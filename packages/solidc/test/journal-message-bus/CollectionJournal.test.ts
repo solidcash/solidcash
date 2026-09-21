@@ -178,7 +178,7 @@ describe('Release 3 collection journal lowering', () => {
     );
   });
 
-  it('marks mutually recursive collection and dynamic journal closures for SDK preflight', () => {
+  it('does not mark mutually recursive journal closures after tail-cycle lowering', () => {
     const collection = compileString(`${PREFIX}
       function a(bytes20 who, int n) internal {
         balances[who] = balances[who] + 1;
@@ -190,7 +190,7 @@ describe('Release 3 collection journal lowering', () => {
       }
       function run(bytes20 who, int n) { a(who, n); require(n >= 0); }
     }`, { forceStateful: true });
-    expect(collection.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+    expect(collection.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
 
     const dynamic = compileString(`pragma solidcash >=0.8.0;
       contract DynamicCycle() {
@@ -206,7 +206,7 @@ describe('Release 3 collection journal lowering', () => {
         function run(bytes value, int n) { a(value, n); require(n >= 0); }
       }
     `, { forceStateful: true });
-    expect(dynamic.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBe(true);
+    expect(dynamic.abi.find((entry) => entry.name === 'run')?.recursiveStateHandler).toBeUndefined();
   });
 
   it('threads an ERC-20 transferFrom tuple across balances and allowance entries', () => {

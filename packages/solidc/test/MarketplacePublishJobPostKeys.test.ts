@@ -2,8 +2,6 @@ import { describe, expect, it } from 'vitest';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { compileFile, compileFileMulti } from '../src/compileFile.js';
-import { applyUpsertFixedKeyRecovery } from '../src/generation/upsertKeySources.js';
-import type { FunctionDefinitionNode } from '../src/ast/AST.js';
 
 const marketplaceV1 = path.resolve(
   fileURLToPath(new URL('.', import.meta.url)),
@@ -95,20 +93,4 @@ describe('MarketplaceV1 publishJobPost upsert keys', () => {
     expect(after).toContain('017793017896');
   });
 
-  it('recovers jobs.length-1 from dynamicWrites when the body no longer has the assign', () => {
-    const fn = {
-      parameters: [],
-      dynamicWrites: ['jobs'],
-      sortedUpsertLoopInfo: [{
-        collection: 'whitelistWorkers',
-        fixedKeyParams: [],
-        varyingArrayParam: 'allowedWorkers_',
-        op: 'set' as const,
-      }],
-    } as unknown as FunctionDefinitionNode;
-    applyUpsertFixedKeyRecovery(fn, new Set(['jobs']));
-    expect(fn.sortedUpsertLoopInfo?.[0].fixedKeySources).toEqual([
-      { kind: 'expression', canonical: JOBS_LENGTH_MINUS_ONE },
-    ]);
-  });
 });

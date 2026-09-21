@@ -57,6 +57,8 @@ let snapshots: FixtureSnapshot<unknown>[] = [];
  * (the function identity is the cache key).
  */
 export async function loadFixture<T>(fixture: () => Promise<T>): Promise<T> {
+  const timingEnabled = process.env.SOLIDC_DEBUG_HARNESS_TIMING === '1';
+  const startedAt = timingEnabled ? Date.now() : 0;
   if (typeof fixture !== 'function') throw new Error('loadFixture: fixture must be a function');
   if (fixture.name === '') {
     throw new Error('loadFixture: fixtures must be named functions (the function is the cache key)');
@@ -66,9 +68,15 @@ export async function loadFixture<T>(fixture: () => Promise<T>): Promise<T> {
     await existing.restorer.restore();
     existing.deploymentRestorer.restore();
     existing.softStateRestorer.restore();
+    if (timingEnabled) console.error('harness-fixture-timing', {
+      fixture: fixture.name, phase: 'restore', ms: Date.now() - startedAt,
+    });
     return existing.data;
   }
   const data = await fixture();
+  if (timingEnabled) console.error('harness-fixture-timing', {
+    fixture: fixture.name, phase: 'execute', ms: Date.now() - startedAt,
+  });
   const provider = getActiveProvider();
   const restorer = await provider.takeSnapshot();
   const deploymentRestorer = takeDeploymentRegistrySnapshot(provider as never);
@@ -76,6 +84,9 @@ export async function loadFixture<T>(fixture: () => Promise<T>): Promise<T> {
   snapshots.push({
     fixture, data, restorer, deploymentRestorer, softStateRestorer, provider,
   } as FixtureSnapshot<unknown>);
+  if (timingEnabled) console.error('harness-fixture-timing', {
+    fixture: fixture.name, phase: 'snapshot', ms: Date.now() - startedAt,
+  });
   return data;
 }
 

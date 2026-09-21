@@ -29,6 +29,36 @@ afterEach(() => {
 });
 
 describe('incremental compile task', () => {
+  it('bypasses both compiler and project caches when SOLIDC_COMPILE_CACHE=0', async () => {
+    const root = tempProject();
+    const hre = createHardhatRuntimeEnvironment(resolveConfig({
+      paths: { contracts: './contracts', artifacts: './artifacts', cache: './cache', tests: './test' },
+      compiler: { solidityImportCompat: true },
+    }, root));
+    const previous = process.env.SOLIDC_COMPILE_CACHE;
+    try {
+      process.env.SOLIDC_COMPILE_CACHE = '1';
+      const cold = await runTask('compile', { quiet: true }, hre) as {
+        compilerJobs: number; cacheHits: number;
+      };
+      const warm = await runTask('compile', { quiet: true }, hre) as {
+        compilerJobs: number; cacheHits: number;
+      };
+      expect(cold.compilerJobs).toBe(2);
+      expect(warm.cacheHits).toBe(2);
+
+      process.env.SOLIDC_COMPILE_CACHE = '0';
+      const uncached = await runTask('compile', { quiet: true }, hre) as {
+        compilerJobs: number; cacheHits: number;
+      };
+      expect(uncached.compilerJobs).toBe(2);
+      expect(uncached.cacheHits).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.SOLIDC_COMPILE_CACHE;
+      else process.env.SOLIDC_COMPILE_CACHE = previous;
+    }
+  });
+
   it('supports the ethers v6 HDNodeWallet.fromMnemonic compatibility constructor', () => {
     const root = tempProject();
     const hre = createHardhatRuntimeEnvironment(resolveConfig({}, root));

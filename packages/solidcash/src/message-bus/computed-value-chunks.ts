@@ -1,10 +1,14 @@
 import { binToHex, vmNumberToBigInt, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
+import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, VALUE_INLINE_LIMIT } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
-import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
+import {
+  persistValueChunkLock, valueChunkIndexFromCommitment, valueChunkWriteResourceIdentity,
+  type ValueChunkWriteDescriptor,
+} from '../stateful/StatefulTransactionBuilder.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { generateLibauthSourceOutputs } from '../utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
 
 export interface ComputedValueChunkConvergence {
@@ -16,6 +20,94 @@ export interface ComputedValueChunkConvergence {
 
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
   && bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20 && bytecode[34] === 0x87;
+
+export interface ComputedValueChunkValueObservation {
+  write: ValueChunkWriteDescriptor;
+  value: Uint8Array;
+  lockingBytecode: Uint8Array;
+  chunkCount: number;
+}
+
+export interface IndexedComputedValueChunkValueObservation extends ComputedValueChunkValueObservation {
+  inputIndex: number;
+}
+
+/**
+ * Match a VM-exposed value to an exact compiler-described write at the chunk-count covenant.
+ * A large stack item alone is not authority: its root-addressed lock and the expected count must both be
+ * present in the same executing frame. The final transaction still has to pass the complete BCH VM preflight.
+ */
+export function matchComputedValueChunkStack(
+  stack: readonly Uint8Array[], writes: readonly ValueChunkWriteDescriptor[],
+): ComputedValueChunkValueObservation[] {
+  if (stack.length < 3 || writes.length === 0) return [];
+  const counts = new Set<number>();
+  for (const operand of stack.slice(-2)) {
+    try {
+      const count = Number(vmNumberToBigInt(operand));
+      if (Number.isSafeInteger(count) && count > 0) counts.add(count);
+    } catch { /* Not a minimally encoded count. */ }
+  }
+  if (counts.size === 0) return [];
+  const locks = new Set(stack.filter(isP2sh32).map(binToHex));
+  if (locks.size === 0) return [];
+  const found: ComputedValueChunkValueObservation[] = [];
+  const seen = new Set<string>();
+  for (const write of writes) {
+    for (const value of stack) {
+      if (value.length <= VALUE_INLINE_LIMIT) continue;
+      const chunkCount = Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+      if (!counts.has(chunkCount)) continue;
+      const lockingBytecode = persistValueChunkLock(write.categoryId, value, write);
+      if (!lockingBytecode || !locks.has(binToHex(lockingBytecode))) continue;
+      const identity = `${valueChunkWriteResourceIdentity(write)}:${binToHex(lockingBytecode)}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      found.push({ write, value: value.slice(), lockingBytecode, chunkCount });
+    }
+  }
+  return found;
+}
+
+/** Observe only executed chunk-count equalities on the complete graph; retain no VM history. */
+export function discoverMessageBusComputedValueChunkValues(
+  builder: TransactionBuilder,
+  targets: readonly { inputIndex: number; write: ValueChunkWriteDescriptor }[],
+): IndexedComputedValueChunkValueObservation[] {
+  if (targets.length === 0) return [];
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const byInput = new Map<number, ValueChunkWriteDescriptor[]>();
+  for (const target of targets) {
+    if (!Number.isSafeInteger(target.inputIndex) || target.inputIndex < 0
+      || target.inputIndex >= transaction.inputs.length) continue;
+    const writes = byInput.get(target.inputIndex) ?? [];
+    writes.push(target.write);
+    byInput.set(target.inputIndex, writes);
+  }
+  const observations = new Map<string, IndexedComputedValueChunkValueObservation>();
+  for (const [inputIndex, writes] of byInput) {
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
+      opcodes: new Set([Op.OP_EQUALVERIFY]),
+      beforeOperation: (unknownState) => {
+        const state = unknownState as AuthenticationProgramStateCommon;
+        if (state.instructions[state.ip]?.opcode !== Op.OP_EQUALVERIFY
+          || state.instructions[state.ip - 1]?.opcode !== Op.OP_DROP
+          || state.controlStack.some((frame) => frame === false)) return;
+        for (const observation of matchComputedValueChunkStack(state.stack, writes)) {
+          const identity = `${inputIndex}:${valueChunkWriteResourceIdentity(observation.write)}`;
+          const prior = observations.get(identity);
+          if (prior && binToHex(prior.value) !== binToHex(observation.value)) {
+            throw new Error(`messageBus: computed value-chunk resource '${identity}' has ambiguous VM values`);
+          }
+          observations.set(identity, { ...observation, inputIndex });
+        }
+      },
+    });
+    vm.evaluate({ inputIndex, sourceOutputs, transaction });
+  }
+  return [...observations.values()];
+}
 
 /**
  * Converge computed value-chunk outputs which exist only in the complete atomic graph.
@@ -89,8 +181,12 @@ export function convergeMessageBusComputedValueChunkOutputs(
         beforeOperation: (unknownState) => {
           const state = unknownState as AuthenticationProgramStateCommon;
           const opcode = state.instructions[state.ip]?.opcode;
+          const nextOpcode = state.instructions[state.ip + 1]?.opcode;
+          const tightEquality = nextOpcode === Op.OP_EQUALVERIFY
+            || (nextOpcode === Op.OP_EQUAL
+              && state.instructions[state.ip + 2]?.opcode === Op.OP_VERIFY);
           if ((opcode !== Op.OP_OUTPUTBYTECODE && opcode !== Op.OP_OUTPUTTOKENCOMMITMENT)
-            || state.instructions[state.ip + 1]?.opcode !== Op.OP_EQUALVERIFY
+            || !tightEquality
             || state.controlStack.some((frame) => frame === false)
             || state.stack.length < 2) return;
           let outputIndex: number;
@@ -118,7 +214,9 @@ export function convergeMessageBusComputedValueChunkOutputs(
     let changed = false;
     for (const [outputIndex, expected] of lockingBytecodeProposals) {
       const output = builder.outputs[outputIndex];
-      if (!output || !(output.to instanceof Uint8Array) || binToHex(output.to) === binToHex(expected)) continue;
+      if (!output) continue;
+      const current = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+      if (binToHex(current) === binToHex(expected)) continue;
       output.to = expected;
       changedOutputs.add(outputIndex);
       repairs += 1;

@@ -1008,6 +1008,15 @@ export class InvalidModifierCombinationError extends SolidCashError {
   }
 }
 
+/** One synthesized block-oracle register cannot simultaneously belong to direct and proxy-owned state. */
+export class MixedBlockOracleOwnershipError extends SolidCashError {
+  constructor(node: ContractNode) {
+    super(node, `Contract '${node.name}' reaches block-oracle state from both direct and delegate execution `
+      + 'surfaces. Split the oracle consumers by contract, or make every externally callable consumer use the '
+      + 'same execution owner');
+  }
+}
+
 export class InvalidImmutableTypeError extends SolidCashError {
   constructor(node: Node, functionType = false) {
     super(

@@ -2,13 +2,30 @@ import { Op } from '@solidcash/utils';
 
 /**
  * Net stack effect of an opcode, used to keep the assembly-block stack tracker in sync.
- * Opcodes with data-dependent (OP_ROLL, OP_IFDUP, OP_CHECKMULTISIG) or control-flow
- * (OP_IF family) effects are absent and rejected. Reordering opcodes pop their touched
- * slots and push the same count of anonymous slots (depth exact, names dropped).
+ * Opcodes with data-dependent heights are absent from the table. Literal OP_IFDUP is resolved separately;
+ * runtime OP_IFDUP and OP_CHECKMULTISIG remain rejected. OP_ROLL's
+ * selected value is data-dependent, but its height change is always one consumed depth operand.
+ * The OP_IF and OP_BEGIN families are analyzed structurally by analyzeAssemblyStack rather than listed here.
+ * Reordering opcodes pop their touched slots and push the same count of anonymous slots (depth exact, names dropped).
  */
 export interface StackEffect {
   pops: number;
   pushes: number;
+}
+
+export interface AssemblyStackAnalysis {
+  /** Minimum number of values which must already exist when the block begins. */
+  requiredDepth: number;
+  /** Net stack-height change on every successful path through the block. */
+  delta: number;
+  /** Minimum number of alt-stack values which must already exist when the block begins. */
+  requiredAltDepth: number;
+  /** Net alt-stack-height change on every successful path through the block. */
+  altDelta: number;
+}
+
+export interface AssemblyStackAnalysisError {
+  error: string;
 }
 
 const EFFECTS: Record<number, StackEffect> = {
@@ -63,6 +80,7 @@ const EFFECTS: Record<number, StackEffect> = {
   [Op.OP_NIP]: { pops: 2, pushes: 1 },
   [Op.OP_OVER]: { pops: 0, pushes: 1 },
   [Op.OP_PICK]: { pops: 1, pushes: 1 },
+  [Op.OP_ROLL]: { pops: 1, pushes: 0 },
   [Op.OP_ROT]: { pops: 3, pushes: 3 },
   [Op.OP_SWAP]: { pops: 2, pushes: 2 },
   [Op.OP_TUCK]: { pops: 2, pushes: 3 },
@@ -76,6 +94,11 @@ const EFFECTS: Record<number, StackEffect> = {
   [Op.OP_REVERSEBYTES]: { pops: 1, pushes: 1 },
 
   // --- Bitwise / comparison ---
+  [Op.OP_INVERT]: { pops: 1, pushes: 1 },
+  [Op.OP_LSHIFTNUM]: { pops: 2, pushes: 1 },
+  [Op.OP_RSHIFTNUM]: { pops: 2, pushes: 1 },
+  [Op.OP_LSHIFTBIN]: { pops: 2, pushes: 1 },
+  [Op.OP_RSHIFTBIN]: { pops: 2, pushes: 1 },
   [Op.OP_AND]: { pops: 2, pushes: 1 },
   [Op.OP_OR]: { pops: 2, pushes: 1 },
   [Op.OP_XOR]: { pops: 2, pushes: 1 },
@@ -150,4 +173,145 @@ const EFFECTS: Record<number, StackEffect> = {
 /** Static stack effect of an opcode, or undefined if it cannot be statically tracked. */
 export function getStackEffect(opcode: number): StackEffect | undefined {
   return EFFECTS[opcode];
+}
+
+/** Resolve OP_IFDUP when its input is the literal immediately preceding it. */
+export function getLiteralIfDupEffect(previous: number | Uint8Array | undefined): StackEffect | undefined {
+  let truthy: boolean;
+  if (previous instanceof Uint8Array) {
+    // BCH casts zero and negative zero (0x80 with only zero prefix bytes) to false.
+    truthy = previous.some((byte, index) => byte !== 0 && !(index === previous.length - 1 && byte === 0x80));
+  } else if (previous === Op.OP_0) {
+    truthy = false;
+  } else if (previous === Op.OP_1NEGATE || (previous !== undefined && previous >= Op.OP_1 && previous <= Op.OP_16)) {
+    truthy = true;
+  } else {
+    return undefined;
+  }
+  return { pops: 0, pushes: truthy ? 1 : 0 };
+}
+
+interface ConditionalFrame {
+  kind: 'conditional';
+  entryState: AssemblyStackAnalysis;
+  thenState?: AssemblyStackAnalysis;
+}
+
+interface LoopFrame {
+  kind: 'loop';
+  entryState: AssemblyStackAnalysis;
+}
+
+type ControlFrame = ConditionalFrame | LoopFrame;
+
+const isConditionalStart = (opcode: number): boolean => opcode === Op.OP_IF || opcode === Op.OP_NOTIF;
+
+/**
+ * Analyze a native assembly block without assuming a particular compiler-managed input stack.
+ *
+ * Raw IF/ELSE arms are safe for the surrounding compiler only when every arm converges to the same stack
+ * height. OP_BEGIN/OP_UNTIL loops obey the analogous invariant: after OP_UNTIL consumes the condition, the
+ * body must restore both stacks to their loop-entry heights. This analysis also computes the number of values
+ * the block borrows from its caller.
+ */
+export function analyzeAssemblyStack(
+  script: readonly (number | Uint8Array)[],
+): AssemblyStackAnalysis | AssemblyStackAnalysisError {
+  let state: AssemblyStackAnalysis = {
+    requiredDepth: 0, delta: 0, requiredAltDepth: 0, altDelta: 0,
+  };
+  const frames: ControlFrame[] = [];
+
+  const apply = (effect: StackEffect): void => {
+    state.requiredDepth = Math.max(state.requiredDepth, effect.pops - state.delta);
+    state.delta += effect.pushes - effect.pops;
+  };
+  const applyAlt = (pops: number, pushes: number): void => {
+    state.requiredAltDepth = Math.max(state.requiredAltDepth, pops - state.altDelta);
+    state.altDelta += pushes - pops;
+  };
+
+  for (let index = 0; index < script.length; index += 1) {
+    const element = script[index];
+    if (element instanceof Uint8Array) {
+      state.delta += 1;
+      continue;
+    }
+    if (isConditionalStart(element)) {
+      apply({ pops: 1, pushes: 0 });
+      frames.push({ kind: 'conditional', entryState: { ...state } });
+      continue;
+    }
+    if (element === Op.OP_ELSE) {
+      const frame = frames.at(-1);
+      if (!frame || frame.kind !== 'conditional') return { error: 'OP_ELSE has no matching OP_IF/OP_NOTIF' };
+      if (frame.thenState) return { error: 'an assembly conditional may contain only one OP_ELSE' };
+      frame.thenState = { ...state };
+      state = { ...frame.entryState };
+      continue;
+    }
+    if (element === Op.OP_ENDIF) {
+      const frame = frames.pop();
+      if (!frame || frame.kind !== 'conditional') {
+        return { error: 'OP_ENDIF has no matching OP_IF/OP_NOTIF' };
+      }
+      const thenState = frame.thenState ?? state;
+      const elseState = frame.thenState
+        ? state : frame.entryState;
+      if (thenState.delta !== elseState.delta || thenState.altDelta !== elseState.altDelta) {
+        return {
+          error: 'assembly conditional stack-height mismatch '
+            + `(main ${thenState.delta}/${elseState.delta}, alt ${thenState.altDelta}/${elseState.altDelta})`,
+        };
+      }
+      state = {
+        requiredDepth: Math.max(thenState.requiredDepth, elseState.requiredDepth),
+        delta: thenState.delta,
+        requiredAltDepth: Math.max(thenState.requiredAltDepth, elseState.requiredAltDepth),
+        altDelta: thenState.altDelta,
+      };
+      continue;
+    }
+    if (element === Op.OP_BEGIN) {
+      frames.push({ kind: 'loop', entryState: { ...state } });
+      continue;
+    }
+    if (element === Op.OP_UNTIL) {
+      const frame = frames.pop();
+      if (!frame || frame.kind !== 'loop') return { error: 'OP_UNTIL has no matching OP_BEGIN' };
+      apply({ pops: 1, pushes: 0 });
+      if (state.delta !== frame.entryState.delta || state.altDelta !== frame.entryState.altDelta) {
+        return {
+          error: 'assembly loop stack-height mismatch '
+            + `(main ${frame.entryState.delta}/${state.delta}, `
+            + `alt ${frame.entryState.altDelta}/${state.altDelta})`,
+        };
+      }
+      state = {
+        requiredDepth: Math.max(frame.entryState.requiredDepth, state.requiredDepth),
+        delta: frame.entryState.delta,
+        requiredAltDepth: Math.max(frame.entryState.requiredAltDepth, state.requiredAltDepth),
+        altDelta: frame.entryState.altDelta,
+      };
+      continue;
+    }
+    const effect = element === Op.OP_IFDUP
+      ? getLiteralIfDupEffect(script[index - 1])
+      : getStackEffect(element);
+    if (!effect) return { error: `opcode ${element} has no statically trackable stack effect` };
+    if (element === Op.OP_TOALTSTACK) {
+      apply(effect);
+      applyAlt(0, 1);
+    } else if (element === Op.OP_FROMALTSTACK) {
+      applyAlt(1, 0);
+      apply(effect);
+    } else {
+      apply(effect);
+    }
+  }
+
+  const open = frames.at(-1);
+  if (open?.kind === 'conditional') return { error: 'assembly conditional is missing OP_ENDIF' };
+  if (open?.kind === 'loop') return { error: 'assembly loop is missing OP_UNTIL' };
+  return state;
 }

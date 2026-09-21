@@ -182,6 +182,8 @@ export interface HardhatRuntimeEnvironment {
  * "multiple artifacts" - pass the artifact object to disambiguate).
  */
 export function loadArtifactByName(artifactsDir: string, name: string): Artifact {
+  const timingEnabled = process.env.SOLIDC_DEBUG_HARNESS_TIMING === '1';
+  const startedAt = timingEnabled ? Date.now() : 0;
   const base = solidcashArtifactsPath(artifactsDir);
   const separator = name.lastIndexOf(':');
   const sourceName = separator === -1 ? undefined : name.slice(0, separator).replace(/\\/g, '/');
@@ -206,6 +208,9 @@ export function loadArtifactByName(artifactsDir: string, name: string): Artifact
   const ident = (a: Artifact): string => (a as any).fingerprint ?? a.bytecode ?? JSON.stringify(a.abi);
   const distinct = new Map<string, Artifact>();
   parsed.forEach((a) => distinct.set(ident(a), a));
+  if (timingEnabled) console.error('harness-artifact-timing', {
+    name, matches: matches.length, ms: Date.now() - startedAt,
+  });
   if (distinct.size === 1) return [...distinct.values()][0];
   if (distinct.size > 1) {
     throw new Error(

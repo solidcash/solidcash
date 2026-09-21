@@ -122,7 +122,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before it can be taken");
         }
 
-        job.roles.worker = eventAddress(event.address_) as string;
+        job.roles.worker = eventLockingBytecode(event.address_) as unknown as string;
         job.state = JobState.Taken;
         job.escrowId = toBigInt(event.data_);
         job.jobTimes!.assignedAt = event.timestamp_;
@@ -146,7 +146,7 @@ export const computeJobStateDiffs = (jobEvents: JobEvent[], jobId: string, job?:
           throw new Error("Job must be created before it can be paid");
         }
 
-        job.roles.worker = eventAddress(event.address_) as string;
+        job.roles.worker = eventLockingBytecode(event.address_) as unknown as string;
         job.state = JobState.Taken;
         job.escrowId = toBigInt(event.data_);
         job.jobTimes!.assignedAt = event.timestamp_;

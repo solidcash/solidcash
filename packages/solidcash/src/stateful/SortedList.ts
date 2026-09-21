@@ -124,6 +124,57 @@ export interface BatchUpsertPlan {
   outputs: Array<{ slot: Uint8Array; commitment: Uint8Array; existed: boolean }>;
 }
 
+export interface JournaledMutationRecord {
+  slot: Uint8Array;
+  nextKey: Uint8Array;
+  value: Uint8Array;
+  authenticated: boolean;
+  dirty: boolean;
+  tombstone: boolean;
+  synthetic: boolean;
+}
+
+/** Record identities used by one source-ordered journal operation. */
+export interface JournaledMutationAccess {
+  /** The logical target record. Repeated operations retain the same ordinal. */
+  targetRecordOrdinal: number;
+  /** The predecessor required to prove absence or to splice a deletion. */
+  predecessorRecordOrdinal?: number;
+  /** Whether the target existed in the pending journal immediately before this operation. */
+  presentBefore: boolean;
+  /** Whether the target exists in the pending journal immediately after this operation. */
+  presentAfter: boolean;
+  /** Whether this operation is permitted to change the target value or pending topology. */
+  mutates: boolean;
+  /** This access is the unique physical authentication of its target record. */
+  authenticatesTarget?: true;
+  /** This access is the unique physical authentication of its predecessor record. */
+  authenticatesPredecessor?: true;
+}
+
+export interface JournaledMutationPlan extends BatchUpsertPlan {
+  /** Final logical nodes in deterministic first-touch order; tombstones are retained but produce no output. */
+  records: JournaledMutationRecord[];
+  /** One target/predecessor record selection per source operation, in source order. */
+  accesses: JournaledMutationAccess[];
+  /** First accesses which consume authenticated pre-state records; synthetic and cached uses are absent. */
+  physicalAuthentications: Array<{ accessOrdinal: number; recordOrdinal: number }>;
+}
+
+/** One logical write in an ordered owner-local journal. */
+export interface JournaledUpsert<T> { slot: Uint8Array; operation: T }
+
+/**
+ * An explicit reducer result for an operation which may only observe the pending journal. Plain byte arrays and
+ * `undefined` retain their compatibility meaning of a dirty write and delete respectively. A clean result must
+ * preserve the current value exactly; it exists so an authenticated present or absent read can publish record
+ * ordinals without being mistaken for a state transition.
+ */
+export interface JournaledMutationResult {
+  value: Uint8Array | undefined;
+  dirty: boolean;
+}
+
 export class SortedList {
   private entries: SortedEntry[]; // sorted ascending by slot value
 
@@ -217,26 +268,168 @@ export class SortedList {
       if (bySlot.has(key)) throw new Error('vmap batch upsert contains a duplicate slot');
       bySlot.set(key, w);
     }
-    if (bySlot.size === 0) return { inputs: [], outputs: [] };
+    return this.planJournaledUpserts(
+      [...bySlot.values()].map(({ slot, value }) => ({ slot, operation: value })),
+      (_current, value) => value,
+    );
+  }
+
+  /**
+   * Plan an ordered sequence of logical upserts against one authenticated pre-state list. Each original entry or
+   * predecessor is co-spent at most once, repeated slots observe the reducer's pending value, and every affected
+   * node is emitted once in its final linked-list shape. This is the SDK reference model for the kernel's future
+   * pending-output journal; the current batch-upsert API remains the strict distinct-slot compatibility surface.
+   */
+  planJournaledUpserts<T>(
+    writes: readonly JournaledUpsert<T>[],
+    reduce: (current: Uint8Array | undefined, operation: T, slot: Uint8Array) => Uint8Array,
+  ): JournaledMutationPlan {
+    return this.planJournaledMutations(writes, reduce);
+  }
+
+  /**
+   * General ordered journal planner. Returning `undefined` removes the logical node; a later operation for the
+   * same slot observes that absence and may reinsert it. Any slot which is deleted along the way conservatively
+   * authenticates its original predecessor as well as its original node, so intermediate link semantics remain
+   * proven even when the final state contains that slot again.
+   */
+  planJournaledMutations<T>(
+    writes: readonly JournaledUpsert<T>[],
+    reduce: (
+      current: Uint8Array | undefined,
+      operation: T,
+      slot: Uint8Array,
+    ) => Uint8Array | undefined | JournaledMutationResult,
+  ): JournaledMutationPlan {
+    if (writes.length === 0) {
+      return { inputs: [], outputs: [], records: [], accesses: [], physicalAuthentications: [] };
+    }
+
+    const finalValues = new Map<string, {
+      slot: Uint8Array;
+      value: Uint8Array | undefined;
+      deleted: boolean;
+      dirty: boolean;
+    }>();
+    const recordOrder: string[] = [];
+    const recordOrdinals = new Map<string, number>();
+    const appendRecord = (slot: Uint8Array): number => {
+      const key = bytesToSlotValue(slot).toString();
+      const prior = recordOrdinals.get(key);
+      if (prior !== undefined) return prior;
+      const ordinal = recordOrder.length;
+      recordOrdinals.set(key, ordinal);
+      recordOrder.push(key);
+      return ordinal;
+    };
+    // This is the evolving journal topology, not just the final value map. It lets a later operation name a
+    // predecessor inserted by an earlier operation without consulting the immutable pre-state list again.
+    const liveSlots = new Map(this.entries.map((entry) => [
+      bytesToSlotValue(entry.slot).toString(), entry.slot,
+    ]));
+    const pendingPredecessor = (slot: Uint8Array): Uint8Array => {
+      const target = bytesToSlotValue(slot);
+      let best: Uint8Array | undefined;
+      for (const candidate of liveSlots.values()) {
+        const value = bytesToSlotValue(candidate);
+        if (value < target && (best === undefined || value > bytesToSlotValue(best))) best = candidate;
+      }
+      if (!best) throw new Error('pending sorted list is missing its HEAD sentinel');
+      return best;
+    };
+    const accesses: JournaledMutationAccess[] = [];
+    const physicalAuthentications: JournaledMutationPlan['physicalAuthentications'] = [];
+    const consumedPhysicalRecords = new Set<number>();
+    for (const write of writes) {
+      const numericSlot = bytesToSlotValue(write.slot);
+      if (numericSlot === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
+      const key = numericSlot.toString();
+      const prior = finalValues.get(key);
+      const original = this.find(write.slot);
+      const current = prior ? prior.value : original?.value;
+      const presentBefore = current !== undefined;
+      const predecessor = pendingPredecessor(write.slot);
+      const reduced = reduce(current, write.operation, write.slot);
+      const explicit = reduced !== undefined && !(reduced instanceof Uint8Array);
+      const value = explicit
+        ? (reduced as JournaledMutationResult).value : reduced as Uint8Array | undefined;
+      const dirty = explicit ? (reduced as JournaledMutationResult).dirty : true;
+      if (!dirty) {
+        const preservesAbsence = current === undefined && value === undefined;
+        const preservesValue = current !== undefined && value !== undefined
+          && current.length === value.length && current.every((byte, index) => byte === value[index]);
+        if (!preservesAbsence && !preservesValue) {
+          throw new Error('a clean journal operation must preserve the pending value');
+        }
+      }
+      let predecessorRecordOrdinal: number | undefined;
+      let targetRecordOrdinal: number;
+      if (presentBefore) {
+        targetRecordOrdinal = appendRecord(write.slot);
+        if (value === undefined) predecessorRecordOrdinal = appendRecord(predecessor);
+      } else {
+        predecessorRecordOrdinal = appendRecord(predecessor);
+        targetRecordOrdinal = appendRecord(write.slot);
+      }
+      accesses.push({
+        targetRecordOrdinal,
+        ...(predecessorRecordOrdinal !== undefined && { predecessorRecordOrdinal }),
+        presentBefore,
+        presentAfter: value !== undefined,
+        mutates: dirty,
+      });
+      for (const recordOrdinal of [targetRecordOrdinal, predecessorRecordOrdinal]) {
+        if (recordOrdinal === undefined || consumedPhysicalRecords.has(recordOrdinal)) continue;
+        const recordSlot = recordOrder[recordOrdinal];
+        if (recordSlot === undefined || this.find(slotValueToBytes(BigInt(recordSlot))) === undefined) continue;
+        consumedPhysicalRecords.add(recordOrdinal);
+        physicalAuthentications.push({ accessOrdinal: accesses.length - 1, recordOrdinal });
+        if (recordOrdinal === targetRecordOrdinal) accesses[accesses.length - 1].authenticatesTarget = true;
+        if (recordOrdinal === predecessorRecordOrdinal) {
+          accesses[accesses.length - 1].authenticatesPredecessor = true;
+        }
+      }
+      if (dirty) {
+        if (value === undefined) liveSlots.delete(key);
+        else liveSlots.set(key, write.slot);
+      }
+      finalValues.set(key, {
+        slot: write.slot,
+        value,
+        deleted: (prior?.deleted ?? false) || (dirty && value === undefined),
+        dirty: (prior?.dirty ?? false) || dirty,
+      });
+    }
 
     const inputMap = new Map<string, SortedEntry>();
     const affected = new Set<string>();
-    for (const w of bySlot.values()) {
+    for (const w of finalValues.values()) {
       const present = this.find(w.slot);
       const source = present ?? this.predecessorOf(w.slot);
       const sourceKey = bytesToSlotValue(source.slot).toString();
       inputMap.set(`${source.utxo.txid}:${source.utxo.vout}`, source);
-      affected.add(sourceKey);
-      affected.add(bytesToSlotValue(w.slot).toString());
+      if (w.dirty) {
+        affected.add(sourceKey);
+        affected.add(bytesToSlotValue(w.slot).toString());
+      }
+      if (present && w.deleted) {
+        const predecessor = this.predecessorOf(w.slot);
+        inputMap.set(`${predecessor.utxo.txid}:${predecessor.utxo.vout}`, predecessor);
+        affected.add(bytesToSlotValue(predecessor.slot).toString());
+      }
     }
 
     const finalSlots = new Map<string, { slot: Uint8Array; value: Uint8Array; existed: boolean }>();
     for (const e of this.entries) {
       const key = bytesToSlotValue(e.slot).toString();
-      finalSlots.set(key, { slot: e.slot, value: bySlot.get(key)?.value ?? e.value, existed: true });
+      const pending = finalValues.get(key);
+      if (pending && pending.value === undefined) continue;
+      finalSlots.set(key, { slot: e.slot, value: pending?.value ?? e.value, existed: true });
     }
-    for (const [key, w] of bySlot) {
-      if (!finalSlots.has(key)) finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
+    for (const [key, w] of finalValues) {
+      if (w.value !== undefined && !finalSlots.has(key)) {
+        finalSlots.set(key, { slot: w.slot, value: w.value, existed: false });
+      }
     }
     const ordered = [...finalSlots.values()].sort((a, b) => {
       const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
@@ -250,11 +443,31 @@ export class SortedList {
       const next = i + 1 < ordered.length ? ordered[i + 1].slot : ZERO_SLOT;
       outputs.push({ slot: cur.slot, commitment: encodeEntryCommitment(cur.slot, next, cur.value), existed: cur.existed });
     }
+    const finalByKey = new Map(ordered.map((entry, index) => [bytesToSlotValue(entry.slot).toString(), {
+      ...entry,
+      nextKey: index + 1 < ordered.length ? ordered[index + 1].slot : ZERO_SLOT,
+    }]));
+    const records: JournaledMutationRecord[] = recordOrder.map((key) => {
+      const final = finalByKey.get(key);
+      const original = this.entries.find((entry) => bytesToSlotValue(entry.slot).toString() === key);
+      const pending = finalValues.get(key);
+      const tombstone = !final && pending?.value === undefined;
+      if (!final && !tombstone) throw new Error(`journal record ${key} has no final or tombstone state`);
+      return {
+        slot: final?.slot ?? pending!.slot,
+        nextKey: final?.nextKey ?? original?.nextKey ?? ZERO_SLOT,
+        value: final?.value ?? new Uint8Array(),
+        authenticated: original !== undefined,
+        dirty: affected.has(key),
+        tombstone,
+        synthetic: original === undefined,
+      };
+    });
     const inputs = [...inputMap.values()].sort((a, b) => {
       const av = bytesToSlotValue(a.slot); const bv = bytesToSlotValue(b.slot);
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
-    return { inputs, outputs };
+    return { inputs, outputs, records, accesses, physicalAuthentications };
   }
 
   planDelete(slot: Uint8Array): DeletePlan {
@@ -276,11 +489,19 @@ export function getCachedSortedList(
   utxos: readonly Utxo[],
 ): SortedList {
   const cacheKey = `${categoryId}:${address}`;
-  const hit = cache.get(cacheKey);
-  if (hit) return hit;
   const list = SortedList.fromUtxos(
     utxos.filter((utxo) => utxo.token?.category === categoryId),
   );
+  const hit = cache.get(cacheKey);
+  // A prior nested resolution can observe HEAD-only before a sibling write lands.
+  // Reuse the cache only when the live outpoint set still matches.
+  if (hit) {
+    const hitKeys = new Set(hit.all.map((entry) => `${entry.utxo.txid}:${entry.utxo.vout}`));
+    const liveKeys = new Set(list.all.map((entry) => `${entry.utxo.txid}:${entry.utxo.vout}`));
+    if (hitKeys.size === liveKeys.size && [...hitKeys].every((key) => liveKeys.has(key))) {
+      return hit;
+    }
+  }
   cache.set(cacheKey, list);
   return list;
 }

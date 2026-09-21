@@ -21,6 +21,14 @@
     "./ethers6": { "types": "./dist/ethers6.d.ts", "default": "./dist/ethers6.js" },
     "./config": { "types": "./dist/config.d.ts", "default": "./dist/config.js" },
     "./vitest-preset": { "types": "./dist/vitest-preset.d.ts", "default": "./dist/vitest-preset.js" },
+    "./cashaddr": { "types": "./dist/cashaddr.d.ts", "default": "./dist/cashaddr.js" },
+    "./project-fixture": { "types": "./dist/project-fixture.d.ts", "default": "./dist/project-fixture.js" },
+    "./ported-script": { "types": "./dist/ported-script.d.ts", "default": "./dist/ported-script.js" },
+    "./mock-contracts": { "types": "./dist/mock-contracts/index.d.ts", "default": "./dist/mock-contracts/index.js" },
+    "./offline-network": { "types": "./dist/offline-network.d.ts", "default": "./dist/offline-network.js" },
+    "./offline-ipfs": { "types": "./dist/offline-ipfs.d.ts", "default": "./dist/offline-ipfs.js" },
+    "./offline-rpc": { "types": "./dist/offline-rpc.d.ts", "default": "./dist/offline-rpc.js" },
+    "./offline-setup": { "types": "./dist/offline-setup.d.ts", "default": "./dist/offline-setup.js" },
     "./package.json": "./package.json"
   },
   "bin": { "solidhat": "dist/cli.js" },
@@ -34,7 +42,11 @@
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run --passWithNoTests"
   },
-  "dependencies": { "@solidcash/testing": "^0.13.1", "solidcash": "^0.13.1" },
+  "dependencies": {
+    "@noble/hashes": "^1.4.0",
+    "@solidcash/testing": "^0.13.1",
+    "solidcash": "^0.13.1"
+  },
   "devDependencies": {
     "@types/node": "^22.17.0",
     "eslint": "^8.54.0",

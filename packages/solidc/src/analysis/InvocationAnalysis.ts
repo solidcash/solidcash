@@ -1,8 +1,9 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IndirectCallNode, Node, TupleAssignmentNode,
-  VariableDefinitionNode,
+  AssignNode, ContractNode, DeleteLocalNode, FunctionCallNode, FunctionCallStatementNode,
+  FunctionDefinitionNode, IdentifierNode, IndirectCallNode, Node, TupleAssignmentNode,
+  TryCatchNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 
 export interface InvocationFunctionSummary {
@@ -30,6 +31,19 @@ export interface InvocationAnalysis {
 
 const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
 
+/**
+ * Solidity `address.transfer` / `.send` before symbol resolution. `this.transfer` is already a
+ * TransferStatementNode at parse; the address-receiver spelling is still `to.transfer` / `to.send`.
+ * IERC20 `token.transfer(to, amount)` has two arguments and is not a satoshi transfer.
+ */
+function isPreSemanticAddressValueTransfer(node: Node): boolean {
+  const call = node instanceof FunctionCallStatementNode ? node.call
+    : node instanceof FunctionCallNode ? node : undefined;
+  if (!call || call.parameters.length !== 1) return false;
+  const name = call.identifier.name;
+  return name.endsWith('.transfer') || name.endsWith('.send');
+}
+
 export function walkInvocationAst(
   value: unknown,
   visit: (node: Node) => void,
@@ -38,12 +52,19 @@ export function walkInvocationAst(
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
   visit(value);
+  if (value instanceof TryCatchNode) {
+    // BCH script failure aborts evaluation, so catches are not executable paths. Keep every footprint and
+    // admission survey aligned with code generation by walking only the operation and successful try body.
+    walkInvocationAst(value.expression, visit, seen);
+    walkInvocationAst(value.tryBlock, visit, seen);
+    return;
+  }
   // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
   // an Object.entries pair array for every node in every call-graph and footprint walk.
   for (const key in value) {
     if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
       || key === 'symbolTable' || key === 'referencedContract' || key === 'stateVariable'
-      || key === 'collection') continue;
+      || key === 'collection' || key === 'type' || key === 'location' || key === 'name' || key === 'functionId' || key === 'error' || key === 'opRolls' || key === 'selectorHex' || key === 'abiType') continue;
     const child = value[key as keyof Node];
     if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {
@@ -89,10 +110,19 @@ export function collectNamedFunctionClosure(
   return closure;
 }
 
-interface FootprintAnalysisCache {
+export interface FootprintAnalysisCache {
   directCalls: WeakMap<FunctionDefinitionNode, Set<string>>;
   bodyNodes: WeakMap<FunctionDefinitionNode, { locallyBound: Set<string>; nodes: Node[] }>;
   directFootprints: WeakMap<FunctionDefinitionNode, SplitStateFootprint>;
+  /** Contract scalar-state namespace used while analysing pre-semantic Solidity-compatible bare identifiers. */
+  stateNames?: ReadonlySet<string>;
+}
+
+export function createFootprintAnalysisCache(stateNames?: ReadonlySet<string>): FootprintAnalysisCache {
+  return {
+    directCalls: new WeakMap(), bodyNodes: new WeakMap(), directFootprints: new WeakMap(),
+    ...(stateNames && { stateNames: new Set(stateNames) }),
+  };
 }
 
 export function analyseFunctionFootprint(
@@ -160,14 +190,29 @@ export function analyseFunctionFootprint(
           : undefined;
         const bareReadName = bareRead?.constructor.name === 'IdentifierNode' ? bareRead.name : undefined;
         if (kind === 'StateAccessNode' && resourceName) directReads.add(`state:${resourceName}`);
+        // Before SymbolTableTraversal, Solidity-compatible `x` and `x = value` state syntax is represented as
+        // ordinary identifiers/assignments. Keep footprint admission representation-independent by recognizing
+        // names from the caller-supplied contract state namespace, with the same local-shadow guard used by bare
+        // collection analysis. Explicit `this.x` already arrives as StateAccess/StateAssign and needs no context.
+        else if (node instanceof AssignNode && node.identifier instanceof IdentifierNode
+          && cache?.stateNames?.has(node.identifier.name) && !locallyBound.has(node.identifier.name)) {
+          directWrites.add(`state:${node.identifier.name}`);
+        } else if (node instanceof DeleteLocalNode && cache?.stateNames?.has(node.identifier.name)
+          && !locallyBound.has(node.identifier.name)) {
+          directWrites.add(`state:${node.identifier.name}`);
+        } else if (node instanceof IdentifierNode && cache?.stateNames?.has(node.name)
+          && !locallyBound.has(node.name)) {
+          directReads.add(`state:${node.name}`);
+        }
         else if (bareReadName !== undefined && !locallyBound.has(bareReadName)) {
           directReads.add(collectionResourceName(bareReadName, undefined));
-        } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource) {
+        } else if (/^(MappingAccess|ArrayAccess|StateArrayAccess)/.test(kind) && collectionResource
+          && resourceName && !locallyBound.has(resourceName)) {
           directReads.add(collectionResource);
         } else if (/^(StateAssign|DeleteState)/.test(kind) && resourceName) {
           directWrites.add(`state:${resourceName}`);
         } else if (/^(MappingAssign|MappingFieldAssign|MappingDelete|StateArray(Push|Pop|Assign|Delete))/
-          .test(kind) && collectionResource) {
+          .test(kind) && collectionResource && resourceName && !locallyBound.has(resourceName)) {
           directWrites.add(collectionResource);
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
@@ -180,8 +225,13 @@ export function analyseFunctionFootprint(
           && resourceName && !locallyBound.has(resourceName)) {
           directWrites.add(collectionResource);
         } else if (kind === 'EmitStatementNode') directEffects.add('events');
-        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode') directEffects.add('value');
-        else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
+        else if (kind.includes('Transfer') || kind === 'AddressSendExpressionNode'
+          || isPreSemanticAddressValueTransfer(node)) {
+          // Solidity `to.transfer(1)` / `to.send(1)` parse as `to.transfer` / `to.send` FunctionCalls until
+          // SymbolTableTraversal rewrites them. Without this, the kernel route never clones the handler as a
+          // satoshi-transfer effect and later inlines the rewrite into `__message_bus1` with no transfer slots.
+          directEffects.add('value');
+        } else if (kind.includes('ExternalFunctionCall') || kind === 'LowLevelCallNode') {
           directEffects.add('external-call');
         } else if (node instanceof IndirectCallNode) directUnknown = true;
       };

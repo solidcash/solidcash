@@ -11,6 +11,12 @@ import {
 } from '@bitauth/libauth';
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
+
+const compiledOptimisationReplacements = optimisationReplacements.map(([pattern, replacement]) => ({
+  pattern,
+  replacement,
+  regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
+}));
 import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
 import { LogEntry, RequireStatement } from './artifact.js';
 
@@ -292,7 +298,7 @@ export function optimiseBytecode(
   let rewritten = false;
   for (let i = 0; i < runs; i += 1) {
     const result = replaceOps(
-      asm, locationData, logs, requires, constructorParamLength, optimisationReplacements,
+      asm, locationData, logs, requires, constructorParamLength, compiledOptimisationReplacements,
     );
 
     // Break on fixed point: nothing matched, so every field is still the caller's own input.
@@ -411,17 +417,14 @@ function replaceOps(
   logs: LogEntry[],
   requires: RequireStatement[],
   constructorParamLength: number,
-  optimisations: string[][],
+  optimisations: { pattern: string; replacement: string; regex: RegExp }[],
 ): ReplaceOpsResult {
   let asm = originalAsm;
   let newLocationData = [...locationData];
   let newLogs = [...logs];
   let newRequires = [...requires];
 
-  optimisations.forEach(([pattern, replacement]) => {
-    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
-    // (no partial matches)
-    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
+  optimisations.forEach(({ pattern, replacement, regex }) => {
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
@@ -457,7 +460,8 @@ function replaceOps(
       // We get the locationData entries for every opcode in the pattern
       const patternLocations = newLocationData.slice(scriptIndex, scriptIndex + patternLength);
 
-      // We get the lowest start location and highest end location of the pattern
+      // Compiler-generated instructions can intentionally have no source range. Merge the concrete locations
+      // represented by the replacement; an entirely synthetic pattern remains synthetic.
       const lowestStart = getLowestStartLocation(patternLocations);
       const highestEnd = getHighestEndLocation(patternLocations);
 
@@ -471,12 +475,12 @@ function replaceOps(
 
       // We merge the lowest start and highest end locations into a single location data entry
       const mergedLocation = {
-        location: {
+        location: lowestStart && highestEnd ? {
           start: lowestStart.location.start,
           end: highestEnd.location.end,
-        },
+        } : undefined,
         positionHint,
-      };
+      } as SingleLocationData;
 
       // We replace the pattern locations with the merged location
       // (note that every opcode in the replacement has the same location)
@@ -570,9 +574,16 @@ function replaceOps(
   };
 }
 
-const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((highest, current) => {
-    if (current.location.end.line > highest.location.end.line) {
+type LocatedLocationData = SingleLocationData & {
+  location: NonNullable<SingleLocationData['location']>;
+};
+
+const getHighestEndLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location != null,
+  );
+  return located.reduce<LocatedLocationData | undefined>((highest, current) => {
+    if (!highest || current.location.end.line > highest.location.end.line) {
       return current;
     }
 
@@ -583,12 +594,15 @@ const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationD
     }
 
     return highest;
-  }, locations[0]);
+  }, undefined);
 };
 
-const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((lowest, current) => {
-    if (current.location.start.line < lowest.location.start.line) {
+const getLowestStartLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location != null,
+  );
+  return located.reduce<LocatedLocationData | undefined>((lowest, current) => {
+    if (!lowest || current.location.start.line < lowest.location.start.line) {
       return current;
     }
 
@@ -599,5 +613,5 @@ const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocation
     }
 
     return lowest;
-  }, locations[0]);
+  }, undefined);
 };

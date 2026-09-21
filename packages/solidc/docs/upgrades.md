@@ -57,7 +57,8 @@ implementation's address as an **immutable constructor arg**:
 ```solidity
 pragma solidcash >=0.8.0;
 contract SolidCashProxy(address implementation) {   // implementation baked at genesis (immutable)
-  bigint __proxySlot;                               // placeholder; layout grafted from the implementation
+  // No placeholder state: forceStateful at regenerate time. Layout is grafted from the implementation;
+  // the delegate authorizes state via _proxyMasterIndex (event-only impls need no dataNft at master+1).
   function __forward(bytes input) {
     implementation.delegatecall(input);             // forwards; the delegate authorizes the state
     require(input.length > 0);
@@ -68,8 +69,26 @@ contract SolidCashProxy(address implementation) {   // implementation baked at g
 Because `implementation` is baked (not a call param), the co-spend pin binds the proxy to exactly that
 implementation - a caller cannot substitute a malicious delegate. Forwarding is permissionless; the
 implementation's inferred proxy-context functions define who may do what (like a public mutating method on
-Ethereum). This is the closest safe analog to EIP-1967 minus in-place upgrade (upgrading means deploying a new
-proxy and migrating state; a standardized upgradeable shape can come later).
+Ethereum). This is the closest safe analog to EIP-1967 minus in-place upgrade for the default proxy
+(same-address retarget requires a param-mode custom proxy; otherwise deploy a new proxy and migrate state).
+
+## `upgrades.upgradeProxy` (param-mode only)
+
+```typescript
+const v1 = await upgrades.deployProxy(getContractFactory(v1Artifact, signer), { counter: 0n }, {
+  proxy: paramModeProxyArtifact, // forwarder takes `address impl`
+});
+await v1.bump().send();
+const v2 = await upgrades.upgradeProxy(v1, getContractFactory(v2Artifact, signer));
+await v2.bump().send(); // same proxy address; new implementation locking bytecode as call arg
+```
+
+`upgradeProxy` deploys the new inferred delegate implementation, checks append-only state layout against the
+live proxy holder, and re-wraps the same state-holding proxy in a new `ProxyContract` handle. There is **no**
+on-chain proxy mutation — param-mode already passes `impl` per call.
+
+Default baked `SolidCashProxy` **refuses** `upgradeProxy` with a clear error: the constructor-baked pin cannot
+change without a new P2SH address. Use a param-mode custom proxy, or migrate.
 
 ### Custom proxy
 

@@ -11,6 +11,7 @@ export default {
           type: 'int256',
         },
       ],
+      sourceEffectOrder: 'linear',
     },
   ],
   bytecode: 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL',
@@ -53,7 +54,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-18T13:08:04.537Z',
+  updatedAt: '2026-09-14T01:55:11.414Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

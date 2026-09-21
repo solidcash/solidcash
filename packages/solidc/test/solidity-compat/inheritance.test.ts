@@ -454,6 +454,38 @@ describe('inherited modifier override and declaration namespace collisions', () 
     expect(events).toHaveLength(1);
     expect(events[0].name).toBe('PairCreated');
   });
+  it('publishes event schemas inherited through an implemented interface', () => {
+    const artifacts = compileStringMulti(`
+      interface INotice { event Changed(uint256 value); }
+      contract NoticeBase is INotice {
+        uint256 value;
+        function set(uint256 next) public { value = next; emit Changed(next); }
+      }
+      contract NoticeLeaf is NoticeBase {}
+    `, { solidityImportCompat: true, messageBus: true });
+    const leaf = artifacts.NoticeLeaf;
+    expect(leaf.messageBus?.handlers.find((handler) => handler.name === 'set')?.emits)
+      .toEqual([expect.objectContaining({ eventSignature: 'Changed(uint256)' })]);
+    expect(leaf.events).toEqual([
+      expect.objectContaining({ name: 'Changed', signature: 'Changed(uint256)' }),
+    ]);
+  });
+  it('publishes only the selected overload of an inherited interface event', () => {
+    const artifacts = compileStringMulti(`
+      interface A { event E(uint256 x); }
+      interface Unrelated { event E(string x); }
+      contract C is A { function f(uint256 x) public { emit E(x); } }
+    `, { solidityImportCompat: true, messageBus: true });
+    // The handler selected E(uint256); sibling overload E(string) must not reach the artifact's event inventory.
+    expect(artifacts.C.events?.map((event) => event.signature)).toEqual(['E(uint256)']);
+  });
+  it('lists an emitted sibling-contract event but not its unemitted siblings', () => {
+    const artifacts = compileStringMulti(`
+      contract Emitter { event Used(uint256 v); event Unused(uint256 v); }
+      contract User { function f(uint256 v) public { emit Emitter.Used(v); } }
+    `, { solidityImportCompat: true });
+    expect(artifacts.User.events?.map((event) => event.signature)).toEqual(['Used(uint256)']);
+  });
   it('rejects same-name parent+child errors even when signatures differ', () => {
     expect(() => cc('contract A { error E(); } contract B is A { error E(uint256 n);'
       + ' function f(bool b) external { if (b) revert E(); revert E(1); } }')).toThrow();

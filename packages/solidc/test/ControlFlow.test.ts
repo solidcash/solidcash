@@ -33,6 +33,33 @@ describe('SBE-1: break/continue when the branch is the last loop statement', () 
       }`);
     expect(a.contractName).toBe('C');
   });
+
+  it('preserves the loop tail when a nested runtime continue is not taken', () => {
+    const nested = compileString(`contract C() {
+      function f(bool skip) {
+        int total = 0;
+        for (int i = 0; i < 2; i = i + 1) {
+          if (i == 1) { if (skip) { continue; } }
+          total = total + i;
+        }
+        require(total >= 0);
+      }
+    }`);
+    const explicit = compileString(`contract C() {
+      function f(bool skip) {
+        int total = 0;
+        for (int i = 0; i < 2; i = i + 1) {
+          if (i == 1) {
+            if (skip) {} else { total = total + i; }
+          } else {
+            total = total + i;
+          }
+        }
+        require(total >= 0);
+      }
+    }`);
+    expect(nested.debug.bytecode).toBe(explicit.debug.bytecode);
+  });
 });
 
 describe('SBE-5: for-loop flexibility + prefix increment statements', () => {

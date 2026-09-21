@@ -1,0 +1,208 @@
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { compileString } from 'solidc';
+import { ethers } from 'ethers';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+
+const KERNEL = {
+  forceStateful: true,
+  messageBus: true,
+  messageBusKernel: true,
+  maximumInputBytes: 1_000_000,
+  solidityImportCompat: true,
+  suppressWarnings: true,
+} as const;
+
+const missingAuthenticatedReturn = (functionName: string): string =>
+  `Could not derive the return value of '${functionName}' for .emitReturn(). The covenant trace did not expose an authenticated return commitment.`;
+
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  const transaction = builder.buildLibauthTransaction();
+  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
+    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
+  ) === true);
+};
+
+const commitmentNonEmpty = (commitment: Uint8Array | string | undefined): boolean => {
+  if (commitment === undefined) return false;
+  const bytes = typeof commitment === 'string' ? hexToBin(commitment) : commitment;
+  return bytes.length > 0 && !bytes.every((byte) => byte === 0);
+};
+
+describe('kernel two-hop return probe', () => {
+  it('materializes authenticated non-empty return commitments across Leaf→Root compose', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const leafArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Leaf {
+        function read(uint256 value) public pure returns (uint256) { return value + 7; }
+      }`, KERNEL);
+    const leafBase = new Contract(leafArtifact, [], { provider });
+    const leafSetup = await setupStatefulUtxos(
+      provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const leaf = StatefulContract.withCategory(
+      leafBase.withCategory(hexToBin(leafSetup.categoryId)), leafSetup.categoryId,
+    );
+
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      interface Reader { function read(uint256 value) external view returns (uint256); }
+      contract Root(address leaf) {
+        function read(uint256 value) public view returns (uint256) {
+          return Reader(leaf).read(value);
+        }
+      }`, KERNEL);
+    const rootBase = new Contract(rootArtifact, [leaf.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+
+    const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'read')!
+      .externalCalls!.find((call) => call.functionName === 'read')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'read', args: [3n] },
+        { contract: leaf, functionName: 'read', args: [3n], callsiteId },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+
+    const transaction = builder.buildLibauthTransaction();
+    const participants = [
+      { artifact: rootArtifact, categoryId: rootSetup.categoryId },
+      { artifact: leafArtifact, categoryId: leafSetup.categoryId },
+    ];
+    for (const { artifact, categoryId } of participants) {
+      const routeInputIndex = builder.inputs.findIndex((input) => 'contract' in input.unlocker
+        && input.unlocker.contract.artifact.contractName === artifact.contractName
+        && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
+      expect(routeInputIndex).toBeGreaterThanOrEqual(0);
+      const routeUnlocker = builder.inputs[routeInputIndex].unlocker;
+      if (!('params' in routeUnlocker)) throw new Error('message-bus route input has no parameters');
+      const returnWitnessIndex = artifact.messageBus!.route.inputs.findIndex(
+        (input) => input.name === '__internal__returnOutputIdx',
+      );
+      expect(returnWitnessIndex).toBeGreaterThanOrEqual(0);
+      const absoluteReturnOutputIndex = Number(routeUnlocker.params[returnWitnessIndex] as bigint);
+      const returnOutput = transaction.outputs[absoluteReturnOutputIndex];
+      expect(returnOutput.token).toMatchObject({
+        category: hexToBin(categoryId),
+        nft: { capability: 'none' },
+      });
+      expect(
+        commitmentNonEmpty(returnOutput.token?.nft?.commitment),
+        `return commitment at ${absoluteReturnOutputIndex} must be non-empty/non-zero`,
+      ).toBe(true);
+      expect(binToHex(returnOutput.token!.nft!.commitment as Uint8Array)).not.toMatch(/^0+$/);
+    }
+
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+  }, 120_000);
+
+  it('fails closed when a prepared return commitment is empty', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const leafArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Leaf {
+        function read(uint256 value) public pure returns (uint256) { return value + 7; }
+      }`, KERNEL);
+    const leafBase = new Contract(leafArtifact, [], { provider });
+    const leafSetup = await setupStatefulUtxos(
+      provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const leaf = StatefulContract.withCategory(
+      leafBase.withCategory(hexToBin(leafSetup.categoryId)), leafSetup.categoryId,
+    );
+
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      interface Reader { function read(uint256 value) external view returns (uint256); }
+      contract Root(address leaf) {
+        function read(uint256 value) public view returns (uint256) {
+          return Reader(leaf).read(value);
+        }
+      }`, KERNEL);
+    const rootBase = new Contract(rootArtifact, [leaf.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+
+    const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'read')!
+      .externalCalls!.find((call) => call.functionName === 'read')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const emptyCommitment = new Uint8Array(0);
+    await expect(messageBus.compose({
+      preparedCalls: [
+        { contract: root, functionName: 'read', args: [3n] },
+        {
+          contract: leaf,
+          functionName: 'read',
+          args: [3n],
+          callsiteId,
+          provisionalResultCommitment: emptyCommitment,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow(/prepared return commitment/);
+  }, 120_000);
+
+  it('emits a non-empty return commitment on Leaf.read via .emitReturn()', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const leafArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Leaf {
+        function read(uint256 value) public pure returns (uint256) { return value + 7; }
+      }`, KERNEL);
+    const leafBase = new Contract(leafArtifact, [], { provider });
+    const leafSetup = await setupStatefulUtxos(
+      provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const leaf = StatefulContract.withCategory(
+      leafBase.withCategory(hexToBin(leafSetup.categoryId)), leafSetup.categoryId,
+    );
+
+    const tx = await leaf.call.read(3n).emitReturn().send();
+    expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    const categoryHex = leafSetup.categoryId.toLowerCase();
+    const returnOutput = tx.outputs.find((output) => {
+      const category = output.token?.category;
+      const categoryMatches = typeof category === 'string'
+        ? category.toLowerCase() === categoryHex
+        : category !== undefined && binToHex(category).toLowerCase() === categoryHex;
+      return categoryMatches
+        && output.token?.nft?.capability === 'none'
+        && commitmentNonEmpty(output.token.nft?.commitment);
+    });
+    expect(returnOutput).toBeDefined();
+    // ABI-encoded uint256(10) must appear in the authenticated return commitment.
+    const expected = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(['uint256'], [10n]).slice(2));
+    const commitment = typeof returnOutput!.token!.nft!.commitment === 'string'
+      ? hexToBin(returnOutput!.token!.nft!.commitment)
+      : returnOutput!.token!.nft!.commitment;
+    expect(binToHex(commitment)).toContain(binToHex(expected));
+  }, 120_000);
+
+  it('pins the missing-authenticated-return error string for .emitReturn()', () => {
+    expect(missingAuthenticatedReturn('read')).toBe(
+      "Could not derive the return value of 'read' for .emitReturn(). "
+      + 'The covenant trace did not expose an authenticated return commitment.',
+    );
+  });
+});

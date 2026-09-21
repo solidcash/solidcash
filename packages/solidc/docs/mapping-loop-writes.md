@@ -6,7 +6,9 @@ model described in early design notes is gone; every persisted node is `slot[32]
 
 Current runtime support includes pure set, `+=`, `-=`, and delete-to-default, including absent-key insertion,
 same-gap chains, repeated recipients, and canonical counter loops (`m[i]`) reordered by an authenticated SDK-
-supplied slot permutation. The remainder of this file records both the shipped design and historical rationale.
+supplied slot permutation. Multiple unconditional source-order counter loops are supported when their collection
+sets are pairwise disjoint; exact input/output cursors separate their trailing journal segments. The remainder of
+this file records both the shipped design and historical rationale.
 
 ## 1. Fixed-bound loops -> unrolled
 
@@ -52,9 +54,9 @@ of that and fails closed (`EntryWriteInLoopError`) otherwise:
   supported. An arbitrary loop-local expression such as `m[ks[i]] = i` still fails closed.
 - **RMW and delete are supported by the sorted-upsert path.** The historical restrictions below explain why the
   former unsorted design could not support them safely.
-- **Single collection.** Two different collections written in one loop is **rejected** (the covenant precomputes
-  one entry address / trailing region). A sound extension (interleave M entries per iteration at stride M with M
-  per-collection count-pins, or M separate trailing regions) is deferred - no current use case needs it.
+- **Historical single-collection cursor.** The original covenant precomputed one entry address and one trailing
+  region. The sorted-upsert path resolves this with per-collection contexts and count pins when all writes share
+  one key tuple; separate disjoint counter loops use accumulated input/output segment cursors.
 - **Array mutations are authenticated.** Varying-key push/pop/index assignment reconstructs and authenticates one
   old whole-array witness per effective key. Duplicate mutation keys are rejected because they require sequential
   folding over one co-spent entry.
@@ -91,6 +93,8 @@ by `LowerVMapCounterLoops` to full-width slot order.
 
 - Duplicate keys in ordinary set/arithmetic loops are deduplicated or folded according to the operation. Duplicate
   keys in varying-key array-mutation loops are rejected until sequential mutation folding is implemented.
+- Sequential counter loops over disjoint collection sets have independent authenticated segments. Revisiting a
+  collection in a later loop is rejected until predecessor planning can consume the first loop's pending topology.
 - Derivation and covenant verification scale with the number of effective keys and value chunks. Practical
   transaction-size, fee, and VM-operation limits are reached before the commitment format's theoretical bounds.
 - The authoritative fail-closed feature list is `verified-mappings.md` §10.1.
@@ -99,4 +103,5 @@ by `LowerVMapCounterLoops` to full-width slot order.
 
 `packages/solidcash/test/e2e/DynamicLoopEntry.test.ts` (for / while / do-while, N=1..3, each entry reads back),
 `DynamicLoopEntryAdversarial.test.ts` (wrong commitment, redirected address, and orphan output all rejected),
-`EntryWriteBehavior.test.ts` (invariant-key caching, counter/array-key set and RMW, and counter-key deletes).
+`EntryWriteBehavior.test.ts` (invariant-key caching, counter/array-key set and RMW, and counter-key deletes), and
+`KernelLoopCompose.test.ts` (sequential disjoint counter-loop journals, including insert and update passes).

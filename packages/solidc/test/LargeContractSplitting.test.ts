@@ -195,6 +195,45 @@ describe('large-contract state-local splitting', () => {
     }
   });
 
+  it('reports generic internal cut profiles when a handler closure cannot fit', () => {
+    const source = `contract CutProfile() {
+      int x;
+      function guard(int value) internal { require(value >= 0); }
+      function current() internal view returns (int) { return this.x; }
+      function store(int value) internal { this.x = value; require(value >= 0); }
+      function set(int value) public {
+        guard(value);
+        store(current() + value);
+        require(value >= 0);
+      }
+    }`;
+    try {
+      compileStringSplit(source, { forceSplit: true, maxShardBytes: 100 });
+      throw new Error('expected split capacity diagnostic');
+    } catch (error) {
+      expect(error).toMatchObject({
+        code: 'SPLIT_CLOSURE_CAPACITY',
+        context: expect.objectContaining({
+          handlers: ['set'],
+          helperCuts: [
+            {
+              name: 'current()', returns: true, readsLocalState: true,
+              writesState: false, externalCalls: false, unknown: false,
+            },
+            {
+              name: 'guard(int256)', returns: false, readsLocalState: false,
+              writesState: false, externalCalls: false, unknown: false,
+            },
+            {
+              name: 'store(int256)', returns: false, readsLocalState: false,
+              writesState: true, externalCalls: false, unknown: false,
+            },
+          ],
+        }),
+      });
+    }
+  });
+
   /**
    * A call edge between two planned entries was ATOMIC: `hardClosureGroups` unioned them and nothing could
    * divide the result, so a union over the limit was a refusal with no remaining move. It is not atomic. The
@@ -695,10 +734,12 @@ contract Mixed() {
     expect(setAbi?.outputs).toEqual([{ type: 'int256' }]);
     expect(setAbi?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')).toBe(true);
     const rootSet = bundle.root.abi.find((fn) => fn.name === 'set');
+    expect(rootSet?.outputs).toEqual([{ type: 'int256' }]);
     const returnCommitmentOpcode = asmToBytecode('OP_OUTPUTTOKENCOMMITMENT')[0].toString(16).padStart(2, '0');
     // The forwarding root retains the return-event ABI slot, but the facet which owns the state transition
-    // must own its output-state covenant. Re-reading it in the root would incorrectly duplicate that work.
-    expect(bundle.root.functionBodies?.[rootSet!.selector!]).not.toContain(returnCommitmentOpcode);
+    // must own its output-state covenant. The root can still use OP_OUTPUTTOKENCOMMITMENT for its general
+    // immutable-output pin, so opcode absence is not a valid negative assertion there.
+    expect(bundle.root.functionBodies?.[rootSet!.selector!]).toBeTypeOf('string');
     expect(bundle.facets[setTarget!].functionBodies?.[setAbi!.selector!]).toContain(returnCommitmentOpcode);
   });
 

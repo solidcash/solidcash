@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { encodePushdataValue, sha256 as sha256Sync } from '@solidcash/utils';
-import { selectAuthenticatedCollectionValue } from '../../src/stateful/StatefulContract.js';
+import {
+  selectAuthenticatedCollectionValue,
+  selectAuthenticatedPreValueWitness,
+} from '../../src/stateful/StatefulContract.js';
 
 describe('authenticated collection value recovery', () => {
   it('selects the final authenticated value when a batch exposes intermediate writes', () => {
@@ -24,5 +27,17 @@ describe('authenticated collection value recovery', () => {
     expect(selectAuthenticatedCollectionValue(
       [preferred, fallback, malformed], roots, new Set([root(preferred), root(malformed)]), 'bytes', undefined,
     )).toEqual(preferred);
+  });
+
+  it('never promotes a trace-only derived root into the pre-value witness', () => {
+    const derived = encodePushdataValue(Uint8Array.from({ length: 64 }, (_, index) => index), 'bytes');
+    const root = binToHex(sha256Sync(derived));
+
+    expect(selectAuthenticatedPreValueWitness(
+      [derived], new Set(), 'bytes', undefined,
+    )).toBeUndefined();
+    expect(selectAuthenticatedPreValueWitness(
+      [derived], new Set([root]), 'bytes', undefined,
+    )).toEqual(derived);
   });
 });

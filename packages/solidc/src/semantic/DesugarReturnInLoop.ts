@@ -1,10 +1,11 @@
 import {
   FunctionDefinitionNode, BlockNode, StatementNode, Node, WhileNode, DoWhileNode, BranchNode,
   ReturnNode, BreakNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
-  SourceFileNode, ContractNode,
+  SourceFileNode, ContractNode, FunctionCallNode, SwitchNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { fixedForMaximum } from './FixedForLoop.js';
 
 /**
  * Desugars a `return` inside a loop into a flag + break + post-loop return. An internal/private solidcash
@@ -28,6 +29,11 @@ const VAL = (k: number): string => `__internal__retval_${k}`;
 
 export default class DesugarReturnInLoop extends AstTraversal {
   private retCount = 0;
+  private returnNames: readonly string[] = [];
+
+  constructor(private readonly onlySelfRecursiveFunctions = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -47,7 +53,8 @@ export default class DesugarReturnInLoop extends AstTraversal {
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
-    if (!node.body || node.returnTypes.length === 0) return node;
+    if (!node.body) return node;
+    if (this.onlySelfRecursiveFunctions && !this.hasSelfCall(node.body, node.name)) return node;
     // Entry-points AND internal/private functions both need this: an in-loop raw return NIPs locals below the
     // value and corrupts the loop's balanced OP_BEGIN/OP_UNTIL stack. (The old entry-point "blob-stash" path was
     // broken - a public `for/while (..) { if (c) return X; }` crashed at runtime.) Desugaring to a flag + break +
@@ -55,7 +62,10 @@ export default class DesugarReturnInLoop extends AstTraversal {
     if (!this.hasReturnInLoop(node.body, false)) return node;
 
     this.retCount = node.returnTypes.length;
-    const decls: StatementNode[] = [new VariableDefinitionNode(PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false))];
+    this.returnNames = node.returnNames;
+    const decls: StatementNode[] = [new VariableDefinitionNode(
+      PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false),
+    )];
     for (let k = 0; k < node.returnTypes.length; k++) {
       decls.push(new VariableDefinitionNode(node.returnTypes[k], [], VAL(k)));
     }
@@ -63,6 +73,16 @@ export default class DesugarReturnInLoop extends AstTraversal {
     const [stmts] = this.transformStatements(node.body.statements ?? [], 0);
     node.body.statements = [...decls, ...stmts];
     return node;
+  }
+
+  private hasSelfCall(node: Node, name: string): boolean {
+    if (node instanceof FunctionCallNode && node.identifier.name === name) return true;
+    return Object.entries(node).some(([key, child]) => {
+      if (['resolvedFunction', 'definition', 'symbolTable', 'location'].includes(key)) return false;
+      if (child instanceof Node) return this.hasSelfCall(child, name);
+      return Array.isArray(child) && child.some((item) =>
+        item instanceof Node && this.hasSelfCall(item, name));
+    });
   }
 
   // Stamp a synthesized node subtree with a source location (only where missing - existing sub-expressions keep
@@ -93,6 +113,10 @@ export default class DesugarReturnInLoop extends AstTraversal {
     if (node instanceof BranchNode) {
       return this.hasReturnInLoop(node.ifBlock, inLoop) || this.hasReturnInLoop(node.elseBlock, inLoop);
     }
+    if (node instanceof SwitchNode) {
+      return node.cases.some((candidate) => this.hasReturnInLoop(candidate.body, inLoop))
+        || this.hasReturnInLoop(node.defaultCase, inLoop);
+    }
     if (node instanceof BlockNode) return (node.statements ?? []).some((s) => this.hasReturnInLoop(s, inLoop));
     return false;
   }
@@ -101,20 +125,36 @@ export default class DesugarReturnInLoop extends AstTraversal {
   private transformStatements(stmts: StatementNode[], loopDepth: number): [StatementNode[], boolean] {
     const out: StatementNode[] = [];
     let had = false;
-    for (const s of stmts) {
+    for (let statementIndex = 0; statementIndex < stmts.length; statementIndex += 1) {
+      const s = stmts[statementIndex];
       // A 1:1 return inside a loop -> stash the values + set the flag + break the loop.
-      if (s instanceof ReturnNode && loopDepth > 0 && s.expressions.length === this.retCount) {
+      const returnedValues = s instanceof ReturnNode && loopDepth > 0
+        ? (s.expressions.length === this.retCount
+          ? s.expressions
+          : (s.expressions.length === 0 && this.returnNames.length === this.retCount
+            ? this.returnNames.map((name) => this.stampLoc(new IdentifierNode(name), s.location))
+            : undefined))
+        : undefined;
+      if (s instanceof ReturnNode && returnedValues) {
         // Splice the stash+flag+break directly into the statement list (not wrapped in a block) so the injected
         // `break` is recognised as in-loop by break/continue expansion.
-        for (let k = 0; k < s.expressions.length; k++) {
-          out.push(this.stampLoc(new AssignNode(new IdentifierNode(VAL(k)), s.expressions[k]), s.location));
+        for (let k = 0; k < returnedValues.length; k++) {
+          out.push(this.stampLoc(new AssignNode(new IdentifierNode(VAL(k)), returnedValues[k]), s.location));
         }
         out.push(this.stampLoc(new AssignNode(new IdentifierNode(FLAG), new BoolLiteralNode(true)), s.location));
         out.push(this.stampLoc(new BreakNode(), s.location));
         had = true;
       } else if (s instanceof WhileNode || s instanceof DoWhileNode) {
+        // Capture the exact canonical-for ceiling before the injected return flag/break propagation changes the
+        // loop body and later break lowering changes its condition. The transformed loop may execute fewer
+        // iterations, so this remains a ceiling but must never be reused as a floor.
+        const authenticatedMaximum = s instanceof WhileNode
+          ? fixedForMaximum(stmts[statementIndex - 1], s) : undefined;
         const [inner, innerHad] = this.transformStatements(s.block.statements ?? [], loopDepth + 1);
         s.block.statements = inner;
+        if (s instanceof WhileNode && innerHad && authenticatedMaximum !== undefined) {
+          s.compilerAuthenticatedMaximumIterations = authenticatedMaximum;
+        }
         out.push(s);
         if (innerHad) { out.push(this.stampLoc(this.propagation(loopDepth), s.location)); had = true; }
       } else if (s instanceof BranchNode) {
@@ -127,6 +167,23 @@ export default class DesugarReturnInLoop extends AstTraversal {
         }
         out.push(s);
         had = had || ifHad || elHad;
+      } else if (s instanceof SwitchNode) {
+        let switchHad = false;
+        for (const candidate of s.cases) {
+          const [inner, innerHad] = this.transformStatements(candidate.body.statements ?? [], loopDepth);
+          candidate.body.statements = inner;
+          switchHad ||= innerHad;
+        }
+        if (s.defaultCase) {
+          const [inner, innerHad] = this.transformStatements(s.defaultCase.statements ?? [], loopDepth);
+          s.defaultCase.statements = inner;
+          switchHad ||= innerHad;
+        }
+        out.push(s);
+        // A stashed return's injected break exits only the switch. Propagate once more immediately outside
+        // the switch so it exits the enclosing loop (or returns from the function after the outermost loop).
+        if (switchHad) out.push(this.stampLoc(this.propagation(loopDepth), s.location));
+        had ||= switchHad;
       } else if (s instanceof BlockNode) {
         const [inner, innerHad] = this.transformStatements(s.statements ?? [], loopDepth);
         s.statements = inner;

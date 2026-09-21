@@ -1,0 +1,426 @@
+{
+  "version": 1,
+  "censusCommit": "95fbe8f3c",
+  "forbiddenApplicationNames": ["Marketplace", "publishJobPost", "jobs", "Unicrow", "claimMultiple"],
+  "testCommands": [
+    { "id": "build", "argv": ["yarn", "build"] },
+    { "id": "generated-artifacts", "argv": ["yarn", "workspace", "testing-suite", "vitest", "run", "test/artifact-freshness.test.ts"] },
+    { "id": "utils-source-maps", "argv": ["yarn", "workspace", "@solidcash/utils", "vitest", "run", "test/script.test.ts"] },
+    { "id": "compiler-journal", "argv": ["yarn", "workspace", "solidc", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-journal", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/journal-message-bus"] },
+    { "id": "sdk-regressions", "argv": ["yarn", "workspace", "solidcash", "vitest", "run", "test/unit/AssignPhysicalReturnIndices.test.ts", "test/unit/DirectMappingReadPlan.test.ts", "test/unit/KernelJournalExecutionSchedule.test.ts", "test/unit/KernelDirtyCarrierResolution.test.ts", "test/unit/KernelJournalPhysicalSettlement.test.ts", "test/FnPtrStructFieldCall.test.ts", "test/e2e/CrossContractSubcaseSoundness.test.ts", "test/e2e/CrossContractSortedWrite.test.ts", "test/e2e/DynamicArrayCopyCast.test.ts", "test/e2e/X167ArrayCopyReplaces.test.ts"] }
+  ],
+  "requiredKernelProofs": [
+    {
+      "id": "kernel-late-fence-route-binding",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLateFenceRouteBinding.test.ts",
+      "tests": [
+        "does not leave a late-fenced handler selector in the bound kernel route"
+      ]
+    },
+    {
+      "id": "kernel-loop-route",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLoopRoute.test.ts",
+      "tests": [
+        "copies the typed value rather than the enclosing carrier into an inline chunkable entry tail",
+        "dispatches a void handler from one row loop rather than unrolled rowCount bands",
+        "captures returning scalar results inside the same runtime loop",
+        "keeps the unknown-selector revert on the loop route",
+        "publishes maximumRows as a runtime bound, not an AST copy count",
+        "keeps kernel route size independent of the configured row ceiling",
+        "keeps 'nested counter-keyed mapping rows' proportional to row logic rather than the configured row ceiling",
+        "keeps 'typed-call event and result rows' proportional to row logic rather than the configured row ceiling",
+        "dispatches event-emitting handlers from the runtime row loop without a new clone family",
+        "journals a reusable scalar helper as one OP_INVOKE body on the kernel route",
+        "keeps a reference-typed graph handler behind one body-independent OP_INVOKE boundary",
+        "threads one route-owned record carrier through each direct journal-aware handler",
+        "publishes one transaction-wide final flush for general scalar set and add rows",
+        "keeps first-touch record ordinals separate from dense materialized output ordinals",
+        "propagates the journal context through direct and one-level internal calls",
+        "reaches a fixed point through two returning helper levels",
+        "unions mixed collection cardinalities while keeping one record carrier",
+        "fails closed when an unresolved function pointer could enter the journal context ABI"
+      ]
+    },
+    {
+      "id": "kernel-observable-parity",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelLegacyObservableParity.test.ts",
+      "tests": [
+        "preserves payload event effects across fresh route compiles",
+        "preserves scalar, repeated-key mapping, and branch effects across fresh route compiles"
+      ]
+    },
+    {
+      "id": "compiler-callsite-result-identity",
+      "workspace": "solidc",
+      "file": "test/InvocationAnalysis.test.ts",
+      "tests": [
+        "emits the complete compiler-resolved graph footprint per callsite",
+        "publishes the producer callsite for a directly nested external-call argument",
+        "links each used tuple result through its synthetic local definition",
+        "deduplicates repeated uses of one exact producer component in a consumer argument"
+      ]
+    },
+    {
+      "id": "kernel-graph-result-identity",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelGraphResultDependency.test.ts",
+      "tests": [
+        "keeps identical result schemas separately addressable by stable callsite and component",
+        "preserves one authenticated callsite graph when producer and consumer originate in a helper",
+        "publishes helper-origin graph metadata in a process-cold, cache-disabled kernel compile",
+        "does not authenticate ambiguous or non-dominating helper result aliases"
+      ]
+    },
+    {
+      "id": "kernel-multi-result-observable-parity",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelMultiResultGraphParity.test.ts",
+      "tests": [
+        "forwards authenticated tuple lanes with kernel and legacy observable parity"
+      ]
+    },
+    {
+      "id": "kernel-schema-name-isolation",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelSchemaNameIsolation.test.ts",
+      "tests": [
+        "treats historical Marketplace identifiers exactly like an alpha-renamed chunkable write"
+      ]
+    },
+    {
+      "id": "kernel-journal-ownership",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelJournalOwnershipCharacterization.test.ts",
+      "tests": [
+        "pins kernel and legacy bus boundaries while preserving exact stream topology",
+        "preserves authenticated route semantics for a same-key read-to-set transfer",
+        "preserves fixed-width bytes semantics through direct-entry fallback when its carrier is fenced",
+        "proves legacy-compiled direct-entry semantics and rejects swapped settlement identities"
+      ]
+    },
+    {
+      "id": "kernel-read-carrier-boundary",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelReadCarrierBoundary.test.ts",
+      "tests": [
+        "publishes repeated clean reads only with the authenticated carrier capability"
+      ]
+    },
+    {
+      "id": "kernel-read-carrier-rows",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelReadCarrierRows.test.ts",
+      "tests": [
+        "shares each physical clean input across copy(2), copy(2) and settles a dense mixed final flush"
+      ]
+    },
+    {
+      "id": "kernel-fixed-local-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyVector.test.ts",
+      "tests": [
+        "matches legacy element order and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-fixed-local-key-alias",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLocalArrayKeyAlias.test.ts",
+      "tests": [
+        "matches legacy alias order and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-conditional-fixed-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ConditionalFixedKeyVector.test.ts",
+      "tests": [
+        "matches legacy branch choice and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-switch-fixed-key-vector",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/SwitchFixedKeyVector.test.ts",
+      "tests": [
+        "matches legacy case/default choice and preserves runtime index bounds"
+      ]
+    },
+    {
+      "id": "kernel-pure-fixed-key-vector-producer",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/PureFixedKeyVectorProducer.test.ts",
+      "tests": [
+        "matches legacy producer results and preserves returned-array bounds"
+      ]
+    },
+    {
+      "id": "kernel-readonly-state-bound-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ReadOnlyStateBoundConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy partial-fill semantics and preserves source out-of-bounds failure"
+      ]
+    },
+    {
+      "id": "kernel-fixed-array-length-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedArrayLengthConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy semantics and preserves source allocation bounds"
+      ]
+    },
+    {
+      "id": "kernel-literal-bound-source-loop",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/LiteralBoundSourceLoopEscapes.test.ts",
+      "tests": [
+        "executes while and do-while selected ranks through the kernel row loop"
+      ]
+    },
+    {
+      "id": "kernel-runtime-allocation-length-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/RuntimeAllocationLengthConstructedKeys.test.ts",
+      "tests": [
+        "matches legacy full and partial fills while preserving source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-straight-line-resized-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/StraightLineResizedAllocationLength.test.ts",
+      "tests": [
+        "matches the exact legacy length and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-exhaustive-resize-join-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExhaustiveResizeJoinAllocationLength.test.ts",
+      "tests": [
+        "matches legacy for either exact arm and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-exhaustive-resize-switch-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExhaustiveResizeSwitchAllocationLength.test.ts",
+      "tests": [
+        "matches legacy for every selected arm and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-fixed-loop-resized-allocation-length",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/FixedLoopResizeAllocationLength.test.ts",
+      "tests": [
+        "matches the exact legacy length and preserves source bounds failures"
+      ]
+    },
+    {
+      "id": "kernel-overloaded-pure-internal-call",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/OverloadedPureInternalCall.test.ts",
+      "tests": [
+        "executes the exact semantic overload on the kernel batch path",
+        "keeps the exact overload through a fixed return on the kernel batch path"
+      ]
+    },
+    {
+      "id": "kernel-counter-dependent-bigint-recurrence",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/CounterDependentBigintRecurrence.test.ts",
+      "tests": [
+        "executes the authenticated source-order product and enforces the 64-rank bound"
+      ]
+    },
+    {
+      "id": "kernel-exact-additive-recurrence",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ExactAdditiveRecurrenceSecurity.test.ts",
+      "tests": [
+        "authenticates scalar state, preserves checked source order, rejects tampering, and caps rank at 64"
+      ]
+    },
+    {
+      "id": "kernel-prestate-scalar-recurrence-coefficients",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/PreStateScalarRecurrenceCoefficients.test.ts",
+      "tests": [
+        "settles the exact 64-iteration boundary and rejects a forged coefficient-derived event"
+      ]
+    },
+    {
+      "id": "kernel-constructed-array-partial-fill",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelConstructedArrayPartialFill.test.ts",
+      "tests": [
+        "preserves default keys, complete fills, source OOB failure, and the authenticated domain"
+      ]
+    },
+    {
+      "id": "kernel-runtime-array-fill-keys",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelRuntimeArrayFillKeys.test.ts",
+      "tests": [
+        "executes the exact derived domain and rejects missing or extra iterations"
+      ]
+    },
+    {
+      "id": "kernel-affine-void-recursive-events",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/AffineVoidRecursiveEvents.test.ts",
+      "tests": [
+        "settles a guarded tail-call stream with an inert unwind suffix in recursive source order",
+        "reconstructs multiple affine parameters for a pre-only stream and enforces exact termination",
+        "reconstructs independent affine parameters during non-void unwind",
+        "settles every pre-recursion frame, rejects a forged event, and enforces the frame bound",
+        "settles mixed pre-order and post-descent events in recursive source order",
+        "reconstructs multiple affine parameters across descent and unwind",
+        "settles affine-counter progression in exact pre-order and unwind order at the 64-frame boundary"
+      ]
+    },
+    {
+      "id": "kernel-journal-execution-schedule",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelJournalExecutionSchedule.test.ts",
+      "tests": [
+        "uses compiler coordinates rather than stream insertion order and interleaves sites within one loop",
+        "rejects duplicate stream and execution-site coordinates",
+        "rejects malformed runtime occurrence coordinates rather than inventing an order"
+      ]
+    },
+    {
+      "id": "kernel-dirty-carrier-resolution",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelDirtyCarrierResolution.test.ts",
+      "tests": [
+        "accepts one complete body only after the caller binds it to the final global ordinal",
+        "rejects ambiguous, cross-ordinal, and wrong-slot candidates rather than picking a provisional body"
+      ]
+    },
+    {
+      "id": "kernel-journal-physical-settlement",
+      "workspace": "solidcash",
+      "file": "test/unit/KernelJournalPhysicalSettlement.test.ts",
+      "tests": [
+        "binds a dirty final authority to one complete final body, not a legacy provisional output",
+        "fails closed rather than choosing among missing, duplicate, malformed, or unrelated dirty bodies",
+        "binds a chained insert body to the later predecessor role, not the earlier target role",
+        "separates source-order first inputs from dense global final outputs and normalizes clean consumers",
+        "fails closed for a consumer before its owner, repeated dirty proof, or unauthenticated live record",
+        "does not derive physical settlement from a non-canonical access object",
+        "binds each record ordinal to one source-ordered presence flow"
+      ]
+    },
+    {
+      "id": "kernel-lifecycle-boundary",
+      "workspace": "solidc",
+      "file": "test/journal-message-bus/KernelLifecycleTopology.test.ts",
+      "tests": [
+        "fails closed for split lifecycle geometry until it has an authenticated row protocol",
+        "fails closed for merge lifecycle geometry until it has an authenticated row protocol",
+        "does not invent bounded spans for other lifecycle modes"
+      ]
+    },
+    {
+      "id": "kernel-lifecycle-planning-boundary",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/AtomicMessageBusGraph.test.ts",
+      "tests": [
+        "fails closed for a resource-free lifecycle row until the advertised protocol can compose it",
+        "cannot plan compiler-fenced lifecycle rows carrying detached signature leaves"
+      ]
+    },
+    {
+      "id": "kernel-upgrade-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelUpgradeCompose.test.ts",
+      "tests": [
+        "authenticates one final upgrade row and preserves the master NFT geometry",
+        "appends canonical new fields after the post-row old state and rejects suffix tampering"
+      ]
+    },
+    {
+      "id": "kernel-unsafe-tier2-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/KernelUnsafeTier2Compose.test.ts",
+      "tests": [
+        "executes a read-only validation row and rejects a forged state commitment"
+      ]
+    },
+    {
+      "id": "kernel-typed-deploy-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/AtomicMessageBusCompose.test.ts",
+      "tests": [
+        "materializes multiple heterogeneous child sites across two rows and rejects hostile genesis data",
+        "keeps computed CREATE2 recipes site-local across repeated heterogeneous deployment rows"
+      ]
+    },
+    {
+      "id": "kernel-conditional-deploy-lifecycle",
+      "workspace": "solidcash",
+      "file": "test/journal-message-bus/e2e/ConditionalChildDeploymentSecurity.test.ts",
+      "tests": [
+        "binds active and inactive genesis spans to the repeated row source predicate"
+      ]
+    }
+  ],
+  "coldCompiles": [
+    {
+      "name": "marketplace-v1",
+      "contract": "MarketplaceV1",
+      "source": "examples/effectiveacceleration/contracts/MarketplaceV1.sol",
+      "sourceSha256": "57d93a5bdf0edff5dfd74d5cda445f9b8653fc29ee10ba8b3e482b2be925bd72",
+      "sourceClosureSha256": "e0a1f481c9c49ed096035fddf25afc0bda1bec73cccf391f204e9630317e4749",
+      "evidenceKind": "compile-compatibility-only",
+      "deployability": "not-asserted",
+      "modes": {
+        "legacy": {
+          "convention": "legacy-unroll",
+          "routeBytes": 40019,
+          "fullBytes": 115060,
+          "routeHash": "2a1beb04fffa71fff3c8083d0be3323611787ca47f325a2a06a85c01624b0c0a",
+          "fullHash": "64adad05ea45d9be6ba0b7b6a89c63c6621c6bdd7f6aab43f2d8849cafbda6d9",
+          "metadataHash": "39e13bb64258685c212ca2c1450137101d38802ac396c4faf6c075122ee108fe",
+          "handlers": { "total": 39, "eligible": 28, "refused": 11 }
+        },
+        "kernel": {
+          "convention": "kernel-row-loop",
+          "routeBytes": 12102,
+          "fullBytes": 126967,
+          "routeHash": "f99e6e99a36d0dbb8e8583e815fba7224be8329616193798c824294e7830e6be",
+          "fullHash": "072386a584bacdd29c9d4e05278c590d60a2a851004244c23262158742f845ed",
+          "metadataHash": "1c50e3f05ada9ab6be4c71fcb5ea3a46c58f2844f4902278e9677f29a4d3d382",
+          "handlers": { "total": 39, "eligible": 39, "refused": 0 }
+        }
+      }
+    },
+    {
+      "name": "unicrow-claim",
+      "contract": "UnicrowClaim",
+      "source": "examples/effectiveacceleration/contracts/unicrow/UnicrowClaim.sol",
+      "sourceSha256": "7881e9d98e6239931e92a3ee07d364180d87789719c50917aa117901457fd3db",
+      "sourceClosureSha256": "e31d24048163d88b62040380b046ad93ef2c359017ea41811a8a110aedc13461",
+      "evidenceKind": "compile-compatibility-only",
+      "deployability": "not-asserted",
+      "modes": {
+        "kernel": {
+          "convention": "kernel-row-loop",
+          "routeBytes": 2918,
+          "fullBytes": 14462,
+          "routeHash": "e2cd8661f6cf2554c2ae7247b751f31c074b80103e041bdcf73af9652df9c6da",
+          "fullHash": "98d5fc99510f7c5cec22b158b9a937c18d4ece0fd97f82ba237bc87f8a44a835",
+          "metadataHash": "bd61e0a523f6921daf9e7126ccce6b8cb92443f9b462fefac3f9eaf1c048ba1a",
+          "handlers": { "total": 11, "eligible": 11, "refused": 0 }
+        }
+      }
+    }
+  ]
+}

@@ -1,16 +1,28 @@
-import { binToHex, hexToBin, utf8ToBin } from '@bitauth/libauth';
-import { sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE } from '@solidcash/utils';
+import { binToHex, bigIntToVmNumber, hexToBin, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import {
+  sha256 as sha256Sync, VALUE_HEAD_SIZE, VALUE_CHUNK_SIZE, VALUE_CHUNK_MAX_COUNT,
+  type Artifact, type EntryAccessAbi,
+} from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import {
+  adaptLegacyNestedJobEventArguments,
+  vmapBatchWitnessFallback,
+} from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
 import {
   assignPhysicalReturnIndices,
   assignedTailEnd,
   returnWitnessOutputIndices,
+  selectMaterializedTailReturnEvents,
   lastCollidingMutableWriterIndex,
   findViewTailDestinations,
   valueChunkBandWidth,
   continuationOutputBaseBeforeSuffix,
   selectValueChunkOutputBase,
+  selectExternalEventProbeInput,
+  hasMaterializedLowLevelCallBlock,
+  materializedLowLevelCallBlockAtMaster,
+  repairMaterializedLowLevelCallBlocks,
   findDisposableValueChunkOutputBase,
   mintingSwapShift,
   chooseMintingSwapShift,
@@ -21,11 +33,19 @@ import {
   collidingParticipantGroupIndex,
   physicalParticipantWidth,
   materializedParticipantWidth,
+  participantSpanOverlapsLane,
   gatherContiguousPlainFunders,
   groupLayoutBlockSize,
   groupLayoutTrailingBase,
+  selectDelegateExecutionLayout,
+  physicalDelegateSlotOffset,
+  pinExactSortedBatchEntry,
+  skipCompilerOwnedInBlockCollectionStrip,
+  groupOwnsLinearSortedBatch,
+  assignBalancedOutputAtOffset,
   blockOutputOwnsSlotKind,
   blockOutputOwnsFixedDataNft,
+  fixedDataNftOwnerInParticipantBlocks,
   groupOwnsInBlockReturnEvent,
   constrainOwnCategoryImmutableOutputs,
   inheritWriterBatchWitnesses,
@@ -34,11 +54,18 @@ import {
   reassertBatchPredecessorOutputsAtDeclaredSlots,
   remapInsertPredOuts,
   resolveAbsolutePredOut,
+  syncDeclaredBatchPredOutWitnesses,
+  stripSurplusInvalidCollectionLockOutputs,
+  stripInvalidCollectionLockOutputs,
+  selectBalancedEntryOutputIdentity,
+  isOutsideTokenWriterBlock,
   logicalReturnGroupIndex,
   packTailReturnPlacements,
   shouldDisplaceForNestedEvent,
   isOverwritableEmitOccupant,
+  chunkableWriterEventOutputIndex,
   publishJobEventOutputIndex,
+  placeChunkableWriterEventOutput,
   placePublishJobEventOutput,
   isJobEventEmitCommitment,
   isLearnedEventEmitCommitment,
@@ -56,6 +83,7 @@ import {
   shouldRetainMintingOutputSwap,
   isMintingBandTokenWriter,
   isMintingBandSwapFunction,
+  shouldRestorePersistedContinuationInputs,
   tokenWriterReturnIndex,
   canonicalWriterReturnCommitment,
   shouldReplaceReturnEventCommitment,
@@ -88,6 +116,7 @@ import {
   writerBlockOccupancyEnd,
   relocateChangeAfterOccupancy,
   packJobsAgainstOpReturn,
+  moveLateOutputsBeforeReverseSuffix,
   valueChunkIndexFromCommitment,
   isPersistValueChunkCommitment,
   persistValueChunkBase,
@@ -110,31 +139,1010 @@ import {
   shouldInsertMintingMaster,
   stripSurplusMintingOutputs,
   reassertTokenInsertNewLock,
+  reassertTokenInsertCommitments,
+  reassertDescribedEntryInsertLocks,
+  entryInsertLockRepairs,
+  linearSortedBatchEntryBands,
+  linearSortedBatchPlannedLockCounts,
+  linearSortedBatchValueArgument,
+  reorderLinearBatchProofSuccessor,
   stripSurplusEmptyCollectionEntries,
   stripSurplusValueChunkLocks,
   reassertScidIdentityOutputs,
   selectExpectedP2sh32OutputLock,
   persistUpdateRedeemLock,
   persistUpdateDigestLock,
+  legacyJobEventsPersistUpdateDigestLock,
+  legacyJobEventsPersistValueChunkLock,
   persistUpdateDestLock,
   persistValueChunkLock,
   isWithdrawShapedJobEvent,
   isInsertShapedJobEvent,
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
+  shouldUseLegacyPersistDigestLockForValueChunks,
   rememberJobEventsLock,
+  rememberJobEventsValue,
+  rememberValueChunkUnlockRecipe,
   persistedJobEventsLock,
+  persistedValueChunkWriteState,
+  selectPersistedValueChunkWrite,
+  selectValueChunkWriteCategory,
+  isInitialValueChunkWrite,
+  persistedValueChunkReadiness,
+  shouldRematerializeDescribedValueChunkWrite,
+  resolveValueChunkWriteCategory,
+  selectCompilerWriterEvent,
+  selectTokenBandRepairOwner,
+  selectProtectedLoopEntryCollections,
+  isCompilerDescribedMintingBandWriter,
   StatefulTransactionBuilder,
-  groupWritesPublishedJobEvents,
+  groupChunkableValueWriteCollection,
+  claimedChunkableValueWriteCollection,
+  groupWritesSingleChunkableValueCollection,
+  groupChunkableArrayWriteCollection,
+  groupWritesSingleChunkableArrayCollection,
+  selectChunkableValueWriteExecution,
+  valueChunkWriteResourceIdentity,
+  legacyPlannedChunkableValueWriteCollection,
+  permitsLegacyNamedValueChunkFallback,
+  permitsLegacyValueChunkEventReconstruction,
+  permitsLegacyDelegateEventRepair,
   placeSameIndexTwin,
   placeInsertNewAt,
   shouldOverwriteForSameIndexTwin,
   synthesizePredNewCommitment,
+  entryCommitmentLacksValue,
+  resolveRestoredBalancesEntryCommitment,
   isSortedEntryHeadCommitment,
   isSortedEntryNodeCommitment,
   isDataNftIndexCommitment,
   type PhysicalReturnGroup,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { getValueChunkLockingBytecode } from '../../src/stateful/covenant-helpers.js';
+import {
+  describeValueChunkWrites, resolveChunkableEntryCollection,
+} from '../../src/stateful/StatefulContract.js';
+
+describe('delegate-only physical slot projection', () => {
+  const layout = {
+    blockSize: 3,
+    slots: [
+      { kind: 'master' as const, offset: 0 },
+      { kind: 'dataNft' as const, offset: 1 },
+      { kind: 'event' as const, offset: 2 },
+    ],
+  };
+
+  it('removes proxy-resident data slots only for delegate-only execution', () => {
+    expect(physicalDelegateSlotOffset(layout, 2, true)).toBe(1);
+    expect(physicalDelegateSlotOffset(layout, 2, false)).toBe(2);
+  });
+});
+
+describe('external event probe input', () => {
+  it('uses delegate geometry across alpha-renaming and ignores a decoy legacy name', () => {
+    const renamedDelegate = { functionName: 'recordNotice', delegateCallGroupIndex: 3 };
+    const legacyNamedOrdinary = { functionName: 'publishJobEvent' };
+
+    expect(selectExternalEventProbeInput(renamedDelegate, 17, 9)).toBe(17);
+    expect(selectExternalEventProbeInput(legacyNamedOrdinary, -1, 9)).toBe(9);
+  });
+});
+
+describe('materialized low-level-call block identity', () => {
+  const makeGroup = (functionName: string, txid: string, vout = 0) => ({
+    categoryId: 'ab'.repeat(32),
+    functionName,
+    masterUtxo: { txid, vout },
+    blockInputs: [
+      { txid, vout },
+      { txid: `${txid.slice(0, -2)}01`, vout: 1 },
+      { txid: `${txid.slice(0, -2)}02`, vout: 2 },
+    ],
+    blockLayout: {
+      blockSize: 3,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'entry', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 },
+      ],
+    },
+  }) as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+
+  it('selects contiguous block repair by layout and master outpoint across alpha-renaming', () => {
+    const historicalName = makeGroup('publishJobEvent', 'aa'.repeat(32));
+    const renamed = makeGroup('appendNotice', 'bb'.repeat(32), 4);
+    expect(hasMaterializedLowLevelCallBlock(historicalName)).toBe(true);
+    expect(hasMaterializedLowLevelCallBlock(renamed)).toBe(true);
+    expect(materializedLowLevelCallBlockAtMaster(
+      [historicalName, renamed], { txid: 'BB'.repeat(32), vout: 4 },
+    )).toBe(renamed);
+  });
+
+  it('does not grant layout authority from a historical function name or ambiguous outpoint', () => {
+    const nameOnly = {
+      ...makeGroup('publishJobEvent', 'cc'.repeat(32)), blockInputs: undefined,
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(hasMaterializedLowLevelCallBlock(nameOnly)).toBe(false);
+    const first = makeGroup('appendNotice', 'dd'.repeat(32));
+    const duplicate = makeGroup('appendAudit', 'dd'.repeat(32));
+    expect(materializedLowLevelCallBlockAtMaster(
+      [first, duplicate], { txid: 'dd'.repeat(32), vout: 0 },
+    )).toBeUndefined();
+  });
+
+  it('repairs a renamed dense block by permutation without changing the input multiset', () => {
+    const renamed = makeGroup('appendNotice', 'ee'.repeat(32), 5);
+    const [master, entry, event] = renamed.blockInputs!;
+    const unrelated = { txid: 'ff'.repeat(32), vout: 9 };
+    const inputs = [master, unrelated, event, entry] as Array<{ txid: string; vout: number }>;
+    const before = inputs.map((input) => `${input.txid.toLowerCase()}:${input.vout}`).sort();
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [renamed])).toBe(1);
+    expect(inputs.slice(0, 3)).toEqual([master, entry, event]);
+    expect(inputs.map((input) => `${input.txid.toLowerCase()}:${input.vout}`).sort()).toEqual(before);
+    expect(inputs).toHaveLength(4);
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [renamed])).toBe(0);
+  });
+
+  it('refuses sparse and specialized blocks handled by other materializers', () => {
+    const sparse = makeGroup('appendNotice', '12'.repeat(32));
+    sparse.blockInputs = sparse.blockInputs!.slice(0, 2);
+    expect(hasMaterializedLowLevelCallBlock(sparse)).toBe(false);
+    const transfer = makeGroup('publishJobEvent', '34'.repeat(32));
+    transfer.blockLayout = {
+      blockSize: 3,
+      slots: [
+        { kind: 'master', offset: 0 },
+        { kind: 'transfer', offset: 1, slotIndex: 0 },
+        { kind: 'event', offset: 2, slotIndex: 0 },
+      ],
+    };
+    expect(hasMaterializedLowLevelCallBlock(transfer)).toBe(false);
+  });
+
+  it('skips shared companion claims without changing order', () => {
+    const first = makeGroup('appendNotice', '56'.repeat(32));
+    const second = makeGroup('appendAudit', '78'.repeat(32));
+    second.blockInputs![1] = first.blockInputs![1];
+    const inputs = [
+      first.blockInputs![0], second.blockInputs![2], first.blockInputs![2], first.blockInputs![1],
+      second.blockInputs![0], second.blockInputs![1],
+    ] as Array<{ txid: string; vout: number }>;
+    const before = [...inputs];
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [first, second])).toBe(0);
+    expect(inputs).toEqual(before);
+  });
+
+  it('skips overlapping destination ranges owned by two otherwise disjoint blocks', () => {
+    const first = makeGroup('appendNotice', '9a'.repeat(32));
+    const second = makeGroup('appendAudit', 'bc'.repeat(32));
+    const inputs = [
+      first.blockInputs![0], second.blockInputs![0], first.blockInputs![1],
+      second.blockInputs![1], first.blockInputs![2], second.blockInputs![2],
+    ] as Array<{ txid: string; vout: number }>;
+    const before = [...inputs];
+    expect(repairMaterializedLowLevelCallBlocks(inputs as never, [first, second])).toBe(0);
+    expect(inputs).toEqual(before);
+  });
+});
+
+describe('generic persisted value-chunk write identity', () => {
+  const categoryId = 'ab'.repeat(32);
+  const slot = new Uint8Array(32).fill(7);
+  const signature = 'notices:mapping(int => Notice[])';
+  const makeGroup = (
+    name: string, collectionSignature = signature, insert = false, valueType = 'Notice[]',
+  ): import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup => {
+    const collectionName = collectionSignature.slice(0, collectionSignature.indexOf(':'));
+    const collection = {
+      name: collectionName, signature: collectionSignature, kind: 'mapping' as const,
+      keyType: 'int', valueType, chunkableValue: true,
+    };
+    const fn = {
+      name, inputs: [], outputs: [], entryAccesses: [{
+        slotIndex: 0, collection: collectionName, keyParams: ['id'], operations: ['write'],
+      }],
+      blockLayout: {
+        blockSize: 2,
+        slots: [{ kind: 'master' as const, offset: 0 }, { kind: 'entry' as const, offset: 1, slotIndex: 0 }],
+      },
+    };
+    const commitment = encodeEntryCommitment(slot, new Uint8Array(32));
+    return {
+      categoryId,
+      stateLayout: { variables: [], collections: [collection] },
+      masterUtxo: {}, dataNftUtxos: [], requiredDataNftIndices: [],
+      functionName: name, functionArgs: [],
+      externalContract: { inner: { artifact: { abi: [fn] } } },
+      blockInputs: [{}, { token: { nft: { commitment } } }],
+      blockLayout: fn.blockLayout,
+      valueChunkOutputBase: 4,
+      valueChunkOutputCount: 3,
+      ...(insert && { plannedEntryInserts: [{
+        blockSlot: 1, outputBlockSlot: 2, newCommitment: binToHex(commitment),
+      }] }),
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+  };
+
+  it('describes scalar bytes/string and array continuations from the same collection effect metadata', () => {
+    for (const valueType of ['bytes', 'string', 'Notice[]']) {
+      const collection = valueType === 'Notice[]' ? 'notices' : `scalar${valueType}`;
+      const candidateGroup = makeGroup(
+        `write${valueType}`, `${collection}:mapping(int => ${valueType})`, false, valueType,
+      );
+      const [descriptor] = describeValueChunkWrites(candidateGroup);
+      expect(descriptor).toMatchObject({
+        collection,
+        collectionSignature: `${collection}:mapping(int => ${valueType})`,
+        keySlot: binToHex(slot),
+        operation: 'update',
+      });
+      expect(groupChunkableValueWriteCollection(candidateGroup)).toBe(collection);
+      expect(groupWritesSingleChunkableValueCollection(candidateGroup)).toBe(true);
+    }
+
+    // The compatibility exports preserve the established array result while new callers use the general API.
+    const array = makeGroup('appendNotice');
+    expect(groupChunkableArrayWriteCollection(array)).toBe('notices');
+    expect(groupWritesSingleChunkableArrayCollection(array)).toBe(true);
+  });
+
+  it('confines application-name recovery to pre-kernel artifacts', () => {
+    const legacyNamed = { functionName: 'publishJobEvent' };
+    const renamedLegacy = { functionName: 'appendNotice' };
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed, renamedLegacy])).toBe(true);
+
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    expect(permitsLegacyNamedValueChunkFallback([
+      { ...legacyNamed, logicalArtifact: kernelArtifact },
+    ])).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([
+      { ...renamedLegacy, logicalArtifact: kernelArtifact },
+    ])).toBe(false);
+
+    // The active route owns the compatibility decision. A kernel owner must not recover historical names merely
+    // because all of its nested participants are old or publish no convention themselves.
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'kernel-row-loop')).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([renamedLegacy], 'kernel-row-loop')).toBe(false);
+    expect(permitsLegacyNamedValueChunkFallback([legacyNamed], 'legacy-unroll')).toBe(true);
+  });
+
+  it('reconstructs descriptor-free events only for legacy plans, ignoring a named kernel decoy', () => {
+    const legacyRenamed = { functionName: 'appendNotice' };
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
+
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], false)).toBe(true);
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed], true)).toBe(false);
+    expect(permitsLegacyValueChunkEventReconstruction([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
+    // A kernel route can legitimately compose an older descriptor-free child. The active owner convention is
+    // authoritative: neither the historical name nor the child's missing convention may re-enable reconstruction.
+    expect(permitsLegacyValueChunkEventReconstruction(
+      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
+    )).toBe(false);
+  });
+
+  it('keeps nested delegate event repair legacy-only across misleading names', () => {
+    const legacyNamed = { functionName: 'publishJobEvent' };
+    const legacyRenamed = { functionName: 'appendNotice' };
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelNamedDecoy = { functionName: 'publishJobEvent', logicalArtifact: kernelArtifact };
+
+    expect(permitsLegacyDelegateEventRepair([legacyNamed, legacyRenamed], false)).toBe(true);
+    expect(permitsLegacyDelegateEventRepair([legacyNamed], true)).toBe(false);
+    expect(permitsLegacyDelegateEventRepair([legacyRenamed, kernelNamedDecoy], false)).toBe(false);
+    expect(permitsLegacyDelegateEventRepair(
+      [{ functionName: 'publishJobEvent' }], false, 'kernel-row-loop',
+    )).toBe(false);
+  });
+
+  it('selects a renamed physical value writer from metadata and rejects a named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    const decoy = {
+      ...makeGroup('publishJobEvent'),
+      stateLayout: { variables: [], collections: [] },
+    };
+    expect(selectChunkableValueWriteExecution([
+      { group: renamed, inputIndex: 17 },
+      { group: decoy, inputIndex: 9 },
+    ])).toMatchObject({
+      inputIndex: 17, collection: 'notices', abiFunction: { name: 'appendNotice' },
+    });
+  });
+
+  it('selects a delegated writer from one authenticated resource before entry geometry materializes', () => {
+    const carrier = makeGroup('relayRecord');
+    const [write] = describeValueChunkWrites(carrier);
+    const owner = {
+      categoryId,
+      lockingBytecode: `aa20${'51'.repeat(32)}87`,
+    };
+    const claim = {
+      resourceIdentity: valueChunkWriteResourceIdentity(write),
+      producer: {
+        version: 1 as const,
+        stateOwner: owner,
+        sourcePath: [{
+          sourceEffectDomainId: '91'.repeat(32),
+          sourceCallsiteId: 4,
+          occurrenceIndex: 0,
+          sourceEffectOrdinal: 2,
+        }],
+        mutationEffectDomainId: '92'.repeat(32),
+        mutationSourceEffectOrdinal: 3,
+      },
+    };
+    const kernelArtifact = {
+      ...carrier.externalContract.inner.artifact,
+      abi: carrier.externalContract.inner.artifact.abi.map((fn: { name: string }) => ({
+        ...fn, name: 'applyRecord',
+      })),
+      messageBus: { convention: 'kernel-row-loop' as const },
+    };
+    const executor = {
+      ...carrier,
+      functionName: 'applyRecord',
+      logicalFunctionName: 'applyRecord',
+      logicalArtifact: kernelArtifact,
+      externalContract: { inner: { artifact: kernelArtifact } },
+      valueChunkWrites: [],
+      valueChunkProducerClaims: [claim],
+      valueChunkStateOwner: owner,
+      valueChunkOutputCount: undefined,
+      callMode: 'delegatecall' as const,
+    };
+
+    expect(claimedChunkableValueWriteCollection(executor)).toBe('notices');
+    expect(selectChunkableValueWriteExecution([
+      { group: executor, inputIndex: 11 },
+    ])).toMatchObject({
+      inputIndex: 11, collection: 'notices', abiFunction: { name: 'applyRecord' },
+    });
+
+    const otherOwner = { ...owner, lockingBytecode: `aa20${'52'.repeat(32)}87` };
+    const otherOwnerExecutor = {
+      ...executor,
+      valueChunkStateOwner: otherOwner,
+      valueChunkProducerClaims: [{
+        ...claim,
+        producer: { ...claim.producer, stateOwner: otherOwner },
+      }],
+    };
+    expect(claimedChunkableValueWriteCollection(otherOwnerExecutor)).toBe('notices');
+    expect(selectChunkableValueWriteExecution([
+      { group: executor, inputIndex: 11 },
+      { group: otherOwnerExecutor, inputIndex: 11 },
+    ])).toBeUndefined();
+
+    expect(claimedChunkableValueWriteCollection({
+      ...executor,
+      valueChunkProducerClaims: [{
+        ...claim,
+        resourceIdentity: `${categoryId}:${'00'.repeat(20)}:${'42'.repeat(32)}`,
+      }],
+    })).toBeUndefined();
+    expect(claimedChunkableValueWriteCollection({
+      ...executor,
+      valueChunkStateOwner: { ...owner, categoryId: '32'.repeat(32) },
+    })).toBeUndefined();
+  });
+
+  it('recovers an alpha-renamed legacy writer from exact planned continuation geometry', () => {
+    const structuralLegacy = (functionName: string, collectionName: string) => {
+      const collection = {
+        name: collectionName,
+        signature: `${collectionName}:mapping(int => Notice[])`,
+        kind: 'mapping' as const,
+        keyType: 'int',
+        valueType: 'Notice[]',
+        chunkableValue: true,
+      };
+      const handler = {
+        name: functionName,
+        inputs: [{ name: '__internal__valueChunkOutputBase', type: 'int' }],
+        writesState: true,
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            { kind: 'master' as const, offset: 0 },
+            { kind: 'entry' as const, offset: 1, slotIndex: 0 },
+          ],
+        },
+      };
+      return {
+        functionName,
+        stateLayout: { variables: [], collections: [collection] },
+        logicalArtifact: {
+          abi: [handler],
+          stateLayout: { variables: [], collections: [collection] },
+          messageBus: { convention: 'legacy-unroll' },
+        } as unknown as Artifact,
+        valueChunkOutputBase: 12,
+        valueChunkOutputCount: 2,
+      };
+    };
+    const historicallyNamed = structuralLegacy('publishJobEvent', 'jobEvents');
+    const alphaRenamed = structuralLegacy('appendNotice', 'notices');
+    expect(legacyPlannedChunkableValueWriteCollection(historicallyNamed)).toBe('jobEvents');
+    expect(legacyPlannedChunkableValueWriteCollection(alphaRenamed)).toBe('notices');
+
+    const ambiguous = structuralLegacy('appendNotice', 'notices');
+    ambiguous.stateLayout.collections.push({
+      ...ambiguous.stateLayout.collections[0],
+      name: 'history', signature: 'history:mapping(int => Notice[])',
+    });
+    expect(legacyPlannedChunkableValueWriteCollection(ambiguous)).toBeUndefined();
+
+    const kernel = structuralLegacy('publishJobEvent', 'jobEvents');
+    kernel.logicalArtifact.messageBus = { convention: 'kernel-row-loop' } as Artifact['messageBus'];
+    expect(legacyPlannedChunkableValueWriteCollection(kernel)).toBeUndefined();
+
+    const noWidth = structuralLegacy('appendNotice', 'notices');
+    noWidth.valueChunkOutputCount = 0;
+    expect(legacyPlannedChunkableValueWriteCollection(noWidth)).toBeUndefined();
+    delete noWidth.valueChunkOutputCount;
+    (noWidth as typeof noWidth & { derivedTrailingOutputs: Map<number, unknown> })
+      .derivedTrailingOutputs = new Map([[7, { unrelated: true }]]);
+    expect(legacyPlannedChunkableValueWriteCollection(noWidth)).toBeUndefined();
+
+    const noWitness = structuralLegacy('appendNotice', 'notices');
+    noWitness.logicalArtifact.abi[0].inputs = [];
+    expect(legacyPlannedChunkableValueWriteCollection(noWitness)).toBeUndefined();
+
+    const overloaded = structuralLegacy('appendNotice', 'notices');
+    overloaded.logicalArtifact.abi.push({
+      ...overloaded.logicalArtifact.abi[0],
+      selector: '01020304',
+      inputs: [
+        { name: 'key', type: 'int' },
+        { name: '__internal__valueChunkOutputBase', type: 'int' },
+      ],
+    });
+    expect(legacyPlannedChunkableValueWriteCollection(overloaded)).toBeUndefined();
+
+    const mixedConvention = structuralLegacy('appendNotice', 'notices');
+    mixedConvention.externalContract = { inner: { artifact: {
+      ...mixedConvention.logicalArtifact,
+      messageBus: { convention: 'kernel-row-loop' },
+    } as Artifact } };
+    expect(legacyPlannedChunkableValueWriteCollection(mixedConvention)).toBeUndefined();
+
+    const driftedLayout = structuralLegacy('appendNotice', 'notices');
+    driftedLayout.externalContract = { inner: { artifact: {
+      ...driftedLayout.logicalArtifact,
+      stateLayout: {
+        ...driftedLayout.logicalArtifact.stateLayout,
+        collections: [{
+          ...driftedLayout.logicalArtifact.stateLayout!.collections![0],
+          name: 'otherNotices',
+        }],
+      },
+    } as Artifact } };
+    expect(legacyPlannedChunkableValueWriteCollection(driftedLayout)).toBeUndefined();
+  });
+
+  it('uses the routed writer layout and collection even when its artifact contains a legacy-named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    const routeHandler = {
+      ...renamed.externalContract.inner.artifact.abi[0],
+      name: 'routeAppendNotice',
+      blockLayout: {
+        blockSize: 7,
+        slots: [
+          { kind: 'master' as const, offset: 0 },
+          { kind: 'entry' as const, offset: 1, slotIndex: 0 },
+          { kind: 'event' as const, offset: 6, slotIndex: 0 },
+        ],
+      },
+    };
+    const namedDecoy = {
+      ...renamed.externalContract.inner.artifact.abi[0],
+      name: 'publishJobEvent',
+      entryAccesses: [],
+      blockLayout: { blockSize: 2, slots: [{ kind: 'master' as const, offset: 0 }] },
+    };
+    const routed = {
+      ...renamed,
+      compilerRoute: { abiFunction: routeHandler },
+      externalContract: { inner: { artifact: {
+        ...renamed.externalContract.inner.artifact,
+        abi: [namedDecoy, renamed.externalContract.inner.artifact.abi[0]],
+      } } },
+    };
+
+    expect(selectChunkableValueWriteExecution([
+      { group: routed, inputIndex: 17 },
+    ])).toMatchObject({
+      inputIndex: 17,
+      collection: 'notices',
+      abiFunction: { name: 'routeAppendNotice', blockLayout: { blockSize: 7 } },
+    });
+  });
+
+  it('selects publish ownership by renamed resource identity and collapses duplicate route views', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    expect(selectValueChunkWriteCategory([renamed])).toEqual({
+      status: 'exact', categoryId, write: renamed,
+    });
+    expect(selectValueChunkWriteCategory([renamed, { ...renamed }])).toEqual({
+      status: 'exact', categoryId, write: { ...renamed },
+    });
+    expect(selectValueChunkWriteCategory([])).toEqual({ status: 'absent' });
+  });
+
+  it('resolves chunkable entry ownership from exact metadata and fails closed for kernel ambiguity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    expect(resolveChunkableEntryCollection({
+      writes: [renamed],
+      categoryId,
+      publishedCollections: ['decoy'],
+      convention: 'kernel-row-loop',
+    })).toBe(signature);
+    expect(resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records'],
+      convention: 'kernel-row-loop',
+    })).toBe('records');
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: ['records', 'audit'],
+      convention: 'kernel-row-loop',
+      legacyFallback: 'historical',
+    })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(() => resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: [],
+      convention: 'kernel-row-loop',
+      legacyFallback: 'historical',
+    })).toThrow(/requires one exact compiler-published collection identity/);
+    expect(resolveChunkableEntryCollection({
+      writes: [],
+      categoryId,
+      publishedCollections: [],
+      convention: 'legacy-unroll',
+      legacyFallback: 'historical',
+    })).toBe('historical');
+  });
+
+  it('treats several well-formed keys in one collection as a multi-resource seed, not persist-band ownership', () => {
+    const [first] = describeValueChunkWrites(makeGroup('initialize', signature, true));
+    const second = {
+      ...first, keySlot: 'cd'.repeat(32), entryAccessSlot: 1, routeSlot: 1, operation: 'insert' as const,
+    };
+    const selection = selectValueChunkWriteCategory([first, second]);
+    expect(selection).toMatchObject({ status: 'multi' });
+    expect(isInitialValueChunkWrite(selection)).toBe(true);
+    expect(persistedValueChunkReadiness({
+      selection,
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(false);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection, persisted: true, plannedInserts: 0,
+    })).toBeUndefined();
+  });
+
+  it('scopes persisted readiness to a renamed resource and rejects cross-builder legacy leakage', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const exact = selectValueChunkWriteCategory([renamed]);
+    expect(persistedValueChunkReadiness({
+      selection: exact,
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(false);
+    expect(persistedValueChunkReadiness({
+      selection: exact,
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: true,
+      legacyReady: false,
+    })).toBe(true);
+    expect(persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: false,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(false);
+    expect(persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: false,
+      permitsLegacyFallback: true,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toBe(true);
+    expect(() => persistedValueChunkReadiness({
+      selection: { status: 'absent' },
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toThrow(/did not produce one exact resource descriptor/);
+    expect(() => persistedValueChunkReadiness({
+      selection: { status: 'ambiguous' },
+      hasWriteMetadata: true,
+      permitsLegacyFallback: false,
+      descriptorReady: false,
+      legacyReady: true,
+    })).toThrow(/Ambiguous compiler-described value-chunk write identity/);
+  });
+
+  it('distinguishes multiple valid resources from malformed compiler identity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const [independent] = describeValueChunkWrites(makeGroup(
+      'appendAudit', 'audit:mapping(int => Notice[])',
+    ));
+    expect(independent.categoryId).toBe(renamed.categoryId);
+    expect(selectValueChunkWriteCategory([renamed, independent])).toEqual({
+      status: 'multi', writes: [renamed, independent],
+    });
+    expect(selectValueChunkWriteCategory([
+      { ...renamed, collectionHash: '00'.repeat(32) },
+    ])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('binds missing chunk categories to exact renamed write identity', () => {
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const exact = selectValueChunkWriteCategory([renamed]);
+    expect(resolveValueChunkWriteCategory(exact, undefined, 'cd'.repeat(32))).toBe(categoryId);
+    expect(resolveValueChunkWriteCategory(exact, 'cd'.repeat(32), categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, undefined, categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'ambiguous' }, categoryId, categoryId)).toBeUndefined();
+    expect(resolveValueChunkWriteCategory({ status: 'absent' }, undefined, categoryId)).toBe(categoryId);
+    expect(resolveValueChunkWriteCategory({ status: 'absent' }, 'ef'.repeat(32), categoryId))
+      .toBe('ef'.repeat(32));
+  });
+
+  it('selects token-band repair ownership by physical compiler layout, independent of handler name', () => {
+    const participant = {
+      categoryId, functionName: 'settleNotice', blockLayout: {
+        blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
+      },
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup;
+    expect(selectTokenBandRepairOwner(
+      [participant], (candidate) => candidate === categoryId ? 12 : -1, { start: 14, end: 17 },
+    )).toEqual({ status: 'exact', groupIndex: 0, categoryId, masterIndex: 12 });
+    expect(selectTokenBandRepairOwner(
+      [participant], () => 12, { start: 20, end: 22 },
+    )).toEqual({ status: 'absent' });
+  });
+
+  it('fails closed when independent participants both claim token-band repair ownership', () => {
+    const otherCategory = 'cd'.repeat(32);
+    const participant = (id: string, name: string) => ({
+      categoryId: id, functionName: name, blockLayout: {
+        blockSize: 5, slots: [{ kind: 'master', offset: 0 }, { kind: 'entry', offset: 1 }],
+      },
+    }) as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').PhysicalReturnGroup;
+    expect(selectTokenBandRepairOwner(
+      [participant(categoryId, 'settleNotice'), participant(otherCategory, 'settleAudit')],
+      (candidate) => candidate === categoryId ? 12 : 13,
+      { start: 14, end: 17 },
+    )).toEqual({ status: 'ambiguous' });
+  });
+
+  it('selects a renamed writer event from compiler route metadata and collapses duplicate views', () => {
+    const eventOutput = {
+      eventSignature: 'NoticeAppended(int,bytes)',
+      commitment: '01aa',
+      lockingBytecode: Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32), 0x87),
+    };
+    const candidate = {
+      categoryId,
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+      },
+      compilerRoute: {
+        abiFunction: {
+          name: 'appendNotice', inputs: [], emits: [{
+            eventName: 'NoticeAppended', eventSignature: eventOutput.eventSignature, emitIndex: 0,
+          }],
+          blockLayout: {
+            blockSize: 3,
+            slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+          },
+        },
+        eventSignaturesBySlot: [eventOutput.eventSignature],
+      },
+      eventOutputs: [eventOutput],
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(selectCompilerWriterEvent([candidate, { ...candidate }])).toMatchObject({
+      status: 'exact', categoryId, slotOffset: 2,
+      eventSignature: 'NoticeAppended(int,bytes)', eventOutput,
+    });
+  });
+
+  it('fails closed on conflicting writer event slots, declarations, or observations', () => {
+    const base = {
+      categoryId,
+      blockLayout: {
+        blockSize: 3,
+        slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+      },
+      compilerRoute: {
+        abiFunction: { name: 'appendNotice', inputs: [], blockLayout: {
+          blockSize: 3,
+          slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 2, slotIndex: 0 }],
+        } },
+        eventSignaturesBySlot: ['NoticeAppended(int,bytes)'],
+      },
+    } as unknown as import('../../src/stateful/StatefulTransactionBuilder.js').ExternalCallUtxoGroup;
+    expect(selectCompilerWriterEvent([
+      base,
+      { ...base, compilerRoute: {
+        ...base.compilerRoute, eventSignaturesBySlot: ['AuditAppended(int,bytes)'],
+      } },
+    ])).toEqual({ status: 'ambiguous' });
+    expect(selectCompilerWriterEvent([{
+      ...base,
+      eventOutputs: [{
+        eventSignature: 'AuditAppended(int,bytes)', commitment: '01bb',
+        lockingBytecode: Uint8Array.of(0x51),
+      }],
+    }])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('fails closed when independent chunkable writers claim different physical inputs', () => {
+    expect(selectChunkableValueWriteExecution([
+      { group: makeGroup('appendNotice'), inputIndex: 17 },
+      { group: makeGroup('appendAudit'), inputIndex: 23 },
+    ])).toBeUndefined();
+  });
+
+  it('fails closed when one physical input ambiguously claims independent collections', () => {
+    expect(selectChunkableValueWriteExecution([
+      { group: makeGroup('appendNotice'), inputIndex: 17 },
+      { group: makeGroup('appendAudit', 'audit:mapping(int => Notice[])'), inputIndex: 17 },
+    ])).toBeUndefined();
+  });
+
+  it('authenticates an alpha-renamed update and rejects a same-category decoy collection', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const value = new Uint8Array(100).fill(9);
+    const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
+    rememberJobEventsValue(categoryId, value);
+    rememberJobEventsLock(categoryId, getValueChunkLockingBytecode(
+      categoryId, renamed.collection, slot, sha256Sync(value),
+    ));
+    expect(renamed).toMatchObject({
+      collectionSignature: signature, keySlot: binToHex(slot), operation: 'update',
+      outputBase: 4, outputCount: 3,
+    });
+    const exact = persistedValueChunkWriteState(renamed);
+    expect(exact?.width).toBeGreaterThan(0);
+    expect(exact?.value).toEqual(value);
+    expect(exact?.recipe).toMatchObject({
+      collection: renamed.collection, categoryId, slot, root: sha256Sync(value),
+    });
+    expect(binToHex(persistUpdateRedeemLock(categoryId, undefined, renamed)!))
+      .toBe(binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))));
+    expect(rememberValueChunkUnlockRecipe(renamed, value, exact?.lockingBytecode)).toBe(true);
+    expect(binToHex(persistValueChunkLock(categoryId, value, renamed)!)).toBe(
+      binToHex(getValueChunkLockingBytecode(categoryId, renamed.collection, slot, sha256Sync(value))),
+    );
+    const digestLock = persistUpdateDigestLock(categoryId, [], renamed);
+    expect(digestLock?.length).toBe(35);
+    expect(binToHex(digestLock!)).not.toBe(binToHex(legacyJobEventsPersistUpdateDigestLock(categoryId)!));
+    expect(persistUpdateDigestLock(categoryId)).toBeUndefined();
+    const otherLock = getValueChunkLockingBytecode(
+      categoryId, 'other', slot, sha256Sync(value),
+    );
+    expect(binToHex(persistUpdateRedeemLock(categoryId, otherLock, renamed)!))
+      .not.toBe(binToHex(otherLock));
+
+    const [decoy] = describeValueChunkWrites(makeGroup('publishJobEvent', 'other:mapping(int => Notice[])'));
+    expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    expect(rememberValueChunkUnlockRecipe(decoy, value, exact?.lockingBytecode)).toBe(false);
+    expect(persistValueChunkLock(categoryId, value, decoy)).not.toEqual(exact?.lockingBytecode);
+    const malformedDescriptor = { ...renamed, collectionHash: '00'.repeat(32) };
+    expect(persistValueChunkLock(categoryId, value, malformedDescriptor)).toBeUndefined();
+    expect(persistUpdateDigestLock(categoryId, [], malformedDescriptor)).toBeUndefined();
+    expect(persistValueChunkLock(categoryId, value, null)).toBeUndefined();
+    expect(persistUpdateRedeemLock(categoryId, exact?.lockingBytecode, null)).toBeUndefined();
+    expect(persistUpdateDigestLock(categoryId, [], null)).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([decoy], categoryId)).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([decoy, renamed], categoryId)).toEqual(renamed);
+    // The route and logical group may both describe one physical write; identity de-duplication keeps it exact.
+    expect(selectPersistedValueChunkWrite([renamed, { ...renamed }], categoryId)).toEqual(renamed);
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('keeps persisted resources separate by collection hash and key slot within one category', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const [first] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const alternateSignature = 'audit:mapping(int => Notice[])';
+    const [secondBase] = describeValueChunkWrites(makeGroup('appendAudit', alternateSignature));
+    const second = { ...secondBase, keySlot: '09'.repeat(32) };
+    const firstValue = new Uint8Array(100).fill(0x31);
+    const secondValue = new Uint8Array(120).fill(0x52);
+    const firstLock = getValueChunkLockingBytecode(
+      categoryId, first.collection, hexToBin(first.keySlot), sha256Sync(firstValue),
+    );
+    const secondLock = getValueChunkLockingBytecode(
+      categoryId, second.collection, hexToBin(second.keySlot), sha256Sync(secondValue),
+    );
+
+    rememberJobEventsValue(categoryId, firstValue);
+    rememberJobEventsLock(categoryId, firstLock);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
+
+    // A later observation for another resource in the same token category must not evict the first identity.
+    rememberJobEventsValue(categoryId, secondValue);
+    rememberJobEventsLock(categoryId, secondLock);
+    expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
+    expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
+
+    // Nor may a name-shaped decoy borrow either exact cache entry.
+    const decoy = { ...second, keySlot: '0a'.repeat(32) };
+    expect(persistedValueChunkWriteState(decoy)).toBeUndefined();
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('protects renamed active collection locks and ignores a legacy-named decoy', () => {
+    const renamed = makeGroup('appendNotice');
+    renamed.valueChunkWrites = describeValueChunkWrites(renamed);
+    const decoy = {
+      ...makeGroup('publishJobEvent'),
+      stateLayout: { variables: [], collections: [] },
+      valueChunkWrites: [],
+    };
+    const selected = selectProtectedLoopEntryCollections([renamed, decoy]);
+    expect(selected.status).toBe('exact');
+    expect(selected.collections).toContain('notices');
+    expect(selected.collections).toContain(signature);
+    expect(selected.collections).not.toContain('jobEvents');
+
+    const planned = makeGroup('createNotice', signature, true);
+    expect(selectProtectedLoopEntryCollections([planned])).toMatchObject({
+      status: 'exact', collections: ['notices'],
+    });
+    expect(selectProtectedLoopEntryCollections([])).toEqual({
+      status: 'absent', collections: ['jobEvents'],
+    });
+    const kernelArtifact = {
+      messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    expect(selectProtectedLoopEntryCollections([{
+      functionName: 'publishJobEvent', logicalArtifact: kernelArtifact,
+    }])).toEqual({ status: 'absent', collections: [] });
+    // A partially populated compiler-route group may not carry a nested artifact from which to infer the
+    // convention. The active owner is still authoritative and must keep historical application-name recovery
+    // disabled for a kernel row loop.
+    const compilerRouteOnly = {
+      functionName: 'publishJobEvent', compilerRoute: {},
+    };
+    expect(selectProtectedLoopEntryCollections(
+      [compilerRouteOnly], 'kernel-row-loop',
+    )).toEqual({ status: 'absent', collections: [] });
+    expect(selectProtectedLoopEntryCollections(
+      [compilerRouteOnly], 'legacy-unroll',
+    )).toEqual({ status: 'absent', collections: ['jobEvents'] });
+
+    const [malformed] = renamed.valueChunkWrites;
+    expect(selectProtectedLoopEntryCollections([{
+      ...renamed,
+      valueChunkWrites: [{ ...malformed, collectionHash: '00'.repeat(32) }],
+    }]).status).toBe('ambiguous');
+  });
+
+  it('publishes insert identity separately from an update', () => {
+    expect(describeValueChunkWrites(makeGroup('createNotice', signature, true))[0])
+      .toMatchObject({ operation: 'insert', entryAccessSlot: 0, routeSlot: 0 });
+  });
+
+  it('derives first-write semantics from renamed descriptors and ignores legacy-name decoys', () => {
+    const [renamedInsert] = describeValueChunkWrites(makeGroup('createNotice', signature, true));
+    const [namedDecoyUpdate] = describeValueChunkWrites(makeGroup('publishJobPost'));
+
+    expect(isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([renamedInsert]), false,
+    )).toBe(true);
+    expect(isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([namedDecoyUpdate]), true,
+    )).toBe(false);
+    expect(isInitialValueChunkWrite({ status: 'absent' }, true)).toBe(true);
+  });
+
+  it('distinguishes independent keys from conflicting views of one resource', () => {
+    const [update] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const distinctKey = { ...update, keySlot: '09'.repeat(32) };
+    expect(selectValueChunkWriteCategory([update, distinctKey])).toEqual({
+      status: 'multi', writes: [update, distinctKey],
+    });
+    expect(isInitialValueChunkWrite(
+      selectValueChunkWriteCategory([update, distinctKey]), true,
+    )).toBe(false);
+
+    expect(selectValueChunkWriteCategory([
+      update, { ...update, operation: 'insert' },
+    ])).toEqual({ status: 'ambiguous' });
+  });
+
+  it('rematerializes only an exact persisted update without competing INSERT destinations', () => {
+    const [update] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const [insert] = describeValueChunkWrites(makeGroup('createNotice', signature, true));
+    const updateSelection = selectValueChunkWriteCategory([update]);
+
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: updateSelection, persisted: true, plannedInserts: 0,
+    })).toBe(true);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: updateSelection, persisted: true, plannedInserts: 1,
+    })).toBe(false);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: selectValueChunkWriteCategory([insert]), persisted: true, plannedInserts: 0,
+    })).toBe(false);
+    expect(shouldRematerializeDescribedValueChunkWrite({
+      selection: { status: 'absent' }, persisted: true, plannedInserts: 0,
+    })).toBeUndefined();
+  });
+
+  it('refuses a category-free choice between two authenticated persisted resources', () => {
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+    const [first] = describeValueChunkWrites(makeGroup('appendNotice'));
+    const firstValue = new Uint8Array(100).fill(3);
+    rememberJobEventsValue(first.categoryId, firstValue);
+    rememberJobEventsLock(first.categoryId, getValueChunkLockingBytecode(
+      first.categoryId, first.collection, slot, sha256Sync(firstValue),
+    ));
+
+    const secondCategory = 'cd'.repeat(32);
+    const second = { ...first, categoryId: secondCategory };
+    const secondValue = new Uint8Array(100).fill(4);
+    rememberJobEventsValue(secondCategory, secondValue);
+    rememberJobEventsLock(secondCategory, getValueChunkLockingBytecode(
+      secondCategory, second.collection, slot, sha256Sync(secondValue),
+    ));
+
+    expect(selectPersistedValueChunkWrite([first, second])).toBeUndefined();
+    expect(selectPersistedValueChunkWrite([first, second], secondCategory)).toEqual(second);
+    expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
+    StatefulTransactionBuilder.clearPersistedJobEvents();
+  });
+
+  it('ties insert mode to the matching route slot in a multi-collection writer', () => {
+    const primary = makeGroup('writeBoth');
+    const otherSlot = new Uint8Array(32).fill(8);
+    const otherSignature = 'audit:mapping(int => Notice[])';
+    const otherCommitment = encodeEntryCommitment(otherSlot, new Uint8Array(32));
+    primary.stateLayout.collections!.push({
+      name: 'audit', signature: otherSignature, kind: 'mapping', keyType: 'int',
+      valueType: 'Notice[]', chunkableValue: true,
+    });
+    const fn = primary.externalContract.inner.artifact.abi[0];
+    fn.entryAccesses.push({
+      slotIndex: 1, collection: 'audit', keyParams: ['id'], operations: ['write'],
+    });
+    fn.blockLayout.blockSize = 3;
+    fn.blockLayout.slots.push({ kind: 'entry', offset: 2, slotIndex: 1 });
+    primary.blockInputs!.push({ token: { nft: { commitment: otherCommitment } } } as never);
+    primary.plannedEntryInserts = [{
+      blockSlot: 2, outputBlockSlot: 3, newCommitment: binToHex(otherCommitment),
+    }];
+
+    expect(describeValueChunkWrites(primary).map((write) => ({
+      collection: write.collection, keySlot: write.keySlot, operation: write.operation,
+    }))).toEqual([
+      { collection: 'notices', keySlot: binToHex(slot), operation: 'update' },
+      { collection: 'audit', keySlot: binToHex(otherSlot), operation: 'insert' },
+    ]);
+  });
+});
 
 const returnSlot = { kind: 'returnEvent' as const, offset: 7 };
 const tokenLayout = { blockSize: 8, slots: [{ kind: 'master' as const, offset: 0 }, returnSlot] };
@@ -230,6 +1238,20 @@ describe('assignPhysicalReturnIndices', () => {
     expect(blockOutputOwnsFixedDataNft(21, 20, undefined, 2)).toBe(true);
     expect(blockOutputOwnsFixedDataNft(22, 20, undefined, 2)).toBe(true);
     expect(blockOutputOwnsFixedDataNft(23, 20, undefined, 2)).toBe(false);
+
+    const participants = [{
+      categoryId: 'AaBb', blockBase: 10, blockLayout: sparse,
+      dataNftCount: 2, requiredDataNftIndices: [3, 7],
+    }, {
+      categoryId: 'delegated-owner', blockBase: 20, blockLayout: undefined,
+      dataNftCount: 2, requiredDataNftIndices: [4, 9],
+    }];
+    expect(fixedDataNftOwnerInParticipantBlocks(14, 'aAbB', participants))
+      .toEqual({ participantIndex: 0, nftIndex: 7 });
+    expect(fixedDataNftOwnerInParticipantBlocks(22, 'delegated-owner', participants))
+      .toEqual({ participantIndex: 1, nftIndex: 9 });
+    expect(fixedDataNftOwnerInParticipantBlocks(12, 'aabb', participants)).toBeUndefined();
+    expect(fixedDataNftOwnerInParticipantBlocks(14, 'other-owner', participants)).toBeUndefined();
   });
 
   it('reserves every output in assigned scalar and loop return witnesses', () => {
@@ -355,6 +1377,161 @@ describe('assignPhysicalReturnIndices', () => {
     expect(groupOwnsInBlockReturnEvent(viewing, 1)).toBe(true);
   });
 
+  it('materializes rolled loop returns even when pending return events were cleared', () => {
+    const digital = utf8ToBin('DIGITAL_VIDEO');
+    const empty = new Uint8Array(0);
+    const groups = [
+      {
+        ...group({
+          categoryId: 'md',
+          functionName: 'publishJobEvent',
+          logicalFunctionName: 'publishJobEvent',
+          externalContract: {
+            inner: {
+              artifact: {
+                abi: [
+                  { name: 'meceTags', writesState: false },
+                  { name: 'publishJobEvent', writesState: true },
+                ],
+              },
+            },
+          },
+        }),
+        loopReturnCommitments: [digital, empty],
+      },
+    ];
+    // Pending cleared after seed — requiring candidates previously dropped the meceTags band.
+    const selected = selectMaterializedTailReturnEvents(groups, []);
+    expect(selected).toHaveLength(2);
+    expect(selected[0]?.identity).toBe('external-call:0:0');
+    expect(selected[1]?.identity).toBe('external-call:0:1');
+    expect(binToHex(selected[0]!.commitment)).toBe(binToHex(digital));
+    expect(binToHex(selected[1]!.commitment)).toBe(binToHex(empty));
+  });
+
+  it('keeps a multi-part tail anchored at its authenticated part-zero return index', () => {
+    const first = Uint8Array.of(0x11);
+    const second = Uint8Array.of(0x22);
+    const returnGroup = group({
+      categoryId: 'reader',
+      functionName: 'readEach',
+      logicalFunctionName: 'readEach',
+      returnOutputIndex: 12,
+      loopReturnCommitments: [first, second],
+      externalContract: {
+        inner: { artifact: { abi: [{ name: 'readEach', writesState: false }] } },
+      },
+    });
+    const groups = [returnGroup];
+
+    const materialized = selectMaterializedTailReturnEvents(groups, []);
+    expect(materialized.map(({ identity }) => identity)).toEqual([
+      'external-call:0:0', 'external-call:0:1',
+    ]);
+    const placements = packTailReturnPlacements(groups, () => -1, materialized, 'other');
+
+    expect(returnGroup.returnOutputIndex).toBe(12);
+    expect(placements.get('external-call:0:0')).toBe(12);
+    expect(placements.get('external-call:0:1')).toBe(13);
+    expect([...returnWitnessOutputIndices(groups)]).toEqual([12, 13]);
+  });
+
+  it('refuses in-block ownership when a fused writer still carries multi-width meceTags returns', () => {
+    // publishJobPost: meceTags(tags_[i]) seeds the MarketplaceData group, then publishJobEvent fuses onto
+    // the same master and overwrites functionName. The rolled loop commitments must still force tail
+    // placement — otherwise base+1 reads an empty hole and meceCount stays 0.
+    const mdLayout = {
+      blockSize: 3,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'entry' as const, offset: 1, slotIndex: 0 },
+        { kind: 'returnEvent' as const, offset: 2 },
+      ],
+    };
+    const groups = [
+      group({
+        categoryId: 'md',
+        functionName: 'publishJobEvent',
+        logicalFunctionName: 'publishJobEvent',
+        returnEventInBlock: true,
+        blockLayout: mdLayout,
+        loopReturnCommitments: { length: 2 },
+        returnOutputIndex: 34,
+        externalContract: {
+          inner: {
+            artifact: {
+              abi: [
+                { name: 'meceTags', writesState: false, outputs: [{ type: 'string' }] },
+                { name: 'publishJobEvent', writesState: true },
+              ],
+            },
+          },
+        },
+      }),
+      group({
+        categoryId: 'md',
+        functionName: 'userRegistered',
+        logicalFunctionName: 'userRegistered',
+        sharedGroupIndex: 0,
+        returnOutputIndex: 35,
+        externalContract: {
+          inner: { artifact: { abi: [{ name: 'userRegistered', writesState: false, outputs: [{ type: 'bool' }] }] } },
+        },
+      }),
+    ];
+    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(false);
+    const assigned = assignPhysicalReturnIndices(groups, () => -1);
+    expect(assigned.get(0)).toBe(34);
+    expect(assigned.get(1)).toBe(36);
+    groups[0].returnOutputIndex = assigned.get(0);
+    groups[1].returnOutputIndex = assigned.get(1);
+    expect(returnWitnessOutputIndices(groups)).toEqual(new Set([34, 35, 36]));
+  });
+
+  it('refuses in-block ownership when the fused shared group carries a multi-part loop return', () => {
+    const layout = {
+      blockSize: 2,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'returnEvent' as const, offset: 1 },
+      ],
+    };
+    const groups = [
+      group({
+        categoryId: 'shared',
+        functionName: 'mutate',
+        logicalFunctionName: 'mutate',
+        returnEventInBlock: true,
+        fusedReturnGroupIndex: 1,
+        blockLayout: layout,
+        externalContract: {
+          inner: { artifact: { abi: [{ name: 'mutate', writesState: true }] } },
+        },
+      }),
+      group({
+        categoryId: 'shared',
+        functionName: 'readEach',
+        logicalFunctionName: 'readEach',
+        sharedGroupIndex: 0,
+        returnOutputIndex: 8,
+        loopReturnCommitments: { length: 2 },
+        externalContract: {
+          inner: { artifact: { abi: [{ name: 'readEach', writesState: false }] } },
+        },
+      }),
+    ];
+
+    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(false);
+    expect(groupOwnsInBlockReturnEvent(groups, 1)).toBe(false);
+    const placements = packTailReturnPlacements(groups, () => 0, [
+      { identity: 'external-call:1:0', categoryId: 'shared' },
+      { identity: 'external-call:1:1', categoryId: 'shared' },
+    ], 'other');
+    expect(placements.get('external-call:1:0')).toBe(8);
+    expect(placements.get('external-call:1:1')).toBe(9);
+    expect(returnWitnessOutputIndices(groups)).toEqual(new Set([8, 9]));
+  });
+
   it('reserves loop-return width so a second meceTags slot is not the next occupant', () => {
     const groups: PhysicalReturnGroup[] = [
       group({
@@ -476,6 +1653,41 @@ describe('assignPhysicalReturnIndices', () => {
     )).toBe(1);
   });
 
+  it('keeps whitelist publish band collision on the natural FakeToken start, not the slid public band', () => {
+    // publishJobPost + whitelistWorkers: plannedWidth 2. Sliding the public band past FakeToken
+    // (15 → 23) hid the collision from minting swap and left empty chunks at 23-24.
+    const groups: PhysicalReturnGroup[] = [
+      group({
+        categoryId: 'marketplace-data',
+        functionName: 'publishJobEvent',
+        blockLayout: { blockSize: 5, slots: [] },
+        valueChunkOutputCount: 2,
+      }),
+      group({
+        categoryId: 'fake-token',
+        functionName: 'transferFrom',
+        blockLayout: { blockSize: 8, slots: [] },
+      }),
+    ];
+    const findMinting = (categoryId: string): number => (
+      categoryId === 'marketplace-data' ? 6 : 15
+    );
+    const plannedWidth = 2;
+    expect(liveJobEventsBandWidth({ plannedWidth })).toBe(2);
+    expect(valueChunkBandWidth({ planned: plannedWidth })).toBe(3);
+    expect(valueChunkBandWidth({ minimum: 1, planned: plannedWidth })).toBe(2);
+    const natural = computePublishJobEventsBand({
+      start: 15, plannedWidth, liveWidth: liveJobEventsBandWidth({ plannedWidth }),
+    });
+    expect(natural).toEqual({ start: 15, end: 16, nNew: 2 });
+    expect(collidingParticipantGroupIndex(groups, findMinting, natural!)).toBe(1);
+    const slid = computePublishJobEventsBand({
+      start: 15 + 8, plannedWidth, liveWidth: liveJobEventsBandWidth({ plannedWidth }),
+    });
+    expect(slid).toEqual({ start: 23, end: 24, nNew: 2 });
+    expect(collidingParticipantGroupIndex(groups, findMinting, slid!)).toBe(-1);
+  });
+
   it('reserves output-only slots when a physical block has fewer token inputs than coordinates', () => {
     expect(physicalParticipantWidth(group({
       categoryId: 'sparse-writer',
@@ -486,6 +1698,12 @@ describe('assignPhysicalReturnIndices', () => {
         slots: [{ kind: 'returnEvent', offset: 3 }],
       },
     }))).toBe(4);
+  });
+
+  it('detects a lane collision in output-only participant coordinates', () => {
+    expect(participantSpanOverlapsLane(18, 9, { start: 26, endExclusive: 28 })).toBe(true);
+    expect(participantSpanOverlapsLane(18, 5, { start: 26, endExclusive: 28 })).toBe(false);
+    expect(participantSpanOverlapsLane(28, 9, { start: 26, endExclusive: 28 })).toBe(false);
   });
 
   it('includes an in-block return slid past a dynamic output band in materialized width', () => {
@@ -568,12 +1786,12 @@ describe('assignPhysicalReturnIndices', () => {
     expect(logicalReturnGroupIndex(groups, 0)).toBe(0);
   });
 
-  it('does not give a proxy-master view the in-block slot', () => {
+  it('gives a standalone proxy-dispatched view its declared in-block slot', () => {
     const groups: PhysicalReturnGroup[] = [
       group({
-        categoryId: 'md',
+        categoryId: 'state-holder',
         functionName: '__forward',
-        logicalFunctionName: 'arbitratorRegistered',
+        logicalFunctionName: 'readFlag',
         returnEventInBlock: true,
         blockLayout: tokenLayout,
         externalContract: {
@@ -581,14 +1799,17 @@ describe('assignPhysicalReturnIndices', () => {
             artifact: {
               abi: [
                 { name: '__forward', writesState: true },
-                { name: 'arbitratorRegistered', writesState: false, outputs: [{ type: 'bool' }] },
+                { name: 'readFlag', writesState: false, outputs: [{ type: 'bool' }] },
               ],
             },
           },
         },
       }),
     ];
-    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(false);
+    expect(groupOwnsInBlockReturnEvent(groups, 0)).toBe(true);
+    expect(assignPhysicalReturnIndices(groups, (categoryId) => (
+      categoryId === 'state-holder' ? 4 : -1
+    )).get(0)).toBe(11);
   });
 
   it('packs view tails after a writer in-block slot past master+blockSize', () => {
@@ -708,6 +1929,177 @@ describe('assignPhysicalReturnIndices', () => {
     expect(resolveAbsolutePredOut(-2n, 26, 8)).toBe(-2n);
   });
 
+  it('syncs drifted PredOut witnesses onto master + declared batch predecessor slots', () => {
+    // post job 1: unlocker PredOut=28 while P' was reasserted at master+8=27.
+    let relocated = 28;
+    const refreshed: Record<string, bigint>[] = [];
+    const updates = syncDeclaredBatchPredOutWitnesses({
+      masterIndex: 19,
+      batchPredecessorOutputs: [{ outputBlockSlot: 8 }],
+      internalArgs: {
+        __internal__vmapBatchPredOut_0: 28n,
+        __internal__vmapBatchPredOut_1: -1n,
+        __internal__vmapBatchPredOut_2: -1n,
+      },
+      refreshInternalArgs: (next) => {
+        refreshed.push(next as Record<string, bigint>);
+      },
+      setRelocatedPredOutBase: (absolute) => {
+        relocated = absolute;
+      },
+    });
+    expect(updates).toEqual({ __internal__vmapBatchPredOut_0: 27n });
+    expect(refreshed).toEqual([{ __internal__vmapBatchPredOut_0: 27n }]);
+    expect(relocated).toBe(27);
+  });
+
+  it('places batch PredOut only at master + declared slot', () => {
+    const balancesLock = hexToBin(`aa20${'99'.repeat(32)}87`);
+    const allowancesLock = hexToBin(`aa20${'88'.repeat(32)}87`);
+    const predCommit = `${'00'.repeat(32)}${'2e'.repeat(32)}`;
+    const updateCommit = `${'e2'.repeat(32)}${'00'.repeat(32)}0000907b984f02ca30`;
+    const outputs = Array.from({ length: 40 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    const predecessors = [{
+      outputBlockSlot: 8,
+      lockingBytecode: balancesLock,
+      commitment: predCommit,
+    }];
+    // Drifted master=4 would land P' at 12 — callers must gate on minting master.
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 4, 'ft', predecessors)).toBe(1);
+    expect(binToHex(outputs[12].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 22, 'ft', predecessors)).toBe(1);
+    expect(binToHex(outputs[30].to as Uint8Array)).toBe(binToHex(balancesLock));
+    // Foreign-collection displace must not park the UPDATE before the minting master.
+    outputs[12] = { to: Uint8Array.of(0x51), amount: 1000n };
+    outputs[26] = {
+      to: balancesLock,
+      amount: 1200n,
+      token: { category: 'ft', nft: { capability: 'mutable' as const, commitment: updateCommit } },
+    };
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 22, 'ft', [{
+      outputBlockSlot: 4,
+      lockingBytecode: allowancesLock,
+      commitment: predCommit,
+    }])).toBe(1);
+    expect(outputs[12].to).toEqual(Uint8Array.of(0x51));
+    expect(binToHex(outputs[26].to as Uint8Array)).toBe(binToHex(allowancesLock));
+    // Displaced balances UPDATE lands after master, not at @12.
+    const displaced = outputs.findIndex((output, index) => (
+      index > 22 && output.to instanceof Uint8Array
+      && binToHex(output.to) === binToHex(balancesLock)
+      && String(output.token?.nft?.commitment ?? '').startsWith('e2')
+    ));
+    expect(displaced).toBeGreaterThan(22);
+  });
+
+  it('strips invalid surplus collection locks that inflate OUTPUTBYTECODE cardinality', () => {
+    // post job 1: expected 3 balances nodes; a Marketplace pad reused the balances lock with `010000`.
+    const balancesLock = hexToBin(`aa20${'99'.repeat(32)}87`);
+    const validCommit = `${'2e'.repeat(32)}${'21'.repeat(32)}000010632d5ec76b05`;
+    const fromUpdate = `${'e2'.repeat(32)}${'00'.repeat(32)}0000907b984f02ca30`;
+    const predCommit = `${'00'.repeat(32)}${'2e'.repeat(32)}`;
+    const outputs = Array.from({ length: 32 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    const place = (index: number, commitment: string, category = 'ft'): void => {
+      outputs[index] = {
+        to: balancesLock,
+        amount: 1200n,
+        token: { category, nft: { capability: 'mutable' as const, commitment } },
+      };
+    };
+    place(21, validCommit);
+    place(23, fromUpdate);
+    place(27, predCommit);
+    place(28, '010000', 'marketplace');
+    expect(stripSurplusInvalidCollectionLockOutputs(outputs, balancesLock, 'ft', 3)).toBe(1);
+    expect(outputs[28].to).toEqual(Uint8Array.of(0x51));
+    expect(outputs[28].token).toBeUndefined();
+    expect(binToHex(outputs[21].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(binToHex(outputs[27].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(stripSurplusInvalidCollectionLockOutputs(outputs, balancesLock, 'ft', 3)).toBe(0);
+    // Without keepIndices, never demote valid nodes even when plannedCount is too low.
+    expect(stripSurplusInvalidCollectionLockOutputs(outputs, balancesLock, 'ft', 1)).toBe(0);
+    expect(binToHex(outputs[21].to as Uint8Array)).toBe(binToHex(balancesLock));
+    // Whitelist-shaped post two: a valid-looking duplicate UPDATE lands before the FakeToken block.
+    place(12, fromUpdate);
+    place(28, '010000', 'marketplace');
+    const keep = new Set([21, 23, 27]);
+    expect(stripSurplusInvalidCollectionLockOutputs(outputs, balancesLock, 'ft', 3, keep)).toBe(2);
+    expect(outputs[12].to).toEqual(Uint8Array.of(0x51));
+    expect(outputs[28].to).toEqual(Uint8Array.of(0x51));
+    expect(binToHex(outputs[21].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(binToHex(outputs[23].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(binToHex(outputs[27].to as Uint8Array)).toBe(binToHex(balancesLock));
+    // Inflated plannedCount (foreign entry candidates counted) must not leave the pre-block clone.
+    place(12, fromUpdate);
+    expect(stripSurplusInvalidCollectionLockOutputs(outputs, balancesLock, 'ft', 3, keep)).toBe(1);
+    expect(outputs[12].to).toEqual(Uint8Array.of(0x51));
+    // Pre-block pad @12 is outside FakeToken master@22 block; 1:1 restore must refuse it.
+    expect(isOutsideTokenWriterBlock(12, 22, 8, [8])).toBe(true);
+    expect(isOutsideTokenWriterBlock(24, 22, 8, [8])).toBe(false);
+    expect(isOutsideTokenWriterBlock(26, 22, 8, [8])).toBe(false);
+    expect(isOutsideTokenWriterBlock(30, 22, 8, [8])).toBe(false);
+  });
+
+  it('keeps balanced collection-entry identity fields from one declared owner', () => {
+    const declaredLock = hexToBin(`aa20${'44'.repeat(32)}87`);
+    const localLock = hexToBin(`aa20${'55'.repeat(32)}87`);
+    const planned = selectBalancedEntryOutputIdentity({
+      plannedCommitment: '11'.repeat(64),
+      declaredLockingBytecode: declaredLock,
+      declaredCategoryId: 'owner',
+      embeddedCommitment: '010000',
+      inputLockingBytecode: localLock,
+      inputCategoryId: 'local',
+    });
+    expect(planned).toEqual({
+      lockingBytecode: declaredLock,
+      categoryId: 'owner',
+      commitment: '11'.repeat(64),
+      preservesEmbeddedEntry: false,
+    });
+
+    const preserved = selectBalancedEntryOutputIdentity({
+      declaredLockingBytecode: declaredLock,
+      declaredCategoryId: 'owner',
+      embeddedCommitment: '22'.repeat(64),
+      inputLockingBytecode: localLock,
+      inputCategoryId: 'local',
+    });
+    expect(preserved).toEqual({
+      lockingBytecode: localLock,
+      categoryId: 'local',
+      commitment: '22'.repeat(64),
+      preservesEmbeddedEntry: true,
+    });
+  });
+
+  it('removes malformed occupants of a declared collection lock without needing an insert predecessor', () => {
+    const lock = hexToBin(`aa20${'66'.repeat(32)}87`);
+    const validCommitment = `${'10'.repeat(32)}${'20'.repeat(32)}`;
+    const outputs = [
+      {
+        to: lock,
+        amount: 1200n,
+        token: { category: 'owner', nft: { capability: 'mutable' as const, commitment: validCommitment } },
+      },
+      {
+        to: lock,
+        amount: 1200n,
+        token: { category: 'foreign', nft: { capability: 'mutable' as const, commitment: '010000' } },
+      },
+    ];
+    const stripped = new Set<number>();
+    expect(stripInvalidCollectionLockOutputs(outputs, lock, 'owner', stripped)).toBe(1);
+    expect(stripped).toEqual(new Set([1]));
+    expect(binToHex(outputs[0].to as Uint8Array)).toBe(binToHex(lock));
+    expect(outputs[1]).toEqual({ to: Uint8Array.of(0x51), amount: 1200n });
+    expect(stripInvalidCollectionLockOutputs(outputs, lock, 'owner')).toBe(0);
+  });
+
   it('uses the batch planner output slot instead of provisional return-tail occupancy', () => {
     expect(materializedPredOutBase({
       blockLayout: { blockSize: 8 },
@@ -754,11 +2146,176 @@ describe('assignPhysicalReturnIndices', () => {
     expect(groupLayoutBlockSize({
       compilerRoute: { abiFunction: { blockLayout: { blockSize: 14 } } },
     })).toBe(14);
+    expect(groupLayoutBlockSize({
+      blockLayout: { blockSize: 14 },
+    })).toBe(14);
     expect(groupLayoutBlockSize({})).toBe(8);
     expect(groupLayoutTrailingBase({
       compilerRoute: { abiFunction: { blockLayout: { blockSize: 163, trailingBase: 99 } } },
     })).toBe(99);
     expect(resolveAbsolutePredOut(99n, 244, 99)).toBe(343n);
+  });
+
+  it('uses ABI blockLayout for a proxy delegate that has no kernel compilerRoute', () => {
+    const initializeLayout = {
+      blockSize: 14,
+      slots: [
+        { kind: 'master' as const, offset: 0 },
+        { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
+        { kind: 'dataNft' as const, offset: 2, nftIndex: 1 },
+        { kind: 'entry' as const, offset: 3, slotIndex: 0, conditional: true },
+        { kind: 'event' as const, offset: 11, slotIndex: 0, conditional: true },
+      ],
+    };
+    expect(selectDelegateExecutionLayout([
+      { callMode: 'delegatecall', blockLayout: initializeLayout },
+    ])).toEqual(initializeLayout);
+    expect(selectDelegateExecutionLayout([
+      { callMode: 'call', blockLayout: initializeLayout },
+      { callMode: 'delegatecall' },
+    ])).toBeUndefined();
+    expect(selectDelegateExecutionLayout([
+      { callMode: 'delegatecall', compilerRoute: { abiFunction: { blockLayout: initializeLayout } } },
+    ])).toEqual(initializeLayout);
+    expect(selectDelegateExecutionLayout(
+      [{ callMode: 'delegatecall', blockLayout: initializeLayout }],
+      new Set([0]),
+    )).toBeUndefined();
+  });
+
+  it('pins exact linear sorted-batch keys even when the layout slot is conditional', () => {
+    expect(pinExactSortedBatchEntry({
+      exact: true, conditionalLayoutSlot: true, linearSortedBatch: true,
+    })).toBe(true);
+    expect(pinExactSortedBatchEntry({
+      exact: false, conditionalLayoutSlot: true, linearSortedBatch: true,
+    })).toBe(true);
+    expect(pinExactSortedBatchEntry({
+      exact: true, conditionalLayoutSlot: true, linearSortedBatch: false,
+    })).toBe(false);
+    expect(pinExactSortedBatchEntry({
+      exact: true, conditionalLayoutSlot: false, linearSortedBatch: false,
+    })).toBe(true);
+    expect(pinExactSortedBatchEntry({
+      exact: false, conditionalLayoutSlot: true, linearSortedBatch: false,
+    })).toBe(false);
+  });
+
+  it('does not treat a kernel linear string-mapping batch as a continuation writer', () => {
+    const meceTags = {
+      name: 'meceTags',
+      signature: 'meceTags:mapping(string => string)',
+      keyType: 'string',
+      valueType: 'string',
+      chunkableValue: true,
+    };
+    const initialize = {
+      functionName: 'initialize',
+      logicalFunctionName: 'initialize',
+      stateLayout: { variables: [], dataNftCount: 0, commitmentLimit: 128, collections: [meceTags] },
+      logicalArtifact: {
+        messageBus: { convention: 'kernel-row-loop' as const },
+        abi: [{
+          name: 'initialize',
+          inputs: [],
+          entryAccesses: [{ collection: 'meceTags', keyParams: ['key'], operations: ['write'] as Array<'write'> }],
+          sortedBatchInfo: [{
+            collection: 'meceTags',
+            slotIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+            linear: true,
+          }],
+        }],
+      },
+      compilerRoute: {
+        abiFunction: {
+          name: 'initialize',
+          inputs: [],
+          entryAccesses: [{ collection: 'meceTags', keyParams: ['key'], operations: ['write'] as Array<'write'> }],
+          sortedBatchInfo: [{
+            collection: 'meceTags',
+            slotIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+            linear: true,
+          }],
+        },
+      },
+    };
+    expect(groupChunkableValueWriteCollection(initialize)).toBe('meceTags');
+    expect(groupOwnsLinearSortedBatch(initialize)).toBe(true);
+    expect(selectChunkableValueWriteExecution([{ group: initialize, inputIndex: 3 }])).toBeUndefined();
+    const registerUser = {
+      functionName: 'registerUser',
+      logicalFunctionName: 'registerUser',
+      stateLayout: {
+        variables: [], dataNftCount: 0, commitmentLimit: 128,
+        collections: [{
+          name: 'users',
+          signature: 'users:mapping(address => User)',
+          keyType: 'address',
+          valueType: 'User',
+          chunkableValue: true,
+        }],
+      },
+      logicalArtifact: {
+        messageBus: { convention: 'kernel-row-loop' as const },
+        abi: [{
+          name: 'registerUser',
+          inputs: [{ name: '__internal__vmapBatchTrailingCount', type: 'bigint' }],
+          entryAccesses: [{
+            collection: 'users', keyParams: ['sender:msg.sender'], operations: ['read', 'write'] as Array<'read' | 'write'>,
+          }],
+          entryLoopWrites: ['users'],
+        }],
+      },
+      compilerRoute: {
+        abiFunction: {
+          name: 'registerUser',
+          inputs: [{ name: '__internal__vmapBatchTrailingCount', type: 'bigint' }],
+          entryAccesses: [{
+            collection: 'users', keyParams: ['sender:msg.sender'], operations: ['read', 'write'] as Array<'read' | 'write'>,
+          }],
+          entryLoopWrites: ['users'],
+        },
+      },
+    };
+    expect(groupChunkableValueWriteCollection(registerUser)).toBe('users');
+    expect(groupOwnsLinearSortedBatch(registerUser)).toBe(false);
+    expect(selectChunkableValueWriteExecution([{ group: registerUser, inputIndex: 3 }])).toBeUndefined();
+    expect(skipCompilerOwnedInBlockCollectionStrip({
+      preserveBlockLayoutWidth: true, pinnedEntryCount: 8,
+    })).toBe(true);
+    expect(skipCompilerOwnedInBlockCollectionStrip({
+      preserveBlockLayoutWidth: true, pinnedEntryCount: 0,
+    })).toBe(false);
+  });
+
+  it('falls back to nested-callee sentinels for a vmap-batch slot with no planned batch', () => {
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchTrailingCount')).toBe(0n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchProof_0')).toBe(-1n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchPredOut_0')).toBe(-1n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchRank_0')).toBe(0n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchSlot_0')).toEqual(new Uint8Array(32));
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchNext_0')).toEqual(new Uint8Array(32));
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchRows_users')).toEqual(new Uint8Array());
+    expect(vmapBatchWitnessFallback('__internal__proxyMasterIndex')).toBeUndefined();
+  });
+
+  it('overwrites a balanced-block pad at a layout offset instead of appending past it', () => {
+    const pad = { to: Uint8Array.of(0x51), amount: 1000n };
+    const outputs = Array.from({ length: 17 }, () => pad);
+    const minted = {
+      to: Uint8Array.from([0xaa, 0x20]),
+      amount: 1200n,
+      token: { amount: 0n, category: 'ab', nft: { capability: 'mutable' as const, commitment: '01' } },
+    };
+    assignBalancedOutputAtOffset(outputs, 7, minted);
+    expect(outputs).toHaveLength(17);
+    expect(outputs[7]).toBe(minted);
+    expect(outputs[6]).toBe(pad);
+    expect(outputs[8]).toBe(pad);
+    assignBalancedOutputAtOffset(outputs, 17, minted);
+    expect(outputs).toHaveLength(18);
+    expect(outputs[17]).toBe(minted);
+    expect(() => assignBalancedOutputAtOffset(outputs, 20, minted)).toThrow(/past the current length/);
   });
 
   it('lets a fused writer overwrite view leftover PredOuts', () => {
@@ -785,6 +2342,8 @@ describe('assignPhysicalReturnIndices', () => {
 
   it('promotes a fused writer batch plan onto the physical read carrier', () => {
     const predecessor = { outputBlockSlot: 8 };
+    const plannedInsert = { blockSlot: 6, outputBlockSlot: 9 };
+    const entryLock = new Uint8Array([0xaa, 0x20]);
     const carrier = {
       internalArgs: {
         __internal__vmapBatchPredOut_0: -1n,
@@ -793,7 +2352,12 @@ describe('assignPhysicalReturnIndices', () => {
       compilerRoute: {
         internalArgs: { __internal__vmapBatchSlot_0: new Uint8Array(32) as bigint | Uint8Array },
       },
+      plannedEntryInserts: [] as Array<{ blockSlot: number; outputBlockSlot: number }>,
+      plannedEntryInsertHandles: [] as number[],
+      relativeOutputInternalArgs: [] as string[],
       batchPredecessorOutputs: [] as Array<{ outputBlockSlot: number }>,
+      batchEntryLockingBytecodes: new Map<number, Uint8Array>(),
+      batchEntryCommitments: new Map<number, string>(),
     };
     const writer = {
       internalArgs: {
@@ -803,11 +2367,25 @@ describe('assignPhysicalReturnIndices', () => {
       compilerRoute: {
         internalArgs: { __internal__vmapBatchNext_0: new Uint8Array([1]) as bigint | Uint8Array },
       },
+      plannedEntryInserts: [plannedInsert],
+      plannedEntryInsertHandles: [17],
+      relativeOutputInternalArgs: ['__internal__vmapBatchPredOut_0'],
       batchPredecessorOutputs: [predecessor],
+      batchEntryLockingBytecodes: new Map([[6, entryLock]]),
+      batchEntryCommitments: new Map([[6, '01']]),
     };
 
-    expect(inheritWriterBatchPlan<bigint | Uint8Array, { outputBlockSlot: number }>(carrier, writer)).toBe(true);
-    expect(carrier.batchPredecessorOutputs).toBe(writer.batchPredecessorOutputs);
+    expect(inheritWriterBatchPlan<
+    bigint | Uint8Array,
+    { outputBlockSlot: number },
+    { blockSlot: number; outputBlockSlot: number }
+    >(carrier, writer)).toBe(true);
+    expect(carrier.plannedEntryInserts).toBe(writer.plannedEntryInserts);
+    expect(carrier.plannedEntryInsertHandles).toBe(writer.plannedEntryInsertHandles);
+    expect(carrier.relativeOutputInternalArgs).toEqual(writer.relativeOutputInternalArgs);
+    expect(carrier.batchPredecessorOutputs).toEqual(writer.batchPredecessorOutputs);
+    expect(carrier.batchEntryLockingBytecodes).toEqual(writer.batchEntryLockingBytecodes);
+    expect(carrier.batchEntryCommitments).toEqual(writer.batchEntryCommitments);
     expect(carrier.internalArgs).toMatchObject({
       __internal__vmapBatchPredOut_0: 8n,
       __internal__vmapBatchTrailingCount: 1n,
@@ -819,6 +2397,18 @@ describe('assignPhysicalReturnIndices', () => {
       __internal__vmapBatchTrailingCount: 1n,
       __internal__vmapBatchNext_0: new Uint8Array([1]),
     });
+  });
+
+  it('rejects mixing distinct writer batch plans on one physical carrier', () => {
+    const carrier = {
+      plannedEntryInserts: [{ blockSlot: 2, outputBlockSlot: 8 }],
+      batchPredecessorOutputs: [{ outputBlockSlot: 8 }],
+    };
+    const writer = {
+      plannedEntryInserts: [{ blockSlot: 3, outputBlockSlot: 9 }],
+      batchPredecessorOutputs: [{ outputBlockSlot: 9 }],
+    };
+    expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
   });
 
   it('relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels', () => {
@@ -945,6 +2535,41 @@ describe('assignPhysicalReturnIndices', () => {
       commitment: 'abcd',
     }])).toBe(0);
     expect(outputs[8]).toBe(occupant);
+  });
+
+  it('displaces a same-category foreign-collection lock at a planned predecessor slot', () => {
+    // FakeToken.transferFrom: balances P' (predOut) vs allowances share categoryId.
+    // Occupancy can leave the allowances entry lock on the balances PredOut coordinate.
+    const balancesLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const allowancesLock = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const outputs = Array.from({ length: 30 }, () => ({
+      to: Uint8Array.of(0x51),
+      amount: 1000n,
+    }));
+    const foreignOccupant = {
+      to: allowancesLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'token',
+        nft: { capability: 'mutable' as const, commitment: 'aa'.repeat(64) },
+      },
+    };
+    outputs[28] = foreignOccupant;
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 19, 'token', [{
+      outputBlockSlot: 9, // absolute 28 when master=19
+      lockingBytecode: balancesLock,
+      commitment: 'bb'.repeat(64),
+    }])).toBe(1);
+    expect(binToHex(outputs[28].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(outputs[28].token?.nft?.commitment).toBe('bb'.repeat(64));
+    const displaced = outputs.find((output, index) => (
+      index !== 28
+      && output.to instanceof Uint8Array
+      && binToHex(output.to) === binToHex(allowancesLock)
+    ));
+    expect(displaced?.token?.nft?.commitment).toBe('aa'.repeat(64));
   });
 
   it('restores an authoritative planned predecessor over its provisional same-owner node', () => {
@@ -1185,9 +2810,10 @@ describe('assignPhysicalReturnIndices', () => {
     expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
     expect(scaledInputPreserveExclusiveEnd(5, 5)).toBe(25);
     expect(scaledEventOutputIndex(5, 5)).toBe(24);
-    expect(publishJobEventOutputIndex(15, 4)).toBe(19);
-    expect(publishJobEventOutputIndex(17)).toBe(21);
-    expect(publishJobEventOutputIndex(18)).toBe(22);
+    expect(chunkableWriterEventOutputIndex(15, 4)).toBe(19);
+    expect(chunkableWriterEventOutputIndex(17)).toBe(21);
+    expect(chunkableWriterEventOutputIndex(18)).toBe(22);
+    expect(publishJobEventOutputIndex(18)).toBe(chunkableWriterEventOutputIndex(18));
     expect(isJobEventEmitCommitment(
       '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000',
     )).toBe(true);
@@ -1208,7 +2834,7 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '5343494401' } },
     };
-    expect(placePublishJobEventOutput(mintingDest, 14, {
+    expect(placeChunkableWriterEventOutput(mintingDest, 14, {
       to: Uint8Array.from([0xaa, 0x21]),
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '0060000000' } },
@@ -1304,7 +2930,8 @@ describe('assignPhysicalReturnIndices', () => {
       amount: 1200n,
       token: { amount: 0n, category: 'ee64', nft: { capability: 'none', commitment: '005e1976a91447d9fe52d462' } },
     })).toBe(true);
-    expect(emitOutputs[21]?.token).toBeUndefined();
+    expect(emitOutputs[21]?.token?.nft?.commitment)
+      .toBe('005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000');
     const emptyDest = Array.from({ length: 22 }, () => ({ to: Uint8Array.of(0x51), amount: 1000n }));
     emptyDest[21] = {
       to: Uint8Array.from([0xaa, 0x20, 0x7b]),
@@ -1570,6 +3197,31 @@ describe('assignPhysicalReturnIndices', () => {
     expect(suffix[1]?.token?.nft?.commitment).toBe('00aa');
     expect(suffix[2]?.token?.nft?.commitment).toBe('01bb');
     expect(suffix[3]?.to).toEqual(Uint8Array.of(0x6a));
+    // Late value-chunks after jobs: lift the early jobs run against OP_RETURN so
+    // TXOUTPUTCOUNT-1-nNew matches the reverse-suffix covenant (post two jobs).
+    const lateAfterJobs = [
+      { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '00aa' } } },
+      { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } } },
+      { to: Uint8Array.of(0xaa, 0x20), token: { nft: { capability: 'mutable' as const, commitment: 'late' }, category: 'ff' } },
+      { to: Uint8Array.of(0x6a), amount: 0n },
+    ];
+    expect(moveLateOutputsBeforeReverseSuffix(lateAfterJobs, jobsLock, 2)).toBe(2);
+    expect(lateAfterJobs[1]?.token?.nft?.commitment).toBe('00aa');
+    expect(lateAfterJobs[2]?.token?.nft?.commitment).toBe('01bb');
+    expect(lateAfterJobs[3]?.to).toEqual(Uint8Array.of(0x6a));
+    // Reverse-suffix orphans: mid-layout duplicate jobs locks must be stripped so
+    // TXOUTPUTCOUNT-1-nNew stays unique after late growth reorders the trailer.
+    const orphaned = [
+      { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: 'dead' } }, amount: 1200n },
+      { to: Uint8Array.of(0x76, 0xa9), amount: 1000n },
+      { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '00aa' } }, amount: 1200n },
+      { to: jobsLock, token: { nft: { capability: 'mutable' as const, commitment: '01bb' } }, amount: 1200n },
+      { to: Uint8Array.of(0x6a), amount: 0n },
+    ];
+    expect(stripSurplusValueChunkLocks(orphaned, { start: 2, nNew: 2 }, jobsLock)).toBe(1);
+    expect(orphaned[0]?.to).toEqual(Uint8Array.of(0x51));
+    expect(orphaned[2]?.token?.nft?.commitment).toBe('00aa');
+    expect(orphaned[3]?.token?.nft?.commitment).toBe('01bb');
     expect(isPersistedJobEventsReady()).toBe(false);
     expect(boundedDerivationIterations({
       defaultIterations: 20, persistWidth: 3, hasLoopOrChunkVars: true,
@@ -1598,6 +3250,10 @@ describe('assignPhysicalReturnIndices', () => {
     expect(shouldGrowSpeculativeChunkRegion({
       ...speculativeGrowth,
       commitmentProgress: 1,
+    })).toBe(false);
+    expect(shouldGrowSpeculativeChunkRegion({
+      ...speculativeGrowth,
+      reverseIndexedChunkSuffix: true,
     })).toBe(false);
     const seeded = new Map<number, { commitment: string }>();
     const persistValue = new Uint8Array(VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE + 4);
@@ -1704,16 +3360,16 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isWithdrawShapedJobEvent([0, '76a914', '', 0])).toBe(false);
     expect(isWithdrawShapedJobEvent({ type_: 15, address_: '76a914', data_: '', timestamp_: 0 })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [16, '', '', 0],
+      persistReady: true, initialWrite: false, event: [16, '', '', 0],
     })).toBe(true);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: true, event: [16, '', '', 0],
+      persistReady: true, initialWrite: true, event: [16, '', '', 0],
     })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [0, '76a914', '', 0],
+      persistReady: true, initialWrite: false, event: [0, '76a914', '', 0],
     })).toBe(false);
     expect(shouldRematerializePersistUpdate({
-      persistReady: true, publishJobPost: false, event: [16, '', '', 0], plannedInserts: 1,
+      persistReady: true, initialWrite: false, event: [16, '', '', 0], plannedInserts: 1,
     })).toBe(false);
     expect(isPersistValueChunkCommitment(
       'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85500000000',
@@ -1819,8 +3475,20 @@ describe('assignPhysicalReturnIndices', () => {
     expect(shouldStampPersistUpdateDigestLock({
       persistReady: true, persistWidth: 0, firstPublishInsert: false,
     })).toBe(false);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: false, permitsLegacyFallback: true, stampPersistUpdate: true,
+    })).toBe(true);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: true, permitsLegacyFallback: true, stampPersistUpdate: true,
+    })).toBe(false);
+    expect(shouldUseLegacyPersistDigestLockForValueChunks({
+      hasWriteMetadata: false, permitsLegacyFallback: false, stampPersistUpdate: true,
+    })).toBe(false);
     expect(persistUpdateDigestLock('missing-category')).toBeUndefined();
-    expect(binToHex(persistUpdateDigestLock(
+    expect(persistUpdateDigestLock(
+      'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
+    )).toBeUndefined();
+    expect(binToHex(legacyJobEventsPersistUpdateDigestLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
     ) ?? new Uint8Array())).toBe(
       'aa2047362c5b4a0c597c12b75c90f68f6933b2e86c63eb6ce7ed46e083407361b7b587',
@@ -1836,7 +3504,7 @@ describe('assignPhysicalReturnIndices', () => {
       destOffset: 2, entryLock, persistLock: persistVLock, inputLock: dummyDigestLock,
     }) ?? new Uint8Array())).toBe(binToHex(persistVLock));
     const persistV = utf8ToBin('Create a marketplace in solidity');
-    const computedPersistLock = persistValueChunkLock(
+    const computedPersistLock = legacyJobEventsPersistValueChunkLock(
       'ee643a1671fbbe5333480fe40ff0fa72b65b6df0818805a2209586e991ca0af0',
       persistV,
     );
@@ -1863,6 +3531,49 @@ describe('assignPhysicalReturnIndices', () => {
     expect(hex!.length).toBeGreaterThan(10);
     const viaStruct = encodeJobEventEmitCommitment(0, stamped);
     expect(viaStruct === hex || (viaStruct?.startsWith('0060') && viaStruct !== '0060000000')).toBe(true);
+  });
+
+  it('quarantines nested timestamp adaptation to the exact legacy ABI schema', () => {
+    const artifact = (convention: 'legacy-unroll' | 'kernel-row-loop', renamed = false) => ({
+      contractName: 'Archive',
+      abi: [{
+        name: 'appendNotice',
+        inputs: [
+          { name: 'item', type: renamed ? 'Notice' : 'JobEventData' },
+          { name: 'id', type: 'uint256' },
+        ],
+      }],
+      structs: [{
+        name: renamed ? 'Notice' : 'JobEventData',
+        fields: renamed
+          ? [
+            { name: 'kind', type: 'uint8' },
+            { name: 'recipient', type: 'bytes' },
+            { name: 'payload', type: 'bytes' },
+            { name: 'observedAt', type: 'uint32' },
+          ]
+          : [
+            { name: 'type_', type: 'uint8' },
+            { name: 'address_', type: 'bytes' },
+            { name: 'data_', type: 'bytes' },
+            { name: 'timestamp_', type: 'uint32' },
+          ],
+      }],
+      messageBus: { convention },
+    }) as unknown as Artifact;
+    const original = [16, '', '', 0] as const;
+    const timestamp = 0x65574ce0n;
+
+    // Function spelling and argument position provide no authority; only the explicitly legacy schema adapts.
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('legacy-unroll'), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toEqual([16, '', '', timestamp]);
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('kernel-row-loop'), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toBe(original);
+    expect(adaptLegacyNestedJobEventArguments(
+      artifact('legacy-unroll', true), 'appendNotice', [original, 7n], timestamp,
+    )[0]).toBe(original);
   });
 
   it('selects the post-append value whose sha256 is the chunk pin, not the Created witness', () => {
@@ -1902,6 +3613,15 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(expectedFromOtcEqualVerify(actual, expected, binToHex(actual)))).toBe('0500475522ee138ae5');
     const stamped = applyRedeemLockToChunks(chunks, redeemPin);
     expect(stamped.every((chunk) => binToHex(chunk.lockingBytecode) === binToHex(redeemPin))).toBe(true);
+  });
+
+  it('ignores oversized value-chunk extractor decoys before hashing or width selection', () => {
+    const oversized = new Uint8Array(
+      VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT + 1,
+    ).fill(0x5a);
+    const pinLock = p2sh32LockFromValueRoot(sha256Sync(oversized));
+
+    expect(selectHashedValueForChunkPin([[oversized]], pinLock, 1)).toBeUndefined();
   });
 
   it('keeps an observed value-chunk run atomic when a staged run has the same commitments', () => {
@@ -2095,6 +3815,18 @@ describe('assignPhysicalReturnIndices', () => {
     expect(liveChunkWidthForGroup(groups, -1)).toBe(0);
   });
 
+  it('does not let legacy child names alter kernel value-chunk ownership', () => {
+    const groups = [
+      { functionName: 'transferFrom', valueChunkOutputCount: 3 },
+      { functionName: 'moveUnits', valueChunkOutputCount: 5 },
+    ];
+    // Descriptor-free legacy plans retain their historical token-writer exclusion.
+    expect(liveChunkSlotsByOwner(groups).has(0)).toBe(false);
+    // A kernel owner requires compiler descriptors, so both otherwise identical children are treated uniformly.
+    expect([...liveChunkSlotsByOwner(groups, 'kernel-row-loop').entries()]).toEqual([[0, 3], [1, 5]]);
+    expect(liveChunkWidthForGroup(groups, 0, 'kernel-row-loop')).toBe(3);
+  });
+
   it('reserves proxy pads so FakeToken starts after the live jobEvents band', () => {
     expect(proxyValueChunkPadCount({ insertBase: 5, chunkSlots: 6, prefixLength: 4 })).toBe(7);
     expect(proxyValueChunkPadCount({ insertBase: 5, chunkSlots: 2, prefixLength: 4 })).toBe(3);
@@ -2148,6 +3880,61 @@ describe('assignPhysicalReturnIndices', () => {
     expect(canonicalWriterReturnCommitment({
       pendingHex: `${'00'.repeat(31)}01`, writesState: true, evmBool: true, returnsBool: true,
     })).toBe(`${'00'.repeat(31)}01`);
+  });
+
+  it('keeps legacy payload heuristics out of generic event placement', () => {
+    const eventLock = Uint8Array.of(0xaa, 0x21);
+    const legacyShapedCommitment = '005e1976a91447d9fe52d462741f418e9dd5efaa6ae7e7adb60088ac0000';
+    const foreignCategoryOutputs = [{
+      to: Uint8Array.of(0xaa, 0x20),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'foreign',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }];
+
+    expect(placeChunkableWriterEventOutput(foreignCategoryOutputs, 0, {
+      to: eventLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    })).toBe(false);
+    expect(foreignCategoryOutputs[0]?.token?.category).toBe('foreign');
+    expect(foreignCategoryOutputs[0]?.to).toEqual(Uint8Array.of(0xaa, 0x20));
+
+    const siblingOutputs = [{
+      to: Uint8Array.of(0xaa, 0x20),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'mutable', commitment: '11'.repeat(32) },
+      },
+    }, {
+      to: Uint8Array.of(0xaa, 0x22),
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }];
+
+    expect(placeChunkableWriterEventOutput(siblingOutputs, 0, {
+      to: eventLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'owner',
+        nft: { capability: 'none', commitment: legacyShapedCommitment },
+      },
+    }, { consumedMutableOk: true })).toBe(true);
+    expect(siblingOutputs[1]?.token?.nft?.commitment).toBe(legacyShapedCommitment);
   });
 
   it('ranks return observations by authentication, not commitment byte length', () => {
@@ -2317,6 +4104,83 @@ describe('assignPhysicalReturnIndices', () => {
     expect(isMintingBandTokenWriter(undefined)).toBe(false);
   });
 
+  it('classifies minting-band writers by compiler effects, not ERC source names', () => {
+    const write = (collection: string): EntryAccessAbi => ({
+      collection, keyParams: ['key'], operations: ['read', 'write'],
+    });
+    const described = (name: string, writes: number) => ({
+      functionName: name,
+      compilerRoute: { abiFunction: {
+        name,
+        inputs: [],
+        outputs: [{ type: 'bool' }],
+        writesState: true,
+        entryAccesses: Array.from({ length: writes }, (_unused, index) => write(`ledger${index}`)),
+      } },
+    });
+
+    expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2))).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('moveUnits', 2), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('setPermit', 1))).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('setPermit', 1), true)).toBe(false);
+    expect(isCompilerDescribedMintingBandWriter(described('transfer', 2), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('transferFrom', 3), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 2), true)).toBe(true);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 1), true)).toBe(false);
+
+    // A familiar ERC name with an explicit effect-free descriptor cannot claim writer geometry.
+    expect(isCompilerDescribedMintingBandWriter(described('transferFrom', 0))).toBe(false);
+    expect(isCompilerDescribedMintingBandWriter(described('approve', 0))).toBe(false);
+
+    // Old artifacts without effect metadata retain their compatibility classification.
+    expect(isCompilerDescribedMintingBandWriter({ functionName: 'transferFrom' }, true)).toBe(true);
+  });
+
+  it('does not classify descriptor-free kernel participants by transfer-like source names', () => {
+    const kernelArtifact = {
+      abi: [], messageBus: { convention: 'kernel-row-loop' },
+    } as unknown as Artifact;
+    const kernelGroup = (name: string): { functionName: string; logicalArtifact: Artifact } => ({
+      functionName: name, logicalArtifact: kernelArtifact,
+    });
+
+    for (const name of ['moveUnits', 'transfer', 'transferFrom', 'approve']) {
+      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name))).toBe(false);
+      expect(isCompilerDescribedMintingBandWriter(kernelGroup(name), true)).toBe(false);
+    }
+    // The kernel owner also dominates descriptor-free legacy children, whose own artifacts cannot advertise the
+    // active route convention. Familiar source names must not manufacture token-writer geometry in that case.
+    expect(isCompilerDescribedMintingBandWriter(
+      { functionName: 'transferFrom' }, true, 'kernel-row-loop',
+    )).toBe(false);
+  });
+
+  it('restores persisted continuations from transaction structure, independent of caller names', () => {
+    const liveCollision = {
+      initialWrite: false,
+      mintingBandWriter: true,
+      persisted: true,
+      hasBand: true,
+      hasCategory: true,
+    };
+    expect(shouldRestorePersistedContinuationInputs(liveCollision)).toBe(true);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, initialWrite: true,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, mintingBandWriter: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, persisted: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, hasBand: false,
+    })).toBe(false);
+    expect(shouldRestorePersistedContinuationInputs({
+      ...liveCollision, hasCategory: false,
+    })).toBe(false);
+  });
+
   it('retains minting relocation after the master moves past from+width', () => {
     const previous = { from: 22, width: 4, categoryId: 'ft' };
     expect(shouldRetainMintingOutputSwap(26, 10, 3, previous, 'ft')).toBe(true);
@@ -2411,34 +4275,34 @@ describe('assignPhysicalReturnIndices', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
     const placeholder = 'e3b0c442' + '00'.repeat(60);
-    const created = '00004cb42000437265617465' + '11'.repeat(20);
-    const whitelist = '0100' + '22'.repeat(20);
+    const firstValue = '31'.repeat(37);
+    const secondValue = '92'.repeat(21);
     const outputs = [
       { to: lock, token: { nft: { capability: 'mutable' as const, commitment: placeholder } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: created } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: whitelist } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: firstValue } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: secondValue } } },
       { to: Uint8Array.of(0x51), token: { nft: { capability: 'none' as const, commitment: '51' } } },
     ];
     expect(stripSurplusEmptyCollectionEntries(outputs, lock, 2)).toBe(1);
     expect(outputs[0].token).toBeUndefined();
     expect(outputs[0].amount).toBe(1000n);
-    expect(outputs[1].token?.nft?.commitment).toBe(created);
-    expect(outputs[2].token?.nft?.commitment).toBe(whitelist);
+    expect(outputs[1].token?.nft?.commitment).toBe(firstValue);
+    expect(outputs[2].token?.nft?.commitment).toBe(secondValue);
     expect(outputs[3].token?.nft?.commitment).toBe('51');
   });
 
-  it('strips a 32-byte H(0) leftover beside Created and a short next row', () => {
+  it('strips a 32-byte empty hash without depending on neighboring payload bytes', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
     const outputs = [
       { to: lock, token: { nft: { capability: 'mutable' as const, commitment: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '00004cb42000437265617465' + '11'.repeat(50) } } },
-      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '01000000000000000000' } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: 'b7'.repeat(61) } } },
+      { to: lock, token: { nft: { capability: 'mutable' as const, commitment: '4d'.repeat(9) } } },
     ];
     expect(stripSurplusEmptyCollectionEntries(outputs, lock, 2)).toBe(1);
     expect(outputs[0].token).toBeUndefined();
-    expect(outputs[1].token?.nft?.commitment.startsWith('00004cb4')).toBe(true);
-    expect(outputs[2].token?.nft?.commitment).toBe('01000000000000000000');
+    expect(outputs[1].token?.nft?.commitment).toBe('b7'.repeat(61));
+    expect(outputs[2].token?.nft?.commitment).toBe('4d'.repeat(9));
   });
 
   it('does not strip mixed empty+real entries without a planned count', () => {
@@ -2450,6 +4314,23 @@ describe('assignPhysicalReturnIndices', () => {
     ];
     expect(stripSurplusEmptyCollectionEntries(outputs, lock)).toBe(0);
     expect(outputs[0].token?.nft?.commitment.startsWith('e3b0c442')).toBe(true);
+  });
+
+  it('keeps a linear sorted-batch of in-block nodes when planned count includes every key', () => {
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
+    const node = (commitment: string) => ({
+      to: lock, token: { nft: { capability: 'mutable' as const, commitment } },
+    });
+    const outputs = [
+      node('41' + 'ab'.repeat(63)),
+      ...Array.from({ length: 7 }, () => node('00'.repeat(64))),
+      node('00'.repeat(32) + 'cd'.repeat(32)),
+    ];
+    expect(stripSurplusEmptyCollectionEntries(outputs, lock, 9)).toBe(0);
+    expect(outputs.filter((output) => output.token?.nft?.capability === 'mutable')).toHaveLength(9);
+    expect(stripSurplusEmptyCollectionEntries(outputs, lock, 1)).toBe(7);
+    expect(outputs.filter((output) => output.token?.nft?.capability === 'mutable')).toHaveLength(2);
   });
 
   it('classifies sorted-list HEAD vs node vs data-NFT tags', () => {
@@ -2532,10 +4413,6 @@ describe('assignPhysicalReturnIndices', () => {
     expect(predNew).toBe('00'.repeat(32) + newSlot);
     expect(isSortedEntryNodeCommitment(dumpedNew)).toBe(true);
     expect(isSortedEntryHeadCommitment(emptyHead)).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      logicalFunctionName: 'publishJobEvent',
-    })).toBe(true);
     expect(shouldOverwriteForSameIndexTwin(outputs[21], headLock, md, predNew)).toBe(true);
     expect(placeSameIndexTwin(outputs, 21, {
       to: headLock,
@@ -2625,24 +4502,85 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs[3].token?.nft?.commitment).toBe('51');
   });
 
-  it('does not treat proxy __forward as a publishJobEvent write', () => {
-    expect(groupWritesPublishedJobEvents({ functionName: '__forward' })).toBe(false);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      logicalFunctionName: 'initialize',
+  it('detects one active chunkable array writer independently of function and collection names', () => {
+    expect(groupWritesSingleChunkableArrayCollection({
+      functionName: 'append', logicalFunctionName: 'append',
     })).toBe(false);
-    expect(groupWritesPublishedJobEvents({
+    const groupFor = (
+      functionName: string,
+      collectionName: string,
+    ): Parameters<typeof groupChunkableArrayWriteCollection>[0] => ({
       functionName: '__forward',
-      logicalFunctionName: 'publishJobEvent',
-    })).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      compilerRoute: { abiFunction: { name: 'publishJobEvent', entryLoopWrites: ['jobEvents'] } },
-    })).toBe(true);
-    expect(groupWritesPublishedJobEvents({
-      functionName: '__forward',
-      compilerRoute: { abiFunction: { name: 'registerUser', entryLoopWrites: ['jobEvents'] } },
-    })).toBe(false);
+      logicalFunctionName: functionName,
+      stateLayout: {
+        variables: [], dataNftCount: 0, commitmentLimit: 128,
+        collections: [{
+          name: collectionName,
+          signature: `${collectionName}:mapping(int => bytes[])`,
+          kind: 'mapping' as const,
+          keyType: 'int256',
+          valueType: 'bytes[]',
+          chunkableValue: true,
+        }],
+      },
+      compilerRoute: {
+        abiFunction: { name: '__route', inputs: [] },
+        rowArguments: [{
+          handler: {
+            name: functionName,
+            inputs: [],
+            entryAccesses: [{
+              collection: collectionName, keyParams: ['key'], operations: ['write'],
+            }],
+          },
+        }],
+      },
+    });
+    expect(groupChunkableArrayWriteCollection(groupFor('append', 'records'))).toBe('records');
+    expect(groupChunkableArrayWriteCollection(groupFor('store', 'segments'))).toBe('segments');
+    expect(groupWritesSingleChunkableArrayCollection(groupFor('store', 'segments'))).toBe(true);
+    const signatureAddressed = groupFor('replace', 'payloads');
+    signatureAddressed.compilerRoute!.rowArguments![0].handler.entryAccesses![0].collection =
+      signatureAddressed.stateLayout!.collections![0].signature;
+    expect(groupChunkableArrayWriteCollection(signatureAddressed)).toBe('payloads');
+  });
+
+  it('honors active route writes and refuses ambiguous chunkable array collections', () => {
+    const stateLayout = {
+      variables: [], dataNftCount: 0, commitmentLimit: 128,
+      collections: ['first', 'second'].map((name) => ({
+        name,
+        signature: `${name}:mapping(int => bytes[])`,
+        kind: 'mapping' as const,
+        keyType: 'int256',
+        valueType: 'bytes[]',
+        chunkableValue: true,
+      })),
+    };
+    const handler = {
+      name: 'writeBoth',
+      inputs: [],
+      entryAccesses: ['first', 'second'].map((collection) => ({
+        collection, keyParams: ['key'], operations: ['write'],
+      })),
+    };
+    const ambiguous = {
+      functionName: '__forward', stateLayout,
+      compilerRoute: { abiFunction: { name: '__route', inputs: [] }, rowArguments: [{ handler }] },
+    };
+    expect(groupChunkableArrayWriteCollection(ambiguous)).toBeUndefined();
+    expect(groupWritesSingleChunkableArrayCollection(ambiguous)).toBe(false);
+
+    const selected = {
+      ...ambiguous,
+      compilerRoute: {
+        ...ambiguous.compilerRoute,
+        abiFunction: {
+          name: '__route', inputs: [], messageBusActiveWriteCollections: ['second'],
+        },
+      },
+    };
+    expect(groupChunkableArrayWriteCollection(selected)).toBe('second');
   });
 
   it('rewrites transferFrom NEW at master+4 to the P\' collection lock', () => {
@@ -2659,5 +4597,399 @@ describe('assignPhysicalReturnIndices', () => {
     expect(binToHex(outputs[4].to as Uint8Array)).toBe(binToHex(pred));
     expect(outputs[4].token?.nft?.commitment).toBe('72');
     expect(reassertTokenInsertNewLock(outputs, 0, 'ft')).toBe(false);
+  });
+
+  it('restores a 1:1 balances entry output overwritten by an allowances lock', () => {
+    const balancesLock = hexToBin(`aa20${'99'.repeat(32)}87`);
+    const allowancesLock = hexToBin(`aa20${'b8'.repeat(32)}87`);
+    const fromSlot = 'e2'.repeat(32);
+    const fromUpdate = `${fromSlot}${'21'.repeat(32)}000010632d5ec76b05`;
+    const outputs = Array.from({ length: 8 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    outputs[2] = {
+      to: balancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: `${'2e'.repeat(32)}00` } },
+    };
+    outputs[4] = {
+      to: allowancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: 'aa'.repeat(64) } },
+    };
+    // A same-slot balances update exists elsewhere (displaced).
+    outputs[6] = {
+      to: balancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: fromUpdate } },
+    };
+    const inputs = Array.from({ length: 8 }, () => ({
+      satoshis: 1200n,
+      token: undefined as undefined | { category: string; nft: { capability: string; commitment: string } },
+      unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51) },
+    }));
+    inputs[4] = {
+      satoshis: 1200n,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: `${fromSlot}${'00'.repeat(40)}` } },
+      unlocker: { generateLockingBytecode: () => balancesLock },
+    };
+    // Use the exported helper path through reassertBatchPredecessor + manual 1:1 expectation:
+    // after repair, slot +4 must carry balances lock and the same-slot update commitment.
+    expect(binToHex(outputs[4].to as Uint8Array)).toBe(binToHex(allowancesLock));
+    // Simulate the trailing-mode 1:1 restore body.
+    const inLock = inputs[4].unlocker.generateLockingBytecode();
+    const inSlot = String(inputs[4].token?.nft.commitment ?? '').slice(0, 64);
+    const sameSlot = outputs.find((candidate, index) => (
+      index !== 4
+      && candidate.to instanceof Uint8Array
+      && binToHex(candidate.to) === binToHex(balancesLock)
+      && String(candidate.token?.nft?.commitment ?? '').startsWith(inSlot)
+    ));
+    outputs[4] = {
+      to: inLock,
+      amount: 1200n,
+      token: {
+        amount: 0n,
+        category: 'ft',
+        nft: { capability: 'mutable', commitment: String(sameSlot?.token?.nft?.commitment ?? '') },
+      },
+    };
+    expect(binToHex(outputs[4].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(outputs[4].token?.nft?.commitment).toBe(fromUpdate);
+  });
+
+  it('rejects empty nested batch seeds and debits the co-spent balances input', () => {
+    // post job 1 FakeToken@19: nested planBatchUpsert publishes slot||next only for balances[from].
+    // Repair must not stamp that empty seed after allowances overwrite +4.
+    const fromSlot = 'e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559';
+    const emptyPlanned = `${fromSlot}${'00'.repeat(32)}`;
+    const inputValue = 1_000_000n;
+    const amount = 100n;
+    const inputCommitment = binToHex(encodeEntryCommitment(
+      hexToBin(fromSlot),
+      new Uint8Array(32),
+      bigIntToVmNumber(inputValue),
+    ));
+    expect(entryCommitmentLacksValue(emptyPlanned)).toBe(true);
+    expect(entryCommitmentLacksValue(inputCommitment)).toBe(false);
+    const restored = resolveRestoredBalancesEntryCommitment({
+      planned: emptyPlanned,
+      inputCommitment,
+      amount,
+    });
+    expect(restored).toBeDefined();
+    expect(entryCommitmentLacksValue(restored)).toBe(false);
+    expect(restored!.startsWith(fromSlot)).toBe(true);
+    expect(restored!.slice(64, 128)).toBe('00'.repeat(32));
+    expect(vmNumberToBigInt(hexToBin(restored!.slice(128)), { requireMinimalEncoding: false }))
+      .toBe(inputValue - amount);
+    // Value-bearing planned still wins over debit.
+    const plannedUpdate = binToHex(encodeEntryCommitment(
+      hexToBin(fromSlot), hexToBin('21'.repeat(32)), bigIntToVmNumber(inputValue - amount),
+    ));
+    expect(resolveRestoredBalancesEntryCommitment({
+      planned: plannedUpdate,
+      inputCommitment,
+      amount: 1n,
+    })).toBe(plannedUpdate);
+
+    // Marketplace posts encode transfer value as a VM-number Uint8Array (100e18), not a bigint.
+    const vmAmount = bigIntToVmNumber(amount);
+    expect(typeof vmAmount === 'object').toBe(true);
+    const fromVm = resolveRestoredBalancesEntryCommitment({
+      planned: emptyPlanned,
+      inputCommitment,
+      amount: vmNumberToBigInt(vmAmount, { requireMinimalEncoding: false }),
+    });
+    expect(fromVm).toBe(restored);
+  });
+
+  it('rewrites a trailing balances PredOut lock when allowances occupies the absolute slot', () => {
+    // post job 1: master=19, balances P' at +2; builder PredOut_0 is block-relative 8 (abs 27),
+    // while some unlocker dumps show absolute 28 — accept both encodings in the repair path.
+    const balancesLock = hexToBin(`aa20${'99'.repeat(32)}87`);
+    const allowancesLock = hexToBin(`aa20${'b8'.repeat(32)}87`);
+    const master = 19;
+    const outputs = Array.from({ length: 30 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    outputs[master + 2] = {
+      to: balancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: 'e2' } },
+    };
+    outputs[master + 8] = {
+      to: allowancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: 'p1' } },
+    };
+    expect(reassertTokenInsertNewLock(outputs, master, 'ft', 2, 8)).toBe(true);
+    expect(binToHex(outputs[master + 8].to as Uint8Array)).toBe(binToHex(balancesLock));
+    expect(outputs[master + 8].token?.nft?.commitment).toBe('p1');
+    // Absolute encoding (master+relative) also works.
+    outputs[master + 8] = {
+      to: allowancesLock,
+      amount: 1200n,
+      token: { amount: 0n, category: 'ft', nft: { capability: 'mutable' as const, commitment: 'p2' } },
+    };
+    expect(reassertTokenInsertNewLock(outputs, master, 'ft', 2, (master + 8) - master)).toBe(true);
+  });
+
+  it('moves a misplaced NEW commitment off the predecessor output onto master+4', () => {
+    const lock = new Uint8Array(35);
+    lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;
+    const predSlot = 'e2a4aac2498e0a62d7a3936482584bb94059e33c96b7090c81338243b335d559';
+    const newSlot = '3b62bcf186d4c341a5f84ec6ab02bf8edb91e8e560718815bccb608e4449a877';
+    const inputCommit = `${predSlot}${'00'.repeat(32)}0000a0dec5adc93536`;
+    const misplacedNew = `${newSlot}${'00'.repeat(32)}000010632d5ec76b05`;
+    const inputs = [
+      { token: { category: 'ft', nft: { capability: 'minting' as const, commitment: '' } } },
+      {},
+      {
+        token: { category: 'ft', nft: { capability: 'mutable' as const, commitment: inputCommit } },
+        unlocker: { generateLockingBytecode: () => lock },
+      },
+    ];
+    const outputs = [
+      { to: Uint8Array.of(0x51), token: { category: 'ft', nft: { capability: 'minting' as const } } },
+      { to: Uint8Array.of(0x51) },
+      { to: lock, token: { category: 'ft', nft: { capability: 'mutable' as const, commitment: misplacedNew } } },
+      { to: Uint8Array.of(0x51) },
+      { to: Uint8Array.of(0x51), token: { category: 'other', nft: { capability: 'mutable' as const, commitment: 'aa' } } },
+    ];
+    expect(reassertTokenInsertCommitments(outputs, inputs, 0, 'ft')).toBe(true);
+    expect(outputs[2].token?.nft?.commitment?.startsWith(predSlot)).toBe(true);
+    expect(outputs[2].token?.nft?.commitment?.slice(64, 128)).toBe(newSlot);
+    expect(outputs[4].token?.nft?.commitment).toBe(misplacedNew);
+    expect(binToHex(outputs[4].to as Uint8Array)).toBe(binToHex(lock));
+    expect(reassertTokenInsertCommitments(outputs, inputs, 0, 'ft')).toBe(false);
+  });
+
+  it('derives insert-lock repair offsets from renamed compiler descriptors', () => {
+    const routed = {
+      functionName: 'moveUnitsFrom',
+      compilerRoute: { abiFunction: {
+        name: 'routeMoveUnitsFrom',
+        inputs: [],
+        writesState: true,
+        entryAccesses: [{
+          collection: 'ledger:mapping(bytes20 => int)',
+          keyParams: ['owner'],
+          operations: ['read', 'write'] as Array<'read' | 'write'>,
+        }, {
+          collection: 'ledger:mapping(bytes20 => int)',
+          keyParams: ['recipient'],
+          operations: ['write'] as Array<'write'>,
+        }, {
+          collection: 'permits:mapping(bytes20 => int)',
+          keyParams: ['spender'],
+          operations: ['write'] as Array<'write'>,
+        }],
+        blockLayout: {
+          blockSize: 8,
+          slots: [
+            { kind: 'master' as const, offset: 0 },
+            { kind: 'entry' as const, offset: 3, slotIndex: 0 },
+            { kind: 'entry' as const, offset: 5, slotIndex: 1 },
+            { kind: 'entry' as const, offset: 7, slotIndex: 2 },
+          ],
+        },
+      } },
+      plannedEntryInserts: [{
+        blockSlot: 3, outputBlockSlot: 8, newCommitment: 'ab'.repeat(32) + '00'.repeat(32),
+      }],
+    };
+    expect(entryInsertLockRepairs(routed)).toEqual([{
+      collection: 'ledger:mapping(bytes20 => int)',
+      predecessorOffset: 3,
+      candidateInsertedOffsets: [5, 7],
+      insertedSlot: 'ab'.repeat(32),
+    }]);
+    const predecessorLock = hexToBin(`aa20${'11'.repeat(32)}87`);
+    const wrongLock = hexToBin(`aa20${'22'.repeat(32)}87`);
+    const outputs: Parameters<typeof reassertDescribedEntryInsertLocks>[0] = Array.from(
+      { length: 8 }, () => ({ to: Uint8Array.of(0x51) }),
+    );
+    outputs[3] = {
+      to: predecessorLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'cd'.repeat(64) } },
+    };
+    outputs[5] = {
+      to: wrongLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ef'.repeat(64) } },
+    };
+    outputs[7] = {
+      to: wrongLock,
+      token: { category: 'ft', nft: { capability: 'mutable', commitment: 'ab'.repeat(64) } },
+    };
+    expect(reassertDescribedEntryInsertLocks(outputs, 0, 'ft', routed)).toBe(1);
+    expect(outputs[5].to).toEqual(wrongLock);
+    expect(outputs[7].to).toEqual(predecessorLock);
+
+    // Published effect metadata makes a familiar name powerless when no planned INSERT exists.
+    expect(entryInsertLockRepairs({
+      ...routed,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...routed.compilerRoute.abiFunction,
+        name: 'transferFrom',
+        entryAccesses: [],
+      } },
+      plannedEntryInserts: [],
+    })).toEqual([]);
+    expect(entryInsertLockRepairs({
+      ...routed,
+      functionName: 'transferFrom',
+      plannedEntryInserts: [{
+        blockSlot: 2, outputBlockSlot: 8, newCommitment: 'ab'.repeat(64),
+      }],
+    })).toEqual([]);
+
+    // Only an explicitly legacy-unroll descriptor-free artifact retains the historical coordinates.
+    expect(entryInsertLockRepairs({
+      functionName: 'transferFrom',
+      logicalArtifact: { messageBus: { convention: 'legacy-unroll' } } as unknown as Artifact,
+    })).toEqual([{
+      collection: '', predecessorOffset: 2, candidateInsertedOffsets: [4], insertedSlot: '',
+    }]);
+    expect(entryInsertLockRepairs({ functionName: 'transferFrom' })).toEqual([]);
+    expect(entryInsertLockRepairs({
+      functionName: 'transferFrom',
+      logicalArtifact: { messageBus: { convention: 'kernel-row-loop' } } as unknown as Artifact,
+    })).toEqual([]);
+
+    // A renamed linear batch publishes the two entry accesses which share one sorted collection. No source
+    // spelling or positional value argument participates in selecting its repair geometry.
+    const linear = {
+      functionName: 'moveUnitsFrom',
+      logicalFunctionArgs: [9n, 'alice', 'bob'],
+      compilerRoute: { abiFunction: {
+        name: 'moveUnitsFrom',
+        inputs: [
+          { name: 'quantity', type: 'uint256' },
+          { name: 'source', type: 'address' },
+          { name: 'destination', type: 'address' },
+        ],
+        writesState: true,
+        entryAccesses: [
+          {
+            collection: 'ledger', keyParams: ['destination'], operations: ['read', 'write'],
+            valueSource: 'binop:+(entry,id:quantity)',
+          },
+          { collection: 'permits', keyParams: ['source'], operations: ['read', 'write'] },
+          {
+            collection: 'ledger', keyParams: ['source'], operations: ['read', 'write'],
+            valueSource: 'binop:-(entry,id:quantity)',
+          },
+        ],
+        sortedBatchInfo: [{ collection: 'ledger', slotIndices: [0, 2], linear: true }],
+        blockLayout: {
+          blockSize: 8,
+          slots: [
+            { kind: 'master' as const, offset: 0 },
+            { kind: 'dataNft' as const, offset: 1, nftIndex: 0 },
+            { kind: 'entry' as const, offset: 2, slotIndex: 0 },
+            { kind: 'entry' as const, offset: 3, slotIndex: 1 },
+            { kind: 'entry' as const, offset: 4, slotIndex: 2 },
+          ],
+        },
+      } },
+      plannedEntryInserts: [],
+    };
+    expect(linearSortedBatchEntryBands(linear)).toEqual([{
+      collection: 'ledger', offsets: [2, 4],
+    }]);
+    expect(linearSortedBatchValueArgument(linear, 'ledger')).toBe(9n);
+    expect(entryInsertLockRepairs(linear)).toEqual([{
+      collection: 'ledger',
+      predecessorOffset: 2,
+      candidateInsertedOffsets: [4],
+      insertedSlot: '',
+    }]);
+    const ledgerLock = hexToBin(`aa20${'41'.repeat(32)}87`);
+    const permitLock = hexToBin(`aa20${'52'.repeat(32)}87`);
+    const batchOutputs = Array.from({ length: 5 }, () => ({ to: Uint8Array.of(0x51) }));
+    batchOutputs[2] = { to: ledgerLock, token: { category: 'token' } } as never;
+    batchOutputs[3] = { to: permitLock, token: { category: 'token' } } as never;
+    batchOutputs[4] = { to: ledgerLock, token: { category: 'token' } } as never;
+    expect([...linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', linear)])
+      .toEqual([[binToHex(ledgerLock), 2]]);
+
+    // A familiar application name without compiler batch authority remains inert.
+    const decoy = {
+      ...linear,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...linear.compilerRoute.abiFunction, name: 'transferFrom', sortedBatchInfo: undefined,
+      } },
+    };
+    expect(linearSortedBatchEntryBands(decoy)).toEqual([]);
+    expect(linearSortedBatchPlannedLockCounts(batchOutputs, 0, 'token', decoy).size).toBe(0);
+
+    // Even one tempting numeric non-key argument is not a mutation value without compiler-authenticated
+    // valueSource provenance for the selected collection.
+    const unrelatedNumericDecoy = {
+      ...linear,
+      functionName: 'transferFrom',
+      compilerRoute: { abiFunction: {
+        ...linear.compilerRoute.abiFunction,
+        name: 'transferFrom',
+        entryAccesses: linear.compilerRoute.abiFunction.entryAccesses.map((access) => ({
+          ...access, valueSource: undefined,
+        })),
+      } },
+    };
+    expect(linearSortedBatchEntryBands(unrelatedNumericDecoy)).toHaveLength(1);
+    expect(linearSortedBatchValueArgument(unrelatedNumericDecoy, 'ledger')).toBeUndefined();
+  });
+
+  it('reorders a linear proof successor at descriptor-owned nonstandard offsets', () => {
+    const category = 'token';
+    const lock = hexToBin(`aa20${'63'.repeat(32)}87`);
+    const proofSlot = '71'.repeat(32);
+    const successorSlot = '82'.repeat(32);
+    const tailSlot = '93'.repeat(32);
+    const predecessor = `${proofSlot}${successorSlot}01`;
+    const successor = `${successorSlot}${tailSlot}02`;
+    const master = 2;
+    const outputs = Array.from({ length: 12 }, () => ({ to: Uint8Array.of(0x51) })) as Parameters<
+      typeof reorderLinearBatchProofSuccessor
+    >[0];
+    outputs[master + 3] = {
+      to: lock, amount: 1300n,
+      token: { category, nft: { capability: 'mutable', commitment: predecessor } },
+    };
+    outputs[master + 7] = {
+      to: Uint8Array.of(0x51), amount: 1400n,
+      token: { category, nft: { capability: 'mutable', commitment: successor } },
+    };
+    const inputs = Array.from({ length: 12 }, () => ({})) as Parameters<
+      typeof reorderLinearBatchProofSuccessor
+    >[1];
+    inputs[master + 5] = { token: { nft: { commitment: `${proofSlot}${tailSlot}03` } } };
+    const repair = {
+      collection: 'ledger', predecessorOffset: 3, candidateInsertedOffsets: [7],
+      proofInputOffset: 5, insertedSlot: '',
+    };
+    const ambiguousOutputs = outputs.map((output) => ({
+      ...output,
+      ...(output.token && { token: { ...output.token, nft: { ...output.token.nft } } }),
+    }));
+    ambiguousOutputs[master + 9] = {
+      to: lock, amount: 1500n,
+      token: {
+        category, nft: { capability: 'mutable', commitment: `${successorSlot}${'a4'.repeat(32)}04` },
+      },
+    };
+    expect(reorderLinearBatchProofSuccessor(ambiguousOutputs, inputs, master, category, {
+      ...repair, candidateInsertedOffsets: [7, 9],
+    })).toBe(false);
+    expect(ambiguousOutputs[master + 3].token?.nft?.commitment).toBe(predecessor);
+    expect(reorderLinearBatchProofSuccessor(outputs, inputs, master, category, repair)).toBe(true);
+    expect(outputs[master + 3].token?.nft?.commitment).toBe(successor);
+    expect(outputs[master + 7].token?.nft?.commitment).toBe(predecessor);
+    expect(outputs[master + 3].to).toEqual(lock);
+    expect(outputs[master + 7].to).toEqual(lock);
+    expect(reorderLinearBatchProofSuccessor(outputs, inputs, master, category, repair)).toBe(false);
   });
 });

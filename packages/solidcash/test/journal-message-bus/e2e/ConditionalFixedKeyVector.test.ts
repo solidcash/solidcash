@@ -1,0 +1,77 @@
+import { bytecodeToAsm } from '@solidcash/utils';
+import { compileString } from 'solidc';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract } from '../../../src/index.js';
+import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+
+const SOURCE = `contract ConditionalFiniteKeys() {
+  mapping(int => int) records;
+  function apply(int count, int base, bool choose) public {
+    int[3] memory keys;
+    keys[0] = base;
+    if (choose) { keys[1] = base + 2; } else { keys[1] = base + 3; }
+    keys[2] = base + 4;
+    for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+      this.records[keys[cursor]] = cursor + 20;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.records[key] == expected); }
+}`;
+
+const compile = (kernel: boolean) => {
+  const failures: unknown[] = [];
+  const artifact = compileString(SOURCE, {
+    forceStateful: true,
+    messageBus: true,
+    messageBusKernel: kernel,
+    maximumInputBytes: 1_000_000,
+    ...(kernel && {
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+      __attemptFailureBox: { failures },
+    }),
+  });
+  if (kernel) expect(failures).toEqual([]);
+  return artifact;
+};
+
+describe('conditional fixed key vectors', () => {
+  it('matches legacy branch choice and preserves runtime index bounds', async () => {
+    for (const kernel of [false, true]) {
+      const provider = createTestProvider();
+      const artifact = compile(kernel);
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+      if (kernel) {
+        expect(bytecodeToAsm(Buffer.from(artifact.functionBodies!['53434231'], 'hex')))
+          .toContain('OP_INVOKE');
+        expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+          .toMatchObject({ eligible: true });
+      }
+      for (const [base, choose] of [[200n, true], [300n, false]] as const) {
+        const apply = kernel
+          ? contract.batch([{ function: 'apply', args: [3n, base, choose] }])
+          : contract.call.apply(3n, base, choose);
+        await expect(apply.send()).resolves.toBeDefined();
+      }
+      for (const [key, value] of [
+        [200n, 20n], [202n, 21n], [204n, 22n], [203n, 0n],
+        [300n, 20n], [303n, 21n], [304n, 22n], [302n, 0n],
+      ] as const) await expect(contract.call.check(key, value).send()).resolves.toBeDefined();
+    }
+
+    const provider = createTestProvider();
+    const artifact = compile(true);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [4n, 400n, true] }]).send())
+      .rejects.toThrow();
+  }, 180_000);
+});

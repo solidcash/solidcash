@@ -1,5 +1,5 @@
 import {
-  binToHex, encodeTransaction, hashTransactionUiOrder,
+  binToHex, encodeTransaction, hash256, hashTransactionUiOrder,
   type Output as LibauthOutput,
 } from '@bitauth/libauth';
 import {
@@ -32,6 +32,20 @@ interface PreparedCovenantValidation {
   sourceOutputs: readonly CovenantSourceOutput[];
 }
 
+interface PartialCovenantSourceIdentity {
+  valueSatoshis: bigint;
+  lockingBytecodeHash: string;
+  tokenCategory?: string;
+  tokenAmount?: bigint;
+  nftCapability?: string;
+  nftCommitment?: string;
+}
+
+interface PartialCovenantValidation {
+  sourceOutputs: readonly PartialCovenantSourceIdentity[];
+  successfulInputs: ReadonlySet<number>;
+}
+
 // The SDK's exact-finalization gate and MockNetworkProvider run in one process. Retain a one-use receipt for a
 // transaction whose every input has already passed the provider-configured BCH-2026 VM, avoiding the identical
 // VM pass at submission. Bind the receipt to provider identity, transaction bytes, and every source output.
@@ -40,6 +54,13 @@ interface PreparedCovenantValidation {
 // node checks still run in the verifier below.
 const preparedCovenantValidations = new WeakMap<object, Map<string, PreparedCovenantValidation>>();
 const maximumPreparedCovenantValidationsPerProvider = 256;
+
+// Convergence and exact preflight are separate phases. Keep their partial receipts separate from the all-input
+// provider receipt above so no submission path can accidentally promote a subset of successful inputs into a
+// complete transaction verdict. These receipts are intentionally one-use and remain inert until preflight elects
+// to consume them.
+const partialCovenantValidations = new WeakMap<object, Map<string, PartialCovenantValidation>>();
+const maximumPartialCovenantValidationsPerProvider = 256;
 
 const bytesEqual = (left: Uint8Array, right: Uint8Array): boolean => (
   left.length === right.length && left.every((byte, index) => byte === right[index])
@@ -62,6 +83,82 @@ const sourceOutputsEqual = (
     && bytesEqual(output.lockingBytecode, candidate.lockingBytecode)
     && tokensEqual(output.token, candidate.token);
 });
+
+const partialSourceOutputIdentity = (
+  output: CovenantSourceOutput,
+): PartialCovenantSourceIdentity => ({
+  valueSatoshis: output.valueSatoshis,
+  // Hash afresh rather than caching by Uint8Array identity: in-place mutation after recording must invalidate.
+  lockingBytecodeHash: binToHex(hash256(output.lockingBytecode)),
+  ...(output.token === undefined ? {} : {
+    tokenCategory: binToHex(output.token.category),
+    tokenAmount: output.token.amount,
+    ...(output.token.nft === undefined ? {} : {
+      nftCapability: output.token.nft.capability,
+      nftCommitment: binToHex(output.token.nft.commitment),
+    }),
+  }),
+});
+
+const partialSourceOutputsEqual = (
+  expected: readonly PartialCovenantSourceIdentity[], actual: readonly CovenantSourceOutput[],
+): boolean => expected.length === actual.length && expected.every((identity, index) => {
+  const candidate = actual[index];
+  if (candidate === undefined) return false;
+  const actualIdentity = partialSourceOutputIdentity(candidate);
+  return identity.valueSatoshis === actualIdentity.valueSatoshis
+    && identity.lockingBytecodeHash === actualIdentity.lockingBytecodeHash
+    && identity.tokenCategory === actualIdentity.tokenCategory
+    && identity.tokenAmount === actualIdentity.tokenAmount
+    && identity.nftCapability === actualIdentity.nftCapability
+    && identity.nftCommitment === actualIdentity.nftCommitment;
+});
+
+/** Record successful input evaluations without granting an all-input provider validation receipt. */
+export function rememberPartialCovenantValidation(
+  provider: NetworkProvider,
+  transaction: PreparedTransaction['transaction'],
+  sourceOutputs: readonly CovenantSourceOutput[],
+  successfulInputs: readonly number[],
+): void {
+  if (successfulInputs.some((index) => !Number.isSafeInteger(index)
+    || index < 0 || index >= transaction.inputs.length)) {
+    throw new Error('Partial covenant validation input indices must identify transaction inputs.');
+  }
+  const txid = binToHex(hashTransactionUiOrder(encodeTransaction(transaction)));
+  let byTxid = partialCovenantValidations.get(provider as object);
+  if (!byTxid) {
+    byTxid = new Map();
+    partialCovenantValidations.set(provider as object, byTxid);
+  }
+  const sourceIdentity = sourceOutputs.map(partialSourceOutputIdentity);
+  const existing = byTxid.get(txid);
+  const merged = existing !== undefined && partialSourceOutputsEqual(existing.sourceOutputs, sourceOutputs)
+    ? new Set([...existing.successfulInputs, ...successfulInputs])
+    : new Set(successfulInputs);
+  byTxid.delete(txid);
+  byTxid.set(txid, { sourceOutputs: sourceIdentity, successfulInputs: merged });
+  if (byTxid.size > maximumPartialCovenantValidationsPerProvider) {
+    const oldestTxid = byTxid.keys().next().value;
+    if (oldestTxid !== undefined) byTxid.delete(oldestTxid);
+  }
+}
+
+/** Take a matching one-use partial receipt. Any transaction/source mismatch yields no reusable inputs. */
+export function takePartialCovenantValidation(
+  provider: NetworkProvider,
+  transaction: PreparedTransaction['transaction'],
+  sourceOutputs: readonly CovenantSourceOutput[],
+): ReadonlySet<number> {
+  const txid = binToHex(hashTransactionUiOrder(encodeTransaction(transaction)));
+  const byTxid = partialCovenantValidations.get(provider as object);
+  const receipt = byTxid?.get(txid);
+  if (receipt === undefined) return new Set();
+  // Delete before comparing or returning: failures and interruptions cannot leave reusable authority behind.
+  byTxid!.delete(txid);
+  return partialSourceOutputsEqual(receipt.sourceOutputs, sourceOutputs)
+    ? receipt.successfulInputs : new Set();
+}
 
 /** Record that every covenant accepted this exact transaction and source-output population. */
 export function rememberPreparedCovenantValidation(

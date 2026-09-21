@@ -365,6 +365,14 @@ describe('call a function-pointer struct field directly (s.x(), t[i].x(), m[k].x
       + ` t[0].x = h; ${FP} fp = t[0].x; return fp(); } }`;
     expect(bc(direct)).toBe(bc(hoist));
   });
+  it('local fixed struct-array element t[i].x() is byte-identical to the hoist', () => {
+    const S = 'struct S { ' + FP + ' x; }';
+    const direct = `contract C { ${S} ${H} function f() public pure returns (uint) {`
+      + ' S[1] memory t; t[0].x = h; return t[0].x(); } }';
+    const hoist = `contract C { ${S} ${H} function f() public pure returns (uint) {`
+      + ` S[1] memory t; t[0].x = h; ${FP} fp = t[0].x; return fp(); } }`;
+    expect(bc(direct)).toBe(bc(hoist));
+  });
   it('accepts direct and hoisted mapping element function-pointer calls under vmap', () => {
     const S = 'struct S { ' + FP + ' x; } mapping(uint => S) m;';
     const direct = `contract C { ${S} ${H} function f() public returns (uint) { m[0].x = h; return m[0].x(); } }`;
@@ -1045,6 +1053,16 @@ describe('abi.encodePacked supported source types', () => {
       + ' public pure returns (bytes memory) { return abi.encodePacked(uint(1), a, b, s); } }',
       { solidityImportCompat: true },
     ).contractName).toBe('C');
+  });
+});
+
+describe('abi.encode compatibility schema boundary', () => {
+  it('does not silently compact-encode unsupported user-authored fixed bytes', () => {
+    expect(() => compileString(
+      'contract C { function f(bytes39 value) public pure returns (bytes memory) {'
+      + ' return abi.encode(value); } }',
+      { solidityImportCompat: true },
+    )).toThrow(/evmCompat abi\.encode: unsupported type 'bytes39'/);
   });
 });
 

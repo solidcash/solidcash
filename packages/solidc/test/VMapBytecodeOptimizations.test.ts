@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm, bytecodeToScript, sourceMapToLocationData } from '@solidcash/utils';
+import { bytecodeToAsm, bytecodeToScript, decodeInt, Op, sourceMapToLocationData } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // These tests inspect the physical route's helper allocation and byte budget.
@@ -124,5 +124,38 @@ describe('general vmap bytecode sharing', () => {
     expect(helperIds.length).toBeGreaterThanOrEqual(1);
     expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
     expect(artifact.bytecode.length / 2).toBeLessThan(2800);
+  });
+
+  it('nests only compiler-authored helpers while sharing composite array traversal', () => {
+    const artifact = compileString(
+      'struct Row { int a; string label; int b; bytes payload; int c; } contract CompositeRows { Row[] rows;'
+      + ' function updateA(int i) external { require(rows[i].a>=0); rows[i].b=1; rows[i].c=2; require(true); }'
+      + ' function updateB(int i) external { require(rows[i].a>=0); rows[i].b=3; rows[i].c=4; require(true); }'
+      + ' function updateC(int i) external { require(rows[i].a>=0); rows[i].b=5; rows[i].c=6; require(true); } }',
+      { ...DIRECT_ROUTE, maximumInputBytes: 1_000_000 },
+    );
+    const invokeDebug = (artifact.debug as typeof artifact.debug & {
+      invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
+    }).invokeDebug ?? {};
+    const compilerHelperIds = new Set(
+      Object.entries(invokeDebug)
+        .filter(([, debug]) => debug.name?.startsWith('compiler helper'))
+        .map(([id]) => Number(id)),
+    );
+    const nestedOutlinedBodies = Object.values(invokeDebug)
+      .filter((debug) => debug.name?.startsWith('outlined source span'))
+      .map((debug) => ({ debug, script: bytecodeToScript(hexToBin(debug.bytecode)) }))
+      .filter(({ script }) => script.includes(Op.OP_INVOKE));
+
+    expect(nestedOutlinedBodies.length).toBeGreaterThanOrEqual(1);
+    for (const { debug, script } of nestedOutlinedBodies) {
+      expect(sourceMapToLocationData(debug.sourceMap)).toHaveLength(script.length);
+      for (let index = 1; index < script.length; index += 1) {
+        if (script[index] !== Op.OP_INVOKE) continue;
+        const operand = script[index - 1];
+        expect(operand).toBeInstanceOf(Uint8Array);
+        expect(compilerHelperIds.has(Number(decodeInt(operand as Uint8Array)))).toBe(true);
+      }
+    }
   });
 });

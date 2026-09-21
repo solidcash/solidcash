@@ -11,7 +11,7 @@ for (const name of ['MarketplaceDataV1', 'MarketplaceV1']) {
   });
   console.log(JSON.stringify({
     name,
-    debugBytes: (artifact.debug?.bytecode.length ?? 0) / 2,
-    releaseBytes: artifact.bytecode.length / 2,
+    serializedBytes: (artifact.debug?.bytecode.length ?? 0) / 2,
+    asmCharacters: artifact.bytecode.length,
   }));
 }

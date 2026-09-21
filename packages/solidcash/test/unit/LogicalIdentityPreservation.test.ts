@@ -9,7 +9,9 @@ import {
   logicalLockFromScidCommitment, resolveLogicalIdentityFromAddresses,
   resolveLogicalIdentityByCategory, requireMsgSenderIdentity, isZeroMsgSenderCategory,
 } from '../../src/stateful/logical-identity.js';
-import { reassertScidIdentityOutputs } from '../../src/stateful/StatefulTransactionBuilder.js';
+import {
+  findScidAnchorInputIndex, reassertScidIdentityOutputs,
+} from '../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { binToHex } from '@bitauth/libauth';
 import { createTestProvider } from '../test-util.js';
@@ -55,6 +57,20 @@ const ADDRESS_HOLDER = 'contract AddressHolder {'
   + '}';
 
 describe('logical CREATE identity at getAddress()', () => {
+  it('resolves only one immutable SCID from the assembled input category', () => {
+    const category = 'ab'.repeat(32);
+    const scid = { category, amount: 0n, nft: { capability: 'none' as const, commitment: '5343494401abcd' } };
+    const inputs: Pick<Utxo, 'token'>[] = [
+      { token: { ...scid, category: 'cd'.repeat(32) } },
+      { token: { ...scid, nft: { ...scid.nft, capability: 'mutable' } } },
+      { token: scid },
+    ];
+    expect(findScidAnchorInputIndex(inputs, category.toUpperCase())).toBe(2);
+    expect(findScidAnchorInputIndex(inputs, 'ef'.repeat(32))).toBe(-1);
+    expect(() => findScidAnchorInputIndex([...inputs, { token: scid }], category))
+      .toThrow('Ambiguous CREATE identity anchors');
+  });
+
   it('recognizes SCID v1 commitments', () => {
     expect(isScidIdentityCommitment('5343494401abcd')).toBe(true);
     expect(isScidIdentityCommitment('53434944')).toBe(false);

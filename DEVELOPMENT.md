@@ -9,6 +9,12 @@ The watcher uses TypeScript's direct-dependency assumption to minimize edit late
 development optimization: always run one-shot `yarn build` before handoff so TypeScript exhaustively validates
 transitive dependents.
 
+Build output belongs in each package's `dist/`, never beside `.ts` sources, tests, scripts, or configs. Do
+not commit generated `.js`, `.js.map`, or `.d.ts` sidecars. Root and testing-suite example tsconfigs have
+`noEmit` to prevent accidental in-place compiles; use project-reference builds for emitted output. Run
+`yarn check:source-tree` before committing; it checks ignored files too. The exceptions are authored VS Code
+JavaScript, `examples/common-js.js`, and two ambient declarations under `packages/`—keep those tracked.
+
 ```bash
 # Compiler tests (an optional file or -t filter can follow `--`)
 yarn test:compiler:watch -- test/Lexer.test.ts
@@ -22,6 +28,12 @@ yarn test:e2e:watch -- test/e2e/EventsFacade.test.ts
 
 Vitest reruns affected tests on save. Press `r` to rerun the current selection. Use the one-shot `yarn build` before handing work off; it uses the same incremental project graph.
 
+For local debugging, select the one test being made green by file and `-t 'test name'`, optionally with one
+adjacent test (target +/- 1). Do not run a contract-wide test ladder or full suite during this loop. After
+the target is green, run only a small set of directly affected tests for broader validation. Reserve full
+suites for major milestones (beta cut, major integration, release), not routine handoffs: they can cost an
+hour of CPU time.
+
 When returning to a branch or before choosing a focused file, Git-aware one-shot commands run only tests
 affected by uncommitted changes:
 
@@ -33,7 +45,7 @@ yarn test:e2e:changed
 
 The SDK's `test:unit` command runs only `test/unit`; `test:fast` and the default SDK watch loop add top-level
 SDK regression tests but deliberately exclude conformance and journal/message-bus suites. The comprehensive
-`yarn test` command is unchanged and remains the pre-handoff gate.
+`yarn test` command is unchanged and remains a milestone regression gate.
 
 If you're already in a package directory, you can run:
 
@@ -91,6 +103,24 @@ cp packages/utils/src/cashproof-optimisations.ts opt.equiv && sed -i '' '/`/d' o
 python <cashproof_path> opt.equiv
 ```
 
+### Debugging a VM failure with an unoptimised build
+
+`solidc` folds the generated script with a peephole/structural optimiser, which is what ships. That rewrite moves
+instructions, so an instruction pointer reported by a VM failure is only approximately attributable to a source
+line (the SDK scans a window of candidate mappings and names the first `require` it finds).
+
+For an investigation where the exact source line matters, compile with optimisation disabled:
+
+```bash
+SOLIDC_NO_OPTIMISE=1 solidhat compile      # or: solidc compile, or { optimise: false } in the compiler options
+```
+
+Every instruction then keeps the source location that produced it, so the reported instruction pointer maps to
+the exact construct and `debug.requires` / `debug.logs` pointers stay exact; failure messages mark such artifacts
+as unoptimised. The mode is a debugging aid only: the script is larger and evaluates more opcodes, so it must not
+be used for artifacts that are deployed or measured for size. The flag participates in the artifact cache key, so
+switching it back and forth recompiles instead of reusing the other mode's artifacts.
+
 ## solidcash
 
 ### Running tests
@@ -98,15 +128,14 @@ python <cashproof_path> opt.equiv
 By default, running tests in the `solidcash` package runs against a local simulated `mocknet`. To run them against the real-world chipnet, you can use the `TESTS_USE_CHIPNET` environment variable. This uses chipnet contracts, which requires the test accounts to have some chipnet BCH.
 
 ```bash
-# Run all tests using chipnet
+# Major-milestone gate only: run all tests using chipnet
 TESTS_USE_CHIPNET=true yarn test
 ```
 
-To run specific tests, you can use the `-t` flag to match the name mentioned in the `it` or `describe` block:
+During debugging, use the exact `it` title and its file, not a broad `describe` filter:
 
 ```bash
-# Run all tests in the 'Transaction Builder' describe block (test/e2e/transaction-builder/TransactionBuilder.test.ts)
-yarn test -t 'Transaction Builder'
+yarn test:e2e:watch -- test/e2e/transaction-builder/TransactionBuilder.test.ts -t '<exact test title>'
 ```
 
 ## Code Coverage

@@ -133,7 +133,8 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
    * not reach.
    */
   it('matches a fresh compile field for field, including debug.bytecode and fingerprint', () => {
-    const fresh = compileString(DEFAULT_PROXY_SOURCE);
+    // Same options as scripts/regenerate-default-proxy.ts: no state fields, but still a stateful covenant.
+    const fresh = compileString(DEFAULT_PROXY_SOURCE, { forceStateful: true, suppressWarnings: true });
     delete (fresh as any).updatedAt;
     expect(defaultProxyArtifact.bytecode).toBe(fresh.bytecode);
     expect(defaultProxyArtifact.debug!.bytecode).toBe(fresh.debug!.bytecode);
@@ -142,8 +143,8 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
 
     // The two fields the hand edit desynchronised agree. Regeneration after production
     // outlining/helper-id changes must keep bytecode, debug.bytecode, and fingerprint aligned.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(262);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(262);
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(324);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(324);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 
@@ -151,7 +152,10 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
   it('publishes the delegatecall target provenance X37 added', () => {
     const forward = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
     expect(forward.lowLevelCalls).toEqual([
-      { callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } },
+      {
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once',
+        target: { kind: 'constructorArg', name: 'implementation' },
+      },
     ]);
   });
 
@@ -179,7 +183,12 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     const preX37 = {
       ...grafted,
       abi: grafted.abi.map((entry) => (entry.name !== '__forward' ? entry : {
-        ...entry, lowLevelCalls: [{ callMode: 'delegatecall' as const }],
+        ...entry,
+        lowLevelCalls: entry.lowLevelCalls?.map((call) => {
+          const withoutTarget = { ...call };
+          delete withoutTarget.target;
+          return withoutTarget;
+        }),
       })),
     } as Artifact;
     expect(() => classifyDelegateParticipant({

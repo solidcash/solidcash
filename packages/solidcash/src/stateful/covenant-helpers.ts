@@ -189,14 +189,33 @@ export function getEntryNftAddress(
   const collectionSignature = resolveCollectionSignature(contract.artifact, collectionNameOrSignature);
   const collectionHash = computeCollectionHash(collectionSignature);
   const covenantScript = buildEntryNftCovenantScript(hexToBin(categoryId), collectionHash);
-  return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+  const entryAddress = scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ENTRY_ADDR === '1') {
+    console.error('entry-addr', JSON.stringify({
+      contract: contract.artifact?.contractName ?? '?',
+      collection: collectionNameOrSignature,
+      categoryId: categoryId.slice(0, 12),
+      lockingBytecode: binToHex(scriptToLockingBytecode(covenantScript, 'p2sh32')),
+      address: entryAddress,
+    }));
+  }
+  return entryAddress;
 }
 
 // Locking-bytecode (bytes) forms of the sub-NFT addresses, used as address-model handles
 // baked into a reader's constructor args (the read covenant checks OP_UTXOBYTECODE == this value).
 export function getDataNftLockingBytecode(categoryId: string): Uint8Array {
   validateCategoryId(categoryId);
-  return scriptToLockingBytecode(buildDataNftCovenantScript(hexToBin(categoryId)), 'p2sh32');
+  const lockingBytecode = scriptToLockingBytecode(buildDataNftCovenantScript(hexToBin(categoryId)), 'p2sh32');
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ENTRY_ADDR === '1') {
+    console.error('data-nft-addr', JSON.stringify({
+      categoryId: categoryId.slice(0, 12),
+      lockingBytecode: binToHex(lockingBytecode),
+    }));
+  }
+  return lockingBytecode;
 }
 
 export function getEntryNftLockingBytecode(

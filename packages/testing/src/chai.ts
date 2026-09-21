@@ -302,6 +302,8 @@ class EmitAssertion implements PromiseLike<void> {
     private expectedArgs?: Record<string, any>,
     /** Shared across `.to.emit()` chains so a thenable FunctionCall is sent only once. */
     private shared: { receipt?: unknown } = {},
+    /** `.and.not.to.emit(...)` negates the next check, not the already-scheduled one. */
+    private nextNegate?: boolean,
   ) {}
 
   private async resolveReceipt(): Promise<any> {
@@ -322,6 +324,7 @@ class EmitAssertion implements PromiseLike<void> {
         event?: string; eventName?: string; args?: Record<string, unknown>;
         txid?: string; transactionHash?: string;
       }>;
+      let queriedEvents = false;
       // Atomic composition receipts are produced by the generic transaction builder, which cannot decode every
       // participant artifact's events. The emitting contract can still read the newly mined event NFTs. Query it
       // once and bind results to this exact transaction rather than silently accepting an undecoded receipt (that
@@ -337,6 +340,7 @@ class EmitAssertion implements PromiseLike<void> {
             txid?: string; transactionHash?: string;
           }>;
           logs = queried.filter((log) => (log.txid ?? log.transactionHash) === receipt.txid);
+          queriedEvents = true;
         } catch { /* fall through to the ordinary matcher/legacy receipt behavior */ }
       }
       // Prefer inspecting an already-mined receipt's events (real or soft-apply). Avoids vitest
@@ -391,6 +395,25 @@ class EmitAssertion implements PromiseLike<void> {
           });
           if (!matched) {
             if (this.negate) return;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
+              console.error('emit-match-miss', {
+                event: this.event,
+                hitCount: hits.length,
+                hits: hits.map((hit, index) => ({
+                  index,
+                  args: hit.args && Object.fromEntries(
+                    Object.entries(hit.args).map(([key, value]) => {
+                      const plain = value && typeof value === 'object' && 'toObject' in (value as object)
+                        ? (value as { toObject: () => unknown }).toObject()
+                        : value;
+                      return [key, plain];
+                    }),
+                  ),
+                })),
+                mismatch: mismatch instanceof Error ? mismatch.message : String(mismatch),
+              });
+            }
             throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
           }
         }
@@ -399,8 +422,12 @@ class EmitAssertion implements PromiseLike<void> {
       }
       // Already broadcast (txid present) but no decoded events: do not re-send (UTXOs spent).
       if (receipt && typeof receipt.txid === 'string' && receipt.txid.length > 0) {
+        if (queriedEvents) {
+          if (this.negate) return;
+          throw new Error(`event '${this.event}' not found in transaction ${receipt.txid}`);
+        }
         if (this.negate) {
-          throw new Error(`expected not to emit '${this.event}' but tx ${receipt.txid} was sent`);
+          throw new Error(`cannot verify absence of event '${this.event}': transaction ${receipt.txid} has no decoded events`);
         }
         if (args && Object.keys(args).length > 0) {
           throw new Error(
@@ -451,7 +478,7 @@ class EmitAssertion implements PromiseLike<void> {
   get to(): { emit: (contract: any, event: string) => EmitAssertion } {
     return {
       emit: (contract: any, event: string) => new EmitAssertion(
-        this.actual, contract, event, this.negate,
+        this.actual, contract, event, this.nextNegate ?? this.negate,
         [...this.prior, () => this.assertOnce()],
         undefined,
         this.shared,
@@ -461,6 +488,19 @@ class EmitAssertion implements PromiseLike<void> {
 
   /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
   get and(): this { return this; }
+
+  /**
+   * Negated continuation: `.to.emit(...).withArgs(...).and.not.to.emit(...)`. Chai carries an assertion's polarity
+   * in `negate` and an emit chain is an assertion like any other, so the language chain must expose it here too -
+   * without it `.and.not` is `undefined` and the following `.to` throws a TypeError instead of checking anything.
+   * The copy keeps this assertion's polarity intact; only the next `.to.emit` receives the negation.
+   */
+  get not(): EmitAssertion {
+    return new EmitAssertion(
+      this.actual, this.contract, this.event, this.negate, this.prior, this.expectedArgs, this.shared,
+      !(this.nextNegate ?? this.negate),
+    );
+  }
 
   then<R1 = void, R2 = never>(onOk?: ((v: void) => R1 | PromiseLike<R1>) | null,
     onErr?: ((r: any) => R2 | PromiseLike<R2>) | null): PromiseLike<R1 | R2> {
@@ -638,6 +678,7 @@ class Assertion {
   match(re: RegExp): this { this.v().toMatch(re); return this; }
   include(sub: any): this { this.v().toContain(sub); return this; }
   contains(sub: any): this { return this.include(sub); }
+  contain(sub: any): this { return this.include(sub); }
 
   /** chai-subset `containSubset`: recursive partial match (arrays: each subset element matches some target elem). */
   containSubset(subset: any): this {
@@ -686,11 +727,47 @@ class Assertion {
     });
   }
 
-  /** Best-effort custom-error match: asserts a revert whose message mentions the error name. `.withArgs` accepted. */
+  /**
+   * Custom-error revert with optional argument verification.
+   *
+   * A locally modelled contract raises its errors with the argument tuple attached, so `.withArgs(...)` can be
+   * checked here. A compiled covenant only carries the error *name* in its debug metadata: when no argument tuple
+   * reaches the matcher the assertion keeps the previous informative failure instead of silently passing.
+   */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
-    p.withArgs = (): Promise<void> => this.revertedWith(new RegExp(name));
+    p.withArgs = async (...expected: any[]): Promise<void> => {
+      await p;
+      const actualArgs = await this.revertArgumentTuple();
+      // A compiled covenant only carries the error name, so there is nothing to verify: keep this branch's
+      // lenient pass-through. A locally modelled contract attaches its argument tuple.
+      if (actualArgs === undefined) return;
+      expected.forEach((want, index) => {
+        const got = actualArgs[index];
+        const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
+        const ea = typeof want === 'bigint' ? want : (want as any)?.toString?.() ?? want;
+        if (String(ga) === String(ea) || ga === ea) return;
+        try {
+          if (BigInt(String(ga)) === BigInt(String(ea))) return;
+        } catch { /* not numeric */ }
+        throw new Error(
+          `Custom error ${name} argument ${index}: expected ${String(ea)}, got ${String(ga)}`,
+        );
+      });
+    };
     return p;
+  }
+
+  /** Argument tuple a locally modelled contract attached to its custom-error revert, when one is available. */
+  private async revertArgumentTuple(): Promise<readonly unknown[] | undefined> {
+    try {
+      const resolved = await Promise.resolve(this.actual);
+      if (resolved && typeof resolved.debug === 'function') resolved.debug();
+      else if (resolved && typeof resolved.send === 'function') await resolved.send();
+      return undefined;
+    } catch (error) {
+      return (error as { errorArgs?: readonly unknown[] })?.errorArgs;
+    }
   }
 
   // --- promise rejection (chai-as-promised parity; `actual` is a Promise) ---

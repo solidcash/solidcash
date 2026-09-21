@@ -1,9 +1,11 @@
 import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
-import { scriptToBytecode } from '@solidcash/utils';
+import { scriptToBytecode, type Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
-import { messageBus } from '../../src/index.js';
+import { messageBus, SignatureTemplate } from '../../src/index.js';
 import { encodeFunctionArgument } from '../../src/Argument.js';
+import { provisionalInvocationResult } from '../../src/message-bus/compose.js';
+import { encodeEvmInvocationResult } from '../../src/stateful/evm-abi-result.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MessageBatchEncoding() {
@@ -17,6 +19,11 @@ contract MessageBusReturningBatch() {
   function twice(int n) public pure returns (int) { return n * 2; }
   function positive(int n) public pure returns (bool) { return n > 0; }
   function pair(int n) public pure returns (int, bool) { return (n + 1, n > 0); }
+}`;
+
+const SIGNATURE_DATA_SOURCE = `pragma solidcash >=0.8.0;
+contract MessageBusSignatureData() {
+  function echo(bytes value) public pure returns (sig) { return sig(value); }
 }`;
 
 const COMPOSITE_SOURCE = `pragma solidcash >=0.8.0;
@@ -43,12 +50,77 @@ contract RoutedCollectionEncoding() {
   }
 }`;
 
+const SWAPPABLE_BALANCE_SOURCE = `pragma solidity ^0.8.0;
+contract SwappableBalanceEncoding {
+  mapping(address => uint) balances;
+  function send(address to, uint amount) public {
+    balances[msg.sender] = balances[msg.sender] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+  function sendFrom(address from, address to, uint amount) public {
+    balances[from] = balances[from] - amount;
+    balances[to] = balances[to] + amount;
+    require(amount >= 0);
+  }
+}`;
+
+const FIXED_TUPLE_COLLECTION_SOURCE = `pragma solidity ^0.8.0;
+contract FixedTupleCollectionEncoding {
+  mapping(address => mapping(address => uint)) credits;
+  function grant(address spender, uint amount) public {
+    credits[msg.sender][spender] = amount;
+    require(true);
+  }
+  function consume(address owner, uint amount) public {
+    uint available = credits[owner][msg.sender];
+    require(available >= amount);
+    credits[owner][msg.sender] = available - amount;
+    require(true);
+  }
+}`;
+
+const SHARED_LITERAL_COLLECTION_SOURCE = `pragma solidcash ^0.13.0;
+contract SharedLiteralCollectionEncoding() {
+  mapping(int => int) source;
+  mapping(int => int) target;
+  function seed(int value) public { this.source[0] = value; require(true); }
+  function fill(int count) public {
+    for (int i = 0; i < count; i = i + 1) this.target[i] = this.source[0];
+    require(true);
+  }
+}`;
+
+const OVERLOADED_SOURCE = `pragma solidcash >=0.8.0;
+contract OverloadedBatchEncoding() {
+  int counter;
+  function apply(int value) public { this.counter = value; require(true); }
+  function apply(bool enabled) public { this.counter = enabled ? 1 : 0; require(true); }
+}`;
+
 const artifact = compileString(SOURCE, {
   forceStateful: true,
   messageBus: true,
 });
 
 describe('messageBus.encodeMessageBatch', () => {
+  it('selects an exact non-first overload and rejects ambiguous or mismatched identities', () => {
+    const overloaded = compileString(OVERLOADED_SOURCE, { forceStateful: true, messageBus: true });
+    const handlers = overloaded.messageBus!.handlers.filter((handler) => handler.name === 'apply');
+    const boolHandler = handlers.find((handler) => handler.inputs[0]?.type === 'bool')!;
+    expect(boolHandler).toBeDefined();
+
+    const encoded = messageBus.encodeMessageBatch(overloaded, [{
+      function: 'apply', selector: boolHandler.selector, args: [true],
+    }]);
+    expect(encoded.rows[0]).toMatchObject({ function: 'apply', selectorHex: boolHandler.selector });
+    expect(() => messageBus.encodeMessageBatch(overloaded, [{ function: 'apply', args: [true] }]))
+      .toThrow(/distinct ABI functions/);
+    expect(() => messageBus.encodeMessageBatch(overloaded, [{
+      function: 'apply', selector: 'ffffffff', args: [true],
+    }])).toThrow(/does not identify ABI function 'apply'/);
+  });
+
   it('encodes real compiler handlers in canonical execution order', () => {
     const encoded = messageBus.encodeMessageBatch(artifact, [
       { function: 'add', args: [2n] },
@@ -67,6 +139,90 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
+  });
+
+  it('enforces an aggregate fixed chunkable-write occurrence policy before encoding', () => {
+    const add = artifact.messageBus!.handlers.find((handler) => handler.name === 'add')!;
+    const bounded = {
+      ...artifact,
+      messageBus: {
+        ...artifact.messageBus!,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(bounded, [{ function: 'add', args: [1n] }])).not.toThrow();
+    expect(() => messageBus.encodeMessageBatch(bounded, [
+      { function: 'add', args: [1n] },
+      { function: 'clear' },
+      { function: 'add', args: [2n] },
+    ])).toThrow(/selects 2 direct chunkable-write rows/);
+
+    const malformed = {
+      ...bounded,
+      messageBus: {
+        ...bounded.messageBus,
+        fixedChunkableWritePolicy: {
+          version: 1 as const, maximumRows: 1 as const, selectors: [add.selector, add.selector],
+        },
+      },
+    };
+    expect(() => messageBus.encodeMessageBatch(malformed, [{ function: 'clear' }])).toThrow(
+      expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+    );
+  });
+
+  it('derives direct and composite KTS1 provenance from compiler policy without embedding signatures', () => {
+    const selector = 'a1b2c3d4';
+    const inputs = [{ name: 'direct', type: 'sig' }, { name: 'authorization', type: 'Authorization' }];
+    const signed = {
+      ...artifact,
+      abi: [{ name: 'authorize', selector, inputs, outputs: [], modifiers: ['public'] }],
+      structs: [{ name: 'Authorization', fields: [{ name: 'proof', type: 'sig' }, { name: 'key', type: 'pubkey' }] }],
+      messageBus: {
+        ...artifact.messageBus!,
+        handlers: [{
+          name: 'authorize', selector, inputs, outputs: [], eligible: true,
+          usesTransactionSignature: true,
+          transactionSignaturePolicy: {
+            hashType: 'all' as const, parameterIndices: [0, 1],
+            coveredBytecodes: [{ parameterIndex: 1, leafIndex: 0, bytecode: '52' }],
+          },
+          signatureBytecode: '51',
+        }],
+      },
+    } as Artifact;
+    const direct = new SignatureTemplate(new Uint8Array(32).fill(0x11));
+    const nested = new SignatureTemplate(new Uint8Array(32).fill(0x22));
+    const encoded = messageBus.encodeMessageBatch(signed, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }]);
+    const provenance = encoded.rows[0].transactionSignatureFrameHex;
+
+    expect(provenance.startsWith('4b5453310102')).toBe(true);
+    expect(provenance).not.toContain('11'.repeat(32));
+    expect(provenance).not.toContain('22'.repeat(32));
+    expect(provenance).toBe(messageBus.messageBusTransactionSignatureFrameHex(signed, 'authorize', selector));
+
+    const reordered = structuredClone(signed);
+    reordered.messageBus!.handlers[0].transactionSignaturePolicy!.parameterIndices = [1, 0];
+    expect(() => messageBus.encodeMessageBatch(reordered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical transaction-signature parameter index/);
+    const uncovered = structuredClone(signed);
+    delete uncovered.messageBus!.handlers[0].signatureBytecode;
+    uncovered.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [];
+    expect(() => messageBus.encodeMessageBatch(uncovered, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/has no covered bytecode/);
+    const foreignCoverage = structuredClone(signed);
+    foreignCoverage.messageBus!.handlers[0].transactionSignaturePolicy!.coveredBytecodes = [
+      { parameterIndex: 2, leafIndex: 0, bytecode: '52' },
+    ];
+    expect(() => messageBus.encodeMessageBatch(foreignCoverage, [{
+      function: 'authorize', args: [direct, { proof: nested, key: new Uint8Array(33).fill(3) }],
+    }])).toThrow(/non-canonical covered-bytecode parameter index/);
   });
 
   it('authenticates mixed static and ordinary rows for one participant in message-bus v2 order', () => {
@@ -94,9 +250,9 @@ describe('messageBus.encodeMessageBatch', () => {
       { function: 'pair', args: [4n] },
     ]);
     expect(encoded.results).toEqual([
-      { row: 0, types: ['int256'] },
-      { row: 1, types: ['bool'] },
-      { row: 2, types: ['int256', 'bool'] },
+      { row: 0, types: ['int256'], resultEncoding: 'compact-pushdata-v1' },
+      { row: 1, types: ['bool'], resultEncoding: 'compact-pushdata-v1' },
+      { row: 2, types: ['int256', 'bool'], resultEncoding: 'compact-pushdata-v1' },
     ]);
     expect(returning.messageBus!.route.outputs).toEqual([{ type: 'bytes' }]);
 
@@ -112,6 +268,65 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.decodeMessageBusResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
+  });
+
+  it('decodes mixed EVM ABI and compact result rows using each authenticated row encoding', () => {
+    const returning = compileString(RETURN_SOURCE, {
+      forceStateful: true, messageBus: true, solidityImportCompat: true,
+    });
+    const encoded = messageBus.encodeMessageBatch(returning, [
+      { function: 'twice', args: [3n] },
+      { function: 'positive', args: [8n] },
+      { function: 'pair', args: [4n] },
+    ]);
+    // Keep the compiler-produced batch framing and row order, but exercise the decoder with an authenticated
+    // mixed schema. The compatibility route's compiler-owned outer bytes carrier remains compact, while the
+    // inner rows still select their own encodings independently.
+    const mixedPlan = {
+      ...encoded,
+      results: [
+        { row: 0, types: ['int256'], resultEncoding: 'evm-abi-v1' as const },
+        { row: 1, types: ['bool'], resultEncoding: 'compact-pushdata-v1' as const },
+        { row: 2, types: ['int256', 'bool'], resultEncoding: 'evm-abi-v1' as const },
+      ],
+    };
+    const first = encodeEvmInvocationResult([6n], ['int256']);
+    const compact = scriptToBytecode([Uint8Array.of(1)]);
+    const last = encodeEvmInvocationResult([5n, true], ['int256', 'bool']);
+    const packed = Uint8Array.from([...first, ...compact, ...last]);
+    const commitment = scriptToBytecode([packed]);
+
+    expect(returning.messageBus!.route.resultEncoding).toBe('compact-pushdata-v1');
+
+    expect(messageBus.decodeMessageBusResults(returning, mixedPlan, commitment)).toEqual([
+      { row: 0, type: 'int256', value: 6n },
+      { row: 1, type: 'bool', value: true },
+      { row: 2, type: '(int256,bool)', value: [5n, true] },
+    ]);
+  });
+
+  it('encodes and decodes a data-only sig as compact bytes without a signing witness', () => {
+    const signatureData = compileString(SIGNATURE_DATA_SOURCE, {
+      forceStateful: true,
+      messageBus: true,
+      messageBusKernel: true,
+    });
+    const value = new Uint8Array(65).fill(0x2a);
+    const encoded = messageBus.encodeMessageBatch(signatureData, [
+      { function: 'echo', args: [value] },
+    ]);
+
+    expect(encoded.routeWitnesses).toEqual([]);
+    expect(encoded.rows[0].argsHex).toBe(binToHex(scriptToBytecode([value])));
+    expect(encoded.results).toEqual([{
+      row: 0, types: ['sig'], resultEncoding: 'compact-pushdata-v1',
+    }]);
+    expect(provisionalInvocationResult(signatureData, ['sig'])).toBe('00');
+
+    const commitment = scriptToBytecode([scriptToBytecode([value])]);
+    expect(messageBus.decodeMessageBusResults(signatureData, encoded, commitment)).toEqual([
+      { row: 0, type: 'sig', value },
+    ]);
   });
 
   it('uses one canonical inline representation for composite row arguments', () => {
@@ -140,6 +355,7 @@ describe('messageBus.encodeMessageBatch', () => {
     const routed = compileString(ROUTED_COLLECTION_SOURCE, {
       forceStateful: true,
       messageBus: true,
+      messageBusKernel: false,
       solidityImportCompat: true,
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
@@ -153,13 +369,119 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     const visibleRouteInputs = routed.messageBus!.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
-    const witness = (name: string) => encoded.routeWitnesses[visibleRouteInputs
+    const witness = (name: string): unknown => encoded.routeWitnesses[visibleRouteInputs
       .findIndex((input) => input.name === name)];
 
     expect(witness('__message_bus_key_balances_0_row_r0')).toEqual(
       messageBus.inactiveMessageBusRouteWitness('address'),
     );
     expect(witness('__message_bus_key_balances_0_row_r1')).toEqual(destination);
+  });
+
+  it('encodes a row whose shared collection key is the caller identity', () => {
+    // `send` binds the shared `balances` key to msgSender and its row-local key to the recipient, while
+    // `sendFrom` binds the same shared input to its `from` argument. A batch that reaches only `send`
+    // therefore has no row that constrains the shared value: it must still publish one type-correct value for
+    // that route input instead of failing with 'no shared physical entry orientation'.
+    const routed = compileString(SWAPPABLE_BALANCE_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (encoded: { routeWitnesses: readonly unknown[] }, name: string): unknown =>
+      encoded.routeWitnesses[visible.findIndex((input) => input.name === name)];
+    const caller = new Uint8Array(25).fill(0x11);
+    const recipient = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+
+    const single = messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(single, '__message_bus_key_balances_0_row')).toEqual(recipient);
+    // No row constrains the shared slot, so the caller identity the encoder already derives for the msgSender
+    // binding is a valid value for it.
+    expect(witness(single, '__message_bus_key_balances_0')).toEqual(caller);
+
+    // The route owns one physical destination entry; repeated rows may use that entry but cannot silently
+    // assign two different destination keys to the same authenticated slot.
+    const twoRows = messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+      { function: 'send', args: [recipient, 5n], logicalCaller: caller },
+    ]);
+    expect(witness(twoRows, '__message_bus_key_balances_0')).toEqual(caller);
+    expect(witness(twoRows, '__message_bus_key_balances_0_row')).toEqual(recipient);
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+      { function: 'send', args: [owner, 5n], logicalCaller: caller },
+    ])).toThrow(/must identify one physical entry/);
+
+    // A row that does constrain the shared slot still decides it, whether or not a caller-identity row is present.
+    const fromOnly = messageBus.encodeMessageBatch(routed, [
+      { function: 'sendFrom', args: [owner, recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(fromOnly, '__message_bus_key_balances_0')).toEqual(owner);
+    expect(witness(fromOnly, '__message_bus_key_balances_0_row')).toEqual(recipient);
+
+    const mixed = messageBus.encodeMessageBatch(routed, [
+      { function: 'send', args: [recipient, 10n], logicalCaller: caller },
+      { function: 'sendFrom', args: [owner, recipient, 10n], logicalCaller: caller },
+    ]);
+    expect(witness(mixed, '__message_bus_key_balances_0')).toEqual(owner);
+  });
+
+  it('assigns nested collection keys to two complete fixed tuple lanes', () => {
+    const routed = compileString(FIXED_TUPLE_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const caller = new Uint8Array(25).fill(0x11);
+    const spender = new Uint8Array(25).fill(0x22);
+    const owner = new Uint8Array(25).fill(0x33);
+    const encoded = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'grant', args: [spender, 10n], logicalCaller: caller },
+    ]);
+    const visible = routed.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const witness = (name: string): unknown => encoded.routeWitnesses[visible
+      .findIndex((input) => input.name === name)];
+    expect([
+      witness('__message_bus_key_credits_0'),
+      witness('__message_bus_key_credits_1'),
+      witness('__message_bus_key_credits_0_alt'),
+      witness('__message_bus_key_credits_1_alt'),
+    ]).toEqual([caller, spender, owner, caller]);
+
+    const only = messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 1n], logicalCaller: caller },
+    ]);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_0_alt')]).toEqual(caller);
+    expect(only.routeWitnesses[visible.findIndex((input) =>
+      input.name === '__message_bus_key_credits_1_alt')]).toEqual(spender);
+
+    expect(() => messageBus.encodeMessageBatch(routed, [
+      { function: 'grant', args: [spender, 80n], logicalCaller: caller },
+      { function: 'consume', args: [owner, 30n], logicalCaller: caller },
+      { function: 'consume', args: [new Uint8Array(25).fill(0x44), 1n], logicalCaller: caller },
+    ])).toThrow(/exceeds two physical entries/);
+  });
+
+  it('derives a literal witness when another handler owns the shared physical entry slot', () => {
+    const shared = compileString(SHARED_LITERAL_COLLECTION_SOURCE, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000, suppressWarnings: true,
+    });
+    const encoded = messageBus.encodeMessageBatch(shared, [{ function: 'fill', args: [3n] }]);
+    const visibleRouteInputs = shared.messageBus!.route.inputs
+      .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    const sourceWitness = encoded.routeWitnesses[visibleRouteInputs
+      .findIndex((input) => input.name === '__message_bus_key_source_0')];
+    expect(sourceWitness).toBe(0n);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {

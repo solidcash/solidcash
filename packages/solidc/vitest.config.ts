@@ -3,15 +3,19 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+    // Tests are authored in TypeScript. Build output can exist beside sources in a development worktree; never
+    // discover stale JavaScript copies as independently scheduled versions of the same tests.
+    include: ['test/**/*.{test,spec}.?(c|m)ts?(x)'],
     // Exhaustive, stable compatibility matrices are opt-in rather than part of the regression loop.
     exclude: ['**/types/**', 'test/HardhatConsoleImport.test.ts'],
     globals: true,
     // Compiler modules are several megabytes after ANTLR generation. Reusing each worker's
     // module graph avoids re-transforming and re-evaluating it for every test file.
     isolate: false,
-    // Compilation is CPU- and memory-heavy; using every logical core increases contention.
-    maxWorkers: '60%',
+    // Compilation is CPU- and memory-heavy; kernel recurrence workers retain large generated AST and bytecode
+    // graphs. A fixed cap keeps the clean beta gate below the host's memory-pressure cliff and makes its timeout
+    // budget independent of the number of logical cores exposed by CI.
+    maxWorkers: 3,
     // Root Vitest projects require projects with distinct worker budgets to run in distinct groups. Running
     // the compiler after the lighter packages also prevents both pools from contending for memory at once.
     sequence: { groupOrder: 1 },

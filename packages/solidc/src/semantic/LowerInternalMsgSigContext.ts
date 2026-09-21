@@ -62,7 +62,7 @@ export default class LowerInternalMsgSigContext extends AstTraversal {
 
   private selector(fn: FunctionDefinitionNode, src: Node): HexLiteralNode {
     const types = fn.parameters
-      .filter((p) => p.name !== '__internal__msgData' && p.name !== CONTEXT)
+      .filter((p) => !p.name.startsWith('__internal__') && p.name !== CONTEXT)
       .map((p) => p.type.toString().replace(/address payable/g, 'address'));
     const value = new HexLiteralNode(computeFunctionSelector(computeFunctionSignature(fn.name, types)));
     value.type = new BytesType(4);

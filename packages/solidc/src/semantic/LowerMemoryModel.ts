@@ -348,6 +348,13 @@ export default class LowerMemoryModel extends AstTraversal {
   private isPassByRefInlinable(fn: FunctionDefinitionNode): boolean {
     const vis = fn.visibility;
     if (vis !== 'internal' && vis !== 'private') return false;
+    // A graph handler's external-call manifest is authenticated at its OP_INVOKE boundary. Inlining that
+    // compiler-owned body into the message-bus row loop changes the current codegen function to the route,
+    // whose layout intentionally owns no per-handler external-return slots. Besides making returning calls
+    // unbound, flattening would bypass recomputation of every outgoing graph row. Reference-typed arguments
+    // do not weaken that boundary: keep the handler as a subroutine and lower its memory values in its own body.
+    // Detached signature handlers have the same hard boundary because CHECKSIG authenticates that exact body.
+    if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) return false;
     if (fn.customModifiers.length !== 0 || !fn.body) return false;
     if (!fn.parameters.some((p) => this.isRefType(p.type))) return false;
     if (this.bodyHas(fn.body, (n) => n instanceof FunctionCallNode && n.identifier?.name === fn.name)) return false;
@@ -426,21 +433,23 @@ export default class LowerMemoryModel extends AstTraversal {
     // Void helper: `g(a);`
     if (stmt instanceof FunctionCallStatementNode) {
       const fn = this.inlinableCallee(stmt.call, refLocals, true);
-      return fn ? [this.buildInlineBlock(fn, stmt.call, stmt)] : undefined;
+      return fn ? [this.buildInlineBlock(fn, stmt.call, stmt, refLocals)] : undefined;
     }
     // Value helper as a decl init: `T n = g(a);` -> hoist `T n;`, then inline with `return E` rewritten to `n = E`.
     if (stmt instanceof VariableDefinitionNode && stmt.expression instanceof FunctionCallNode) {
       const fn = this.inlinableCallee(stmt.expression, refLocals, false);
       if (fn) {
         const holder = this.at(new VariableDefinitionNode(stmt.type, stmt.modifier, stmt.name, undefined), stmt);
-        return [holder, this.buildInlineBlock(fn, stmt.expression, stmt, stmt.name)];
+        return [holder, this.buildInlineBlock(fn, stmt.expression, stmt, refLocals, stmt.name)];
       }
     }
     // Value helper as an assign RHS: `n = g(a);` -> inline with `return E` rewritten to `n = E` (n already declared).
     if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
       && stmt.expression instanceof FunctionCallNode) {
       const fn = this.inlinableCallee(stmt.expression, refLocals, false);
-      if (fn) return [this.buildInlineBlock(fn, stmt.expression, stmt, stmt.identifier.name)];
+      if (fn) return [this.buildInlineBlock(
+        fn, stmt.expression, stmt, refLocals, stmt.identifier.name,
+      )];
     }
     return undefined;
   }
@@ -458,11 +467,17 @@ export default class LowerMemoryModel extends AstTraversal {
   }
 
   // Build `{ <paramBindings>; <renamed g body> }`. Params + g's locals are renamed to fresh unique names so the
-  // flat-namespace gate stays unambiguous across call sites; a memory-ref param binds as an ALIAS decl
-  // (`T[] memory __inl_x = <arg>`), a value param as a value copy. Scoped so later passes keep the nesting. When
+  // flat-namespace gate stays unambiguous across call sites; a memory-ref param either substitutes a safe caller
+  // local directly or binds as an isolated alias declaration, while a value param remains a value copy. Scoped so
+  // later passes keep the nesting. When
   // returnTarget is set (a value helper), the terminal `return E` is rewritten to `<returnTarget> = E`.
-  private buildInlineBlock(fn: FunctionDefinitionNode, call: FunctionCallNode, src: Node, returnTarget?: string):
-  BlockNode {
+  private buildInlineBlock(
+    fn: FunctionDefinitionNode,
+    call: FunctionCallNode,
+    src: Node,
+    refLocals: ReadonlySet<string>,
+    returnTarget?: string,
+  ): BlockNode {
     const tag = this.counter++;
     const rename = new Map<string, string>();
     for (const p of fn.parameters) rename.set(p.name, `__inl_${p.name}_${tag}`);
@@ -471,6 +486,25 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof VariableDefinitionNode) rename.set(n.name, `__inl_${n.name}_${tag}`);
     });
     this.remapNames(bodyClone, rename);
+    // A push/pop changes the referenced array object, including its length. Keeping a synthetic value-copy alias
+    // (`__inl_x = a`) makes element stores appear shared only after pointer lowering, while a resize silently
+    // changes the alias alone. When the helper never rebinds its parameter, substitute the caller's reference
+    // local directly and omit that alias declaration. Whole-parameter assignment/delete and assembly retain the
+    // isolated binding because those operations change the helper-local pointer rather than the caller variable.
+    const directlyBound = new Set<number>();
+    fn.parameters.forEach((parameter, index) => {
+      const argument = call.parameters[index];
+      if (!this.isRefType(parameter.type) || !(argument instanceof IdentifierNode)
+        || !refLocals.has(argument.name)) return;
+      const rebinds = this.bodyHas(fn.body!, (candidate) => (
+        candidate instanceof AssignNode && candidate.identifier instanceof IdentifierNode
+          && candidate.identifier.name === parameter.name
+      ) || (candidate instanceof DeleteLocalNode && candidate.identifier.name === parameter.name)
+        || candidate instanceof AssemblyStatementNode);
+      if (rebinds) return;
+      this.remapNames(bodyClone, new Map([[rename.get(parameter.name)!, argument.name]]));
+      directlyBound.add(index);
+    });
     if (returnTarget !== undefined) {
       const stmts = bodyClone.statements ?? [];
       const ret = stmts[stmts.length - 1];
@@ -478,8 +512,9 @@ export default class LowerMemoryModel extends AstTraversal {
         stmts[stmts.length - 1] = this.at(new AssignNode(new IdentifierNode(returnTarget), ret.expressions[0]), src);
       }
     }
-    const bindings = fn.parameters.map((p, i) => this.at(
-      new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src));
+    const bindings = fn.parameters.flatMap((p, i) => directlyBound.has(i) ? [] : [this.at(
+      new VariableDefinitionNode(p.type, p.modifier, rename.get(p.name)!, this.clone(call.parameters[i])), src,
+    )]);
     const block = new BlockNode([...bindings, ...(bodyClone.statements ?? [])]);
     block.scoped = true;
     return this.at(block, src);

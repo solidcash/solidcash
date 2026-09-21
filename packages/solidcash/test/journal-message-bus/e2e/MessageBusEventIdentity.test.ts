@@ -35,7 +35,10 @@ describe('message-bus runtime event identity', () => {
       optimizeForCompilationSpeed: true,
       suppressWarnings: true,
     });
-    expect(artifact.messageBus?.route.emits?.[0]?.eventName).toBe('A');
+    // The route is an envelope, not a semantic event producer. Event identity belongs to the
+    // selected handler even when multiple branches reuse the same physical event slot.
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendA')?.emits)
+      .toContainEqual(expect.objectContaining({ eventName: 'A' }));
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'appendB')?.emits)
       .toContainEqual(expect.objectContaining({ eventName: 'B' }));
 
@@ -46,6 +49,14 @@ describe('message-bus runtime event identity', () => {
       await provider.addUtxo(signer.getAddress(), randomUtxo({ satoshis: 10_000n }));
     }
     const contract = StatefulContract.withCategory(inner, categoryId).connect(signer);
+    const discoverEvents = contract._messageBusEventCommitmentsFromTransaction.bind(contract);
+    contract._messageBusEventCommitmentsFromTransaction = (...args) => new Map(
+      [...discoverEvents(...args)].map(([index, expectation]) => [index, {
+        commitment: expectation.commitment,
+      }]),
+    );
+    // A real equality failure can stop execution after the commitment pin and before the following locking-bytecode
+    // pin. The selected handler's unique event schema must recover that missing half of the output identity.
     const call = contract.batch([{ function: 'appendB', args: [1n, 7n] }]);
 
     await expect(call.send()).resolves.toMatchObject({

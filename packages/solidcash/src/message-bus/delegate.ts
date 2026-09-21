@@ -218,6 +218,11 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
       + 'UNDETECTED_BY_THIS_GATE',
   }),
   Object.freeze({
+    id: 'unpublished-delegate-frame',
+    reason: 'the proxy artifact predates the delegate-frame occurrence or calldata-source metadata. Missing '
+      + 'metadata is unknown, never proof of one unconditional callsite',
+  }),
+  Object.freeze({
     id: 'computed-delegate-target',
     reason: 'the published target provenance is `computed`: a ternary, an array element, a slice, a '
       + 'concatenation, a struct field, a tuple-destructured local, `tx.origin`/`msg.sender`, or an alias cycle '
@@ -247,10 +252,8 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
 /**
  * Classes this gate CANNOT refuse, and exactly why.
  *
- * A conditional, an iterated and a singular delegate edge publish BYTE-IDENTICAL artifact metadata today:
- * `lowLevelCalls: [{ callMode: 'delegatecall' }]` and one `lowLevelCall` block slot, with no `externalCalls`
- * entry. Typed interface edges already publish `occurrence`/`maximumOccurrences`; low-level edges do not.
- * Until that additive field exists, refusing these two classes has to happen in the compiler, not here.
+ * Low-level edges now publish `occurrence`/`maximumOccurrences`, so conditional and iterated delegate frames
+ * are visible and refused below. Older artifacts publish neither and fail closed as `unpublished-delegate-frame`.
  *
  * X43 REMOVED TWO ENTRIES from this list. `bytes-typed-delegate-target` (`address t = address(target);
  * t.delegatecall(input);`) and `bytes-typed-key-material` (`checkSig(s, pubkey(k))`) were the residual of the
@@ -278,8 +281,6 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
  * than one that says so. These are named because they are known, not because they are harmless.
  */
 export const UNDETECTED_BY_THIS_GATE: readonly string[] = Object.freeze([
-  'conditional-delegate-edge',
-  'iterated-delegate-edge',
   'decoy-committed-target',
 ]);
 
@@ -370,6 +371,31 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
       + `${delegateEdges.length} delegatecall edge(s); an admitted delegate participant binds exactly one`,
     );
   }
+  const delegateEdge = delegateEdges[0];
+  if (delegateEdge.occurrence === undefined || delegateEdge.dataParamIndex === undefined) {
+    throw new DelegateParticipantClassError(
+      `class 'unpublished-delegate-frame' is not admitted: proxy function '${input.proxy.functionName}' does `
+      + 'not publish both lowLevelCalls[].occurrence and lowLevelCalls[].dataParamIndex. Recompile the proxy; '
+      + 'an absent field is unknown, never proof of one unconditional frame with bound calldata',
+    );
+  }
+  if (delegateEdge.occurrence !== 'once') {
+    const classId = delegateEdge.occurrence === 'conditional'
+      ? 'conditional-delegate-edge' : 'iterated-delegate-edge';
+    throw new DelegateParticipantClassError(
+      `class '${classId}' is not admitted: proxy function '${input.proxy.functionName}' publishes a `
+      + `${delegateEdge.occurrence} delegatecall occurrence; the current participant frame has no authenticated `
+      + 'activation/cardinality field',
+    );
+  }
+  const visibleInputs = proxyFn.inputs.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const payloadInput = visibleInputs[delegateEdge.dataParamIndex];
+  if (payloadInput?.type !== 'bytes') {
+    throw new DelegateParticipantClassError(
+      `class 'unpublished-delegate-frame' is not admitted: proxy function '${input.proxy.functionName}' `
+      + `publishes calldata parameter ${delegateEdge.dataParamIndex}, but that is not a visible bytes input`,
+    );
+  }
   if (!(implFn.modifiers ?? []).includes('delegate')) {
     throw new DelegateParticipantClassError(
       `implementation function '${input.implementation.functionName}' is not declared 'delegate', so it runs `
@@ -437,7 +463,7 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
 
   // X43. WHERE the target and the checked key came from, read through the `unknown`-spelling readers so an
   // artifact that predates the fields cannot be confused with one that answered.
-  const targetProvenance = lowLevelCallTargetProvenance(delegateEdges[0]);
+  const targetProvenance = lowLevelCallTargetProvenance(delegateEdge);
   const guardKey = signatureGuardKeyProvenance(proxyFn);
   // X51. What that key is PINNED to, when the compiler proved a pin. `unknown` when it proved none, when the
   // body has no signature check, or when the artifact predates the field - three situations a consumer must not

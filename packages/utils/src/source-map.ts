@@ -25,8 +25,13 @@ import { FullLocationData, PositionHint } from './types.js';
  * 14:20:14:29;;:12::30;:34::43;
  *
  */
+const SMALL_INT_STRINGS = Array.from({ length: 512 }, (_, value) => String(value));
+const internIntString = (value: number): string => (
+  value >= 0 && value < SMALL_INT_STRINGS.length ? SMALL_INT_STRINGS[value] : String(value)
+);
+
 export function generateSourceMap(locationData: FullLocationData, enabled = true): string {
-  if (!enabled) return '';
+  if (!enabled || locationData.length === 0) return '';
   let prevStartLine = 0;
   let prevStartColumn = 0;
   let prevEndLine = 0;
@@ -43,20 +48,20 @@ export function generateSourceMap(locationData: FullLocationData, enabled = true
     const startColumn = location?.start.column ?? prevStartColumn;
     const endLine = location?.end.line ?? prevEndLine;
     const endColumn = location?.end.column ?? prevEndColumn;
-    const prevStartLineString = prevStartLine === startLine ? '' : String(startLine);
+    const prevStartLineString = prevStartLine === startLine ? '' : internIntString(startLine);
     prevStartLine = startLine;
 
-    const prevStartColumnString = prevStartColumn === startColumn ? '' : String(startColumn);
+    const prevStartColumnString = prevStartColumn === startColumn ? '' : internIntString(startColumn);
     prevStartColumn = startColumn;
 
-    const prevEndLineString = prevEndLine === endLine ? '' : String(endLine);
+    const prevEndLineString = prevEndLine === endLine ? '' : internIntString(endLine);
     prevEndLine = endLine;
 
-    const prevEndColumnString = prevEndColumn === endColumn ? '' : String(endColumn);
+    const prevEndColumnString = prevEndColumn === endColumn ? '' : internIntString(endColumn);
     prevEndColumn = endColumn;
 
     const hint = positionHint ?? PositionHint.START;
-    const prevHintString = prevHint === hint ? '' : String(hint);
+    const prevHintString = prevHint === hint ? '' : internIntString(hint);
     prevHint = hint;
 
     if (prevHintString) {

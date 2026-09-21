@@ -22,10 +22,11 @@ import {
   HexLiteralNode,
   StringLiteralNode,
   CastNode,
+  NullaryOpNode,
   ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { cloneNode } from '../ast/clone.js';
+import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 
 /**
  * Coalesce consecutive whole-field writes to the SAME struct-valued vmap mapping entry into one entry read + one
@@ -46,6 +47,10 @@ import { cloneNode } from '../ast/clone.js';
 export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   private counter = 0;
   private mappings = new Map<string, { keyCount: number; struct: StructType }>();
+
+  constructor(private readonly rewriteSingles = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -88,7 +93,7 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
         run.push(statements[j] as MappingFieldAssignNode);
         j += 1;
       }
-      const built = run.length >= 2 ? this.build(run, first) : undefined;
+      const built = (run.length >= 2 || this.rewriteSingles) ? this.build(run, first) : undefined;
       if (built) out.push(built);
       else for (let k = i; k < j; k += 1) out.push(statements[k]);
       i = j;
@@ -112,25 +117,39 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
     run: MappingFieldAssignNode[], first: { struct: StructType; keys: ExpressionNode[] },
   ): StatementNode | undefined {
     const { struct } = first;
-    // Gate: no value reads the same entry, and no value has side effects (so a struct-field-order rebuild is a
-    // sound reorder of the per-statement writes).
+    // Gate: no value has side effects (so a struct-field-order rebuild is a sound reorder of the per-statement
+    // writes). A value that READS the same entry is handled below by routing that read through the entry
+    // snapshot, which is what makes the ordinary read-modify-write spelling (`m[k].f = m[k].f + 1`, `m[k].f += 1`,
+    // `m[k].f++`) a whole-entry read-once/write-once instead of a per-statement upsert.
     for (const w of run) {
-      if (this.readsEntry(w.expression, w.name, w.keys) || this.hasSideEffects(w.expression)) return undefined;
+      if (this.hasSideEffects(w.expression)) return undefined;
     }
-    // Last write wins per field.
-    const written = new Map<string, ExpressionNode>();
-    for (const w of run) written.set(w.fieldName, w.expression);
-
     const loc = run[0].location;
     const stmts: StatementNode[] = [];
-    const allWritten = struct.fields.every((f) => written.has(f.name));
-
+    const selfReading = run.some((w) => this.readsEntry(w.expression, w.name, w.keys));
+    const allWritten = struct.fields.every((f) => run.some((w) => w.fieldName === f.name));
+    // The snapshot is required whenever a field is carried over, and whenever a value reads the entry: those
+    // reads become field reads of the snapshot, so the entry is read exactly once for the whole run.
+    const needsSnapshot = !allWritten || selfReading;
     let tmpName: string | undefined;
-    if (!allWritten) {
+    if (needsSnapshot) {
       tmpName = `__mefw_${this.counter++}`;
       const decl = new VariableDefinitionNode(struct, [], tmpName, this.entryRead(run[0].name, run[0].keys, loc));
       decl.location = loc;
       stmts.push(decl);
+    }
+    // Last write wins per field. Each value is rewritten against the snapshot plus the values written EARLIER in
+    // the run, so `m[k].f = m[k].f + 1` composes with a following `m[k].g = m[k].f + 1` exactly as the
+    // statement-sequential program does.
+    const written = new Map<string, ExpressionNode>();
+    const pending = new Map<string, ExpressionNode>();
+    for (const w of run) {
+      const rewritten = this.rewriteValue(w.expression, {
+        name: w.name, keys: w.keys, snapshot: tmpName, pending, location: loc,
+      });
+      if (!rewritten) return undefined;
+      written.set(w.fieldName, rewritten);
+      pending.set(w.fieldName, rewritten);
     }
 
     const ctorArgs = struct.fields.map((f) => {
@@ -149,6 +168,56 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
     const block = new BlockNode(stmts);
     block.location = loc;
     return block;
+  }
+
+  /**
+   * Replace every read of the entry being written inside one field-write VALUE, so the value is computed from the
+   * already-taken snapshot plus the expressions this run wrote earlier for the fields it reads.
+   *
+   * `m[k].f = m[k].f + 1` therefore becomes `m[k].f = __mefw.f + 1`, which is the same value: `__mefw` is the state
+   * of the entry immediately before the first write of the run, and `readEntry` only ever matched a value with no
+   * side effects, so the fields it reads either still hold their snapshot value or hold a value this run already
+   * computed from that snapshot.
+   *
+   * Returns `undefined` when a read cannot be reproduced from the snapshot. That happens for a read of the entry
+   * AS A WHOLE after an earlier write in the run (the sequential program would observe the write, the snapshot does
+   * not) and for any construct this method does not rebuild, in which case the caller keeps the original
+   * statements.
+   */
+  private rewriteValue(
+    expr: ExpressionNode,
+    ctx: {
+      name: string; keys: ExpressionNode[]; snapshot?: string;
+      pending: Map<string, ExpressionNode>; location: Node['location'];
+    },
+  ): ExpressionNode | undefined {
+    let refused = false;
+    const rewritten = cloneNodeReplacing(expr, (candidate) => {
+      // `m[k].f`: the field of the entry, taken from the expression this run already wrote for that field, else
+      // from the snapshot. Checked before the bare-entry case below, which would otherwise see `m[k]` alone.
+      if (candidate instanceof FieldAccessNode && this.isEntryRead(candidate.expression, ctx)) {
+        const earlier = ctx.pending.get(candidate.name);
+        if (earlier) return cloneNode(earlier) as ExpressionNode;
+        if (ctx.snapshot === undefined) { refused = true; return candidate; }
+        const out = cloneNode(candidate) as FieldAccessNode;
+        out.expression = this.ident(ctx.snapshot, ctx.location);
+        return out;
+      }
+      if (this.isEntryRead(candidate, ctx)) {
+        // The whole entry as a value. Only the pre-run snapshot can answer it, never a partially written entry.
+        if (ctx.snapshot === undefined || ctx.pending.size > 0) { refused = true; return candidate; }
+        return this.ident(ctx.snapshot, ctx.location);
+      }
+      return undefined;
+    });
+    return refused ? undefined : rewritten;
+  }
+
+  /** Is `node` exactly the read of the entry being written, with no further member or index applied to it? */
+  private isEntryRead(node: Node, ctx: { name: string; keys: ExpressionNode[] }): boolean {
+    if (!(node instanceof ArrayAccessNode || node instanceof MappingAccessNode)) return false;
+    const { base, accessKeys } = this.flatten(node);
+    return base instanceof IdentifierNode && base.name === ctx.name && this.keysEqual(accessKeys, ctx.keys);
   }
 
   // `m[k0]..[kn]` as a nested ArrayAccess read (resolved to a mapping read downstream).
@@ -218,6 +287,9 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
   private isPure(expr: ExpressionNode): boolean {
     if (expr instanceof IdentifierNode || expr instanceof IntLiteralNode || expr instanceof BoolLiteralNode
       || expr instanceof HexLiteralNode || expr instanceof StringLiteralNode) return true;
+    // A transaction/environment read (`msg.sender`, `tx.origin`, `block.timestamp`, ...) evaluates to the same
+    // value at both uses of the key and changes nothing, so it is as repeatable as a local name.
+    if (expr instanceof NullaryOpNode) return true;
     if (expr instanceof FieldAccessNode) return this.isPure(expr.expression);
     if (expr instanceof CastNode) return this.isPure(expr.expression);
     if (expr instanceof ArrayAccessNode) return this.isPure(expr.array) && this.isPure(expr.index);
@@ -233,6 +305,9 @@ export default class CoalesceMappingEntryFieldWrites extends AstTraversal {
     if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
     if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
     if (a instanceof BoolLiteralNode && b instanceof BoolLiteralNode) return a.value === b.value;
+    // `m[msg.sender].f` is the ordinary authenticated-self spelling, so a transaction/environment read has to
+    // compare equal to itself for a run of writes to one entry to coalesce at all.
+    if (a instanceof NullaryOpNode && b instanceof NullaryOpNode) return a.operator === b.operator;
     if (a instanceof FieldAccessNode && b instanceof FieldAccessNode) {
       return a.name === b.name && this.exprEqual(a.expression, b.expression);
     }

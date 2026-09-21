@@ -2064,7 +2064,7 @@ export default class AstBuilder
     const customModCtxs = ctx.customModifierInvocation_list();
     if (customModCtxs && customModCtxs.length > 0) {
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: this.customModifierName(m),
@@ -2081,23 +2081,83 @@ export default class AstBuilder
     if (returnTypeCtx) {
       this.applyReturnType(functionDefinition, returnTypeCtx);
     }
-    if (functionDefinition.returnTypes.length === 1
-      && functionDefinition.returnTypes[0] instanceof FunctionType
-      && functionDefinition.returnTypes[0].isExternal
+    const externalFunctionReturnIndices = functionDefinition.returnTypes
+      .map((type, index) => type instanceof FunctionType && type.isExternal ? index : -1)
+      .filter((index) => index >= 0);
+    if (externalFunctionReturnIndices.length > 0
       && (functionDefinition.body.statements?.length ?? 0) > 0) {
-      const statement = functionDefinition.body.statements![functionDefinition.body.statements!.length - 1];
-      const returned = statement instanceof ReturnNode && statement.expressions.length === 1
-        ? statement.expressions[0] : undefined;
-      if (returned instanceof StateAccessNode && this.currentContractFunctionNames.has(returned.name)) {
-        this.selfExternalFunctionReturnAliases.set(name, returned.name);
-        functionDefinition.returnedSelfFunctionName = returned.name;
-      } else if (statement instanceof AssignNode
-        && functionDefinition.returnNames?.includes(statement.identifier.name)
-        && statement.expression instanceof StateAccessNode
-        && this.currentContractFunctionNames.has(statement.expression.name)) {
-        // Named-return form: `returns (function() external p) { p = this.f; }`.
-        this.selfExternalFunctionReturnAliases.set(name, statement.expression.name);
-        functionDefinition.returnedSelfFunctionName = statement.expression.name;
+      const functionBodyStatements = functionDefinition.body.statements!;
+      const tail = functionBodyStatements[functionBodyStatements.length - 1];
+      const selfTargets = (expression: ExpressionNode | undefined): string[] | undefined => {
+        if (expression instanceof StateAccessNode && this.currentContractFunctionNames.has(expression.name)) {
+          return [expression.name];
+        }
+        if (!(expression instanceof TernaryOpNode)) return undefined;
+        const left = selfTargets(expression.ifTrue);
+        const right = selfTargets(expression.ifFalse);
+        return left && right ? [...new Set([...left, ...right])] : undefined;
+      };
+      const selfTarget = (expression: ExpressionNode | undefined): string | undefined => {
+        const targets = selfTargets(expression);
+        return targets?.length === 1 ? targets[0] : undefined;
+      };
+      const returnedTargets: Array<Array<string[] | undefined>> = [];
+      const collectReturns = (value: unknown, seen = new WeakSet<object>()): void => {
+        if (Array.isArray(value)) {
+          value.forEach((item) => collectReturns(item, seen));
+          return;
+        }
+        if (!(value instanceof Node) || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof ReturnNode) {
+          returnedTargets.push(functionDefinition.returnTypes.map((_type, index) =>
+            value.expressions.length === functionDefinition.returnTypes.length
+              ? selfTargets(value.expressions[index]) : undefined));
+          return;
+        }
+        for (const [key, child] of Object.entries(value)) {
+          if (!['location', 'definition', 'referencedContract', 'resolvedFunction', 'symbolTable', 'type']
+            .includes(key)) collectReturns(child, seen);
+        }
+      };
+      collectReturns(functionDefinition.body);
+      const namedReturn = functionDefinition.returnTypes.length === 1
+        && functionDefinition.returnNames?.length === 1
+        ? functionDefinition.returnNames[0] : undefined;
+      // The physical self pointer is one integer functionId, but a foreign or runtime-selected external pointer
+      // has a different representation. Prove the complete return surface rather than inferring identity from the
+      // last visited statement: the tail must terminate every fallthrough path, and every earlier explicit return
+      // must name that same self target. Named returns are kept deliberately strict: an unconditional final
+      // assignment dominates natural fallthrough, and an early return would need path-sensitive assignment proof.
+      const tailDirectTarget = tail instanceof ReturnNode && tail.expressions.length === 1
+        ? selfTarget(tail.expressions[0]) : undefined;
+      const tailNamedTarget = namedReturn && tail instanceof AssignNode
+        && tail.identifier.name === namedReturn ? selfTarget(tail.expression) : undefined;
+      const fixedTarget = tailDirectTarget
+        && returnedTargets.length > 0
+        && returnedTargets.every((targets) => targets[0]?.length === 1
+          && targets[0][0] === tailDirectTarget)
+        ? tailDirectTarget
+        : tailNamedTarget && returnedTargets.length === 0 ? tailNamedTarget : undefined;
+      if (fixedTarget) {
+        this.selfExternalFunctionReturnAliases.set(name, fixedTarget);
+        functionDefinition.returnedSelfFunctionName = fixedTarget;
+        functionDefinition.returnedSelfFunctionNames = [fixedTarget];
+        functionDefinition.returnedSelfFunctionTargetSets = [[fixedTarget]];
+      } else if (tail instanceof ReturnNode
+        && tail.expressions.length === functionDefinition.returnTypes.length
+        && returnedTargets.length > 0) {
+        const targetSets = functionDefinition.returnTypes.map((_type, index) => {
+          if (!externalFunctionReturnIndices.includes(index)) return undefined;
+          const targets = returnedTargets.flatMap((returned) => returned[index] ?? []);
+          return returnedTargets.every((returned) => (returned[index]?.length ?? 0) > 0)
+            ? [...new Set(targets)] : undefined;
+        });
+        if (externalFunctionReturnIndices.every((index) => targetSets[index] !== undefined)) {
+          functionDefinition.returnedSelfFunctionTargetSets = targetSets;
+          const fixedTargets = targetSets.map((targets) => targets?.length === 1 ? targets[0] : undefined);
+          functionDefinition.returnedSelfFunctionNames = fixedTargets;
+        }
       }
     }
     // Record a struct-returning function (for inline storage-pointer writes `Lib.f(slot).value = v`).
@@ -2212,7 +2272,7 @@ export default class AstBuilder
         );
       }
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map(
           (m: CustomModifierInvocationContext): CustomModifierInvocation => ({
             name: this.customModifierName(m),
@@ -2330,7 +2390,7 @@ export default class AstBuilder
         throw new ParseError('Custom modifiers are not allowed on free functions', Location.fromCtx(customModCtxs[0]));
       }
       functionDefinition.customModifiers = customModCtxs
-        .filter((m) => !this.tryParseSplitMergeModifier(m, functionDefinition))
+        .filter((m) => !this.tryParseLifecycleModifier(m, functionDefinition))
         .map((m): CustomModifierInvocation => ({
           name: this.customModifierName(m),
           args: m.expressionList() ? this.buildCallArguments(m.expressionList()!) : [],
@@ -2436,16 +2496,22 @@ export default class AstBuilder
   }
 
   /**
-   * Check if a custom modifier invocation is actually a split/merge modifier.
-   * split(paramName) and merge(paramName) use the custom modifier syntax but
-   * are handled specially - they set splitCountParam/mergeCountParam on the function.
-   * Returns true if the invocation was consumed as split/merge.
+   * Check if a custom modifier invocation is actually a contextual lifecycle modifier.
+   * `deploy`, split(paramName), and merge(paramName) use the custom modifier syntax but are handled specially;
+   * keeping deploy contextual permits an ordinary function named `deploy` without reserving a lexer token.
+   * Returns true if the invocation was consumed as a lifecycle modifier.
    */
-  private tryParseSplitMergeModifier(
+  private tryParseLifecycleModifier(
     ctx: CustomModifierInvocationContext,
     functionDefinition: FunctionDefinitionNode,
   ): boolean {
     const name = this.customModifierName(ctx);
+    // Keep `deploy` contextual rather than reserving it in the lexer: Solidity contracts commonly use `deploy`
+    // as an ordinary function name. In modifier position, the argument-free spelling is the lifecycle keyword.
+    if (name === 'deploy' && !ctx.expressionList()) {
+      functionDefinition.modifiers.push(FunctionModifier.DEPLOY);
+      return true;
+    }
     if (name !== 'split' && name !== 'merge') return false;
 
     const exprList = ctx.expressionList();
@@ -3769,7 +3835,30 @@ export default class AstBuilder
           || expressionCtx instanceof MethodCallNamedContext) {
           updateNode = this.buildCallStatement(expressionCtx);
         } else {
-          updateNode = new ExpressionStatementNode(this.visit(expressionCtx) as ExpressionNode);
+          const expression = this.visit(expressionCtx) as ExpressionNode;
+          // A for-update discards its expression value, so prefix and postfix identifier increments have the
+          // same statement semantics. Normalize them here to the assignment shape consumed by canonical loop
+          // analysis, which intentionally runs before the general expression-valued ++/-- desugar.
+          if (expression instanceof UnaryOpNode && expression.expression instanceof IdentifierNode
+            && [UnaryOperator.POSTFIX_INCREMENT, UnaryOperator.PREFIX_INCREMENT,
+              UnaryOperator.POSTFIX_DECREMENT, UnaryOperator.PREFIX_DECREMENT].includes(expression.operator)) {
+            const increment = expression.operator === UnaryOperator.POSTFIX_INCREMENT
+              || expression.operator === UnaryOperator.PREFIX_INCREMENT;
+            const target = expression.expression;
+            const read = new IdentifierNode(target.name);
+            read.location = target.location;
+            const one = new IntLiteralNode(1n);
+            one.location = expression.location;
+            const next = new BinaryOpNode(
+              read, increment ? BinaryOperator.PLUS : BinaryOperator.MINUS, one,
+            );
+            next.location = expression.location;
+            const identifier = new IdentifierNode(target.name);
+            identifier.location = target.location;
+            updateNode = new AssignNode(identifier, next);
+          } else {
+            updateNode = new ExpressionStatementNode(expression);
+          }
           updateNode.location = Location.fromCtx(updateCtx);
         }
       }
@@ -3795,20 +3884,35 @@ export default class AstBuilder
     whileNode.forLoopUpdateCount = updateNode ? 1 : 0;
     whileNode.location = Location.fromCtx(ctx);
 
-    // Retain the exact progression only for the canonical `for (T i = C; ...; i = i + D)` shape. External-call
-    // metadata can then describe arguments which depend on the live iteration value without folding `i` back to
-    // its initializer. Every other update shape remains intentionally unresolved.
+    // Retain the exact progression for syntactically canonical `for` loops. External-call metadata can then
+    // describe arguments which depend on the live iteration value without folding `i` back to its initializer.
+    // Semantic replay later decides whether a non-literal step is stable enough for kernel admission.
     if (initNode instanceof VariableDefinitionNode
       && initNode.expression instanceof IntLiteralNode
       && updateNode instanceof AssignNode
       && updateNode.identifier.name === initNode.name
       && updateNode.expression instanceof BinaryOpNode
-      && updateNode.expression.operator === BinaryOperator.PLUS
-      && updateNode.expression.left instanceof IdentifierNode
-      && updateNode.expression.left.name === initNode.name
-      && updateNode.expression.right instanceof IntLiteralNode) {
-      initNode.loopInitialValue = initNode.expression.value;
-      initNode.loopStepValue = updateNode.expression.right.value;
+      && (updateNode.expression.operator === BinaryOperator.PLUS
+        || updateNode.expression.operator === BinaryOperator.MINUS)) {
+      const counterOnLeft = updateNode.expression.left instanceof IdentifierNode
+        && updateNode.expression.left.name === initNode.name;
+      const counterOnRight = updateNode.expression.operator === BinaryOperator.PLUS
+        && updateNode.expression.right instanceof IdentifierNode
+        && updateNode.expression.right.name === initNode.name;
+      if (counterOnLeft || counterOnRight) {
+        const magnitude = counterOnLeft ? updateNode.expression.right : updateNode.expression.left;
+        initNode.loopInitialValue = initNode.expression.value;
+        if (magnitude instanceof IntLiteralNode) {
+          initNode.loopStepValue = updateNode.expression.operator === BinaryOperator.PLUS
+            ? magnitude.value : -magnitude.value;
+        } else {
+          initNode.loopStepExpression = updateNode.expression.operator === BinaryOperator.PLUS
+            ? magnitude
+            : Object.assign(new BinaryOpNode(
+              new IntLiteralNode(0n), BinaryOperator.MINUS, magnitude,
+            ), { location: updateNode.expression.location });
+        }
+      }
     }
 
     // Wrap: { init; while (cond) { body; update; } } - init omitted for an empty `for (; ...)`.
@@ -5832,7 +5936,7 @@ export default class AstBuilder
     const name = alias ? alias.container : rawName;
 
     // Storage-pointer alias to a mapping-value struct, ARRAY-field element write: `p.arr[j] op= v` where
-    // `T storage p = m[k]` (e.g. Unicrow's `escrow.split[WHO] = v` on `Escrow storage escrow = escrows[id]`).
+    // `T storage p = m[k]` (e.g. `record.parts[j] = v` on `T storage record = records[id]`).
     // The trailing `[j]` indexes the array FIELD, not the mapping, so route it through the mapping-value-struct
     // roundtrip (read entry into a temp, write the element, write back) like the direct `m[k].arr[j]` form -
     // NOT the alias key-merge below (which would treat `j` as a second mapping key).
@@ -7194,6 +7298,7 @@ export default class AstBuilder
         );
       }
       const node = new AddressSendExpressionNode(object, parameters[0]);
+      node.inlinedLibraryEffect = this.parsingLibraryFunction;
       node.location = Location.fromCtx(ctx);
       return node;
     }
@@ -7556,6 +7661,17 @@ export default class AstBuilder
       if (close < 0 || !/^(?:\[[^\]]*\])*$/.test(text.slice(close + 1))) break;
       text = text.slice(1, close) + text.slice(close + 1);
     }
+    // `parseType('Rec[]')` yields `ArrayType(undefined)` because `Rec` is not a primitive. Falling through
+    // to `resolveType` (struct/enum/UDVT maps) is required; otherwise the kernel wrapper's
+    // `abi.decodeAt(rowArgs, (Rec[]), 0)` types as `address[]`.
+    if (text.endsWith(']') && text.includes('[')) {
+      const bracketIdx = text.lastIndexOf('[');
+      const elementTypeStr = text.substring(0, bracketIdx);
+      const boundStr = text.substring(bracketIdx + 1, text.length - 1);
+      const elementType = this.resolveAbiDecodeType(elementTypeStr);
+      const bound = boundStr ? parseInt(boundStr, 10) : undefined;
+      return new ArrayType(elementType, bound !== undefined && !Number.isNaN(bound) ? bound : undefined);
+    }
     const ty = parseType(text) ?? this.resolveType(text);
     // An interface/contract-typed decode item (`abi.decode(data, (IERC20))`, BentoBox/Kashi) has no primitive or
     // struct type - a contract/interface handle is an address on BCH, so decode it as an address (matching the `C[]`
@@ -7566,18 +7682,7 @@ export default class AstBuilder
       return new AddressType(false, text);
     }
     if (!ty) throw new Error(`Unsupported type '${text}' in abi.decode`);
-    const elemName = text.replace(/(\[\])+$/, '');
-    const fixup = (t: Type): Type => {
-      if (t instanceof ArrayType) {
-        // preserve the bound: a fixed-size array (uint256[3]) must stay bounded, not collapse to a dynamic array
-        return new ArrayType(
-          t.elementType === undefined ? new AddressType(false, elemName) : fixup(t.elementType),
-          t.bound,
-        );
-      }
-      return t;
-    };
-    return fixup(ty);
+    return ty;
   }
 
   visitAbiDecode(ctx: AbiDecodeContext): AbiDecodeNode {
@@ -9112,15 +9217,20 @@ export default class AstBuilder
     const callArgs = this.buildCallArguments(ctx.expressionList(0));
     // Low-level `.call`/`.staticcall`/`.delegatecall(payload)` takes exactly one arg. A same-named method with a
     // different arity (e.g. `IFoo(c).increment.call()` - an interface method reached via a field access) is not a
-    // low-level call and falls through to the generic method-call wrap below.
+    // low-level call and falls through to the generic method-call wrap below. One-arg typed invoke
+    // `IFoo(c).increment.call(n)` is the same FieldAccess spelling and must not be stolen as `addr.call(bytes)`.
     if ((method === 'call' || method === 'staticcall' || method === 'delegatecall') && callArgs.length === 1) {
-      const node = new LowLevelCallStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0], method);
-      node.callOptions = this.parseCallOptions(ctx.callOptions());
-      if (node.callOptions?.value && (method === 'staticcall' || method === 'delegatecall')) {
-        throw new ParseError(`Cannot set call option 'value' for ${method}`, loc);
+      const recv = this.visit(recvCtx) as ExpressionNode;
+      const typedInvoke = recv instanceof FieldAccessNode && recv.expression instanceof FunctionCallNode;
+      if (!typedInvoke) {
+        const node = new LowLevelCallStatementNode(recv, callArgs[0], method);
+        node.callOptions = this.parseCallOptions(ctx.callOptions());
+        if (node.callOptions?.value && (method === 'staticcall' || method === 'delegatecall')) {
+          throw new ParseError(`Cannot set call option 'value' for ${method}`, loc);
+        }
+        node.location = loc;
+        return node;
       }
-      node.location = loc;
-      return node;
     }
     const recvPeeled = peelExpr(recvCtx);
     if (recvPeeled instanceof ThisExprContext && isThisMapping(recvPeeled)
@@ -9144,6 +9254,7 @@ export default class AstBuilder
       }
       if (recvCtx.getText() !== 'this' && callArgs.length === 1 && ctx.callOptions() === null) {
         const node = new AddressTransferStatementNode(this.visit(recvCtx) as ExpressionNode, callArgs[0]);
+        node.inlinedLibraryEffect = this.parsingLibraryFunction;
         node.location = loc; return node;
       }
     }

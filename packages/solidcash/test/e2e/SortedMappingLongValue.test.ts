@@ -3,7 +3,10 @@ import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, getValueChunkAddress } from '../../src/index.js';
+import {
+  keyToSlot, encodeEntryCommitment, slotValueToBytes, bytesToSlotValue,
+  getEntryNftAddress, getValueChunkAddress,
+} from '../../src/index.js';
 import { buildValueChunkCommitment, splitValueIntoValueChunks } from '@solidcash/utils';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
@@ -100,6 +103,14 @@ describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)'
     expect(enumerated[0].slot).toEqual(s5);
     expect(enumerated[0].value).toEqual(bigVal);
     expect((await sc.check(5n, bigVal, alicePub, sig).send()).txid).toBeDefined(); // present long -> witness verified
+
+    // An absent lookup still authenticates and decodes its selected predecessor before returning the default.
+    // Choose a key above s5 so the long entry is that predecessor; its hidden witness must come from s5's chunks,
+    // while the source-level value remains empty.
+    let absentKey = 6n;
+    while (bytesToSlotValue(keyToSlot(bigIntToVmNumber(absentKey))) <= bytesToSlotValue(s5)) absentKey += 1n;
+    sc = StatefulContract.withCategory(contract, categoryId);
+    expect((await sc.check(absentKey, new Uint8Array(), alicePub, sig).send()).txid).toBeDefined();
 
     sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(5n, hexToBin('cd'.repeat(99) + 'ce'), alicePub, sig).send())

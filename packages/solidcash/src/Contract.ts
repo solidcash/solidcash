@@ -12,7 +12,7 @@ import {
 } from '@solidcash/utils';
 import {
   ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
-  isSignatureTemplateArray,
+  isDeferredSignatureArgument,
 } from './Argument.js';
 import {
   Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
@@ -29,6 +29,56 @@ import {
 } from './loop-call.js';
 import type { TransactionBuilder } from './TransactionBuilder.js';
 import semver from 'semver';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { decodeKernelEntryJournalAccesses } from './stateful/KernelEntryJournal.js';
+
+const KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES = 520;
+// Each target/predecessor selector scans exactly through its zero-based record ordinal. The emitted selector uses
+// at most 25 priced scan/decode operations per visited record at BCH's 100-unit base operation price. The fixed
+// header, identity, ordinal, and commitment checks fit in a conservative 17,000-unit envelope per access.
+const KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN = 25 * 100;
+const KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS = 17_000;
+const KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES = ConsensusBch2026.maximumStackItemLength;
+
+/**
+ * Size the existing discarded kernel-route reserve from the physical access program the composer supplied.
+ * Record selection cost grows with these fixed-width entries, while a constant 520-byte reserve does not. The
+ * route covenant still authenticates every stream and its declared count; malformed public arguments cannot gain
+ * authority by increasing this budget, and the result is capped at BCH-2026's stack-item limit.
+ */
+/** @internal Exported for exact boundary tests; not re-exported from the package API. */
+export function kernelRouteDensityReserveBytes(accessStreams: FunctionArgument | undefined): number {
+  if (!Array.isArray(accessStreams)) return KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES;
+  let accessCount = 0;
+  let recordScanCount = 0;
+  const visit = (value: FunctionArgument): void => {
+    if (value instanceof Uint8Array) {
+      try {
+        const accesses = decodeKernelEntryJournalAccesses(value);
+        accessCount += accesses.length;
+        for (const access of accesses) {
+          recordScanCount += access.targetRecordOrdinal + 1;
+          if (access.predecessorRecordOrdinal !== undefined) {
+            recordScanCount += access.predecessorRecordOrdinal + 1;
+          }
+        }
+      } catch {
+        // Malformed public arguments have no authority and fail in the route covenant. They must not allocate
+        // density padding merely because their byte length resembles an access stream.
+      }
+      return;
+    }
+    if (Array.isArray(value)) value.forEach(visit);
+  };
+  accessStreams.forEach(visit);
+  const operationCost = accessCount * KERNEL_ROUTE_FIXED_OPERATION_COST_PER_ACCESS
+    + recordScanCount * KERNEL_ROUTE_OPERATION_COST_PER_RECORD_SCAN;
+  return Math.min(
+    KERNEL_ROUTE_DENSITY_MAX_RESERVE_BYTES,
+    KERNEL_ROUTE_DENSITY_BASE_RESERVE_BYTES
+      + Math.ceil(operationCost / ConsensusBch2026.operationCostBudgetPerByte),
+  );
+}
 
 // Large generated contracts can carry multi-megabyte ASM listings. Stateful deployment and proxy wiring create
 // several Contract instances from the exact same artifact (withCategory, logical-address attachment, delegates).
@@ -148,7 +198,15 @@ export class Contract<
     const soleFn = artifact.abi.length === 1 ? artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!artifact.isLibrary || artifact.delegateOnly === true);
-    if (soleFn && !soleFnIsProxyImpl) {
+    // A compiler-owned message-bus route is intentionally absent from the public ABI, but it is still a second
+    // executable selector in the redeem script. Treating the sole source function as selectorless then places its
+    // first argument in the dispatch-selector position and the covenant rejects before either function executes.
+    // `available` is additive metadata. Older artifacts with `messageBus` omitted the field but still contain the
+    // executable SCB1 selector, so only an explicit false means there is no hidden route in the redeem script.
+    const soleFnSharesCompilerRoute = artifact.messageBus !== undefined
+      && artifact.messageBus.available !== false
+      && artifact.messageBus.routeInBytecode !== false;
+    if (soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);
     } else {
@@ -245,7 +303,7 @@ export class Contract<
       this.encodedConstructorArgs.map(binToHex).join(','),
       this.usesExternalLibraries ? 'library-pad' : '',
       this.isStateful && this.category ? binToHex(this.category) : '',
-      this.salt ? binToHex(this.salt) : '',
+      this.salt === undefined ? 'no-salt' : `salt:${binToHex(this.salt)}`,
     ].join('|');
     let compositions = composedBytecodeScripts.get(artifact.bytecode);
     if (!compositions) {
@@ -261,16 +319,16 @@ export class Contract<
         contractBytecodeScript = [Op.OP_DROP, ...contractBytecodeScript];
       }
 
-    // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
-    // it, so the address commits to the category (address => genuine state). This reworks the former dead
-    // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
-    // so it is one contract-level check covering every function, including selfdestruct/unsafe.
-    //
-    // A stateful contract's spent UTXO is always its master = the MINTING NFT (capability 0x02), and
-    // capabilities never change, so OP_UTXOTOKENCATEGORY returns `category(32) || 0x02`. We bake that exact
-    // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
-    // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
-    // wrong capability. See docs/external-contract-calls.md.
+      // Category self-pin (stateful contracts): bake the category and verify the spent UTXO's category equals
+      // it, so the address commits to the category (address => genuine state). This reworks the former dead
+      // `<salt> OP_DROP` into a live check. It is the script prologue (runs before constructor args + dispatch),
+      // so it is one contract-level check covering every function, including selfdestruct/unsafe.
+      //
+      // A stateful contract's spent UTXO is always its master = the MINTING NFT (capability 0x02), and
+      // capabilities never change, so OP_UTXOTOKENCATEGORY returns `category(32) || 0x02`. We bake that exact
+      // 33-byte value (internal byte order + the 0x02 minting capability) and compare directly - no need to
+      // split off the capability byte. This also pins the capability, rejecting a same-category UTXO with the
+      // wrong capability. See docs/external-contract-calls.md.
       if (this.isStateful && this.category && this.category.length > 0) {
         const catWithCapability = Uint8Array.from([...this.category.slice().reverse(), 0x02]);
         contractBytecodeScript = [
@@ -279,9 +337,9 @@ export class Contract<
         ];
       }
 
-    // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
-    // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
-      if (this.salt && this.salt.length > 0) {
+      // User CREATE2 salt (optional, any contract): a dead push baked into the script for deterministic /
+      // counterfactual address control. Separate, outermost segment (distinct from the category self-pin).
+      if (this.salt !== undefined) {
         contractBytecodeScript = [this.salt, Op.OP_DROP, ...contractBytecodeScript];
       }
       compositions.set(compositionKey, contractBytecodeScript);
@@ -486,9 +544,14 @@ export class Contract<
         ? parsedFunctionBody(this.artifact.functionBodies[selectorHex])
         : bytecode;
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
-        const match = /^__message_bus_sig_(\d+)_\d+_r\d+$/.exec(inputName);
+        const match = /^__message_bus_sig_(\d+)_(\d+)(?:_(\d+))?(?:_r\d+|_rows)$/.exec(inputName);
         if (!match) return signingBytecode;
-        const handler = this.artifact.messageBus?.handlers[Number(match[1])];
+        // Witness handler ordinals index the route's eligible dispatch set, not the complete diagnostic list.
+        const handler = this.artifact.messageBus?.handlers.filter((candidate) => candidate.eligible)[Number(match[1])];
+        const parameterBody = handler?.transactionSignaturePolicy?.coveredBytecodes
+          ?.find((candidate) => candidate.parameterIndex === Number(match[2])
+            && candidate.leafIndex === Number(match[3] ?? 0))?.bytecode;
+        if (parameterBody) return parsedFunctionBody(parameterBody);
         const handlerBody = handler?.signatureBytecode;
         if (!handlerBody) {
           // A signature parameter may only be forwarded by this participant;
@@ -514,7 +577,7 @@ export class Contract<
         if (Array.isArray(arg)) return arg.map(coerceArg);
         return arg;
       };
-      const encodedArgs = args.map((arg, i) => {
+      let encodedArgs = args.map((arg, i) => {
         try {
           return encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs);
         } catch (error) {
@@ -531,20 +594,41 @@ export class Contract<
       // internal argument, so their unlocking bytecode is identical in every pass. Large delegate artifacts can
       // otherwise copy and serialize hundreds of kilobytes per input on every probe.
       const hasSignatures = encodedArgs.some(
-        (arg) => arg instanceof SignatureTemplate || isSignatureTemplateArray(arg),
+        (arg) => isDeferredSignatureArgument(arg),
       );
       const needsBlockhashIndex = !internalsProvided && abiFunction.inputs.some(
         (input) => input.name === '__internal__blockhashInputIndex',
       );
       const cacheUnlockingBytecode = !hasSignatures && !needsBlockhashIndex;
       let cachedUnlockingBytecode: Uint8Array | undefined;
+      // Redeem push is stable across probe-local ReturnOutputIdx edits; keep it so arg-only
+      // rebuilds do not reserialize multi-megabyte Marketplace redeem scripts every probe.
+      let cachedRedeemPush: Uint8Array | undefined;
+
+      // Probe-local layout fixes may mutate `params` (same array as `args`) after construction.
+      // Re-encode changed slots and drop the unlocking-bytecode cache so OUTCOMMIT indices stay live.
+      const syncEncodedArgsFromParams = (onlyIndices?: readonly number[]): void => {
+        const indices = onlyIndices ?? args.map((_, index) => index);
+        for (const i of indices) {
+          try {
+            encodedArgs[i] = encodeFunctionArgument(coerceArg(args[i]) as never, argInputs[i].type, structs);
+          } catch (error) {
+            throw new Error(
+              `Could not encode argument '${argInputs[i].name}' at index ${i} as ${argInputs[i].type}: `
+              + `${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+          }
+        }
+        cachedUnlockingBytecode = undefined;
+      };
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         if (cacheUnlockingBytecode && cachedUnlockingBytecode) return cachedUnlockingBytecode;
         const completeArgs = encodedArgs.map((arg, index) => {
-          if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
+          if (!isDeferredSignatureArgument(arg)) return arg;
 
           // Generate transaction signature from SignatureTemplate
           const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
@@ -553,8 +637,13 @@ export class Contract<
               transaction, sourceOutputs, inputIndex, coveredBytecode, template.getHashType(),
             ),
           ));
+          const finalize = (value: unknown): ConstructorArgument => {
+            if (value instanceof SignatureTemplate) return sign(value);
+            if (Array.isArray(value)) return value.map(finalize);
+            throw new Error(`Invalid deferred signature argument '${argInputs[index].name}'`);
+          };
           if (arg instanceof SignatureTemplate) return sign(arg);
-          return encodeFunctionArgument(arg.map(sign), argInputs[index].type, structs) as Uint8Array;
+          return encodeFunctionArgument(finalize(arg), argInputs[index].type, structs) as Uint8Array;
         });
 
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
@@ -568,14 +657,34 @@ export class Contract<
           ? [this.budgetPad(abiFunction, args), ...completeArgs, ...synthArgs]
           : [...completeArgs, ...synthArgs];
 
-        const unlockingBytecode = createUnlockingBytecode(this.addressType, bytecode, finalArgs, selector);
+        let unlockingBytecode: Uint8Array;
+        if (this.addressType === 'p2s') {
+          unlockingBytecode = createUnlockingBytecode(this.addressType, bytecode, finalArgs, selector);
+        } else {
+          const unlockScript = [...finalArgs].reverse();
+          if (selector !== undefined) unlockScript.unshift(selector);
+          const argsBytecode = scriptToBytecode(unlockScript);
+          if (cachedRedeemPush === undefined) {
+            cachedRedeemPush = scriptToBytecode([bytecode]);
+          }
+          unlockingBytecode = new Uint8Array(argsBytecode.length + cachedRedeemPush.length);
+          unlockingBytecode.set(argsBytecode, 0);
+          unlockingBytecode.set(cachedRedeemPush, argsBytecode.length);
+        }
         if (cacheUnlockingBytecode) cachedUnlockingBytecode = unlockingBytecode;
         return unlockingBytecode;
       };
 
       const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
 
-      return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
+      return {
+        generateUnlockingBytecode,
+        generateLockingBytecode,
+        contract: this,
+        params: args,
+        abiFunction,
+        syncEncodedArgsFromParams,
+      };
     };
   }
 
@@ -593,8 +702,20 @@ export class Contract<
       if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
       // Preserve the historical positional frame without carrying the callManifest in the master. The
-      // artifact-specialized verifier inputs carry the canonical callManifest.
-      const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
+      // artifact-specialized verifier inputs carry the canonical callManifest. Kernel journal routes retain a
+      // bounded payload in this already-discarded slot: their record scans can otherwise exceed BCH-2026's
+      // operation-density budget despite remaining below every absolute operation and script-size limit.
+      const kernelJournalRoute = abiFunction.inputs.some(
+        (input) => input.name === '__internal__kernelJournalAccessStreams',
+      );
+      const kernelJournalAccessIndex = abiFunction.inputs.findIndex(
+        (input) => input.name === '__internal__kernelJournalAccessStreams',
+      );
+      const reservedPositionalPush = scriptToBytecode([
+        new Uint8Array(kernelJournalRoute
+          ? kernelRouteDensityReserveBytes(args[kernelJournalAccessIndex])
+          : 0),
+      ]);
       let cachedOrdinary: Uint8Array | undefined;
       let cachedCompilerRoute: Uint8Array | undefined;
       const generateUnlockingBytecode = (
@@ -614,7 +735,7 @@ export class Contract<
         cachedCompilerRoute = new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
-          ...messageEnvelopePlaceholder,
+          ...reservedPositionalPush,
           ...ordinary.slice(5),
         ]);
         return cachedCompilerRoute;
@@ -634,7 +755,10 @@ export class Contract<
     const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
     const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
       && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
-    const selector = soleFn && !soleFnIsProxyImpl
+    const soleFnSharesCompilerRoute = this.artifact.messageBus !== undefined
+      && this.artifact.messageBus.available !== false
+      && this.artifact.messageBus.routeInBytecode !== false;
+    const selector = soleFn && !soleFnIsProxyImpl && !soleFnSharesCompilerRoute
       ? undefined
       : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;
     return this.createUnlocker(abiFunction, selector);

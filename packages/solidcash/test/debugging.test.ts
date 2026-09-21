@@ -340,7 +340,9 @@ describe('Debugging tests', () => {
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
       expect(checkSigTransaction).toFailRequireWith('Test.scash:79 Require statement failed at input 0 in contract Test.scash at line 79 with the following message: Signatures do not match.');
-      expect(checkSigTransaction).toFailRequireWith('Failing statement: require(checkSig(s, pk), "Signatures do not match")');
+      // CHECKSIGVERIFY reports the exact failing expression; the enclosing RequireStatement still supplies the
+      // line and custom message above. A final implicit verify remains attributed to the whole require below.
+      expect(checkSigTransaction).toFailRequireWith('Failing statement: checkSig(s, pk)');
 
       const checkSigTransactionNullSignature = new TransactionBuilder({ provider })
         .addInput(
@@ -350,7 +352,8 @@ describe('Debugging tests', () => {
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
       expect(checkSigTransactionNullSignature).toFailRequireWith('Test.scash:79 Require statement failed at input 0 in contract Test.scash at line 79 with the following message: Signatures do not match.');
-      expect(checkSigTransactionNullSignature).toFailRequireWith('Failing statement: require(checkSig(s, pk), "Signatures do not match")');
+      // An empty signature takes the unmerged NULLFAIL attribution path, whose VERIFY maps to the enclosing statement.
+      expect(checkSigTransactionNullSignature).toFailRequireWith('Failing statement: require(checkSig(s, pk), "Signatures do not match");');
     });
 
     // test_fail_checksig_final_verify

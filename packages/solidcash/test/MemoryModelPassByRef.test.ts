@@ -50,6 +50,37 @@ describe('memory model P4: internal pass-by-reference', () => {
     }`);
   });
 
+  it('helper resizes the caller array in place', async () => {
+    await run(`contract C() {
+      int counter;
+      function resize(uint[] memory x, uint first, uint discarded) internal {
+        x.push(first); x.push(discarded); x.pop();
+      }
+      function f() {
+        uint[] memory a = new uint[](0);
+        resize(a, 42, 99);
+        require(a.length == 1); require(a[0] == 42);
+        require(true);
+      }
+    }`);
+  });
+
+  it('keeps whole-parameter rebinding local to the helper', async () => {
+    await run(`contract C() {
+      int counter;
+      function replace(uint[] memory x) internal {
+        x = new uint[](1); x[0] = 99;
+      }
+      function f() {
+        uint[] memory a = new uint[](2);
+        a[0] = 7;
+        replace(a);
+        require(a.length == 2); require(a[0] == 7); require(a[1] == 0);
+        require(true);
+      }
+    }`);
+  });
+
   it('helper fills the array in a loop (local renamed, control flow inlined)', async () => {
     await run(`contract C() {
       int counter;

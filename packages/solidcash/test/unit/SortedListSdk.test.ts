@@ -200,6 +200,181 @@ describe('SortedList SDK: atomic batch upsert planning', () => {
   });
 });
 
+describe('SortedList SDK: ordered pending-output journal planning', () => {
+  const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
+  const add = (current: Uint8Array | undefined, amount: number): Uint8Array =>
+    Uint8Array.of((current?.[0] ?? 0) + amount);
+
+  it('reduces repeated existing and inserted slots against their pending values', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(50), operation: 2 },
+      { slot: s(20), operation: 1 },
+      { slot: s(50), operation: 3 },
+      { slot: s(20), operation: 4 },
+    ], add);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 50]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 50, 90]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '05', '05']);
+    expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([50, 10, 20]);
+    expect(plan.records.map(({ authenticated, synthetic, tombstone }) =>
+      ({ authenticated, synthetic, tombstone }))).toEqual([
+      { authenticated: true, synthetic: false, tombstone: false },
+      { authenticated: true, synthetic: false, tombstone: false },
+      { authenticated: false, synthetic: true, tombstone: false },
+    ]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true,
+        authenticatesTarget: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
+      { targetRecordOrdinal: 0, presentBefore: true, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 2, presentBefore: true, presentAfter: true, mutates: true },
+    ]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 1, recordOrdinal: 1 },
+    ]);
+  });
+
+  it('co-spends one original predecessor and flushes one final same-gap chain', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(20), operation: 1 },
+      { slot: s(30), operation: 4 },
+      { slot: s(20), operation: 2 },
+    ], add);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 20, 30]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([20, 30, 50]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['', '03', '04']);
+    expect(plan.records.map((record) => Number(bytesToSlotValue(record.slot)))).toEqual([10, 20, 30]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
+      { targetRecordOrdinal: 2, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
+      { targetRecordOrdinal: 1, presentBefore: true, presentAfter: true, mutates: true },
+    ]);
+  });
+
+  it('does not expose the HEAD sentinel as a writable logical slot', () => {
+    expect(() => SortedList.fromUtxos(sampleUtxos()).planJournaledUpserts([
+      { slot: s(0), operation: 1 },
+    ], add)).toThrow('HEAD sentinel');
+  });
+
+  it('rebuilds one final link after an existing node is deleted', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'delete' },
+    ], () => undefined);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([90]);
+    expect(plan.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)),
+      next: Number(bytesToSlotValue(record.nextKey)),
+      tombstone: record.tombstone,
+    }))).toEqual([
+      { slot: 50, next: 90, tombstone: true },
+      { slot: 10, next: 90, tombstone: false },
+    ]);
+    expect(plan.accesses).toEqual([
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true,
+        authenticatesTarget: true, authenticatesPredecessor: true },
+    ]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 0, recordOrdinal: 1 },
+    ]);
+  });
+
+  it('combines a predecessor update with deletion of its successor', () => {
+    type Operation = { kind: 'set'; value: Uint8Array } | { kind: 'delete' };
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations<Operation>([
+      { slot: s(10), operation: { kind: 'set', value: hexToBin('aa') } },
+      { slot: s(50), operation: { kind: 'delete' } },
+    ], (_current, operation) => operation.kind === 'delete' ? undefined : operation.value);
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    const decoded = plan.outputs.map((output) => decodeEntryCommitment(output.commitment));
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(decoded.map((entry) => Number(bytesToSlotValue(entry.nextKey)))).toEqual([90]);
+    expect(decoded.map((entry) => binToHex(entry.value))).toEqual(['aa']);
+  });
+
+  it('observes pending absence across delete and reinsert while authenticating both original nodes', () => {
+    type Operation = { kind: 'set'; value: Uint8Array } | { kind: 'delete' };
+    const reduce = (_current: Uint8Array | undefined, operation: Operation): Uint8Array | undefined =>
+      operation.kind === 'delete' ? undefined : operation.value;
+    const list = SortedList.fromUtxos(sampleUtxos());
+    const reinserted = list.planJournaledMutations<Operation>([
+      { slot: s(50), operation: { kind: 'delete' } },
+      { slot: s(50), operation: { kind: 'set', value: hexToBin('bb') } },
+    ], reduce);
+    expect(reinserted.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    expect(reinserted.outputs.map((output) => decodeEntryCommitment(output.commitment))
+      .map((entry) => [Number(bytesToSlotValue(entry.slot)), binToHex(entry.value)]))
+      .toEqual([[10, ''], [50, 'bb']]);
+    expect(reinserted.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone,
+    }))).toEqual([{ slot: 50, tombstone: false }, { slot: 10, tombstone: false }]);
+    expect(reinserted.accesses).toEqual([
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: true, presentAfter: false, mutates: true,
+        authenticatesTarget: true, authenticatesPredecessor: true },
+      { targetRecordOrdinal: 0, predecessorRecordOrdinal: 1, presentBefore: false, presentAfter: true, mutates: true },
+    ]);
+
+    const cancelledInsert = list.planJournaledMutations<Operation>([
+      { slot: s(20), operation: { kind: 'set', value: hexToBin('aa') } },
+      { slot: s(20), operation: { kind: 'delete' } },
+    ], reduce);
+    expect(cancelledInsert.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10]);
+    expect(cancelledInsert.outputs.map((output) => decodeEntryCommitment(output.commitment))
+      .map((entry) => [Number(bytesToSlotValue(entry.slot)), Number(bytesToSlotValue(entry.nextKey))]))
+      .toEqual([[10, 50]]);
+    expect(cancelledInsert.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)), tombstone: record.tombstone, synthetic: record.synthetic,
+    }))).toEqual([
+      { slot: 10, tombstone: false, synthetic: false },
+      { slot: 20, tombstone: true, synthetic: true },
+    ]);
+    expect(cancelledInsert.accesses).toEqual([
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: false, presentAfter: true, mutates: true,
+        authenticatesPredecessor: true },
+      { targetRecordOrdinal: 1, predecessorRecordOrdinal: 0, presentBefore: true, presentAfter: false, mutates: true },
+    ]);
+  });
+
+  it('authenticates clean present and absent reads without producing journal outputs', () => {
+    const plan = SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'read' },
+      { slot: s(20), operation: 'read' },
+    ], (current) => ({ value: current, dirty: false }));
+
+    expect(plan.inputs.map((entry) => Number(bytesToSlotValue(entry.slot)))).toEqual([10, 50]);
+    expect(plan.outputs).toEqual([]);
+    expect(plan.physicalAuthentications).toEqual([
+      { accessOrdinal: 0, recordOrdinal: 0 },
+      { accessOrdinal: 1, recordOrdinal: 1 },
+    ]);
+    expect(plan.records.map((record) => ({
+      slot: Number(bytesToSlotValue(record.slot)),
+      authenticated: record.authenticated,
+      dirty: record.dirty,
+      tombstone: record.tombstone,
+      synthetic: record.synthetic,
+    }))).toEqual([
+      { slot: 50, authenticated: true, dirty: false, tombstone: false, synthetic: false },
+      { slot: 10, authenticated: true, dirty: false, tombstone: false, synthetic: false },
+      { slot: 20, authenticated: false, dirty: false, tombstone: true, synthetic: true },
+    ]);
+    expect(() => SortedList.fromUtxos(sampleUtxos()).planJournaledMutations([
+      { slot: s(50), operation: 'invalid-clean-write' },
+    ], () => ({ value: Uint8Array.of(9), dirty: false }))).toThrow('must preserve');
+  });
+});
+
 describe('SortedList SDK: plans satisfy the proven covenants (end to end)', () => {
   const s = (n: number): Uint8Array => slotValueToBytes(BigInt(n));
 

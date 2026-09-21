@@ -124,4 +124,31 @@ describe('chai empty-address and event predicates', () => {
       expect({ txid: 'ab' }).to.emit({}, 'JobEvent').withArgs(1n),
     ).rejects.toThrow(/has no decoded events/);
   });
+
+  it('negates the next emit without reversing a preceding withArgs check', async () => {
+    const receipt = {
+      txid: 'ab',
+      events: [{ event: 'Changed', args: { value: 7n } }],
+    };
+    const contract = { artifact: { events: [{ name: 'Changed', parameters: [{ name: 'value' }] }] } };
+    await expect(receipt).to.emit(contract, 'Changed').withArgs(7n)
+      .and.not.to.emit(contract, 'Absent');
+    await vitestExpect(
+      expect(receipt).to.emit(contract, 'Changed').withArgs(7n)
+        .and.not.to.emit(contract, 'Changed'),
+    ).rejects.toThrow("expected not to emit 'Changed'");
+  });
+
+  it('uses an empty transaction-scoped query to verify an event was absent', async () => {
+    const receipt = { txid: 'ab' };
+    const contract = {
+      filters: { Missing: () => ({ event: 'Missing' }) },
+      queryFilter: async () => [{ txid: 'other', eventName: 'Missing' }],
+    };
+    await expect(receipt).not.to.emit(contract, 'Missing');
+    await vitestExpect(expect(receipt).to.emit(contract, 'Missing'))
+      .rejects.toThrow("event 'Missing' not found in transaction ab");
+    await vitestExpect(expect(receipt).not.to.emit({}, 'Missing'))
+      .rejects.toThrow('cannot verify absence');
+  });
 });

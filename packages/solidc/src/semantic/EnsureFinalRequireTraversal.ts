@@ -38,7 +38,10 @@ import {
   FunctionCallNode,
   InstantiationNode,
   ExternalFunctionCallNode,
+  FunctionCallStatementNode,
+  AssemblyStatementNode,
 } from '../ast/AST.js';
+import { YulFunctionCallNode, YulNode } from '../ast/YulAST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { hasAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
 import {
@@ -48,6 +51,7 @@ import {
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
+  private neverReturn = new Set<string>();
 
   constructor(
     private enforceFinalRequire: boolean = true,
@@ -57,6 +61,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.neverReturn = collectNeverReturnNames(node.freeFunctions);
     for (const func of node.freeFunctions) {
       this.visitFunctionDefinition(func);
     }
@@ -127,7 +132,7 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 
     // Internal/private/free functions with return types: validate return on all paths
     if ((visibility === 'internal' || visibility === 'private' || node.isFreeFunction) && hasReturnTypes) {
-      if (!allPathsReturn(node.body.statements)) {
+      if (!allPathsReturn(node.body.statements, this.neverReturn)) {
         throw new MissingReturnError(node);
       }
       return node;
@@ -148,7 +153,11 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     // Entry-point functions with return types: the function body can end with return
     // (the code generator adds covenant verification automatically after return value encoding)
     if ((visibility === 'public' || visibility === 'external') && hasReturnTypes) {
-      if (!allPathsReturn(node.body.statements)) {
+      // A split mutating entry publishes its result from the facet input. Its root input only authenticates and
+      // executes that delegate; it deliberately retains the logical return ABI/layout without fabricating a
+      // second stack value or return-event output. Only the compiler can set this marker.
+      if (node.splitDelegateReturnForwarder) return node;
+      if (!allPathsReturn(node.body.statements, this.neverReturn)) {
         throw new MissingReturnError(node);
       }
       return node;
@@ -172,6 +181,20 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
     }
 
     return node;
+  }
+}
+
+/**
+ * Cheap-admission fail-fast: returning free/library helpers whose source already has an uncovered path
+ * (OZ Address.verifyCallResultFromTarget's `_revert` arm) throw here instead of after journal/memory
+ * lowering. Public-only rungs prune those helpers first, so they do not refuse. Helpers that only become
+ * covered after later lowering are not cheap-admission; the full EnsureFinalRequire pass still runs.
+ */
+export function rejectFreeFunctionMissingReturns(ast: SourceFileNode): void {
+  const neverReturn = collectNeverReturnNames(ast.freeFunctions ?? []);
+  for (const fn of ast.freeFunctions ?? []) {
+    if (fn.isAbstract || !fn.body || fn.returnTypes.length === 0) continue;
+    if (!allPathsReturn(fn.body.statements, neverReturn)) throw new MissingReturnError(fn);
   }
 }
 
@@ -355,19 +378,99 @@ function isStatefulOp(s: StatementNode): boolean {
     || s instanceof StateArrayAssignNode || s instanceof StateArrayDeleteNode;
 }
 
-function allPathsReturn(statements: StatementNode[] = []): boolean {
+function yulContainsRevert(node: unknown, seen = new WeakSet<object>()): boolean {
+  if (!node || typeof node !== 'object' || seen.has(node as object)) return false;
+  seen.add(node as object);
+  if (node instanceof YulFunctionCallNode && node.name === 'revert') return true;
+  if (node instanceof YulNode) {
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value) && value.some((item) => yulContainsRevert(item, seen))) return true;
+      if (value && typeof value === 'object' && yulContainsRevert(value, seen)) return true;
+    }
+  }
+  return false;
+}
+
+function callNeverReturns(name: string, neverReturn: Set<string>): boolean {
+  const simple = name.split('.').pop() ?? name;
+  return neverReturn.has(name) || neverReturn.has(simple) || simple === '_revert';
+}
+
+function isTerminatingStatement(statement: StatementNode, neverReturn: Set<string>): boolean {
+  if (statement instanceof ReturnNode || statement instanceof RevertNode) return true;
+  if (statement instanceof AssemblyStatementNode) {
+    if (/\brevert\b/i.test(statement.assemblyBody)) return true;
+    if (statement.yulBlock && yulContainsRevert(statement.yulBlock)) return true;
+  }
+  if (statement instanceof FunctionCallStatementNode) {
+    return callNeverReturns(statement.call.identifier.name, neverReturn);
+  }
+  if (statement instanceof BranchNode) {
+    return allPathsTerminate(statement.ifBlock.statements, neverReturn)
+      && (statement.elseBlock !== undefined
+        && allPathsTerminate(statement.elseBlock.statements, neverReturn));
+  }
+  if (statement instanceof UncheckedNode) {
+    return allPathsTerminate(statement.block.statements ?? [], neverReturn);
+  }
+  if (statement instanceof BlockNode) {
+    return allPathsTerminate(statement.statements ?? [], neverReturn);
+  }
+  if (statement instanceof SwitchNode) {
+    if (!statement.defaultCase) return false;
+    return statement.cases.every((c) => allPathsTerminate(c.body.statements, neverReturn))
+      && allPathsTerminate(statement.defaultCase.statements, neverReturn);
+  }
+  return false;
+}
+
+function allPathsTerminate(statements: StatementNode[] = [], neverReturn: Set<string> = new Set()): boolean {
   const statementsWithoutLogs = statements.filter((s) => !(s instanceof ConsoleStatementNode));
   if (statementsWithoutLogs.length === 0) return false;
+  return isTerminatingStatement(statementsWithoutLogs[statementsWithoutLogs.length - 1], neverReturn);
+}
+
+function collectNeverReturnNames(functions: FunctionDefinitionNode[]): Set<string> {
+  const neverReturn = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const fn of functions) {
+      if (!fn.body || neverReturn.has(fn.name)) continue;
+      if (allPathsTerminate(fn.body.statements, neverReturn)) {
+        neverReturn.add(fn.name);
+        const simple = fn.name.split('.').pop();
+        if (simple) neverReturn.add(simple);
+        grew = true;
+      }
+    }
+  }
+  return neverReturn;
+}
+
+function allPathsReturn(
+  statements: StatementNode[] = [], neverReturn: Set<string> = new Set(),
+): boolean {
+  const statementsWithoutLogs = statements.filter((s) => !(s instanceof ConsoleStatementNode));
+  if (statementsWithoutLogs.length === 0) return false;
+
+  // Once a top-level statement terminates on every path, everything after it is unreachable and cannot turn a
+  // returning function into a fall-through function. In particular, journal lowering may insert flushes before
+  // `return` while leaving an author-written dead require after it for the later dead-code transform to remove.
+  // Validate the reachable prefix rather than choosing the syntactically final statement unconditionally.
+  const firstTerminal = statementsWithoutLogs.findIndex((statement) =>
+    isTerminatingStatement(statement, neverReturn));
+  if (firstTerminal >= 0 && firstTerminal < statementsWithoutLogs.length - 1) return true;
 
   const finalStatement = statementsWithoutLogs[statementsWithoutLogs.length - 1];
 
   if (finalStatement instanceof ReturnNode) return true;
-  if (finalStatement instanceof RevertNode) return true;
+  if (isTerminatingStatement(finalStatement, neverReturn)) return true;
 
   if (finalStatement instanceof BranchNode) {
-    const ifReturns = allPathsReturn(finalStatement.ifBlock.statements);
+    const ifReturns = allPathsReturn(finalStatement.ifBlock.statements, neverReturn);
     const elseReturns = finalStatement.elseBlock
-      ? allPathsReturn(finalStatement.elseBlock.statements)
+      ? allPathsReturn(finalStatement.elseBlock.statements, neverReturn)
       : false;
     return ifReturns && elseReturns;
   }
@@ -376,17 +479,21 @@ function allPathsReturn(statements: StatementNode[] = []): boolean {
     // BCH script failure is fatal, so catch clauses are dead code (SymbolTableTraversal emits the corresponding
     // compatibility warning and codegen compiles only the try path). A successful try is therefore the only
     // continuing path whose return behavior matters; a failed try never falls through this function.
-    return allPathsReturn(finalStatement.tryBlock.statements);
+    return allPathsReturn(finalStatement.tryBlock.statements, neverReturn);
   }
 
   if (finalStatement instanceof UncheckedNode) {
-    return allPathsReturn(finalStatement.block.statements ?? []);
+    return allPathsReturn(finalStatement.block.statements ?? [], neverReturn);
+  }
+
+  if (finalStatement instanceof BlockNode) {
+    return allPathsReturn(finalStatement.statements ?? [], neverReturn);
   }
 
   if (finalStatement instanceof SwitchNode) {
     if (!finalStatement.defaultCase) return false;
-    const casesReturn = finalStatement.cases.every((c) => allPathsReturn(c.body.statements));
-    const defaultReturns = allPathsReturn(finalStatement.defaultCase.statements);
+    const casesReturn = finalStatement.cases.every((c) => allPathsReturn(c.body.statements, neverReturn));
+    const defaultReturns = allPathsReturn(finalStatement.defaultCase.statements, neverReturn);
     return casesReturn && defaultReturns;
   }
 

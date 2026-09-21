@@ -2,6 +2,91 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 
 describe('vmap fixed-write batch metadata', () => {
+  it('publishes chunkable-array identity on a nested collection writer', () => {
+    const artifact = compileString(`contract Data() {
+      mapping(int => int[]) notices;
+      function appendNotice(int key, int value) {
+        this.notices[key].push(value);
+        require(true);
+      }
+    }`);
+    const append = artifact.abi.find((fn) => fn.name === 'appendNotice');
+    expect(append?.entryAccesses?.find((access) => access.collection === 'notices'))
+      .toMatchObject({ operations: ['read', 'write'], chunkableArrayValue: true });
+  });
+
+  it('binds a chunkable-array element recipe to the exact mutated parameter and effect', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Packet { uint8 tag; bytes owner; bytes data; uint32 recordedAt; }
+      contract Archive {
+        mapping(uint256 => Packet[]) history;
+        function append(uint256 key, Packet decoy, Packet selected) public {
+          selected.recordedAt = uint32(block.timestamp);
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access?.storedElementSource).toMatchObject({
+      version: 1,
+      mutationEffectOrdinal: access?.mutationEffectOrdinals?.[0],
+      elementType: 'Packet',
+      expression: {
+        kind: 'call', name: 'Packet', type: 'Packet',
+        args: [
+          expect.objectContaining({ kind: 'field', name: 'tag' }),
+          expect.objectContaining({ kind: 'field', name: 'owner' }),
+          expect.objectContaining({ kind: 'field', name: 'data' }),
+          expect.objectContaining({ kind: 'cast', type: 'uint32', expression: expect.objectContaining({
+            kind: 'state', name: '__block_timestamp',
+          }) }),
+        ],
+      },
+    });
+    expect(access?.arrayMutation).toBe('push');
+    const selectedSource = access?.storedElementSource?.expression.args?.[0].expression;
+    expect(selectedSource).toMatchObject({ source: { kind: 'forward', paramIndex: 2 } });
+  });
+
+  it('omits a stored-element recipe when control flow can redefine its operand', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Cell { uint256 value; uint32 writtenAt; }
+      contract Archive {
+        mapping(uint256 => Cell[]) history;
+        function append(uint256 key, Cell selected, bool replace) public {
+          if (replace) selected.writtenAt = uint32(block.timestamp);
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access?.storedElementSource).toBeUndefined();
+    expect(access?.arrayMutation).toBe('push');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  it('omits a stored-element recipe after an unsupported local mutation', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Cell { uint256 value; }
+      contract Archive {
+        mapping(uint256 => Cell[]) history;
+        function append(uint256 key, Cell selected) public {
+          delete selected;
+          history[key].push(selected);
+          require(true);
+        }
+      }
+    `, { forceStateful: true, solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const access = artifact.abi.find((fn) => fn.name === 'append')?.entryAccesses?.[0];
+    expect(access).toMatchObject({ arrayMutation: 'push' });
+    expect(access?.storedElementSource).toBeUndefined();
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
   it('groups distinct fixed writes to one collection by final entry slot', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;
@@ -70,14 +155,40 @@ describe('vmap fixed-write batch metadata', () => {
       function plusTwice(int k) external { m[k].x += 1; m[k].x += 1; require(true); }
       function plusOnce(int k) external { m[k].x = m[k].x + 1; require(true); }
     }`, { forceStateful: true });
+    // The coalescer preserves the sequential expression tree. Runtime semantics are 6 and old+2 respectively;
+    // valueSource need not constant-fold or reassociate those operations to describe them exactly.
     expect(artifact.abi.find((fn) => fn.name === 'litThenRmw')?.entryAccesses?.[0]?.valueSource)
-      .toBe('call:S(lit:6,field:y(map:m(id:k)))');
+      .toBe('call:S(binop:+(lit:5,lit:1),field:y(map:m(id:k)))');
     expect(artifact.abi.find((fn) => fn.name === 'fromParam')?.entryAccesses?.[0]?.valueSource)
       .toBe('call:S(id:a,binop:+(id:a,lit:1))');
     expect(artifact.abi.find((fn) => fn.name === 'plusTwice')?.entryAccesses?.[0]?.valueSource)
-      .toBe('call:S(binop:+(field:x(map:m(id:k)),lit:2),field:y(map:m(id:k)))');
+      .toBe('call:S(binop:+(binop:+(field:x(map:m(id:k)),lit:1),lit:1),field:y(map:m(id:k)))');
     expect(artifact.abi.find((fn) => fn.name === 'plusOnce')?.entryAccesses?.[0]?.valueSource)
       .toBe('call:S(binop:+(field:x(map:m(id:k)),lit:1),field:y(map:m(id:k)))');
+  });
+
+  it('coalesces dependent field writes keyed by a stable transaction intrinsic', () => {
+    const failures: unknown[] = [];
+    const artifact = compileString(`contract NeutralStore() {
+      struct Pair { int left; int right; }
+      mapping(address => Pair) records;
+      function revise(int delta) public {
+        this.records[msg.sender].left = this.records[msg.sender].left + delta;
+        this.records[msg.sender].right = this.records[msg.sender].left + 1;
+        require(true);
+      }
+    }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      __artifactCache: false, __attemptFailureBox: { failures }, __strictNoInternalRecovery: true,
+    });
+    expect(failures).toEqual([]);
+    const revise = artifact.abi.find((fn) => fn.name === 'revise');
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'revise'))
+      .toMatchObject({ eligible: true, physicalEntrySlots: [0] });
+    expect(revise?.entryAccesses).toHaveLength(1);
+    expect(revise?.entryAccesses?.[0]?.valueSource).toContain('call:Pair(');
+    expect(revise?.entryAccesses?.[0]?.valueSource).toContain('binop:+(');
   });
 
   it('records a mapping fixed-array element write as arrset valueSource', () => {

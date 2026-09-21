@@ -262,3 +262,118 @@ status, and whether a Hardhat project was detected.
 `@solidcash/solidhat` declares `sideEffects: false`. Configuration, initialization, Vitest integration, and each
 Hardhat/Ethers generation are independent export-map entry points. The initializer does not load the compiler,
 network runtime, or compatibility shims; task runtime modules are loaded only when a task is executed.
+
+## Offline mode
+
+A ported suite that talks to a live service is not a test. It passes on the machine where the daemon happens to be
+running and fails in CI; it returns whatever that service currently holds instead of what the assertion describes;
+it spends its time on sockets and retries; and when it goes green you cannot tell whether your code is correct or
+the service simply answered.
+
+Offline mode replaces those dependencies with in-process stand-ins, so the suite is hermetic, deterministic, and
+fast - and still runs your application code unmodified. It covers three things a ported Hardhat project reaches for:
+
+| what the suite touches | what answers instead |
+| --- | --- |
+| an HTTP service (IPFS-style upload + gateway, price feed, indexer) | an in-memory service that keeps the real wire contract, plus a guard that refuses every request no service claims |
+| the contracts themselves | local models (see [Local contract models](#local-contract-models)) - no compilation, no virtual machine |
+| the EVM-only JSON-RPC methods deployment scripts still call | deterministic shims for `eth_getCode`, `eth_sendRawTransaction`, … |
+
+Because the guard *refuses* anything unregistered, "this suite makes no real network calls" is a property you can
+assert rather than hope for.
+
+### Use it in three steps
+
+**1. Turn it on** in the Vitest config. This is the whole setup for the common case:
+
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import { solidhatPreset } from '@solidcash/solidhat/vitest-preset';
+
+export default defineConfig(solidhatPreset(
+  { hardhat: 2, ethers: 6 },
+  { test: { include: ['test/**/*.test.ts'] } },
+  { offline: true },
+));
+```
+
+The in-memory IPFS upload service and gateway are registered for you, and `IPFS_UPLOAD_SERVICE_URL` /
+`IPFS_GATEWAY_URL` decide which endpoints they answer.
+
+**2. Describe anything else your application talks to** as an `OfflineService`, and declare pre-existing contracts
+the chain did not deploy:
+
+```ts
+import { installOfflineNetwork } from '@solidcash/solidhat/offline-network';
+import { seedOfflineRpcCode } from '@solidcash/solidhat/offline-rpc';
+
+installOfflineNetwork({
+  services: [{
+    name: 'rates',
+    matches: (url) => url.origin === 'https://rates.example.com',
+    handle: async () => Response.json({ usd: 1 }),
+  }],
+});
+seedOfflineRpcCode({ '0x1111111111111111111111111111111111111111': '0x6080' });
+```
+
+**3. Prove it stayed offline.** `assertNoNetworkViolations()` fails with the exact URLs that tried to escape:
+
+```ts
+import { assertNoNetworkViolations, offlineRuntime } from '@solidcash/solidhat/offline-setup';
+
+afterAll(() => assertNoNetworkViolations());
+// offlineRuntime().network.calls lists everything the suite asked for, handled or not
+```
+
+Tuning, when a suite legitimately needs an exception:
+
+- `SOLIDCASH_OFFLINE_MODE=record` - record escapes instead of failing, for diagnosing an existing suite.
+- `SOLIDCASH_OFFLINE_ALLOW=https://host-a/,/^https:\/\/host-b\.example\.com\//` - let matching requests
+  through to the real network.
+- `SOLIDCASH_MOCK_IPFS_SECRET` - require uploads to present that secret, which exercises the application's
+  rejected-upload path.
+
+### Local contract models
+
+`@solidcash/solidhat/mock-contracts` replaces contracts with local programs: models are ordinary classes with a
+caller, an event sink and revert helpers, wrapped in an ethers-shaped handle.
+
+```ts
+class CounterModel extends MockContractModel {
+  static readonly viewMethods = ['count'] as const;
+  static readonly events = { Incremented: ['by'] } as const;
+
+  private value = 0n;
+
+  count(): bigint { return this.value; }
+  increment(by: bigint): void {
+    if (by <= 0n) this.ctx.revert('amount must be greater than 0');
+    this.value += by;
+    this.ctx.emit('Incremented', { by });
+  }
+}
+
+installMockContracts(hre, { upgrades, contracts: { Counter: { create: () => new CounterModel() } } });
+```
+
+`installMockContracts` replaces `getContractFactory`, `getContractAt` and `upgrades.deployProxy`. A name without a
+model is refused rather than silently compiled, so a passing suite cannot be passing because half of it still ran
+on chain. Receipts carry decoded events for the chai `emit` matcher, `addListener`/`queryFilter` work, and models
+participate in `loadFixture` snapshots so fixture state rewinds between tests like a real chain. Deployment
+addresses are valid CashAddresses (`@solidcash/solidhat/cashaddr`) so they round-trip through event payloads.
+
+### Running ported deployment scripts
+
+`runPortedScript` runs a Hardhat-era script in the current process with the globals it expects (`__dirname`,
+`require`, and `process.exit` as a completion signal), so deployment scripts can be exercised against the same
+mocked chain as the rest of the suite.
+
+### Project fixtures
+
+`stageProjectFixture` materializes a ported project under a fixture directory (`.solidhat/` by default) as relative
+symlinks into the checkout: contract sources as file links (the compile walker treats those as targets), vendored
+`@scope` directories as directory links so relative imports keep resolving, and whole trees for `src/`, tests and
+implementations. Staging is idempotent, prunes links the current mirror no longer describes, and refuses to clobber
+real files unless forced.

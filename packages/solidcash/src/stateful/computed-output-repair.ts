@@ -1,9 +1,59 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import { isEmptyValueEntryCommitment } from './SortedList.js';
 
 type VmInstruction = { opcode: number; data?: Uint8Array };
+
+/** Each fixed output has at most three repairable semantic fields, regardless of how many inputs inspect it. */
+export function computedOutputRepairPassLimit(inputCount: number, outputCount: number): number {
+  if (!Number.isSafeInteger(inputCount) || inputCount < 0
+    || !Number.isSafeInteger(outputCount) || outputCount < 0) {
+    throw new Error('Computed-output repair requires finite input and output counts.');
+  }
+  const claims = outputCount * 3;
+  if (!Number.isSafeInteger(claims)) {
+    throw new Error('Computed-output repair surface exceeds the safe integer range.');
+  }
+  return Math.max(1, claims + 1);
+}
+
+/**
+ * Record an authenticated field transition and reject any return to a value already seen at that coordinate.
+ * The caller may discover coordinates in any order; this tracks cycles per exact output field.
+ */
+export function recordComputedOutputRepairTransition(
+  history: Map<string, string>,
+  inputIndex: number,
+  coordinate: string,
+  proposed: string,
+): void {
+  const prior = history.get(coordinate);
+  const claim = `${inputIndex}:${proposed}`;
+  if (prior !== undefined) {
+    throw new Error(
+      `Computed-output repair repeated authenticated claim ${coordinate}`
+      + `${prior === claim
+        ? '' : ' with a conflicting value or conflicting input'}.`,
+    );
+  }
+  history.set(coordinate, claim);
+}
+
+/** Reject repeated normalized transaction states, including coupled multi-coordinate cycles. */
+export function recordComputedOutputConvergenceState(
+  history: Set<string>, fingerprint: string,
+): void {
+  if (history.has(fingerprint)) {
+    throw new Error('Computed-output repair convergence cycle in the normalized transaction state.');
+  }
+  history.add(fingerprint);
+}
+
+/** Build a fixed-width identity without retaining each complete serialized transaction. */
+export function computedOutputConvergenceFingerprint(transaction: Uint8Array): string {
+  return binToHex(hash256(transaction));
+}
 
 /** VM observers run before libauth's conditional-operation wrapper, including for opcodes in untaken branches. */
 export function isActiveVmControlBranch(controlStack: readonly boolean[]): boolean {
@@ -148,14 +198,20 @@ export function canApplyRepairedNftCommitment(args: {
   proposed: Uint8Array;
   hasLockingBytecode: boolean;
   fixedStateSlot: boolean;
+  explicitOverride?: boolean;
   authenticatedMutableSlot?: boolean;
   maximumCommitmentBytes?: number;
 }): RepairedNftApply {
   const {
     capability, currentCommitmentHex, proposed, hasLockingBytecode, fixedStateSlot,
+    explicitOverride = false,
     authenticatedMutableSlot = false,
     maximumCommitmentBytes = 128,
   } = args;
+  // An imperative SDK override is a caller assertion, not a derivation placeholder. If it disagrees with the
+  // covenant, leave the mismatch intact so final preflight refuses it instead of silently substituting the
+  // covenant-observed value. Auto-derived and delegated fixed state remains repairable.
+  if (explicitOverride) return 'skip';
   if (capability !== 'mutable' && capability !== 'none') return 'skip';
   if (isScidIdentityCommitment(currentCommitmentHex) || isScidIdentityCommitment(proposed)) {
     return 'skip';

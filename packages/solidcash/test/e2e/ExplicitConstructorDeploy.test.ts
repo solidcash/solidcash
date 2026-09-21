@@ -72,6 +72,84 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     expect(state).toMatchObject({ counter: 1n, fee: 100n, untouched: 0n });
   });
 
+  it('derives a finite if/else dynamic constructor assignment from its runtime arguments', async () => {
+    const artifact = compileString(`
+      contract C() {
+          string selected;
+          constructor(bool takeLeft, string left, string right) {
+              if (takeLeft) {
+                  this.selected = left;
+              } else {
+                  this.selected = right;
+              }
+          }
+          function read() view returns (string) { return this.selected; }
+      }
+    `);
+
+    expect(artifact.abi.find((entry) => entry.name === '__construct')?.dynamicWriteSources)
+      .toMatchObject({ selected: { kind: 'ternary' } });
+
+    const left = 'left branch '.repeat(14);
+    const right = 'chosen right branch '.repeat(20);
+    const { result: rightResult } = await deploy(artifact, [], 'b3c4', {}, [false, left, right]);
+    expect(await rightResult.contract.getState()).toMatchObject({ selected: right });
+
+    const { result: leftResult } = await deploy(artifact, [], 'b4c5', {}, [true, left, right]);
+    expect(await leftResult.contract.getState()).toMatchObject({ selected: left });
+  });
+
+  it('derives multiple ordered and nested dynamic assignments with branch-dependent chunk counts', async () => {
+    const artifact = compileString(`
+      contract C() {
+          int scalar;
+          string selected;
+          bytes memo;
+          constructor(int route, bool flip, string left, string middle, string right, bytes a, bytes b) {
+              this.scalar = 1;
+              string aliasValue = left;
+              if (flip) { aliasValue = middle; }
+              if (route == 0) {
+                  this.selected = aliasValue;
+              } else if (route == 1) {
+                  this.selected = right;
+              } else {
+                  this.selected = flip ? middle : left;
+              }
+              this.scalar = 2;
+              if (flip) { this.memo = a; } else { this.memo = b; }
+          }
+          function read() view returns (int) { return this.scalar; }
+      }
+    `);
+    expect(Object.keys(artifact.abi.find((entry) => entry.name === '__construct')
+      ?.dynamicWriteSources ?? {}).sort()).toEqual(['memo', 'selected']);
+
+    const short = 'short';
+    const middle = 'middle branch '.repeat(12);
+    const long = 'long branch with several chunks '.repeat(14);
+    const smallMemo = new Uint8Array([1, 2, 3]);
+    const largeMemo = new Uint8Array(290).fill(7);
+
+    const { result: shortResult } = await deploy(
+      artifact, [], 'b5c6', {}, [0n, false, short, middle, long, largeMemo, smallMemo],
+    );
+    expect(await shortResult.contract.getState()).toMatchObject({
+      scalar: 2n, selected: short, memo: smallMemo,
+    });
+
+    const { result: longResult } = await deploy(
+      artifact, [], 'b6c7', {}, [1n, true, short, middle, long, largeMemo, smallMemo],
+    );
+    expect(await longResult.contract.getState()).toMatchObject({
+      scalar: 2n, selected: long, memo: largeMemo,
+    });
+
+    const mutableOutputs = (result: typeof shortResult) => result.tx.outputs
+      .filter((output) => output.token?.nft?.capability === 'mutable').length;
+    expect(mutableOutputs(longResult)).toBeGreaterThan(mutableOutputs(shortResult));
+  });
+
   it('uses the full constructor NFT layout inside a sparse internal helper', async () => {
     const artifact = compileString(`
       contract C() {

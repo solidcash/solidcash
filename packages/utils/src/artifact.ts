@@ -5,6 +5,13 @@ export interface ResolvedImport {
 
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
+/** Exact ABI entry-point identity for overload-safe compiler and SDK selection. */
+export interface AbiFunctionReference {
+  name: string;
+  /** Four-byte function selector as eight hexadecimal characters (the optional `0x` prefix is accepted). */
+  selector: string;
+}
+
 export interface CompilerOptions {
   /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
   maximumInputBytes?: number;
@@ -17,6 +24,14 @@ export interface CompilerOptions {
    * and column-accurate failing snippets are not.
    */
   sourceMap?: boolean;
+  /**
+   * Emit the code generator's bytecode verbatim instead of the peephole/structural optimiser's output. Default
+   * true (optimise). The unoptimised script keeps a one-to-one instruction/source-map correspondence, so a VM
+   * instruction pointer names the exact source line and require that produced it instead of the approximate
+   * window an optimised map forces. Debugging only: scripts are larger and evaluate more opcodes, so it must not
+   * be used for deployed artifacts. `SOLIDC_NO_OPTIMISE=1` selects it for a whole compile run.
+   */
+  optimise?: boolean;
   /** Suppress non-fatal compiler warnings while preserving errors and ordinary command output. */
   suppressWarnings?: boolean;
   /**
@@ -24,12 +39,23 @@ export interface CompilerOptions {
    * Skip compiling ordinary entry-point bodies on that throwaway pass; the binder second pass emits them.
    */
   __cheapAdmissionCodegen?: boolean;
+  /**
+   * Internal. compileFile / project compilation may memoize artifacts even when an importResolver is present.
+   * compileString stays uncached unless SOLIDC_COMPILE_CACHE=1.
+   */
+  __artifactCache?: boolean;
+  /** Internal test-only: parse the generated message-bus route as source (print-and-parse oracle). */
+  __messageBusRouteParseOracle?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
     inputCount: number;
     inputs: readonly AbiInput[];
     functions: readonly { id: number; name: string; bytecode: string }[];
+    /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
+    lifecycle?: true;
+    /** @deprecated Compatibility with pre-merge split artifacts. */
+    splitLifecycle?: true;
   };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
@@ -90,13 +116,22 @@ export interface CompilerOptions {
   // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
   // Optional compile-time surface for large compatibility projects. Direct ABI entry points remain unchanged;
-  // only these named functions are cloned into the authenticated message-bus route. Omitted means all eligible
-  // entry points. This avoids cloning dozens of unrelated external handlers when one atomic DAG needs a few.
-  messageBusHandlers?: readonly string[];
+  // only these functions are cloned into the authenticated message-bus route. A legacy string selects every
+  // overload with that name; an exact reference selects only the entry point with both that name and selector.
+  // Omitted means all eligible entry points. This avoids cloning dozens of unrelated external handlers when one
+  // atomic DAG needs a few.
+  messageBusHandlers?: readonly (string | AbiFunctionReference)[];
   // Compile an otherwise graph-free message-bus participant with the atomic graph envelope. Leaf participants
   // still need per-row logical callers when one composed transaction reaches them from different parents.
   // Omitted preserves the compact local-caller route used by standalone batching.
   messageBusGraphContext?: boolean;
+  /**
+   * Select the message-bus calling convention (`packages/solidc/docs/message-bus-kernel.md`).
+   * Omitted or `true` uses the kernel row loop. `false` is a temporary compatibility escape hatch for
+   * reproducing the historical clone/unroll route. Kernel-ineligible handlers publish `KERNEL_*` reasons;
+   * the resolved convention is published on `artifact.messageBus`.
+   */
+  messageBusKernel?: boolean;
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];
@@ -114,12 +149,70 @@ export interface EmitAbi {
   emitIndex: number;
 }
 
+/** One segment of the source-ordered runtime event plan. Exactly one repeat source is present. */
+export interface RuntimeLoopEventAbi {
+  permutationParam?: string;
+  /** Exact bound expression when the permutation's source domain is not recoverable from its legacy name. */
+  iterationBound?: ExternalCallExpression;
+  repeatCount?: number;
+  /** Exact do-while recurrence domain for a compiler-lowered affine loop. This is mutually exclusive with
+   * permutationParam and repeatCount. Expressions may reference counterName through an `identifier` node. */
+  iterationDomain?: RuntimeLoopIterationDomainAbi;
+  eventSignatures: readonly string[];
+  /** Replayable per-site event arguments, aligned with eventSignatures. Required for iteration domains. For a
+   * permutation-backed segment, loopIndex sources encode the logical source counter independently of key order. */
+  arguments?: readonly (readonly ExternalCallExpression[])[];
+  /** Per-site runtime predicates, aligned with eventSignatures. Missing entries are unconditional. */
+  conditions?: readonly (ExternalCallExpression | null)[];
+  /** Source-order predicate which ends the loop after the current logical iteration. */
+  iterationBreakCondition?: ExternalCallExpression;
+  /** Function-local execution segment, shared with transfers produced by the same loop. */
+  effectSequence?: number;
+  /** Per-site order among all event and transfer effects in this segment. */
+  effectOrder?: readonly number[];
+}
+
+export interface RuntimeLoopIterationDomainAbi {
+  counterName: string;
+  initialValue: ExternalCallExpression;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  /** Compiler-proven frame ceiling. Consumers must additionally enforce their own hard resource ceiling. */
+  maximumIterations: number;
+}
+
+/** One repeated BCH-transfer segment produced by a runtime counter loop. */
+export interface RuntimeLoopTransferAbi {
+  permutationParam: string;
+  siteCount: number;
+  /** Effect kind per source site. Omitted by older artifacts whose sites are all plain BCH transfers. */
+  siteKinds?: readonly ('bch' | 'token' | 'nft')[];
+  /** Token-container slot per source site; null for plain BCH sites. */
+  tokenContainerSlots?: readonly (number | null)[];
+  /** Per-site runtime predicates, aligned with the source transfer sites. */
+  conditions?: readonly (ExternalCallExpression | null)[];
+  /** Function-local execution segment, shared with events produced by the same loop. */
+  effectSequence?: number;
+  /** Per-site order among all event and transfer effects in this segment. */
+  effectOrder?: readonly number[];
+}
+
 export interface TokenContainerAccessAbi {
   keyParam: string;
   keySource?: 'param' | 'own';
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
+}
+
+/** One statically allocated token-container transfer alternative. Branch alternatives may share transferIndex;
+ * exactly one condition may be true for each physical slot in a concrete invocation. */
+export interface TokenContainerTransferSiteAbi {
+  transferIndex: number;
+  tokenContainerSlot: number;
+  kind: 'token' | 'nft';
+  /** Undefined is unconditional; null records a conditional predicate older tooling cannot evaluate. */
+  condition?: ExternalCallExpression | null;
 }
 
 // A positional argument to a delegate-library call (`L.f(...)`). Either a forwarded enclosing-function
@@ -132,6 +225,9 @@ export type LibraryCallArg =
 export interface AbiOutput {
   type: string;
 }
+
+/** Versioned tuple-wide wire representation for authenticated external-call results. */
+export type ExternalResultEncoding = 'evm-abi-v1' | 'compact-pushdata-v1';
 
 /** Kinds of slots in the 1:1 block layout. */
 export type BlockSlotKind =
@@ -154,6 +250,8 @@ export type BlockSlotKind =
   | 'lowLevelCall'
   /** SDK-authenticated logical contract identity which is distinct from the physical participant master. */
   | 'identityAnchor'
+  /** A merge-only minting master consumed by the authenticated lifecycle tail route. */
+  | 'lifecycleMaster'
   | 'trailing';
 
 /** A single slot in the function's block layout. */
@@ -180,6 +278,130 @@ export interface FunctionBlockLayout {
 }
 
 /**
+ * Compiler-authored geometry for one typed stateful child-creation site reached by a message-bus handler.
+ *
+ * This is published even while the kernel admission gate remains closed, so transaction assemblers can grow
+ * against an exact, application-neutral topology rather than rediscovering `new C(...)` from contract names.
+ * One genesis input supplies the category; the corresponding output run is the child master followed by its
+ * mutable data NFTs.
+ */
+/** A pure value expression which an SDK can reproduce from a decoded handler row and authenticated pre-state. */
+export type ChildDeploymentValueRecipe =
+  | { kind: 'handlerInput'; inputIndex: number; resultType?: string }
+  /** The graph-authenticated logical caller for this invocation row. */
+  | { kind: 'logicalCaller'; resultType: 'address' }
+  /** A scalar decoded from the authenticated incoming participant state commitment. */
+  | { kind: 'state'; name: string; resultType: string }
+  | { kind: 'intLiteral'; value: string; resultType: string }
+  | { kind: 'boolLiteral'; value: boolean; resultType: string }
+  | { kind: 'bytesLiteral'; value: string; resultType: string }
+  | { kind: 'cast'; resultType: string; operand: ChildDeploymentValueRecipe }
+  | { kind: 'aggregate'; resultType: string; elements: readonly ChildDeploymentValueRecipe[] }
+  | { kind: 'concat'; resultType: string; operands: readonly ChildDeploymentValueRecipe[] }
+  | {
+    kind: 'hash';
+    algorithm: 'ripemd160' | 'sha1' | 'sha256' | 'hash160' | 'hash256';
+    resultType: string;
+    operand: ChildDeploymentValueRecipe;
+  }
+  | { kind: 'unary'; operator: '!' | '-'; resultType: string; operand: ChildDeploymentValueRecipe }
+  | {
+    kind: 'conditional';
+    resultType: string;
+    condition: ChildDeploymentValueRecipe;
+    ifTrue: ChildDeploymentValueRecipe;
+    ifFalse: ChildDeploymentValueRecipe;
+  }
+  | {
+    kind: 'binary';
+    operator: '*' | '/' | '%' | '+' | '-' | '<' | '<=' | '>' | '>=' | '==' | '!=' | '&&' | '||';
+    resultType: string;
+    left: ChildDeploymentValueRecipe;
+    right: ChildDeploymentValueRecipe;
+  };
+
+/** A fixed BCH transfer whose operands are reproducible from one authenticated handler row. */
+export interface FixedBchTransferAbi {
+  /** Physical transfer register within the handler's per-row effect frame. */
+  transferIndex: number;
+  /** Legacy shallow sources retained for artifact consumers which do not yet evaluate recipes. */
+  recipient: ArgSource;
+  amount: ArgSource;
+  /** Canonical typed recipes used by kernel composition. Absence means the operand is not materializable. */
+  recipientRecipe?: ChildDeploymentValueRecipe;
+  amountRecipe?: ChildDeploymentValueRecipe;
+  /** A stateless child address derived from compiler-pinned body bytes and pure row recipes. */
+  derivedRecipient?: {
+    contractName: string;
+    creationBytecode: string;
+    constructorInputs: readonly AbiInput[];
+    constructorArgs: readonly ChildDeploymentValueRecipe[];
+    salt?: ChildDeploymentValueRecipe;
+  };
+  callOption?: 'value';
+  /** Exact source-path predicate. Null explicitly means that source reachability is not reproducible. */
+  condition?: ExternalCallExpression | null;
+}
+
+/** Completely folded, constructor-only initial state for one child deployment site. */
+export interface ChildDeploymentGenesisStateAbi {
+  kind: 'constructor';
+  fields: readonly {
+    name: string;
+    type: string;
+    nftIndex: number;
+    fieldIndex: number;
+    value: ChildDeploymentValueRecipe;
+  }[];
+}
+
+/** One finite entry NFT created by a fully replayable child constructor. */
+export interface ChildDeploymentGenesisEntryAbi {
+  collection: string;
+  collectionSignature: string;
+  keyType: string;
+  valueType: string;
+  key: ChildDeploymentValueRecipe;
+  value: ChildDeploymentValueRecipe;
+}
+
+export interface ChildDeploymentSiteAbi {
+  siteIndex: number;
+  contractName: string;
+  occurrence: 'once' | 'conditional' | 'loop' | 'recursive';
+  /** Offset and width of this source occurrence inside its route row's compiler-owned deployment frame. */
+  spanOffset?: number;
+  spanWidth?: number;
+  /** Exact pure row expression deciding whether a conditional occurrence executes. */
+  activation?: ChildDeploymentValueRecipe;
+  genesisInputCount: 1;
+  masterOutputCount: 1;
+  dataNftOutputCount: number;
+  entryNftOutputCount?: number;
+  totalOutputCount: number;
+  categorySource: 'genesis-input-outpoint-txhash';
+  constructorArgs: readonly (ChildDeploymentValueRecipe | { kind: 'expression' })[];
+  salt?: { kind: 'handlerInput'; inputIndex: number } | { kind: 'literal'; value: string }
+  | ChildDeploymentValueRecipe | { kind: 'expression' };
+  /** BCH sent by this creation site in its separately reserved transfer slot. The recipient is always the
+   * compiler-authenticated child locking bytecode and is therefore intentionally not caller-supplied metadata. */
+  value?: {
+    transferIndex: number;
+    amount: ChildDeploymentValueRecipe | { kind: 'expression' };
+  };
+  /** Exact child body embedded by the parent's address computation, before category/salt pinning. */
+  creationBytecode: string;
+  /** Hash of the canonical child state geometry used to interpret `genesisState`. */
+  childLayoutDigest?: string;
+  /** Present only when the complete constructor transition was folded into pure row recipes. */
+  genesisState?: ChildDeploymentGenesisStateAbi;
+  /** Finite constructor-created collection entries, in canonical child-output order. */
+  genesisEntries?: readonly ChildDeploymentGenesisEntryAbi[];
+  /** This site's genesis includes one compiler-folded call on the freshly created child. */
+  hasFoldedChildCall?: true;
+}
+
+/**
  * Where a value the covenant depends on came from in the source the artifact was compiled from.
  *
  * The published TYPE of a value answers nothing about who chose it: `address t = address(target)` with
@@ -202,11 +424,36 @@ export interface ValueProvenance {
   name?: string;
 }
 
+/**
+ * Exact, fail-closed recipe for collapsing a source forwarding function into an authenticated delegate
+ * execution frame. Publication alone grants no message-bus admission: the kernel verifier must still bind the
+ * resolved implementation and payload to the executor input while keeping state and outputs owned by the
+ * participant block.
+ */
+export interface DelegateForwardingAbi {
+  version: 1;
+  callIndex: number;
+  payloadInput: number;
+  target: ValueProvenance;
+  targetBinding:
+  | { kind: 'constructorArg'; input: number; name: string }
+  | { kind: 'literal'; lockingBytecode: string };
+  frame: {
+    stateOwner: 'participant';
+    executor: 'target-input';
+    calldata: 'payload-input';
+    outputOwner: 'participant';
+  };
+  terminalRequire: true;
+}
+
 export interface AbiFunction {
   name: string;
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
   inputs: readonly AbiInput[];
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
+  /** Tuple-wide wire representation used for typed external results. */
+  resultEncoding?: ExternalResultEncoding;
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
   /**
@@ -255,27 +502,32 @@ export interface AbiFunction {
     tokenTransferWidth: number;
     tokenTransferOffset?: number;
     tokenNftTransfers: boolean;
+    deployBase?: number;
+    deployWidth?: number;
+    deployOffset?: number;
+    deployInputOffset?: number;
   };
   entryAccesses?: readonly EntryAccessAbi[];
+  /** Compiler proof that source-effect ordinals form one straight-line order. */
+  sourceEffectOrder?: 'linear' | 'unsupported-flow';
+  /** Compiler proof that the complete function body is exactly `return mapping[keys...]`, with each key a
+   * direct visible parameter. SDKs may use this to answer the read without executing a derivation transaction. */
+  directMappingReturn?: {
+    collection: string;
+    keyParams: readonly string[];
+  };
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
   /** Local call-result values forwarded as arguments into later external callsites. */
-  resultConsumers?: readonly {
-    consumerCallsiteId: number;
-    argument: number;
-    producerCallsiteId: number;
-  }[];
+  resultConsumers?: readonly ExternalResultConsumerAbi[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
+  runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
+  runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
   transferCount?: number;
-  transfers?: readonly {
-    transferIndex: number;
-    recipient: ArgSource;
-    amount: ArgSource;
-    callOption?: 'value';
-  }[];
+  transfers?: readonly FixedBchTransferAbi[];
   deployTargets?: readonly {
-    contractName: string; dataNftCount: number;
+    contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
     // or null for a non-trivial expression. Lets the SDK derive childConstructorArgs from the deploy args.
     constructorArgs?: readonly (string | null)[];
@@ -286,8 +538,12 @@ export interface AbiFunction {
     creationBytecode?: string;
     /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
     hasFoldedChildCall?: boolean;
+    childLayoutDigest?: string;
+    genesisState?: ChildDeploymentGenesisStateAbi;
+    genesisEntries?: readonly ChildDeploymentGenesisEntryAbi[];
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+  tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
   usesMsgSender?: boolean;
   /**
    * The signature check that authorizes this function, described by the key it is checked against.
@@ -317,6 +573,10 @@ export interface AbiFunction {
   lowLevelCalls?: readonly {
     callMode: 'call' | 'staticcall' | 'delegatecall';
     dataParamIndex?: number;
+    /** Source reachability of this physical callsite. Absent identifies an older artifact, never `once`. */
+    occurrence?: 'once' | 'conditional' | 'loop';
+    /** Exact compiler-proven ceiling (one for a branch, literal trip count for a fixed loop). */
+    maximumOccurrences?: number;
     /**
      * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
      * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
@@ -325,6 +585,12 @@ export interface AbiFunction {
      */
     target?: ValueProvenance;
   }[];
+  /**
+   * Compiler proof that this function is only a singular delegate frame: one unconditional low-level
+   * delegatecall statement followed by `require(true)`. Consumers may replace that forwarding frame with an
+   * authenticated implementation route only when they also bind the published target and payload input.
+   */
+  delegateForwarding?: DelegateForwardingAbi;
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
   // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
   // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).
@@ -336,6 +602,12 @@ export interface AbiFunction {
   dynamicReads?: readonly string[];
   // Dynamic-storage vars written on-chain; the SDK consumes their old chunks and creates the new ones.
   dynamicWrites?: readonly string[];
+  /**
+   * Exact constructor-time values for dynamic writes which the SDK can replay before genesis. Expressions are
+   * published only when every control-flow arm assigns the same variable and the complete expression is
+   * serializable; absence is unknown and must retain VM-probe fallback behavior.
+   */
+  dynamicWriteSources?: Readonly<Record<string, ExternalCallExpression>>;
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];
@@ -349,6 +621,17 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
+  /**
+   * Optional compiler-owned replay programs for locally constructed key vectors. These become actionable only
+   * when the corresponding kernel route authenticates the replayed key/rank relation; consumers must ignore
+   * an artifact carrying a descriptor without that route capability.
+   */
+  constructedKeyVectors?: readonly ConstructedKeyVectorV1Abi[];
+  /**
+   * Compiler-authored affine recursive-frame relation. It is not a kernel capability:
+   * absence and presence both require the existing recursive settlement admission checks.
+   */
+  affineRecursiveFrames?: readonly AffineRecursiveFrameV1Abi[];
   /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[]; linear?: boolean }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
@@ -375,6 +658,47 @@ export interface AbiFunction {
   ecrecoverLoopReads?: boolean; // dynamic ecrecover loop: the SDK co-spends one recovery pair per sig-array element
 }
 
+/**
+ * One compiler-authenticated runtime-journal stream which may use a route-local
+ * physical protocol. A handler selector and its compact access-stream ordinal
+ * are both required: a route capability must never defer unrelated handler
+ * rows merely because they share the same artifact.
+ */
+export interface KernelEntryJournalCapabilityScopeAbi {
+  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
+  handlerSelector: string;
+  /** Stable compiler-owned ordinal in that handler's journal-access vector. */
+  journalAccessStreamIndex: number;
+}
+
+/** Physical ownership selected by completed compiler descriptors for one kernel journal family. */
+export type KernelJournalDispositionAbi = 'carrier' | 'eager-journal' | 'neutral';
+
+/** One compiler-owned compact journal stream in its stable handler-local ordinal space. */
+export interface KernelJournalDispositionStreamAbi {
+  journalAccessStreamIndex: number;
+  /** Digest of the exact completed stream descriptor used by final code generation. */
+  descriptorDigest: string;
+  disposition: KernelJournalDispositionAbi;
+}
+
+/** Completed-descriptor disposition for one external handler. */
+export interface KernelJournalDispositionHandlerScopeAbi {
+  /** Canonical four-byte external handler selector, lowercase hex without 0x. */
+  selectorHex: string;
+  /** Digest of the complete final-codegen descriptor family for this handler. */
+  completedDescriptorDigest: string;
+  mode: KernelJournalDispositionAbi;
+  /** Ordered exactly as the handler's compact journal stream vector. */
+  streams: readonly KernelJournalDispositionStreamAbi[];
+}
+
+/** Versioned, ordered projection of the compiler's final-codegen journal ownership decision. */
+export interface KernelJournalDispositionsAbi {
+  version: 1;
+  handlers: readonly KernelJournalDispositionHandlerScopeAbi[];
+}
+
 export interface CollectionIterationAbi {
   collection: string;
   mode: 'entries' | 'keys' | 'values';
@@ -395,6 +719,12 @@ export interface InvokeDebugInformation extends FunctionDebugInformation {
 
 export interface DebugInformation {
   bytecode: string; // unlike `bytecode` property above, this is a hex-encoded binary string
+  /**
+   * Present and `false` only when the artifact was compiled with `optimise: false`. The instruction stream is then
+   * the code generator's own, so `sourceMap`, `requires` and `logs` instruction pointers are exact and a VM
+   * failure can be attributed to the source construct that produced it without a correction scan.
+   */
+  optimise?: boolean;
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements
@@ -436,7 +766,7 @@ export interface StateVariableInfo {
   fieldIndex: number;
   visibility?: string;  // 'external' | 'internal' | 'private' - omitted when 'public' (default)
   immutable?: boolean;  // true when variable can only be assigned in constructor - omitted when false (default)
-  contractType?: string;  // contract/interface name when type is a contract reference (e.g. 'MarketplaceV1')
+  contractType?: string;  // contract/interface name when type is a contract reference (e.g. 'Registry')
   packed?: boolean;  // true when array is stored as packed blob in data NFT - omitted when false (default)
   // true for dynamic-storage vars (string / unbounded bytes): the data-NFT field holds a uint32 length
   // header (<name>$len) and the value lives in chunk UTXOs. Omitted when false. See dynamic-storage.md.
@@ -481,14 +811,73 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
+/**
+ * Stable identity recipe for every access in one runtime journal stream.
+ *
+ * Record ordinals are necessarily runtime values: first-touch order depends on the actual keys and whether each
+ * key is present. Consumers derive one identity per referenced record as
+ * `(accessStreamIndex, access-program ordinal, decoded record ordinal, record role)`. The predecessor role is
+ * active only when the compact access flags publish a predecessor. Settlement ownership is resolved across the
+ * complete scheduled journal by choosing the last mutating access for each referenced record. This identity names
+ * the access responsible for a record's final disposition; it neither promises that a physical output exists (a
+ * delete can settle to absence) nor changes the journal band's global first-touch record-ordinal ordering.
+ */
+export interface JournalSettlementIdentityAbi {
+  /** Must equal the containing stream's journalAccessStreamIndex. */
+  accessStreamIndex: number;
+  /** Record references are decoded in the route-owned, transaction-wide first-touch ordinal domain. */
+  recordOrdinalScope?: 'global-journal';
+  /** The compact access program's zero-based operation order supplies the source occurrence. */
+  accessOrdinalSource: 'access-program-order';
+  /**
+   * Runtime record references carried by each compact access. The predecessor role is present only when the
+   * canonical access flags carry predecessorRecordOrdinal; listing it here does not itself grant output ownership.
+   */
+  recordOrdinalSources: readonly ['target-record-ordinal', 'predecessor-record-ordinal'];
+  /**
+   * Stream capability, intersected with the decoded access flags: target mutates iff `access.mutates`, predecessor
+   * mutates iff `access.mutates && predecessorRecordOrdinal !== undefined`; all other references are carriers.
+   */
+  settlementRole: 'carrier-only' | 'mutation-settlement';
+  /** Rule selecting the unique settlement owner for a record referenced by several accesses. */
+  settlementOwnership: 'none' | 'last-mutating-access';
+  /**
+   * Physical disposition phase contributed by this stream. Optional only for backward compatibility: newly
+   * compiled carrier reads authenticate an existing input, while mutations authorize a resulting output.
+   */
+  recordDispositionSource?: 'authenticated-carrier' | 'mutation-settlement';
+}
+
 // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
   collection: string;
+  /** Hex-encoded 20-byte hash binding this access stream to one collection covenant. */
+  collectionHash: string;
+  /** Stable source-order position of this stream in the selected row's compact journal-access vector. */
+  journalAccessStreamIndex: number;
+  /** Stable runtime record/settlement identity recipe. Optional only for backward compatibility with old artifacts. */
+  settlementIdentity?: JournalSettlementIdentityAbi;
+  /** Opaque compiler ordinal shared by operation streams executed within the same source loop. */
+  journalExecutionGroup?: number;
   fixedKeyParams: readonly string[];
   fixedKeySources?: readonly KeySourceAbi[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
+  /** Composite-key positions populated from the same varying element. Omitted means the final key component. */
+  varyingKeyIndices?: readonly number[];
+  /** Complete key-component recipes evaluated at the logical counter value before physical slot sorting. */
+  varyingKeyExpressions?: readonly ExternalCallExpression[];
+  /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
+  constructedKeyReplay?: boolean;
+  /** The key recipe selects among more than two branch-merged constructed-array definitions. */
+  multiArmConstructedKeyReplay?: boolean;
+  /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
+  crossArrayKeyReplay?: boolean;
+  /** The key recipe replays a forwarded array mutated by a nested helper which also returns a value. */
+  nestedHelperReturnReplay?: boolean;
+  /** The write predicate consumes a mutable local assigned earlier in the same logical iteration. */
+  sameIterationMutableSelectionReplay?: boolean;
   /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
   keyDecodeTupleIndex?: number;
   keyDecodeTupleTypes?: readonly string[];
@@ -496,20 +885,66 @@ export interface SortedUpsertLoopAbi {
   predicateArrayParam?: string;
   predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
+  /** Compiler-owned logical-index array used to select valueArrayParam elements without reordering the public array. */
+  valueArrayIndexParam?: string;
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
   valueRuntimeLocal?: string;
   valueRuntimeExpression?: boolean;
+  /** Authenticated source-order trace for a mapping value which carries state between loop iterations. */
+  valueTraceWitnessParam?: string;
+  valueTraceLocal?: string;
+  valueTraceInitial?: ExternalCallExpression;
+  valueTraceUpdates?: readonly {
+    condition?: ExternalCallExpression;
+    expression: ExternalCallExpression;
+  }[];
+  valueTraceAfterUpdates?: readonly {
+    condition?: ExternalCallExpression;
+    expression: ExternalCallExpression;
+  }[];
+  /** Compiler-owned prefix-boundary trace: N+1 counts around N conditional constructed-array resizes. */
+  prefixCountWitnessParam?: string;
+  /** Source-order predicate which advances prefixCountWitnessParam by exactly one. */
+  prefixCountCondition?: ExternalCallExpression;
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
+  /** Compiler-owned logical indices selecting mutationValueArrayParam without reordering the public array. */
+  mutationValueArrayIndexParam?: string;
   mutationValueScalarParam?: string;
   mutationValueConst?: string;
+  /** Replayable source expression for a mutation value not reducible to one direct parameter/literal source. */
+  mutationValueExpression?: ExternalCallExpression;
   mutationIndexArrayParam?: string;
+  /** Compiler-owned logical indices selecting mutationIndexArrayParam without reordering the public array. */
+  mutationIndexArrayIndexParam?: string;
   mutationIndexScalarParam?: string;
   mutationIndexConst?: string;
+  /** Replayable source expression for a setAt index not reducible to one direct parameter/literal source. */
+  mutationIndexExpression?: ExternalCallExpression;
   oldValuesWitnessParam?: string;
-  op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
+  /** Ordering/cardinality of the old-value witness; omitted means the complete logical source domain. */
+  oldValuesWitnessDomain?: 'selected-source';
+  /** Authenticated inverse permutation mapping compact source occurrence to physical witness rank. */
+  sourceOrderIndexParam?: string;
+  /** Exact physical widths of this independently sorted runtime stream. */
+  inputCountParam?: string;
+  outputCountParam?: string;
+  /** Runtime predicate controlling whether this loop contributes any journal entries. */
+  condition?: ExternalCallExpression;
+  /** Predicate selecting logical counter values which actually contribute journal entries. */
+  iterationCondition?: ExternalCallExpression;
+  /** Predicate which terminates source-domain replay after the current iteration. */
+  iterationBreakCondition?: ExternalCallExpression;
+  /** Public-argument expression computing a non-affine source-loop bound. */
+  iterationBound?: ExternalCallExpression;
+  /** The source condition is `counter != bound`; the endpoint must be exactly reachable by the signed step. */
+  iterationExactBound?: boolean;
+  /** Public-argument expression computing the signed source-loop step. */
+  iterationStep?: ExternalCallExpression;
+  /** `read` authenticates and exactly preserves an existing counter-keyed entry. */
+  op: '+' | '-' | 'set' | 'delete' | 'read';
 }
 
 export interface KeySourceAbi {
@@ -524,10 +959,16 @@ export interface KeySourceAbi {
 }
 
 export interface EntryAccessAbi {
+  /** Physical entry-slot ordinal. Differs from this array's index when runtime-loop entries were filtered out. */
+  slotIndex?: number;
   collection: string;
   keyParams: string[];
   keySources?: readonly KeySourceAbi[];  // optional for backward compat with old artifacts
   operations: readonly string[];
+  /** Compiler-authored mutation identities; not a control-flow reachability or terminality proof. */
+  mutationEffectOrdinals?: readonly number[];
+  /** Compiler proof that this entry stores a dynamic-array value in authenticated continuation chunks. */
+  chunkableArrayValue?: true;
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
@@ -536,6 +977,15 @@ export interface EntryAccessAbi {
   valueParam?: string;
   /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
   valueSource?: string;
+  /** Compiler-authenticated, typed source of the element appended by one exact chunkable-array mutation. */
+  storedElementSource?: {
+    version: 1;
+    mutationEffectOrdinal: number;
+    elementType: string;
+    expression: ExternalCallExpression;
+  };
+  /** Exact collection-array mutation represented by this access. */
+  arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
 }
 
 export interface ExternalReadAbi {
@@ -549,12 +999,14 @@ export interface ExternalReadAbi {
 
 export interface ArgSource {
   kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
-    | 'expression';
+  | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
   indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
-  indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
+  indexValue?: number;     // for 'arrayElement': fixed index, or the index at occurrence zero when indexStepValue is present
+  indexStepValue?: number; // for 'arrayElement': per-occurrence index delta of a loop induction variable index
   initialValue?: string;   // for 'loopIndex': value at occurrence zero
   stepValue?: string;      // for 'loopIndex': delta per reached occurrence
+  stepExpression?: ExternalCallExpression; // for 'loopIndex': runtime delta from public arguments
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
@@ -566,6 +1018,8 @@ export interface ExternalCallExpression {
   name?: string;
   /** Compiler-stable producer identity within the containing function. */
   callsiteId?: number;
+  /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
+  resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;
@@ -586,6 +1040,80 @@ export interface ExternalCallExpression {
   statements?: readonly ExternalCallStatement[];
 }
 
+/** One authenticated use of an earlier graph call's result. */
+export type ExternalResultConsumerAbi = {
+  consumerCallsiteId: number;
+  producerCallsiteId: number;
+  /** Exact component selected from the producer's canonical return tuple. */
+  resultIndex?: number;
+} & (
+  | { argument: number; condition?: never }
+  | { condition: true; argument?: never }
+);
+
+/**
+ * A compiler-authored, finite proof program for a locally constructed mapping-key vector.
+ *
+ * This is deliberately data-only ABI metadata: consumers must evaluate it with the narrow v1 replay
+ * interpreter, never by executing source text or inspecting local variable names. Omission is not a weaker
+ * descriptor; it means the compiler did not prove a replay program and kernel admission must remain closed.
+ */
+export interface ConstructedKeyVectorV1Abi {
+  version: 1;
+  /** Stable ordinal within the owning handler's compact journal-access stream. */
+  vectorOrdinal: number;
+  /** Exact fixed-width element ABI type. */
+  elementType: string;
+  allocationLength: ExternalCallExpression;
+  producer: {
+    domain: {
+      kind: 'pre-test' | 'post-test';
+      start: ExternalCallExpression;
+      bound: ExternalCallExpression;
+      step: ExternalCallExpression;
+      comparison: '<' | '<=' | '>' | '>=';
+    };
+    writes: readonly {
+      index: ExternalCallExpression;
+      value: ExternalCallExpression;
+      condition?: ExternalCallExpression;
+    }[];
+  };
+  consumer: {
+    index: ExternalCallExpression;
+    vectorElementComponent: number;
+    keyComponentCount: number;
+    fixedComponents: readonly { component: number; expression: ExternalCallExpression }[];
+  };
+}
+
+/**
+ * A data-only proof of the relationship between a source recursive unwind rank and the
+ * mapping accesses made by that frame. It intentionally names neither source locals nor
+ * state declarations: `accessOrdinal` binds it to the already-published compact journal
+ * access order. A consumer must not treat this metadata as permission to change the
+ * physical settlement protocol; it is preparatory evidence for a future authenticated
+ * recursive-frame bridge.
+ */
+export interface AffineRecursiveFrameV1Abi {
+  version: 1;
+  phase: 'unwind';
+  inductionParameterIndex: number;
+  step: ExternalCallExpression;
+  maximumFrames: 64;
+  parameterProgressions: readonly {
+    parameterIndex: number;
+    direction: 'add' | 'subtract';
+    step: ExternalCallExpression;
+    counterSlope?: ExternalCallExpression;
+  }[];
+  accesses: readonly {
+    accessOrdinal: number;
+    operation: 'read' | 'set' | 'delete';
+    key: readonly ExternalCallExpression[];
+  }[];
+}
+
 export interface ExternalCallStatement {
   kind: 'variable' | 'assign' | 'while' | 'branch' | 'return' | 'expression' | 'block';
   name?: string;
@@ -599,6 +1127,8 @@ export interface ExternalCallStatement {
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
+  /** Compiler-authored function-local program point of this call effect. */
+  sourceEffectOrdinal?: number;
   /** Source start of the call expression, retained for deterministic SDK derivation diagnostics. */
   sourceLocation?: { line: number; column: number };
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
@@ -642,6 +1172,8 @@ export interface ExternalCallAbi {
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: readonly string[];
+  /** Tuple-wide result representation expected by this compiler-authored callsite. */
+  resultEncoding?: ExternalResultEncoding;
   returnEventSignature?: string;
   computedOffset?: number;
   callMode?: 'call' | 'staticcall' | 'delegatecall';
@@ -652,6 +1184,10 @@ export interface ExternalCallAbi {
   rawArgSources?: readonly ArgSource[];
   batchInvocations?: readonly {
     selector: string;
+    /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
+    sourceCallsiteId?: number;
+    /** Compiler-authored program point of the source row before physical batching. */
+    sourceEffectOrdinal?: number;
     logicalIndex: number;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];
@@ -762,13 +1298,10 @@ export interface InvocationAnalysisFunction {
   resultDependencies?: readonly {
     callsiteId: number;
     returnTypes: readonly string[];
+    resultEncoding?: ExternalResultEncoding;
     opaque: boolean;
   }[];
-  resultConsumers?: readonly {
-    consumerCallsiteId: number;
-    argument: number;
-    producerCallsiteId: number;
-  }[];
+  resultConsumers?: readonly ExternalResultConsumerAbi[];
   /**
    * True only when every external-call occurrence is statically singular. Conditional and loop callsites
    * require a runtime occurrence proof and therefore remain explicitly unbounded in this summary.
@@ -781,12 +1314,7 @@ export interface InvocationAnalysisFunction {
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
-  transfers?: readonly {
-    transferIndex: number;
-    recipient: ArgSource;
-    amount: ArgSource;
-    callOption?: 'value';
-  }[];
+  transfers?: readonly FixedBchTransferAbi[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   dynamicReads?: readonly string[];
   dynamicWrites?: readonly string[];
@@ -820,6 +1348,21 @@ export interface InvocationAnalysisArtifact {
  * Silent drift between the copies would therefore move a real consensus-facing limit.
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
+
+/**
+ * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
+ * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
+ * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
+ * remains stable when a clean record acquires a longer dirty value tail. The 99-record limit is an explicit
+ * global transport/indexing ceiling across all streams, aligned as a deliberate v1 budget with the reviewed
+ * one-stream access ceiling. Finalized transactions remain subject to independent BCH size and cost limits.
+ */
+export const KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX = '__internal__kernelJournalRecordSegment_';
+export const KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT = 3;
+export const KERNEL_ENTRY_JOURNAL_MAX_RECORDS = 99;
+export const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS = Math.ceil(
+  KERNEL_ENTRY_JOURNAL_MAX_RECORDS / KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
+);
 
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
@@ -869,12 +1412,31 @@ export interface Artifact {
   messageBus?: {
     version: 1;
     selector: '53434231';
+    /** False when this artifact carries verifier capability metadata for another co-spent executable route. */
+    routeInBytecode?: boolean;
+    /**
+     * Resolved dispatch of the published route. `kernel-row-loop` only when compiled with
+     * `messageBusKernel: true` and every dispatched handler is kernel-shaped.
+     */
+    convention?: 'legacy-unroll' | 'kernel-row-loop';
+    /** False when every handler was refused and the published route is a non-executable stub. */
+    available?: boolean;
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
+    /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
+     * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
+     * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
+    fixedChunkableWritePolicy?: {
+      version: 1;
+      maximumRows: 1;
+      selectors: readonly string[];
+    };
     /** Compiler-published admission and message-envelope contract for atomic composition. */
     atomicMessageBus?: {
       domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
+      /** Atomic callManifest wire versions accepted by this artifact's verifier program. */
+      protocolVersions?: readonly (1 | 2 | 3 | 4)[];
       /** The final verifier input carries the canonical frame authenticated by every participant binder. */
       messageEnvelope: {
         region: 'participant-verifiers';
@@ -884,12 +1446,44 @@ export interface Artifact {
       maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
     };
+    /**
+     * Versioned route-local entry-journal capabilities. These describe code executed inside the participant's
+     * kernel route, rather than the atomic call-manifest wire format advertised above. A consumer must treat an
+     * absent capability as unsupported; in particular, a kernel convention alone never authorizes omitting a
+     * physical entry input.
+     */
+    kernelEntryJournal?: {
+      version: 1;
+      /**
+       * Exact completed-descriptor ownership for every admitted handler. Presence alone grants no SDK authority:
+       * carrier behavior additionally requires the released route capability and authenticated local route.
+       */
+      kernelJournalDispositions?: KernelJournalDispositionsAbi;
+      /** Digest committed by one tagged push/drop in the executable route bytecode. */
+      kernelJournalDispositionCommitment?: { version: 1; digest: string };
+      capabilities?: readonly {
+        /** The route creates and later consumes its reserved clean-read carrier marker (0x0511). */
+        kind: 'internal-read-carrier';
+        /** Version of the route-local marker, first-authentication, and final-flush protocol. */
+        version: 1;
+        /**
+         * Exact handler/access-stream pairs to which this physical protocol applies.
+         * Omission is not a wildcard: consumers must fail closed rather than
+         * globally deferring all runtime journal rows in the artifact.
+         */
+        scopes?: readonly KernelEntryJournalCapabilityScopeAbi[];
+      }[];
+    };
     /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
     verifierProgram?: {
       verifyFunctionId: number;
       inputCount: number;
       inputs: readonly AbiInput[];
       functions: readonly { id: number; name: string; bytecode: string }[];
+      /** The verifier returns an authenticated uint16 lifecycle-code suffix. */
+      lifecycle?: true;
+      /** @deprecated Compatibility with pre-merge split artifacts. */
+      splitLifecycle?: true;
     };
     route: AbiFunction;
     handlers: {
@@ -897,9 +1491,14 @@ export interface Artifact {
       selector: string;
       inputs: AbiInput[];
       outputs?: AbiOutput[];
+      /** Tuple-wide result representation produced by this exact handler. */
+      resultEncoding?: ExternalResultEncoding;
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
+      runtimeLoopEvents?: readonly RuntimeLoopEventAbi[];
+      runtimeLoopTransfers?: readonly RuntimeLoopTransferAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      tokenContainerTransferSites?: readonly TokenContainerTransferSiteAbi[];
       /** Per selected handler call, the visible parameter feeding keccak256 or null for a computed preimage. */
       keccakPreimageParams?: readonly (string | null)[];
       /** Explicit for every newly compiled handler, so an inactive recovery sibling is distinguishable from
@@ -908,12 +1507,76 @@ export interface Artifact {
       ecrecoverArgParams?: readonly (readonly (string | null)[])[];
       /** One entry per transitive recovery call, including `false` for native/P2PKH projections. */
       ecrecoverEvmFlags?: readonly boolean[];
-      transfers?: readonly {
-        transferIndex: number;
-        recipient: ArgSource;
-        amount: ArgSource;
-        callOption?: 'value';
-      }[];
+      transfers?: readonly FixedBchTransferAbi[];
+      /** Exact singular delegate-forwarding frame. Topology only; an ineligible handler remains refused. */
+      delegateForwarding?: DelegateForwardingAbi;
+      /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
+      childDeployments?: readonly ChildDeploymentSiteAbi[];
+      /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
+       * only a canonical fixed-field suffix in the final existing data NFT. */
+      lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };
+      /** Participant-local lifecycle planning metadata. Authenticated split/merge/selfdestruct handlers may
+       * consume this topology; write/effect/collection-bearing lifecycle rows remain fenced from kernel admission. */
+      lifecycleTopology?: {
+        version: 2;
+        kind: 'split' | 'merge' | 'selfdestruct';
+        coordinate: 'participant';
+        /** Exact transaction-wide census for the participant's minting NFT category. */
+        categoryCensus: {
+          tokenCategory: 'participant';
+          nftCapability: 'minting';
+          inputCount: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+          outputCount: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+        };
+        /**
+         * Fixed master+dataNft prefix beside the minting lifecycle tail.
+         * `preserve` = read-bearing split/merge; `consume` = fixed-scalar selfdestruct.
+         */
+        resourcePrefix?: {
+          dataNftCount: number;
+          mode: 'preserve' | 'consume';
+          nftIndices: readonly number[];
+        };
+        inputSpans: readonly {
+          mode: 'preserve' | 'consume';
+          offset: number;
+          count: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+          identity: {
+            lockingBytecode: 'participant';
+            tokenCategory: 'participant';
+            nftCapability: 'minting';
+            nftCommitment: 'preserve' | 'unconstrained';
+            tokenAmount: 'preserve' | 'nondecrease' | 'unconstrained';
+            satoshis: 'preserve' | 'reclaim';
+          };
+        }[];
+        outputSpans: readonly {
+          mode: 'preserve' | 'create';
+          offset: number;
+          count: { source: 'fixed'; value: number }
+          | { source: 'parameter'; parameterIndex: number; addend: number };
+          identity: {
+            lockingBytecode: 'participant';
+            tokenCategory: 'participant';
+            nftCapability: 'minting';
+            nftCommitment: 'preserve' | 'empty';
+            tokenAmount: 'preserve' | 'nondecrease' | 'zero';
+            satoshis: 'preserve' | 'funded';
+          };
+        }[];
+      };
+      /** The selected handler's compiler-resolved call closure can execute CHECKSIG/CHECKMULTISIG. */
+      usesTransactionSignature?: boolean;
+      /** Transaction-signature witnesses whose hash type is covenanted by the generated route. */
+      transactionSignaturePolicy?: {
+        hashType: 'all';
+        parameterIndices: readonly number[];
+        /** Exact OP_INVOKE body covered by signatures whose check executes in an internal/private helper. */
+        coveredBytecodes?: readonly { parameterIndex: number; leafIndex: number; bytecode: string }[];
+      };
       eligible: boolean;
       rejectionReason?: string;
       rejectionCode?:
@@ -941,10 +1604,18 @@ export interface Artifact {
         perRow?: boolean;
         /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
         swappable?: boolean;
+        /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
+        entryTupleGroup?: number;
+        /** Component ordinal within the complete tuple. */
+        keyComponentIndex?: number;
+        /** Corresponding component in the fixed alternate physical tuple lane. */
+        alternateRouteInput?: string;
       }[];
       /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
        * every other union-route entry coordinate as an inactive balanced slot. */
       physicalEntrySlots?: readonly number[];
+      /** Fixed physical route-slot choices aligned one-to-one with the handler's direct entry accesses. */
+      physicalEntrySlotAlternatives?: readonly (readonly number[])[];
     }[];
   };
   diagnostics?: readonly {
@@ -1180,32 +1851,8 @@ export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: '
   return JSON.stringify(bundle, null, 2);
 }
 
-/** Restore `arr.length-1` on nested vmap upserts when codegen omitted fixedKeySources. */
-function patchArtifactUpsertFixedKeys(artifact: Artifact): void {
-  const patchAbi = (abi: Artifact['abi'] | undefined): void => {
-    for (const fn of abi ?? []) {
-      const writes = fn.dynamicWrites ?? [];
-      if (writes.length !== 1) continue;
-      for (const info of fn.sortedUpsertLoopInfo ?? []) {
-        if (info.fixedKeySources && info.fixedKeySources.length > 0) continue;
-        const patched = info as unknown as { fixedKeySources: KeySourceAbi[] };
-        patched.fixedKeySources = [{
-          kind: 'expression',
-          expressionLabel: `binop:-(unop:.length(state:${writes[0]}),lit:1)`,
-        }];
-      }
-    }
-  };
-  patchAbi(artifact.abi);
-  if (artifact.delegateArtifact) patchAbi(artifact.delegateArtifact.abi);
-}
-
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
-  patchArtifactUpsertFixedKeys(artifact);
-  // Stringifying a live compile artifact can rebuild ABI via lazy getters (delegate variant).
-  // Re-apply after parse so published JSON keeps `jobs.length-1` even if those copies dropped it.
   const normalisedArtifact = JSON.parse(JSON.stringify(artifact)) as Artifact;
-  patchArtifactUpsertFixedKeys(normalisedArtifact);
   if (artifact.delegateProxyStateOutputCountPinned
     || normalisedArtifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
     normalisedArtifact.delegateProxyStateOutputCountPinned = true;

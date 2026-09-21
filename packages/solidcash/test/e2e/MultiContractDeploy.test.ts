@@ -12,8 +12,11 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 // attach auto-register the whole map - no explicit registerArtifacts, no childArtifact in deployFrom.
 // attach(address) resolves the category from the indexer (getUtxos). See docs/multi-contract-artifacts.md.
 const SOURCE = `
-  contract MultiChild(bytes20 owner) {
+  contract MultiChild() {
+    bytes20 owner;
     int counter;
+    bool untouched;
+    constructor(bytes20 initialOwner) { this.owner = initialOwner; this.counter = 7; }
     function bump() { this.counter = this.counter + 1; require(true); }
   }
   contract MultiFactory(pubkey factoryOwner) {
@@ -64,7 +67,6 @@ describe('ContractBundle (implicit ArtifactMap context)', () => {
       factory, // already carries the bundle's artifacts (bundle.deploy registered them)
       deployFunctionName: 'deployChild',
       deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh],
-      childConstructorArgs: [alicePkh],
       fundingUtxo,
       funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       changeAddress: p2pkh.address,
@@ -77,7 +79,22 @@ describe('ContractBundle (implicit ArtifactMap context)', () => {
     const state = parsePushdataCommitment(
       childData!.token!.nft!.commitment, bundle.get('MultiChild').stateLayout!, 0,
     );
-    expect(state.counter).toBe(0n);
+    expect(state.counter).toBe(7n);
+    expect(state.owner).toEqual(alicePkh);
+    expect(state.untouched).toBe(false);
+  });
+
+  it('refuses childInitialState overrides of authenticated constructor fields', async () => {
+    await expect(StatefulContract.deployFrom({
+      provider,
+      factory,
+      deployFunctionName: 'deployChild',
+      deployFunctionArgs: [new SignatureTemplate(alicePriv), alicePkh],
+      childInitialState: { owner: new Uint8Array(20) },
+      fundingUtxo: { txid: 'bc3d'.repeat(16), vout: 0, satoshis: 50000n },
+      funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: p2pkh.address,
+    })).rejects.toThrow(/cannot override authenticated constructor-genesis field 'owner'/);
   });
 
   it('attaches by address - the category is resolved from the indexer (getUtxos), not a registry', async () => {

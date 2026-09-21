@@ -7,7 +7,9 @@ contract Analysis() {
   int x;
   mapping(int => int) balances;
   function leaf(int k) internal { this.x = this.x + k; }
-  function left(int k) internal { leaf(k); right(k); }
+  // Keep the mutual cycle non-tail-recursive so the tail-recursion lowering pass does not intentionally replace
+  // it with a program-counter loop before invocation analysis records the remaining call graph.
+  function left(int k) internal { right(k); leaf(k); }
   function right(int k) internal { if (k > 0) left(k - 1); }
   function run(int k) { left(k); require(k >= 0); }
   function readBalance(int k) view { require(balances[k] >= 0); }
@@ -74,6 +76,8 @@ describe('Release 0 shared invocation analysis', () => {
       transferIndex: 0,
       recipient: { kind: 'forward', paramIndex: 1 },
       amount: { kind: 'forward', paramIndex: 0 },
+      recipientRecipe: { kind: 'handlerInput', inputIndex: 1 },
+      amountRecipe: { kind: 'handlerInput', inputIndex: 0 },
     }]);
     expect(summary.transfers).toEqual(abi.transfers);
     expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);
@@ -126,6 +130,23 @@ describe('Release 0 shared invocation analysis', () => {
     // A runtime trip count with no dominating literal ceiling still proves nothing, in either direction.
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated'))
       .toMatchObject({ bounded: false });
+  });
+
+  it('does not classify a low-level producer in a branch predicate as an optional arm', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract PredicateCalls() {
+        function probe(address target, bytes payload) private returns (bool) {
+          (bool ok, bytes memory result) = target.call(payload);
+          return ok && result.length >= 0;
+        }
+        function run(address target, bytes payload) public {
+          if (!probe(target, payload)) { require(false); }
+          require(true);
+        }
+      }`, { solidityImportCompat: true, messageBus: true, messageBusKernel: true });
+    const call = artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === 'run')!.externalCalls![0];
+    expect(call).toMatchObject({ callsiteId: 0, occurrence: 'once', maximumOccurrences: 1 });
   });
 
   it('publishes an exact floor only where the reached count cannot vary', () => {
@@ -208,6 +229,7 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      resultIndex: 0,
     }]);
     expect(artifact.abi.find((fn) => fn.name === 'run')!.resultConsumers)
       .toEqual(summary.resultConsumers);
@@ -231,12 +253,14 @@ describe('Release 0 shared invocation analysis', () => {
     expect(calls[1].argSources?.[0]).toMatchObject({
       kind: 'expression',
       expression: {
-        kind: 'externalCall',
-        name: 'IProducer.quote',
+        kind: 'producerResult',
         callsiteId: 0,
+        resultIndex: 0,
         type: 'bigint',
       },
     });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 }]);
   });
 
   it('links each used tuple result through its synthetic local definition', () => {
@@ -252,8 +276,8 @@ describe('Release 0 shared invocation analysis', () => {
       }`, { forceStateful: true });
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
       .toEqual([
-        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 },
-        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
+        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
+        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
       ]);
   });
 
@@ -276,19 +300,187 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      resultIndex: 0,
     }]);
     expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
       kind: 'expression',
       expression: {
-        kind: 'externalCall',
-        name: 'IProducer.quote',
+        kind: 'producerResult',
         callsiteId: 0,
+        resultIndex: 0,
         type: 'bigint',
-        target: {
-          kind: 'source',
-          source: { kind: 'forward', paramIndex: 0 },
-        },
       },
     });
+  });
+
+  it('deduplicates repeated uses of one exact producer component in a consumer argument', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract RepeatedResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted + quoted);
+          require(quoted >= 0);
+        }
+      }`, { forceStateful: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+      resultIndex: 0,
+    }]);
+    expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        left: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+        right: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      },
+    });
+  });
+
+  it('links a produced result to each conditionally reached callsite', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function ready(bigint n) returns (bool); }
+      interface IAction { function run(bigint n); }
+      contract ConditionalResultFlow() {
+        function dispatch(address probe, address action, bigint n) public {
+          bool ready = IProbe(probe).ready(n);
+          if (!ready) {
+            IAction(action).run(0);
+            IAction(action).run(n);
+          }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
+    expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
+      'once', 'conditional', 'conditional',
+    ]);
+    for (const call of fn.externalCalls!.slice(1)) {
+      expect(call.condition).toMatchObject({
+        kind: 'unary',
+        operator: '!',
+        expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      });
+    }
+    expect(fn.resultConsumers).toEqual([
+      { consumerCallsiteId: 1, condition: true, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, condition: true, producerCallsiteId: 0, resultIndex: 0 },
+    ]);
+    expect(artifact.abi.find((candidate) => candidate.name === 'dispatch')!.resultConsumers)
+      .toEqual(fn.resultConsumers);
+  });
+
+  it('preserves sibling call activation across inlined helper postconditions', () => {
+    const artifact = compileString(`pragma solidity >=0.8.0;
+      interface ITarget { function act(bigint n) external returns (bool); }
+      contract InlinedConditionalResultFlow() {
+        function optional(address target, bigint n) private returns (bool) {
+          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
+          return success && (result.length == 0 || abi.decode(result, (bool)));
+        }
+        function checked(address target, bigint n) private {
+          bool success, bytes result = target.call(abi.encodeCall(ITarget.act, (n)));
+          require(success && (result.length == 0 || abi.decode(result, (bool))));
+        }
+        function dispatch(address target, bigint n) public {
+          if (!optional(target, n)) {
+            checked(target, 0);
+            checked(target, n);
+          }
+          require(n >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, suppressWarnings: true, solidityImportCompat: true,
+    });
+    const fn = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'dispatch')!;
+    expect(fn.externalCalls?.map((call) => call.occurrence)).toEqual([
+      'once', 'conditional', 'conditional',
+    ]);
+    expect(fn.externalCalls?.[1].condition).toBeDefined();
+    expect(fn.externalCalls?.[1].condition).toEqual(fn.externalCalls?.[2].condition);
+    expect(JSON.stringify(fn.externalCalls?.[2].condition)).not.toContain('"callsiteId":1');
+  });
+
+  // A partially written state-array entry is rebuilt as `T(.., thisField, ..)`: the front end reuses the read
+  // node as the rebuilt field's argument, and a later rebuild of another field restates the entry with that same
+  // argument. The published argument must be the value the handler wrote, never the read folded back on itself.
+  it('publishes a state-array entry field written before a later whole-entry rebuild', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IData { function publish(uint256 id, bool flag, uint256 amount) external; }
+      contract FieldProvenance() {
+        struct Inner { uint8 state; bool flag; uint256 amount; }
+        Inner[] jobs;
+        IData data;
+        function post(uint256 n) public {
+          jobs.push();
+          uint256 id = jobs.length - 1;
+          Inner storage job = jobs[id];
+          job.flag = n > 0;
+          job.amount = n + 1;
+          data.publish(id, job.flag, job.amount);
+          require(n > 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
+    const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
+    expect(sources[1]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(sources[2]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '+',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(JSON.stringify(sources)).not.toContain('"reference"');
+  });
+
+  // Conditional writes are tracked per field: a branch that cannot change the observed field must not discard an
+  // unconditional write to it, and a field the handler never wrote stays the entry read rather than a rebuild.
+  it('keeps state-array field provenance across a conditional write to a sibling field', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IData { function publish(uint256 id, bool flag, uint8 state) external; }
+      contract FieldProvenanceConditional() {
+        struct Inner { uint8 state; bool flag; uint256 amount; }
+        Inner[] jobs;
+        IData data;
+        function post(uint256 n) public {
+          jobs.push();
+          uint256 id = jobs.length - 1;
+          if (n > 1) { jobs[id].amount = n; }
+          jobs[id].flag = n > 0;
+          data.publish(id, jobs[id].flag, jobs[id].state);
+          require(n > 0);
+        }
+      }`, { forceStateful: true, messageBus: true, suppressWarnings: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'post')!;
+    const sources = fn.externalCalls!.find((call) => call.functionName === 'publish')!.argSources!;
+    expect(sources[1]).toMatchObject({
+      kind: 'expression',
+      expression: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+      },
+    });
+    expect(sources[2]).toMatchObject({
+      kind: 'expression',
+      expression: { kind: 'field', name: 'state' },
+    });
+    // The field the handler never wrote stays a read of the entry (`jobs`), whichever spelling the array cache
+    // local left behind, so the SDK can evaluate it against chain state.
+    expect(JSON.stringify(sources[2])).toContain('"jobs"');
+    expect(JSON.stringify(sources)).not.toContain('"reference"');
   });
 });

@@ -4,6 +4,37 @@ npm-debug.log
 **/node_modules/
 *.tsbuildinfo
 
+# Accidental in-place TypeScript output; package builds emit to dist/.
+/packages/**/*.js
+/packages/**/*.js.map
+/packages/**/*.d.ts
+/packages/**/*.d.ts.map
+/examples/**/*.js
+/examples/**/*.js.map
+/examples/**/*.d.ts
+/examples/**/*.d.ts.map
+/scripts/**/*.js
+/scripts/**/*.js.map
+/scripts/**/*.d.ts
+/scripts/**/*.d.ts.map
+/website/src/**/*.js
+/website/src/**/*.js.map
+/website/src/**/*.d.ts
+/website/src/**/*.d.ts.map
+/*.js
+/*.js.map
+/*.d.ts
+/*.d.ts.map
+# The VS Code extension is authored JavaScript; only declaration/map sidecars are generated.
+/vscode-solidcash/**/*.js.map
+/vscode-solidcash/**/*.d.ts
+/vscode-solidcash/**/*.d.ts.map
+# Authored ambient declarations, not compiler output.
+!/packages/solidcash/src/external-types/@psf/bch-js.d.ts
+!/packages/testing/src/ethers-subpaths.d.ts
+# Authored JavaScript example, not a TypeScript sidecar.
+!/examples/common-js.js
+
 **/.DS_Store
 /**/.project
 /**/.classpath

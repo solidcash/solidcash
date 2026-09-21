@@ -22,6 +22,11 @@ import {
   DoWhileNode,
   UncheckedNode,
   ReturnNode,
+  ExternalFunctionCallNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
+  TernaryOpNode,
+  ExpressionNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
@@ -61,12 +66,18 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   private voidExternalCallHelpers: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private fileUsingForDirectives: { libraryName?: string, targetTypeName?: string }[] = [];
+  private interfaceNames: Set<string> = new Set();
   private constNames: Set<string> = new Set(); // qualified names of file-level (library) constants (L.SIG)
   private counter = 0;
+
+  constructor(private readonly earlyRootFilter?: (fn: FunctionDefinitionNode) => boolean) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
     this.fileUsingForDirectives = node.usingForDirectives ?? [];
+    this.interfaceNames = new Set((node.interfaceDefinitions ?? []).map((iface) => iface.name));
     this.constNames = new Set((node.constantDefinitions ?? []).map((c) => c.name));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
@@ -87,8 +98,11 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     for (const fn of all) {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
-      // context and turns its external calls into inert ordinary-call nodes.
-      if (!fn.graphEmissionHandler && fn.body && this.canDiscardCallResult(fn)
+      // context and turns its external calls into inert ordinary-call nodes. Public entry points and
+      // compiler-owned route clones are the same: inlining them into the kernel row loop makes
+      // SymbolTableTraversal rewrite `token.transfer` against an unbound `__internal__loopTargets`.
+      if (!fn.graphEmissionHandler && !fn.isEntryPoint && !fn.name.startsWith('__message_bus_')
+        && fn.body && this.canDiscardCallResult(fn)
         && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         this.voidExternalCallHelpers.add(fn.name);
       }
@@ -101,10 +115,12 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // covenant parameters. Inlining the same helper body here leaves L.g with the direct external call and its own
     // correctly discovered witness parameters.
     for (const fn of this.freeFns) {
-      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
+      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name], []);
     }
     for (const fn of node.functions) {
-      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+      if (this.earlyRootFilter && !this.earlyRootFilter(fn)) continue;
+      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name], []);
     }
     return node;
   }
@@ -178,6 +194,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
+      // Message-bus admission may run after an earlier syntax-normalization pass has already replaced the
+      // surface method spelling with a dedicated external-call node. Treat the pre- and post-normalization
+      // representations identically so early physical-frame inlining does not depend on pipeline position.
+      if (this.earlyRootFilter && (n instanceof ExternalFunctionCallNode || n instanceof LowLevelCallNode
+        || n instanceof LowLevelCallStatementNode)) {
+        found = true;
+        return;
+      }
       if (n instanceof VariableDefinitionNode) env.set(n.name, n.type);
       if (n instanceof FunctionCallNode) {
         const name = n.identifier.name;
@@ -189,6 +213,10 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       }
       if (n instanceof MethodCallNode) {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
+        if (this.earlyRootFilter && n.object instanceof CastNode
+          && this.isInterfaceTyped(n.object.type)) { found = true; return; }
+        if (this.earlyRootFilter && n.object instanceof FunctionCallNode
+          && this.interfaceNames.has(n.object.identifier.name)) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
     });
@@ -273,10 +301,14 @@ export default class InlineExternalCallHelpers extends AstTraversal {
   }
 
   // Rewrite a statement list, replacing eligible helper-call statements with the inlined helper body.
-  private inlineStatements(stmts: StatementNode[], stack: string[]): StatementNode[] {
+  private inlineStatements(
+    stmts: StatementNode[], stack: string[],
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  ): StatementNode[] {
     const out: StatementNode[] = [];
     for (const stmt of stmts) {
-      this.recurseNestedBlocks(stmt, stack);
+      this.stampLowLevelCalls(stmt, conditions);
+      this.recurseNestedBlocks(stmt, stack, conditions);
       if (stmt instanceof FunctionCallStatementNode) {
         const name = stmt.call.identifier.name;
         const helper = this.funcByName.get(name);
@@ -286,7 +318,12 @@ export default class InlineExternalCallHelpers extends AstTraversal {
           if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
             throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
           }
-          out.push(...this.inlineCall(helper, stmt.call.parameters, stack));
+          out.push(...this.inlineCall(
+            helper,
+            stmt.call.parameters,
+            stack,
+            stmt.call.sourceActivationConditions ?? conditions,
+          ));
           continue;
         }
       }
@@ -295,13 +332,19 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     return out;
   }
 
-  private recurseNestedBlocks(stmt: StatementNode, stack: string[]): void {
-    const inline = (b: BlockNode | undefined): void => {
-      if (b) b.statements = this.inlineStatements(b.statements ?? [], stack);
+  private recurseNestedBlocks(
+    stmt: StatementNode, stack: string[],
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  ): void {
+    const inline = (
+      b: BlockNode | undefined,
+      nestedConditions = conditions,
+    ): void => {
+      if (b) b.statements = this.inlineStatements(b.statements ?? [], stack, nestedConditions);
     };
     if (stmt instanceof BranchNode) {
-      inline(stmt.ifBlock);
-      inline(stmt.elseBlock);
+      inline(stmt.ifBlock, [...conditions, { expression: stmt.condition, negated: false }]);
+      inline(stmt.elseBlock, [...conditions, { expression: stmt.condition, negated: true }]);
     } else if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
       inline(stmt.block);
     } else if (stmt instanceof UncheckedNode) {
@@ -311,8 +354,90 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     }
   }
 
+  /** Preserve the source arm of raw calls before helper bodies are flattened into their caller. */
+  private stampLowLevelCalls(
+    value: Node,
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+      if (value.sourceActivationConditions === undefined) {
+        value.sourceActivationConditions = conditions.map(({ expression, negated }) => ({
+          expression: cloneNode(expression) as ExpressionNode,
+          negated,
+        }));
+      }
+      return;
+    }
+    if (value instanceof BranchNode) {
+      this.stampLowLevelCalls(value.condition, conditions, seen);
+      this.stampLowLevelCalls(value.ifBlock, [
+        ...conditions, { expression: value.condition, negated: false },
+      ], seen);
+      if (value.elseBlock) this.stampLowLevelCalls(value.elseBlock, [
+        ...conditions, { expression: value.condition, negated: true },
+      ], seen);
+      return;
+    }
+    if (value instanceof TernaryOpNode) {
+      this.stampLowLevelCalls(value.condition, conditions, seen);
+      this.stampLowLevelCalls(value.ifTrue, [
+        ...conditions, { expression: value.condition, negated: false },
+      ], seen);
+      this.stampLowLevelCalls(value.ifFalse, [
+        ...conditions, { expression: value.condition, negated: true },
+      ], seen);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+        'sourceActivationConditions'].includes(key)) continue;
+      if (child instanceof Node) this.stampLowLevelCalls(child, conditions, seen);
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof Node) this.stampLowLevelCalls(item, conditions, seen);
+      }
+    }
+  }
+
+  private prependCallActivations(
+    value: Node,
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof FunctionCallNode || value instanceof MethodCallNode
+      || value instanceof ExternalFunctionCallNode || value instanceof LowLevelCallNode
+      || value instanceof LowLevelCallStatementNode) {
+      value.sourceActivationConditions = [
+        ...conditions,
+        ...(value.sourceActivationConditions ?? []),
+      ].map(({ expression, negated }) => ({
+        expression: cloneNode(expression) as ExpressionNode,
+        negated,
+      }));
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+        'sourceActivationConditions'].includes(key)) continue;
+      if (child instanceof Node) this.prependCallActivations(child, conditions, seen);
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof Node) {
+          this.prependCallActivations(item, conditions, seen);
+        }
+      }
+    }
+  }
+
   // Produce [param-binding decls..., alpha-renamed helper body...] for one inlined call site.
-  private inlineCall(helper: FunctionDefinitionNode, args: Node[], stack: string[]): StatementNode[] {
+  private inlineCall(
+    helper: FunctionDefinitionNode, args: Node[], stack: string[],
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  ): StatementNode[] {
     const n = this.counter++;
     const map = new Map<string, string>();
     for (const p of helper.parameters) map.set(p.name, `${PREFIX}${n}_${p.name}`);
@@ -321,6 +446,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     // remaining helper statements sit in the appropriate else branch, then erase the now-terminal bare returns.
     // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.
     const normalized = cloneNode(helper) as FunctionDefinitionNode;
+    this.prependCallActivations(normalized.body, conditions);
     normalized.accept(new EarlyReturnTransformation());
     const stripReturns = (block: BlockNode): void => {
       const kept: StatementNode[] = [];
@@ -356,7 +482,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       def.location = args[i].location ?? helper.location;
       return def;
     });
-    const inlined = this.inlineStatements(body.statements ?? [], [...stack, helper.name]);
+    const inlined = this.inlineStatements(body.statements ?? [], [...stack, helper.name], conditions);
     return [...bindings, ...inlined];
   }
 

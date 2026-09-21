@@ -8,6 +8,7 @@ import {
   FunctionCallStatementNode,
   VariableDefinitionNode,
   IdentifierNode,
+  FieldAccessNode,
   IntLiteralNode,
   ExpressionNode,
   BranchNode,
@@ -36,6 +37,8 @@ import {
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   TransferStatementNode,
+  AddressTransferStatementNode,
+  AddressSendExpressionNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   MethodCallNode,
@@ -50,7 +53,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Errors.js';
+import { AmbiguousInlineOverloadError } from '../Errors.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -83,6 +86,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     private readonly inlineSolidityInitializers = false,
     private readonly inlineDelegateStateHelpers = false,
   ) { super(); }
+
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -201,37 +205,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      // A graph emission handler executes behind OP_INVOKE precisely so its hidden callManifest/caller/result
-      // frame authenticates every reached edge. Flattening one into __message_bus1 makes that the current
-      // function at code generation, so its external calls take the ordinary-call path and no emission row is ever
-      // recomputed and compared - the callManifest can then state any target and any arguments. Same guard, and
-      // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
-      // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
-      //
-      // X29 replaced SEC-6's refusal for the `emit` / `transfer` carrying clones: they stay behind OP_INVOKE
-      // too, which is what keeps their edges bound, and their effect is no longer dropped because the ROUTE now
-      // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
-      // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
-      // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
-      // Delegate initializer/owner guards must still flatten into the entry even when a message-bus
-      // clone would otherwise keep them behind OP_INVOKE. Those clones address INPUTINDEX, not the
-      // proxy pending write, so `initialize` fails `_checkInitializing` on a clean compile.
-      if (this.keepsGraphEmissionBinding(fn)
-        && !/^(?:_checkInitializing|_checkOwner|_requireNotPaused)$/.test(fn.name)) continue;
-      // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
-      // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
-      // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
-      // shifts every later input index in the block and is co-spent once for the whole route, not once per
-      // dispatch site. Flattening the clone instead is exactly what SEC-6 measured forgeable, so the shape is
-      // refused rather than published with unbound edges.
-      //
-      // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
-      // merely reads msg.sender / msg.value in a graph route, and such a clone has no external call for the
-      // callManifest to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
-      if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
-        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__message_bus_(graph|resource)_/, ''),
-          this.hasTokenContainerEffects(fn) ? 'a token-container operation' : 'a storage-pointer parameter');
-      }
+      // Compiler-owned graph and detached-signature handlers are physical OP_INVOKE bodies. Their hidden
+      // protocol context belongs to that invocation, so no storage/effect shape may flatten them into the route.
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
@@ -284,7 +260,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
+          || fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler
+          || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         for (const candidate of this.nodesOf(fn)) {
           if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
@@ -312,7 +289,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
     // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
     for (const fn of this.freeFns) {
-      if (fn.body && fn.returnTypes.length === 0 && this.hasStoragePointerParam(fn)) {
+      if (fn.body && fn.returnTypes.length === 0
+        && (this.hasStoragePointerParam(fn) || this.hasPhysicalEffects(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -322,6 +300,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.exprInlinableFns = new Map();
     const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
       if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
@@ -350,35 +329,6 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // which stay dispatchable.
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
-  }
-
-  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding. Since X29 that
-  // includes clones carrying an `emit` or a `transfer`: the route reserves their OUTPUT frames, one per dispatch
-  // site, so leaving them subroutines no longer loses the effect. A token-container operation still needs a
-  // co-spent INPUT slot, which no per-site output frame can express, so it stays excluded (refused above).
-  private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
-    if (!fn.graphEmissionHandler || this.hasTokenContainerEffects(fn) || this.hasStoragePointerParam(fn)) {
-      return false;
-    }
-    // Effect-carrying clones are kept ONLY when they have an outgoing edge, which is the whole defect surface:
-    // an edge is what a callManifest can misstate. `graphTailHandlers` also admits an edge-free handler that
-    // merely reads msg.value or msg.sender (Release 4's value batch is exactly that), and flattening one loses
-    // nothing while un-flattening it moves its transfer covenant behind OP_INVOKE - measured to break the SDK's
-    // auto-derivation of the transfer outputs. Keep every edge-free clone on the established path.
-    return !this.hasPhysicalEffects(fn) || this.hasOutgoingCall(fn);
-  }
-
-  // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until
-  // LowerExternalCalls runs, and `a.call/staticcall/delegatecall(..)` is either a LowLevelCall or a dotted
-  // FunctionCall. Mirrors the `methodCallCount` test compiler.ts applies at route synthesis.
-  private hasOutgoingCall(fn: FunctionDefinitionNode): boolean {
-    for (const node of this.nodesOf(fn)) {
-      if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
-        || node instanceof LowLevelCallStatementNode) return true;
-      else if (node instanceof FunctionCallNode
-        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) return true;
-    }
-    return false;
   }
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
@@ -597,8 +547,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
-    return this.nodesOf(fn).some((node) => node instanceof EmitStatementNode
-      || node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode);
+    return this.nodesOf(fn).some((node) => {
+      if (node instanceof InstantiationNode
+        || node instanceof EmitStatementNode || node instanceof TransferStatementNode
+        || node instanceof TokenContainerMethodStatementNode
+        || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) return true;
+      // Solidity `to.transfer(1)` / `to.send(1)` is still `to.transfer` until symbol resolution.
+      const call = node instanceof FunctionCallStatementNode ? node.call
+        : node instanceof FunctionCallNode ? node : undefined;
+      if (!call || call.parameters.length !== 1) return false;
+      const name = call.identifier.name;
+      return name.endsWith('.transfer') || name.endsWith('.send');
+    });
   }
 
   // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
@@ -642,14 +603,30 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         // Resolve the exact overload by (name, arity); fall back to the name map for a single-overload callee whose
         // arity was adjusted by reorderNamedTail. The recursion guard is keyed by (name, arity) too, so inlining
         // `_approve/4` from inside `_approve/3` is not blocked by the shared name.
-        const callee = this.funcByKey.get(key) ?? this.funcByName.get(name);
-        if (callee) this.reorderNamedTail(stmt.call, callee);
-        if (callee && this.inlinedFns.has(name) && !stack.includes(inlineKey(name, callee.parameters.length))
-          && stmt.call.parameters.length === callee.parameters.length) {
-          if (this.ambiguousInlineKeys.has(inlineKey(name, stmt.call.parameters.length))) {
-            throw new AmbiguousInlineOverloadError(stmt.call, name, stmt.call.parameters.length);
+        let callee = this.funcByKey.get(key) ?? this.funcByName.get(name);
+        let args = stmt.call.parameters;
+        // `using L for T; recv.method(x)` is still `recv.method` here. Physical-effect library helpers
+        // (`Address.sendValue`) are selected for inlining by their `L.method` name; without rewriting this
+        // spelling the helper is dropped and ST later reports `recv.method` as undefined on the message-bus path.
+        const dot = name.lastIndexOf('.');
+        if (!callee && dot > 0) {
+          const method = name.slice(dot + 1);
+          const matches = this.freeFns.filter((fn) => fn.name.endsWith(`.${method}`) && this.inlinedFns.has(fn.name)
+            && stmt.call.parameters.length + 1 === fn.parameters.length);
+          if (matches.length === 1) {
+            callee = matches[0];
+            const receiver = new IdentifierNode(name.slice(0, dot));
+            receiver.location = stmt.call.location;
+            args = [receiver, ...stmt.call.parameters];
           }
-          out.push(...this.inlineCall(callee, stmt.call.parameters, stack));
+        }
+        if (callee) this.reorderNamedTail(stmt.call, callee);
+        if (callee && this.inlinedFns.has(callee.name) && !stack.includes(inlineKey(callee.name, callee.parameters.length))
+          && args.length === callee.parameters.length) {
+          if (this.ambiguousInlineKeys.has(inlineKey(callee.name, args.length))) {
+            throw new AmbiguousInlineOverloadError(stmt.call, callee.name, args.length);
+          }
+          out.push(...this.inlineCall(callee, args, stack));
           continue;
         }
       }
@@ -750,6 +727,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       cloned.body, collectionPaths, flattenedStructPaths,
     ) as BlockNode;
     this.walk(cloned.body, (node) => {
+      if ((callee.isLibraryFunction || callee.name.includes('.'))
+        && (node instanceof AddressTransferStatementNode || node instanceof AddressSendExpressionNode)) {
+        node.inlinedLibraryEffect = true;
+      }
+      if ((callee.isLibraryFunction || callee.name.includes('.')) && node instanceof FunctionCallNode
+        && /\.(?:transfer|send)$/.test(node.identifier.name)) node.inlinedLibraryEffect = true;
       if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
       } else if (node instanceof TupleAssignmentNode) {
@@ -1016,6 +999,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof FieldAccessNode) {
+        // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
+        // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
+        // shares a struct field's name (`string label` vs `items[id].label`) corrupts the field access to
+        // `items[id].__message_bus_arg_*` / `__spN_label` -> "Struct has no field ...", which then fails the
+        // autoDelegate variant build for pooled Item[] writers that use parameter names matching fields.
       } else if (n instanceof TupleAssignmentNode) {
         // Tuple lvalues are plain element descriptors rather than
         // IdentifierNodes. Keep an existing-variable capture aligned with

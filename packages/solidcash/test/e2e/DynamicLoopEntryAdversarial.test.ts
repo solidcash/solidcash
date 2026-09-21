@@ -81,13 +81,23 @@ describe('dynamic loop mapping write - adversarial soundness', () => {
       COVENANT_REFUSAL,
     );
 
-    // (3) Orphan: append a duplicate entry output so the tx has N+1 entry outputs while the counter is N ->
-    // the output-count pin rejects. (Also unbalances the tx, which is itself a rejection - either way, refused.)
+    // (3) Orphan: append a zero-value duplicate entry output so the tx has N+1 entry outputs while the counter
+    // is N. Pay for the additional serialized bytes from the non-token change output: otherwise relay-fee policy
+    // rejects the larger transaction before input 0 executes, which would not prove the output-count pin.
     await expect(submitTampered((tx) => {
-      tx.outputs.push({
+      const originalSize = encodeTransaction(tx).length;
+      const orphan = {
         ...tx.outputs[2],
+        valueSatoshis: 0n,
         token: { ...tx.outputs[2].token!, nft: { ...tx.outputs[2].token!.nft! } },
-      });
+      };
+      tx.outputs.push(orphan);
+      const additionalRelayFee = BigInt(encodeTransaction(tx).length - originalSize);
+      const feeOutput = tx.outputs.find((output) => output.token === undefined);
+      if (feeOutput === undefined || feeOutput.valueSatoshis < additionalRelayFee) {
+        throw new Error(`fixture cannot fund the ${additionalRelayFee}-satoshi orphan-output relay fee`);
+      }
+      feeOutput.valueSatoshis -= additionalRelayFee;
     })).rejects.toThrow(
       COVENANT_REFUSAL,
     );

@@ -59,14 +59,15 @@ export default class LowerSelfCallMsgData extends AstTraversal {
   }
 
   private replaceMsgData(fn: FunctionDefinitionNode): void {
-    const signatureTypes = fn.parameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
+    const sourceParameters = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
+    const signatureTypes = sourceParameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
     const selector = computeFunctionSelector(computeFunctionSignature(fn.name, signatureTypes));
 
     const replacement = (src: NullaryOpNode): AbiEncodeWithSelectorNode => {
       const selectorNode = new HexLiteralNode(selector);
       selectorNode.type = new BytesType(4);
       selectorNode.location = src.location;
-      const args = fn.parameters.map((p) => {
+      const args = sourceParameters.map((p) => {
         const id = new IdentifierNode(p.name);
         id.location = src.location;
         return id;

@@ -1,18 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
+  ArgSource, Artifact, ExternalCallExpression, FunctionArgument,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
 import {
   anchorRoutedDynamicResourcesAtOwner,
-  canRefreshReachedCallFromPostState,
+  compilerRouteUsesPhysicalWrapper,
   externalCallTargetSourceLockingBytecodeHex,
   externalReturnParamSlot,
   groupIndexForExternalCallSlot,
   inactiveMessageBusRouteWitness,
   isSdkResolvedExternalCallTopologyWitness,
+  physicalExternalCallGroupIndexByMasterOutpoint,
   physicalExternalCallSelectorHex,
   rebaseRoutedBatchProofOffsets,
   selectedMessageBusResourceMetadata,
@@ -60,6 +61,20 @@ const source = (paramIndex: number): ExternalCallExpression => ({
 });
 
 describe('compiler-published external-call predicate evaluation', () => {
+  it('short-circuits logical predicates but fails closed when an unresolved branch is required', () => {
+    const literal = (value: boolean): ExternalCallExpression => ({ kind: 'literal', type: 'bool', value });
+    const logical = (operator: '&&' | '||', left: boolean): ExternalCallExpression => ({
+      kind: 'binary', operator, left: literal(left), right: { kind: 'identifier', name: 'missing' },
+    });
+    const evaluate = (expression: ExternalCallExpression): FunctionArgument | undefined =>
+      evaluator._evaluateExternalExpression(expression, [], artifact, undefined, []);
+
+    expect(evaluate(logical('&&', false))).toBe(false);
+    expect(evaluate(logical('||', true))).toBe(true);
+    expect(evaluate(logical('&&', true))).toBeUndefined();
+    expect(evaluate(logical('||', false))).toBeUndefined();
+  });
+
   it('rebases owner-relative batch proofs across an embedded proxy prefix', () => {
     const rebased = rebaseRoutedBatchProofOffsets({
       __internal__vmapBatchProof_0: 3n,
@@ -89,6 +104,17 @@ describe('compiler-published external-call predicate evaluation', () => {
     expect(anchored[3]).toBe(chunk);
     expect(anchored[5]).toEqual({ id: 3 });
     expect(inputs[5]).toBe(chunk);
+  });
+
+  it('distinguishes synthetic compiler routes from physical wrapper routes', () => {
+    const selector = Uint8Array.of(1, 2, 3, 4);
+    const route = { name: '__message_bus1', inputs: [] } as never;
+    const wrapper = { name: '__forward', inputs: [] } as never;
+
+    expect(compilerRouteUsesPhysicalWrapper(selector, undefined, route)).toBe(false);
+    expect(compilerRouteUsesPhysicalWrapper(selector, wrapper, route)).toBe(true);
+    expect(compilerRouteUsesPhysicalWrapper(selector, route, route)).toBe(false);
+    expect(compilerRouteUsesPhysicalWrapper(undefined, wrapper, route)).toBe(false);
   });
 
   it('selects loop resources from the concrete message-bus handlers', () => {
@@ -272,6 +298,108 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
   });
 
+  it.each([
+    ['scalar state', 'Record current;', '',
+      'current.enabled = flags.length > 0;', 'current.enabled'],
+    ['mapping state', 'mapping(uint => Record) records;', '',
+      'records[7].enabled = flags.length > 0;', 'records[7].enabled'],
+    ['state-array storage alias', 'Record[] records;', `records.push();
+      uint id = records.length - 1;
+      Record storage record = records[id];`,
+    'record.enabled = flags.length > 0;', 'record.enabled'],
+  ])('resolves a field from its dominating %s struct write without application names',
+    (_label, declaration, setup, assignment, read) => {
+      const snapshotArtifact = compileString(`
+        pragma solidity ^0.8.0;
+        interface ISink { function accept(bytes calldata value) external; }
+        contract Registry {
+          struct Record { bool enabled; }
+          ${declaration}
+          address sink;
+          function publish(bool[] calldata flags) public {
+            ${setup}
+            ${assignment}
+            ISink(sink).accept(abi.encodePacked(${read}));
+            require(true);
+          }
+        }
+      `, {
+        solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+        maximumInputBytes: 1_000_000,
+      });
+      const publish = snapshotArtifact.abi.find((candidate) => candidate.name === 'publish')!;
+      const sources = publish.externalCalls?.[0].argSources;
+      expect(sources).toBeDefined();
+      expect(JSON.stringify(sources)).not.toContain('stateAccess');
+
+      const snapshotEvaluator = new StatefulContract(
+        '00'.repeat(32), snapshotArtifact, createTestProvider(),
+      ) as unknown as PredicateEvaluator;
+      expect(snapshotEvaluator._resolveExternalArgs(
+        sources!, [[]], snapshotArtifact, {}, publish.inputs,
+      )).toEqual([Uint8Array.of(0)]);
+      expect(snapshotEvaluator._resolveExternalArgs(
+        sources!, [[true]], snapshotArtifact, {}, publish.inputs,
+      )).toEqual([Uint8Array.of(1)]);
+    });
+
+  it('preserves a dominating field type for packed external-call arguments', () => {
+    const typedArtifact = compileString(`
+      pragma solidity ^0.8.0;
+      interface ISink { function accept(bytes calldata value) external; }
+      contract Registry {
+        struct Record { uint16 number; }
+        mapping(uint => Record) records;
+        address sink;
+        function publish(uint id, uint16 number) public {
+          records[id].number = number;
+          ISink(sink).accept(abi.encodePacked(records[id].number));
+          require(true);
+        }
+      }
+    `, {
+      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    const publish = typedArtifact.abi.find((candidate) => candidate.name === 'publish')!;
+    const sources = publish.externalCalls?.[0].argSources;
+    const typedEvaluator = new StatefulContract(
+      '00'.repeat(32), typedArtifact, createTestProvider(),
+    ) as unknown as PredicateEvaluator;
+    expect(typedEvaluator._resolveExternalArgs(
+      sources!, [7n, 2n], typedArtifact, {}, publish.inputs,
+    )).toEqual([Uint8Array.of(0, 2)]);
+  });
+
+  it('does not snapshot a conditional state-array struct write as unconditional', () => {
+    const conditionalArtifact = compileString(`
+      pragma solidity ^0.8.0;
+      interface ISink { function accept(bytes calldata value) external; }
+      contract Registry {
+        struct Record { bool enabled; }
+        Record[] records;
+        address sink;
+        function publish(bool[] calldata flags, bool update) public {
+          records.push();
+          uint id = records.length - 1;
+          Record storage record = records[id];
+          record.enabled = flags.length > 0;
+          if (update) record.enabled = false;
+          ISink(sink).accept(abi.encodePacked(record.enabled));
+          require(true);
+        }
+      }
+    `, {
+      solidityImportCompat: true, forceStateful: true, messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+    });
+    const sources = conditionalArtifact.abi.find((candidate) => candidate.name === 'publish')
+      ?.externalCalls?.[0].argSources;
+    expect(sources).toBeDefined();
+    expect(JSON.stringify(sources)).toContain('arrayAccess');
+    expect(JSON.stringify(sources)).not.toContain('"name":"Record"');
+  });
+
   it('packs a zero address cast to uint160 as the compiler zero value', () => {
     const expression: ExternalCallExpression = {
       kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
@@ -300,24 +428,6 @@ describe('conditional external-call topology', () => {
 
     expect(externalCallTargetSourceLockingBytecodeHex(owner, 0, [], resolved))
       .toBe(binToHex(physicalLock));
-  });
-
-  it('retains a reached call when completed caller state invalidates its earlier guard', () => {
-    const guard: ExternalCallExpression = {
-      kind: 'binary',
-      operator: '>',
-      left: source(0),
-      right: { kind: 'state', name: 'amount' },
-    };
-    const initialReachability = evaluator._evaluateExternalExpression(
-      guard, [200n], artifact, { amount: 100n }, [{ type: 'uint256' }],
-    );
-    const postStateReachability = evaluator._evaluateExternalExpression(
-      guard, [200n], artifact, { amount: 200n }, [{ type: 'uint256' }],
-    );
-
-    expect(initialReachability).toBe(true);
-    expect(canRefreshReachedCallFromPostState(postStateReachability)).toBe(false);
   });
 
   it('uses ABI-valid placeholders for inactive fixed route bands', () => {
@@ -372,10 +482,54 @@ describe('conditional external-call topology', () => {
     expect(physicalExternalCallSelectorHex([proxy, sharedView], [delegate], 1)).toBe('53434231');
   });
 
+  it('interns repeated callsites by the exact consumed master outpoint', () => {
+    const first = { masterUtxo: { txid: 'AA'.repeat(32), vout: 2 } };
+    const alias = { masterUtxo: { txid: 'aa'.repeat(32), vout: 2 }, sharedGroupIndex: 0 };
+    const groups = [first, alias];
+
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'Aa'.repeat(32), vout: 2 },
+    )).toBe(0);
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'aa'.repeat(32), vout: 3 },
+    )).toBe(-1);
+    expect(physicalExternalCallGroupIndexByMasterOutpoint(
+      groups, { txid: 'bb'.repeat(32), vout: 2 },
+    )).toBe(-1);
+  });
+
   it('treats physical call bases and master indices as SDK-owned route witnesses', () => {
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__externalCallInputBase')).toBe(true);
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__extcallMasterIdx6')).toBe(true);
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__extcallAnchorIdx6')).toBe(true);
     expect(isSdkResolvedExternalCallTopologyWitness('__internal__vmapBatchProof_0')).toBe(false);
+  });
+
+  it('selects the array element a reached loop occurrence actually evaluates', () => {
+    // A runtime loop's callsite is expanded once per reached occurrence, so an induction-variable element index
+    // advances with it. Freezing the index on the first element makes every later row carry an argument the
+    // callee row it is paired with never evaluated.
+    const resolveAt = (occurrenceIndex: number): FunctionArgument[] | undefined =>
+      evaluator._resolveExternalArgs(
+        [{ kind: 'arrayElement', paramIndex: 0, indexValue: 0, indexStepValue: 1 }],
+        [['DV', 'test', 'DA']], artifact, undefined, [{ type: 'string[]' }], undefined, occurrenceIndex,
+      );
+
+    expect(resolveAt(0)).toEqual(['DV']);
+    expect(resolveAt(1)).toEqual(['test']);
+    expect(resolveAt(2)).toEqual(['DA']);
+  });
+
+  it('does not advance a literal array index between reached occurrences', () => {
+    // A published zero step marks an index the compiler proved does not depend on the loop variable, so every
+    // reached occurrence must keep selecting the same element.
+    const resolveAt = (occurrenceIndex: number): FunctionArgument[] | undefined =>
+      evaluator._resolveExternalArgs(
+        [{ kind: 'arrayElement', paramIndex: 0, indexValue: 1, indexStepValue: 0 }],
+        [['DV', 'test', 'DA']], artifact, undefined, [{ type: 'string[]' }], undefined, occurrenceIndex,
+      );
+
+    expect(resolveAt(0)).toEqual(['test']);
+    expect(resolveAt(2)).toEqual(['test']);
   });
 });

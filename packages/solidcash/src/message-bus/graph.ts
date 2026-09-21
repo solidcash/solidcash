@@ -1,21 +1,31 @@
 import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type {
-  AbiFunction, Artifact, ExternalCallAbi, InvocationAnalysisFunction,
+  AbiFunction, Artifact, ExternalCallAbi, ExternalResultEncoding, InvocationAnalysisFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, type EncodedMessageBatch, type MessageBatchCall,
+  encodeMessageBatch, messageBusTransactionSignatureFrameHex, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+  type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import { planKernelLifecycleTopology } from '../stateful/KernelLifecycleTopology.js';
+import { resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import {
   encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope, atomicMessageBusPhysicalLayout,
-  type AtomicMessageBusCallManifest, type AtomicPhysicalLayout,
+  type AtomicMessageBusCallManifest, type AtomicParticipantLifecycle, type AtomicPhysicalLayout,
 } from './atomic.js';
+import {
+  deriveValueChunkProducerChildPath,
+  type ValueChunkProducerPathContext,
+  type ValueChunkProducerPathDisposition,
+} from '../stateful/ValueChunkProducerIdentity.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
   /** Physical covenant identity used to intern and position the participant's state-owner block. */
   lockingBytecode: string;
+  /** Replacement covenant identity created at master offset zero; omitted preserves the input identity. */
+  outputLockingBytecode?: string;
   /**
    * Authenticated public target identity when it differs from the physical state owner, as it does for a
    * proxy/delegate execution or a contract with a published logical CREATE identity. This is the address a
@@ -50,9 +60,22 @@ export interface CompiledGraphInvocation {
   parent: number | null;
   callee: number;
   function: string;
+  /** Exact ABI entry-point selector. Required when `function` names distinct overloads. */
+  selector?: string;
   args?: readonly FunctionArgument[];
   /** Compiler-stable identity of the parent callsite reached by this invocation. */
   consumerCallsiteId?: number;
+  /**
+   * Source callsite represented by this invocation. For an ordinary call this equals
+   * `consumerCallsiteId`; a collapsed batch retains the pre-collapse source callsite here.
+   */
+  sourceCallsiteId?: number;
+  /** Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** Reached runtime occurrence of this source callsite or batch row. */
+  occurrenceIndex?: number;
+  /** Compiler-authored program point of the source call in its parent's shared effect domain. */
+  sourceEffectOrdinal?: number;
   /**
    * Exact locking bytecode evaluated by the parent call expression. It may be the participant's physical
    * owner or an authenticated public identity; settlement still belongs to `callee` in both cases.
@@ -93,11 +116,25 @@ export interface PlannedGraphInvocation {
   callOptions: number;
   argsHex: string;
   resultTypes: readonly string[];
+  /** Authenticated tuple-wide wire representation for this producer's result. */
+  resultEncoding?: ExternalResultEncoding;
   /**
    * Compiler callsite identifier of the parent occurrence this invocation answers. Absent for the root and
    * for parents whose artifact publishes no matching callsite.
    */
   consumerCallsiteId?: number;
+  /** Stable source producer identity, distinct from the physical callsite for collapsed batches. */
+  sourceCallsiteId?: number;
+  /** Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** Reached runtime occurrence of the source producer. */
+  occurrenceIndex?: number;
+  /** Compiler-authored program point of the parent call in its shared write/call effect domain. */
+  sourceEffectOrdinal?: number;
+  /** Whether source identity was published by the compiler or normalized from a legacy batch row. */
+  sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
+  /** Complete only when every root-to-invocation edge has compiler-authenticated source coordinates. */
+  readonly producerPath: ValueChunkProducerPathDisposition;
   /** Exact source-level call target and the participant-local input which authenticates it. */
   targetLockingBytecode: string;
   targetIdentityOffset: number;
@@ -110,6 +147,8 @@ export interface CompiledParticipantExecution {
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
+  /** Authenticated output identity; omitted is the canonical preservation case. */
+  outputLockingBytecode?: string;
   logicalLockingBytecode?: string;
   /** Local balanced-block offset of the authenticated public call target. */
   logicalIdentityOffset: number;
@@ -129,6 +168,8 @@ export interface CompiledParticipantExecution {
   settlementBoundary: number;
   /** Exclusive completion position for each local row, in message-bus batch execution order. */
   completionPositions: readonly number[];
+  /** Derived only from the selected compiler-published handler and its typed invocation arguments. */
+  lifecycle?: AtomicParticipantLifecycle;
 }
 
 export interface CompiledGraphPlan {
@@ -154,7 +195,8 @@ export function selectedGraphEventOffsets(
     const maximumRows = capability?.maximumRows ?? 0;
     const selectedHandlers = participant.invocations.map((invocationIndex) => {
       const invocation = plan.invocations[invocationIndex];
-      return capability?.handlers.find((handler) => handler.name === invocation.function);
+      return capability?.handlers.find((handler) => handler.name === invocation.function
+        && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     });
     const canonicalPrefix = maximumRows > 0 && eventSlots.length === maximumRows
       && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
@@ -173,7 +215,8 @@ export function selectedGraphEventOffsets(
     if (localRow >= frame.sites) return;
     const invocation = plan.invocations[invocationIndex];
     const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-      candidate.name === invocation.function);
+      candidate.name === invocation.function
+      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
     for (const emitted of handler?.emits ?? []) {
       if (emitted.emitIndex < 0 || emitted.emitIndex >= frame.eventWidth) continue;
       const offset = offsetBySlot.get(frame.eventBase + localRow * frame.eventWidth + emitted.emitIndex);
@@ -266,9 +309,13 @@ export interface FinalizedAtomicInvocationGraph {
 export interface AtomicEventSlotEffect {
   participant: number;
   offset: number;
-  active: boolean;
+  active?: boolean;
   lockingBytecodeHex: string;
   commitmentHex: string;
+  /** Exact local invocation row for a runtime-sized event occurrence in the participant trailing band. */
+  runtimeRow?: number;
+  /** Compiler-published schema used to bind a runtime occurrence to that row. */
+  eventSignature?: string;
 }
 
 export interface AtomicResourceSlotEffect {
@@ -315,6 +362,31 @@ export interface AtomicSidecarSlotEffect {
   value: bigint;
 }
 
+export interface AtomicDeploymentOutputEffect {
+  lockingBytecodeHex: string;
+  /** Display-order category id (the vout-0 genesis transaction id), without a capability suffix. */
+  tokenCategoryHex: string;
+  capability: 'minting' | 'mutable';
+  commitmentHex: string;
+  tokenAmount: bigint;
+  value: bigint;
+}
+
+/** Exact child-genesis output span selected by one compiler-published deployment occurrence. */
+export interface AtomicDeploymentSlotEffect {
+  participant: number;
+  invocation: number;
+  siteIndex: number;
+  /** Participant-local balanced slot occupied by the token-free vout-0 genesis input and child master output. */
+  offset: number;
+  /** False reserves and authenticates the site's canonical neutral balanced span. */
+  active: boolean;
+  genesisTransactionHashHex?: string;
+  genesisOutputIndex?: number;
+  /** Child master first, followed by every mutable child data NFT in compiler-published order. */
+  outputs: readonly AtomicDeploymentOutputEffect[];
+}
+
 const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
 
 const uint16LeHex = (value: number, field: string): string => {
@@ -347,14 +419,57 @@ export function atomicParticipantPolicyHash(artifact: Artifact): string {
     eligible: handler.eligible,
     rejectionCode: handler.rejectionCode ?? '',
     emits: (handler.emits ?? []).map((event) => [event.eventName, event.eventSignature, event.emitIndex]),
-    transfers: (handler.transfers ?? []).map((transfer) => [transfer.transferIndex, transfer.callOption ?? '']),
+    transfers: (handler.transfers ?? []).map((transfer) => ({
+      transferIndex: transfer.transferIndex,
+      recipient: transfer.recipient,
+      amount: transfer.amount,
+      recipientRecipe: transfer.recipientRecipe ?? null,
+      amountRecipe: transfer.amountRecipe ?? null,
+      derivedRecipient: transfer.derivedRecipient ? {
+        ...transfer.derivedRecipient,
+        creationBytecode: transfer.derivedRecipient.creationBytecode.toLowerCase(),
+      } : null,
+      callOption: transfer.callOption ?? '',
+      condition: transfer.condition ?? null,
+    })),
     tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
       [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
+    lifecycleTopology: handler.lifecycleTopology ?? null,
+    usesTransactionSignature: handler.usesTransactionSignature ?? false,
+    transactionSignaturePolicy: handler.transactionSignaturePolicy ? {
+      hashType: handler.transactionSignaturePolicy.hashType,
+      parameterIndices: [...handler.transactionSignaturePolicy.parameterIndices],
+      coveredBytecodes: (handler.transactionSignaturePolicy.coveredBytecodes ?? []).map((entry) => ({
+        parameterIndex: entry.parameterIndex, leafIndex: entry.leafIndex, bytecode: entry.bytecode.toLowerCase(),
+      })),
+    } : null,
+    signatureBytecode: handler.signatureBytecode?.toLowerCase() ?? '',
+    childDeployments: (handler.childDeployments ?? []).map((site) => ({
+      siteIndex: site.siteIndex,
+      contractName: site.contractName,
+      occurrence: site.occurrence,
+      ...(site.spanOffset !== undefined && { spanOffset: site.spanOffset }),
+      ...(site.spanWidth !== undefined && { spanWidth: site.spanWidth }),
+      ...(site.activation !== undefined && { activation: site.activation }),
+      genesisInputCount: site.genesisInputCount,
+      masterOutputCount: site.masterOutputCount,
+      dataNftOutputCount: site.dataNftOutputCount,
+      entryNftOutputCount: site.entryNftOutputCount ?? 0,
+      totalOutputCount: site.totalOutputCount,
+      categorySource: site.categorySource,
+      constructorArgs: site.constructorArgs,
+      ...(site.salt && { salt: site.salt }),
+      ...(site.value && { value: site.value }),
+      creationBytecode: site.creationBytecode.toLowerCase(),
+      childLayoutDigest: site.childLayoutDigest ?? '',
+      genesisState: site.genesisState ?? null,
+      genesisEntries: site.genesisEntries ?? [],
+    })),
   }));
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
 }
 
-/** Freeze the currently admitted invocation, state-resource, and event families into the atomic wire. */
+/** Freeze the currently admitted invocation and typed effect families into the atomic wire. */
 export function finalizeAtomicInvocationGraph(
   plan: CompiledGraphPlan, stateCategories: readonly string[],
   results: Readonly<Record<number, string>> = {},
@@ -364,6 +479,7 @@ export function finalizeAtomicInvocationGraph(
   tokenEffects: readonly AtomicTokenSlotEffect[] = [],
   sidecarEffects: readonly AtomicSidecarSlotEffect[] = [],
   actualSizes?: readonly number[],
+  deploymentEffects: readonly AtomicDeploymentSlotEffect[] = [],
 ): FinalizedAtomicInvocationGraph {
   if (stateCategories.length !== plan.participants.length) {
     throw new Error('messageBus: atomic master categories must align with participants');
@@ -372,6 +488,7 @@ export function finalizeAtomicInvocationGraph(
     throw new Error('messageBus: actual participant sizes must align with participants');
   }
   const spans = plan.participants.map((participant, index) => {
+    if (participant.lifecycle !== undefined) return participant.lifecycle.balancedSpan;
     const block = participant.blockLayout!;
     const fixedSize = block.fixedSuffix ? block.blockSize : block.trailingBase ?? block.blockSize;
     const actualSize = actualSizes?.[index] ?? block.blockSize;
@@ -383,12 +500,49 @@ export function finalizeAtomicInvocationGraph(
     return actualSize;
   });
   const layout = atomicMessageBusPhysicalLayout(spans);
+  const outputIdentityV2 = plan.participants.some((participant) =>
+    participant.outputLockingBytecode !== undefined
+      && participant.outputLockingBytecode.toLowerCase() !== participant.lockingBytecode.toLowerCase());
+  const transactionSignatureFrames = plan.invocations.map((invocation) => {
+    const participant = plan.participants[invocation.callee];
+    return participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4)
+      ? messageBusTransactionSignatureFrameHex(participant.artifact, invocation.function, invocation.selectorHex)
+      : '';
+  });
+  const signatureV4 = transactionSignatureFrames.some((signatureFrame, invocationIndex) =>
+    signatureFrame.length > 0
+      && plan.participants[plan.invocations[invocationIndex].callee]
+        .artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
+  // V4 carries the V3 participant suffix for wire extensibility. Resource-free lifecycle authority stays
+  // selector-derived from the one-row local batch (and the verifier commitment lifecycle code); the V4 suffix
+  // remains the neutral `mode=0,count=0` spelling. Signed non-lifecycle siblings may therefore share a V4
+  // manifest with a lifecycle participant. Detached `sig` leaves on the lifecycle handler itself remain a
+  // compiler `KERNEL_TX_SIGNATURE` fence.
+  if (outputIdentityV2) {
+    const legacy = plan.participants.findIndex((participant) =>
+      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
+    if (legacy >= 0) {
+      throw new Error(
+        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 2`,
+      );
+    }
+  }
+  if (signatureV4) {
+    const legacy = plan.participants.findIndex((participant) =>
+      !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(4));
+    if (legacy >= 0) {
+      throw new Error(
+        `messageBus: participant ${legacy} verifier does not advertise atomic callManifest protocol 4`,
+      );
+    }
+  }
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
       'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
-      'ecrecoverSideCar', 'trailing', 'lowLevelCall', 'identityAnchor',
+      'ecrecoverSideCar', 'deploy', 'deployDataNft', 'trailing', 'lowLevelCall', 'identityAnchor',
+      'lifecycleMaster',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -403,23 +557,33 @@ export function finalizeAtomicInvocationGraph(
     if (!/^[0-9a-f]{64}$/.test(category)) {
       throw new Error(`messageBus: participant ${index} master category must be 32-byte hex`);
     }
-    const maximumSize = participant.blockLayout!.blockSize;
-    const fixedSize = participant.blockLayout!.fixedSuffix
-      ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize;
+    const maximumSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
+    const lifecyclePrefix = participant.lifecycle === undefined ? 0
+      : (participant.blockLayout?.slots.filter((slot) =>
+        slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft').length ?? 0);
+    const fixedSize = participant.lifecycle === undefined
+      ? (participant.blockLayout!.fixedSuffix
+        ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize)
+      : 1 + lifecyclePrefix;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const publishesResult = participant.invocations.some((invocation) =>
       plan.invocations[invocation].resultTypes.length > 0);
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
+    const outputLockingBytecode = (participant.outputLockingBytecode ?? participant.lockingBytecode).toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, stateCategory: internalCategory,
+      ...((outputIdentityV2 || signatureV4) && { outputLockingBytecode }),
       fixedSize, actualSize, maximumSize,
       trailingUsed: actualSize - fixedSize,
       // Route layouts publish the union of every eligible handler, so a void selected batch can retain a physical
       // return coordinate without activating it. Advertising that inactive coordinate makes the verifier demand
       // the canonical encoded empty vector (`00`) from a deliberately token-free balanced output.
       returnOffset: !publishesResult || returnSlot === undefined ? 0xffff : returnSlot.offset,
+      // Lifecycle remains a compiler-authored planning property. Its authority is derived by the specialized
+      // participant verifier from its authenticated one-row batch selector/count and this ordinary V1/V2 block
+      // geometry, so no caller-authored lifecycle transcript is serialized into the global manifest.
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -443,6 +607,21 @@ export function finalizeAtomicInvocationGraph(
     if (completion === undefined) {
       throw new Error(`messageBus: invocation ${invocation.index} has no compiler-authored completion position`);
     }
+    const signatureFrame = transactionSignatureFrames[invocation.index];
+    if (signatureV4) {
+      const projected = plan.participants[invocation.callee].batch.rows[invocation.localRow];
+      if (projected === undefined || projected.selectorHex.toLowerCase() !== invocation.selectorHex.toLowerCase()
+        || projected.argsHex.toLowerCase() !== invocation.argsHex.toLowerCase()) {
+        throw new Error(
+          `messageBus: invocation ${invocation.index} signature provenance is not aligned with its encoded row`,
+        );
+      }
+      if (projected.transactionSignatureFrameHex.toLowerCase() !== signatureFrame.toLowerCase()) {
+        throw new Error(
+          `messageBus: invocation ${invocation.index} signature provenance disagrees with compiler policy`,
+        );
+      }
+    }
     return {
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
@@ -455,6 +634,7 @@ export function finalizeAtomicInvocationGraph(
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
+      ...(signatureV4 && signatureFrame.length > 0 && { transactionSignatureFrameHex: signatureFrame }),
     };
   });
   const resourceKeys = new Set(resourceEffects.map((effect) => `${effect.participant}:${effect.offset}`));
@@ -478,11 +658,15 @@ export function finalizeAtomicInvocationGraph(
       // through the same fully-authenticated input/output token row as a source-level token container; the SDK
       // additionally requires exact preservation, and the executor's own master covenant independently binds it.
       const tokenContainer = slot.kind === 'tokenContainer' || slot.kind === 'lowLevelCall';
+      const lifecycleConsume = effect.mode === 2
+        && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
+        && plan.participants[effect.participant]?.lifecycle?.kind === 'selfdestruct';
       if (effect.mode < 0 || effect.mode > 5
         || (satoshiContainer ? effect.mode !== 3 : effect.mode === 3)
         || (tokenContainer ? effect.mode !== 4 : effect.mode === 4)
         || (!satoshiContainer && !tokenContainer
-          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0)) {
+          && slot.kind !== 'entry' && slot.kind !== 'trailing' && effect.mode !== 0
+          && !lifecycleConsume)) {
         throw new Error(`messageBus: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
@@ -548,8 +732,8 @@ export function finalizeAtomicInvocationGraph(
     .map((effect) => {
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`messageBus: event effect names participant ${effect.participant}`);
-      const slot = participant.blockLayout!.slots.find((candidate) =>
-        candidate.kind === 'event' && candidate.offset === effect.offset);
+      const slot = participant.blockLayout!.slots.find((candidate) => candidate.offset === effect.offset
+        && (candidate.kind === 'event' || (effect.runtimeRow !== undefined && candidate.kind === 'trailing')));
       if (!slot) {
         throw new Error(`messageBus: participant ${effect.participant} has no event slot ${effect.offset}`);
       }
@@ -561,10 +745,11 @@ export function finalizeAtomicInvocationGraph(
       const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function);
+          candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
         return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
       });
-      if (maximumRows < 1 || slot.slotIndex === undefined
+      if (maximumRows < 1 || (effect.runtimeRow === undefined && slot.slotIndex === undefined)
         || (emittingInvocations.length === 0 && eventSlotCount % maximumRows !== 0)) {
         throw new Error(`messageBus: participant ${effect.participant} has a non-canonical event frame`);
       }
@@ -576,11 +761,22 @@ export function finalizeAtomicInvocationGraph(
       // Older/minimal artifacts do not publish handler-level emit metadata. Keep their canonical physical-frame
       // binding as a compatibility fallback; full artifacts use the reached emitting invocation sequence above.
       const graphFrame = participant.artifact.messageBus?.route?.graphEffectFrame;
+      const fixedSlotIndex = slot.slotIndex;
       let parent: number | undefined;
-      if (graphFrame && graphFrame.eventWidth > 0
-        && slot.slotIndex >= graphFrame.eventBase
-        && slot.slotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
-        const relative = slot.slotIndex - graphFrame.eventBase;
+      if (effect.runtimeRow !== undefined) {
+        const candidate = participant.invocations.find((invocationIndex) =>
+          plan.invocations[invocationIndex].localRow === effect.runtimeRow);
+        const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
+        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
+          .find((entry) => entry.name === invocation.function);
+        const publishedSignatures = new Set((handler?.runtimeLoopEvents ?? [])
+          .flatMap((loop) => loop.eventSignatures));
+        if (candidate !== undefined && effect.eventSignature !== undefined
+          && publishedSignatures.has(effect.eventSignature)) parent = candidate;
+      } else if (graphFrame && graphFrame.eventWidth > 0 && fixedSlotIndex !== undefined
+        && fixedSlotIndex >= graphFrame.eventBase
+        && fixedSlotIndex < graphFrame.eventBase + graphFrame.sites * graphFrame.eventWidth) {
+        const relative = fixedSlotIndex - graphFrame.eventBase;
         const localRow = Math.floor(relative / graphFrame.eventWidth);
         const emitIndex = relative % graphFrame.eventWidth;
         const candidate = participant.invocations[localRow];
@@ -590,7 +786,8 @@ export function finalizeAtomicInvocationGraph(
         if (handler?.emits?.some((emitted) => emitted.emitIndex === emitIndex)) parent = candidate;
       } else {
         parent = emittingInvocations[eventOrdinal]
-          ?? (frameWidth > 0 ? participant.invocations[Math.floor(slot.slotIndex / frameWidth)] : undefined);
+          ?? (frameWidth > 0 && fixedSlotIndex !== undefined
+            ? participant.invocations[Math.floor(fixedSlotIndex / frameWidth)] : undefined);
       }
       if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
         || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
@@ -694,6 +891,156 @@ export function finalizeAtomicInvocationGraph(
           : effect.commitmentHex.toLowerCase(),
       };
     });
+  const deploymentKeys = new Set(deploymentEffects.map((effect) =>
+    `${effect.participant}:${effect.invocation}:${effect.siteIndex}`));
+  if (deploymentKeys.size !== deploymentEffects.length) {
+    throw new Error('messageBus: atomic deployment effects contain a duplicate invocation site');
+  }
+  const expectedDeploymentKeys = new Set<string>();
+  const canonicalDeploymentSites = (invocationIndex: number) => {
+    const invocation = plan.invocations[invocationIndex];
+    const participant = invocation === undefined ? undefined : plan.participants[invocation.callee];
+    const handler = participant?.artifact.messageBus?.handlers.find((candidate) =>
+      candidate.name === invocation.function
+      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+    const sites = handler?.childDeployments ?? [];
+    let expectedSpanOffset = 0;
+    if (sites.some((site, index) => {
+      const spanWidth = site.spanWidth ?? site.totalOutputCount;
+      const spanOffset = site.spanOffset ?? expectedSpanOffset;
+      const valid = site.siteIndex === index
+        && (site.occurrence === 'once' || (site.occurrence === 'conditional' && site.activation !== undefined))
+        && site.genesisInputCount === 1 && site.masterOutputCount === 1
+        && Number.isSafeInteger(site.dataNftOutputCount) && site.dataNftOutputCount >= 0
+        && Number.isSafeInteger(site.entryNftOutputCount ?? 0) && (site.entryNftOutputCount ?? 0) >= 0
+        && site.totalOutputCount === 1 + site.dataNftOutputCount + (site.entryNftOutputCount ?? 0)
+        && spanWidth === site.totalOutputCount && spanOffset === expectedSpanOffset;
+      expectedSpanOffset += site.totalOutputCount;
+      return !valid;
+    })) {
+      throw new Error(`messageBus: invocation ${invocationIndex} has a non-canonical deployment topology`);
+    }
+    return sites;
+  };
+  for (const invocation of plan.invocations) {
+    const sites = canonicalDeploymentSites(invocation.index);
+    for (const site of sites) {
+      expectedDeploymentKeys.add(`${invocation.callee}:${invocation.index}:${site.siteIndex}`);
+    }
+  }
+  if (expectedDeploymentKeys.size !== deploymentKeys.size
+    || [...expectedDeploymentKeys].some((key) => !deploymentKeys.has(key))) {
+    throw new Error('messageBus: atomic deployment effects do not exactly cover reached deployment invocations');
+  }
+  const deploymentOffsets = new Set(deploymentEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (deploymentOffsets.size !== deploymentEffects.length) {
+    throw new Error('messageBus: atomic deployment effects contain a duplicate participant slot');
+  }
+  const deploymentRows = [...deploymentEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      const invocation = plan.invocations[effect.invocation];
+      if (!participant || !invocation || invocation.callee !== effect.participant
+        || !participant.invocations.includes(effect.invocation)) {
+        throw new Error(
+          `messageBus: deployment participant ${effect.participant} does not own invocation ${effect.invocation}`,
+        );
+      }
+      const sites = canonicalDeploymentSites(effect.invocation);
+      const site = sites[effect.siteIndex];
+      if (!site || site.siteIndex !== effect.siteIndex) {
+        throw new Error(
+          `messageBus: invocation ${effect.invocation} has no straight-line deployment site ${effect.siteIndex}`,
+        );
+      }
+      // The compiler publishes one physical deployment window per route row: its first member is the
+      // token-free genesis input/child-master pair (`deploy`), and every remaining member is output-only
+      // (`deployDataNft`). Multiple logical source sites partition that window in source order; later child
+      // masters remain members of the same physical window rather than introducing another `deploy` slot.
+      const rowSlots = participant.blockLayout!.slots.filter((candidate) =>
+        (candidate.kind === 'deploy' || candidate.kind === 'deployDataNft')
+        && candidate.slotIndex === invocation.localRow)
+        .sort((left, right) => left.offset - right.offset);
+      const rowBase = rowSlots[0];
+      if (!rowBase || rowBase.kind !== 'deploy'
+        || rowSlots.some((slot, index) => slot.offset !== rowBase.offset + index
+          || (index > 0 && slot.kind !== 'deployDataNft'))) {
+        throw new Error(
+          `messageBus: participant ${effect.participant} row ${invocation.localRow} has a non-canonical deployment window`,
+        );
+      }
+      const siteOffset = rowBase.offset + (site.spanOffset
+        ?? sites.slice(0, effect.siteIndex).reduce((offset, prior) => offset + prior.totalOutputCount, 0));
+      const usedWidth = sites.reduce((width, candidate) => width + candidate.totalOutputCount, 0);
+      if (usedWidth > rowSlots.length || siteOffset !== effect.offset
+        || effect.offset + site.totalOutputCount > rowBase.offset + rowSlots.length) {
+        throw new Error(
+          `messageBus: participant ${effect.participant} deployment site ${effect.siteIndex} has a non-canonical output span`,
+        );
+      }
+      const active = effect.active !== false;
+      if (active && effect.outputs.length !== site.totalOutputCount) {
+        throw new Error(
+          `messageBus: deployment site ${effect.siteIndex} requires ${site.totalOutputCount} exact outputs`,
+        );
+      }
+      if (!active && (site.occurrence !== 'conditional' || effect.outputs.length !== 0)) {
+        throw new Error(`messageBus: deployment site ${effect.siteIndex} has a non-canonical inactive span`);
+      }
+      if (!active) {
+        return {
+          kind: 5, owner: effect.participant, consumer: effect.participant,
+          slot: effect.offset, mode: 1, sourceOffset: effect.offset, targetOffset: effect.offset,
+          selectorHex: '00000000', position: effect.offset, parent: effect.invocation, depth: invocation.depth,
+          subtreeEnd: effect.invocation, subjectHex: '',
+          argsHex: uint16LeHex(effect.siteIndex, 'deployment site index'),
+          resultHex: '', effectHex: uint16LeHex(site.totalOutputCount, 'inactive deployment span width'),
+        };
+      }
+      const genesis = effect.genesisTransactionHashHex?.toLowerCase() ?? '';
+      if (!/^[0-9a-f]{64}$/.test(genesis) || effect.genesisOutputIndex !== 0) {
+        throw new Error(`messageBus: deployment site ${effect.siteIndex} genesis must be a 32-byte vout-0 transaction`);
+      }
+      effect.outputs.forEach((output, index) => {
+        const expectedCapability = index === 0 ? 'minting' : 'mutable';
+        if (!/^(?:[0-9a-fA-F]{2})+$/.test(output.lockingBytecodeHex)
+          || !/^(?:[0-9a-fA-F]{2})*$/.test(output.commitmentHex)
+          || output.tokenCategoryHex.toLowerCase() !== genesis
+          || output.capability !== expectedCapability || output.tokenAmount !== 0n
+          || output.value < 0n || output.value > 0xffff_ffff_ffff_ffffn) {
+          throw new Error(
+            `messageBus: deployment site ${effect.siteIndex} output ${index} does not match its child-genesis shape`,
+          );
+        }
+      });
+      const internalCategory = (genesis.match(/../g) as string[]).reverse().join('');
+      const descriptorDigest = site.childLayoutDigest?.toLowerCase() ?? '';
+      if (!/^[0-9a-f]{64}$/.test(descriptorDigest)) {
+        throw new Error(
+          `messageBus: deployment site ${effect.siteIndex} has no authenticated child layout descriptor`,
+        );
+      }
+      const effectHex = uint16LeHex(effect.outputs.length, 'deployment output count')
+        + effect.outputs.map((output, index) => {
+          const lockingBytecode = output.lockingBytecodeHex.toLowerCase();
+          const commitment = output.commitmentHex.toLowerCase();
+          return uint64LeHex(output.value, `deployment output ${index} value`)
+            + uint8Hex(output.capability === 'minting' ? 2 : 1)
+            + uint16LeHex(lockingBytecode.length / 2, `deployment output ${index} locking bytecode length`)
+            + lockingBytecode
+            + uint16LeHex(commitment.length / 2, `deployment output ${index} commitment length`)
+            + commitment;
+        }).join('');
+      return {
+        kind: 5, owner: effect.participant, consumer: effect.participant,
+        slot: effect.offset, mode: 0, sourceOffset: effect.offset, targetOffset: effect.offset,
+        selectorHex: '00000000', position: effect.offset, parent: effect.invocation, depth: invocation.depth,
+        subtreeEnd: effect.invocation, subjectHex: '',
+        argsHex: uint16LeHex(effect.siteIndex, 'deployment site index') + internalCategory + descriptorDigest,
+        resultHex: '', effectHex,
+      };
+    });
   const sidecarKeys = new Set(sidecarEffects.map((effect) => `${effect.participant}:${effect.offset}`));
   if (sidecarKeys.size !== sidecarEffects.length) {
     throw new Error('messageBus: atomic sidecar effects contain a duplicate participant slot');
@@ -727,9 +1074,13 @@ export function finalizeAtomicInvocationGraph(
       };
     });
   const rows = [
-    ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows, ...sidecarRows,
+    ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows,
+    ...deploymentRows, ...sidecarRows,
   ];
-  const callManifest = { participants, rows };
+  const callManifest = {
+    ...(signatureV4 ? { version: 4 as const }
+      : outputIdentityV2 ? { version: 2 as const } : {}), participants, rows,
+  };
   const bytes = encodeAtomicMessageBusCallManifest(callManifest);
   return Object.freeze({ plan, layout, callManifest, bytes, messageEnvelope: encodeAtomicMessageEnvelope(callManifest) });
 }
@@ -915,7 +1266,8 @@ function bindConsumerCallsites(
       || callsite.functionName === functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
-      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}`;
+      `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}|`
+      + `${callsite.resultEncoding ?? 'legacy'}`;
     if (new Set(candidates.map(contract)).size > 1) {
       throw new Error(
         `messageBus: invocation ${parent} cannot bind '${functionName}' to one callsite; its conditional or `
@@ -1285,15 +1637,10 @@ function assertNoStaleEmissionCloneReads(
  * the callManifest would then commit the wrong selector and argument vector consistently. Entries agreeing on
  * their selector are the same target and are not ambiguous.
  */
-export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFunction | undefined {
-  const matches = artifact.abi.filter((candidate) => candidate.name === name);
-  if (matches.length > 1
-    && new Set(matches.map((candidate) => candidate.selector ?? '')).size > 1) {
-    throw new Error(
-      `messageBus: participant artifact declares ${matches.length} distinct ABI functions named '${name}'`,
-    );
-  }
-  return matches[0];
+export function resolveGraphAbiFunction(
+  artifact: Artifact, name: string, selector?: string,
+): AbiFunction | undefined {
+  return resolveMessageBusAbiFunction(artifact, name, selector);
 }
 
 type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
@@ -1302,9 +1649,9 @@ type GraphCallerInvocation = Pick<CompiledGraphInvocation,
 'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
 
 /**
- * Every CALL/staticcall edge is made by the authenticated state owner. A delegate executor remains the exact
- * source-level `address(this)` value, but choosing a low-level rather than interface call cannot change the
- * callee's `msg.sender`: both are encodings of the same outgoing call from the same contract instance.
+ * Every CALL/staticcall edge is made by the authenticated state owner. Delegate execution resources remain on
+ * the separately pinned implementation input, but the outgoing caller is the proxy/state-owner context. Call
+ * argument planning must use this same identity for source-level `address(this)` on the edge.
  */
 export function graphInvocationCallerIdentity(
   participants: readonly GraphCallerParticipant[],
@@ -1333,8 +1680,9 @@ export function graphInvocationCallerIdentity(
  * is why the direct block layout alone cannot tell a bound effect from a dropped one and why this compares the
  * two policies instead of flagging every value-moving function. The measured discriminator is the message-bus batch
  * handler: an option contributes nothing to `handler.transfers`, a first-party transfer contributes one entry
- * and eight route `transfer` slots. Dropped token-container operations are already refused at compile time;
- * the container arm here is the SDK-side backstop for the same class.
+ * and eight route `transfer` slots. A value-bearing child creation is the other bound form: its exact transfer
+ * index and typed amount recipe are published by the selector-exact child-deployment site. Dropped token-container
+ * operations are already refused at compile time; the container arm here is the SDK-side backstop for the same class.
  *
  * X5: this is ONE measurement with two consumers - `assertNoUnboundCallOptions`, which turns it into the single
  * named refusal, and `planCompiledGraph`, which encodes it into the committed row. Splitting the measurement
@@ -1343,10 +1691,12 @@ export function graphInvocationCallerIdentity(
 export function measureUnboundCallOptions(
   artifact: Artifact, fn: AbiFunction, name: string,
 ): { optionBits: number; detail?: string } {
-  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name
+    && (fn.selector === undefined || candidate.selector === fn.selector));
   const routeKinds = new Set((artifact.messageBus?.route.blockLayout?.slots ?? [])
     .map((slot) => slot.kind as string));
-  const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0);
+  const deploymentValues = handler?.childDeployments?.filter((site) => site.value !== undefined).length ?? 0;
+  const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0) - deploymentValues;
   const unboundContainer = (fn.tokenContainerAccesses?.length ?? 0)
     - (handler?.tokenContainerAccesses?.length ?? 0);
   // Backstop for an artifact whose per-handler policy is absent or understated: a direct-mode option slot
@@ -1422,6 +1772,10 @@ export function planCompiledGraph(
       && !/^([0-9a-f]{2})+$/.test(participant.logicalLockingBytecode.toLowerCase())) {
       throw new Error(`messageBus: participant ${index} logical locking bytecode must be hex bytes`);
     }
+    if (participant.outputLockingBytecode !== undefined
+      && !/^([0-9a-f]{2})+$/.test(participant.outputLockingBytecode.toLowerCase())) {
+      throw new Error(`messageBus: participant ${index} output locking bytecode must be non-empty hex bytes`);
+    }
     if (identities.has(lbc)) {
       throw new Error('messageBus: two participant rows name the same physical locking bytecode');
     }
@@ -1470,7 +1824,7 @@ export function planCompiledGraph(
     if (invocation.callMode !== undefined) return 'call';
     const parentInvocation = invocations[invocation.parent];
     const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function,
+      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
     );
     const modes = [...new Set((parentFunction?.externalCalls ?? [])
       .filter((call) => invocation.consumerCallsiteId !== undefined
@@ -1518,15 +1872,21 @@ export function planCompiledGraph(
         },
       );
     }
-    const rowHandler = participants[invocation.callee].artifact.messageBus?.handlers.find((handler) =>
-      handler.name === invocation.function);
+    const abiFunction = resolveGraphAbiFunction(
+      participants[invocation.callee].artifact, invocation.function, invocation.selector,
+    );
+    const rowHandler = resolveMessageBusHandler(
+      participants[invocation.callee].artifact, invocation.function, abiFunction?.selector,
+    );
     perOwner[invocation.callee].push({
       function: invocation.function,
+      ...(abiFunction?.selector !== undefined && { selector: abiFunction.selector }),
       args: invocation.args,
-      // Graph admission rejects every unbound `{value: ...}` call option. A nested payable row therefore has
-      // exactly zero logical BCH value; publish that proof explicitly so a handler which conditionally reads
-      // msg.value (ERC20-vs-native payment) does not ask the SDK for a witness it already constrained to zero.
-      ...(invocation.parent !== null && rowHandler?.usesMsgValue && { msgValue: 0n }),
+      // Graph admission rejects every unbound incoming `{value: ...}` call option. A nested payable row with
+      // no compiler-authored transfer therefore has exactly zero logical BCH value. Transfer-bearing rows derive
+      // their (possibly conditional) negative delta from the same authenticated recipes used by composition.
+      ...(invocation.parent !== null && rowHandler?.usesMsgValue
+        && (rowHandler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
       ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
@@ -1552,7 +1912,7 @@ export function planCompiledGraph(
       );
     }
     const participant = participants[invocation.callee];
-    const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function);
+    const abiFunction = resolveGraphAbiFunction(participant.artifact, invocation.function, invocation.selector);
     // An absent ABI entry is refused rather than skipped, matching `deriveCompiledGraphPlan`'s `functionAbi`.
     // Skipping it silently disabled the call-option check for the one artifact shape that can hide the
     // evidence: the direct-mode `transferCount`/`blockLayout` an option publishes live on this entry, so a row
@@ -1575,8 +1935,12 @@ export function planCompiledGraph(
     if (invocation.parent !== null) {
       const parentInvocation = invocations[invocation.parent];
       const parentParticipant = participants[parentInvocation.callee];
-      const parentHandler = parentParticipant.artifact.messageBus?.handlers
-        .find((candidate) => candidate.name === parentInvocation.function);
+      const parentAbi = resolveGraphAbiFunction(
+        parentParticipant.artifact, parentInvocation.function, parentInvocation.selector,
+      );
+      const parentHandler = resolveMessageBusHandler(
+        parentParticipant.artifact, parentInvocation.function, parentAbi?.selector,
+      );
       if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value')) {
         bits |= CALL_OPTION_VALUE;
       }
@@ -1605,6 +1969,86 @@ export function planCompiledGraph(
       : [];
     const logicalIdentityOffset = participant.logicalIdentityOffset ?? 0;
     const participantBlockSize = participant.artifact.messageBus?.route.blockLayout?.blockSize ?? 0;
+    const selectedLifecycle = globalByOwner[owner].flatMap((invocationIndex) => {
+      const invocation = invocations[invocationIndex];
+      const abi = resolveGraphAbiFunction(participant.artifact, invocation.function, invocation.selector);
+      const handler = resolveMessageBusHandler(
+        participant.artifact, invocation.function, abi?.selector,
+      );
+      return handler?.lifecycleTopology === undefined ? [] : [{ invocation, handler }];
+    });
+    let lifecycle: AtomicParticipantLifecycle | undefined;
+    if (selectedLifecycle.length > 0) {
+      if (selectedLifecycle.length !== 1 || globalByOwner[owner].length !== 1) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} must execute exactly one lifecycle invocation`,
+        );
+      }
+      const layoutSlots = participant.artifact.messageBus?.route.blockLayout?.slots ?? [];
+      const dataNftSlots = layoutSlots.filter((slot) =>
+        slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft');
+      const disallowedLifecycleSlots = layoutSlots.some((slot) =>
+        slot.kind !== 'master' && slot.kind !== 'dataNft' && slot.kind !== 'readOnlyDataNft');
+      if (executionKind !== 0 || participant.outputLockingBytecode !== undefined
+        || layoutSlots.length < 1 || layoutSlots[0]?.kind !== 'master'
+        || disallowedLifecycleSlots
+        || participantBlockSize !== 1 + dataNftSlots.length) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} requires one direct master[+dataNft] balanced block`,
+        );
+      }
+      const selected = selectedLifecycle[0];
+      if (participant.artifact.messageBus?.verifierProgram?.lifecycle !== true
+        && participant.artifact.messageBus?.verifierProgram?.splitLifecycle !== true) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} verifier does not advertise selector-derived authority`,
+        );
+      }
+      const topology = planKernelLifecycleTopology(
+        selected.handler.lifecycleTopology, selected.invocation.args ?? [],
+      );
+      const prefix = topology.resourcePrefix?.dataNftCount ?? 0;
+      if (prefix !== dataNftSlots.length
+        || (topology.resourcePrefix !== undefined
+          && topology.resourcePrefix.nftIndices.length !== prefix)) {
+        throw new Error(
+          `messageBus: lifecycle participant ${owner} resourcePrefix does not match its block layout`,
+        );
+      }
+      const fixedSize = 1 + prefix;
+      if (topology.kind === 'selfdestruct') {
+        if (topology.categoryCensus.inputCount !== 1 || topology.categoryCensus.outputCount !== 0) {
+          throw new Error(`messageBus: lifecycle participant ${owner} retirement census is not canonical`);
+        }
+        if (topology.resourcePrefix !== undefined && topology.resourcePrefix.mode !== 'consume') {
+          throw new Error(`messageBus: lifecycle participant ${owner} retirement prefix mode is not consume`);
+        }
+        lifecycle = Object.freeze({
+          version: 1 as const, kind: 'selfdestruct' as const, count: 1,
+          inputSpan: fixedSize, outputSpan: fixedSize, balancedSpan: fixedSize,
+          inputTail: 'retired-master' as const, outputTail: 'reclaim' as const,
+        });
+      } else {
+        const count = topology.kind === 'split'
+          ? topology.categoryCensus.outputCount - 1 : topology.categoryCensus.inputCount - 1;
+        if (count < 1 || count >= 32767) {
+          throw new Error(`messageBus: lifecycle participant ${owner} count does not fit its balanced span`);
+        }
+        if (topology.resourcePrefix !== undefined && topology.resourcePrefix.mode !== 'preserve') {
+          throw new Error(`messageBus: lifecycle participant ${owner} split/merge prefix mode is not preserve`);
+        }
+        const split = topology.kind === 'split';
+        const balancedSpan = fixedSize + count;
+        lifecycle = Object.freeze({
+          version: 1 as const, kind: topology.kind, count,
+          inputSpan: split ? fixedSize : balancedSpan,
+          outputSpan: split ? balancedSpan : fixedSize,
+          balancedSpan,
+          inputTail: split ? 'funding' as const : 'consumed-masters' as const,
+          outputTail: split ? 'created-masters' as const : 'reclaim' as const,
+        });
+      }
+    }
     if (!Number.isInteger(logicalIdentityOffset)
       || logicalIdentityOffset < 0 || logicalIdentityOffset >= participantBlockSize) {
       throw new Error(`messageBus: participant ${owner} logical identity offset is outside its balanced block`);
@@ -1626,6 +2070,9 @@ export function planCompiledGraph(
       participant: owner,
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
+      ...(participant.outputLockingBytecode !== undefined && {
+        outputLockingBytecode: participant.outputLockingBytecode.toLowerCase(),
+      }),
       ...(participant.logicalLockingBytecode !== undefined && {
         logicalLockingBytecode: participant.logicalLockingBytecode.toLowerCase(),
       }),
@@ -1646,6 +2093,7 @@ export function planCompiledGraph(
       routeInputs: participant.artifact.messageBus!.route.inputs,
       settlementBoundary: Math.max(...globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
       completionPositions: Object.freeze(globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
+      ...(lifecycle && { lifecycle }),
     });
   });
 
@@ -1677,7 +2125,9 @@ export function planCompiledGraph(
     } else {
       const parentInvocation = invocations[invocation.parent];
       const parentArtifact = participants[parentInvocation.callee].artifact;
-      const parentFunction = resolveGraphAbiFunction(parentArtifact, parentInvocation.function);
+      const parentFunction = resolveGraphAbiFunction(
+        parentArtifact, parentInvocation.function, parentInvocation.selector,
+      );
       const candidates = parentFunction?.externalCalls?.filter((call) =>
         invocation.consumerCallsiteId !== undefined
           ? call.callsiteId === invocation.consumerCallsiteId
@@ -1728,6 +2178,7 @@ export function planCompiledGraph(
       callOptions: (callMode === 'staticcall' ? CALL_OPTION_READ_ONLY : 0) | optionBits[index],
       argsHex: row.argsHex,
       resultTypes: Object.freeze([...(result?.types ?? [])]),
+      ...(result && { resultEncoding: result.resultEncoding }),
       targetLockingBytecode: targetIdentity.lockingBytecode,
       targetIdentityOffset: targetIdentity.offset,
     });
@@ -1759,12 +2210,20 @@ export function planCompiledGraph(
     childrenOf[invocations[child].parent!].push(child);
   }
   const consumerCallsites: (number | undefined)[] = invocations.map(() => undefined);
+  const sourceOccurrences: ({
+    sourceCallsiteId: number;
+    sourceLogicalIndex?: number;
+    occurrenceIndex: number;
+    sourceEffectOrdinal?: number;
+    sourceCallsiteProvenance: 'compiler' | 'legacy-logical';
+  } | undefined)[] = invocations.map(() => undefined);
   const resultDependencies: number[][] = invocations.map(() => []);
   for (let parent = 0; parent < invocations.length; parent += 1) {
     const children = childrenOf[parent];
     const parentInvocation = invocations[parent];
+    const parentArtifact = participants[parentInvocation.callee].artifact;
     const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function,
+      parentArtifact, parentInvocation.function, parentInvocation.selector,
     );
     // X179: the floor, ordered before the ceiling and before the `children.length === 0` skip, because a
     // handler planned with NO children is exactly the shape it refuses - the skip is what let a dropped edge
@@ -1792,7 +2251,8 @@ export function planCompiledGraph(
         }
         const reachedFunction = invocations[children[position]].function;
         const expectedFunction = callsite.rawFunctionName ?? callsite.functionName;
-        if (!isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
+        if (callsite.batchInvocations === undefined
+          && !isRuntimeResolvedCallsite(callsite) && expectedFunction !== reachedFunction) {
           throw new Error(
             `messageBus: invocation ${parent} binds callsite ${callsiteId} to '${reachedFunction}', `
             + `but the compiler publishes '${expectedFunction}'`,
@@ -1813,9 +2273,148 @@ export function planCompiledGraph(
         assertPlannedOccurrenceCount(callsite, count);
       }
     }
+    const seenSourceOccurrences = new Set<string>();
+    const inferredOccurrence = new Map<string, number>();
     children.forEach((child, position) => {
       const callsite = bindings[position];
       consumerCallsites[child] = callsite?.callsiteId;
+      if (callsite?.callsiteId !== undefined) {
+        const invocation = invocations[child];
+        let sourceCallsiteId = invocation.sourceCallsiteId;
+        let sourceLogicalIndex = invocation.sourceLogicalIndex;
+        let occurrenceIndex = invocation.occurrenceIndex;
+        let sourceEffectOrdinal: number | undefined;
+        let sourceCallsiteProvenance: 'compiler' | 'legacy-logical' = 'compiler';
+        if (callsite.batchInvocations !== undefined) {
+          if (sourceLogicalIndex === undefined) {
+            throw new Error(
+              `messageBus: invocation ${child} omits source identity for batched callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (!Number.isSafeInteger(sourceLogicalIndex) || sourceLogicalIndex < 0) {
+            throw new Error(`messageBus: invocation ${child} has an invalid batched source identity`);
+          }
+          const row = callsite.batchInvocations.find((candidate) => candidate.logicalIndex === sourceLogicalIndex);
+          if (!row) {
+            throw new Error(
+              `messageBus: invocation ${child} names absent source row `
+              + `${sourceCallsiteId}:${sourceLogicalIndex} at batched callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (row.sourceCallsiteId === undefined) {
+            sourceCallsiteProvenance = 'legacy-logical';
+            if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
+              throw new Error(
+                `messageBus: invocation ${child} assigns an unauthenticated source callsite to a legacy batch row`,
+              );
+            }
+            sourceCallsiteId = callsite.callsiteId;
+          } else {
+            if (sourceCallsiteId === undefined) {
+              throw new Error(
+                `messageBus: invocation ${child} omits compiler source callsite for batched callsite `
+                + `${callsite.callsiteId}`,
+              );
+            }
+            if (sourceCallsiteId !== row.sourceCallsiteId) {
+              throw new Error(
+                `messageBus: invocation ${child} source callsite ${sourceCallsiteId} disagrees with `
+                + `compiler row ${row.sourceCallsiteId}`,
+              );
+            }
+          }
+          sourceEffectOrdinal = row.sourceEffectOrdinal;
+          if (!Number.isSafeInteger(sourceCallsiteId) || sourceCallsiteId < 0) {
+            throw new Error(`messageBus: invocation ${child} has an invalid batched source callsite`);
+          }
+          if (row.selector.toLowerCase() !== plannedBase[child].selectorHex.toLowerCase()) {
+            throw new Error(
+              `messageBus: invocation ${child} source row selector disagrees with its planned target`,
+            );
+          }
+          const targetFunction = resolveGraphAbiFunction(
+            participants[invocations[child].callee].artifact,
+            invocations[child].function,
+            invocations[child].selector,
+          );
+          const visibleTargetInputs = targetFunction?.inputs.filter((input) =>
+            !input.name.startsWith('__internal__'));
+          if (!visibleTargetInputs || row.inputs.length !== visibleTargetInputs.length
+            || row.inputs.some((input, inputIndex) => input.type !== visibleTargetInputs[inputIndex].type)) {
+            throw new Error(
+              `messageBus: invocation ${child} source row schema disagrees with its planned target`,
+            );
+          }
+          if ((row.occurrence ?? 'once') !== 'loop' && occurrenceIndex !== undefined && occurrenceIndex !== 0) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns occurrence ${occurrenceIndex} to a `
+              + `${row.occurrence ?? 'once'} source row`,
+            );
+          }
+        } else {
+          if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
+            throw new Error(
+              `messageBus: invocation ${child} source callsite ${sourceCallsiteId} disagrees with `
+              + `physical callsite ${callsite.callsiteId}`,
+            );
+          }
+          if (sourceLogicalIndex !== undefined) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns a batch logical index to non-batched callsite `
+              + `${callsite.callsiteId}`,
+            );
+          }
+          sourceCallsiteId = callsite.callsiteId;
+          sourceEffectOrdinal = callsite.sourceEffectOrdinal;
+          if ((callsite.occurrence ?? 'once') !== 'loop'
+            && occurrenceIndex !== undefined && occurrenceIndex !== 0) {
+            throw new Error(
+              `messageBus: invocation ${child} assigns occurrence ${occurrenceIndex} to a `
+              + `${callsite.occurrence ?? 'once'} callsite`,
+            );
+          }
+        }
+        if (sourceEffectOrdinal !== undefined
+          && (!Number.isSafeInteger(sourceEffectOrdinal) || sourceEffectOrdinal < 0)) {
+          throw new Error(`messageBus: invocation ${child} has an invalid compiler source-effect ordinal`);
+        }
+        if (invocation.sourceEffectOrdinal !== undefined
+          && invocation.sourceEffectOrdinal !== sourceEffectOrdinal) {
+          throw new Error(
+            `messageBus: invocation ${child} source-effect ordinal disagrees with its compiler callsite`,
+          );
+        }
+        const sourceKey = `${sourceCallsiteId}:${sourceLogicalIndex ?? -1}`;
+        const expectedOccurrence = inferredOccurrence.get(sourceKey) ?? 0;
+        if (occurrenceIndex === undefined) {
+          occurrenceIndex = expectedOccurrence;
+        }
+        if (!Number.isSafeInteger(occurrenceIndex) || occurrenceIndex < 0) {
+          throw new Error(`messageBus: invocation ${child} has an invalid source occurrence index`);
+        }
+        if (occurrenceIndex !== expectedOccurrence) {
+          throw new Error(
+            `messageBus: invocation ${child} source occurrence ${sourceKey}:${occurrenceIndex} is not `
+            + `the canonical next occurrence ${expectedOccurrence}`,
+          );
+        }
+        inferredOccurrence.set(sourceKey, expectedOccurrence + 1);
+        const identity = `${sourceKey}:${occurrenceIndex}`;
+        if (seenSourceOccurrences.has(identity)) {
+          throw new Error(
+            `messageBus: invocation ${parent} repeats source occurrence ${identity} at physical callsite `
+            + `${callsite.callsiteId}`,
+          );
+        }
+        seenSourceOccurrences.add(identity);
+        sourceOccurrences[child] = {
+          sourceCallsiteId,
+          ...(sourceLogicalIndex !== undefined && { sourceLogicalIndex }),
+          occurrenceIndex,
+          ...(sourceEffectOrdinal !== undefined && { sourceEffectOrdinal }),
+          sourceCallsiteProvenance,
+        };
+      }
       if (!callsite?.hasReturnValues) return;
       const produced = plannedBase[child].resultTypes;
       if (produced.length === 0) {
@@ -1833,17 +2432,103 @@ export function planCompiledGraph(
           + `${child}, which produces (${produced.join(',')})`,
         );
       }
+      if (!callsite.opaqueReturn && !isRuntimeResolvedCallsite(callsite) && expected !== undefined) {
+        const expectedEncoding = resolveExternalResultEncoding(
+          callsite.resultEncoding, parentArtifact, expected,
+          `message-bus callsite ${callsite.callsiteId ?? '?'} in '${parentFunction?.name ?? '?'}'`,
+        );
+        if (plannedBase[child].resultEncoding !== expectedEncoding) {
+          throw new Error(
+            `messageBus: invocation ${parent} expects result encoding '${expectedEncoding}' from invocation `
+            + `${child}, which produces '${plannedBase[child].resultEncoding ?? 'none'}'`,
+          );
+        }
+      }
       resultDependencies[parent].push(child);
     });
+    for (const callsite of publishedCallsites) {
+      if (callsite.callsiteId === undefined || callsite.batchInvocations === undefined) continue;
+      const rows = callsite.batchInvocations;
+      const publishedSourceCount = rows.filter((row) => row.sourceCallsiteId !== undefined).length;
+      const publishedEffectCount = rows.filter((row) => row.sourceEffectOrdinal !== undefined).length;
+      if (publishedSourceCount !== 0 && publishedSourceCount !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} mixes legacy and source-aware rows`);
+      }
+      if (publishedEffectCount !== 0 && publishedEffectCount !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} mixes source-effect provenance`);
+      }
+      if (rows.some((row, logicalIndex) => row.logicalIndex !== logicalIndex
+        || (row.sourceCallsiteId !== undefined
+          && (!Number.isSafeInteger(row.sourceCallsiteId) || row.sourceCallsiteId < 0)))) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} has non-canonical logical indices`);
+      }
+      const sourceIds = new Set(rows.flatMap((row) => row.sourceCallsiteId === undefined
+        ? [] : [row.sourceCallsiteId]));
+      if (publishedSourceCount > 0 && sourceIds.size !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} has duplicate source callsites`);
+      }
+      const effectOrdinals = new Set(rows.flatMap((row) => row.sourceEffectOrdinal === undefined
+        ? [] : [row.sourceEffectOrdinal]));
+      if (publishedEffectCount > 0 && effectOrdinals.size !== rows.length) {
+        throw new Error(`messageBus: batched callsite ${callsite.callsiteId} repeats a source-effect identity`);
+      }
+      for (const row of rows) {
+        const count = children.filter((child) => {
+          const source = sourceOccurrences[child];
+          return consumerCallsites[child] === callsite.callsiteId
+            && source?.sourceCallsiteId === (row.sourceCallsiteId ?? callsite.callsiteId)
+            && source?.sourceLogicalIndex === row.logicalIndex;
+        }).length;
+        const kind = row.occurrence ?? 'once';
+        if (kind === 'once' && count !== 1) {
+          throw new Error(
+            `messageBus: batched callsite ${callsite.callsiteId} source row ${row.logicalIndex} `
+            + `must be represented exactly once, but ${count} occurrences were planned`,
+          );
+        }
+        if (kind === 'conditional' && count > 1) {
+          throw new Error(
+            `messageBus: batched callsite ${callsite.callsiteId} conditional source row ${row.logicalIndex} `
+            + `was represented ${count} times`,
+          );
+        }
+      }
+    }
     // Fixed-row graph handlers authenticate and consume each child result in
     // source order. Runtime raw loops do the same with their bounded
     // occurrence cursor. Both forms therefore admit any acyclic dependency
     // list within the existing graph/row maxima.
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
+  const unavailableProducerPath: ValueChunkProducerPathDisposition = Object.freeze({ status: 'unavailable' });
+  const producerPaths: ValueChunkProducerPathDisposition[] = invocations.map(() => unavailableProducerPath);
+  const rootProducerContext: ValueChunkProducerPathContext = Object.freeze({
+    version: 1, sourcePath: Object.freeze([]),
+  });
+  producerPaths[0] = Object.freeze({ status: 'complete', context: rootProducerContext });
+  for (let index = 1; index < invocations.length; index += 1) {
+    const invocation = invocations[index];
+    const source = sourceOccurrences[index];
+    const parentDisposition = producerPaths[invocation.parent!];
+    if (!source || source.sourceCallsiteProvenance !== 'compiler'
+      || source.sourceEffectOrdinal === undefined || parentDisposition.status !== 'complete') continue;
+    const parentExecution = executions[invocations[invocation.parent!].callee];
+    producerPaths[index] = deriveValueChunkProducerChildPath({
+      parent: parentDisposition,
+      parentExecutionLockingBytecode: parentExecution.executionKind === 1
+        ? parentExecution.executorLockingBytecode : parentExecution.lockingBytecode,
+      parentSelector: plannedBase[invocation.parent!].selectorHex,
+      sourceCallsiteId: source.sourceCallsiteId,
+      ...(source.sourceLogicalIndex !== undefined && { sourceLogicalIndex: source.sourceLogicalIndex }),
+      occurrenceIndex: source.occurrenceIndex,
+      sourceEffectOrdinal: source.sourceEffectOrdinal,
+    });
+  }
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,
     ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
+    ...(sourceOccurrences[index] !== undefined && sourceOccurrences[index]),
+    producerPath: producerPaths[index],
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
   const rootLogicalCaller = invocations[0].logicalCaller;

@@ -24672,6 +24672,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         valueConst = valueRight.value.toString();                      // loop-invariant int literal
       } else if (valueRight instanceof BoolLiteralNode) {
         valueConst = valueRight.value ? '1' : '0';                     // bool literal: true=0x01, false=empty (int 1/0)
+      } else if (valueArrayParam === undefined && valueScalarParam === undefined && valueConst === undefined
+        && valueRuntimeLocal === undefined && !mutation && varyingArrayParam !== undefined) {
+        // Counter-affine `i` / `i+K` (possibly lowered to __internal__vmapCounterLogical_*): keep the
+        // runtime expression in script, but record valueArrayOffset so the SDK can materialize concrete
+        // commitment tails without OTC derivation — required for mixed int+bytes compose settlement.
+        const counterName = this.currentFunction.runtimeCounterLoopCounters?.get(varyingArrayParam)?.name;
+        const isCounterValueId = (node: Node): boolean => node instanceof IdentifierNode && (
+          (counterName !== undefined && node.name === counterName)
+          || node.name.startsWith('__internal__vmapCounterLogical_')
+        );
+        if (isCounterValueId(valueRight)) {
+          valueArrayOffset = '0';
+        } else if (valueRight instanceof BinaryOpNode && valueRight.operator === BinaryOperator.PLUS
+          && isCounterValueId(valueRight.left) && valueRight.right instanceof IntLiteralNode) {
+          valueArrayOffset = valueRight.right.value.toString();
+        } else if (valueRight instanceof BinaryOpNode && valueRight.operator === BinaryOperator.PLUS
+          && isCounterValueId(valueRight.right) && valueRight.left instanceof IntLiteralNode) {
+          valueArrayOffset = valueRight.left.value.toString();
+        }
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
@@ -25516,16 +25535,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private kernelJournalCanSettleScalar(
     node: MappingAssignNode | MappingDeleteNode, isRawbytes: boolean, isChunkable: boolean,
   ): boolean {
-    return this.sortedUpsertLoopJournalAccessStreamIndex !== undefined
-      && this.hasKernelJournalRecordCarrier()
-      && this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) >= 0
-      && this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) >= 0
-      && (node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
-      && (this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+'
+    if (this.sortedUpsertLoopJournalAccessStreamIndex === undefined
+      || !this.hasKernelJournalRecordCarrier()
+      || this.getStackIndex(this.sortedUpsertLoopJournalCursorName, true) < 0
+      || this.getStackIndex(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_JOURNAL_COUNT, true) < 0
+      || !(node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      || !(this.sortedUpsertLoopOp === 'set' || this.sortedUpsertLoopOp === '+'
         || this.sortedUpsertLoopOp === 'delete')
-      && !isRawbytes && !isChunkable
-      && (node instanceof MappingDeleteNode
-        || (node.arrayIndex === undefined && !node.arrayPush && !node.arrayPop));
+      || isRawbytes || isChunkable
+      || (!(node instanceof MappingDeleteNode)
+        && (node.arrayIndex !== undefined || node.arrayPush || node.arrayPop))) {
+      return false;
+    }
+    // Scalar journal settlement dirties the route carrier and forces the final flush. Sibling rawbytes /
+    // chunkable streams in the same execution group still mint per-row and leave clean old records, so that
+    // flush EQUALVERIFYs stale tails against new outputs. Keep the whole mixed group on the per-row path
+    // until rawbytes journal settlement exists.
+    if (this.kernelJournalExecutionGroupHasRawbytesSibling(
+      this.sortedUpsertLoopJournalAccessStreamIndex,
+    )) {
+      return false;
+    }
+    return true;
+  }
+
+  /** True when another stream in this execution group stores a rawbytes / chunkable value. */
+  private kernelJournalExecutionGroupHasRawbytesSibling(streamIndex: number): boolean {
+    const infos = this.currentFunction.sortedUpsertLoopInfo ?? [];
+    const self = infos.find((info) => info.journalAccessStreamIndex === streamIndex);
+    if (!self) return false;
+    return infos.some((info) => {
+      if (info.journalExecutionGroup !== self.journalExecutionGroup) return false;
+      if (info.journalAccessStreamIndex === streamIndex) return false;
+      const collection = this.collectionDefinitions.find((candidate) => candidate.name === info.collection);
+      if (!collection) return false;
+      const valueType = collection.innermostValueType;
+      return this.sortedValueKind(valueType) === 'rawbytes' || this.isChunkableValue(valueType);
+    });
   }
 
   /** Leave true iff the current access tuple is an existing-entry mutation (flags low nibble 0b1011). */

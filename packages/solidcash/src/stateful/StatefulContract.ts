@@ -21882,10 +21882,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         perKey = true;
       }
       if (info.valueRuntimeExpression) {
-        // The first VM probe only needs a correctly typed placeholder; trace derivation replaces its commitment
-        // with the value computed by the row. A numeric zero is not encodable as a struct/array and made direct
-        // structural RMWs fail before the verifier could derive their real outputs.
-        valsArr = keysArr.map(() => getDefaultStateValue(collection.valueType, stateLayout.structs));
+        // Counter-affine `i` / `i+K` publishes valueArrayOffset while keeping the on-script runtime expression.
+        // Seed from the key vector so the shared offset pass below materializes concrete commitment tails —
+        // required for mixed int+bytes compose where OTC derivation alone does not settle the scalar stream.
+        if (info.valueArrayOffset !== undefined
+          && /^(?:u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType)) {
+          valsArr = keysArr.map((key) => toBig(key));
+        } else {
+          // The first VM probe only needs a correctly typed placeholder; trace derivation replaces its commitment
+          // with the value computed by the row. A numeric zero is not encodable as a struct/array and made direct
+          // structural RMWs fail before the verifier could derive their real outputs.
+          valsArr = keysArr.map(() => getDefaultStateValue(collection.valueType, stateLayout.structs));
+        }
         perKey = true;
         runtimeExpressionLoopCollections.add(info.collection);
       }
@@ -22924,7 +22932,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ));
     const kernelRouteSettlement = entryArtifact.messageBus?.convention === 'kernel-row-loop'
       && entryAbiFunction?.selector === entryArtifact.messageBus.selector;
+    // The dense fixed-width pending-scalar carrier is only safe when every mutating stream is a fixed-width
+    // scalar. Mixed int+bytes execution groups are compiled onto the per-row path (no scalar journal dirtying),
+    // so keep dependency-discovered pending flags and settle like the bytes-only path.
+    const allMutatingStreamsAreFixedScalars = runtimeKernelJournalStreams.every((stream) => {
+      if (!stream.writes.some((write) => write.operation !== 'read')) return true;
+      const collection = stateLayout.collections?.find((candidate) => candidate.name === stream.collection
+        || candidate.signature === stream.collection);
+      return !!collection && collection.chunkableValue !== true
+        && /^(?:bool|u?int\d*|u?fixed\d*x\d*|bigint)$/.test(collection.valueType);
+    });
     const pendingScalarSettlementActive = !deferRuntimeJournalMaterialization && kernelRouteSettlement
+      && allMutatingStreamsAreFixedScalars
       && (hasPendingScalarDependency || hasPendingExistingScalarSettlement
         || singletonRuntimeExpressionSettlement);
     if (pendingScalarSettlementActive) {

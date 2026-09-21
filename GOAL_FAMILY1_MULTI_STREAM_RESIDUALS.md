@@ -11,9 +11,9 @@
 
 | ID | Residual | Minimum cell | Today |
 |---|---|---|---|
-| **A** | Heterogeneous loop streams | same `for` domain; `int` map + `bytes` map | `KERNEL_LAYOUT` |
-| **B** | Same-iteration resource selection | `if (pick) a[i] else b[i]` in bounded `for` | `KERNEL_LAYOUT` |
-| **C** | Events beside ≥2 mutation streams | two int maps + unconditional `emit` in same `for` | `KERNEL_LAYOUT` |
+| **A** | Heterogeneous loop streams | same `for` domain; `int` map + `bytes` map | **Admitted** — compose inline ≤60B; batch long chunks |
+| **B** | Same-iteration resource selection | `if (pick) a[i] else b[i]` in bounded `for` | **Admitted** — compose pick true/false |
+| **C** | Events beside ≥2 mutation streams | two int maps + unconditional `emit` in same `for` | **Admitted** — compose writeEmit |
 
 Already green (must not regress): homo dual-int loop; sequential dual loops; single-stream+event; `KernelMultiContinuationResourceCompose`; `KernelConditionalMultiContinuationCompose`.
 

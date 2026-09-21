@@ -162,17 +162,26 @@ describe('kernel mixed-handler row framing under composition', () => {
     }
     const clearRow = framed.rows[1]!;
     expect(clearRow.calldataLength).toBe(0);
-    // Hostile walk: reuse clear's start with the next add's length — shipped helper refuses.
+
+    // Unframed: missing bounds — shipped helper refuses before any slice.
+    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+      row: clearRow.row,
+      argsHex: clearRow.argsHex,
+    })).toThrow(/unframed: missing calldataStart\/Length/);
+
+    // Hostile OOB walk with no argsHex oracle — shipped helper refuses past blob bounds.
+    expect(() => sliceMessageBatchRowCalldata(framed.blob, {
+      row: clearRow.row,
+      calldataStart: clearRow.calldataStart,
+      calldataLength: framed.blob.length + 1,
+    })).toThrow(/walked past authenticated blob bounds/);
+
+    // Hostile length that disagrees with published argsHex — shipped helper refuses.
     const forgedLength = framed.rows[2]!.calldataLength;
     expect(forgedLength).toBeGreaterThan(0);
     expect(() => sliceMessageBatchRowCalldata(framed.blob, {
       ...clearRow,
       calldataLength: forgedLength,
     })).toThrow(/row framing mismatch|does not match encoded arguments/);
-
-    // Unframed residual: strip published bounds — shipped helper refuses before any slice.
-    const { calldataStart: _s, calldataLength: _l, ...unframed } = clearRow;
-    expect(() => sliceMessageBatchRowCalldata(framed.blob, unframed))
-      .toThrow(/unframed: missing calldataStart\/Length/);
   });
 });

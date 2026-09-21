@@ -92,6 +92,8 @@ export type MessageBatchRowCalldataFrame = {
  * Slice one row's authenticated calldata from a message-bus batch blob using published framing.
  * Fail-closes when `calldataStart`/`calldataLength` are missing or non-integer, the slice walks past
  * `blob`, or (when `argsHex` is published) the slice disagrees with that hex.
+ *
+ * This is the shipped consume-path authority for mixed-handler row framing (Item 3 residual).
  */
 export function sliceMessageBatchRowCalldata(
   blob: Uint8Array,

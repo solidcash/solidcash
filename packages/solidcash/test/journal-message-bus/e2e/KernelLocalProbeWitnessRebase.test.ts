@@ -13,6 +13,7 @@ const KERNEL = {
   forceStateful: true,
   messageBus: true,
   messageBusKernel: true,
+  messageBusGraphContext: true,
   maximumInputBytes: 1_000_000,
   solidityImportCompat: true,
   suppressWarnings: true,
@@ -79,6 +80,12 @@ describe('kernel local probe witness rebase', () => {
     expect(storeRouteInputIndex).toBeGreaterThanOrEqual(0);
     const routeUnlocker = builder.inputs[storeRouteInputIndex].unlocker;
     if (!('params' in routeUnlocker)) throw new Error('store route input has no parameters');
+
+    const ownerBandPosition = storeArtifact.messageBus!.route.inputs.findIndex(
+      (input) => input.name === '__internal__messageBusOwnerBandInput',
+    );
+    expect(ownerBandPosition).toBeGreaterThanOrEqual(0);
+    expect(routeUnlocker.params[ownerBandPosition]).toBe(BigInt(storeRouteInputIndex));
 
     const dynamicBasePosition = storeArtifact.messageBus!.route.inputs.findIndex(
       (input) => input.name === '__internal__dynamicChunkInputBase',

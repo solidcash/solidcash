@@ -497,6 +497,8 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  */
 /** Compiler-added hidden ABI parameter carrying the authenticated participant owner of a route frame. */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+/** Stable route-band coordinate for a graph participant's physical owner input. */
+const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 
@@ -11360,7 +11362,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
-      const slots = targetFunc.externalCalls ?? [];
+      // One physical participant may represent several source callsites. Each logical invocation still owns an
+      // authenticated transcript row, so expand the collapsed slot before consuming the emission stream.
+      const logicalSlots = (targetFunc.externalCalls ?? []).flatMap((slot) => (
+        (slot.batchInvocations === undefined ? undefined : [...slot.batchInvocations]
+          .sort((left, right) => Number.isSafeInteger(left.sourceEffectOrdinal)
+            && Number.isSafeInteger(right.sourceEffectOrdinal)
+            ? left.sourceEffectOrdinal! - right.sourceEffectOrdinal! : 0))?.map((row) => ({
+          ...slot,
+          interfaceName: row.sourceCallNode?.interfaceName ?? slot.interfaceName,
+          functionName: row.sourceCallNode?.functionName ?? slot.functionName,
+          compileTimeSelector: row.selector,
+          runtimeSelector: undefined,
+          argSources: row.argSources,
+          sourceCallNode: row.sourceCallNode ?? slot.sourceCallNode,
+          sourceEffectOrdinal: row.sourceEffectOrdinal,
+          batchInvocations: undefined,
+        })) ?? [slot]
+      ));
+      const slots = logicalSlots.every((slot) => slot.sourceEffectOrdinal !== undefined)
+        ? logicalSlots.sort((left, right) => left.sourceEffectOrdinal! - right.sourceEffectOrdinal!)
+        : logicalSlots;
       const emissionStackBaseline = [...this.stack];
       const emissionResults: string[] = [];
       this.scopeDepth += 1;
@@ -18557,26 +18579,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const physicalSlot = node.callInfo
       ? this.externalCallSlots[node.callInfo.externalCallSlotIndex] : undefined;
+    const batchRow = node.externalBatchLogicalIndex === undefined
+      ? undefined
+      : physicalSlot?.batchInvocations?.find((row) => row.logicalIndex === node.externalBatchLogicalIndex);
+    // A collapsed physical participant is only a storage coordinate. Preserve the source callsite's selector,
+    // arguments, and result identity when checking its logical graph row.
+    const graphEmissionSlot = physicalSlot === undefined || batchRow === undefined
+      ? physicalSlot
+      : {
+        ...physicalSlot,
+        interfaceName: batchRow.sourceCallNode?.interfaceName ?? node.interfaceName,
+        functionName: batchRow.sourceCallNode?.functionName ?? node.functionName,
+        compileTimeSelector: batchRow.selector,
+        runtimeSelector: undefined,
+        argSources: batchRow.argSources,
+        sourceCallNode: batchRow.sourceCallNode ?? node,
+        sourceEffectOrdinal: batchRow.sourceEffectOrdinal,
+        hasReturnValues: (batchRow.returnTypes?.length ?? 0) > 0,
+        returnTypes: batchRow.returnTypes,
+        batchInvocations: undefined,
+      } satisfies ExternalCallSlot;
     if (this.currentFunction.graphRuntimeEmissionHandler) {
-      if (!physicalSlot) throw new Error(
+      if (!graphEmissionSlot) throw new Error(
         `Runtime graph call '${node.interfaceName}.${node.functionName}' in '${this.currentFunction.name}' `
         + `lacks compiler metadata (slot ${node.callInfo?.externalCallSlotIndex ?? 'unset'}, `
         + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
       );
       if (this.graphStraightRuntimeMode) {
-        {
-          const emissionSelector = this.graphEmissionSelectorForCall(physicalSlot, node);
-          this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
-            disposition: 'defer-whole-vector', parametersAreCallArguments: true,
-            ...(emissionSelector !== undefined && { emissionSelector }),
-          });
-        }
+        this.verifyGraphEmissionRow(graphEmissionSlot, this.currentFunction, node.parameters, locationData, {
+          disposition: 'defer-whole-vector', parametersAreCallArguments: true,
+        });
         const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
         this.stack[0] = rowName;
         this.graphStraightRuntimeRows.push(rowName);
         return node;
       }
-      this.consumeGraphRuntimeEmissionRow(physicalSlot, node.parameters, node, locationData);
+      this.consumeGraphRuntimeEmissionRow(graphEmissionSlot, node.parameters, node, locationData);
       if (node.opaqueReturn) {
         // A reached graph edge is successful or the co-spend aborts. Pair that success bit with the exact
         // producer-authenticated blob peeled from this occurrence's row.
@@ -18622,9 +18660,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return node;
     }
-    const batchRow = node.externalBatchLogicalIndex === undefined
-      ? undefined
-      : physicalSlot?.batchInvocations?.find((row) => row.logicalIndex === node.externalBatchLogicalIndex);
     if (batchRow) this.appendExternalBatchRow(batchRow, node, locationData);
 
     // Inline loop-indexed dispatch: `targets[i].call/staticcall(data[i])` over a calldata/param address array
@@ -18963,7 +18998,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A later graph edge may be parameterized by a local initialized from an earlier returning edge. Expanding
       // that local exposes the producer call, but it must never be cloned into the route: one source call has one
       // stable identity. Replace it with the authenticated hidden-frame result while cloning instead.
-      const currentOrdinal = handler.externalCalls?.indexOf(slot) ?? -1;
+      const currentOrdinal = handler.externalCalls?.findIndex((candidate) =>
+        candidate.slotIndex === slot.slotIndex) ?? -1;
       const projectProducerResult = (
         producerNode: ExternalFunctionCallNode, resultIndex: number,
       ): IdentifierNode => {
@@ -19517,7 +19553,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_runtime_remainder)');
-    this.emitReplace(this.graphEmissionStreamSlot(), node);
+    this.emitReplaceGraphEmissionStream(node);
     this.popFromStack();
     this.debugEmissionConsume('runtime-row');
     this.dischargeGraphEmissionRow();
@@ -19538,7 +19574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(3);
     this.pushToStack('(__graph_emission_remainder)');
-    this.emitReplace(this.graphEmissionStreamSlot(), node);
+    this.emitReplaceGraphEmissionStream(node);
     this.popFromStack();
     this.debugEmissionConsume('constructed-row');
     this.dischargeGraphEmissionRow();
@@ -19682,6 +19718,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * has no published band coordinate and retains its explicitly threaded frame slot.
    */
   private bandEmissionOrdinal(): number | undefined {
+    // Dynamic-state routes thread their chunk base through each invoked handler frame. In that shape the mutable
+    // emission value which later consumers observe is the frame-local cursor; replacing the published ABI-band
+    // seed instead leaves the live cursor untouched and can overwrite a neighbouring route witness while the
+    // handler continues (observed as a skipped read-only chunk covenant in a later internal call).
+    if (this.currentFunction.messageBusCallerBandNames?.includes('__internal__dynamicChunkInputBase')) {
+      return undefined;
+    }
     return this.declaredBandOrdinal('__internal__graphEmissions');
   }
 
@@ -19747,8 +19790,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.deferredGraphEmissionRows !== this.graphStraightRuntimeRows.length) {
       throw new Error('Graph emission vector comparison does not own every deferred row');
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_straight_expected)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
@@ -33205,7 +33247,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           trackedOwnerIndex, extraStackOffset,
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
-        if (graphRowHandler) {
+        const bandOwnerOrdinal = graphRowHandler && ownerName === MESSAGE_BUS_OWNER_INPUT
+          ? this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT) : undefined;
+        if (bandOwnerOrdinal !== undefined) {
+          // The route ABI band is stable while invoked handler frames and their live operands are not.
+          this.emit(Op.OP_DEPTH, locationData);
+          this.emit(encodeInt(BigInt(bandOwnerOrdinal)), locationData);
+          this.emit(Op.OP_SUB, locationData);
+          this.emit(Op.OP_PICK, locationData);
+        } else if (graphRowHandler) {
           this.emitPickTrackedFromBottom(ownerName, locationData);
         } else {
           // Merge-capable routes keep `__internal__lifecycleOwnerInput` under a growing row frame; pick it by

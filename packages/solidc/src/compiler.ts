@@ -1353,6 +1353,8 @@ const MESSAGE_BUS_CLONE_PREFIXES = [
  * explicitly rather than letting an internal OP_INVOKE body infer it from OP_INPUTINDEX.
  */
 const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
+/** Stable route-band coordinate for a graph participant's physical owner input. */
+const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 
 const withinSpan = (location: Location, point: Point): boolean => {
   const after = point.line > location.start.line
@@ -9480,8 +9482,10 @@ function synthesizeMessageBusRoute(
   const lifecycleReturnTransport = kernelLifecycleHandlers.size > 0;
   const verifierBinderRouteParameters = useBoundRoute
     ? ['bigint __internal__activeVerifierIndex'] : [];
+  const ownerBandRouteParameters = graphExecutionContext
+    ? [`bigint ${MESSAGE_BUS_OWNER_BAND_INPUT}`] : [];
   const routeParameterList = [
-    'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
+    'bytes batchBlob', ...ownerBandRouteParameters, ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...lifecycleOwnerRouteParameters,
     ...(kernelUpgradeMode ? [
       'bytes __internal__upgradeBytecode', 'bytes __internal__upgradeStateSuffix',

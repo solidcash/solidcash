@@ -7834,6 +7834,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const value = resolvedCallerInternalWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
+        if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
         // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
         // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
         // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as
@@ -11035,6 +11036,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const internalInitArgs: FunctionArgument[] = [];
     for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
       if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+      else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
       else {
         const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
         if (match) {
@@ -31245,6 +31247,35 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 nestedProxyGroup?.callerIdentity?.categoryId ?? this.categoryId,
               );
             }
+            if (inp.name === '__internal__msgSenderAnchorIdx') {
+              const nestedProxyGroupIndex = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              // A root proxy implementation preserves tx.origin, so it needs no SCID witness. A nested proxy
+              // preserves its caller's logical identity across the delegate boundary; authenticate that exact
+              // subject only when it differs from the physical parent which is already co-spent.
+              if (nestedProxyGroupIndex === undefined) return -1n;
+              const nestedProxyGroup = externalCallUtxoGroups[nestedProxyGroupIndex];
+              const parentGroupIndex = allGroupParentIndices[nestedProxyGroupIndex];
+              const physicalCallerLockingBytecode = parentGroupIndex !== undefined && parentGroupIndex >= 0
+                ? externalCallUtxoGroups[parentGroupIndex]?.externalContract.inner.lockingBytecode
+                  ?? binToHex(publicSelfAddress)
+                : binToHex(publicSelfAddress);
+              const callerSubjectLockingBytecode = nestedProxyGroup.callerIdentity?.lockingBytecode
+                ?? physicalCallerLockingBytecode;
+              const band = callerIdentityAnchorBand(
+                callerSubjectLockingBytecode,
+                physicalCallerLockingBytecode,
+                identityAnchors.map((anchor, anchorBand) => ({
+                  band: anchorBand,
+                  lockingBytecode: binToHex(anchor.unlocker.generateLockingBytecode()),
+                })),
+              );
+              if (band !== undefined) {
+                anchorFillPositions.push({
+                  argIndex: inpIndex, name: inp.name, band, proxyRoute: false,
+                });
+              }
+              return -1n;
+            }
             if (inp.name === '__internal__proxyMasterIndex') {
               const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
               const resolvedProxyMaster = proxyExternalGroup === undefined
@@ -33311,6 +33342,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // probe (returnProbeOnly) and other partial builds do not guarantee.
       finalArgs = materializeInternalFunctionArgument(
         finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
+      );
+    }
+    if (abiFunction?.inputs.some((input) => input.name === '__internal__msgSenderAnchorIdx')) {
+      // A direct frame resolves msg.sender from tx.origin (zero category) or the unique physical caller master
+      // selected by its category. It has no separate logical SCID witness; nested graph/delegate frames patch an
+      // exact anchor in their dedicated encoders. Materialize the sentinel by ABI name so every later hidden
+      // witness keeps its published position, including return probes built from pre-existing artifacts.
+      finalArgs = materializeInternalFunctionArgument(
+        finalArgs, abiFunction.inputs, '__internal__msgSenderAnchorIdx', -1n,
       );
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

@@ -19,6 +19,19 @@ const KERNEL_REASONS = [
 ] as const;
 
 describe('kernel beta admission invariants', () => {
+  it('publishes the participant owner at a stable graph route-band coordinate', () => {
+    const artifact = compileString(`contract Ledger() {
+      string note;
+      function replace(string value) public { this.note = value; require(true); }
+    }`, { ...OPTIONS, messageBusGraphContext: true });
+
+    const inputs = artifact.messageBus?.route.inputs.map((input) => input.name);
+    expect(inputs?.slice(0, 2)).toEqual([
+      'batchBlob',
+      '__internal__messageBusOwnerBandInput',
+    ]);
+  });
+
   it('publishes only the closed six-reason refusal catalog', () => {
     const cases = [
       {

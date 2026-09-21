@@ -1531,6 +1531,7 @@ const graphRouteContext = (
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
     __internal__lifecycleOwnerInput: BigInt(finalized.layout.participantInputs[participant]),
+    __internal__messageBusOwnerBandInput: BigInt(finalized.layout.participantInputs[participant]),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
     } : {}),

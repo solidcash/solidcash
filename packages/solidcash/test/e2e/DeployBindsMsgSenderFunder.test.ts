@@ -29,6 +29,38 @@ contract Owned() {
 }`;
 
 describe('ContractFactory.deploy binds the signer as the msg.sender funder', () => {
+  it('fills the direct constructor sender-anchor witness in kernel mode', async () => {
+    const provider = createTestProvider();
+    const signer = HDSigner.fromPhrase(
+      'test test test test test test test test test test test junk',
+      provider,
+    );
+    for (let i = 0; i < 8; i++) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: Buffer.alloc(32, i + 9).toString('hex'),
+        vout: 0,
+        satoshis: 100_000_000n,
+      });
+    }
+
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract ConstructorSenderEntry {
+        mapping(address => int) public balances;
+        constructor() { this.balances[msg.sender] = 7; }
+      }
+    `, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      solidityImportCompat: true,
+    });
+    expect(artifact.abi.find((entry) => entry.name === '__construct')?.inputs)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: '__internal__msgSenderAnchorIdx' }),
+      ]));
+    const owned = await new ContractFactory(artifact, signer).deploy();
+    await owned.deployed();
+    expect(await (owned as any).balances(signer.getAddress())).toBe(7n);
+  });
+
   it('lets the deployer call an onlyOwner function after deploy', async () => {
     const provider = createTestProvider();
     const signer = HDSigner.fromPhrase(

@@ -32,4 +32,23 @@ describe('stateful return argument materialization', () => {
       6n,
     )).toThrow(/missing visible ABI argument 'value'/);
   });
+
+  it('keeps later probe witnesses aligned when inserting a sender-anchor sentinel', () => {
+    const inputs = [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+      { name: '__internal__msgSenderCategory', type: 'bytes32' },
+      { name: '__internal__msgSenderAnchorIdx', type: 'bigint' },
+      { name: '__internal__vmapBatchSlot_0', type: 'bytes32' },
+      { name: '__internal__returnOutputIdx', type: 'bigint' },
+    ];
+    const category = new Uint8Array(32).fill(1);
+    const slot = new Uint8Array(32).fill(2);
+    expect(materializeInternalFunctionArgument(
+      [new Uint8Array(20), 5n, category, 0n, slot, 9n],
+      inputs,
+      '__internal__msgSenderAnchorIdx',
+      -1n,
+    )).toEqual([new Uint8Array(20), 5n, category, -1n, slot, 9n]);
+  });
 });

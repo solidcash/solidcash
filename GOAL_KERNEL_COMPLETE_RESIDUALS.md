@@ -5,7 +5,7 @@
 **Worktree:** `.worktrees/kernel-comprehensive-fixtures`  
 **Branch:** `grok/kernel-comprehensive-fixtures`  
 **Baseline tip:** `bfd69af2f` (family-1 A/B/C settle; compose inline ≤60B; batch long chunks)  
-**Phase-0 tip:** pending commit — compose ≥61B loop-nested chunks via in-band trailing placement + route `__internal__valueChunkOutputBase`  
+**Final tip:** see `git rev-parse HEAD` / kcomplete-tip.txt — phases 0–7 minimum cells closed under permanent fences  
 **Maps:** `KERNEL_EXTENSION_INVENTORY.md`, `FENCE_MAP_7_18.md`, `REEVAL_STILL_OPEN.md`  
 **Plans:** `ITEMS_3_4_PLAN.md`, `ITEMS_5_6_PLAN.md`
 
@@ -37,7 +37,7 @@
 - [x] **5** Aggregate / recursive mapping (`KernelNestedForeignVmapCompose`, `KernelReturnAggregateCompose`)
 - [x] **6** Broader deploy + lifecycle subset (`KernelTypedYulCreateCompose`; existing V4/lifecycle compose suite)
 - [x] **7** Bounded sig + typed assembly (`KernelDataOnlySignatureResultCompose`, `KernelSafeNativeAssemblyCompose`)
-- [ ] Docs/inventory/fence/`message-bus-kernel.md` updated per phase; `yarn build`; GREP_CLEAN
+- [x] Docs/inventory/fence/`message-bus-kernel.md` updated per phase; `yarn build`; GREP_CLEAN
 
 ## Already green (regression anchors)
 

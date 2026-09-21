@@ -7,12 +7,20 @@ import { describe, expect, it } from 'vitest';
 const traversalPath = resolve(dirname(fileURLToPath(import.meta.url)),
   '../src/generation/GenerateTargetTraversal.ts');
 const traversalSource = readFileSync(traversalPath, 'utf8');
+const compilerPath = resolve(dirname(fileURLToPath(import.meta.url)), '../src/compiler.ts');
+const compilerSource = readFileSync(compilerPath, 'utf8');
 
 type Disposition = 'verify-exact-vector' | 'consume-vector-prefix' | 'defer-whole-vector';
 
 interface AuditResult {
   dispositions: Disposition[];
   errors: string[];
+}
+
+interface CursorAuditResult {
+  errors: string[];
+  reads: number;
+  writes: number;
 }
 
 /** Source-level mutation auditor for the four graph emission producer classes. */
@@ -24,6 +32,10 @@ function audit(sourceText: string): AuditResult {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.name.text === 'verifyGraphEmissionRow') {
       const verification = node.arguments[4];
+      if (node.arguments.some((argument) => argument.kind === ts.SyntaxKind.FalseKeyword)) {
+        errors.push(`line ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: `
+          + 'boolean emission verification convention reintroduced');
+      }
       if (!verification || !ts.isObjectLiteralExpression(verification)) {
         errors.push(`line ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}: `
           + 'emission producer has no explicit verification policy');
@@ -45,10 +57,6 @@ function audit(sourceText: string): AuditResult {
     && !sourceText.includes('this.verifyDeferredGraphEmissionVector(loc);')) {
     errors.push('deferred emission rows have no whole-vector verifier');
   }
-  if (sourceText.includes('compare = false') || sourceText.includes(', false, true')
-    || sourceText.includes(', false, false')) {
-    errors.push('boolean emission verification convention reintroduced');
-  }
   return { dispositions, errors };
 }
 
@@ -58,6 +66,113 @@ function removeOccurrence(sourceText: string, policy: string, occurrence: number
     seen += 1;
     return seen === occurrence ? 'parametersAreCallArguments: true' : match;
   });
+}
+
+/**
+ * Source-level audit for the authenticated graph-emission cursor.
+ *
+ * The route-band implementation has one mutable cursor, so a consumer must not recover the named stack slot
+ * directly: the paired accessors are the sole authority for choosing either the stable route-band coordinate or
+ * the explicitly threaded non-route slot. Debug-only non-consuming row comparisons remain outside this audit.
+ */
+function auditCursorAccess(sourceText: string): CursorAuditResult {
+  const source = ts.createSourceFile('GenerateTargetTraversal.ts', sourceText, ts.ScriptTarget.Latest, true);
+  const errors: string[] = [];
+  let reads = 0;
+  let writes = 0;
+  let currentMethod = '';
+
+  const graphSlotAliases = new Map<string, Set<string>>();
+  const collectAliases = (node: ts.Node, method = ''): void => {
+    const enclosingMethod = ts.isMethodDeclaration(node) ? node.name.getText(source) : method;
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)
+      && node.initializer !== undefined && ts.isStringLiteral(node.initializer)
+      && node.initializer.text === '__internal__graphEmissions') {
+      const aliases = graphSlotAliases.get(enclosingMethod) ?? new Set<string>();
+      aliases.add(node.name.text);
+      graphSlotAliases.set(enclosingMethod, aliases);
+    }
+    ts.forEachChild(node, (child) => collectAliases(child, enclosingMethod));
+  };
+  collectAliases(source);
+
+  const referencesCursorCoordinate = (node: ts.Node | undefined, method: string): boolean => {
+    if (node === undefined) return false;
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(source) === 'this') {
+      if (node.expression.name.text === 'graphEmissionStreamSlot') return true;
+      if (node.expression.name.text === 'getStackIndex') {
+        const argument = node.arguments[0];
+        if (argument === undefined) return false;
+        if (ts.isStringLiteral(argument) && argument.text === '__internal__graphEmissions') return true;
+        if (ts.isIdentifier(argument) && graphSlotAliases.get(method)?.has(argument.text)) return true;
+      }
+    }
+    return node.getChildren(source).some((child) => referencesCursorCoordinate(child, method));
+  };
+
+  const line = (node: ts.Node): number => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+  const walk = (node: ts.Node): void => {
+    const previousMethod = currentMethod;
+    if (ts.isMethodDeclaration(node)) currentMethod = node.name.getText(source);
+
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const receiver = node.expression.expression.getText(source);
+      const name = node.expression.name.text;
+      const firstArgument = node.arguments[0]?.getText(source) ?? '';
+
+      if (receiver === 'this' && name === 'emitGraphEmissionStreamRead') reads += 1;
+      if (receiver === 'this' && name === 'emitReplaceGraphEmissionStream') writes += 1;
+
+      if (receiver === 'this' && name === 'emitReplace'
+        && currentMethod !== 'emitReplaceGraphEmissionStream'
+        && referencesCursorCoordinate(node.arguments[0], currentMethod)) {
+        errors.push(`line ${line(node)}: graph-emission cursor write bypasses its paired writer`);
+      }
+
+      if (receiver === 'this' && name === 'emit'
+        && currentMethod !== 'emitGraphEmissionStreamRead'
+        && referencesCursorCoordinate(node.arguments[0], currentMethod)) {
+        errors.push(`line ${line(node)}: graph-emission cursor read bypasses its paired reader`);
+      }
+
+      if (receiver === 'this' && name === 'graphEmissionStreamSlot'
+        && !['emitGraphEmissionStreamRead', 'emitReplaceGraphEmissionStream']
+          .includes(currentMethod)) {
+        errors.push(`line ${line(node)}: graph-emission cursor coordinate escaped its paired accessors`);
+      }
+
+      if (receiver === 'this' && name === 'declaredBandOrdinal'
+        && firstArgument.includes('__internal__graphEmissions')
+        && !['bandEmissionOrdinal', 'emitRowAgainstStreamAssert']
+          .includes(currentMethod)) {
+        errors.push(`line ${line(node)}: graph-emission route-band coordinate bypasses its paired accessors`);
+      }
+    }
+
+    ts.forEachChild(node, walk);
+    currentMethod = previousMethod;
+  };
+  walk(source);
+
+  const methodBody = (name: string): string => {
+    let body = '';
+    const find = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node) && node.name.getText(source) === name) body = node.getText(source);
+      if (body === '') ts.forEachChild(node, find);
+    };
+    find(source);
+    return body;
+  };
+  const reader = methodBody('emitGraphEmissionStreamRead');
+  const writer = methodBody('emitReplaceGraphEmissionStream');
+  for (const [label, body] of [['reader', reader], ['writer', writer]] as const) {
+    if (!body.includes('this.bandEmissionOrdinal()') || !body.includes('this.graphEmissionStreamSlot()')) {
+      errors.push(`graph-emission cursor ${label} does not share both route-band and threaded-slot coordinates`);
+    }
+  }
+
+  return { errors, reads, writes };
 }
 
 describe('X206 graph emission verification ownership', () => {
@@ -90,5 +205,81 @@ describe('X206 graph emission verification ownership', () => {
       '/* mutation: verifier omitted */');
     expect(mutated).not.toBe(traversalSource);
     expect(audit(mutated).errors).toContain('deferred emission rows have no whole-vector verifier');
+  });
+});
+
+describe('graph emission cursor ownership', () => {
+  it('routes every cursor read and write through accessors with the same coordinate policy', () => {
+    const result = auditCursorAccess(traversalSource);
+    expect(result.errors).toEqual([]);
+    expect(result.reads).toBeGreaterThan(1);
+    expect(result.writes).toBeGreaterThan(1);
+  });
+
+  it('rejects a direct named-slot read at a graph emission consumer', () => {
+    const mutated = traversalSource.replace(
+      'this.emitGraphEmissionStreamRead(locationData);\n      this.pushToStack(\'(__graph_expected_emissions)\');',
+      'this.emit(encodeInt(BigInt(this.getStackIndex(\'__internal__graphEmissions\'))), locationData);\n'
+        + '      this.pushToStack(\'(__graph_expected_emissions)\');',
+    );
+    expect(mutated).not.toBe(traversalSource);
+    expect(auditCursorAccess(mutated).errors).toContainEqual(
+      expect.stringContaining('cursor read bypasses its paired reader'),
+    );
+  });
+
+  it('rejects a direct named-slot write at a graph emission consumer', () => {
+    const mutated = traversalSource.replace(
+      'this.emitReplaceGraphEmissionStream(node);',
+      "this.emitReplace(this.getStackIndex('__internal__graphEmissions'), node);",
+    );
+    expect(mutated).not.toBe(traversalSource);
+    expect(auditCursorAccess(mutated).errors).toContainEqual(
+      expect.stringContaining('cursor write bypasses its paired writer'),
+    );
+  });
+
+  it.each([
+    {
+      accessor: 'reader',
+      signature: 'private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {',
+    },
+    {
+      accessor: 'writer',
+      signature: 'private emitReplaceGraphEmissionStream(node: Node): void {',
+    },
+  ])('rejects a $accessor that stops sharing the route-band coordinate', ({ accessor, signature }) => {
+    const original = `${signature}\n    const bandOrdinal = this.bandEmissionOrdinal();`;
+    const mutated = traversalSource.replace(original, `${signature}\n    const bandOrdinal = undefined;`);
+    expect(mutated).not.toBe(traversalSource);
+    expect(auditCursorAccess(mutated).errors).toContain(
+      `graph-emission cursor ${accessor} does not share both route-band and threaded-slot coordinates`,
+    );
+  });
+
+  it('checks final exhaustion through the authoritative cursor while generated source only retains liveness', () => {
+    const source = ts.createSourceFile(
+      'GenerateTargetTraversal.ts', traversalSource, ts.ScriptTarget.Latest, true,
+    );
+    let visitFunctionDefinition = '';
+    const find = (node: ts.Node): void => {
+      if (ts.isMethodDeclaration(node) && node.name.getText(source) === 'visitFunctionDefinition') {
+        visitFunctionDefinition = node.getText(source);
+        return;
+      }
+      ts.forEachChild(node, find);
+    };
+    find(source);
+
+    expect(visitFunctionDefinition).toContain("this.stack.includes('__internal__graphEmissions')");
+    expect(visitFunctionDefinition).toContain('this.emitGraphEmissionStreamRead(loc);');
+    expect(visitFunctionDefinition).toContain('this.emit(Op.OP_SIZE, loc);');
+    expect(visitFunctionDefinition).toContain('this.emit(Op.OP_EQUALVERIFY, loc);');
+    expect(compilerSource).toContain(
+      'require(__internal__graphEmissions == __internal__graphEmissions);',
+    );
+    expect(compilerSource).not.toContain(
+      'require(__internal__graphEmissions.length == 0);',
+    );
   });
 });

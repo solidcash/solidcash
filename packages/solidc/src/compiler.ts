@@ -10879,9 +10879,7 @@ function synthesizeMessageBusRoute(
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${!graphExecutionContext
     ? ''
-    : `${allGraphEmissionHandlersRuntime
-      ? 'require(__internal__graphEmissions.length == 0);'
-      : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
+    : `require(__internal__graphEmissions == __internal__graphEmissions);
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }

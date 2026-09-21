@@ -6637,8 +6637,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!this.isDefineSubTraversal && this.isCompilerMessageBusRoute(node)
       && this.stack.includes('__internal__graphEmissions')) {
       const loc = { location: node.body.location, positionHint: PositionHint.END };
-      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
-      this.emit(Op.OP_PICK, loc);
+      this.emitGraphEmissionStreamRead(loc);
       this.emit(Op.OP_SIZE, loc);
       this.emit(Op.OP_NIP, loc);
       this.emit(Op.OP_0, loc);
@@ -6812,7 +6811,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.graphStraightRuntimeMode) {
         this.emit(Op.OP_0, { location: node.body.location, positionHint: PositionHint.END });
         this.pushToStack('(__graph_exhausted)');
-        this.emitReplace(this.getStackIndex('__internal__graphEmissions'), node);
+        this.emitReplaceGraphEmissionStream(node);
         this.popFromStack();
       }
       return node;
@@ -11404,9 +11403,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       hiddenContextCount += 1;
     }
     if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
-      const expected = '__internal__graphEmissions';
-      this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitGraphEmissionStreamRead(locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
@@ -11530,8 +11527,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           if (!slot.hasReturnValues) this.consumeConstructedGraphEmissionRow(node, locationData);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), locationData);
-        this.emit(Op.OP_PICK, locationData);
+        this.emitGraphEmissionStreamRead(locationData);
         this.emit(Op.OP_0, locationData);
         this.emit(Op.OP_EQUALVERIFY, locationData);
       }
@@ -19508,7 +19504,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The prefix (row without its result frame) is what the returning path compares against the stream; asserting
     // it here covers both dispositions.
     this.emitRowAgainstStreamAssert(locationData);
-    const expected = '__internal__graphEmissions';
     if (!slot.hasReturnValues) {
       this.emit(Uint8Array.of(0, 0), locationData);
       this.pushToStack('(__graph_empty_result)');
@@ -19525,8 +19520,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.pendingGraphEmissionRows += 1;
         return 0;
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitGraphEmissionStreamRead(locationData);
       this.pushToStack('(__graph_expected_emissions)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
@@ -19562,8 +19556,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_prefix_length)');
-    this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_expected_emissions)');
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19588,7 +19581,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(__graph_result_blob)');
       this.pushToStack('(__graph_runtime_remainder)');
-      this.emitReplace(this.getStackIndex(expected), handler);
+      this.emitReplaceGraphEmissionStream(handler);
       this.popFromStack();
     } else {
       // The remainder must be exactly resultLength:u16le || result.
@@ -19647,32 +19640,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return returnTypes.length;
   }
 
-  /**
-   * Require the consumer's stream source to equal the pristine band item.
-   *
-   * The consumer compares an assembled row against a stream it reads from its own frame slot, and that slot is
-   * replaced after every peel. When a comparison fails, the first question is whether the source was already
-   * advanced (or never equalled the band at all) before this consumer touched it - this says so directly, in the
-   * same place the comparison runs.
-   */
-  private emitStreamSyncCheck(locationData: SingleLocationData): void {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_STREAM_SYNC_CHECK !== '1') return;
-    // With the band gate on, the read IS the band item (see emitGraphEmissionStreamRead), so there is nothing to
-    // compare: the frame slot the gate bypasses legitimately holds a neighbouring value (measured: a 200-byte
-    // argument vector) and asserting its equality to the stream would abort a working configuration.
-    if (this.bandEmissionOrdinal() !== undefined) return;
-    const bandOrdinal = this.declaredBandOrdinal('__internal__graphEmissions');
-    if (bandOrdinal === undefined) return;
-    this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_DEPTH, locationData);
-    this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
-    this.emit(Op.OP_SUB, locationData);
-    this.emit(Op.OP_PICK, locationData);
-    this.emit(Op.OP_EQUALVERIFY, locationData);
-  }
-
   /** Consume one reached conditional/loop call from the runtime graph emission vector. */
   private consumeGraphRuntimeEmissionRow(
     slot: ExternalCallSlot,
@@ -19684,12 +19651,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       disposition: 'consume-vector-prefix', parametersAreCallArguments: true,
     });
     if (returned > 0) return;
-    this.emitStreamSyncCheck(locationData);
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_runtime_row_length)');
-    const remainder = '__internal__graphEmissions';
     this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_runtime_emissions)');
     this.emit(Op.OP_SWAP, locationData);
@@ -19707,12 +19672,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Consume the canonical row/vector on top from the authenticated emission stream in occurrence order. */
   private consumeConstructedGraphEmissionRow(node: Node, locationData: SingleLocationData): void {
-    this.emitStreamSyncCheck(locationData);
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.pushToStack('(__graph_emission_length)');
-    const remainder = '__internal__graphEmissions';
     this.emitGraphEmissionStreamRead(locationData);
     this.pushToStack('(__graph_emission_stream)');
     this.emit(Op.OP_SWAP, locationData);
@@ -19765,9 +19728,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitRowAgainstStreamAssert(locationData: SingleLocationData): void {
     if (!this.rowAssemblyAssertEnabled()) return;
-    // Deliberately independent of SOLIDC_BAND_EMISSION_STREAM: the assert must read the PRISTINE band item even
-    // when the consumers still use their own frame copies, so it can say whether the band is intact at assembly
-    // time or whether something else already peeled from it.
+    // Read the same stable route-band cell as the production cursor accessors, without consuming it.
     const bandOrdinal = this.declaredBandOrdinal('__internal__graphEmissions');
     if (bandOrdinal === undefined) return;
     this.emit(Op.OP_DUP, locationData);                              // [row, rowCopy]
@@ -19839,13 +19800,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Top-relative depth of the authenticated emission stream, used by BOTH the consumer's pick and the
    * `emitReplace` that stores the peeled remainder back into the same slot.
    *
-   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts that depth by `n` at every consumer, which is how the
-   * "one slot off" hypothesis for a mis-split emission row is measured rather than argued: a single untracked
-   * runtime operand (or one phantom tracked name) moves every top-relative read in the body by exactly one, and
-   * the direction of the shift says which of the two it is. The shift is diagnostic only - it must never be set
-   * for a shipped artifact - because a pick and the replace that follows it have to address the same slot.
+   * `SOLIDC_DEBUG_STREAM_PICK_OFFSET=<n>` shifts the fallback frame depth in non-route graph bodies. It does not
+   * affect compiler-owned routes, whose paired cursor accessors use the stable route-band coordinate. The shift is
+   * diagnostic only and must never be set for a shipped artifact.
    */
-  /** Read the authenticated emission stream for one consumer, preferring the band for the first one. */
+  /** Read the authenticated emission stream for one consumer. */
   private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {
     const bandOrdinal = this.bandEmissionOrdinal();
     if (bandOrdinal !== undefined) {
@@ -19861,19 +19820,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, locationData);
   }
 
-  /** The route ABI band ordinal of the emission stream, when the route publishes the band and the gate is on. */
+  /**
+   * Stable storage coordinate of the mutable authenticated-emission cursor.
+   *
+   * Compiler-owned route clones execute with the route ABI band below their OP_INVOKE frame. Every graph row
+   * consumer must address the same band cell: mixing this coordinate with a model-relative frame PICK lets
+   * returning rows advance one copy while a later void row rereads the pristine vector. A non-route graph body
+   * has no published band coordinate and retains its explicitly threaded frame slot.
+   */
   private bandEmissionOrdinal(): number | undefined {
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process
-      ?.env?.SOLIDC_BAND_EMISSION_STREAM !== '1') return undefined;
     return this.declaredBandOrdinal('__internal__graphEmissions');
   }
 
   /**
    * Store the peeled stream remainder (on top) back into the slot the next consumer reads.
    *
-   * With the band gate on that slot is the band item itself, which is replaced IN PLACE at its constant bottom
-   * ordinal - the band keeps its layout, so every other band ordinal stays valid. Without the gate this stays the
-   * historical model-index replacement.
+   * For compiler-owned routes that slot is the band item itself, replaced in place at its constant bottom ordinal;
+   * the band keeps its layout, so every other ordinal stays valid. Non-route graph bodies retain the explicitly
+   * threaded model-index replacement.
    */
   private emitReplaceGraphEmissionStream(node: Node): void {
     const bandOrdinal = this.bandEmissionOrdinal();

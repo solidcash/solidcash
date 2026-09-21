@@ -26385,6 +26385,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lockingBytecode: binToHex(publicSelfAddress),
             });
             const delegateSelfAddress = hexToBin(delegateCallerIdentity.lockingBytecode);
+            // The root delegate frame executes as the proxy but is called by the account funding this logical
+            // invocation. Nested probes can override that caller explicitly; otherwise connect(caller) owns the
+            // logical nonce and therefore the canonical P2PKH fee tail from which tx.origin is authenticated.
+            const delegateFrameMsgSender = overrides?.callerLockingBytecode
+              ?? this._logicalNonceSigner?.getLockingBytecode()
+              ?? this._signer?.getLockingBytecode();
+            if (delegateFrameMsgSender === undefined) {
+              throw new Error('Cannot plan a delegated graph without an authenticated execution-frame caller.');
+            }
             for (const nested of publishedNestedExternalCalls) {
               if (timingEnabled) console.error('nested-callsite-start', {
                 callsiteId: nested.callsiteId, interfaceName: nested.interfaceName, functionName: nested.functionName,
@@ -26404,6 +26413,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 state: onChainState.state,
                 callerInputs: delegateVisibleInputs,
                 executionSelfAddress: delegateSelfAddress,
+                executionMsgSender: delegateFrameMsgSender,
                 producerCalls: publishedNestedExternalCalls,
                 resultConsumers: delegateFn?.resultConsumers,
                 planningContext: graphPlanningResults,
@@ -29067,6 +29077,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           lockingBytecode: parentContract.inner.lockingBytecode,
         });
         const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
+        const parentFrameMsgSender = parent.callerIdentity === undefined
+          ? this._logicalNonceSigner?.getLockingBytecode() ?? this._signer?.getLockingBytecode()
+          : hexToBin(parent.callerIdentity.lockingBytecode);
+        if (parentFrameMsgSender === undefined) {
+          throw new Error('Cannot expand an external graph without an authenticated execution-frame caller.');
+        }
         const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
         const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
         const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
@@ -29097,6 +29113,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             state: parentState,
             callerInputs: parentFn.inputs,
             executionSelfAddress: parentOutgoingSelfAddress,
+            executionMsgSender: parentFrameMsgSender,
             producerCalls: parentFn.externalCalls,
             resultConsumers: parentFn.resultConsumers,
             planningContext: graphPlanningResults,
@@ -37288,6 +37305,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       state: Record<string, unknown>;
       callerInputs: readonly { name?: string; type: string }[];
       executionSelfAddress: FunctionArgument;
+      /** Authenticated msg.sender of this execution frame; distinct from address(this). */
+      executionMsgSender: FunctionArgument;
       producerCalls: readonly ExternalCallAbi[];
       resultConsumers?: readonly ExternalResultConsumerAbi[];
       planningContext: GraphPlanningProducerResultContext;
@@ -37325,6 +37344,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             lane: 'condition',
           },
           sourceIteration,
+          frame.executionMsgSender,
         ) : new Map<string, FunctionArgument>();
       if (call.condition) {
         const active = frame.registryOwner._evaluateExternalExpression(
@@ -37359,6 +37379,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         frame.planningContext,
         undefined,
         sourceIteration,
+        frame.executionMsgSender,
       );
       const argumentReturns = await frame.registryOwner._resolveExternalExpressionReturns(
         sources,
@@ -37376,6 +37397,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           lane: 'arguments',
         },
         sourceIteration,
+        frame.executionMsgSender,
       );
       const expressionReturns = new Map([...conditionReturns, ...addressReturns, ...argumentReturns]);
       const args = frame.registryOwner._resolveExternalArgs(
@@ -37388,6 +37410,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         sourceIteration,
         false,
         frame.executionSelfAddress,
+        frame.executionMsgSender,
       );
       if (args === undefined) {
         throw new Error(
@@ -37406,6 +37429,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           sourceIteration,
           false,
           frame.executionSelfAddress,
+          frame.executionMsgSender,
         )?.[0]
         : call.addressStateVar !== undefined
           ? frame.state[call.addressStateVar] as FunctionArgument | undefined
@@ -37456,6 +37480,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       lane: 'condition' | 'arguments';
     },
     occurrenceIndex = 0,
+    executionMsgSender?: FunctionArgument,
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
     const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -37523,6 +37548,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       fnArgs: FunctionArgument[],
       fnInputs: readonly { name: string; type: string }[] | undefined,
       callerState: Record<string, unknown> | undefined,
+      calleeFrameMsgSender: FunctionArgument,
     ): Promise<ExternalCallInfo[] | undefined> => {
       const abi = callee._resolveCallAbi(fn, fnArgs);
       const published = abi?.externalCalls;
@@ -37548,7 +37574,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const resolvedTarget = ec.addressSource
           ? callee._resolveExternalArgs(
             [ec.addressSource], fnArgs, callee.inner.artifact, fnState, fnInputs, resolved,
-            0, false, selfAddress,
+            0, false, selfAddress, calleeFrameMsgSender,
           )?.[0]
           : ec.addressStateVar !== undefined
             ? fnState?.[ec.addressStateVar] as FunctionArgument | undefined
@@ -37569,7 +37595,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const sources = ec.rawArgSources ?? ec.argSources;
         const childArgs = callee._resolveExternalArgs(
           sources, fnArgs, callee.inner.artifact, fnState, fnInputs, resolved,
-          0, false, selfAddress,
+          0, false, selfAddress, calleeFrameMsgSender,
         );
         if (!childArgs) return undefined;
         resolvedCalls.push({
@@ -37666,7 +37692,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         return await callee._deriveReturnValue(
           functionName, values, undefined, calleeAbi,
-          await calleeExternalCalls(callee, functionName, values, calleeAbi?.inputs, state),
+          await calleeExternalCalls(
+            callee, functionName, values, calleeAbi?.inputs, state, callerLock,
+          ),
           // The probe materializes the callee frame reused by the composition. Pin msg.sender-keyed slots to the
           // authenticated state owner selected above, never to the transaction origin or delegate executor.
           callerLock,
@@ -37701,13 +37729,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const values = this._resolveExternalArgs(
           sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-          producerOccurrenceIndex, false, executionSelfAddress,
+          producerOccurrenceIndex, false, executionSelfAddress, executionMsgSender,
         );
         if (!values) return undefined;
         const target = producer.addressSource
           ? this._resolveExternalArgs(
             [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-            producerOccurrenceIndex, false, executionSelfAddress,
+            producerOccurrenceIndex, false, executionSelfAddress, executionMsgSender,
           )?.[0]
           : producer.addressStateVar !== undefined
             ? state?.[producer.addressStateVar] as FunctionArgument | undefined
@@ -37813,12 +37841,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const functionName = expression.name.slice(separator + 1);
       const values = (expression.args ?? []).map((argument) => this._evaluateExternalExpression(
         argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        occurrenceIndex, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
       ));
       if (values.some((value) => value === undefined)) return;
       const target = expression.target && this._evaluateExternalExpression(
         expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        occurrenceIndex, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
       );
       const value = await derive(
         interfaceName, functionName, values as FunctionArgument[], target,
@@ -37847,6 +37875,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     occurrenceIndex = 0,
     stateIncludesPriorWrites = false,
     executionSelfAddress?: FunctionArgument,
+    executionMsgSender?: FunctionArgument,
   ): FunctionArgument[] | undefined {
     if (!argSources) return undefined;
     if (argSources.length === 0) return [];
@@ -37891,8 +37920,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           break;
         }
         case 'msgSender': {
-          if (!this._signer) return undefined;
-          resolved.push(addressToLockScript(this._signer.getAddress()));
+          const sender = executionMsgSender
+            ?? (this._signer ? addressToLockScript(this._signer.getAddress()) : undefined);
+          if (sender === undefined) return undefined;
+          resolved.push(sender);
           break;
         }
         case 'selfAddress': {
@@ -37936,6 +37967,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const value = this._evaluateExternalExpression(
               source.expression, functionArgs, artifact, state, callerInputs, externalReturns,
               occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+              undefined, undefined, false, executionMsgSender,
             );
             if (value === undefined) return undefined;
             resolved.push(value);
@@ -38122,11 +38154,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
     strictFieldAccess = false,
+    executionMsgSender?: FunctionArgument,
   ): FunctionArgument | undefined {
     const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
       this._evaluateExternalExpression(
         candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
         stateIncludesPriorWrites, executionSelfAddress, localBindings, stateLengthDeltas, strictFieldAccess,
+        executionMsgSender,
       )
     );
     const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -38329,7 +38363,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (expression.kind === 'source' && expression.source) {
       return this._resolveExternalArgs(
         [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
-        occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+        occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress, executionMsgSender,
       )?.[0];
     }
     if (expression.kind === 'literal') {

@@ -43,7 +43,7 @@ describe('required kernel admission', () => {
     ]);
   });
 
-  it('refuses a chunkable replacement reached only through conditional control', () => {
+  it('admits a chunkable replacement reached only through bool-param empty-else control', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes) values;
       function set(uint key, bytes value, bool take) public {
@@ -52,8 +52,15 @@ describe('required kernel admission', () => {
       }
       function control() public { require(true); }
     }`, KERNEL);
-    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+    const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set');
+    const access = artifact.abi.find((candidate) => candidate.name === 'set')?.entryAccesses?.[0];
+    expect(handler).toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.fixedChunkableWritePolicy?.selectors).toContain(handler?.selector);
+    expect(access).toMatchObject({
+      collection: 'values',
+      operations: ['write'],
+      activation: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+    });
   });
 
   it('refuses a top-level chunkable replacement bypassed by a successful early return', () => {

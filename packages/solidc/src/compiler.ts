@@ -26,7 +26,9 @@ import {
   KernelJournalDispositionsAbi,
   messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
-import { generateArtifact, generateDeclarationArtifact, occurrenceInfoOf } from './artifact/Artifact.js';
+import {
+  generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
+} from './artifact/Artifact.js';
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
@@ -11639,6 +11641,25 @@ function compileResolvedAst(
     });
     throw error;
   };
+  // Capture this relation on the parsed source tree. Later reference and memory lowerings replace an array write
+  // with shared-buffer operations, but retain the external call node itself through the pipeline.
+  for (const fn of ast.contract.functions) {
+    const seen = new Set<object>();
+    const visit = (value: unknown): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof ExternalFunctionCallNode || value instanceof MethodCallNode) {
+        value.resultArrayOutput = resultArrayOutputOf(fn.body, value);
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) child.forEach(visit);
+      }
+    };
+    visit(fn.body);
+  }
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
   // (internal/unmarked) functions has no entry point and cannot be compiled standalone.

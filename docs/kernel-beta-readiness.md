@@ -13,15 +13,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
   resource metadata in a dedicated refactor, separately from capability work.
-- The focused beta scenario is not green. Neutral regressions cover a producer-returned Solidity address resolving
-  a unique P2SH32 participant and remaining authenticated as the full raw-call target behind `OP_INVOKE`. In fresh
-  `approve result`, stable metadata correctly assigns the intermediate fixed-array producer to output 37 and its
-  child results to outputs 38–40; output 37 nevertheless remains the provisional `00`. Reverse numeric derivation
-  is not a dependency order after logical calls coalesce by physical owner: the collapsed graph contains a real
-  callback cycle, so the intermediate producer is probed before the shared owner has materialized its child
-  effects and is never retried. The next batch should add bounded, fail-closed semantic convergence over the
-  compiler-authored physical dependency graph, with a neutral shared-owner callback regression; do not redirect
-  the consumer to a child result or start a title ladder.
+- The focused `post two jobs` scenario is green after a fresh compile. A neutral BCH-2026 regression proves zero,
+  one, and two repeated getter results whose exact affine domain consumes an authenticated earlier scalar result.
+  The compiler preserves the source callsite-to-returned-array link before memory lowering; the SDK retains one
+  physical callsite and resolves each reached occurrence from its planned arguments. This is a focused checkpoint,
+  not evidence that the 66-title beta gate or the previously observed shared-owner callback cycle is resolved.
 
 ## Gate before the next leap
 

@@ -483,4 +483,137 @@ describe('Release 0 shared invocation analysis', () => {
     expect(JSON.stringify(sources[2])).toContain('"jobs"');
     expect(JSON.stringify(sources)).not.toContain('"reference"');
   });
+
+  it('publishes an exact affine pre-test domain after path-sensitive loop-entry assignments', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract AffineLoopEntry() {
+        function run(address target, bigint n, bool bump, bool wide) public {
+          bigint original = n;
+          n = original + 2;
+          bigint bound = 0;
+          bound = n;
+          if (bump) { bound = bound + 1; }
+          bigint delta = wide ? 2 : 1;
+          for (bigint i = 1; i < bound; i = i + delta) {
+            ITarget(target).step(i);
+          }
+          require(n >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const call = artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0];
+    expect(call.iterationDomain).toMatchObject({
+      counterName: 'i',
+      initialValue: { kind: 'literal', value: '1' },
+      stepValue: {
+        kind: 'ternary',
+        condition: { kind: 'source', source: { kind: 'forward', paramIndex: 3 } },
+        ifTrue: { kind: 'literal', value: '2' },
+        ifFalse: { kind: 'literal', value: '1' },
+      },
+      continueCondition: {
+        kind: 'binary', operator: '<',
+        left: { kind: 'identifier', name: 'i' },
+        right: {
+          kind: 'ternary',
+          condition: { kind: 'source', source: { kind: 'forward', paramIndex: 2 } },
+        },
+      },
+    });
+    expect(call.iterationDomain?.maximumIterations).toBeGreaterThan(0);
+    expect(call.minimumOccurrences).toBeUndefined();
+  });
+
+  it('uses an authenticated prior producer result in the loop domain and publishes its consumer lane', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProbe { function limit(bigint seed) returns (bigint, bool); }
+      interface ITarget { function step(bigint value); }
+      contract ResultBoundLoop() {
+        function run(address probe, address target, bigint seed) public {
+          bigint limit, bool enabled = IProbe(probe).limit(seed);
+          bigint bound = enabled ? limit : 0;
+          for (bigint i = 0; i < bound; i = i + 1) {
+            ITarget(target).step(i);
+          }
+          require(seed >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'run')!;
+    expect(fn.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
+      [0, 'limit'], [1, 'step'],
+    ]);
+    expect(fn.externalCalls?.[1].iterationDomain?.continueCondition).toMatchObject({
+      kind: 'binary', operator: '<',
+      right: {
+        kind: 'ternary',
+        condition: { kind: 'producerResult', callsiteId: 0, resultIndex: 1 },
+        ifTrue: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 },
+      },
+    });
+    expect(fn.resultConsumers).toEqual(expect.arrayContaining([
+      {
+        consumerCallsiteId: 1, iterationDomain: true,
+        producerCallsiteId: 0, resultIndex: 0,
+      },
+      {
+        consumerCallsiteId: 1, iterationDomain: true,
+        producerCallsiteId: 0, resultIndex: 1,
+      },
+    ]));
+    expect(JSON.stringify(fn.externalCalls?.[1].iterationDomain)).not.toContain('externalCall');
+    const analyzed = artifact.invocationAnalysis!.functions.find((candidate) => candidate.name === 'run')!;
+    expect(analyzed.externalCalls?.[1].iterationDomain).toEqual(fn.externalCalls?.[1].iterationDomain);
+    expect(analyzed.resultConsumers).toEqual(fn.resultConsumers);
+  });
+
+  it('preserves a loop call result-to-returned-array link across memory lowering', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ISource {
+        function size() external view returns (uint256);
+        function read(uint256 index) external view returns (uint256);
+      }
+      contract ResultArrayLoop(address source) {
+        function collect(uint256 offset) public view returns (uint256[] memory) {
+          uint256 length = ISource(source).size() - offset;
+          uint256[] memory result = new uint256[](length);
+          for (uint256 index = 0; index < length; index++) {
+            result[index] = ISource(source).read(index + offset);
+          }
+          return result;
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      messageBusGraphContext: true, solidityImportCompat: true, suppressWarnings: true,
+    });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'collect')!;
+    expect(fn.externalCalls?.map((call) => [call.callsiteId, call.functionName])).toEqual([
+      [0, 'size'], [1, 'read'],
+    ]);
+    expect(fn.externalCalls?.[1]).toMatchObject({
+      occurrence: 'loop', resultArrayOutput: 0,
+      iterationDomain: { counterName: 'index' },
+    });
+  });
+
+  it('withholds an affine domain when a dependency changes inside the loop', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint value); }
+      contract MutatingLoopBound() {
+        function run(address target, bigint bound) public {
+          for (bigint i = 0; i < bound; i = i + 1) {
+            bound = bound - 1;
+            ITarget(target).step(i);
+          }
+          require(bound >= 0);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true, suppressWarnings: true,
+    });
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls?.[0].iterationDomain)
+      .toBeUndefined();
+  });
 });

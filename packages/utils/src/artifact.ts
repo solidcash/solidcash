@@ -181,6 +181,16 @@ export interface RuntimeLoopIterationDomainAbi {
   maximumIterations: number;
 }
 
+/** Exact bounded recurrence for a pre-test loop containing one external graph callsite. */
+export interface ExternalCallIterationDomainAbi {
+  counterName: string;
+  initialValue: ExternalCallExpression;
+  stepValue: ExternalCallExpression;
+  continueCondition: ExternalCallExpression;
+  /** Independent compiler ceiling; consumers must also enforce their own actual-row limit. */
+  maximumIterations: number;
+}
+
 /** One repeated BCH-transfer segment produced by a runtime counter loop. */
 export interface RuntimeLoopTransferAbi {
   permutationParam: string;
@@ -1049,6 +1059,7 @@ export type ExternalResultConsumerAbi = {
 } & (
   | { argument: number; condition?: never }
   | { condition: true; argument?: never }
+  | { iterationDomain: true; argument?: never; condition?: never }
 );
 
 /**
@@ -1166,6 +1177,9 @@ export interface ExternalCallAbi {
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Runtime predicate guarding this callsite, serialized from its enclosing source branches. */
   condition?: ExternalCallExpression;
+  /** Exact affine pre-test loop recurrence which reaches this callsite. Unlike `maximumOccurrences`, this
+   * describes the runtime iteration domain rather than only publishing a protocol ceiling. */
+  iterationDomain?: ExternalCallIterationDomainAbi;
   /** ABI output array directly populated by this loop call (`result[i] = call(); return result`). */
   resultArrayOutput?: number;
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */

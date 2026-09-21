@@ -8,8 +8,10 @@ import {
 } from '../../src/stateful/KernelDelegateForwarding.js';
 import {
   assertExternalCallRowPayload, assertPreparedExternalCallRowReconciliation,
+  evaluateExternalCallAffineIterationDomain,
   externalCallCandidateIterationIndices, externalCallMetadataIdentityMatches,
   externalCallReachedOccurrenceIndices,
+  externalReturnsForCallsites,
   producerResultOccurrenceIndex,
   resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
@@ -133,6 +135,80 @@ describe('kernel delegate entry coordinates', () => {
     expect(externalCallCandidateIterationIndices({ ...call, maximumOccurrences: 1 }, [])).toEqual([0]);
     expect(externalCallCandidateIterationIndices({ ...call, maximumOccurrences: 10_001 }, []))
       .toBeUndefined();
+  });
+
+  it.each([
+    ['zero', 0n, 1n, 0n, []],
+    ['one', 0n, 1n, 1n, [0]],
+    ['positive N', -2n, 2n, 5n, [0, 1, 2, 3]],
+    ['negative N', 5n, -2n, -2n, [0, 1, 2, 3]],
+  ] as const)('evaluates an exact %s bounded affine iteration domain', (
+    _name, initial, step, bound, expected,
+  ) => {
+    const initialExpression = { kind: 'initial' };
+    const stepExpression = { kind: 'step' };
+    const continueCondition = { kind: 'condition' };
+    const domain = {
+      counterName: 'counter', initialValue: initialExpression, stepValue: stepExpression,
+      continueCondition, maximumIterations: 8,
+    };
+
+    expect(evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
+      if (expression === initialExpression) return initial;
+      if (expression === stepExpression) return step;
+      const counter = bindings.get('counter');
+      if (typeof counter !== 'bigint') return undefined;
+      return step > 0n ? counter < bound : counter > bound;
+    })).toEqual(expected);
+  });
+
+  it('fails closed for unresolved, non-progressing, changing, and ceiling-bound affine domains', () => {
+    const initialValue = { kind: 'initial' };
+    const stepValue = { kind: 'step' };
+    const continueCondition = { kind: 'condition' };
+    const domain = {
+      counterName: 'counter', initialValue, stepValue, continueCondition, maximumIterations: 2,
+    };
+    const evaluate = (
+      initial: bigint | undefined, step: bigint | undefined,
+      active: (counter: bigint) => boolean | undefined,
+    ) => evaluateExternalCallAffineIterationDomain(domain, (expression, bindings) => {
+      if (expression === initialValue) return initial;
+      if (expression === stepValue) return step;
+      const counter = bindings.get('counter');
+      if (typeof counter !== 'bigint') return undefined;
+      return active(counter);
+    });
+
+    expect(() => evaluate(undefined, 1n, () => true)).toThrow(/unresolved initial value/);
+    expect(() => evaluate(0n, 1n, () => undefined)).toThrow(/unresolved continue condition/);
+    expect(() => evaluate(0n, undefined, () => true)).toThrow(/unresolved step/);
+    expect(() => evaluate(0n, 0n, () => true)).toThrow(/non-progressing zero step/);
+    expect(() => evaluateExternalCallAffineIterationDomain({
+      ...domain, stepValue: { kind: 'identifier', name: 'counter' },
+    }, () => 1n)).toThrow(/step is not invariant/);
+    expect(() => evaluate(0n, 1n, () => true)).toThrow(/2-iteration ceiling/);
+    expect(() => evaluateExternalCallAffineIterationDomain(
+      { ...domain, maximumIterations: 20_000 }, (expression, bindings) => (
+        expression === initialValue ? 0n : expression === stepValue ? 1n : bindings.has('counter')
+      ),
+    )).toThrow(/SDK hard cap/);
+  });
+
+  it('accepts exactly one authenticated iteration-domain result-consumer lane', () => {
+    const producerCall = {
+      callsiteId: 3, interfaceName: 'ISource', functionName: 'bound', requiredDataNftIndices: [],
+      hasReturnValues: true, returnTypes: ['uint16'],
+    };
+    const lane = {
+      consumerCallsiteId: 4, producerCallsiteId: 3, resultIndex: 0, iterationDomain: true as const,
+    };
+    expect(() => externalReturnsForCallsites([], new Map(), [producerCall], {
+      callsiteId: 4, resultConsumers: [lane] as never,
+    })).not.toThrow();
+    expect(() => externalReturnsForCallsites([], new Map(), [producerCall], {
+      callsiteId: 4, resultConsumers: [{ ...lane, condition: true }] as never,
+    })).toThrow(/one valid consumer lane/);
   });
 
   it('does not clone one producer result across consumer loop iterations', () => {

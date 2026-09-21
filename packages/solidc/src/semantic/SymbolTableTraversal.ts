@@ -14407,6 +14407,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, functionName, parameters,
         );
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callMode = callMode;
         callNode.callOptions = node.callOptions;
@@ -14527,6 +14528,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             );
           }
           const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
+          inert.resultArrayOutput = node.resultArrayOutput;
           inert.sourceEffectOrdinal = node.sourceEffectOrdinal;
           inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
           inert.foldedIntoDeploy = true;
@@ -14541,6 +14543,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, node.methodName, parameters,
         );
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -14615,6 +14618,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
+          callNode.resultArrayOutput = node.resultArrayOutput;
           callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
           callNode.sourceActivationConditions = node.sourceActivationConditions;
           callNode.opaqueReturn = true;
@@ -14685,6 +14689,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, visitedVar, node.methodName, parameters);
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
@@ -14744,6 +14749,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const addressExpr = this.visit(node.object) as ExpressionNode;
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
+        callNode.resultArrayOutput = node.resultArrayOutput;
         callNode.sourceEffectOrdinal = node.sourceEffectOrdinal;
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;

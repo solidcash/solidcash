@@ -2658,6 +2658,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** Source-level returned-array link captured before memory lowering rewrites the assignment. */
+  resultArrayOutput?: number;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
   /** Function-local program point shared with mapping-write effects. */
@@ -2919,6 +2921,8 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
+  /** Source-level returned-array link copied if this resolves to an external graph call. */
+  resultArrayOutput?: number;
   /** Pre-semantic source program point copied if this lowers to an external graph call. */
   sourceEffectOrdinal?: number;
   /** Lexical predicates captured before helper/control-flow lowering. */

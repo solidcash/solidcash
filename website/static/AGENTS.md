@@ -52,7 +52,8 @@ incremental build metadata; do not replace the build with per-package `tsc -p` l
 artifacts only need regeneration when contract sources or emitted compiler JavaScript change; `.tsbuildinfo`
 and declaration/source-map timestamp changes must not invalidate them.
 
-Package builds emit to `dist/`. Never emit `.js`, `.js.map`, or generated `.d.ts` beside TypeScript sources,
+Package builds emit to `dist/`. Never emit `.js`, `.js.map`, or generated declaration sidecars (`.d.ts`,
+`.d.mts`, `.d.cts`, and their maps) beside TypeScript sources,
 tests, scripts, or configs, and never commit such sidecars. The root and testing-suite example tsconfigs are
 no-emit; use `yarn build` or `yarn build:watch` for output. `.gitignore` retains explicit exceptions for
 authored JavaScript and ambient declarations. Run `yarn check:source-tree` before committing; ignored files

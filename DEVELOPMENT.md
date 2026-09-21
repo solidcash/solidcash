@@ -10,7 +10,8 @@ development optimization: always run one-shot `yarn build` before handoff so Typ
 transitive dependents.
 
 Build output belongs in each package's `dist/`, never beside `.ts` sources, tests, scripts, or configs. Do
-not commit generated `.js`, `.js.map`, or `.d.ts` sidecars. Root and testing-suite example tsconfigs have
+not commit generated `.js`, `.js.map`, or declaration sidecars (`.d.ts`, `.d.mts`, `.d.cts`, and maps). Root
+and testing-suite example tsconfigs have
 `noEmit` to prevent accidental in-place compiles; use project-reference builds for emitted output. Run
 `yarn check:source-tree` before committing; it checks ignored files too. The exceptions are authored VS Code
 JavaScript, `examples/common-js.js`, and two ambient declarations under `packages/`—keep those tracked.

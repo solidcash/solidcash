@@ -11,7 +11,12 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
   resource metadata in a dedicated refactor, separately from capability work.
-- The focused `approve result` title is not green. Its proxy route has several authenticated chunkable mapping resources, while the continuation ABI exposes only one scalar output-base coordinate. The SDK correctly refuses to project that coordinate across distinct collection/key lanes. The next change needs a general per-resource coordinate representation or an equivalent authenticated sequential-band rule, with a reduced regression before another marketplace run.
+- The focused beta scenario is not green. The compiler now pools explicit read-only mapping-result handlers, but
+  the SDK return scanner cannot yet recover an oversized named-struct result at an intermediate row epoch. It
+  observes the authenticated digest, rejects the raw vector with its primitive-only validator, and can falsely
+  converge on a stale blob. The next batch should make return extraction artifact/schema-aware and add a neutral,
+  unseeded mutate → callback read → later write regression. Do not substitute final-state projection for an
+  intermediate result.
 
 ## Gate before the next leap
 

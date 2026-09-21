@@ -2012,6 +2012,32 @@ describe('state assignments in short-circuit branch conditions', () => {
 });
 
 describe('contextually typed inline-array literals', () => {
+  it('encodes a returned array literal using its declared result type', () => {
+    const options = { forceStateful: true, solidityImportCompat: true, suppressWarnings: true } as const;
+    const inline = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function read() public pure returns (uint256[5] memory) {'
+      + ' return [uint256(1), uint256(2), uint256(3), uint256(4), uint256(5)]; } }', options);
+    const contextualLocal = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function read() public pure returns (uint256[5] memory) {'
+      + ' uint256[5] memory values = [uint256(1), uint256(2), uint256(3), uint256(4), uint256(5)];'
+      + ' return values; } }', options);
+
+    expect(inline.bytecode).toBe(contextualLocal.bytecode);
+  });
+
+  it('preserves the following result slot after a returned array literal', () => {
+    const options = { forceStateful: true, solidityImportCompat: true, suppressWarnings: true } as const;
+    const inline = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function read() public pure returns (uint256[3] memory, bool) {'
+      + ' return ([uint256(1), uint256(2), uint256(3)], true); } }', options);
+    const contextualLocal = compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function read() public pure returns (uint256[3] memory, bool) {'
+      + ' uint256[3] memory values = [uint256(1), uint256(2), uint256(3)];'
+      + ' return (values, true); } }', options);
+
+    expect(inline.bytecode).toBe(contextualLocal.bytecode);
+  });
+
   it('interprets hex-number elements from an integer array destination', () => {
     const hex = compileString('contract C { function f() public pure returns (uint[2] memory) {'
       + ' uint[2] memory a = [0x111, 0x333333]; return a; } }',

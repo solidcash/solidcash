@@ -1939,7 +1939,27 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitReturn(node: ReturnNode): Node {
+    // Return expressions are contextual assignments to the function's declared result slots. Array literals
+    // therefore need the same representation decision as local/state assignments before visitArray lowers them:
+    // the return encoder consumes one count-prefixed blob, not one stack item per literal element.
+    if (!node.isYulReturn && this.currentFunction) {
+      node.expressions.forEach((expression, index) => {
+        const expected = this.currentFunction?.returnTypes[index];
+        if (!(expression instanceof ArrayNode) || !(expected instanceof ArrayType)) return;
+        this.contextualizeArrayLiteral(expression, expected);
+        expression.blobEncoded = true;
+        if (expression.elements.length === 0) expression.type = expected;
+      });
+    }
     node.expressions = this.visitList(node.expressions);
+    if (!node.isYulReturn && this.currentFunction) {
+      node.expressions.forEach((expression, index) => {
+        const expected = this.currentFunction?.returnTypes[index];
+        if (expression instanceof ArrayNode && expected instanceof ArrayType) {
+          coerceArrayLiteralType(expression, expected);
+        }
+      });
+    }
     if (node.isYulReturn) return node;
     if (node.fromModifier && node.expressions.length === 0) return node;
     // Type check return values against enclosing function's declared return types

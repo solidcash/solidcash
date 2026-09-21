@@ -5,7 +5,7 @@
 **Worktree:** `.worktrees/kernel-comprehensive-fixtures`  
 **Branch:** `grok/kernel-comprehensive-fixtures`  
 **Baseline tip:** `bfd69af2f` (family-1 A/B/C settle; compose inline ≤60B; batch long chunks)  
-**Final tip:** see `git rev-parse HEAD` / kcomplete-tip.txt — phases 0–7 minimum cells closed under permanent fences  
+**Final tip:** `cd888a0fc` —  see `git rev-parse HEAD` / kcomplete-tip.txt — phases 0–7 minimum cells closed under permanent fences  
 **Maps:** `KERNEL_EXTENSION_INVENTORY.md`, `FENCE_MAP_7_18.md`, `REEVAL_STILL_OPEN.md`  
 **Plans:** `ITEMS_3_4_PLAN.md`, `ITEMS_5_6_PLAN.md`
 

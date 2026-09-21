@@ -17,7 +17,8 @@ import { binToHex } from '@bitauth/libauth';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
-  findDeploymentByLockingBytecode, registerDeployment, registeredExecutionLockingBytecode,
+  findDeploymentByCategory, findDeploymentByLockingBytecode, registerDeployment,
+  registeredExecutionLockingBytecode,
   registeredPhysicalLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
 
@@ -227,6 +228,30 @@ describe('logical CREATE identity at getAddress()', () => {
 
     expect(registeredExecutionLockingBytecode(deployment)).toBe(implementationLock);
     expect(findDeploymentByLockingBytecode(provider, implementationLock)).toBe(deployment);
+  });
+
+  it('resolves the state-owning proxy registration by category', () => {
+    const provider = createTestProvider();
+    const implementationCategory = '11'.repeat(32);
+    const proxyCategory = '22'.repeat(32);
+    const implementation = {
+      contractName: 'Implementation', address: 'implementation-address',
+      lockingBytecode: `aa20${'11'.repeat(32)}87`,
+      contract: { categoryId: implementationCategory },
+    };
+    const proxy = {
+      contractName: 'Implementation', address: 'proxy-address',
+      lockingBytecode: `aa20${'22'.repeat(32)}87`,
+      contract: {
+        proxy: { categoryId: proxyCategory },
+        implementation: { categoryId: implementationCategory },
+      },
+    };
+    registerDeployment(provider, implementation);
+    registerDeployment(provider, proxy);
+
+    expect(findDeploymentByCategory(provider, implementationCategory)).toBe(implementation);
+    expect(findDeploymentByCategory(provider, proxyCategory)).toBe(proxy);
   });
 
   it('resolves identity from target/address when _logicalAddress is omitted', async () => {

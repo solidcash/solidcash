@@ -403,7 +403,7 @@ function invalidateSignerUtxos(signer: Signer): void {
   signerUtxoSnapshots.get(signer.provider as object)?.delete(signer.getAddress());
 }
 import {
-  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+  findDeploymentByAddress, findDeploymentByCategory, findDeploymentByLockingBytecode, findDeploymentByName,
   registeredExecutionLockingBytecode,
 } from './deployment-registry.js';
 import {
@@ -18779,7 +18779,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       await Promise.all([...participants].map(syncMockParticipantOracle));
     }
-    const registeredSelf = findDeploymentByAddress(this.inner.provider, this.target);
+    // A delegate implementation can retain its own logical address while executing against a proxy's category.
+    // The category is the authenticated state-owner identity, so prefer its registration over the standalone
+    // implementation deployment. Solidity-visible address(this) and outgoing msg.sender then share one owner
+    // lock, while registeredExecutionLockingBytecode below continues to identify the executor separately.
+    const registeredCategorySelf = findDeploymentByCategory(this.inner.provider, this.categoryId);
+    const registeredAddressSelf = findDeploymentByAddress(this.inner.provider, this.target);
+    const registeredSelf = registeredCategorySelf ?? registeredAddressSelf;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      console.error('self-identity-registration', JSON.stringify({
+        functionName,
+        category: this.categoryId.slice(0, 24),
+        target: this.target,
+        categoryLock: registeredCategorySelf?.lockingBytecode?.slice(0, 24),
+        addressLock: registeredAddressSelf?.lockingBytecode?.slice(0, 24),
+        executionLock: registeredSelf && registeredExecutionLockingBytecode(registeredSelf)?.slice(0, 24),
+      }));
+    }
     const executionSelfAddress = hexToBin(
       registeredSelf ? registeredExecutionLockingBytecode(registeredSelf) ?? this.inner.lockingBytecode
         : this.inner.lockingBytecode,
@@ -37575,7 +37592,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       try {
         // The frame that MAKES this call is the callee's caller: its locking bytecode and category are exactly the
         // identity the compiler resolves `msg.sender` from, and the probe built below is reused by the composition.
-        const callerLock = hexToBin(this.inner.lockingBytecode);
+        // A delegated frame executes on an implementation object whose category belongs to the proxy. Resolve
+        // that category back to its registered state owner: co-spending the implementation's own master makes
+        // the callee's category scan observe executor bytecode while its slot witness was keyed by the proxy.
+        const callerDeployment = findDeploymentByCategory(this.inner.provider, this.categoryId);
+        const registeredCaller = callerDeployment?.contract as {
+          proxy?: StatefulContract<Artifact>;
+        } | StatefulContract<Artifact> | undefined;
+        const registeredProxy = registeredCaller && 'proxy' in registeredCaller
+          ? registeredCaller.proxy : undefined;
+        const callerContract = registeredProxy
+          ? registeredProxy
+          : registeredCaller instanceof StatefulContract ? registeredCaller
+            : this as unknown as StatefulContract<Artifact>;
+        const callerLock = hexToBin(
+          callerDeployment?.lockingBytecode ?? callerContract.inner.lockingBytecode,
+        );
         const debugIdentity = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1';
         const annotate = <T>(call: T): T => {
@@ -37592,7 +37624,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               lock: binToHex(callerLock).slice(0, 24),
             }));
           }
-          if (typeof withIdentity === 'function') withIdentity.call(call, callerLock, this.categoryId);
+          if (typeof withIdentity === 'function') {
+            withIdentity.call(call, callerLock, callerContract.categoryId);
+          }
           return call;
         };
         if (debugIdentity) {
@@ -37624,29 +37658,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Pair with the callee's own `derive-return-value-entry` record: if this fires with a lock while the
           // callee logs `hasCallerLock: false`, the two are in different code copies (stale bundle), not the same
           // call.
-          const lock = executionSelfAddress instanceof Uint8Array
-            ? executionSelfAddress : hexToBin(this.inner.lockingBytecode);
           console.error('derive-call-identity', JSON.stringify({
             callee: callee.inner.artifact.contractName, functionName,
             caller: this.inner.artifact.contractName,
-            lock: binToHex(lock).slice(0, 24), category: this.categoryId.slice(0, 24),
+            lock: binToHex(callerLock).slice(0, 24), category: callerContract.categoryId.slice(0, 24),
           }));
         }
         return await callee._deriveReturnValue(
           functionName, values, undefined, calleeAbi,
           await calleeExternalCalls(callee, functionName, values, calleeAbi?.inputs, state),
-          // `executionSelfAddress` is THIS frame's identity, i.e. the contract that calls `callee`. The probe it
-          // launches materializes the callee frame the composition reuses, so the callee's `msg.sender`-keyed
-          // mapping slots must be pinned against that identity - not against the transaction origin.
-          // The frame that MAKES the call is the callee's caller, whether or not the caller passed its own
-          // identity in: this method runs on that frame, so its locking bytecode is exactly the value the
-          // compiler resolves `msg.sender` from. Leaving it undefined keyed a nested probe by the
-          // transaction origin (measured: the `transferFrom` probe pinned `4038d902…` - signer-keyed -
-          // while the transaction addresses `00fe98d8…`).
-          executionSelfAddress instanceof Uint8Array
-            ? executionSelfAddress : hexToBin(this.inner.lockingBytecode),
-          this.categoryId,
-          this as unknown as StatefulContract<Artifact>,
+          // The probe materializes the callee frame reused by the composition. Pin msg.sender-keyed slots to the
+          // authenticated state owner selected above, never to the transaction origin or delegate executor.
+          callerLock,
+          callerContract.categoryId,
+          callerContract,
         ) as FunctionArgument;
       } catch (error) {
         if (!allowProvisional || !(error instanceof Error)

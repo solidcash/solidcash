@@ -66,6 +66,23 @@ export function findDeploymentByName(
   return undefined;
 }
 
+/** Resolve the most recent registered state owner for one token category. */
+export function findDeploymentByCategory(
+  provider: NetworkProvider, categoryId: string,
+): RegisteredDeployment | undefined {
+  const current = deployments.get(provider) ?? [];
+  const wanted = categoryId.replace(/^0x/, '').toLowerCase();
+  for (let index = current.length - 1; index >= 0; index--) {
+    const registered = current[index].contract as {
+      categoryId?: string;
+      proxy?: { categoryId?: string };
+    };
+    const candidate = registered.proxy?.categoryId ?? registered.categoryId;
+    if (candidate?.replace(/^0x/, '').toLowerCase() === wanted) return current[index];
+  }
+  return undefined;
+}
+
 export function findDeploymentByAddress(
   provider: NetworkProvider, address: string,
 ): RegisteredDeployment | undefined {

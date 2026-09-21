@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { hexToBin } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { getContractFactory, upgrades } from '../../src/index.js';
+import { createTestProvider, getSigners } from '../test-util.js';
 
 const TOKEN = `
 pragma solidity ^0.8.0;
 contract MiniToken {
     mapping(address => mapping(address => uint256)) public allowance;
+    event Approval(address indexed owner, address indexed spender, uint256 value);
     function approve(address spender, uint256 value) public returns (bool) {
         allowance[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
         return true;
     }
 }
@@ -21,34 +22,41 @@ interface IMiniToken {
     function approve(address spender, uint256 value) external returns (bool);
 }
 contract Approver {
-    int public ok;
+    int public completed;
+    function initialize() public { this.completed = 0; }
     function forceApprove(address token) public {
-        require(IMiniToken(token).approve(address(this), 100));
-        this.ok = this.ok + 1;
+        bytes memory payload = abi.encodeCall(
+            IMiniToken.approve, (address(this), type(uint256).max)
+        );
+        (bool success, bytes memory returned) = token.call(payload);
+        require(success && abi.decode(returned, (bool)));
+        this.completed = this.completed + 1;
     }
 }
 `;
 
 describe('nested approve insert', () => {
-  it('inserts _allowances[caller][caller] when the caller force-approves itself', async () => {
+  it('uses the delegated state owner for a returning msg.sender-keyed write', async () => {
     const provider = createTestProvider();
-    const tokenArt = compileString(TOKEN, { solidityImportCompat: true });
-    const callerArt = compileString(CALLER, { solidityImportCompat: true });
-    const tokenInner = new Contract(tokenArt, [], { provider });
-    const { categoryId: tokenCat } = await setupStatefulUtxos(
-      provider, tokenInner, tokenArt.stateLayout!, {}, { saltContract: true },
-    );
-    const token = StatefulContract.withCategory(tokenInner.withCategory(hexToBin(tokenCat)), tokenCat);
-    const callerInner = new Contract(callerArt, [], { provider });
-    const { categoryId: callerCat } = await setupStatefulUtxos(
-      provider, callerInner, callerArt.stateLayout!, { ok: 0n }, { saltContract: true },
-    );
-    const caller = StatefulContract.withCategory(callerInner.withCategory(hexToBin(callerCat)), callerCat, {
-      externals: { IMiniToken: token },
-    });
-    const tx = await caller.forceApprove(token.inner.lockingBytecode).send();
+    const [signer] = await getSigners(1, { provider, fundingUtxos: 8 });
+    const options = {
+      forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+      solidityImportCompat: true,
+    } as const;
+    const tokenArtifact = compileString(TOKEN, options);
+    const callerArtifact = compileString(CALLER, options);
+    expect(tokenArtifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(callerArtifact.messageBus?.convention).toBe('kernel-row-loop');
+
+    const token = await getContractFactory(tokenArtifact, signer).deploy();
+    const caller = await upgrades.deployProxy(getContractFactory(callerArtifact, signer), []);
+    const tx = await (caller as any).forceApprove(token.inner.lockingBytecode).send();
+
     expect(tx.txid).toBeDefined();
-    expect((await caller.getState()).ok).toBe(1n);
-    expect(await token.state.allowance(caller.inner.lockingBytecode, caller.inner.lockingBytecode)).toBe(100n);
+    expect((await caller.proxy.getState()).completed).toBe(1n);
+    expect(await token.state.allowance(
+      caller.proxy.inner.lockingBytecode,
+      caller.proxy.inner.lockingBytecode,
+    )).toBe((1n << 256n) - 1n);
   }, 180_000);
 });

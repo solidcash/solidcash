@@ -19718,13 +19718,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * has no published band coordinate and retains its explicitly threaded frame slot.
    */
   private bandEmissionOrdinal(): number | undefined {
-    // Dynamic-state routes thread their chunk base through each invoked handler frame. In that shape the mutable
-    // emission value which later consumers observe is the frame-local cursor; replacing the published ABI-band
-    // seed instead leaves the live cursor untouched and can overwrite a neighbouring route witness while the
-    // handler continues (observed as a skipped read-only chunk covenant in a later internal call).
-    if (this.currentFunction.messageBusCallerBandNames?.includes('__internal__dynamicChunkInputBase')) {
-      return undefined;
-    }
     return this.declaredBandOrdinal('__internal__graphEmissions');
   }
 

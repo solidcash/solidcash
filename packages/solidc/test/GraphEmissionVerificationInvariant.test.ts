@@ -23,6 +23,20 @@ interface CursorAuditResult {
   writes: number;
 }
 
+function methodText(sourceText: string, name: string): string {
+  const source = ts.createSourceFile('source.ts', sourceText, ts.ScriptTarget.Latest, true);
+  let body = '';
+  const find = (node: ts.Node): void => {
+    if (ts.isMethodDeclaration(node) && node.name.getText(source) === name) {
+      body = node.getText(source);
+      return;
+    }
+    if (body === '') ts.forEachChild(node, find);
+  };
+  find(source);
+  return body;
+}
+
 /** Source-level mutation auditor for the four graph emission producer classes. */
 function audit(sourceText: string): AuditResult {
   const source = ts.createSourceFile('GenerateTargetTraversal.ts', sourceText, ts.ScriptTarget.Latest, true);
@@ -209,6 +223,17 @@ describe('X206 graph emission verification ownership', () => {
 });
 
 describe('graph emission cursor ownership', () => {
+  it('uses the finalized route band for dynamic and fixed-state emission cursors', () => {
+    const selector = methodText(traversalSource, 'bandEmissionOrdinal');
+    expect(selector).toContain(
+      "return this.declaredBandOrdinal('__internal__graphEmissions');",
+    );
+    expect(selector).not.toContain('__internal__dynamicChunkInputBase');
+    expect(compilerSource).toContain(
+      'candidate.messageBusCallerBandNames = finalizedBandNames;',
+    );
+  });
+
   it('routes every cursor read and write through accessors with the same coordinate policy', () => {
     const result = auditCursorAccess(traversalSource);
     expect(result.errors).toEqual([]);

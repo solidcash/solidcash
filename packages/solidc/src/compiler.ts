@@ -3749,13 +3749,27 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
   const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
     if (unsupported) return;
     if (node instanceof BranchNode) {
+      const ifWritesChunkable = nodeContainsChunkableWrite(
+        node.ifBlock, chunkableNames, footprintNames, locallyBound,
+      );
+      const elseWritesChunkable = node.elseBlock !== undefined && nodeContainsChunkableWrite(
+        node.elseBlock, chunkableNames, footprintNames, locallyBound,
+      );
+      // Control flow unrelated to the proved resource does not make an unconditional write conditional. Still
+      // inspect every expression and arm: helper-hidden writes and a successful early return before the direct
+      // write must continue to invalidate the exactly-once proof.
+      if (!ifWritesChunkable && !elseWritesChunkable) {
+        scan(node.condition, activation);
+        scan(node.ifBlock, activation);
+        if (node.elseBlock !== undefined) scan(node.elseBlock, activation);
+        return;
+      }
       const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
       if (branchActivation === undefined) {
         unsupported = true;
         return;
       }
-      if (node.elseBlock !== undefined
-        && nodeContainsChunkableWrite(node.elseBlock, chunkableNames, footprintNames, locallyBound)) {
+      if (elseWritesChunkable) {
         // Writes in both arms are same-iteration resource selection — still fenced.
         unsupported = true;
         return;
@@ -12912,6 +12926,20 @@ function compileResolvedAst(
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   if (mergedCompilerOptions.messageBus) {
+    // Route synthesis publishes the caller band before semantic analysis, but the symbol pass can append
+    // compiler-owned route inputs (currently return-output, proxy-master, and dynamic-chunk coordinates). A
+    // DEFINE'd handler addresses this physical band from the bottom, so retaining the pre-semantic list shifts
+    // every published ordinal by the number of appended inputs. Refresh every clone from the final route ABI;
+    // deriving the band here also keeps future hidden inputs from requiring another coordinate adjustment.
+    const finalizedRoute = ast.contract.functions.find((fn) => fn.messageBusRoute === true);
+    if (finalizedRoute) {
+      const finalizedBandNames = finalizedRoute.parameters.map((parameter) => parameter.name);
+      for (const candidate of ast.contract.functions) {
+        if (MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) {
+          candidate.messageBusCallerBandNames = finalizedBandNames;
+        }
+      }
+    }
     padMessageBusCloneCalls(ast);
   }
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });

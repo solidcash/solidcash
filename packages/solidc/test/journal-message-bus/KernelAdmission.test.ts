@@ -21,8 +21,8 @@ describe('required kernel admission', () => {
       mapping(uint => bytes) values;
       int calls;
       event Stored(uint key);
-      function set(uint key, bytes value, bool count) public {
-        if (count) this.calls = this.calls + 1;
+      function set(uint key, bytes value, int count) public {
+        if (count > 0) this.calls = this.calls + 1;
         values[key] = value;
         emit Stored(key);
         require(true);

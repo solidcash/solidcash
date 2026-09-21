@@ -13,11 +13,11 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
   resource metadata in a dedicated refactor, separately from capability work.
-- The focused beta scenario is not green. Schema-aware intermediate results, producer-derived late predicates,
-  compiler-published pure helpers with fixed-array element assignments, and constant folding now have neutral
-  regressions. Fresh `approve result` passes its prior `sendEscrowShare` predicate failure, then BCH-2026 preflight
-  fails at input 200 (`__message_bus1`): an empty item is split at index 98. The next batch should localize that
-  authenticated layout/materialization failure with one input-bounded diagnostic run; do not start a title ladder.
+- The focused beta scenario is not green. Neutral regressions now cover a producer-returned Solidity address
+  resolving a unique P2SH32 participant and remaining authenticated as the full raw-call target behind
+  `OP_INVOKE`. Fresh `approve result` reaches the later Unicrow journal settlement, where input 9 selects output
+  59 (the OP_RETURN separator) as a materialized record and then tries to split its absent token category. The
+  next batch should repair that general journal-output ordinal/layout error; do not start a title ladder.
 
 ## Gate before the next leap
 

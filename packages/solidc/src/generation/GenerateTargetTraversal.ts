@@ -19304,6 +19304,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (evaluatedTargetExpression) this.stack[0] = '(__graph_target)';
     else this.pushToStack('(__graph_target)');
+    // Imported-Solidity producer results carry addresses as 20-byte identities. The authenticated graph transcript
+    // is deliberately native and names the full target locking bytecode. Recover that full value from the current
+    // rooted emission row, prove its canonical projection equals the runtime value, and then frame the full value.
+    // Reading the row avoids a fixed external-call input coordinate: graph callees are located by the settlement
+    // plan, and the later complete-row assertion independently consumes this same authenticated stream position.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(20n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emitGraphEmissionStreamRead(locationData);
+    this.pushToStack('(__graph_target_stream)');
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_BIN2NUM, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(__graph_target)');
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
@@ -31377,27 +31405,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Top is a candidate address. Empty or 20-byte HASH160 is not locking bytecode
-   * (p2sh20=23, p2pkh=25, p2sh32=35). Replace it with the item beneath (physical
-   * or identity lock already pushed for this identity check).
+   * Authenticate an expected address against the candidate locking bytecode beneath it.
+   * A 20-byte imported-Solidity identity is the canonical projection of that candidate, never a placeholder
+   * which may be discarded. The empty legacy sentinel continues to select the already-authenticated candidate.
    */
   private emitPreferLockingBytecode(locationData: SingleLocationData): void {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_SWAP, locationData);
     this.emit(encodeInt(20n), locationData);
     this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_BOOLOR, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // [candidateLbc, expected20] -> [expected20, projectedCandidate]. The caller's EQUALVERIFY binds them.
+    this.emit(Op.OP_SWAP, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
     this.emit(Op.OP_DROP, locationData);
-    // After DROP the top is the already-pushed locking bytecode (physical master or
-    // CREATE-anchor identity). DUP it. OVER would copy the index beneath that lock
-    // and EQUALVERIFY lock vs index.
+    // After DROP the top is the already-pushed locking bytecode (physical master or identity lock).
     this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
   }
 

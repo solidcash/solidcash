@@ -1,7 +1,7 @@
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract, registerDeployment, StatefulContract } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
@@ -27,6 +27,123 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel late transitive conditional graph planning', () => {
+  it('resolves a late P2SH32 target from an authenticated producer address result', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const targetArtifact = compileString(`pragma solidity ^0.8.0;
+      contract ValueTarget {
+        uint public stored;
+        function store(uint value) public { stored = value; require(true); }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const targetBase = new Contract(targetArtifact, [], { provider });
+    const targetSetup = await setupStatefulUtxos(
+      provider, targetBase, targetArtifact.stateLayout!, { stored: 0n }, { saltContract: true },
+    );
+    const target = StatefulContract.withCategory(
+      targetBase.withCategory(hexToBin(targetSetup.categoryId)), targetSetup.categoryId,
+    );
+    expect(target.inner.lockingBytecode).toMatch(/^aa20[0-9a-f]{64}87$/u);
+    registerDeployment(provider, {
+      contractName: targetArtifact.contractName,
+      address: target.target,
+      lockingBytecode: target.inner.lockingBytecode,
+      contract: target,
+    });
+
+    const sourceArtifact = compileString(`pragma solidity ^0.8.0;
+      contract TargetSource(address destination) {
+        function resolve() public view returns (address) { return destination; }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const sourceBase = new Contract(sourceArtifact, [target.inner.lockingBytecode], { provider });
+    const sourceSetup = await setupStatefulUtxos(
+      provider, sourceBase, sourceArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const source = StatefulContract.withCategory(
+      sourceBase.withCategory(hexToBin(sourceSetup.categoryId)), sourceSetup.categoryId,
+    );
+
+    const coordinatorArtifact = compileString(`pragma solidity ^0.8.0;
+      interface ITargetSource { function resolve() external view returns (address); }
+      interface IValueTarget { function store(uint value) external; }
+      contract RouteCoordinator(address source) {
+        function run(uint value) public {
+          address destination = ITargetSource(source).resolve();
+          destination.call(abi.encodeCall(IValueTarget.store, (value)));
+          require(true);
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    expect(coordinatorArtifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(coordinatorArtifact.bytecode.replace(/\s+/gu, '')).toContain('OP_INVOKE');
+    const coordinatorCalls = coordinatorArtifact.abi.find((entry) => entry.name === 'run')!.externalCalls!;
+    expect(coordinatorCalls.map((call) => call.functionName)).toEqual(['resolve', '__raw__']);
+    expect(coordinatorCalls[1]).toMatchObject({ interfaceName: '__raw__', rawFunctionName: 'store' });
+    expect(coordinatorCalls[1]!.addressSource?.expression).toMatchObject({
+      kind: 'producerResult',
+      callsiteId: coordinatorCalls[0]!.callsiteId,
+      resultIndex: 0,
+    });
+    const coordinatorBase = new Contract(
+      coordinatorArtifact, [source.inner.lockingBytecode], { provider },
+    );
+    const coordinatorSetup = await setupStatefulUtxos(
+      provider, coordinatorBase, coordinatorArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const coordinator = StatefulContract.withCategory(
+      coordinatorBase.withCategory(hexToBin(coordinatorSetup.categoryId)), coordinatorSetup.categoryId,
+    );
+    coordinator._registerResolvedExternal('ITargetSource', source);
+
+    const relayArtifact = compileString(`pragma solidity ^0.8.0;
+      interface IRouteCoordinator { function run(uint value) external; }
+      contract EntryRelay(address coordinator) {
+        function relay(uint value) public {
+          IRouteCoordinator(coordinator).run(value);
+          require(true);
+        }
+      }`, { ...KERNEL, messageBusGraphContext: true });
+    const relayBase = new Contract(relayArtifact, [coordinator.inner.lockingBytecode], { provider });
+    const relaySetup = await setupStatefulUtxos(
+      provider, relayBase, relayArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const relay = StatefulContract.withCategory(
+      relayBase.withCategory(hexToBin(relaySetup.categoryId)), relaySetup.categoryId,
+    );
+    relay._registerResolvedExternal('IRouteCoordinator', coordinator);
+
+    const rootArtifact = compileString(`pragma solidity ^0.8.0;
+      contract EntryRoot(address implementation) {
+        function execute(bytes rawPayload) public {
+          implementation.delegatecall(rawPayload);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(rootArtifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(rootArtifact.bytecode.replace(/\s+/gu, '')).toContain('OP_INVOKE');
+    const rootBase = new Contract(rootArtifact, [relay.inner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+
+    const payload = hexToBin(relayArtifact.abi.find((entry) => entry.name === 'relay')!.selector!);
+    const call = root.call.execute(payload)
+      .withCallerIdentity(hexToBin(root.inner.lockingBytecode), root.categoryId)
+      .withCall(relay, 'relay', [41n]);
+    const builder = await call.build();
+    const participantContracts = builder.inputs.flatMap((input) => (
+      'contract' in input.unlocker ? [input.unlocker.contract.artifact.contractName] : []
+    ));
+    expect(participantContracts.filter((name) => name === 'EntryRelay')).toHaveLength(1);
+    expect(participantContracts.filter((name) => name === 'RouteCoordinator')).toHaveLength(1);
+    expect(participantContracts.filter((name) => name === 'TargetSource')).toHaveLength(1);
+    expect(participantContracts.filter((name) => name === 'ValueTarget')).toHaveLength(1);
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await target.getState()).stored).toBe(41n);
+  }, 180_000);
+
   it.each([true, false])(
     'resolves producer-derived branch %s and fixed-array arguments before adding late callees',
     async (choose) => {

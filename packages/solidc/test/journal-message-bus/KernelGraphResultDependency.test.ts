@@ -1,6 +1,11 @@
 import { execFileSync } from 'child_process';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import {
+  bytecodeToAsm, encodeInt, Op, scriptToBytecode,
+} from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
+import { compileAddressToEvmIdentity } from '../../src/generation/utils.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -13,6 +18,86 @@ const KERNEL = {
 } as const;
 
 describe('kernel graph result dependencies', () => {
+  it('keeps a producer-result address as the authenticated target of a raw graph edge', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITargetSource {
+        function target(uint id) external returns (address);
+      }
+
+      interface IAction {
+        function execute(uint id) external;
+      }
+
+      contract Coordinator {
+        ITargetSource immutable source;
+        uint touched;
+
+        constructor(address source_) {
+          source = ITargetSource(source_);
+        }
+
+        function apply(uint id) external {
+          address target = source.target(id);
+          (bool ok, bytes memory result) = target.call(abi.encodeCall(IAction.execute, (id)));
+          require(ok);
+          touched = result.length;
+          require(true);
+        }
+      }
+    `, KERNEL);
+
+    const fn = artifact.abi.find((candidate) => candidate.name === 'apply');
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply'))
+      .toMatchObject({ eligible: true });
+
+    const calls = fn?.externalCalls ?? [];
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      callsiteId: 0,
+      returnTypes: ['address'],
+      resultEncoding: 'evm-abi-v1',
+    });
+    expect(calls[1]).toMatchObject({
+      callsiteId: 1,
+      interfaceName: '__raw__',
+      functionName: '__raw__',
+      addressSource: {
+        kind: 'expression',
+        expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'address' },
+      },
+      rawFunctionName: 'execute',
+    });
+
+    const functions = artifact.invocationAnalysis?.functions ?? [];
+    const graphHandler = functions.find((candidate) => candidate.name === '__message_bus_handler_apply');
+    expect(graphHandler).toBeDefined();
+    expect(functions.find((candidate) => candidate.name === '__message_bus1')?.calls)
+      .toContain(graphHandler?.id);
+    expect(artifact.bytecode.replace(/\s+/g, '')).toContain('OP_INVOKE');
+
+    const invokeDebug = artifact.debug.invokeDebug ?? {};
+    const projectionBytecode = binToHex(scriptToBytecode(compileAddressToEvmIdentity()));
+    const projectionHelper = Object.entries(invokeDebug)
+      .find(([, entry]) => entry.bytecode === projectionBytecode);
+    expect(projectionHelper).toBeDefined();
+    const projectionInvocation = bytecodeToAsm(scriptToBytecode([
+      encodeInt(BigInt(projectionHelper![0])), Op.OP_INVOKE,
+    ]));
+    const handlerBody = Object.values(invokeDebug)
+      .find((entry) => entry.name === '__message_bus_handler_apply');
+    expect(handlerBody).toBeDefined();
+    const handlerAsm = bytecodeToAsm(hexToBin(handlerBody!.bytecode));
+    const rawSelector = calls[1].rawSelector!;
+    expect(handlerAsm).toMatch(new RegExp([
+      'OP_2 OP_SPLIT OP_SWAP OP_BIN2NUM OP_SPLIT OP_DROP OP_DUP',
+      projectionInvocation,
+      'OP_2 OP_PICK OP_EQUALVERIFY OP_NIP OP_ENDIF',
+      '\\S+ OP_INVOKE 00 OP_CAT',
+      `${rawSelector} OP_CAT`,
+    ].join(' ')));
+  });
+
   it('keeps a multi-result producer behind one invoke boundary when no later edge consumes it', () => {
     const artifact = compileString(`pragma solidcash ^0.13.0;
       interface IReader {

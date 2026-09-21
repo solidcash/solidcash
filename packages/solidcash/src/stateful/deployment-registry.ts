@@ -1,6 +1,6 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 
 export interface RegisteredDeployment {
   contractName: string;
@@ -155,6 +155,46 @@ export function findDeploymentByLockingBytecode(
     } catch { /* the registered address is not a cashaddr */ }
   }
   return undefined;
+}
+
+/**
+ * Resolve the canonical 20-byte address carried by imported-Solidity ABI values.
+ *
+ * This is intentionally separate from `findDeploymentByLockingBytecode`: a 20-byte Solidity identity is not a
+ * Bitcoin Cash locking bytecode. More than one matching deployment is ambiguous and therefore unresolved.
+ */
+export function findDeploymentBySolidityAddressPayload(
+  provider: NetworkProvider, payload: Uint8Array,
+): RegisteredDeployment | undefined {
+  if (payload.length !== 20) return undefined;
+  const wanted = binToHex(payload);
+  const current = deployments.get(provider) ?? [];
+  const matches = current.filter((deployment) => {
+    const candidates = new Set<string | undefined>([
+      registeredExecutionLockingBytecode(deployment), deployment.lockingBytecode,
+    ]);
+    try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
+    return [...candidates].some((candidate) => {
+      if (!candidate) return false;
+      let bytecode: Uint8Array;
+      try { bytecode = hexToBin(candidate.replace(/^0x/, '')); } catch { return false; }
+      const narrowed = lockingBytecodeToSolidityAddressPayload(bytecode);
+      return narrowed !== undefined && binToHex(narrowed) === wanted;
+    });
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Resolve a compiler-typed address value, preserving exact BCH identities before Solidity ABI projection. */
+export function findDeploymentByAddressValue(
+  provider: NetworkProvider, value: string | Uint8Array,
+): RegisteredDeployment | undefined {
+  if (typeof value === 'string') {
+    return findDeploymentByAddress(provider, value)
+      ?? findDeploymentByLockingBytecode(provider, value);
+  }
+  return findDeploymentByLockingBytecode(provider, binToHex(value))
+    ?? findDeploymentBySolidityAddressPayload(provider, value);
 }
 
 /**

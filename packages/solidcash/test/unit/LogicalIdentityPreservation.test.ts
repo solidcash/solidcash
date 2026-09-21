@@ -13,11 +13,11 @@ import {
   findScidAnchorInputIndex, reassertScidIdentityOutputs,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { createTestProvider } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import {
-  findDeploymentByCategory, findDeploymentByLockingBytecode, registerDeployment,
+  findDeploymentByAddressValue, findDeploymentByCategory, findDeploymentByLockingBytecode, registerDeployment,
   registeredExecutionLockingBytecode,
   registeredPhysicalLockingBytecode,
 } from '../../src/stateful/deployment-registry.js';
@@ -228,6 +228,25 @@ describe('logical CREATE identity at getAddress()', () => {
 
     expect(registeredExecutionLockingBytecode(deployment)).toBe(implementationLock);
     expect(findDeploymentByLockingBytecode(provider, implementationLock)).toBe(deployment);
+  });
+
+  it('resolves a unique P2SH32 deployment from its typed Solidity address identity', () => {
+    const provider = createTestProvider();
+    const lockingBytecode = `aa20${'31'.repeat(32)}87`;
+    const deployment = {
+      contractName: 'AddressTarget', address: 'logical-address', lockingBytecode, contract: {},
+    };
+    registerDeployment(provider, deployment);
+
+    const solidityIdentity = hash160(hexToBin(lockingBytecode));
+    expect(findDeploymentByAddressValue(provider, solidityIdentity)).toBe(deployment);
+    expect(findDeploymentByAddressValue(provider, new Uint8Array(20).fill(0x72))).toBeUndefined();
+
+    registerDeployment(provider, {
+      contractName: 'CollidingAddressTarget', address: 'second-logical-address',
+      lockingBytecode: `a914${binToHex(solidityIdentity)}87`, contract: {},
+    });
+    expect(findDeploymentByAddressValue(provider, solidityIdentity)).toBeUndefined();
   });
 
   it('resolves the state-owning proxy registration by category', () => {

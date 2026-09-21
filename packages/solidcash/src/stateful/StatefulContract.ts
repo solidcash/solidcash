@@ -403,8 +403,8 @@ function invalidateSignerUtxos(signer: Signer): void {
   signerUtxoSnapshots.get(signer.provider as object)?.delete(signer.getAddress());
 }
 import {
-  findDeploymentByAddress, findDeploymentByCategory, findDeploymentByLockingBytecode, findDeploymentByName,
-  registeredExecutionLockingBytecode,
+  findDeploymentByAddress, findDeploymentByAddressValue, findDeploymentByCategory,
+  findDeploymentByLockingBytecode, findDeploymentByName, registeredExecutionLockingBytecode,
 } from './deployment-registry.js';
 import {
   logicalIdentityAddressVariants, logicalIdentityBandKey, resolveLogicalIdentity,
@@ -417,7 +417,7 @@ import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, tryCashAddressToLockScript, findLastIndex, generateLibauthSourceOutputs, getNetworkPrefix,
-  scriptToAddress, scriptToLockingBytecode, randomUtxo,
+  lockingBytecodeToSolidityAddressPayload, scriptToAddress, scriptToLockingBytecode, randomUtxo,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
@@ -4976,11 +4976,11 @@ function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm
     const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
     const spanInstructions = Number(debugEnv?.SOLIDC_DEBUG_SPAN_INSTRUCTIONS ?? Number.NaN);
     const state = unknownState as AuthenticationProgramStateCommon;
-    // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
-    // subprograms share the same instruction count.
+    // Match the address-identity guard (`DUP SIZE NIP…` ending in `EQUALVERIFY`). Its body evolves with address
+    // representations, so the explicit diagnostic span length remains the caller's discriminator.
     const opcodes = state.instructions.map((instruction) => instruction.opcode);
-    const guardShape = opcodes.length === 15 && opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
-      && opcodes[14] === 136;
+    const guardShape = opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
+      && opcodes.at(-1) === 136;
     if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions && guardShape) {
       console.error('derive-span-faithful', JSON.stringify({
         ordinal: cached.trace.length - 1,
@@ -26469,14 +26469,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               const resolvedTargetLockingBytecode = tryCashAddressToLockScript(addressValue);
               let deploymentAtAddress: unknown;
-              if (typeof addressValue === 'string') {
-                deploymentAtAddress = (
-                  findDeploymentByAddress(this.inner.provider, addressValue)
-                  ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
-                )?.contract;
-              } else if (addressValue instanceof Uint8Array) {
-                deploymentAtAddress = findDeploymentByLockingBytecode(
-                  this.inner.provider, binToHex(addressValue),
+              if (typeof addressValue === 'string' || addressValue instanceof Uint8Array) {
+                deploymentAtAddress = findDeploymentByAddressValue(
+                  this.inner.provider, addressValue,
                 )?.contract;
               }
               // Hardhat-style factories connect externals on the public proxy
@@ -29254,7 +29249,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // shape is materialized by `_buildRepeatedExternalBatch` before this late frontier is reached. Treating
           // iteration zero as logical row zero changes the authenticated producer path even for an ordinary
           // conditional callsite.
-          const resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
+          let resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
           const registeredByName = logicalParentContract._externalRegistry.get(nested.interfaceName)
             ?? parentContract._externalRegistry.get(nested.interfaceName)
             ?? this._externalRegistry.get(nested.interfaceName)
@@ -29265,12 +29260,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? binToHex(resolvedTargetLockingBytecode)
             : resolvedAddressTarget instanceof Uint8Array ? binToHex(resolvedAddressTarget) : undefined;
           let registered = resolvedAddressTarget === undefined ? registeredByName
-            : targetHex
-              ? findDeploymentByLockingBytecode(this.inner.provider, targetHex)?.contract
-              : typeof resolvedAddressTarget === 'string'
-                ? (findDeploymentByAddress(this.inner.provider, resolvedAddressTarget)
-                  ?? findDeploymentByLockingBytecode(this.inner.provider, resolvedAddressTarget))?.contract
-                : undefined;
+            : typeof resolvedAddressTarget === 'string' || resolvedAddressTarget instanceof Uint8Array
+              ? findDeploymentByAddressValue(this.inner.provider, resolvedAddressTarget)?.contract
+              : undefined;
           if (!registered && targetHex && registeredByName) {
             const namedPhysical = typeof registeredByName === 'object' && 'proxy' in registeredByName
               ? registeredByName.proxy : registeredByName;
@@ -29286,11 +29278,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const rawTarget = resolvedAddressTarget;
             const rawTargetHex = targetHex
               ?? (rawTarget instanceof Uint8Array ? binToHex(rawTarget) : undefined);
-            const deployment = rawTargetHex
-              ? findDeploymentByLockingBytecode(this.inner.provider, rawTargetHex)?.contract
-              : typeof rawTarget === 'string'
-                ? (findDeploymentByAddress(this.inner.provider, rawTarget)
-                  ?? findDeploymentByLockingBytecode(this.inner.provider, rawTarget))?.contract : undefined;
+            const deployment = typeof rawTarget === 'string' || rawTarget instanceof Uint8Array
+              ? findDeploymentByAddressValue(this.inner.provider, rawTarget)?.contract : undefined;
             registered = deployment ?? externalCallUtxoGroups
               .map((candidate) => candidate.externalContract as StatefulContract)
               .find((candidate) => {
@@ -29303,6 +29292,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           if (!registered) {
             if (preparedAtomicNodes !== undefined) {
+              if ((globalThis as { process?: { env?: Record<string, string> } })
+                .process?.env?.SOLIDC_DEBUG_ROUTE) {
+                const namedPhysical = registeredByName && typeof registeredByName === 'object'
+                  && 'proxy' in registeredByName ? registeredByName.proxy : registeredByName;
+                console.error('transitive-external-target-miss', {
+                  parent: logicalParentArtifact.contractName,
+                  functionName: logicalParentFunctionName,
+                  callsiteId: nested.callsiteId,
+                  occurrenceIndex,
+                  interfaceName: nested.interfaceName,
+                  rawFunctionName: nested.rawFunctionName,
+                  rawSelector: nested.rawSelector,
+                  targetType: resolvedAddressTarget instanceof Uint8Array
+                    ? 'bytes' : typeof resolvedAddressTarget,
+                  targetHex,
+                  targetString: typeof resolvedAddressTarget === 'string'
+                    ? resolvedAddressTarget : undefined,
+                  registeredByName: (namedPhysical as StatefulContract | undefined)
+                    ?.inner?.lockingBytecode,
+                });
+              }
               throw new Error(
                 `Reached transitive graph callsite ${nested.callsiteId ?? 'unknown'} occurrence `
                 + `${occurrenceIndex} has no authenticated target deployment.`,
@@ -29317,6 +29327,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
           const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract;
+          if (resolvedAddressTarget instanceof Uint8Array && resolvedAddressTarget.length === 20) {
+            resolvedTargetLockingBytecode = hexToBin(callee.inner.lockingBytecode);
+          }
           const graphChildArgs = graphParentArgs === logicalParentArgs
             ? childArgs
             : logicalParentContract._resolveExternalArgs(
@@ -36933,11 +36946,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const facadeState = await (facadeHost.implementation ?? facadeHost).getState();
           const stored = facadeState[addressStateVar];
           if (typeof stored === 'string' || stored instanceof Uint8Array) {
-            const asHex = typeof stored === 'string' ? stored.replace(/^0x/i, '') : binToHex(stored);
-            byAddress = findDeploymentByLockingBytecode(this.inner.provider, asHex)?.contract
-              ?? (typeof stored === 'string'
-                ? findDeploymentByAddress(this.inner.provider, stored)?.contract
-                : undefined);
+            byAddress = findDeploymentByAddressValue(this.inner.provider, stored)?.contract;
           }
         } catch {
           // Keep registry/name resolution only.
@@ -37507,12 +37516,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     ): StatefulContract | {
         forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
       } | undefined => {
-      const deploymentAtTarget = typeof target === 'string'
-        ? (findDeploymentByAddress(this.inner.provider, target)
-          ?? findDeploymentByLockingBytecode(this.inner.provider, target))?.contract
-        : target instanceof Uint8Array
-          ? findDeploymentByLockingBytecode(this.inner.provider, binToHex(target))?.contract
-          : undefined;
+      const deploymentAtTarget = typeof target === 'string' || target instanceof Uint8Array
+        ? findDeploymentByAddressValue(this.inner.provider, target)?.contract : undefined;
       const registeredByName = (registryOwner._externalRegistry.get(interfaceName)
         ?? this._externalRegistry.get(interfaceName)
         ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract) as StatefulContract | {
@@ -38220,10 +38225,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     const narrowAddress = (locking: Uint8Array): Uint8Array => {
       if (locking.length === 0) return new Uint8Array(20);
-      if (locking.length === 20) return locking;
-      if (locking.length === 23) return locking.slice(2, 22);
-      if (locking.length === 35) return hash160Sync(locking);
-      return locking.slice(3, 23);
+      return lockingBytecodeToSolidityAddressPayload(locking) ?? locking;
     };
     const readsAuthenticatedState = (
       candidate: ExternalCallExpression | undefined,

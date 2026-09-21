@@ -454,6 +454,22 @@ export function tryCashAddressToLockScript(value: unknown): Uint8Array | undefin
   return addressToLockScript(value);
 }
 
+/** Canonical 20-byte identity used when imported Solidity lowers a BCH address into an EVM ABI address. */
+export function lockingBytecodeToSolidityAddressPayload(
+  bytecode: Uint8Array,
+): Uint8Array | undefined {
+  if (bytecode.length === 20) return bytecode;
+  if (bytecode.length === 23 && bytecode[0] === 0xa9 && bytecode[1] === 0x14
+    && bytecode[22] === 0x87) return bytecode.slice(2, 22);
+  if (bytecode.length === 25 && bytecode[0] === 0x76 && bytecode[1] === 0xa9
+    && bytecode[2] === 0x14 && bytecode[23] === 0x88 && bytecode[24] === 0xac) {
+    return bytecode.slice(3, 23);
+  }
+  if (bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20
+    && bytecode[34] === 0x87) return hash160(bytecode);
+  return undefined;
+}
+
 export function getNetworkPrefix(network: string): 'bitcoincash' | 'bchtest' | 'bchreg' {
   switch (network) {
     case Network.MAINNET:

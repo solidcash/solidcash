@@ -187,4 +187,70 @@ describe('kernel multi collection journaled writes under composition', () => {
     const entries = await store.getEntries('scores');
     expect(entries.find((entry) => binToHex(entry.slot) === slotHex(3n))?.value).toBe(99n);
   }, 300_000);
+
+  it('fail-closes when prepared store args disagree with the caller poke vector', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const storeArtifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        mapping(int => int) scores;
+        mapping(int => int) bonuses;
+        function setBoth(int key, int a, int b) public {
+          this.scores[key] = a;
+          this.bonuses[key] = b;
+          require(true);
+        }
+      }`, KERNEL);
+    expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'setBoth'))
+      .toMatchObject({ eligible: true });
+
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+      interface IStore {
+        function setBoth(int key, int a, int b) external;
+      }
+      contract Caller() {
+        function poke(address store, int key, int a, int b) public {
+          IStore(store).setBoth(key, a, b);
+          require(true);
+        }
+      }`, KERNEL);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'setBoth');
+    expect(callsite?.callsiteId).toBeDefined();
+
+    await expect(store.call.setBoth(7n, 1n, 2n).send()).resolves.toBeDefined();
+
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    // Caller asks for (40, 50); store descriptor swaps the collection values — fail closed like item 5.
+    await expect(messageBus.compose({
+      preparedCalls: [{
+        contract: caller,
+        functionName: 'poke',
+        args: [store.inner.lockingBytecode, 7n, 40n, 50n],
+      }, {
+        contract: store,
+        functionName: 'setBoth',
+        args: [7n, 50n, 40n],
+        callsiteId: callsite!.callsiteId,
+      }],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow();
+  }, 300_000);
 });

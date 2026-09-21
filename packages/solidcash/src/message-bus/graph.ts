@@ -1962,21 +1962,6 @@ export function planCompiledGraph(
   const globalByOwner: number[][] = participants.map(() => []);
   const subtreeEnds = invocations.map((_invocation, index) => index);
   const active: number[] = [];
-  const encodedCallMode = (invocation: CompiledGraphInvocation): 'call' | 'staticcall' => {
-    if (invocation.parent === null) return 'call';
-    if (invocation.callMode === 'staticcall') return 'staticcall';
-    if (invocation.callMode !== undefined) return 'call';
-    const parentInvocation = invocations[invocation.parent];
-    const parentFunction = resolveGraphAbiFunction(
-      participants[parentInvocation.callee].artifact, parentInvocation.function, parentInvocation.selector,
-    );
-    const modes = [...new Set((parentFunction?.externalCalls ?? [])
-      .filter((call) => invocation.consumerCallsiteId !== undefined
-        ? call.callsiteId === invocation.consumerCallsiteId
-        : call.functionName === invocation.function)
-      .map((call) => call.callMode ?? 'call'))];
-    return modes.length === 1 && modes[0] === 'staticcall' ? 'staticcall' : 'call';
-  };
   invocations.forEach((invocation, index) => {
     if (!Number.isInteger(invocation.callee)
       || invocation.callee < 0 || invocation.callee >= participants.length) {
@@ -2031,7 +2016,9 @@ export function planCompiledGraph(
       // their (possibly conditional) negative delta from the same authenticated recipes used by composition.
       ...(invocation.parent !== null && rowHandler?.usesMsgValue
         && (rowHandler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
-      ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
+      // Do not put `callMode` on the batch wire here. The parent covenant accumulates a version-1 SCB1 blob in
+      // `appendExternalBatchRow` (no per-row mode byte). Setting callMode flips encodeMessageBatch to version 2
+      // and breaks EQUALVERIFY against that expected blob for mixed-selector nested batches.
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : {

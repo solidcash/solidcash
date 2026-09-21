@@ -18565,9 +18565,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         + `slots ${this.externalCallSlots.map((slot) => `${slot.interfaceName}.${slot.functionName}`).join(', ')})`,
       );
       if (this.graphStraightRuntimeMode) {
-        this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
-          disposition: 'defer-whole-vector', parametersAreCallArguments: true,
-        });
+        {
+          const emissionSelector = this.graphEmissionSelectorForCall(physicalSlot, node);
+          this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
+            disposition: 'defer-whole-vector', parametersAreCallArguments: true,
+            ...(emissionSelector !== undefined && { emissionSelector }),
+          });
+        }
         const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
         this.stack[0] = rowName;
         this.graphStraightRuntimeRows.push(rowName);
@@ -18903,6 +18907,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return `__internal__graphResult${slot.returnSlotIndex ?? 0}_${field}`;
   }
 
+
+  /**
+   * Selector for one collapsed batch row's graph-emission transcript.
+   * Mixed-handler batches share one physical slot whose compileTimeSelector is the first row; each source
+   * callsite must still authenticate with its own row selector or the emission stream EQUALVERIFY fails.
+   */
+  private graphEmissionSelectorForCall(
+    slot: ExternalCallSlot,
+    call: ExternalFunctionCallNode,
+  ): Uint8Array | undefined {
+    if (call.externalBatchLogicalIndex === undefined || !slot.batchInvocations) return undefined;
+    const row = slot.batchInvocations.find((candidate) => candidate.logicalIndex === call.externalBatchLogicalIndex);
+    return row?.selector;
+  }
+
   /** Verify one source-executed call against the compiler-owned participant emission frame. */
   private verifyGraphEmissionRow(
     slot: ExternalCallSlot,
@@ -18912,9 +18931,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     verification: {
       disposition: GraphEmissionRowDisposition;
       parametersAreCallArguments?: boolean;
+      /** Per-row selector for a collapsed mixed-handler batch; defaults to the physical slot selector. */
+      emissionSelector?: Uint8Array;
     },
   ): number {
-    const { disposition, parametersAreCallArguments = false } = verification;
+    const { disposition, parametersAreCallArguments = false, emissionSelector } = verification;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process
       ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
       // EVERY variant of this check (returning, consuming, deferred, non-returning) builds its operands from the
@@ -19183,7 +19204,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.visit(slot.runtimeSelector);
       }
     } else {
-      this.emit(slot.compileTimeSelector!, locationData);
+      this.emit(emissionSelector ?? slot.compileTimeSelector!, locationData);
     }
     // The raw branch already models both OP_SPLIT results above (and moves the
     // argument tail to the alt stack). Other branches push only the selector.
@@ -19426,8 +19447,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: Node,
     locationData: SingleLocationData,
   ): void {
+    const emissionSelector = node instanceof ExternalFunctionCallNode
+      ? this.graphEmissionSelectorForCall(slot, node)
+      : undefined;
     const returned = this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, {
       disposition: 'consume-vector-prefix', parametersAreCallArguments: true,
+      ...(emissionSelector !== undefined && { emissionSelector }),
     });
     if (returned > 0) return;
     this.emit(Op.OP_DUP, locationData);

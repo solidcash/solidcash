@@ -82,7 +82,7 @@ Authoritative gate/fixture map: [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md). Do n
 | 14 | `KERNEL_OPAQUE_EFFECT` | `KernelAdmission` opaque native / stack-divergent assembly; `CallManifestIneligibilityMatrixV1` |
 | 15 | `KERNEL_FOREIGN_DELEGATE` | `KernelAdmission` `refuses foreign delegatecall as KERNEL_FOREIGN_DELEGATE` |
 | 16 | `KERNEL_LIFECYCLE` | `KernelLifecycleTopology` collection-bearing + statement-form state selfdestruct; `KernelAdmission` unsafe(0/1) |
-| 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks; loop-nested external value-chunk trailing slots under atomic compose. Admitted: unconditional/bool-param multi-resource fixed chunkable; hetero loop streams with compose inline ≤60B + batch long chunks (`KernelHeteroLoopStreamsCompose`); bool-param same-iter selection (`KernelSameIterSelectionCompose`) |
+| 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks; loop-nested external value-chunk trailing slots under atomic compose. Admitted: unconditional/bool-param multi-resource fixed chunkable; hetero loop streams with compose inline ≤60B **and ≥61B** + batch long chunks (`KernelHeteroLoopStreamsCompose`); bool-param same-iter selection (`KernelSameIterSelectionCompose`) |
 | 18 | `KERNEL_LAYOUT` | Selected/early-terminated events; both-arms non-loop chunkable selection; early-return bypass. Admitted: unconditional emit beside ≥2 mutation streams (`KernelMultiStreamEventCompose`); bool-param empty-else fixed-chunkable |
 
 ## Session status
@@ -98,6 +98,6 @@ Post-beta planning follows the missing-proof-object order (resource-indexed mult
 | 5–6 | Planned — `ext-plans/ITEMS_5_6_PLAN.md` |
 | 7–18 | **Fenced** — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md); selected events / non-bool selection / relocatable blocks remain |
 
-**Family 1 status:** A (hetero int+bytes loops), B (bool-param same-iter selection), C (unconditional emit beside ≥2 streams) admitted under resource-indexed stream metadata. Mixed scalar+rawbytes groups stay on the per-row mint path (scalar journal dirtying disabled when a rawbytes sibling shares the execution group). Compose settles inline chunkable tails (≤60B); external loop-nested chunks settle via the kernel batch route until trailing block slots publish under atomic compose. Still fenced: non-bool selection, selected/early-terminated events, both-arms non-loop chunkable, loop-nested external chunk compose.
+**Family 1 status:** A (hetero int+bytes loops), B (bool-param same-iter selection), C (unconditional emit beside ≥2 streams) admitted under resource-indexed stream metadata. Mixed scalar+rawbytes groups stay on the per-row mint path (scalar journal dirtying disabled when a rawbytes sibling shares the execution group). Compose settles inline (≤60B) **and external (≥61B)** loop-nested chunkable tails once the route publishes `__internal__valueChunkOutputBase` + a balanced trailing band and composed loop mints occupy in-band `valueChunkOutputs` (same path as fixed-key COND). Batch long chunks remain a direct-settlement regression. Still fenced under #17: relocatable multi-span blocks beyond that admitted trailing-band subset.
 
 Proof dir: `/tmp/grok-goal-6d38cca74b23/implementer/ext-plans/`

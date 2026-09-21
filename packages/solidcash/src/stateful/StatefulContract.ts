@@ -33237,18 +33237,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
       composedMintCursor += mint.chunks.length;
     }
-    // Runtime-loop groups are final outputs in reverse iteration order. The covenant addresses group i as
-    // outputCount - chunksAlreadyVerified - groupSize, so each group remains direct-indexed and bounded-cost.
-    for (const mint of [...loopValueChunkMints].reverse()) {
+    // Runtime-loop groups normally land as reverse-suffix late outputs (covenant addresses group i as
+    // outputCount - chunksAlreadyVerified - groupSize). Under a composed balanced trailing band the same
+    // chunks must occupy in-band trailing slots like fixed-key valueChunkMints: appending past blockSize
+    // overflows the layout (`participant N built X/Y slots`) and the OP_RETURN late-suffix anchor adds another.
+    const composedTrailingLoopChunks = (effectiveBlockLayout?.slots ?? [])
+      .some((slot) => slot.kind === 'trailing')
+      && builder.getComposedBlockBase() !== 0;
+    const loopMintsForPlacement = composedTrailingLoopChunks
+      ? loopValueChunkMints
+      : [...loopValueChunkMints].reverse();
+    for (const mint of loopMintsForPlacement) {
       const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
-      mint.chunks.forEach((data, i) => builder.addLateValueChunkOutput({
-        to: chunkAddr,
-        amount: 1000n,
-        token: {
-          category: this.categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: buildValueChunkCommitment(i, data) },
-        },
-      }));
+      mint.chunks.forEach((data, i) => {
+        const output = {
+          to: chunkAddr,
+          amount: 1000n,
+          token: {
+            category: this.categoryId, amount: 0n,
+            nft: { capability: 'mutable' as const, commitment: buildValueChunkCommitment(i, data) },
+          },
+        };
+        if (composedTrailingLoopChunks) builder.addValueChunkOutput(output);
+        else builder.addLateValueChunkOutput(output);
+      });
     }
 
     // blockhash(n) requires tx.time >= n; set it so the derivation probe (and the final tx) satisfy the CLTV.

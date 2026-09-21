@@ -33,7 +33,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 const slotHex = (key: bigint): string => binToHex(keyToSlotMulti([bigIntToVmNumber(key)]));
 
 describe('kernel heterogeneous loop streams under composition', () => {
-  it('settles int+bytes writeBoth via messageBus.compose (n>=2) and long chunks via batch', async () => {
+  it('settles int+bytes writeBoth via messageBus.compose (n>=2, inline and ≥61B) and long chunks via batch', async () => {
     const provider = createMessageBusCapstoneTestProvider();
 
     const storeArtifact = compileString(`pragma solidcash >=0.8.0;
@@ -110,10 +110,14 @@ describe('kernel heterogeneous loop streams under composition', () => {
       }
     };
 
-    // Inline chunkable tails (≤60 bytes) settle under messageBus.compose. External continuation chunks for
-    // loop-nested chunkable values still need trailing block-layout slots under atomic composition; that path
-    // is exercised via the kernel batch route below.
-    for (const payload of [new Uint8Array(20).fill(0x41), new Uint8Array(60).fill(0x43)]) {
+    // Inline (≤60B) and external (≥61B) loop-nested chunkable tails both settle under messageBus.compose once
+    // the route publishes a balanced trailing band and composed loop mints occupy in-band valueChunkOutputs.
+    for (const payload of [
+      new Uint8Array(20).fill(0x41),
+      new Uint8Array(60).fill(0x43),
+      new Uint8Array(61).fill(0x44),
+      new Uint8Array(130).fill(0x42),
+    ]) {
       const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
       const composition = messageBus.compose({
         preparedCalls: [{
@@ -138,7 +142,8 @@ describe('kernel heterogeneous loop streams under composition', () => {
       await expectPostState(payload);
     }
 
-    const longPayload = new Uint8Array(130).fill(0x42);
+    // Batch long-chunk path remains a regression for direct kernel settlement without a nested Caller→Store graph.
+    const longPayload = new Uint8Array(190).fill(0x45);
     const longBuilder = await store.batch([{ function: 'writeBoth', args: [2n, longPayload] }]).build();
     expect(vmAccepts(longBuilder)).toBe(true);
     await expect(store.batch([{ function: 'writeBoth', args: [2n, longPayload] }]).send()).resolves.toMatchObject({

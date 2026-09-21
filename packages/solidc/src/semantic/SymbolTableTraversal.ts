@@ -1935,6 +1935,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__kernelJournalAccessStreams',
         '__internal__kernelJournalRecords',
         '__internal__vmapBatchTrailingCount',
+        '__internal__valueChunkOutputBase',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -3416,6 +3417,12 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const routeLeading = new ParameterNode(new BytesType(), lname);
                 routeLeading.location = routeFn.location;
                 routeFn.parameters.push(routeLeading);
+              }
+              if (coll?.sorted && vt && isChunkableValueType(vt)
+                && !routeFn.parameters.some((parameter) => parameter.name === '__internal__valueChunkOutputBase')) {
+                const routeChunkBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__valueChunkOutputBase');
+                routeChunkBase.location = routeFn.location;
+                routeFn.parameters.push(routeChunkBase);
               }
             }
           }

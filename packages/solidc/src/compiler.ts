@@ -9122,7 +9122,8 @@ function synthesizeMessageBusRoute(
                 if (parameter.name.startsWith('__internal__collectionIter')
                   || parameter.name.startsWith('__internal__valueWitness_')
                   || parameter.name.startsWith('__internal__leadingPushValue_')
-                  || parameter.name === '__internal__vmapBatchTrailingCount') return parameter.name;
+                  || parameter.name === '__internal__vmapBatchTrailingCount'
+                  || parameter.name === '__internal__valueChunkOutputBase') return parameter.name;
                 return tokenCategoryInputByHandler.get(fn)?.get(i)
                   ?? witnessByInput.get(i) ?? decodedName(i);
               })()),
@@ -9408,7 +9409,8 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')
-        && parameter.name !== '__internal__vmapBatchTrailingCount') return false;
+        && parameter.name !== '__internal__vmapBatchTrailingCount'
+        && parameter.name !== '__internal__valueChunkOutputBase') return false;
       if (declaredPermNames.has(parameter.name)) return false;
       declaredPermNames.add(parameter.name);
       return true;

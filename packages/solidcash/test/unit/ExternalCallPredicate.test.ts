@@ -298,6 +298,43 @@ describe('compiler-published external-call predicate evaluation', () => {
     )).toEqual(Uint8Array.of(1, 2, 0x44, 0x56));
   });
 
+  it('evaluates fixed-array element assignments in a compiler-published pure helper', () => {
+    const helperArtifact = compileString(`
+      pragma solidity >=0.8.0;
+      uint constant FIRST = 0;
+      uint constant SECOND = 1;
+      uint constant LAST = 2;
+      uint constant SCALE = 100;
+      function distribute(uint amount, uint16[3] splits) pure returns (uint[3]) {
+        uint[3] values;
+        values[FIRST] = uint(splits[FIRST]) * amount / SCALE;
+        values[SECOND] = uint(splits[SECOND]) * amount / SCALE;
+        values[LAST] = amount - values[FIRST] - values[SECOND];
+        return values;
+      }
+      interface ISink { function publish(uint value) external; }
+      contract HelperCaller(address sink) {
+        function run(uint amount, uint16[3] splits) public {
+          uint[3] memory values = distribute(amount, splits);
+          ISink(sink).publish(values[2]);
+          ISink(sink).publish(values[0]);
+          require(amount >= 0);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true, messageBus: true });
+    const expression = helperArtifact.abi.find((candidate) => candidate.name === 'run')
+      ?.externalCalls?.[0].batchInvocations?.[0].argSources?.[0].expression;
+    expect(expression).toBeDefined();
+
+    const helperEvaluator = new StatefulContract(
+      '00'.repeat(32), helperArtifact, createTestProvider(), { constructorArgs: [new Uint8Array()] },
+    ) as unknown as PredicateEvaluator;
+    expect(helperEvaluator._evaluateExternalExpression(
+      expression!, [1000n, [20n, 30n, 50n]], helperArtifact, undefined,
+      [{ type: 'uint' }, { type: 'uint16[3]' }],
+    )).toBe(500n);
+  });
+
   it.each([
     ['scalar state', 'Record current;', '',
       'current.enabled = flags.length > 0;', 'current.enabled'],

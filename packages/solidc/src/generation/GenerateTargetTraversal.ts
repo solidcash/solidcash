@@ -19413,6 +19413,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callManifestArgumentParameters = argumentParameters
       .map((parameter, sourceIndex) => ({ parameter, sourceIndex }))
       .filter(({ parameter }) => !this.typeIsEntireTransactionSignature(parameter.type!));
+    const materializeGraphArgumentValue = (expression: ExpressionNode): void => {
+      if (expression instanceof ArrayNode) {
+        expression.blobEncoded = true;
+        // Type checking normally propagates value encoding into nested literals before code generation. Graph
+        // materialization can introduce this requirement later, so preserve the same invariant recursively.
+        for (const element of expression.elements) materializeGraphArgumentValue(element);
+      } else if (expression instanceof TernaryOpNode) {
+        materializeGraphArgumentValue(expression.ifTrue);
+        materializeGraphArgumentValue(expression.ifFalse);
+      } else if (expression instanceof CastNode) {
+        materializeGraphArgumentValue(expression.expression);
+      }
+    };
     if (rawCall && !canonicalRawParameters) {
       if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
@@ -19440,6 +19453,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_UTXOBYTECODE, locationData);
           this.pushToStack('(__graph_arg_value)');
         } else if (evaluateArgument) {
+          // An inline array normally uses the expression-stack representation (elements plus count). A graph
+          // emission row, however, carries each call argument as exactly one canonical value, just like an array
+          // local or ABI parameter. Materialize the literal in that value representation before visiting it;
+          // otherwise the row encoder consumes only the count and strands the elements above the target/selector,
+          // corrupting this row and every later callsite in the same handler.
+          materializeGraphArgumentValue(parameter);
           parameter = this.visit(parameter);
           callManifestArgumentParameters[i].parameter = parameter;
         } else {

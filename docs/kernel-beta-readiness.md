@@ -4,19 +4,20 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 
 ## Current state
 
-- The last one-shot build and focused kernel/legacy, source-order, and clean-codegen checks passed. This is not a full-suite or release result; there is no current 66-title marketplace result or clean-env cold compile/size comparison to claim.
+- The last one-shot build, source-tree guard, and focused compiler/SDK/BCH-2026 regressions passed. A fresh
+  four-job Marketplace compile completed all 22 sources with zero cache hits; this is not a full-suite or release
+  result, and there is no current 66-title result or clean-env legacy/kernel timing comparison to claim.
 - Useful `SOLIDC_*` probes remain available under the [diagnostic policy](kernel-diagnostics.md). Observation-only tracing must leave bytecode unchanged (covered for route-argument tracing). Flags that alter emitted code, witnesses, outlining, or optimisation are experiments, **not production measurements**. The cold gate now strips inherited switches. `SOLIDC_ROUTE_ABI_TAIL` is default-on behavior; `=0` is an A/B escape hatch.
 - Focused self/foreign/proxy compose proofs cover mappings, dynamic values, events, sidecars, returns, and lifecycle operations. These are fixture evidence, not an expanded beta manifest. Fixed-state read-bearing split/merge and modifier-only fixed-state selfdestruct now publish explicit resource topology. Wider dynamic lifecycle layouts and detached `sig` leaves remain fenced.
 - Source-tree build sidecars are removed; authored JavaScript and ambient declarations remain. Build into `dist/` and run `yarn check:source-tree` before committing.
 - The SDK still has an explicitly legacy-fenced `JobEvent` compatibility adapter and historical internal names around
   chunked continuation bands. Do not extend those names into kernel decisions; retire them behind compiler-published
   resource metadata in a dedicated refactor, separately from capability work.
-- The focused beta scenario is not green. The compiler now pools explicit read-only mapping-result handlers, but
-  the SDK return scanner cannot yet recover an oversized named-struct result at an intermediate row epoch. It
-  observes the authenticated digest, rejects the raw vector with its primitive-only validator, and can falsely
-  converge on a stale blob. The next batch should make return extraction artifact/schema-aware and add a neutral,
-  unseeded mutate → callback read → later write regression. Do not substitute final-state projection for an
-  intermediate result.
+- The focused beta scenario is not green. Schema-aware intermediate results, producer-derived late predicates,
+  compiler-published pure helpers with fixed-array element assignments, and constant folding now have neutral
+  regressions. Fresh `approve result` passes its prior `sendEscrowShare` predicate failure, then BCH-2026 preflight
+  fails at input 200 (`__message_bus1`): an empty item is split at index 98. The next batch should localize that
+  authenticated layout/materialization failure with one input-bounded diagnostic run; do not start a title ladder.
 
 ## Gate before the next leap
 

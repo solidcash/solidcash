@@ -1377,6 +1377,7 @@ function buildFunctionAbiMetadata(
         };
       const rewriteStatement = (statement: ExternalCallStatement): ExternalCallStatement => ({
         ...statement,
+        ...(statement.index && { index: rewrite(statement.index) }),
         ...(statement.expression && { expression: rewrite(statement.expression) }),
         ...(statement.condition && { condition: rewrite(statement.condition) }),
         ...(statement.statements && { statements: statement.statements.map(rewriteStatement) }),

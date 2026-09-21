@@ -28936,30 +28936,108 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId)) {
             continue;
           }
+          if (nested.condition) {
+            const conditionReturns = await logicalParentContract._resolveExternalExpressionReturns(
+              [{ kind: 'expression', expression: nested.condition }],
+              logicalParentArgs,
+              logicalParentContract,
+              parentState,
+              parentFn.inputs,
+              parentOutgoingSelfAddress,
+              parentFn.externalCalls,
+              false,
+              graphPlanningResults,
+              {
+                callsiteId: nested.callsiteId,
+                resultConsumers: parentFn.resultConsumers,
+                lane: 'condition',
+              },
+            );
+            const active = logicalParentContract._evaluateExternalExpression(
+              nested.condition,
+              logicalParentArgs,
+              logicalParentArtifact,
+              parentState,
+              parentFn.inputs,
+              conditionReturns,
+              0,
+              false,
+              parentOutgoingSelfAddress,
+            );
+            if (typeof active !== 'boolean') {
+              throw new Error(
+                `Could not resolve runtime predicate for transitive external call `
+                + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
+              );
+            }
+            if (!active) continue;
+          }
+          const nestedSources = nested.rawArgSources ?? nested.argSources;
+          const addressReturns = await logicalParentContract._resolveExternalExpressionReturns(
+            nested.addressSource ? [nested.addressSource] : [],
+            logicalParentArgs,
+            logicalParentContract,
+            parentState,
+            parentFn.inputs,
+            parentOutgoingSelfAddress,
+            parentFn.externalCalls,
+            false,
+            graphPlanningResults,
+          );
+          const argumentReturns = await logicalParentContract._resolveExternalExpressionReturns(
+            nestedSources,
+            logicalParentArgs,
+            logicalParentContract,
+            parentState,
+            parentFn.inputs,
+            parentOutgoingSelfAddress,
+            parentFn.externalCalls,
+            false,
+            graphPlanningResults,
+            {
+              callsiteId: nested.callsiteId,
+              resultConsumers: parentFn.resultConsumers,
+              lane: 'arguments',
+            },
+          );
+          const expressionReturns = new Map([...addressReturns, ...argumentReturns]);
           const resolvedAddressTarget = nested.addressSource
             ? logicalParentContract._resolveExternalArgs(
               [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
-              parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+              parentFn.inputs, expressionReturns, 0, false, parentOutgoingSelfAddress,
             )?.[0]
             : nested.addressStateVar
               ? parentState[nested.addressStateVar] as FunctionArgument | undefined
               : undefined;
+          if (nested.addressSource && resolvedAddressTarget === undefined) {
+            throw new Error(
+              `Could not resolve target for reached transitive external call `
+              + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
+            );
+          }
           const resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
-          let registered = logicalParentContract._externalRegistry.get(nested.interfaceName)
+          const registeredByName = logicalParentContract._externalRegistry.get(nested.interfaceName)
             ?? parentContract._externalRegistry.get(nested.interfaceName)
             ?? this._externalRegistry.get(nested.interfaceName)
             ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
             ?? (/^I[A-Z]/.test(nested.interfaceName)
               ? findDeploymentByName(this.inner.provider, nested.interfaceName.slice(1))?.contract : undefined);
-          if (!registered && resolvedAddressTarget !== undefined) {
-            const targetHex = resolvedAddressTarget instanceof Uint8Array
-              ? binToHex(resolvedAddressTarget) : undefined;
-            registered = targetHex
+          const targetHex = resolvedTargetLockingBytecode
+            ? binToHex(resolvedTargetLockingBytecode)
+            : resolvedAddressTarget instanceof Uint8Array ? binToHex(resolvedAddressTarget) : undefined;
+          let registered = resolvedAddressTarget === undefined ? registeredByName
+            : targetHex
               ? findDeploymentByLockingBytecode(this.inner.provider, targetHex)?.contract
               : typeof resolvedAddressTarget === 'string'
                 ? (findDeploymentByAddress(this.inner.provider, resolvedAddressTarget)
                   ?? findDeploymentByLockingBytecode(this.inner.provider, resolvedAddressTarget))?.contract
                 : undefined;
+          if (!registered && targetHex && registeredByName) {
+            const namedPhysical = typeof registeredByName === 'object' && 'proxy' in registeredByName
+              ? registeredByName.proxy : registeredByName;
+            if ((namedPhysical as StatefulContract).inner?.lockingBytecode === targetHex) {
+              registered = registeredByName;
+            }
           }
           // A lowered Address/SafeERC20 edge deliberately has no source interface name. Resolve it from the
           // authenticated computed address first, then from an already co-spent deployment advertising the
@@ -28967,7 +29045,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // guessing by `__raw__` in the registry can instead redirect the call to an unrelated deployment.
           if (!registered && nested.interfaceName === '__raw__') {
             const rawTarget = resolvedAddressTarget;
-            const rawTargetHex = rawTarget instanceof Uint8Array ? binToHex(rawTarget) : undefined;
+            const rawTargetHex = targetHex
+              ?? (rawTarget instanceof Uint8Array ? binToHex(rawTarget) : undefined);
             const deployment = rawTargetHex
               ? findDeploymentByLockingBytecode(this.inner.provider, rawTargetHex)?.contract
               : typeof rawTarget === 'string'
@@ -28992,11 +29071,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
           const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract;
           const childArgs = logicalParentContract._resolveExternalArgs(
-            nested.rawArgSources ?? nested.argSources,
+            nestedSources,
             logicalParentArgs, logicalParentArtifact, parentState,
-            parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+            parentFn.inputs, expressionReturns, 0, false, parentOutgoingSelfAddress,
           );
-          if (childArgs === undefined) continue;
+          if (childArgs === undefined) {
+            throw new Error(
+              `Could not resolve arguments for reached transitive external call `
+              + `${nested.interfaceName}.${nested.functionName} at callsite ${nested.callsiteId ?? 'unknown'}.`,
+            );
+          }
           const graphChildArgs = graphParentArgs === logicalParentArgs
             ? childArgs
             : logicalParentContract._resolveExternalArgs(
@@ -36943,7 +37027,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     consumer?: {
       callsiteId?: number;
       resultConsumers?: readonly ExternalResultConsumerAbi[];
-      lane: 'condition';
+      lane: 'condition' | 'arguments';
     },
   ): Promise<Map<string, FunctionArgument>> {
     const resolved = new Map<string, FunctionArgument>();
@@ -36977,12 +37061,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : target instanceof Uint8Array
           ? findDeploymentByLockingBytecode(this.inner.provider, binToHex(target))?.contract
           : undefined;
-      return (deploymentAtTarget
-        ?? registryOwner._externalRegistry.get(interfaceName)
+      const registeredByName = (registryOwner._externalRegistry.get(interfaceName)
         ?? this._externalRegistry.get(interfaceName)
         ?? findDeploymentByName(this.inner.provider, interfaceName)?.contract) as StatefulContract | {
         forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
       } | undefined;
+      if (target === undefined) return registeredByName;
+      if (deploymentAtTarget) return deploymentAtTarget as StatefulContract | {
+        forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
+      };
+      const targetLock = tryCashAddressToLockScript(target);
+      const namedPhysical = registeredByName && typeof registeredByName === 'object'
+        && 'proxy' in registeredByName
+        ? (registeredByName as unknown as { proxy: StatefulContract }).proxy : registeredByName;
+      return targetLock && namedPhysical instanceof StatefulContract
+        && namedPhysical.inner.lockingBytecode === binToHex(targetLock)
+        ? registeredByName : undefined;
     };
     /**
      * Resolve a callee's own published external calls against the exact argument frame the probe invokes it with.
@@ -37161,9 +37255,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       try {
         const sources = producer.rawArgSources ?? producer.argSources ?? [];
         for (const source of sources) {
-          if (source.kind === 'expression') await visit(source.expression);
+          if (source.kind === 'expression') await visit(source.expression, undefined, false);
         }
-        if (producer.addressSource?.kind === 'expression') await visit(producer.addressSource.expression);
+        if (producer.addressSource?.kind === 'expression') {
+          await visit(producer.addressSource.expression, undefined, false);
+        }
         const values = this._resolveExternalArgs(
           sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
           0, false, executionSelfAddress,
@@ -37174,7 +37270,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
             0, false, executionSelfAddress,
           )?.[0]
-          : undefined;
+          : producer.addressStateVar !== undefined
+            ? state?.[producer.addressStateVar] as FunctionArgument | undefined
+            : producer.addressLiteral;
         const rawTarget = producer.interfaceName === '__raw__'
           ? registeredTarget(producer.interfaceName, target) : undefined;
         const rawExecutionTarget = rawTarget && typeof rawTarget === 'object' && 'proxy' in rawTarget
@@ -37191,9 +37289,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           planningContext,
           callsiteId,
           values,
-          // This cache is scoped to one compiler function and immutable state snapshot. The published callsite
-          // authenticates its target expression; arguments and provisional quality distinguish runtime seeds.
-          undefined,
+          target,
           allowProvisional,
           async () => {
             if (!rawFunction || !rawExecutionTarget) {
@@ -37223,11 +37319,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         resolvingProducers.delete(callsiteId);
       }
     };
-    const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
+    const visit = async (
+      expression: ExternalCallExpression | undefined, consumerArgument?: number, validateConsumerLane = true,
+    ): Promise<void> => {
       if (!expression) return;
       for (const child of [expression.target, expression.expression, expression.left, expression.right,
-        expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
-      for (const child of expression.args ?? []) await visit(child);
+        expression.condition, expression.ifTrue, expression.ifFalse]) {
+        await visit(child, consumerArgument, validateConsumerLane);
+      }
+      for (const child of expression.args ?? []) await visit(child, consumerArgument, validateConsumerLane);
       if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
         const producer = producerByCallsite.get(expression.callsiteId);
         const resultIndex = expression.resultIndex;
@@ -37238,16 +37338,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
           );
         }
-        if (consumer?.resultConsumers && consumer.callsiteId !== undefined) {
+        if (validateConsumerLane && consumer?.resultConsumers && consumer.callsiteId !== undefined) {
           const lanes = consumer.resultConsumers.filter((candidate) =>
             candidate.consumerCallsiteId === consumer.callsiteId
-            && candidate.condition === true
+            && (consumer.lane === 'condition'
+              ? candidate.condition === true
+              : candidate.argument === consumerArgument)
             && candidate.producerCallsiteId === expression.callsiteId
             && (candidate.resultIndex === undefined || candidate.resultIndex === resultIndex));
           if (lanes.length !== 1) {
             throw new Error(
               `Graph producerResult ${expression.callsiteId}:${resultIndex} does not identify exactly one `
-              + `published consumer condition lane ${consumer.callsiteId}.`,
+              + `published consumer ${consumer.lane === 'condition' ? 'condition' : `argument ${consumerArgument}`} `
+              + `lane ${consumer.callsiteId}.`,
             );
           }
         }
@@ -37284,7 +37387,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       if (value !== undefined) resolved.set(JSON.stringify(expression), value);
     };
-    for (const source of argSources ?? []) await visit(source.expression);
+    for (const [argument, source] of (argSources ?? []).entries()) {
+      await visit(source.expression, consumer?.lane === 'arguments' ? argument : undefined);
+    }
     return resolved;
   }
 
@@ -38011,7 +38116,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             stateIncludesPriorWrites, executionSelfAddress, bindings,
           )
         );
-        const defaultValue = (type: string | undefined): FunctionArgument => {
+        const defaultValue = (type: string | undefined): FunctionArgument | undefined => {
+          const fixedArray = type?.match(/^(.*)\[(\d+)\]$/u);
+          if (fixedArray) {
+            const length = Number(fixedArray[2]);
+            if (!Number.isSafeInteger(length) || length < 0 || length > 10_000) return undefined;
+            const values = Array.from({ length }, () => defaultValue(fixedArray[1]));
+            return values.every((value) => value !== undefined)
+              ? values as unknown as FunctionArgument : undefined;
+          }
           if (type === 'bool') return false;
           if (type === 'string') return '';
           if (type?.endsWith('[]')) return [];
@@ -38029,6 +38142,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const value = evaluateWith(statement.expression);
               if (value === undefined) { invalid = true; return { returned: false }; }
               bindings.set(statement.name, value);
+            } else if (statement.kind === 'arrayAssign' && statement.name
+              && statement.index && statement.expression) {
+              const array = bindings.get(statement.name);
+              const index = evaluateWith(statement.index);
+              const value = evaluateWith(statement.expression);
+              const numericIndex = typeof index === 'bigint' || typeof index === 'number'
+                ? Number(index) : -1;
+              if (!Array.isArray(array) || !Number.isSafeInteger(numericIndex)
+                || numericIndex < 0 || numericIndex >= array.length || value === undefined) {
+                invalid = true;
+                return { returned: false };
+              }
+              const updated = [...array] as FunctionArgument[];
+              updated[numericIndex] = value;
+              bindings.set(statement.name, updated as FunctionArgument);
             } else if (statement.kind === 'while' && statement.condition && statement.statements) {
               while (true) {
                 const condition = evaluateWith(statement.condition);

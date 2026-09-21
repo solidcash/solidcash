@@ -8034,6 +8034,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (resolved !== expression) return serializeExpression(resolved, seen);
         if (expression instanceof IdentifierNode) {
           const definition = expression.definition?.definition;
+          const constant = definition instanceof ConstantDefinitionNode
+            ? definition : this.constantMap.get(expression.name);
+          if (constant && constant.expression !== expression) {
+            return serializeExpression(constant.expression, seen);
+          }
           if (definition instanceof VariableDefinitionNode
             && definitionDependsOnProducer(definition)) {
             unresolvedProducerAlias = true;
@@ -8540,6 +8545,13 @@ export default class SymbolTableTraversal extends AstTraversal {
                   const value = serializeExpression(statement.expression);
                   if (!value || !localNames.has(statement.identifier.name)) return undefined;
                   serialized.push({ kind: 'assign', name: statement.identifier.name, expression: value });
+                } else if (statement instanceof ArrayAssignNode) {
+                  const index = serializeExpression(statement.index);
+                  const value = serializeExpression(statement.value);
+                  if (!index || !value || !localNames.has(statement.name)) return undefined;
+                  serialized.push({
+                    kind: 'arrayAssign', name: statement.name, index, expression: value,
+                  });
                 } else if (statement instanceof WhileNode) {
                   const condition = serializeExpression(statement.condition);
                   const body = serializeBlock(statement.block);

@@ -682,6 +682,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 `messageBus: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
               );
             }
+            const isKernel = participant.artifact.messageBus?.convention === 'kernel-row-loop';
+            if (isKernel && row.sourceCallsiteId === undefined) {
+              throw new Error(
+                `messageBus: kernel batched callsite ${call.callsiteId} row ${row.logicalIndex} `
+                + 'omits sourceCallsiteId',
+              );
+            }
             expand(
               target,
               targetFunction.name,
@@ -702,6 +709,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               call.callsiteId,
               resolvedTarget.targetLockingBytecode,
               {
+                // Kernel rows must publish source identity; legacy may alias physical only explicitly above.
                 sourceCallsiteId: row.sourceCallsiteId ?? call.callsiteId!,
                 sourceLogicalIndex: row.logicalIndex,
                 occurrenceIndex: occurrence,

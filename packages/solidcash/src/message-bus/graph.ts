@@ -2450,6 +2450,13 @@ export function planCompiledGraph(
             );
           }
           if (row.sourceCallsiteId === undefined) {
+            // Kernel artifacts must publish source identity on every batch row; legacy aliasing is opt-in only.
+            if (parentArtifact.messageBus?.convention === 'kernel-row-loop') {
+              throw new Error(
+                `messageBus: kernel batched callsite ${callsite.callsiteId} omits sourceCallsiteId `
+                + `on row ${sourceLogicalIndex}`,
+              );
+            }
             sourceCallsiteProvenance = 'legacy-logical';
             if (sourceCallsiteId !== undefined && sourceCallsiteId !== callsite.callsiteId) {
               throw new Error(

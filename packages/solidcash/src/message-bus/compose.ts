@@ -214,9 +214,28 @@ export function assertPreparedInvocationIdentity(
     && descriptor.occurrenceIndex !== descriptor.batchOccurrenceIndex) {
     throw new Error(`messageBus: prepared invocation ${index} has conflicting occurrence identities`);
   }
-  const sourceCallsiteId = descriptor.sourceCallsiteId ?? descriptor.callsiteId;
+  const isBatched = invocation.sourceLogicalIndex !== undefined
+    || descriptor.sourceLogicalIndex !== undefined
+    || descriptor.batchLogicalIndex !== undefined;
+  if (isBatched) {
+    // Batched edges must carry the full four-tuple; never invent source identity from the physical lane.
+    if (descriptor.sourceCallsiteId === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source callsite identity`);
+    }
+    if (descriptor.sourceLogicalIndex === undefined && descriptor.batchLogicalIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source logical row`);
+    }
+    if (descriptor.occurrenceIndex === undefined && descriptor.batchOccurrenceIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source occurrence`);
+    }
+  }
+  const sourceCallsiteId = isBatched
+    ? descriptor.sourceCallsiteId!
+    : (descriptor.sourceCallsiteId ?? descriptor.callsiteId);
   const sourceLogicalIndex = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
-  const occurrenceIndex = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0;
+  const occurrenceIndex = isBatched
+    ? (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex)!
+    : (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0);
   if (descriptor.callsiteId !== invocation.consumerCallsiteId) {
     throw new Error(`messageBus: prepared invocation ${index} physical callsite disagrees with the compiled graph`);
   }
@@ -1769,12 +1788,14 @@ export class AtomicMessageBusComposition {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
         if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+        const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+        const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== batchLogicalIndex) return undefined;
+          && descriptorLogical !== undefined
+          && descriptorLogical !== batchLogicalIndex) return undefined;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== occurrence) return undefined;
+          && descriptorOccurrence !== undefined
+          && descriptorOccurrence !== occurrence) return undefined;
         next += 1;
         return {
           participant: workParticipants[next - 1],
@@ -1788,9 +1809,22 @@ export class AtomicMessageBusComposition {
         const reached: number[] = [];
         for (let cursor = next; cursor < descriptors.length; cursor += 1) {
           const descriptor = descriptors[cursor];
+          const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+          const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
           if (descriptor.callsiteId !== callsiteId
-            || descriptor.batchLogicalIndex !== batchLogicalIndex) break;
-          reached.push(descriptor.batchOccurrenceIndex ?? reached.length);
+            || descriptorLogical !== batchLogicalIndex) break;
+          if (descriptorOccurrence === undefined) {
+            // Transparent promotion always stamps occurrence; positional fallback is legacy `calls:` only.
+            if (this.options.requirePreparedIdentity === true) {
+              throw new Error(
+                `messageBus: prepared batched callsite ${callsiteId} row ${batchLogicalIndex} `
+                + 'omits its source occurrence',
+              );
+            }
+            reached.push(reached.length);
+            continue;
+          }
+          reached.push(descriptorOccurrence);
         }
         return reached.length > 0 || this.options.preparedCalls ? reached : undefined;
       },

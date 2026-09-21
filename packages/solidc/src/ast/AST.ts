@@ -2713,8 +2713,10 @@ export interface ExternalCallArgSource {
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
-  /** Compiler-stable producer identity within the containing function. */
+  /** Physical producer/consumer lane after repeated-owner collapse. */
   callsiteId?: number;
+  /** Pre-collapse source callsite; distinct from `callsiteId` for batched producers. */
+  sourceCallsiteId?: number;
   /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
   resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */

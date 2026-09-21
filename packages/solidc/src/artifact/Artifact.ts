@@ -1411,16 +1411,23 @@ function buildFunctionAbiMetadata(
         || resultIndex < 0 || resultIndex >= producer.returnTypes.length) {
         throw new Error(`Result dependency in '${func.name}' selects an invalid producer result`);
       }
-      const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`;
+      const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`
+        + `:${normalized.sourceCallsiteId ?? ''}`;
       result.set(key, {
         consumerCallsiteId,
         ...(lane === 'condition' ? { condition: true as const } : { argument: lane }),
         producerCallsiteId: producerCallsiteId!,
+        ...(normalized.sourceCallsiteId !== undefined && {
+          producerSourceCallsiteId: normalized.sourceCallsiteId,
+        }),
         resultIndex,
       });
       return {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
+        ...(normalized.sourceCallsiteId !== undefined && {
+          sourceCallsiteId: normalized.sourceCallsiteId,
+        }),
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };

@@ -939,8 +939,17 @@ export interface ArgSource {
 export interface ExternalCallExpression {
     kind: string;
     name?: string;
-    /** Compiler-stable producer identity within the containing function. */
+    /**
+     * Physical producer/consumer lane within the containing function after repeated-owner collapse.
+     * For `producerResult` / `externalCall`, pair with `sourceCallsiteId` when the producer was batched.
+     */
     callsiteId?: number;
+    /**
+     * Pre-collapse source callsite of the producer. Distinct from `callsiteId` for collapsed batch rows;
+     * equals `callsiteId` for ordinary (non-batched) edges. Kernel artifacts publish this whenever the
+     * expression names a producer that participated in repeated-owner collapse.
+     */
+    sourceCallsiteId?: number;
     /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
     resultIndex?: number;
     /** Authenticated receiver expression for a returning external call. */
@@ -962,10 +971,18 @@ export interface ExternalCallExpression {
     /** Bounded statement program for a compiler-published pure helper body. */
     statements?: readonly ExternalCallStatement[];
 }
-/** One authenticated use of an earlier graph call's result. */
+/**
+ * One authenticated use of an earlier graph call's result.
+ *
+ * `consumerCallsiteId` / `producerCallsiteId` are physical lanes. When the producer was a collapsed
+ * batch row, `producerSourceCallsiteId` carries the pre-collapse source identity so result consumption
+ * can address that specific source row inside the physical batch.
+ */
 export type ExternalResultConsumerAbi = {
     consumerCallsiteId: number;
     producerCallsiteId: number;
+    /** Pre-collapse source identity of the producer when it differs from the physical lane (batched). */
+    producerSourceCallsiteId?: number;
     /** Exact component selected from the producer's canonical return tuple. */
     resultIndex?: number;
 } & ({
@@ -1048,6 +1065,12 @@ export interface ExternalCallStatement {
     statements?: readonly ExternalCallStatement[];
     elseStatements?: readonly ExternalCallStatement[];
 }
+/**
+ * One compiler-authored outgoing call edge.
+ *
+ * Callsite identity is a four-tuple: physical `callsiteId`, batch row `sourceCallsiteId`,
+ * `logicalIndex`, and runtime occurrence. Kernel batch rows must publish `sourceCallsiteId`.
+ */
 export interface ExternalCallAbi {
     /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
     callsiteId?: number;
@@ -1110,10 +1133,14 @@ export interface ExternalCallAbi {
     rawArgSources?: readonly ArgSource[];
     batchInvocations?: readonly {
         selector: string;
-        /** Compiler-stable callsite before repeated-owner rows are collapsed into one physical callsite. */
+        /**
+         * Pre-collapse source callsite. Required on kernel-convention artifacts for every batch row;
+         * absence is legacy-only and must be admitted via explicit `sourceCallsiteProvenance: 'legacy-logical'`.
+         */
         sourceCallsiteId?: number;
         /** Compiler-authored program point of the source row before physical batching. */
         sourceEffectOrdinal?: number;
+        /** Ordered row inside this physical batch template (0..n-1, dense). */
         logicalIndex: number;
         inputs: readonly AbiInput[];
         argSources?: readonly ArgSource[];

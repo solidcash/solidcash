@@ -149,6 +149,26 @@ describe('atomic compiled invocation graph', () => {
       ...descriptor,
       batchOccurrenceIndex: 4,
     }, invocation, 1)).toThrow(/conflicting occurrence identities/);
+    // Batched edges must not silently alias source identity from the physical lane or invent occurrence 0.
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+    }, invocation, 1)).toThrow(/omits its source callsite identity/);
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceCallsiteId: 11,
+      sourceLogicalIndex: 2,
+    }, invocation, 1)).toThrow(/omits its source occurrence/);
+    expect(() => messageBus.assertPreparedInvocationIdentity({
+      ...base,
+      callsiteId: 7,
+      sourceCallsiteId: 7,
+      sourceLogicalIndex: 2,
+      occurrenceIndex: 3,
+    }, invocation, 1)).toThrow(/source callsite disagrees/);
     const rebuilt = messageBus.rebuildPreparedInvocation(descriptor, [1n], '01');
     expect(rebuilt).toMatchObject({
       callsiteId: 7,
@@ -1025,6 +1045,20 @@ describe('atomic compiled invocation graph', () => {
       { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
       { physical: 4, source: 4, logical: 1, provenance: 'legacy-logical' },
     ]);
+
+    const kernelRoot = structuredClone(root) as typeof root;
+    kernelRoot.artifact.messageBus = {
+      ...kernelRoot.artifact.messageBus!,
+      convention: 'kernel-row-loop',
+    };
+    for (const row of kernelRoot.artifact.abi[0].externalCalls![0].batchInvocations!) {
+      delete (row as { sourceCallsiteId?: number }).sourceCallsiteId;
+    }
+    expect(() => messageBus.deriveCompiledGraphPlan({
+      root: kernelRoot, function: 'run', args: [[2n]], targets: {},
+      target: () => sink,
+      expressionArgument: ({ occurrence }) => BigInt(occurrence + 2),
+    })).toThrow(/kernel batched callsite .* omits sourceCallsiteId/);
   });
 
   it('assigns canonical occurrences to a non-batched runtime callsite', () => {

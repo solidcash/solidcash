@@ -3774,7 +3774,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             && expression.callsiteId !== undefined
             && expression.callsiteId >= 0) {
             const logicalProducer = logicalCallSlots[expression.callsiteId];
-            if (logicalProducer) expression.callsiteId = logicalProducer.slotIndex;
+            if (logicalProducer) {
+              // Keep the pre-collapse source identity; physical lane alone cannot name a batch row.
+              if (expression.sourceCallsiteId === undefined) {
+                expression.sourceCallsiteId = expression.callsiteId;
+              }
+              expression.callsiteId = logicalProducer.slotIndex;
+            }
           }
           for (const child of [expression.target, expression.expression, expression.left, expression.right,
             expression.condition, expression.ifTrue, expression.ifFalse, ...(expression.args ?? [])]) {

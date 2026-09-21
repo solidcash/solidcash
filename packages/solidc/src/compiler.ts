@@ -9197,9 +9197,24 @@ function synthesizeMessageBusRoute(
       // during an earlier decode, and a later decode then reads the adjacent selector-prefixed row instead.
       let effectiveDispatch = dispatch;
       if (lifecycleKind === 'merge') {
+        // Consumed masters sit after the fixed dataNft preserve prefix (D). Tails must not re-enter the
+        // handler body (state reads are owner-relative); the verifier authenticates tail geometry.
+        // Prefer the handler's published NFT compact set when present; otherwise derive from fixed-state reads.
+        const mergeReads = analyseFunctionFootprint(fn, byName, footprintCache).reads;
+        const mergeHasFixedStateRead = mergeReads.some((resource) => {
+          if (!resource.startsWith('state:')) return false;
+          const name = resource.slice('state:'.length);
+          return !dynamicState.has(name) && contract.stateVariables.some((state) => state.name === name);
+        });
+        const mergePrefixSize = (fn.requiredNftIndices?.length ?? 0) > 0
+          ? fn.requiredNftIndices!.length
+          : mergeHasFixedStateRead
+            ? contract.stateVariables.filter((state) => !dynamicState.has(state.name)).length
+            : 0;
         effectiveDispatch = `if (this.activeInputIndex == ${atomicParticipantInput}) { ${dispatch} } else {
-          require(this.activeInputIndex > ${atomicParticipantInput}
-            && this.activeInputIndex <= ${atomicParticipantInput} + __message_bus_active_lifecycle_count);
+          require(this.activeInputIndex > ${atomicParticipantInput} + ${mergePrefixSize}
+            && this.activeInputIndex <= ${atomicParticipantInput} + ${mergePrefixSize}
+              + __message_bus_active_lifecycle_count);
         }`;
       }
       const wrappedDispatch = markDispatch
@@ -10784,7 +10799,9 @@ function synthesizeMessageBusRoute(
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
         // This carrier can approach the transaction-size ceiling. A control-flow scope makes its lifetime
         // explicit so generic row-frame updates never rotate dead unlocking bytecode through the main stack.
-        if (true) {
+        // Merge tails share the survivor unlocker but are not the batch-push carrier; skip the self-check there.
+        if (${lifecycleOwnerRouteParameters.length > 0
+    ? `this.activeInputIndex == __internal__lifecycleOwnerInput` : 'true'}) {
           bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
           require(__message_bus_unlock.length >= 7);
           require(__message_bus_unlock.slice(0, 5) == hex"0453434231");

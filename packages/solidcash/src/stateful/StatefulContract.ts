@@ -106,6 +106,10 @@ import {
   encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
 } from '../message-bus/message-bus.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import {
+  phase1PhysicalOwnerOrder, planPhysicalOwnerComponents,
+  selectCompleteAcyclicPhysicalOwnerPlan, type PhysicalOwnerPlan,
+} from '../message-bus/physical-owner-plan.js';
 import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
@@ -13807,6 +13811,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     debugTargetDerivation = false,
     currentStateSnapshot?: Readonly<Record<string, StateValueType>>,
     skipExternalStateDerivation = false,
+    phase1OwnerPlan?: PhysicalOwnerPlan,
   ): Promise<{
       state: Record<string, StateValueType> | undefined;
       vmErrored: boolean;
@@ -14160,8 +14165,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // phase with refreshed absolute witnesses; serializing the multi-megabyte composed transaction once per
         // external group again is redundant. Final transaction verification still executes every input, so stale
         // external material cannot pass unnoticed.
-        const firstPhase1Group = skipExternalStateDerivation ? -1 : externalCallUtxoGroups.length - 1;
-        for (let groupIdx = firstPhase1Group; groupIdx >= 0; groupIdx--) {
+        const phase1GroupOrder = phase1PhysicalOwnerOrder(
+          externalCallUtxoGroups.length, skipExternalStateDerivation, phase1OwnerPlan,
+        );
+        for (const groupIdx of phase1GroupOrder) {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
           if (group.sharedGroupIndex !== undefined) continue;
@@ -26188,6 +26195,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     };
     let preparedAtomicNodes: PreparedAtomicNode[] | undefined;
     const preparedAtomicNodeByExternalGroup = new Map<number, number>();
+    /** Exact physical carrier placement for every prepared logical occurrence. */
+    const externalGroupByPreparedAtomicNode = new Map<number, number>();
     // Logical aliases retain their own node index for convergence. Reused physical groups separately point at the
     // latest reached callsite, so a later sequential row is copied wholly from one stable node rather than mixing
     // mutable physical arguments with the selector/path of the first call that happened to allocate the group.
@@ -28678,6 +28687,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const runtimeRows: readonly RouteExpressionKeyRow[] | undefined =
                   childCompilerRoute?.rowArguments ?? directInvocationRows;
                 if (runtimeRows?.length) {
+                  if (runtimeRows.length > 1 && runtimeRows.some((row) => row.handler.externalCalls?.length)) {
+                    throw new Error(
+                      'A repeated graph owner with transitive calls requires occurrence-indexed parent metadata.',
+                    );
+                  }
                   const runtimeRowsWithProducerPaths = runtimeRows.map((row) => ({
                     row,
                     producerPath: row.producerPath ?? preparedChildProducerPath(0, {
@@ -28737,6 +28751,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }
                   }
                   for (const { row, producerPath } of runtimeRowsWithProducerPaths) {
+                    if (resolveRowArgsFromResults && row.usedProducerCallsiteIds === undefined) {
+                      throw new Error(
+                        'A result-dependent compiler-route row has no selected producer-callsite metadata.',
+                      );
+                    }
                     const rowValueChunkProductions = valueChunkProductionsForPath(producerPath);
                     preparedAtomicNodes.push({
                       contract: callee,
@@ -28885,6 +28904,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     hasReplan: replanChildRoute !== undefined,
                     hasResolver: preparedAtomicNodes[atomicNodeIndex]!.resolveArgsFromResults !== undefined,
                   }));
+                }
+                for (let nodeIndex = atomicNodeIndex; nodeIndex < preparedAtomicNodes.length; nodeIndex += 1) {
+                  externalGroupByPreparedAtomicNode.set(nodeIndex, childExternalGroupIndex);
                 }
                 preparedAtomicNodeByExternalGroup.set(childExternalGroupIndex, atomicNodeIndex);
                 latestPreparedAtomicNodeByPhysicalGroup.set(
@@ -29972,6 +29994,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),
                 active: true,
               });
+              externalGroupByPreparedAtomicNode.set(atomicNodeIndex, childGroupIndex);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ATOMIC_PUSH === '1') {
                 const pushedIndex = preparedAtomicNodes.length - 1;
@@ -35292,10 +35315,86 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const ecGroupsForDerive = externalCallUtxoGroups.length > 0 ? externalCallUtxoGroups : [];
       const ecCallsForDerive = externalCallUtxoGroups.length > 0 ? allGroupEcSlots : [];
       const osGroupsForDerive = externalOutStateUtxoGroups.length > 0 ? externalOutStateUtxoGroups : undefined;
+      const plannedPhase1OwnerPlan = preparedAtomicNodes?.length ? (() => {
+        const occurrenceKeyByNode = new Map<number, string>();
+        preparedAtomicNodes!.forEach((node, nodeIndex) => {
+          if (!node.active) return;
+          if (node.parent !== null && !externalGroupByPreparedAtomicNode.has(nodeIndex)) {
+            throw new Error(
+              `Prepared graph occurrence ${nodeIndex} has no exact external-group placement metadata.`,
+            );
+          }
+          if (!externalGroupByPreparedAtomicNode.has(nodeIndex)) return;
+          if (node.producerPath.status !== 'complete') {
+            throw new Error(`Prepared graph occurrence ${nodeIndex} has no stable producer-path identity.`);
+          }
+          const occurrenceKey = canonicalValueChunkProducerPathContext(node.producerPath.context);
+          if (occurrenceKey === undefined) {
+            throw new Error(`Prepared graph occurrence ${nodeIndex} has a malformed producer-path identity.`);
+          }
+          occurrenceKeyByNode.set(nodeIndex, occurrenceKey);
+        });
+        for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
+          if (externalGroupByPreparedAtomicNode.get(nodeIndex) !== groupIndex) {
+            throw new Error(
+              `Prepared graph occurrence ${nodeIndex} disagrees on external group ${groupIndex}.`,
+            );
+          }
+        }
+        const activePlacedNodes = [...externalGroupByPreparedAtomicNode]
+          .filter(([nodeIndex]) => preparedAtomicNodes![nodeIndex]?.active);
+        const plan = planPhysicalOwnerComponents(activePlacedNodes.map(([nodeIndex, groupIndex]) => {
+          const node = preparedAtomicNodes![nodeIndex]!;
+          const occurrenceKey = occurrenceKeyByNode.get(nodeIndex)!;
+          let parentOccurrenceKey: string | undefined;
+          if (node.parent !== null) {
+            parentOccurrenceKey = occurrenceKeyByNode.get(node.parent);
+            if (parentOccurrenceKey === undefined) {
+              const parent = preparedAtomicNodes![node.parent];
+              if (!parent || parent.parent !== null) {
+                throw new Error(
+                  `Prepared graph occurrence ${nodeIndex} has unmapped non-root parent ${node.parent}.`,
+                );
+              }
+            }
+          }
+          const resultProducerOccurrenceKeys = (node.resultProducerCallsiteIds ?? []).map((callsiteId) => {
+            const candidates = activePlacedNodes.filter(([candidateIndex]) => {
+              const candidate = preparedAtomicNodes![candidateIndex]!;
+              return candidate.parent === node.parent && candidate.sourceCallsiteId === callsiteId
+                && candidateIndex < nodeIndex;
+            });
+            if (candidates.length !== 1) {
+              throw new Error(
+                `Prepared graph occurrence ${nodeIndex} requires exactly one earlier producer occurrence `
+                + `for parent-frame callsite ${callsiteId}; found ${candidates.length}.`,
+              );
+            }
+            return occurrenceKeyByNode.get(candidates[0]![0])!;
+          });
+          const group = ecGroupsForDerive[groupIndex]!;
+          return {
+            occurrenceKey,
+            physicalOwner: group.sharedGroupIndex ?? groupIndex,
+            ...(parentOccurrenceKey !== undefined && { parentOccurrenceKey }),
+            ...(resultProducerOccurrenceKeys.length > 0 && { resultProducerOccurrenceKeys }),
+          };
+        }));
+        return plan;
+      })() : undefined;
+      const phase1OwnerPlan = plannedPhase1OwnerPlan === undefined ? undefined
+        : selectCompleteAcyclicPhysicalOwnerPlan(
+          plannedPhase1OwnerPlan,
+          ecGroupsForDerive.flatMap((group, groupIndex) => (
+            group.sharedGroupIndex === undefined ? [groupIndex] : []
+          )),
+        );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
         console.error('stateful-derive-call', {
           functionName,
+          phase1OwnerComponents: plannedPhase1OwnerPlan?.components,
+          phase1OwnerScheduleActive: phase1OwnerPlan !== undefined,
           groups: ecGroupsForDerive.map((group, groupIdx) => ({
             groupIdx,
             functionName: group.functionName,
@@ -35458,6 +35557,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         eventBlockLayoutForDerive, derivTransferCount, derivTokenOps, delegatecallInputIndex,
         osGroupsForDerive, timingEnabled,
         onChainState.state,
+        false, phase1OwnerPlan,
       );
       if (timingEnabled) console.error('builder-derive-pass', {
         functionName, pass: 1, ms: Date.now() - firstDeriveStarted,
@@ -35482,7 +35582,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             entryAccessesForDerive, emitInfos.length > 0 ? emitInfos : undefined,
             eventBlockLayoutForDerive, derivTransferCount, derivTokenOps, delegatecallInputIndex,
             osGroupsForDerive, timingEnabled,
-            onChainState.state, true,
+            onChainState.state, true, phase1OwnerPlan,
           );
           if (timingEnabled) console.error('builder-derive-pass', {
             functionName, pass: 2, ms: Date.now() - secondDeriveStarted,
@@ -35528,7 +35628,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // provides manual transfers, we work with whatever transfers are already in the builder.
       (builder as any).__reDerive = async (stb: StatefulTransactionBuilder) => (
         this._deriveFullTransactionState(stb, rni, ecGroups, ecCalls, ea, ei,
-          eventBlockLayoutForDerive, undefined, undefined, dci, osGroups, false, onChainState.state)
+          eventBlockLayoutForDerive, undefined, undefined, dci, osGroups, false, onChainState.state,
+          false, phase1OwnerPlan)
       );
     }
 

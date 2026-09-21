@@ -27,6 +27,54 @@ export interface PhysicalOwnerPlan {
   readonly components: readonly PhysicalOwnerComponent[];
 }
 
+/**
+ * Activate an exact owner schedule only when it covers the complete physical derivation domain and contains no
+ * callback component. Cyclic components need authenticated, idempotent convergence; a single topological sweep
+ * cannot make one sound merely by choosing an arbitrary member order.
+ */
+export function selectCompleteAcyclicPhysicalOwnerPlan(
+  plan: PhysicalOwnerPlan,
+  canonicalOwners: readonly number[],
+): PhysicalOwnerPlan | undefined {
+  const expected = new Set<number>();
+  for (const owner of canonicalOwners) {
+    if (!Number.isSafeInteger(owner) || owner < 0) {
+      throw new PhysicalOwnerPlanError(`derivation domain contains invalid physical owner ${owner}.`);
+    }
+    if (expected.has(owner)) {
+      throw new PhysicalOwnerPlanError(`derivation domain repeats physical owner ${owner}.`);
+    }
+    expected.add(owner);
+  }
+  const planned = new Set(plan.components.flatMap((component) => component.owners));
+  for (const owner of expected) {
+    if (!planned.has(owner)) {
+      throw new PhysicalOwnerPlanError(`derivation domain is missing physical owner ${owner}.`);
+    }
+  }
+  for (const owner of planned) {
+    if (!expected.has(owner)) {
+      throw new PhysicalOwnerPlanError(`schedule contains unknown physical owner ${owner}.`);
+    }
+  }
+  return plan.components.some((component) => component.cyclic) ? undefined : plan;
+}
+
+/** Resolve the concrete Phase-1 traversal without coupling dependency semantics to transaction derivation. */
+export function phase1PhysicalOwnerOrder(
+  groupCount: number,
+  skip: boolean,
+  plan?: PhysicalOwnerPlan,
+): readonly number[] {
+  if (skip) return Object.freeze([]);
+  if (!Number.isSafeInteger(groupCount) || groupCount < 0) {
+    throw new PhysicalOwnerPlanError(`derivation has invalid group count ${groupCount}.`);
+  }
+  return Object.freeze(plan
+    ? plan.components.flatMap((component) => component.owners)
+    : Array.from({ length: groupCount }, (_unused, index) => groupCount - index - 1));
+}
+
 export class PhysicalOwnerPlanError extends Error {
   constructor(message: string) {
     super(`Physical-owner plan: ${message}`);

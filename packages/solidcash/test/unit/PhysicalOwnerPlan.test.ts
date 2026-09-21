@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  phase1PhysicalOwnerOrder,
   planPhysicalOwnerComponents,
+  selectCompleteAcyclicPhysicalOwnerPlan,
   type PhysicalOwnerOccurrence,
 } from '../../src/message-bus/physical-owner-plan.js';
 
@@ -103,5 +105,44 @@ describe('physical-owner dependency planning', () => {
     expect(() => planPhysicalOwnerComponents([
       occurrence('producer', 0), occurrence('consumer', 1, undefined, ['producer', 'producer']),
     ])).toThrow(/repeats dependency/);
+  });
+
+  it('activates only a complete acyclic derivation schedule', () => {
+    const plan = planPhysicalOwnerComponents([
+      occurrence('parent', 0), occurrence('child', 2, 'parent'), occurrence('independent', 1),
+    ]);
+
+    expect(selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, 1, 2])).toBe(plan);
+    expect(() => selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, 2]))
+      .toThrow(/unknown physical owner 1/);
+    expect(() => selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, 1, 2, 3]))
+      .toThrow(/missing physical owner 3/);
+    expect(() => selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, 1, 1, 2]))
+      .toThrow(/repeats physical owner 1/);
+    expect(() => selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, -1, 2]))
+      .toThrow(/invalid physical owner -1/);
+  });
+
+  it('does not activate a callback schedule before convergence is implemented', () => {
+    const plan = planPhysicalOwnerComponents([
+      occurrence('root-run', 0),
+      occurrence('relay', 1, 'root-run'),
+      occurrence('root-provide', 0, 'relay'),
+    ]);
+
+    expect(selectCompleteAcyclicPhysicalOwnerPlan(plan, [0, 1])).toBeUndefined();
+  });
+
+  it('consumes an exact plan in dependency order and preserves the legacy fallback', () => {
+    const plan = planPhysicalOwnerComponents([
+      occurrence('parent', 0), occurrence('producer', 2, 'parent'),
+      occurrence('consumer', 1, 'parent', ['producer']),
+    ]);
+
+    expect(phase1PhysicalOwnerOrder(3, false, plan)).toEqual([2, 1, 0]);
+    expect(phase1PhysicalOwnerOrder(3, false)).toEqual([2, 1, 0]);
+    expect(phase1PhysicalOwnerOrder(3, true, plan)).toEqual([]);
+    expect(Object.isFrozen(phase1PhysicalOwnerOrder(3, false, plan))).toBe(true);
+    expect(() => phase1PhysicalOwnerOrder(-1, false)).toThrow(/invalid group count -1/);
   });
 });

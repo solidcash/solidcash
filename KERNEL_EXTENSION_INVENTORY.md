@@ -83,7 +83,7 @@ Authoritative gate/fixture map: [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md). Do n
 | 15 | `KERNEL_FOREIGN_DELEGATE` | `KernelAdmission` `refuses foreign delegatecall as KERNEL_FOREIGN_DELEGATE` |
 | 16 | `KERNEL_LIFECYCLE` | `KernelLifecycleTopology` collection-bearing + statement-form state selfdestruct; `KernelAdmission` unsafe(0/1) |
 | 17 | `KERNEL_LAYOUT` | Relocatable multi-span blocks; loop-nested external value-chunk trailing slots under atomic compose. Admitted: unconditional/bool-param multi-resource fixed chunkable; hetero loop streams with compose inline ≤60B **and ≥61B** + batch long chunks (`KernelHeteroLoopStreamsCompose`); bool-param same-iter selection (`KernelSameIterSelectionCompose`) |
-| 18 | `KERNEL_LAYOUT` | Selected/early-terminated events; both-arms non-loop chunkable selection; early-return bypass. Admitted: unconditional emit beside ≥2 mutation streams (`KernelMultiStreamEventCompose`); bool-param empty-else fixed-chunkable |
+| 18 | `KERNEL_LAYOUT` | Both-arms non-loop chunkable selection; non-bool selection; early-return bypass. Admitted: unconditional emit beside ≥2 mutation streams (`KernelMultiStreamEventCompose`); bool-param empty-else fixed-chunkable; bool-param-selected emit beside journal (`KernelSelectedEventCompose`) |
 
 ## Session status
 

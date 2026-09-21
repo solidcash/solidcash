@@ -37,7 +37,7 @@ These inventory rows already have admitted subsets. Negatives should target the 
 | 15 | Own-implementation `delegate` / proxy frame (not foreign `delegatecall`); metadata may publish `delegateForwarding` while eligibility stays false for foreign | Any foreign executor treated as participant owner |
 | 16 | Resource-free and read-only fixed-scalar split/merge; resource-free + modifier-only fixed-scalar selfdestruct; statement-form master-only selfdestruct; in-place-append upgrade; `unsafe(2)` (`KernelLifecycleTopology`, compose e2e suite) | Collection/event/blockhash/write-bearing lifecycle; statement-form on state-bearing contracts; `unsafe` tiers 0/1 |
 | 17 | Fixed participant blocks; unconditional/bool-param multi-resource fixed chunkable; hetero loop streams (compose inline ≤60B **and ≥61B** + batch long); bool-param same-iter selection | Fully relocatable multi-span blocks; non-bool / counter-derived selection schedules beyond the admitted trailing-band loop-chunk subset |
-| 18 | Unconditional event beside one or more authenticated mutation streams; bool-param empty-else fixed-chunkable | Selected/early-terminated events; both-arms non-loop chunkable selection; zero-width coordinate shifts |
+| 18 | Unconditional event beside one or more authenticated mutation streams; bool-param empty-else fixed-chunkable; **bool-param-selected emit beside journal mutation** (`KernelSelectedEventCompose`) | Both-arms non-loop chunkable selection; non-bool selection; zero-width coordinate shifts; early-return bypass |
 
 ## Notes for implementers
 

@@ -31,7 +31,7 @@
 - [x] **1b** Re-verify item 1 caller identity (`KernelCallsiteCallerIdentityCompose`, `KernelBatchedCallsiteIdentityCompose`)
 - [x] **1c** Item 5 multi-producer result dependencies (`KernelMultiProducerResultCompose`)
 - [x] **1d** Item 6 multiple computed writes / ordered claims (`KernelMultiCollectionWriteCompose` + multi-continuation chunkable)
-- [ ] **2** Path/effect: selected events, non-bool selection, both-arms chunkable, maskable break/continue, bounded transfers-beside-journal
+- [x] **2** Path/effect: bool-param-selected emit beside journal settled (`KernelSelectedEventCompose`); both-arms/non-bool remain KERNEL_LAYOUT; break/continue sharper residual (no compose admit claimed)
 - [ ] **3** Bounded constructed-key domain settle
 - [ ] **4** Mixed dynamic+collection spans; relocatable trailing bands
 - [ ] **5** Aggregate / recursive mapping admits+settle

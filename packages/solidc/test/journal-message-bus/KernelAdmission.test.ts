@@ -10672,4 +10672,167 @@ describe('required kernel admission', () => {
     expect(abi?.sortedUpsertLoopInfo).toHaveLength(2);
     expect(abi?.runtimeLoopEvents?.length).toBeGreaterThan(0);
   });
+
+  // Phase 2: bool-param-selected emit beside a journaled write (SelectedEventCompose).
+  it('admits bool-param-selected emit beside a fixed-key int mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      event Touched(int indexed key, int value);
+      function set(int key, int value, bool emitIt) public {
+        values[key] = value;
+        if (emitIt) { emit Touched(key, value); }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps early-return-bypassed selected emit behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) values;
+      event Touched(int indexed key);
+      function set(int key, int value, bool skip) public {
+        if (skip) return;
+        values[key] = value;
+        emit Touched(key);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Phase 3: bounded constructed-key (hash160) admit + residual multi-arm constructed join.
+  it('admits a hash160(pubkey) constructed key write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(bytes20 => int) balances;
+      function credit(pubkey pk, int n) public {
+        bytes20 who = hash160(pk);
+        balances[who] = balances[who] + n;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'credit'))
+      .toMatchObject({ eligible: true });
+  });
+
+  // Phase 4 residual: dynamic bytes + mapping is admitted; token-container co-layout stays fenced.
+  it('admits independently indexed bytes state beside an int mapping write', () => {
+    const artifact = compileString(`contract C() {
+      bytes note;
+      mapping(int => int) scores;
+      function set(bytes n, int k, int v) public {
+        note = n;
+        scores[k] = v;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('locks dynamic-bytes + token-container co-layout as a #9 residual (missing tokenContainer block slot)', () => {
+    // Codegen fails closed while compiling the message-bus route when dynamic bytes shares a handler with
+    // tokens[category] access — the residual until non-overlapping span descriptors publish a tokenContainer slot.
+    expect(() => compileString(`contract ParallelTokenJournal() {
+      bytes payload;
+      function append(bytes32 category, bytes suffix) public {
+        this.payload = bytes.concat(this.payload, suffix);
+        bytes commitment = this.tokens[category].nftCommitment;
+        require(this.tokens[category].tokenAmount >= 0);
+        require(commitment == commitment);
+      }
+      function control() public { require(true); }
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(/tokenContainer\[0\]/);
+  });
+
+  // Phase 5: nested mapping admit + residual unbounded recursive key walk.
+  it('admits a depth-two nested mapping write', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => mapping(int => int)) grid;
+      function set(int a, int b, int v) public {
+        grid[a][b] = v;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps an unbounded while-walk over mapping keys behind KERNEL_UNBOUNDED_KEY', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) m;
+      function walk(int start) public {
+        int k = start;
+        while (k != 0) { m[k] = k; k = m[k - 1]; }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'walk'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_UNBOUNDED_KEY' });
+  });
+
+  // Phase 6: replayable typed child deploy admit + residual runtime-count deploy loop.
+  it('admits a straight-line typed child deployment site', () => {
+    const artifact = compileStringMulti(`
+      contract Child(int x) { int public v; constructor() { v = x; } }
+      contract Parent() {
+        function spawn(int x) public deploy {
+          new Child(x);
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, KERNEL).Parent;
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'spawn'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps a runtime-count child deployment loop behind KERNEL_LAYOUT', () => {
+    const artifact = compileStringMulti(`
+      contract Child(int x) { int public v; constructor() { v = x; } }
+      contract Parent() {
+        function spawnMany(int n) public deploy {
+          for (int i = 0; i < n; i = i + 1) { new Child(i); }
+          require(true);
+        }
+        function control() public { require(true); }
+      }
+    `, KERNEL).Parent;
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'spawnMany'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+  });
+
+  // Phase 7: bounded detached-sig / safe assembly admit + residual opaque assembly.
+  it('admits a data-only sig constructed from ordinary bytes', () => {
+    const artifact = compileString(`contract C() {
+      function echo(bytes value) public pure returns (sig) {
+        return sig(value);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'echo'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('keeps stack-divergent native assembly behind KERNEL_OPAQUE_EFFECT', () => {
+    const artifact = compileString(`contract C() {
+      int public x;
+      function touch() public {
+        assembly { OP_DUP }
+        x = 1;
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'touch'))
+      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_OPAQUE_EFFECT' });
+  });
 });

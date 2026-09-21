@@ -106,6 +106,7 @@ import {
   encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
 } from '../message-bus/message-bus.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import {
@@ -37801,69 +37802,69 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       expression: ExternalCallExpression | undefined, consumerArgument?: number, validateConsumerLane = true,
     ): Promise<void> => {
       if (!expression) return;
-      for (const child of [expression.target, expression.expression, expression.left, expression.right,
-        expression.condition, expression.ifTrue, expression.ifFalse]) {
-        await visit(child, consumerArgument, validateConsumerLane);
-      }
-      for (const child of expression.args ?? []) await visit(child, consumerArgument, validateConsumerLane);
-      if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
-        const producer = producerByCallsite.get(expression.callsiteId);
-        const resultIndex = expression.resultIndex;
-        if (!producer || resultIndex === undefined
-          || !Number.isInteger(resultIndex) || resultIndex < 0
-          || resultIndex >= (producer.returnTypes?.length ?? 0)) {
-          throw new Error(
-            `Graph producerResult ${expression.callsiteId}:${String(resultIndex)} does not identify one published result.`,
-          );
-        }
-        if (validateConsumerLane && consumer?.resultConsumers && consumer.callsiteId !== undefined) {
-          const lanes = consumer.resultConsumers.filter((candidate) =>
-            candidate.consumerCallsiteId === consumer.callsiteId
-            && (consumer.lane === 'condition'
-              ? candidate.condition === true
-              : candidate.argument === consumerArgument)
-            && candidate.producerCallsiteId === expression.callsiteId
-            && (candidate.resultIndex === undefined || candidate.resultIndex === resultIndex));
-          if (lanes.length !== 1) {
+      await visitExternalExpressionEvaluationPath(expression, async (candidate) => {
+        if (candidate.kind === 'producerResult' && candidate.callsiteId !== undefined) {
+          const producer = producerByCallsite.get(candidate.callsiteId);
+          const resultIndex = candidate.resultIndex;
+          if (!producer || resultIndex === undefined
+            || !Number.isInteger(resultIndex) || resultIndex < 0
+            || resultIndex >= (producer.returnTypes?.length ?? 0)) {
             throw new Error(
-              `Graph producerResult ${expression.callsiteId}:${resultIndex} does not identify exactly one `
-              + `published consumer ${consumer.lane === 'condition' ? 'condition' : `argument ${consumerArgument}`} `
-              + `lane ${consumer.callsiteId}.`,
+              `Graph producerResult ${candidate.callsiteId}:${String(resultIndex)} does not identify one published result.`,
             );
           }
+          if (validateConsumerLane && consumer?.resultConsumers && consumer.callsiteId !== undefined) {
+            const lanes = consumer.resultConsumers.filter((lane) =>
+              lane.consumerCallsiteId === consumer.callsiteId
+              && (consumer.lane === 'condition'
+                ? lane.condition === true
+                : lane.argument === consumerArgument)
+              && lane.producerCallsiteId === producer.callsiteId
+              && (lane.resultIndex === undefined || lane.resultIndex === resultIndex));
+            if (lanes.length !== 1) {
+              throw new Error(
+                `Graph producerResult ${producer.callsiteId}:${resultIndex} does not identify exactly one `
+                + `published consumer ${consumer.lane === 'condition'
+                  ? 'condition' : `argument ${consumerArgument}`} lane ${consumer.callsiteId}.`,
+              );
+            }
+          }
+          const result = await resolveProducer(producer);
+          const selected = (producer.returnTypes?.length ?? 0) === 1
+            ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
+          if (selected !== undefined) resolved.set(JSON.stringify(candidate), selected);
+          return;
         }
-        const result = await resolveProducer(producer);
-        const selected = (producer.returnTypes?.length ?? 0) === 1
-          ? result : Array.isArray(result) ? result[resultIndex] as FunctionArgument : undefined;
-        if (selected !== undefined) resolved.set(JSON.stringify(expression), selected);
-        return;
-      }
-      if (expression.kind !== 'externalCall' || !expression.name) return;
-      const publishedProducer = expression.callsiteId === undefined
-        ? undefined : producerByCallsite.get(expression.callsiteId);
-      if (publishedProducer) {
-        const value = await resolveProducer(publishedProducer);
-        if (value !== undefined) resolved.set(JSON.stringify(expression), value);
-        return;
-      }
-      const separator = expression.name.indexOf('.');
-      if (separator < 1 || separator === expression.name.length - 1) return;
-      const interfaceName = expression.name.slice(0, separator);
-      const functionName = expression.name.slice(separator + 1);
-      const values = (expression.args ?? []).map((argument) => this._evaluateExternalExpression(
-        argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+        if (candidate.kind !== 'externalCall' || !candidate.name) return;
+        const publishedProducer = candidate.callsiteId === undefined
+          ? undefined : producerByCallsite.get(candidate.callsiteId);
+        if (publishedProducer) {
+          const value = await resolveProducer(publishedProducer);
+          if (value !== undefined) resolved.set(JSON.stringify(candidate), value);
+          return;
+        }
+        const separator = candidate.name.indexOf('.');
+        if (separator < 1 || separator === candidate.name.length - 1) return;
+        const interfaceName = candidate.name.slice(0, separator);
+        const functionName = candidate.name.slice(separator + 1);
+        const values = (candidate.args ?? []).map((argument) => this._evaluateExternalExpression(
+          argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+          occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
+        ));
+        if (values.some((value) => value === undefined)) return;
+        const target = candidate.target && this._evaluateExternalExpression(
+          candidate.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+          occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
+        );
+        const value = await derive(
+          interfaceName, functionName, values as FunctionArgument[], target,
+          candidate.type ? [candidate.type] : undefined,
+        );
+        if (value !== undefined) resolved.set(JSON.stringify(candidate), value);
+      }, (candidate) => this._evaluateExternalExpression(
+        candidate, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
         occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
       ));
-      if (values.some((value) => value === undefined)) return;
-      const target = expression.target && this._evaluateExternalExpression(
-        expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        occurrenceIndex, false, executionSelfAddress, undefined, undefined, false, executionMsgSender,
-      );
-      const value = await derive(
-        interfaceName, functionName, values as FunctionArgument[], target,
-        expression.type ? [expression.type] : undefined,
-      );
-      if (value !== undefined) resolved.set(JSON.stringify(expression), value);
     };
     for (const [argument, source] of (argSources ?? []).entries()) {
       await visit(source.expression, consumer?.lane === 'arguments' ? argument : undefined);

@@ -91,11 +91,12 @@ Post-beta planning follows the missing-proof-object order (resource-indexed mult
 
 | Item | Status |
 |---|---|
-| 1 | **Landed on tip** (`d3b98a487` / merge) — re-verify fixtures before treating as closed |
+| 1 | **Landed + re-verified** — `KernelCallsiteCallerIdentityCompose`, `KernelBatchedCallsiteIdentityCompose` |
 | 2 | **Landed + verified** — multi-resource fixed chunkable + bool-param activation; family-1 A/B/C loop residuals (`KernelHeteroLoopStreamsCompose`, `KernelSameIterSelectionCompose`, `KernelMultiStreamEventCompose`) |
 | 3 | **Landed** — `encodeMessageBatch` publishes per-row `calldataStart`/`calldataLength`; mixed-arity settle (`KernelMixedHandlerRowFramingCompose`, `MessageBatchEncoding`) |
 | 4 | **Landed on tip** (`9137ab4cc`) — batched callsite four-tuple |
-| 5–6 | Planned — `ext-plans/ITEMS_5_6_PLAN.md` |
+| 5 | **Landed** — multi-producer result fan-in under compose (`KernelMultiProducerResultCompose`); swapped-lane fail-closed |
+| 6 | **Landed** — multi-write claims: dual scalar collections + terminal same-key collapse (`KernelMultiCollectionWriteCompose`); chunkable multi-resource already via `KernelMultiContinuationResourceCompose` |
 | 7–18 | **Fenced** — [`FENCE_MAP_7_18.md`](./FENCE_MAP_7_18.md); selected events / non-bool selection / relocatable blocks remain |
 
 **Family 1 status:** A (hetero int+bytes loops), B (bool-param same-iter selection), C (unconditional emit beside ≥2 streams) admitted under resource-indexed stream metadata. Mixed scalar+rawbytes groups stay on the per-row mint path (scalar journal dirtying disabled when a rawbytes sibling shares the execution group). Compose settles inline (≤60B) **and external (≥61B)** loop-nested chunkable tails once the route publishes `__internal__valueChunkOutputBase` + a balanced trailing band and composed loop mints occupy in-band `valueChunkOutputs` (same path as fixed-key COND). Batch long chunks remain a direct-settlement regression. Still fenced under #17: relocatable multi-span blocks beyond that admitted trailing-band subset.

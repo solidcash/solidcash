@@ -2748,6 +2748,17 @@ export interface ExternalCallStatement {
 export interface ExternalCallSlot {
   interfaceName: string;
   functionName: string;
+  /**
+   * Authenticated caller subject for this outgoing edge. Default is the physical state-owner master; CREATE /
+   * proxy / executor roles are published only when the call expression authenticates that subject.
+   */
+  callerIdentity?: {
+    version: 1;
+    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+    auth: 'input-bytecode' | 'category' | 'literal';
+    authOffset: number;
+    subjectLockingBytecode?: string;
+  };
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
   // Code-baked address literal target `IFoo(0x..).m()` (hex): the covenant pushes this constant as the

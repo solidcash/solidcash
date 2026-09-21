@@ -1,6 +1,7 @@
 import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type {
-  AbiFunction, Artifact, ExternalCallAbi, ExternalResultEncoding, InvocationAnalysisFunction,
+  AbiFunction, Artifact, CallsiteCallerIdentityAbi, ExternalCallAbi, ExternalResultEncoding,
+  InvocationAnalysisFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
@@ -138,8 +139,27 @@ export interface PlannedGraphInvocation {
   /** Exact source-level call target and the participant-local input which authenticates it. */
   targetLockingBytecode: string;
   targetIdentityOffset: number;
+  /**
+   * Resolved caller authentication for this edge. Absent only for the transaction-origin root. Nested rows
+   * carry the compiler-published descriptor plus the participant-local lock/offset that authenticate it.
+   */
+  callerIdentity?: ResolvedGraphCallerIdentity;
   /** Child invocation results which must exist before this invocation can resume. */
   resultDependencies: readonly number[];
+}
+
+/** Resolved caller subject for one planned graph edge. */
+export interface ResolvedGraphCallerIdentity {
+  version: 1;
+  role: CallsiteCallerIdentityAbi['role'];
+  auth: CallsiteCallerIdentityAbi['auth'];
+  /** Participant-local input that authenticates `lockingBytecode` (0xffff for origin). */
+  authOffset: number;
+  lockingBytecode: string;
+  /** Alias of authOffset retained for existing callManifest / compose consumers. */
+  offset: number;
+  subjectLockingBytecode?: string;
+  sourceCallsiteProvenance: 'compiler' | 'legacy-logical';
 }
 
 export interface CompiledParticipantExecution {
@@ -1643,29 +1663,153 @@ export function resolveGraphAbiFunction(
   return resolveMessageBusAbiFunction(artifact, name, selector);
 }
 
-type GraphCallerParticipant = Pick<CompiledGraphParticipant, 'lockingBytecode'>;
+type GraphCallerParticipant = {
+  artifact: Artifact;
+  lockingBytecode: string;
+  logicalLockingBytecode?: string;
+  logicalIdentityOffset?: number;
+  executorLockingBytecode?: string;
+  executorOffset?: number | null;
+};
 
-type GraphCallerInvocation = Pick<CompiledGraphInvocation,
-'parent' | 'callee' | 'function' | 'consumerCallsiteId'>;
+type GraphCallerInvocation = (
+  Pick<CompiledGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'selector'>
+  | Pick<PlannedGraphInvocation, 'parent' | 'callee' | 'function' | 'consumerCallsiteId' | 'callerIdentity'>
+) & { selectorHex?: string };
+
+const publishedCallsiteCallerIdentity = (
+  parentParticipant: GraphCallerParticipant,
+  parentInvocation: GraphCallerInvocation,
+  child: GraphCallerInvocation,
+): CallsiteCallerIdentityAbi | undefined => {
+  const selector = 'selector' in parentInvocation ? parentInvocation.selector
+    : 'selectorHex' in parentInvocation ? parentInvocation.selectorHex : undefined;
+  let parentFunction: AbiFunction | undefined;
+  try {
+    parentFunction = resolveGraphAbiFunction(
+      parentParticipant.artifact, parentInvocation.function, selector,
+    );
+  } catch {
+    // Fixture / lifecycle peers may carry a selector that does not name the parent handler. Fall back to
+    // name-only resolution so a missing publication still takes the legacy path instead of failing closed here.
+    try {
+      parentFunction = resolveGraphAbiFunction(parentParticipant.artifact, parentInvocation.function);
+    } catch {
+      parentFunction = undefined;
+    }
+  }
+  const callsites = parentFunction?.externalCalls ?? [];
+  if (child.consumerCallsiteId !== undefined) {
+    return callsites.find((call) => call.callsiteId === child.consumerCallsiteId)?.callerIdentity;
+  }
+  const byName = callsites.filter((call) =>
+    (call.rawFunctionName ?? call.functionName) === child.function);
+  return byName.length === 1 ? byName[0].callerIdentity : undefined;
+};
+
+const resolvePublishedCallerIdentity = (
+  caller: GraphCallerParticipant,
+  published: CallsiteCallerIdentityAbi,
+  provenance: 'compiler' | 'legacy-logical',
+): ResolvedGraphCallerIdentity => {
+  if (published.version !== 1) {
+    throw new Error(`messageBus: unsupported callsite callerIdentity version ${published.version}`);
+  }
+  if (published.role === 'origin') {
+    if (published.authOffset !== 0xffff) {
+      throw new Error('messageBus: origin callerIdentity must publish authOffset 0xffff');
+    }
+    return {
+      version: 1, role: 'origin', auth: published.auth, authOffset: 0xffff,
+      lockingBytecode: published.subjectLockingBytecode?.toLowerCase() ?? '',
+      offset: 0xffff, subjectLockingBytecode: published.subjectLockingBytecode?.toLowerCase(),
+      sourceCallsiteProvenance: provenance,
+    };
+  }
+  if (published.auth === 'literal') {
+    const lock = published.subjectLockingBytecode?.toLowerCase();
+    if (!lock || !/^([0-9a-f]{2})+$/.test(lock)) {
+      throw new Error('messageBus: literal callerIdentity requires subjectLockingBytecode hex');
+    }
+    return {
+      version: 1, role: published.role, auth: 'literal', authOffset: published.authOffset,
+      lockingBytecode: lock, offset: published.authOffset, subjectLockingBytecode: lock,
+      sourceCallsiteProvenance: provenance,
+    };
+  }
+  switch (published.role) {
+  case 'owner': {
+    const offset = published.authOffset;
+    return {
+      version: 1, role: 'owner', auth: published.auth, authOffset: offset,
+      lockingBytecode: caller.lockingBytecode.toLowerCase(), offset,
+      sourceCallsiteProvenance: provenance,
+    };
+  }
+  case 'create':
+  case 'proxy': {
+    const logical = caller.logicalLockingBytecode?.toLowerCase();
+    if (!logical) {
+      throw new Error(
+        `messageBus: callerIdentity role '${published.role}' requires an authenticated logical identity`,
+      );
+    }
+    const offset = published.authOffset === 0xffff
+      ? (caller.logicalIdentityOffset ?? 0)
+      : published.authOffset;
+    return {
+      version: 1, role: published.role, auth: published.auth, authOffset: offset,
+      lockingBytecode: logical, offset, sourceCallsiteProvenance: provenance,
+    };
+  }
+  case 'executor': {
+    const executor = caller.executorLockingBytecode?.toLowerCase();
+    const offset = published.authOffset === 0xffff
+      ? (caller.executorOffset ?? 0xffff)
+      : published.authOffset;
+    if (!executor || offset === 0xffff) {
+      throw new Error('messageBus: callerIdentity role \'executor\' requires a pinned executor input');
+    }
+    return {
+      version: 1, role: 'executor', auth: published.auth, authOffset: offset,
+      lockingBytecode: executor, offset, sourceCallsiteProvenance: provenance,
+    };
+  }
+  default:
+    throw new Error(`messageBus: unsupported callerIdentity role '${(published as CallsiteCallerIdentityAbi).role}'`);
+  }
+};
 
 /**
- * Every CALL/staticcall edge is made by the authenticated state owner. Delegate execution resources remain on
- * the separately pinned implementation input, but the outgoing caller is the proxy/state-owner context. Call
- * argument planning must use this same identity for source-level `address(this)` on the edge.
+ * Resolve the authenticated caller subject for one CALL/staticcall edge from the compiler-published
+ * callsite descriptor. Never invent owner@0 from proxy/delegate execution geometry when a publication exists.
  */
 export function graphInvocationCallerIdentity(
   participants: readonly GraphCallerParticipant[],
   invocations: readonly GraphCallerInvocation[],
   invocation: GraphCallerInvocation,
-): { lockingBytecode: string; offset: number } {
+): ResolvedGraphCallerIdentity {
   if (invocation.parent === null) {
     throw new Error('messageBus: transaction-origin invocation has no participant caller identity');
   }
-  const caller = participants[invocations[invocation.parent].callee];
-  return {
-    lockingBytecode: caller.lockingBytecode,
-    offset: 0,
-  };
+  if ('callerIdentity' in invocation && invocation.callerIdentity !== undefined) {
+    return invocation.callerIdentity;
+  }
+  const parentInvocation = invocations[invocation.parent];
+  const caller = participants[parentInvocation.callee];
+  const published = publishedCallsiteCallerIdentity(caller, parentInvocation, invocation);
+  if (published !== undefined) {
+    return resolvePublishedCallerIdentity(caller, published, 'compiler');
+  }
+  // Kernel routes require an explicit publication; legacy artifacts keep today's owner@0 fallback.
+  if (caller.artifact.messageBus?.convention === 'kernel-row-loop') {
+    throw new Error(
+      'messageBus: kernel callsite is missing compiler-published callerIdentity',
+    );
+  }
+  return resolvePublishedCallerIdentity(caller, {
+    version: 1, role: 'owner', auth: 'input-bytecode', authOffset: 0,
+  }, 'legacy-logical');
 }
 
 /**
@@ -2164,6 +2308,9 @@ export function planCompiledGraph(
         );
       }
     }
+    const callerIdentity = invocation.parent === null
+      ? undefined
+      : graphInvocationCallerIdentity(participants, invocations, invocation);
     return Object.freeze({
       index,
       parent: invocation.parent,
@@ -2181,6 +2328,7 @@ export function planCompiledGraph(
       ...(result && { resultEncoding: result.resultEncoding }),
       targetLockingBytecode: targetIdentity.lockingBytecode,
       targetIdentityOffset: targetIdentity.offset,
+      ...(callerIdentity !== undefined && { callerIdentity }),
     });
   });
   // Compiler-side diagnostic for §6.3's transitive rule. This is deliberately duplicated by the root

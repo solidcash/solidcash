@@ -2021,6 +2021,10 @@ function buildFunctionAbiMetadata(
           ...(resultArrayOutput !== undefined && { resultArrayOutput }),
           interfaceName: ec.interfaceName,
           functionName: ec.functionName,
+          // Default authenticated subject is the physical state-owner master. Absence means a legacy artifact.
+          callerIdentity: ec.callerIdentity ?? {
+            version: 1 as const, role: 'owner' as const, auth: 'input-bytecode' as const, authOffset: 0,
+          },
           ...(ec.addressParam && { addressParam: ec.addressParam }),
           ...(ec.addressStateVar && { addressStateVar: ec.addressStateVar }),
           ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),

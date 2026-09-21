@@ -131,6 +131,21 @@ describe('kernel late transitive conditional graph planning', () => {
     const call = root.call.execute(payload)
       .withCallerIdentity(hexToBin(root.inner.lockingBytecode), root.categoryId)
       .withCall(relay, 'relay', [41n]);
+    const preparedBuilder = await (call as unknown as {
+      _applyOverrides(): Promise<{
+        getExternalCallUtxoGroups(): readonly Array<{
+          logicalFunctionName?: string;
+          logicalFunctionArgs?: unknown[];
+          logicalContract?: StatefulContract;
+          logicalArtifact?: ReturnType<typeof compileString>;
+        }>;
+      }>;
+    })._applyOverrides();
+    const lateTargetGroup = preparedBuilder.getExternalCallUtxoGroups()
+      .find((group) => group.logicalFunctionName === 'store');
+    expect(lateTargetGroup?.logicalFunctionArgs).toEqual([41n]);
+    expect(lateTargetGroup?.logicalContract).toBe(target);
+    expect(lateTargetGroup?.logicalArtifact).toBe(targetArtifact);
     const builder = await call.build();
     const participantContracts = builder.inputs.flatMap((input) => (
       'contract' in input.unlocker ? [input.unlocker.contract.artifact.contractName] : []

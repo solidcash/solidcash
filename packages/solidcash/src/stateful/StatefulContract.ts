@@ -29899,6 +29899,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             externalContract: callee,
             callerIdentity: parentCallerIdentity,
             logicalFunctionName: rawFunctionName ?? nested.functionName,
+            logicalFunctionArgs: graphChildArgs,
+            logicalContract: callee,
+            logicalArtifact: proxyCallee?.implementation.inner.artifact ?? callee.inner.artifact,
             ...(Object.keys(lateInternalArgs).length > 0 && { internalArgs: lateInternalArgs }),
             ...(lateRelativeOutputInternalArgs.size > 0 && {
               relativeOutputInternalArgs: [...lateRelativeOutputInternalArgs],

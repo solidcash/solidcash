@@ -208,6 +208,11 @@ describe('messageBus.encodeMessageBatch', () => {
       { function: 'clear' },
       { function: 'add', args: [2n] },
     ])).toThrow(/selects 2 direct chunkable-write rows/);
+    expect(() => messageBus.encodeMessageBatch(bounded, [
+      { function: 'add', args: [1n] },
+      { function: 'clear' },
+      { function: 'add', args: [2n] },
+    ], {}, { atomicContinuationConvergence: true })).not.toThrow();
 
     const malformed = {
       ...bounded,

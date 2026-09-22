@@ -2100,10 +2100,17 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       // uncovered arm. This pass replaces that rung, so it has to apply the same source-level refusal; when it
       // fires, the ordinary ladder below still decides the narrower rungs exactly as before.
       if (widestFirst) rejectFreeFunctionMissingReturns(rungAst);
-      const firstRung = compileResolvedAst(
+      // This optimized shipping pass bypasses the ordinary admission ladder, but it must not bypass the
+      // analyzer which authorizes the published handler set. Record the same source spans and stamp the same
+      // decision set the ladder would have produced before accepting the artifact.
+      const firstRungAttribution: ExternalAdmissionAttribution = {
+        refused: new Set(), spans: [], reasons: new Map(),
+      };
+      const firstRung = stampMessageBusAdmission(compileResolvedAst(
         rungAst, code, firstRungOptions, false,
         widestFirst, true, true, true, true,
-      );
+        firstRungAttribution,
+      ), firstRungAttribution);
       // A direct (route-less) build is not the shape this pass exists to produce: the ladder still owns the
       // fallback to a direct artifact, its diagnostics, and the winner recompile that shape requires.
       if (firstRung.messageBus) {
@@ -4035,7 +4042,7 @@ function pooledChunkableArrayPushCollection(
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
 ): string | undefined {
-  if (!fn.body || fn.sourceEffectOrder !== 'linear') return undefined;
+  if (!fn.body) return undefined;
   const chunkableArrays = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && collection.innermostValueType instanceof ArrayType
       && isChunkableValueType(collection.innermostValueType) ? [name] : []
@@ -4055,6 +4062,12 @@ function pooledChunkableArrayPushCollection(
     if (unsupported) return;
     const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
       || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode;
+    if (node instanceof ReturnNode && direct.length === 0) {
+      // A successful early return can bypass a later top-level push. Post-push returns are harmless because the
+      // pooled resource mutation has already occurred exactly once.
+      unsupported = true;
+      return;
+    }
     if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
       if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
         || node.messageBusJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
@@ -6579,7 +6592,9 @@ function synthesizeMessageBusRoute(
       && statefulExternalCall
       && boundedNamedClosure
       && !graphHasDelegatecall;
-    if (!reason && (consumesLowLevelReturn || (fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
+    if (!reason && (consumesLowLevelReturn
+      || (compilerOptions.messageBusKernel !== true
+        && fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
       && !authenticatedBoundedLowLevelConsumer
       && (fn.returnTypes.length > 0
         || footprint.writes.length > 0
@@ -13349,6 +13364,9 @@ function compileResolvedAst(
         });
       }
     }
+    // Route source was assembled before the late clone ABI above. Fill the newly-authenticated hidden tail before
+    // TypeCheckTraversal resolves those generated calls.
+    padMessageBusCloneCalls(ast);
     // Handler ABI metadata is published from the source entry point, but a graph handler is physically invoked
     // through its compiler-owned clone. Copy the clone's exact fixed-slot projection instead of independently
     // remapping the unused direct body (whose post-inline constant folding may legitimately have a different
@@ -13385,9 +13403,26 @@ function compileResolvedAst(
       }
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
-    // Route source was assembled before the late clone/handler ABI above. Fill the newly-authenticated hidden
-    // tail before TypeCheckTraversal resolves those generated calls.
-    padMessageBusCloneCalls(ast);
+    // A real handler batch that projects multiple route lanes must retain its complete topology (including
+    // alternate tuple lanes selected by another row). Dynamic-resource routes likewise keep the complete batch:
+    // their primary and alternate entries share one authenticated trailing band. Every other synthetic batch is
+    // settled by its outlined handler and must be removed as a whole; an alternate lane alone is not a valid
+    // topology transition.
+    messageBusRoute.sortedBatchInfo = messageBusRoute.sortedBatchInfo?.filter((batch) => {
+      const needsCompleteBatch = batch.slotIndices.length > 1 && (routeDynamicResources.length > 0
+        || ast.contract.functions.some((fn) => {
+        if (fn === messageBusRoute || !fn.isEntryPoint || !fn.messageBusEligible
+          || !fn.sortedBatchInfo?.some((handlerBatch) => handlerBatch.collection === batch.collection)) {
+          return false;
+        }
+        const projected = new Set([
+          ...(fn.messageBusPhysicalEntrySlots ?? []),
+          ...(fn.messageBusPhysicalEntrySlotAlternatives?.flat() ?? []),
+        ]);
+        return batch.slotIndices.filter((slotIndex) => projected.has(slotIndex)).length > 1;
+      }));
+      return needsCompleteBatch;
+    });
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
   // Record the corresponding physical-slot alternatives after entry slots have been assigned, but before
@@ -13945,7 +13980,6 @@ function compileResolvedAst(
       })();
       const hasCompletePooledChunkableArrayPushTransport = fn.messageBusDispatched === true
         && fn.messageBusPooledChunkableArrayPush === true
-        && abi?.sourceEffectOrder === 'linear'
         && pooledChunkableArrayPushCollection !== undefined
         && chunkableWriteCollections.size === 1
         && pooledChunkableArrayPushAccesses.length === 1
@@ -13972,7 +14006,13 @@ function compileResolvedAst(
         && access.settlementIdentity.accessOrdinalSource === 'access-program-order'
         && access.settlementIdentity.settlementRole === 'mutation-settlement'
         && access.settlementIdentity.settlementOwnership === 'last-mutating-access');
-      const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
+      const hasMixedChunkableTransportDomains = abi?.sourceEffectOrder !== 'linear'
+        && runtimeJournalAccesses.some((access) => access.op !== 'read'
+          && chunkableWriteCollections.has(access.collection)
+          && abi?.entryAccesses?.some((entry) => entry.collection === access.collection
+            && entry.operations.includes('write')) === true);
+      const hasIncompleteChunkableTransport = hasMixedChunkableTransportDomains
+        || [...chunkableWriteCollections].some((collection) => (
         !(hasCompleteFixedChunkableOccurrenceTransport && fixedChunkableWriteCollections.has(collection))
         && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
         && !transportedChunkableWrites.some((transport) => transport.collection === collection)
@@ -14039,6 +14079,8 @@ function compileResolvedAst(
             && JSON.stringify(mutation.fixedKeySources ?? []) === JSON.stringify(first.fixedKeySources ?? [])
             && JSON.stringify(collectionByName.get(mutation.collection)?.allKeyTypes.map((type) => type.toString()))
               === JSON.stringify(firstCollection?.allKeyTypes.map((type) => type.toString())));
+          const flatKeyDomain = mutations.every((mutation) =>
+            collectionByName.get(mutation.collection)?.allKeyTypes.length === 1);
           const globallyOwnedSettlements = mutations.every((mutation) =>
             mutation.settlementIdentity?.recordOrdinalScope === 'global-journal'
             && mutation.settlementIdentity.settlementRole === 'mutation-settlement'
@@ -14084,7 +14126,7 @@ function compileResolvedAst(
             && mutation.crossArrayKeyReplay !== true
             && mutation.nestedHelperReturnReplay !== true
             && mutation.sameIterationMutableSelectionReplay !== true);
-          return !(homogeneousOperation && distinctCollections && sharedKeyDomain
+          return !(homogeneousOperation && distinctCollections && sharedKeyDomain && flatKeyDomain
             && globallyOwnedSettlements && supportedStreamValueKinds && simpleSharedSchedule);
         });
       // Bounded symbolic replay can reconstruct keys read from a locally constructed array, but that provenance
@@ -14121,9 +14163,12 @@ function compileResolvedAst(
       const mutationStreams = runtimeJournalAccesses.filter((access) => access.op !== 'read');
       const distinctMutationStreamCount = new Set(mutationStreams.map((access) =>
         access.journalAccessStreamIndex)).size;
+      const distinctMutationExecutionGroupCount = new Set(mutationStreams.map((access) =>
+        access.journalExecutionGroup)).size;
       const hasUnauthenticatedMultiStreamEvents = (abi?.runtimeLoopEvents?.length ?? 0) > 0
         && distinctMutationStreamCount > 1
-        && (hasSelectedRuntimeEvent
+        && (distinctMutationExecutionGroupCount > 1
+          || hasSelectedRuntimeEvent
           || mutationStreams.some((access) =>
             !(Number.isSafeInteger(access.journalAccessStreamIndex)
               && access.settlementIdentity?.accessStreamIndex === access.journalAccessStreamIndex
@@ -14717,6 +14762,19 @@ function compileResolvedAst(
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),
             ...(sourceAbi?.tokenContainerTransferSites?.length
               ? { tokenContainerTransferSites: sourceAbi.tokenContainerTransferSites } : {}),
+            ...(fn.entryLoopWrites?.length ? { entryLoopWrites: fn.entryLoopWrites } : {}),
+            ...(() => {
+              const loopWrites = new Set(fn.entryLoopWrites ?? []);
+              const signatures = Object.fromEntries((fn.entryAccesses ?? [])
+                .filter((access) => loopWrites.has(access.collection))
+                .map((access) => [access.collection, access.collectionSignature]));
+              return Object.keys(signatures).length > 0 ? { entryLoopWriteSignatures: signatures } : {};
+            })(),
+            ...(fn.sortedInsertLoops?.length ? { sortedInsertLoops: fn.sortedInsertLoops } : {}),
+            ...(fn.sortedInsertLoopInfo?.length ? { sortedInsertLoopInfo: fn.sortedInsertLoopInfo } : {}),
+            ...(fn.sortedUpsertLoopInfo?.length ? { sortedUpsertLoopInfo: fn.sortedUpsertLoopInfo } : {}),
+            dynamicReads: fn.dynamicReads ?? [],
+            dynamicWrites: fn.dynamicWrites ?? [],
             ...(sourceAbi?.keccakPreimageParams?.length
               ? { keccakPreimageParams: sourceAbi.keccakPreimageParams } : {}),
             // Publish handler-local recovery presence explicitly. A route reserves the union of every eligible

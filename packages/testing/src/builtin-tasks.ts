@@ -319,10 +319,10 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         solFiles,
         { solidityImportCompat: true, ...compilerOptions },
         compileFileMulti,
-        {
+        artifactCache ? {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
           compilerVersion: compilerCacheIdentity,
-        },
+        } : undefined,
         compileJobs > 1
           ? { jobs: compileJobs, module: compilerEntry, exportName: 'compileFileMulti' }
           : undefined,

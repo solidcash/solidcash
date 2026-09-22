@@ -309,6 +309,42 @@ describe('atomic compiled invocation graph', () => {
     )).toThrow(/non-canonical computed value-chunk resource identity/);
   });
 
+  it('keeps compiler span geometry when a local row observes the same chunk elsewhere', () => {
+    const resource = `${'11'.repeat(32)}:${'22'.repeat(20)}:${'33'.repeat(32)}`;
+    const merged = messageBus.mergeComputedValueChunkSpanClaims([
+      { offset: 18, resourceIdentity: resource, resourcePart: 'chunk:0' },
+      { offset: 19, resourceIdentity: resource, resourcePart: 'chunk:1' },
+    ], [
+      { offset: 20, resourceIdentity: resource, resourcePart: 'chunk:0' },
+    ]);
+    expect(merged.map((claim) => claim.offset)).toEqual([18, 19]);
+    expect(messageBus.minimumActualSizeForComputedValueChunkClaims(1, 8, 8, 72, merged)).toBe(12);
+
+    const ambiguous = messageBus.mergeComputedValueChunkSpanClaims([
+      { offset: 18, resourceIdentity: resource, resourcePart: 'chunk:0' },
+    ], [
+      { offset: 20, resourceIdentity: resource, resourcePart: 'chunk:0' },
+      { offset: 22, resourceIdentity: resource, resourcePart: 'chunk:0' },
+    ]);
+    expect(() => messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 8, 72, ambiguous,
+    )).toThrow(/moves chunk:0/);
+  });
+
+  it('derives route batch trailing cardinality from physical predecessor outputs', () => {
+    const inputs = [
+      { name: '__internal__vmapBatchPredOut_0' },
+      { name: '__internal__vmapBatchPredOut_1' },
+      { name: '__internal__vmapBatchPredOut_2' },
+      { name: '__internal__vmapBatchTrailingCount' },
+    ];
+    expect(messageBus.physicalVmapBatchTrailingCount(inputs, [-1n, -2n, -1n, 1n])).toBe(0n);
+    expect(messageBus.physicalVmapBatchTrailingCount(inputs, [40n, 40n, 41n, 0n])).toBe(2n);
+    expect(messageBus.physicalVmapBatchTrailingCount(
+      inputs.slice(0, 3), [40n, -1n, 41n],
+    )).toBeUndefined();
+  });
+
   it('applies every changed semantic class in one complete observation pass', () => {
     const applied: string[] = [];
     expect(messageBus.applySemanticClaimObservationPass([

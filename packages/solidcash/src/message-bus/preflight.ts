@@ -167,6 +167,23 @@ export interface MessageBusComputedResourceConvergence {
   outputs: readonly number[];
 }
 
+/** A balanced trailing reservation is an entry target only when it reuses a declared entry collection lock. */
+export const isTrailingEntryRepairCandidate = (candidate: {
+  slotKind: string;
+  inputHasToken: boolean;
+  outputCapability?: string;
+  outputCategory?: string;
+  outputTokenAmount?: bigint;
+  blockCategory?: string;
+  outputLockingBytecode: string;
+  entryLockingBytecodes: ReadonlySet<string>;
+}): boolean => candidate.slotKind === 'trailing'
+  && !candidate.inputHasToken
+  && candidate.outputCapability === 'mutable'
+  && candidate.outputCategory?.toLowerCase() === candidate.blockCategory?.toLowerCase()
+  && candidate.outputTokenAmount === 0n
+  && candidate.entryLockingBytecodes.has(candidate.outputLockingBytecode.toLowerCase());
+
 /**
  * Converge compiler-declared mutable outputs against the complete atomic transaction.
  *
@@ -192,6 +209,13 @@ const convergeMessageBusMutableResourceOutputs = (
   for (const block of assembly.blocks) {
     const owned = new Set<number>();
     const blockCategory = builder.inputs[block.base]?.token?.category?.toLowerCase();
+    const entryLockingBytecodes = new Set(block.blockLayout.slots.flatMap((slot) => {
+      if (slot.kind !== 'entry') return [];
+      const output = builder.outputs[block.base + slot.offset];
+      if (!output) return [];
+      const lock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+      return [binToHex(lock).toLowerCase()];
+    }));
     for (const slot of block.blockLayout.slots) {
       if (slot.kind !== 'dataNft' && (!includeEntries || slot.kind !== 'entry')) continue;
       const outputIndex = block.base + slot.offset;
@@ -221,6 +245,26 @@ const convergeMessageBusMutableResourceOutputs = (
         }
       }
       owned.add(outputIndex);
+    }
+    // Sorted insertion recreates the predecessor (P') in the trailing band. Its balanced input is deliberately
+    // token-free, so it is not covered by the fixed entry-slot loop above; the collection lock ties the reserved
+    // coordinate back to a compiler-declared entry family without admitting dynamic/event/sidecar outputs.
+    for (const slot of block.blockLayout.slots) {
+      const outputIndex = block.base + slot.offset;
+      const input = builder.inputs[outputIndex];
+      const output = builder.outputs[outputIndex];
+      if (!output?.token?.nft) continue;
+      const outputLock = output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to);
+      if (isTrailingEntryRepairCandidate({
+        slotKind: slot.kind,
+        inputHasToken: input?.token !== undefined,
+        outputCapability: output.token.nft.capability,
+        outputCategory: output.token.category,
+        outputTokenAmount: output.token.amount,
+        blockCategory,
+        outputLockingBytecode: binToHex(outputLock),
+        entryLockingBytecodes,
+      })) owned.add(outputIndex);
     }
     ownedByBlock.set(block.participant, owned);
   }
@@ -1211,7 +1255,7 @@ const evaluateEveryInput = (
   const invokeDebugWatchHex = invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_WATCH_HEX?.toLowerCase();
   if (Number.isInteger(invokeDebugInput) && invokeDebugInput >= 0
     && invokeDebugInput < transaction.inputs.length
-    && Number.isInteger(invokeDebugId) && invokeDebugId >= 0) {
+    && Number.isInteger(invokeDebugId) && invokeDebugId !== -1) {
     type InvokeDebugState = AuthenticationProgramStateCommon & {
       instructions: Array<{ opcode: number }>;
     };
@@ -1224,6 +1268,7 @@ const evaluateEveryInput = (
     let afterInvokeRemaining = 0;
     let targetReturned = false;
     let priorWatchShape = '';
+    const operationRing: Array<{ ip: number; opcode: number; top: string[] }> = [];
     const watchedBytes = invokeDebugWatchHex && invokeDebugWatchHex.length % 2 === 0
       ? hexToBin(invokeDebugWatchHex) : undefined;
     const watchOpcodes = new Set([
@@ -1251,6 +1296,12 @@ const evaluateEveryInput = (
       opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
       beforeOperation: (unknownState) => {
         const state = unknownState as InvokeDebugState;
+        operationRing.push({
+          ip: state.ip,
+          opcode: state.instructions[state.ip]?.opcode ?? -1,
+          top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 24))}`),
+        });
+        if (operationRing.length > 800) operationRing.shift();
         if (pendingInvoke !== undefined) {
           activeInvoke = pendingInvoke;
           pendingInvoke = undefined;
@@ -1330,6 +1381,7 @@ const evaluateEveryInput = (
           instructionCount: state.instructions.length,
           controlDepth: state.controlStack.length,
           ...describeStack(state),
+          operationRing,
         }));
         pendingInvoke = { callerInstructions: state.instructions, resumeIp: state.ip + 1 };
         return;
@@ -2460,7 +2512,7 @@ const evaluateEveryInput = (
             commit: output.token?.nft ? binToHex(output.token.nft.commitment).slice(0, 24) : '',
           })),
         });
-        console.error('message-bus-preflight-failure', {
+        console.error('message-bus-preflight-failure', JSON.stringify({
           inputGuardOperands,
           inputIndex,
           ip: evaluated.ip,
@@ -2484,8 +2536,26 @@ const evaluateEveryInput = (
             ip: frame.ip,
             opcode: frame.instructions[frame.ip]?.opcode,
             instructionCount: frame.instructions.length,
+            stack: ('stack' in frame && Array.isArray(frame.stack))
+              ? frame.stack.slice(-16).map((item: Uint8Array) => ({
+                bytes: item.length, hex: binToHex(item).slice(0, 128),
+              })) : undefined,
+            alternateStack: ('alternateStack' in frame && Array.isArray(frame.alternateStack))
+              ? frame.alternateStack.slice(-8).map((item: Uint8Array) => ({
+                bytes: item.length, hex: binToHex(item).slice(0, 128),
+              })) : undefined,
           } : frame),
-        });
+          nearOutputs: transaction.outputs.slice(
+            Math.max(0, (lastOutputBytecodeIndex ?? inputIndex) - 5),
+            (lastOutputBytecodeIndex ?? inputIndex) + 6,
+          ).map((output, offset) => ({
+            index: Math.max(0, (lastOutputBytecodeIndex ?? inputIndex) - 5) + offset,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token && binToHex(output.token.category),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+          })),
+        }));
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_INPUTS === '1') {

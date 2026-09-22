@@ -76,7 +76,7 @@ import {
   findMessageBusHandlerForInvocation,
 } from './graph-handler-join.js';
 import { layoutInvariantError } from './diagnostics.js';
-import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
+import { decodeLayoutCoordinate, layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import {
   buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
@@ -1355,6 +1355,48 @@ export interface ComputedValueChunkSpanClaim {
   offset: number;
   resourceIdentity?: string;
   resourcePart?: string;
+}
+
+/** Count physical predecessor recreations from the finalized witness vector. */
+export function physicalVmapBatchTrailingCount(
+  inputs: readonly { name: string }[],
+  params: readonly unknown[],
+): bigint | undefined {
+  if (!inputs.some((input) => input.name === '__internal__vmapBatchTrailingCount')) return undefined;
+  const predecessorOutputs = new Set<string>();
+  for (const [index, input] of inputs.entries()) {
+    if (!/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) continue;
+    const value = params[index];
+    if (typeof value === 'bigint' && value >= 0n) predecessorOutputs.add(value.toString());
+  }
+  return BigInt(predecessorOutputs.size);
+}
+
+/** Merge compiler-owned spans with locally observed chunks without duplicating a reserved resource part. */
+export function mergeComputedValueChunkSpanClaims(
+  spans: readonly ComputedValueChunkSpanClaim[],
+  materialized: readonly ComputedValueChunkSpanClaim[],
+): ComputedValueChunkSpanClaim[] {
+  const spanParts = new Set(spans.flatMap((claim) => (
+    claim.resourceIdentity === undefined || claim.resourcePart === undefined
+      ? [] : [`${claim.resourceIdentity}\u0000${claim.resourcePart}`]
+  )));
+  const offsetsByPart = new Map<string, Set<number>>();
+  for (const claim of materialized) {
+    if (claim.resourceIdentity === undefined || claim.resourcePart === undefined) continue;
+    const key = `${claim.resourceIdentity}\u0000${claim.resourcePart}`;
+    const offsets = offsetsByPart.get(key) ?? new Set<number>();
+    offsets.add(claim.offset);
+    offsetsByPart.set(key, offsets);
+  }
+  return [
+    ...spans,
+    ...materialized.filter((claim) => {
+      if (claim.resourceIdentity === undefined || claim.resourcePart === undefined) return true;
+      const key = `${claim.resourceIdentity}\u0000${claim.resourcePart}`;
+      return !spanParts.has(key) || (offsetsByPart.get(key)?.size ?? 0) > 1;
+    }),
+  ];
 }
 
 /**
@@ -3686,10 +3728,10 @@ export class AtomicMessageBusComposition {
           __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
           __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
         };
-        const computedValueChunkClaims = [
-          ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
-          ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
-        ];
+        const computedValueChunkClaims = mergeComputedValueChunkSpanClaims(
+          computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? [],
+          computedValueChunkMetadata.__messageBusComputedValueChunks ?? [],
+        );
         const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
           participant.participant,
           graph.layout.participantInputs[participant.participant],
@@ -3704,7 +3746,7 @@ export class AtomicMessageBusComposition {
           && (computedValueChunkClaims.length > 0 || participant.routeInputs.some(
             (input) => input.name === '__internal__valueChunkOutputBase',
           ))) {
-          console.error('atomic-computed-value-chunk-span', {
+          console.error('atomic-computed-value-chunk-span', JSON.stringify({
             participant: participant.participant,
             participantBase: graph.layout.participantInputs[participant.participant],
             fixedSize,
@@ -3717,7 +3759,7 @@ export class AtomicMessageBusComposition {
               resourceIdentity: claim.resourceIdentity,
               resourcePart: claim.resourcePart,
             })),
-          });
+          }));
         }
         let actualSize = blockSize;
         while (actualSize > minimumActualSize) {
@@ -3801,8 +3843,9 @@ export class AtomicMessageBusComposition {
           //                                          chunk NFT).
           //   `__internal__vmapBatchPredOut_<slot>` - read with OP_OUTPUTBYTECODE (measured: the displaced
           //                                          predecessor's P' output instead of this participant's).
-          // D7: tagged absent/inactive sentinels stay untouched — only active coordinates relocate.
-          // A value outside this frame's extent cannot be a participant-local coordinate.
+          // Tagged absent/inactive sentinels stay untouched. A preserved inactive dynamic base is different: it
+          // retains a local chunk coordinate while suppressing the broad write epilogue, so resolve that coordinate
+          // and let applyParticipantAbsoluteWitnesses re-encode the inactive tag after relocation.
           const relocatable: Array<{ index: number; name: string; limit: number }> = [];
           if (chunkIndex >= 0) relocatable.push({ index: chunkIndex, name: 'dynamicChunkInputBase', limit: local.inputs.length });
           for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
@@ -3812,6 +3855,25 @@ export class AtomicMessageBusComposition {
           }
           const publishedRelocations: Array<{ name: string; from: string; to: string }> = [];
           const resyncedIndices: number[] = [];
+          const trailingCountIndex = masterUnlocker?.abiFunction?.inputs?.findIndex(
+            (input) => input.name === '__internal__vmapBatchTrailingCount',
+          ) ?? -1;
+          const physicalTrailingCount = masterUnlocker?.params === undefined
+            ? undefined
+            : physicalVmapBatchTrailingCount(
+              masterUnlocker.abiFunction?.inputs ?? [], masterUnlocker.params,
+            );
+          if (trailingCountIndex >= 0 && physicalTrailingCount !== undefined
+            && masterUnlocker?.params !== undefined
+            && masterUnlocker.params[trailingCountIndex] !== physicalTrailingCount) {
+            publishedRelocations.push({
+              name: 'vmapBatchTrailingCount',
+              from: String(masterUnlocker?.params?.[trailingCountIndex]),
+              to: String(physicalTrailingCount),
+            });
+            masterUnlocker.params[trailingCountIndex] = physicalTrailingCount;
+            resyncedIndices.push(trailingCountIndex);
+          }
           // A `PredOut` witness names the output carrying the re-pointed predecessor (P') of an inserted node. The
           // batch planner publishes it in the CONCRETE callsite's coordinate space (measured: `approve` declares 4,
           // the first slot after its own four-slot block) while the covenant reads `tx.outputs[PredOut]` in the
@@ -3843,12 +3905,18 @@ export class AtomicMessageBusComposition {
           for (const candidate of relocatable) {
             const value = masterUnlocker?.params?.[candidate.index];
             if (publishedBase <= 0 || masterUnlocker?.params === undefined) continue;
-            // D7: decode tagged sentinels — raw `value < 0` alone is not the authority.
-            if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
             if (candidate.name === 'dynamicChunkInputBase') {
-              dynLocalBase = Number(value);
+              if (typeof value !== 'bigint') continue;
+              const decoded = decodeLayoutCoordinate(value);
+              const localIndex = decoded.kind === 'coordinate'
+                ? decoded.index
+                : decoded.kind === 'inactive' ? decoded.preservedIndex : undefined;
+              if (localIndex === undefined || localIndex < 0 || localIndex >= candidate.limit) continue;
+              dynLocalBase = localIndex;
               continue;
             }
+            // D7: only active PredOut coordinates relocate; tagged sentinels never enter arithmetic.
+            if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
             const slot = /(\d+)$/.exec(candidate.name)?.[1];
             const proofIndex = slot === undefined ? undefined : predOutIndexByName.get(`__internal__vmapBatchProof_${slot}`);
             const proof = proofIndex === undefined ? undefined : masterUnlocker.params[proofIndex];

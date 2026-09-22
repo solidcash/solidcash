@@ -1026,6 +1026,16 @@ export function liveJobEventsBandWidth(parts: {
   ));
 }
 
+/** Select a continuation lock without allowing persisted compatibility state to override a live covenant pin. */
+export function selectValueChunkRedeemLock(parts: {
+  computed?: Uint8Array;
+  covenantObserved?: Uint8Array;
+  compatibility?: Uint8Array;
+  cached?: Uint8Array;
+}): Uint8Array | undefined {
+  return parts.computed ?? parts.covenantObserved ?? parts.compatibility ?? parts.cached;
+}
+
 /**
  * Exclusive end of the `INPUTINDEX * scale - k` 1:1 preserve window used by
  * delegate epilogues (`scale = 1 + dataNftCount`). Chunks must start at or after this.
@@ -1337,6 +1347,62 @@ export interface ValueChunkWriteDescriptor {
   operation: 'insert' | 'update';
   outputBase: number;
   outputCount: number;
+}
+
+/** Convert a participant-local continuation coordinate into its aggregate transaction coordinate. */
+export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBase: number): number {
+  return outputBase < 0 ? outputBase : outputBase + blockBase;
+}
+
+/** Keep participant builders in their local coordinate domain until descriptor export. */
+export function selectBuilderValueChunkOutputBase(
+  localOutputBase: number,
+  publishedOutputBase: number | undefined,
+  composedBlockBase: number,
+): number {
+  return composedBlockBase > 0 ? localOutputBase : publishedOutputBase ?? localOutputBase;
+}
+
+/** Move every resolved continuation lane with its carrier while preserving lane spacing. */
+export function rebaseValueChunkWriteDescriptors(
+  writes: readonly ValueChunkWriteDescriptor[] | undefined,
+  previousBase: number | undefined,
+  nextBase: number,
+): ValueChunkWriteDescriptor[] | undefined {
+  if (writes === undefined || previousBase === undefined || previousBase === nextBase) {
+    return writes === undefined ? undefined : [...writes];
+  }
+  const delta = nextBase - previousBase;
+  return writes.map((write) => write.outputBase < 0
+    ? write : { ...write, outputBase: write.outputBase + delta });
+}
+
+/** Count the outputs physically occupying a balanced block's trailing frame. */
+export function physicalBalancedTrailingOutputCount(
+  currentOutputCount: number,
+  blockSize: number,
+  trailingCapacity: number,
+): number {
+  if (![currentOutputCount, blockSize, trailingCapacity].every(Number.isSafeInteger)
+    || currentOutputCount < 0 || blockSize < 0 || trailingCapacity < 0
+    || trailingCapacity > blockSize) {
+    throw new Error('Invalid balanced trailing-frame geometry');
+  }
+  return Math.max(0, currentOutputCount - (blockSize - trailingCapacity));
+}
+
+/** Compiler-routed delegates already materialize their loop entries inside the authenticated participant frame. */
+export function shouldReassertLegacyDelegateLoopEntries(compilerRouteDelegateBlock: boolean): boolean {
+  return !compilerRouteDelegateBlock;
+}
+
+/** A source-ordered segment plan is the sole materializer for its runtime loop-entry commitments. */
+export function shouldAppendUnsegmentedLoopEntries(
+  runtimeSegmentCount: number,
+  loopEntriesBeforeDynamicChunks: boolean,
+  delegateEntriesAfterLowLevel: boolean,
+): boolean {
+  return runtimeSegmentCount === 0 && !loopEntriesBeforeDynamicChunks && !delegateEntriesAfterLowLevel;
 }
 
 export interface DerivedChunkOutputObservation {
@@ -11055,6 +11121,7 @@ export class StatefulTransactionBuilder {
 
   /** Restore planned delegate loop commitments at their compiler-owned coordinates without shifting later rows. */
   private _reassertDelegateLoopEntries(builder: TransactionBuilder): void {
+    if (!shouldReassertLegacyDelegateLoopEntries(this.compilerRouteDelegateBlock)) return;
     const delegateLoopVars = this._delegateLoopEntryVars();
     if (delegateLoopVars.length === 0) return;
     const delegateFunction = (group: ExternalCallUtxoGroup): AbiFunction | undefined => (
@@ -14267,10 +14334,12 @@ export class StatefulTransactionBuilder {
     const recipeLock = stampDigest
       ? this._persistUpdateDigestLock(persistTokenCategory)
       : undefined;
-    const redeemLock = chunks[0]?.lockingBytecode
-      ?? recipeLock
-      ?? this.jobEventsRedeemLock
-      ?? (stateOwnerCategory ? persistedJobEventsLock(stateOwnerCategory) : undefined);
+    const redeemLock = selectValueChunkRedeemLock({
+      computed: chunks[0]?.lockingBytecode,
+      covenantObserved: this.jobEventsRedeemLock,
+      compatibility: recipeLock,
+      cached: stateOwnerCategory ? persistedJobEventsLock(stateOwnerCategory) : undefined,
+    });
     const placed = applyRedeemLockToChunks(
       [...this.derivedChunkOutputs.entries()]
         .filter(([index]) => index >= liveBand.start && index <= liveEnd)
@@ -14354,10 +14423,12 @@ export class StatefulTransactionBuilder {
     const persistVLock = this._persistValueChunkLock(persistTokenCategory, persistValue)
       ?? this._persistValueChunkLock(publishCategory, persistValue);
 
-    const redeemLock = persistVLock
-      ?? persistDigestLock
-      ?? this.jobEventsRedeemLock
-      ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
+    const redeemLock = selectValueChunkRedeemLock({
+      computed: persistVLock,
+      covenantObserved: this.jobEventsRedeemLock,
+      compatibility: persistDigestLock,
+      cached: categoryId ? persistedJobEventsLock(categoryId) : undefined,
+    });
     const persistedValue = this._shouldRematerializePersistUpdate()
       ? (this._persistedValueChunkValue(persistTokenCategory)
         ?? this._persistedValueChunkValue(categoryId))
@@ -14396,6 +14467,7 @@ export class StatefulTransactionBuilder {
       }
     }
     const siblingLock = source[0]?.lockingBytecode
+      ?? this.jobEventsRedeemLock
       ?? persistDigestLock
       ?? dominant
       ?? redeemLock
@@ -15015,8 +15087,19 @@ export class StatefulTransactionBuilder {
           && ownsCapturedValueChunkOutputBase(alias),
       );
       for (const alias of physicalAliases) {
+        const previousBase = alias.valueChunkOutputBase;
+        const resolvedWriteBases = (alias.valueChunkWrites ?? [])
+          .map((write) => write.outputBase)
+          .filter((base) => Number.isSafeInteger(base) && base >= 0);
+        const previousWriteBase = resolvedWriteBases.length > 0
+          ? Math.min(...resolvedWriteBases) : previousBase;
+        const writesNeedRebase = previousWriteBase !== undefined && previousWriteBase !== absoluteStart;
         const encoded = alias.internalArgs?.__internal__valueChunkOutputBase;
-        if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)) continue;
+        if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)
+          && !writesNeedRebase) continue;
+        alias.valueChunkWrites = rebaseValueChunkWriteDescriptors(
+          alias.valueChunkWrites, previousWriteBase, absoluteStart,
+        );
         // Kernel sole authority: when trailing geometry is published, assign via resolve (not invent).
         const trailingBase = alias.blockLayout?.trailingBase
           ?? carrier.blockLayout?.trailingBase;
@@ -15494,9 +15577,15 @@ export class StatefulTransactionBuilder {
 
   /** Compiler-authored value-chunk resources carried by this concrete call graph. */
   getValueChunkWriteDescriptors(): readonly ValueChunkWriteDescriptor[] {
+    const blockBase = this.getComposedBlockBase();
     return [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
       .flatMap((group) => group.valueChunkWrites ?? [])
-      .map((write) => ({ ...write }));
+      .map((write) => ({
+        ...write,
+        // Participant builders execute and materialize against block-local output indices. Metadata exported to
+        // the aggregate composer names transaction outputs, so cross the coordinate boundary exactly here.
+        outputBase: absoluteComposedValueChunkOutputBase(write.outputBase, blockBase),
+      }));
   }
 
   setValueChunkRawCommitments(id: string, commitments: string[]): this {
@@ -18747,6 +18836,81 @@ export class StatefulTransactionBuilder {
       });
     }
 
+    const appendDynamicChunks = (): void => {
+      if (this.delegateDynamicChunksAtSuffix) {
+        const recovered = [...this.derivedChunkOutputs.entries()]
+          .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === this.categoryId)
+          .sort(([left], [right]) => left - right);
+        if (recovered.length > 0) {
+          for (const [, chunk] of recovered) {
+            const chunkOutput = {
+              to: chunk.lockingBytecode,
+              amount: 1200n,
+              token: {
+                amount: 0n,
+                category: chunk.categoryId ?? this.categoryId,
+                nft: { capability: 'mutable' as const, commitment: chunk.commitment },
+              },
+            };
+            chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+            builder.addOutput(chunkOutput);
+          }
+          return;
+        }
+      }
+      for (const dv of this.dynamicChunkVars) {
+        const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
+        const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
+        const computedBase = this.getChunkOutputBase();
+        if (debugChunkLayout && commitments.length > 0 && builder.outputs.length !== computedBase) {
+          console.error('dynamic-chunk-layout-mismatch', {
+            name: dv.name, outputBase: builder.outputs.length, computedBase, count: commitments.length,
+          });
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && commitments.length > 0) {
+          console.error('append-dynamic-chunks', {
+            name: dv.name,
+            lockingBytecode: binToHex(dv.lockingBytecode),
+            outputBase: builder.outputs.length,
+            computedBase,
+            baseParts: {
+              layoutTrailingBase: this.blockLayout?.trailingBase,
+              layoutBlockSize: this.blockLayout?.blockSize,
+              externalCallOutputs: this.externalCallUtxoGroups.map((group) => ({
+                shared: group.sharedGroupIndex,
+                blockInputs: group.blockInputs?.length,
+                fallback: 1 + group.dataNftUtxos.length,
+              })),
+              externalReturns: this.tailReturnEventOutputs()
+                .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length,
+              lowLevelGroups: this.lowLevelCallUtxoGroups.map((group) => 1 + group.dataNftUtxos.length),
+              lowLevelRaw: this.lowLevelCallRawInputs.length,
+              iterationEntries: this.iterationEntryInputs.length,
+              loopEntries: this._loopEntryOutputCount(),
+              valueChunks: this._valueChunkOutputCount(),
+              pendingOutputs: this.pendingOutputs.length,
+              identityAnchors: this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0),
+            },
+            count: commitments.length,
+          });
+        }
+        for (const commitment of commitments) {
+          const chunkOutput = {
+            to: dv.lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment },
+            },
+          };
+          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+          builder.addOutput(chunkOutput);
+        }
+      }
+    };
     const appendLoopEntry = (
       lv: (typeof this.loopEntryVars)[number], commitment: string,
     ): void => {
@@ -19000,81 +19164,6 @@ export class StatefulTransactionBuilder {
     };
     if (this.delegateEntriesAfterLowLevel) appendValueChunks();
 
-    const appendDynamicChunks = (): void => {
-      if (this.delegateDynamicChunksAtSuffix) {
-        const recovered = [...this.derivedChunkOutputs.entries()]
-          .filter(([, chunk]) => (chunk.categoryId ?? this.categoryId) === this.categoryId)
-          .sort(([left], [right]) => left - right);
-        if (recovered.length > 0) {
-          for (const [, chunk] of recovered) {
-            const chunkOutput = {
-              to: chunk.lockingBytecode,
-              amount: 1200n,
-              token: {
-                amount: 0n,
-                category: chunk.categoryId ?? this.categoryId,
-                nft: { capability: 'mutable' as const, commitment: chunk.commitment },
-              },
-            };
-            chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-            builder.addOutput(chunkOutput);
-          }
-          return;
-        }
-      }
-      for (const dv of this.dynamicChunkVars) {
-        const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
-        const debugChunkLayout = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_CHUNK_LAYOUT === '1';
-        const computedBase = this.getChunkOutputBase();
-        if (debugChunkLayout && commitments.length > 0 && builder.outputs.length !== computedBase) {
-          console.error('dynamic-chunk-layout-mismatch', {
-            name: dv.name, outputBase: builder.outputs.length, computedBase, count: commitments.length,
-          });
-        }
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' && commitments.length > 0) {
-          console.error('append-dynamic-chunks', {
-            name: dv.name,
-            lockingBytecode: binToHex(dv.lockingBytecode),
-            outputBase: builder.outputs.length,
-            computedBase,
-            baseParts: {
-              layoutTrailingBase: this.blockLayout?.trailingBase,
-              layoutBlockSize: this.blockLayout?.blockSize,
-              externalCallOutputs: this.externalCallUtxoGroups.map((group) => ({
-                shared: group.sharedGroupIndex,
-                blockInputs: group.blockInputs?.length,
-                fallback: 1 + group.dataNftUtxos.length,
-              })),
-              externalReturns: this.tailReturnEventOutputs()
-                .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length,
-              lowLevelGroups: this.lowLevelCallUtxoGroups.map((group) => 1 + group.dataNftUtxos.length),
-              lowLevelRaw: this.lowLevelCallRawInputs.length,
-              iterationEntries: this.iterationEntryInputs.length,
-              loopEntries: this._loopEntryOutputCount(),
-              valueChunks: this._valueChunkOutputCount(),
-              pendingOutputs: this.pendingOutputs.length,
-              identityAnchors: this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0),
-            },
-            count: commitments.length,
-          });
-        }
-        for (const commitment of commitments) {
-          const chunkOutput = {
-            to: dv.lockingBytecode,
-            amount: 1200n,
-            token: {
-              amount: 0n,
-              category: this.categoryId,
-              nft: { capability: 'mutable' as const, commitment },
-            },
-          };
-          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-          builder.addOutput(chunkOutput);
-        }
-      }
-    };
     if (!this.delegateEntriesAfterLowLevel && !this.delegateDynamicChunksAtSuffix) appendDynamicChunks();
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
@@ -19088,8 +19177,11 @@ export class StatefulTransactionBuilder {
         commitments: this.loopEntryCommitments.get(value.collection),
       })));
     }
-    for (const lv of (this.loopEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
-      ? [] : this._trailingLoopEntryVars())) {
+    for (const lv of (shouldAppendUnsegmentedLoopEntries(
+      this.runtimeLoopTrailingSegments.length,
+      this.loopEntriesBeforeDynamicChunks,
+      this.delegateEntriesAfterLowLevel,
+    ) ? this._trailingLoopEntryVars() : [])) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -19127,13 +19219,28 @@ export class StatefulTransactionBuilder {
           0,
         ),
       };
-      const trailingOutputCount = Object.values(trailingOutputCounts).reduce((sum, count) => sum + count, 0);
+      const declaredTrailingOutputCount = Object.values(trailingOutputCounts)
+        .reduce((sum, count) => sum + count, 0);
+      const trailingBase = (this.blockLayout?.blockSize ?? trailingCapacity) - trailingCapacity;
+      while (builder.outputs.length < trailingBase) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      // A semantic resource can materialize more than one physical settlement output (for example, a routed
+      // journal entry may emit both an eager predecessor rewrite and a dense final row). Capacity belongs to the
+      // physical frame, so pad from the cursor rather than from independently reconstructed semantic counts.
+      const trailingOutputCount = physicalBalancedTrailingOutputCount(
+        builder.outputs.length,
+        this.blockLayout?.blockSize ?? builder.outputs.length,
+        trailingCapacity,
+      );
       if (trailingOutputCount > trailingCapacity) {
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_TRAILING_CAPACITY === '1') {
           console.error('balanced-trailing-capacity', JSON.stringify({
             capacity: trailingCapacity,
             counts: trailingOutputCounts,
+            declaredCount: declaredTrailingOutputCount,
+            physicalCount: trailingOutputCount,
             loopEntries: this.loopEntryVars.map((value) => ({
               collection: value.collection,
               delegate: value.delegate,

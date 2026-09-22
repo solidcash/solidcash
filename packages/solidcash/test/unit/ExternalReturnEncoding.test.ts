@@ -3,7 +3,8 @@ import { binToHex, hash160, hexToBin } from '@bitauth/libauth';
 import { AbiCoder } from 'ethers';
 import { decodePushdataValue, encodePushdataValue, sha256, type StructDefinitionInfo } from '@solidcash/utils';
 import {
-  decodeEvmReturnValue, encodeExternalReturnValue, encodeExternalReturnValues, encodeLeadingRouteArrayPushes,
+  decodeEvmReturnValue, encodeCompleteRouteArrayPushes, encodeExternalReturnValue, encodeExternalReturnValues,
+  encodeLeadingRouteArrayPushes,
   encodeStructArgument,
   isCanonicalEvmReturnBlob, isCanonicalEvmReturnSequence, isCanonicalEvmReturnVector,
   isCanonicalEvmScalarReturnBlob, isCanonicalEvmScalarReturnVector,
@@ -383,6 +384,24 @@ describe('encodeLeadingRouteArrayPushes', () => {
       count: 2n,
       active: true,
     }]);
+  });
+
+  it('encodes the terminal push when pinning the complete selected-route value', () => {
+    const initialValue = encodePushdataValue([{ count: 1n, active: false }], 'Pair[]', structs);
+    const encoded = encodeCompleteRouteArrayPushes({
+      rowArguments: [row(7n, 2n), row(8n, 3n), row(7n, 4n)],
+      collection: 'history',
+      valueType: 'Pair[]',
+      structs,
+      initialValue,
+      resolveElement: resolveElement(structs),
+    });
+    expect(encoded).toBeDefined();
+    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([
+      { count: 1n, active: false },
+      { count: 2n, active: true },
+      { count: 4n, active: true },
+    ]);
   });
 
   it('does not merge pushes for different keys', () => {

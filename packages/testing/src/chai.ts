@@ -302,6 +302,8 @@ class EmitAssertion implements PromiseLike<void> {
     private expectedArgs?: Record<string, any>,
     /** Shared across `.to.emit()` chains so a thenable FunctionCall is sent only once. */
     private shared: { receipt?: unknown } = {},
+    /** Polarity applied only to the next assertion added through `.to.emit(...)`. */
+    private nextNegate = false,
   ) {}
 
   private async resolveReceipt(): Promise<any> {
@@ -322,6 +324,7 @@ class EmitAssertion implements PromiseLike<void> {
         event?: string; eventName?: string; args?: Record<string, unknown>;
         txid?: string; transactionHash?: string;
       }>;
+      let queriedTransactionEvents = false;
       // Atomic composition receipts are produced by the generic transaction builder, which cannot decode every
       // participant artifact's events. The emitting contract can still read the newly mined event NFTs. Query it
       // once and bind results to this exact transaction rather than silently accepting an undecoded receipt (that
@@ -337,6 +340,7 @@ class EmitAssertion implements PromiseLike<void> {
             txid?: string; transactionHash?: string;
           }>;
           logs = queried.filter((log) => (log.txid ?? log.transactionHash) === receipt.txid);
+          queriedTransactionEvents = true;
         } catch { /* fall through to the ordinary matcher/legacy receipt behavior */ }
       }
       // Prefer inspecting an already-mined receipt's events (real or soft-apply). Avoids vitest
@@ -416,10 +420,16 @@ class EmitAssertion implements PromiseLike<void> {
         if (this.negate) throw new Error(`expected not to emit '${this.event}'`);
         return;
       }
+      if (queriedTransactionEvents) {
+        if (this.negate) return;
+        throw new Error(`event '${this.event}' not found in transaction ${receipt.txid}`);
+      }
       // Already broadcast (txid present) but no decoded events: do not re-send (UTXOs spent).
       if (receipt && typeof receipt.txid === 'string' && receipt.txid.length > 0) {
         if (this.negate) {
-          throw new Error(`expected not to emit '${this.event}' but tx ${receipt.txid} was sent`);
+          throw new Error(
+            `cannot verify absence of event '${this.event}': transaction ${receipt.txid} has no decoded events`,
+          );
         }
         if (args && Object.keys(args).length > 0) {
           throw new Error(
@@ -450,6 +460,7 @@ class EmitAssertion implements PromiseLike<void> {
     // Continuation `.to.emit(...)` is provided by EmitAssertion's `to` getter.
     return new EmitAssertion(
       this.actual, this.contract, this.event, this.negate, this.prior, argsObj, this.shared,
+      this.nextNegate,
     );
   }
 
@@ -470,7 +481,7 @@ class EmitAssertion implements PromiseLike<void> {
   get to(): { emit: (contract: any, event: string) => EmitAssertion } {
     return {
       emit: (contract: any, event: string) => new EmitAssertion(
-        this.actual, contract, event, this.negate,
+        this.actual, contract, event, this.nextNegate,
         [...this.prior, () => this.assertOnce()],
         undefined,
         this.shared,
@@ -490,7 +501,8 @@ class EmitAssertion implements PromiseLike<void> {
    */
   get not(): EmitAssertion {
     return new EmitAssertion(
-      this.actual, this.contract, this.event, !this.negate, this.prior, this.expectedArgs, this.shared,
+      this.actual, this.contract, this.event, this.negate, this.prior, this.expectedArgs, this.shared,
+      !this.nextNegate,
     );
   }
 

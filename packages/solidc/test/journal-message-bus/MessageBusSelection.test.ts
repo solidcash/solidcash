@@ -344,7 +344,7 @@ describe('message-bus compilation selection', () => {
           return records[id];
         }
 
-        function consumeOpaque(bytes payload) internal returns (bytes memory) {
+        function consumeOpaque(bytes payload) public returns (bytes memory) {
           (bool success, bytes memory result) = peer.call(payload);
           require(success);
           return result;

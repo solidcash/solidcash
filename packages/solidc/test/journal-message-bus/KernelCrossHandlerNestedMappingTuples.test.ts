@@ -1,3 +1,4 @@
+import { decodeAuthenticationInstructions, hexToBin, OpcodesBCH } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
@@ -74,9 +75,65 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
         [[0, 1]],
         [[0, 1]],
       ]);
+      expect(artifact.messageBus?.route.sortedBatchInfo).toEqual([
+        { collection: 'credits', slotIndices: [0, 1] },
+      ]);
       expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);
     },
   );
+
+  it('retains a complete multi-lane batch declared by a routed handler', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract RoutedTransfer {
+        mapping(address => uint256) private balances;
+        function transfer(address from, address to, uint256 amount) public {
+          balances[from] = balances[from] - amount;
+          balances[to] = balances[to] + amount;
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true, solidityImportCompat: true,
+      messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 10_000_000, suppressWarnings: true,
+    });
+
+    expect(artifact.messageBus?.route.sortedBatchInfo).toEqual([
+      { collection: 'balances', slotIndices: [0, 1] },
+    ]);
+  });
+
+  it('publishes selected-row loop resources on the handler descriptor', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract CompositeLedger {
+        struct Record { address owner; uint256 amount; }
+        mapping(uint256 => Record[]) private records;
+        function set(uint256 key, address owner, uint256 amount) public {
+          records[key].push(Record(owner, amount));
+          require(true);
+        }
+      }
+    `, {
+      forceStateful: true, solidityImportCompat: true,
+      messageBus: true, messageBusKernel: true,
+      maximumInputBytes: 10_000_000, suppressWarnings: true,
+    });
+
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set')).toMatchObject({
+      eligible: true,
+      entryLoopWrites: ['records'],
+    });
+    const route = artifact.messageBus!.route;
+    const instructions = decodeAuthenticationInstructions(hexToBin(artifact.functionBodies![route.selector]));
+    const compactInsertGuard = [
+      OpcodesBCH.OP_PICK, OpcodesBCH.OP_0, OpcodesBCH.OP_LESSTHAN, OpcodesBCH.OP_SUB,
+      OpcodesBCH.OP_DUP, OpcodesBCH.OP_OUTPUTBYTECODE, OpcodesBCH.OP_2,
+      OpcodesBCH.OP_PICK, OpcodesBCH.OP_EQUALVERIFY,
+    ];
+    expect(instructions.some((_, start) => compactInsertGuard.every(
+      (opcode, offset) => instructions[start + offset]?.opcode === opcode,
+    ))).toBe(false);
+  });
 
   it('publishes independent two-entry lanes for repeated read-only mapping handlers', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;

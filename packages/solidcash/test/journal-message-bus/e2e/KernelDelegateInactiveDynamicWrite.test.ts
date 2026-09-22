@@ -60,7 +60,7 @@ describe('delegate route inactive dynamic writes', () => {
 
     const deployed = await upgrades.deployProxy(
       getContractFactory(artifact, signer),
-      { marker: 0n, dormant: [] },
+      { marker: 0n, dormant: [signer.getAddress()] },
       { initializer: false },
     );
     const probeArtifact = compileString(PROBE, { ...OPTIONS, messageBusGraphContext: true });

@@ -60,6 +60,18 @@ describe('F8′ analyzer-first admission', () => {
     expect(artifact.messageBus?.admittedHandlerIds?.length).toBeGreaterThan(0);
   });
 
+  it('stamps the optimized first-rung artifact from attribution spans', () => {
+    const artifact = compileString(`pragma solidcash ^0.13.0;
+      contract FastCounter {
+        int current;
+        function bump(int value) public { current = value; require(value >= 0); }
+      }
+    `, { ...KERNEL, optimizeForCompilationSpeed: true });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.admissionSource).toBe('attribution-spans');
+    expect(artifact.messageBus?.admittedHandlerIds).toContain('bump');
+  });
+
   it('compiler.ts uses recoverCompileByMonotoneRefusal and never stamps published-fallback', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '../src/compiler.ts'), 'utf8');

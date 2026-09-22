@@ -17,4 +17,10 @@ describe('dynamic chunk input base coordinates', () => {
     expect(resolveDynamicChunkInputBase(-1, 7)).toBe(-1n);
     expect(resolveDynamicChunkInputBase(-2, 0)).toBe(-1n);
   });
+
+  it('preserves read coordinates while marking an inactive write epilogue', () => {
+    expect(resolveDynamicChunkInputBase(3, 17, false)).toBe(-23n);
+    expect(resolveDynamicChunkInputBase(0, 0, false)).toBe(-3n);
+    expect(resolveDynamicChunkInputBase(-1, 17, false)).toBe(-2n);
+  });
 });

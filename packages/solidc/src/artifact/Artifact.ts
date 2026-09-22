@@ -1738,23 +1738,20 @@ function buildFunctionAbiMetadata(
       }
       const key = `${consumerCallsiteId}:${lane}:${producerCallsiteId}:${resultIndex}`
         + `:${normalized.sourceCallsiteId ?? ''}`;
+      const producerSourceCallsiteId = normalized.sourceCallsiteId ?? producerCallsiteId!;
       result.set(key, {
         consumerCallsiteId,
         ...(lane === 'condition' ? { condition: true as const }
           : lane === 'iterationDomain' ? { iterationDomain: true as const }
             : { argument: lane }),
         producerCallsiteId: producerCallsiteId!,
-        ...(normalized.sourceCallsiteId !== undefined && {
-          producerSourceCallsiteId: normalized.sourceCallsiteId,
-        }),
+        producerSourceCallsiteId,
         resultIndex,
       });
       return {
         kind: 'producerResult',
         callsiteId: producerCallsiteId,
-        ...(normalized.sourceCallsiteId !== undefined && {
-          sourceCallsiteId: normalized.sourceCallsiteId,
-        }),
+        sourceCallsiteId: producerSourceCallsiteId,
         resultIndex,
         ...(normalized.type && { type: normalized.type }),
       };

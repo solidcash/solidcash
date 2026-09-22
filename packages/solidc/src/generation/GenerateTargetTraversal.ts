@@ -231,6 +231,28 @@ import {
   isFixedWidthType,
   getFixedWidth,
 } from './utils.js';
+
+/** Stack indices to drop, in execution order, so an inactive branch matches active cleanup with duplicates. */
+export function inactiveBranchDropIndices(stackBefore: readonly string[], stackAfter: readonly string[]): number[] {
+  const remainingDrops = new Map<string, number>();
+  for (const name of stackBefore) remainingDrops.set(name, (remainingDrops.get(name) ?? 0) + 1);
+  for (const name of stackAfter) remainingDrops.set(name, (remainingDrops.get(name) ?? 0) - 1);
+  if ([...remainingDrops.values()].some((count) => count < 0)) {
+    throw new Error('Inactive verifier branch cannot synthesize active-branch stack values.');
+  }
+  const working = [...stackBefore];
+  const indices: number[] = [];
+  for (const name of stackBefore) {
+    const count = remainingDrops.get(name) ?? 0;
+    if (count <= 0) continue;
+    const index = working.indexOf(name);
+    indices.push(index);
+    working.splice(index, 1);
+    remainingDrops.set(name, count - 1);
+  }
+  return indices;
+}
+
 import { isNumericType } from '../utils.js';
 import { getLiteralIfDupEffect, getStackEffect } from '../asmStackEffects.js';
 import {
@@ -8574,17 +8596,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * write inside it reads this slot (read-modify-write) instead of re-reading, and replaces it in place.
    */
   private preAllocateDynamicWrite(sv: StateVariableNode, key: string, locationData: SingleLocationData): void {
-    this.emitReadDynamicScalar(sv, locationData); // pushes '(value)' = current tight value
-    const valueStackName = `__internal__dynwrite_value_${sv.name}`;
-    this.popFromStack();
-    this.pushToStack(valueStackName);
-
-    this.emit(Op.OP_SIZE, locationData); // [value, size] - OP_SIZE leaves value, pushes size
-    this.pushToStack('(dynlen)');
-    this.emitPushdataEncode(new IntType(false, 32), locationData); // [value, len_encoded]
+    // Capture the physical header before reassembling the decoded value. The dynamic-read loop has runtime-only
+    // working operands which are deliberately absent from the static tracker; a later state-field read can then
+    // address a neighbouring field in a large routed frame. Reading A$len first also preserves the distinction
+    // between an empty chunk payload (length 0) and an empty array's decoded `pushdata(0)` blob (one byte).
+    this.emitReadDynamicLen(sv, '(dynlen)', locationData);
+    this.emitPushdataEncode(new IntType(false, 32), locationData);
     this.popFromStack();
     const stateWriteStackName = `__internal__state_write_${sv.name}`;
     this.pushToStack(stateWriteStackName);
+
+    this.emitReadDynamicScalar(sv, locationData); // pushes '(value)' = current decoded/tight value
+    this.popFromStack();
+    const valueStackName = `__internal__dynwrite_value_${sv.name}`;
+    this.pushToStack(valueStackName);
+
+    // Keep the established journal bank order: A$len above its dynamic value.
+    this.emit(Op.OP_SWAP, locationData);
+    [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+
     this.pendingStateWrites.set(key, stateWriteStackName);
     this.preAllocatedStateWrites.add(key);
 
@@ -9614,6 +9644,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (routePreserved.size === 0 && (
       this.currentFunction.messageBusRoute === true
       || (this.currentFunction.name?.startsWith('__message_bus') === true)
+      || this.isCompilerMessageBusRoute()
       || this.currentFunction.messageBusEligible === true
       || (this.currentFunction.entryLoopWrites?.length ?? 0) > 0
     )) {
@@ -9632,7 +9663,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const partialName = '(foreign_chunk_offset)';
     if (names.size > 0) this.pushToStack(partialName);
     for (const name of names) {
-      if (!includeWrittenOldChunks && written.has(name) && !routePreserved.has(name)) continue;
+      // A same-function write is added below from its NEW value. Counting its route-preserved name here as well
+      // duplicates the run (measured `jobEvents[jobId].push`: base 159 + preserved userAddresses + jobEvents twice
+      // addressed output 161 while the entry is at 160). Sibling-only preserved dynamics remain in `names`.
+      if (!includeWrittenOldChunks && written.has(name)) continue;
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
       if (!sv) continue;
       this.emitReadDynamicLen(sv, '(vmap_foreign_len)', locationData, callsiteDepth);
@@ -11009,7 +11043,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the handler's published physical slot. Remapping only the chunk-value witnesses leaves sorted-batch
     // topology arguments (slot/proof/next/predOut/rank) pointed at a same-numbered, unrelated route entry; the
     // handler then compares its runtime key hash with a valid witness for the wrong collection or key.
-    const match = /^__internal__(valueWitness|leadingPushValue|vmapBatch(?:Slot|Proof|Next|PredOut|Rank))_(\d+)$/
+    const match = /^__internal__(valueWitness|(?:leading|complete)PushValue|vmapBatch(?:Slot|Proof|Next|PredOut|Rank))_(\d+)$/
       .exec(targetParameter.name);
     if (!match || !targetFunc.messageBusPhysicalEntrySlots) return argument;
     const localSlot = Number(match[2]);
@@ -11277,7 +11311,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .filter((name) => name === KERNEL_JOURNAL_RECORDS
         || name.startsWith(KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX));
     const targetJournalContextNames = [
-      ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
+      ...(targetFunc.graphRuntimeEmissionHandler && targetFunc.graphRuntimeEmissionThreaded
+        ? ['__internal__graphEmissions'] : []),
       ...(targetRuntimeLoopEntryInputCount
         ? [
           GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT,
@@ -21390,9 +21425,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       .some((entry) => entry.chunkableArrayValue === true);
     const emitInsertReconstructedBase = (): void => {
       this.emitTrailingBlockBase(blockSize, loc, undefined, 5); // NEW outIdx; five raw predecessor fields are live
-      const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some(
-        (slot) => slot.kind === 'returnEvent',
-      ) ?? false;
+      // A balanced route's explicit trailingBase keeps the return-event coordinate as padding. Only compact the
+      // direct-call layout where blockSize is also the implicit trailing base.
+      const hasReturnEventSlot = this.currentFunction.blockLayout?.trailingBase === undefined
+        && (this.currentFunction.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent') ?? false);
       if (hasReturnEventSlot) {
         const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
         if (returnOutputIdx >= 0) {
@@ -21405,8 +21441,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // X102. Five untracked vmap fields remain above the tracked frame here. Both the iteration-count terms and
       // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
-      // Keep the legacy delegate skip on ordinary INSERTs; chunkable handlers take the absolute-base branch.
-      if (preferAbsoluteDynBase || !this.currentFunctionIsDelegate) {
+      // Keep the legacy delegate skip on ordinary INSERTs (registerUser): ungating it shifted NEW onto a pad.
+      // Entry-loop / route-preserved-dyn handlers take the absolute-base branch above instead.
+      if (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix()) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }
     };
@@ -23693,12 +23730,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const stackName = this.pendingStateWrites.get(key);
 
           if (stackName) {
-            // Use already-encoded value from stack
-            // An aggregate message-bus route invokes handlers which return journal slots into the physical
-            // route frame. Their runtime height can grow independently of the route traversal's top-relative
-            // model, but the route's own entry frame remains anchored at the bottom. Copy journal fields by that
-            // stable ordinal when reconstructing the participant state commitment.
-            this.emitPickSettlementValue(stackName, locationData, node);
+            const dynamicBaseIndex = sv.isDynamic
+              ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
+            if (dynamicBaseIndex >= 0 && this.isCompilerMessageBusRoute(node)) {
+              // The route journal is a union across handlers. If the selected rows contain no dynamic writer,
+              // dormant lanes are not authoritative state updates: preserve each dynamic header directly from
+              // authenticated input state while allowing scalar fields in the same NFT to settle normally.
+              const savedStack = [...this.stack];
+              this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', locationData);
+              this.emit(encodeInt(-1n), locationData);
+              this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+              this.emit(Op.OP_IF, locationData);
+              this.emitPickSettlementValue(stackName, locationData, node);
+              this.emit(Op.OP_ELSE, locationData);
+              this.stack = [...savedStack];
+              const fieldType = this.physicalFieldType(sv);
+              this.emitStateFieldRead(sv, fieldType, sortedFields, locationData);
+              this.pushToStack('(inactive_dynamic_header)');
+              this.emitPushdataEncode(fieldType, locationData);
+              this.popFromStack();
+              this.emit(Op.OP_ENDIF, locationData);
+              this.stack = savedStack;
+            } else {
+              // Use already-encoded value from stack. An aggregate message-bus route invokes handlers which
+              // return journal slots into the physical route frame. Their runtime height can grow independently
+              // of the route traversal's top-relative model, but the entry frame remains anchored at the bottom.
+              this.emitPickSettlementValue(stackName, locationData, node);
+            }
             this.pushToStack('(value)');
           } else {
             // Read from input commitment, decode, re-encode
@@ -23860,21 +23918,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(loop_commit)');
 
     // --- outIdx = trailingBase + preservedDynamicChunks + counter  (untracked, above tracked (loop_commit)) ---
-    // Without the dynamic-chunk offset, jobEvents loop NEWs land on preserved dynamic chunk outputs
-    // (measured take-job MDV1: verify at pad 163 / dyn band instead of entry 161).
-    // Prefer the authenticated absolute first-dynamic coordinate when threaded; reconstructing from
-    // owner+trailingBase can mis-pick the cospend entry as master (123+40=163 vs dynBase 159 → entry 161).
-    // Negative sentinel means no old chunk input — reconstruct like the dynamic-write path.
+    // Without the dynamic-chunk offset, jobEvents loop NEWs land on preserved userAddresses/arbitratorAddresses
+    // chunk outputs (measured take-job MDV1: verify at pad 163 / dyn band instead of entry 161).
+    // Always prefer the authenticated absolute base when present: usesDelegateTransactionSuffix() previously
+    // forced the reconstruct path on proxy-impl handlers, and that path mis-picks the cospend entry as owner
+    // (123+40=163 instead of dynBase 159 + 2 preserved chunks = 161).
     const emitLoopEntryReconstructedBase = (): void => {
-      const ownerFrameOffset = this.usesMessageBusOwnerBlockBase() ? 1 : 0;
-      this.emitTrailingBlockBase(blockSize, loc, undefined, ownerFrameOffset);
-      if ((this.currentFunction.messageBusRouteDynamicResources?.length ?? 0) > 0) {
-        this.emit(Op.OP_1SUB, loc);
-      }
+      this.emitTrailingBlockBase(blockSize, loc);
       this.emitAddDynamicOutputsBeforeEntries(loc, 0);
     };
     const explicitTrailingBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
     if (explicitTrailingBase >= 0) {
+      // A graph handler can execute with loop locals beneath its tracked frame, making a reconstructed
+      // participant-owner pick differ from the authenticated trailing coordinate by one. The explicit witness is
+      // already absolute (and already includes collection-iteration inputs), so use it as the stable base and add
+      // only the dynamic runs which physically follow it. Negative sentinel → reconstruct (first-chunk push).
       this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
@@ -28052,8 +28110,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return nesting;
   }
 
-  private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
+  private emitDynamicWriteVerification(node: FunctionDefinitionNode, guardInactiveRoute = true): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
+    const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
+    if (guardInactiveRoute && dynamicBaseIndex >= 0) {
+      const stackBefore = [...this.stack];
+      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitDynamicWriteVerification(node, false);
+      const stackAfter = [...this.stack];
+      this.emit(Op.OP_ELSE, loc);
+      this.stack = [...stackBefore];
+      for (const index of inactiveBranchDropIndices(stackBefore, stackAfter)) {
+        this.emit(encodeInt(BigInt(index)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(index);
+      }
+      this.emit(Op.OP_ENDIF, loc);
+      this.stack = stackAfter;
+      return;
+    }
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
     const CHUNK = 120;
     // A compact layout counts a returnEvent slot which a plain send does not materialize, so its trailing chunks
@@ -28215,18 +28294,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitPickCompilerRouteFrameValue(returnParamName, loc);
         this.emit(Op.OP_1ADD, loc);
       } else {
-        this.emitTrailingBlockBase(blockSize, loc);
-        // Non-returning, non-loop callee blocks still precede local dynamic chunks.
-        const externalCallOutputCount = this.externalCallSlots
-          .filter((slot) => !slot.inlineLoopDispatch && !this.isExternalCallSlotLoopNested(slot))
-          .reduce((sum, slot) => sum + 1 + slot.requiredDataNftIndices.length, 0);
-        if (externalCallOutputCount > 0) {
-          this.emit(encodeInt(BigInt(externalCallOutputCount)), loc);
-          this.emit(Op.OP_ADD, loc);
+        const explicitDynamicBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
+        const emitReconstructedBase = (): void => {
+          this.emitTrailingBlockBase(blockSize, loc);
+          // Non-returning, non-loop callee blocks still precede local dynamic chunks.
+          const externalCallOutputCount = this.externalCallSlots
+            .filter((slot) => !slot.inlineLoopDispatch && !this.isExternalCallSlotLoopNested(slot))
+            .reduce((sum, slot) => sum + 1 + slot.requiredDataNftIndices.length, 0);
+          if (externalCallOutputCount > 0) {
+            this.emit(encodeInt(BigInt(externalCallOutputCount)), loc);
+            this.emit(Op.OP_ADD, loc);
+          }
+          this.emitAddCollectionIterCounts(loc);
+        };
+        if (explicitDynamicBase >= 0) {
+          // Composed routes publish the exact first dynamic-chunk coordinate. An invoked route clone's active
+          // input can be the adjacent executor rather than its participant owner, so reconstructing owner +
+          // trailingBase shifts the whole chunk run by one. The witness already includes collection-iteration
+          // inputs; the offsets below must not add them a second time. A negative sentinel means this invocation
+          // has no old chunk input (for example a first push), so reconstruct its output coordinate normally.
+          this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(0n), loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_IF, loc);
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_DROP, loc);
+          emitReconstructedBase();
+          this.emit(Op.OP_ENDIF, loc);
+        } else {
+          emitReconstructedBase();
         }
       }
       if (!this.usesDelegateTransactionSuffix()) {
-        this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
+        // Returning-call bases do not pass through the ordinary reconstruction branch above.
+        if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
           this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
@@ -29113,6 +29215,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // index, so its +1 remains required.
       this.emit(encodeInt(BigInt(explicitBase)), loc);
       this.emit(Op.OP_PICK, loc);
+      // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
+      // encoded = -(base + 3). Decode before applying read-loop offsets.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(-1n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_NEGATE, loc);
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_SUB, loc);
+      this.emit(Op.OP_ENDIF, loc);
     } else if (threadedBase >= 0) {
       this.emitMasterInputIndex(loc);
       this.emit(encodeInt(BigInt(threadedBase + 1)), loc);
@@ -32955,7 +33067,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /** Copy a tracked frame value by its stable distance from the bottom. */
-  private emitPickTrackedFromBottom(name: string, locationData: SingleLocationData): void {
+  private emitPickTrackedFromBottom(
+    name: string, locationData: SingleLocationData,
+  ): void {
     const topIndex = this.getStackIndex(name);
     const bottomOrdinalPlusOne = this.stack.length - topIndex;
     if (DEBUG_COMPUTE_BASE) {
@@ -33549,6 +33663,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (`__internal__returnOutputIdx < 0`) materializes no output there. Runtime mapping outputs therefore compact
     // by one exactly like dynamic-state and mapping-value chunk outputs. Inputs do not compact: the builder keeps
     // their block alignment with a non-token funding input, so this belongs only in the output-base helper.
+    // A message-bus route and its outlined graph handlers execute against the route's published fixed trailing
+    // band. Their working layout can still carry a direct-call returnEvent slot, but compacting it would move a
+    // runtime mapping output one coordinate before the route ABI's authoritative trailingBase.
     const hasUnmaterializedReturnSlot = trailingBase === undefined
       && this.currentFunction.blockLayout?.trailingBase === undefined
       && (this.currentFunction.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent') ?? false);

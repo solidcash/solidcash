@@ -163,8 +163,8 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
           try {
             outputIndex = Number(vmNumberToBigInt(state.stack[state.stack.length - 1]));
           } catch { return; }
-          if (!owners.get(outputIndex)?.has(inputIndex)) return;
           const expected = state.stack[state.stack.length - 2];
+          if (!owners.get(outputIndex)?.has(inputIndex)) return;
           if (expected.length === 0 || expected.length > 128) return;
           const expectedHex = binToHex(expected);
           // Ordinal is relative to the contiguous owned run that contains this output.

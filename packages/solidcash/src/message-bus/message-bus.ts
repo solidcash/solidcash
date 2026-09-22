@@ -588,6 +588,8 @@ export function encodeMessageBatch(
    * an unselected position an explicit identity.
    */
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+  /** @internal Atomic graph composition re-derives one terminal continuation lane across all selected rows. */
+  options: { atomicContinuationConvergence?: boolean } = {},
 ): EncodedMessageBatch {
   const capability = artifact.messageBus;
   if (!capability) {
@@ -642,7 +644,7 @@ export function encodeMessageBatch(
       const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
       return handler !== undefined && selectors.includes(normalizeFunctionSelector(handler.selector));
     }).length;
-    if (selected > fixedChunkablePolicy.maximumRows) {
+    if (selected > fixedChunkablePolicy.maximumRows && options.atomicContinuationConvergence !== true) {
       throw new Error(
         `message-bus batch selects ${selected} direct chunkable-write rows; `
         + `the authenticated participant route permits at most ${fixedChunkablePolicy.maximumRows}`,

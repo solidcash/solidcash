@@ -24,6 +24,18 @@ contract C() {
 describe('chunk-array write after an early-return guard', () => {
   const provider = createTestProvider();
 
+  it('not-taken write preserves a canonical empty-array header', async () => {
+    const artifact = compileString(SRC, { chunkedArrays: true });
+    const contract = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { nums: [] }, { saltContract: true },
+    );
+    const sc = StatefulContract.withCategory(contract, categoryId);
+
+    await sc.popIf(false).send();
+    expect((await sc.getState()).nums).toEqual([]);
+  });
+
   it('pop: not-taken preserves, taken shrinks', async () => {
     const artifact = compileString(SRC, { chunkedArrays: true });
     const contract = new Contract(artifact, [], { provider });

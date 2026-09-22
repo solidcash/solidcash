@@ -1001,7 +1001,11 @@ export function applyParticipantAbsoluteWitnesses(args: {
           }),
         );
       }
-      write(index, 'dynamicChunkInputBase', args.witnesses.dynamicChunkInputBase);
+      const current = args.params[index];
+      const next = typeof current === 'bigint' && current < -2n
+        ? -args.witnesses.dynamicChunkInputBase - 3n
+        : args.witnesses.dynamicChunkInputBase;
+      write(index, 'dynamicChunkInputBase', next);
       continue;
     }
     if (input.name === '__internal__valueChunkOutputBase') {

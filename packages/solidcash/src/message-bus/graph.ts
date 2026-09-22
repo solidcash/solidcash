@@ -2278,7 +2278,12 @@ export function planCompiledGraph(
         : 0xffff,
       executorLockingBytecode: executionKind === 1
         ? participant.executorLockingBytecode!.toLowerCase() : '',
-      batch: encodeMessageBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
+      // Atomic composition re-derives and authenticates the terminal continuation value across every selected
+      // writer row. Standalone batches retain the artifact's one-row fixed-chunkable guard.
+      batch: encodeMessageBatch(
+        participant.artifact, perOwner[owner], participant.unboundRouteWitnesses,
+        { atomicContinuationConvergence: true },
+      ),
       invocations: Object.freeze(globalByOwner[owner]),
       blockLayout: participant.artifact.messageBus!.route.blockLayout!,
       routeInputs: participant.artifact.messageBus!.route.inputs,

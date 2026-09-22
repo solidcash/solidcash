@@ -101,6 +101,7 @@ import {
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
   liveJobEventsBandWidth,
+  selectValueChunkRedeemLock,
   selectObservedValueChunkRun,
   persistedJobEventsWidth,
   selectHashedValueForChunkPin,
@@ -3278,6 +3279,11 @@ describe('assignPhysicalReturnIndices', () => {
     expect(liveJobEventsBandWidth({
       plannedWidth: 2, persistWidth: 5, derivedWidth: 3,
     })).toBe(3);
+    const observedLock = Uint8Array.of(0xaa, 0x20, 0x01, 0x87);
+    const compatibilityLock = Uint8Array.of(0xaa, 0x20, 0x02, 0x87);
+    expect(selectValueChunkRedeemLock({
+      covenantObserved: observedLock, compatibility: compatibilityLock,
+    })).toBe(observedLock);
     expect(computePublishJobEventsBand({
       implIndex: 18, blockSize: 5, plannedWidth: 2, insertShift: 1,
     })).toEqual({ start: 24, end: 25, nNew: 2 });

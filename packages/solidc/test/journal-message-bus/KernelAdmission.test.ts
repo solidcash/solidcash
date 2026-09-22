@@ -165,8 +165,34 @@ describe('required kernel admission', () => {
     ]);
   });
 
+  it('admits a guarded dynamic-struct push with an unsupported-flow source marker', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract C {
+        struct Review { address reviewer; uint256 jobId; uint8 rating; string text; uint32 timestamp; }
+        mapping(address => Review[]) userReviews;
+        address marketplace;
+        modifier onlyMarketplace() { require(msg.sender == marketplace); _; }
+        function appendEntry(
+          address target, address reviewer, uint256 jobId, uint8 rating, string memory text
+        ) public onlyMarketplace {
+          require(rating >= 1 && rating <= 5);
+          userReviews[target].push(Review({
+            reviewer: reviewer, jobId: jobId, rating: rating, text: text,
+            timestamp: uint32(block.timestamp)
+          }));
+        }
+        function control() public { require(true); }
+      }
+    `, { ...KERNEL, solidityImportCompat: true, maximumInputBytes: 1_000_000 });
+    const abi = artifact.abi.find((candidate) => candidate.name === 'appendEntry');
+    expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendEntry'))
+      .toMatchObject({ eligible: true });
+  });
+
   it.each([
     ['a conditional push', 'if (take) this.values[key].push(value);', 'bool take'],
+    ['an early return before a push', 'if (take) return; this.values[key].push(value);', 'bool take'],
     ['two pushes', 'this.values[key].push(value); this.values[key].push(value);', ''],
     ['push and pop', 'this.values[key].push(value); this.values[key].pop();', ''],
   ])('keeps %s outside the pooled direct-push capability', (_label, mutation, extraParameter) => {
@@ -544,7 +570,7 @@ describe('required kernel admission', () => {
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sameRow'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'flat'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sequential'))
       .toMatchObject({ eligible: true });
   });
@@ -683,7 +709,7 @@ describe('required kernel admission', () => {
   it('refuses lifecycle handlers as KERNEL_LIFECYCLE', () => {
     expect(denied(`contract C() {
       int value;
-      function denied() selfdestruct { require(true); }
+      function denied() selfdestruct { value = 1; require(true); }
       function control() public { require(true); }
     }`, 'denied')).toMatchObject({
       eligible: false,
@@ -10596,7 +10622,7 @@ describe('required kernel admission', () => {
     expect(new Set(info?.map((stream) => stream.varyingArrayParam)).size).toBe(1);
     // Trailing continuation band + valueChunkOutputBase let compose settle loop-nested ≥61B payloads.
     expect(artifact.messageBus?.route.blockLayout?.trailingCapacity).toBeGreaterThanOrEqual(61);
-    expect(artifact.messageBus?.route.inputs?.some(
+    expect(artifact.abi.find((candidate) => candidate.name === 'writeBoth')?.inputs.some(
       (input) => input.name === '__internal__valueChunkOutputBase',
     )).toBe(true);
   });

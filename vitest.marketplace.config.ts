@@ -60,8 +60,10 @@ export default defineConfig(solidhatPreset(
     },
     test: {
       include: ['.marketplace/project/test/marketplace.test.ts'],
-      testTimeout: 600_000,
-      hookTimeout: 600_000,
+      // Kernel-mode history tests compose dozens of multi-participant BCH transactions serially. Keep the
+      // unchanged upstream test bodies authoritative rather than aborting a healthy loop at the ten-minute mark.
+      testTimeout: 1_200_000,
+      hookTimeout: 1_200_000,
       fileParallelism: false,
       // The fixture retains several multi-megabyte covenant transactions. Avoid spending most of a full run in
       // major GC at Node's default ~4 GB worker ceiling, and expose per-test progress without SDK debug logging.

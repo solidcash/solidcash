@@ -62,6 +62,7 @@ import {
   convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
 } from './computed-dynamic-chunks.js';
+import { materializeTransportedValueEntryCommitment } from './transported-value-entry.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
   applyParticipantAbsoluteWitnesses,
@@ -3325,6 +3326,28 @@ export class AtomicMessageBusComposition {
               },
             };
           }
+          if (candidate.production.write.operation !== 'update') continue;
+          const entryCandidates = participant.blockLayout!.slots.flatMap((slot) => {
+            if (slot.kind !== 'entry') return [];
+            const output = local.outputs[slot.offset];
+            if (output?.token?.category.toLowerCase()
+              !== candidate.production.stateOwner.categoryId.toLowerCase()
+              || output.token.nft?.capability !== 'mutable'
+              || output.token.amount !== 0n) return [];
+            const commitment = materializeTransportedValueEntryCommitment({
+              currentCommitmentHex: output.token.nft.commitment,
+              keySlotHex: candidate.production.write.keySlot,
+              value: candidate.production.value,
+            });
+            return commitment === undefined ? [] : [{ offset: slot.offset, commitment }];
+          });
+          if (entryCandidates.length !== 1) {
+            throw new Error(
+              `messageBus: transported continuation production resolves ${entryCandidates.length} owning entries`,
+            );
+          }
+          const entry = entryCandidates[0]!;
+          local.outputs[entry.offset]!.token!.nft!.commitment = entry.commitment;
         }
         const split = splitByParticipant.get(participant.participant);
         if (split) {

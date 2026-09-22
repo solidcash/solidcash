@@ -581,9 +581,12 @@ export function finalizeAtomicInvocationGraph(
     const lifecyclePrefix = participant.lifecycle === undefined ? 0
       : (participant.blockLayout?.slots.filter((slot) =>
         slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft').length ?? 0);
+    // fixedSuffix (identity anchors / executor) only forbids trailing *compaction* (see spans above).
+    // It must not collapse callManifest fixedSize to maximumSize: that published graphFixedSize=88 with
+    // trailingUsed=0 for FakeToken (artifact trailingBase 23 + identity +1), and the OUTPUTBYTECODE lock
+    // loop then compared trailing NFT locks against the wrong schedule (take-job input 225 EQUALVERIFY).
     const fixedSize = participant.lifecycle === undefined
-      ? (participant.blockLayout!.fixedSuffix
-        ? maximumSize : participant.blockLayout!.trailingBase ?? maximumSize)
+      ? (participant.blockLayout!.trailingBase ?? maximumSize)
       : 1 + lifecyclePrefix;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');

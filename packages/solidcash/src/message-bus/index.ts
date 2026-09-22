@@ -6,6 +6,8 @@ export * from './atomic.js';
 export * from './delegate.js';
 export * from './diagnostics.js';
 export * from './graph.js';
+export * from './layout-resolver.js';
+export * from './resource-fold.js';
 export * from './message-bus.js';
 export * from './preflight.js';
 export * from './worklist.js';

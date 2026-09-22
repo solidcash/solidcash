@@ -106,6 +106,11 @@ import {
 } from '../message-bus/message-bus.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
+import {
+  foldChunkableResource,
+  type ResourceFoldPlan,
+  type ResourceFoldStep,
+} from '../message-bus/resource-fold.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
 import {
   advanceValueChunkProducerArgumentEpoch,
@@ -6240,19 +6245,25 @@ function routeRowCollectionKey(
  * matching handler body; the compiler-provided leading-push argument replays earlier rows against the same
  * authenticated collection entry before that final push.
  */
-export function encodeLeadingRouteArrayPushes(params: {
+/**
+ * Build a Gate-B `ResourceFoldPlan` for ≥2 selected rows that push the same chunkable key.
+ * Leading/complete witnesses must come from `foldChunkableResource` — this is the published plan shape.
+ */
+export function buildChunkablePushFoldPlan(params: {
   rowArguments: readonly RouteExpressionKeyRow[];
   collection: string;
   valueType: string;
   structs: Artifact['structs'];
   timestamp?: bigint;
-  /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
   legacyJobEventCompatibility?: boolean;
-  /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
   resolveElement?: (
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
   ) => Uint8Array | undefined;
-}): Uint8Array | undefined {
+}): {
+  plan: ResourceFoldPlan;
+  elements: Uint8Array[];
+  valueType: string;
+} | undefined {
   const array = parseArrayTypeString(params.valueType);
   if (!array || array.bound !== undefined) return undefined;
   const rows: Array<{
@@ -6268,8 +6279,6 @@ export function encodeLeadingRouteArrayPushes(params: {
     if (accesses[0].arrayMutation === 'push' && recipe?.version === 1) {
       return [{ row, key, access: accesses[0] }];
     }
-    // Old legacy-unroll artifacts have no recipe. Keep their exact schema adapter isolated here; kernel rows are
-    // never authorized by a same-typed argument search.
     if (params.legacyJobEventCompatibility !== true) return [];
     const visible = visibleHandlerInputs(row.handler.inputs);
     const elementInputs = visible.map((input, index) => ({ input, index }))
@@ -6278,13 +6287,12 @@ export function encodeLeadingRouteArrayPushes(params: {
       ? [{ row, key, access: accesses[0], legacyElementIndex: elementInputs[0].index }] : [];
   });
   if (rows.length < 2) return undefined;
-  const final = rows[rows.length - 1];
-  const earlier = rows.slice(0, -1).filter((row) => row.key === final.key);
-  if (earlier.length === 0) return undefined;
-  let encoded = encodePushdataValue([], params.valueType, params.structs);
-  for (const candidate of earlier) {
-    // Same wire rule as the refresh's current element: an empty event timestamp is stamped by the storing handler,
-    // so the derived leading mutation must carry the stamp too.
+  const final = rows[rows.length - 1]!;
+  const sameKey = rows.filter((row) => row.key === final.key);
+  if (sameKey.length < 2) return undefined;
+  const elements: Uint8Array[] = [];
+  const steps: ResourceFoldStep[] = [];
+  for (const [index, candidate] of sameKey.entries()) {
     const element = candidate.legacyElementIndex === undefined
       ? params.resolveElement?.(candidate.row, candidate.access, array.elementType)
       : encodeStructArgument(
@@ -6294,9 +6302,69 @@ export function encodeLeadingRouteArrayPushes(params: {
     if (!element) throw new Error(
       `Cannot evaluate compiler-authenticated stored element for '${params.collection}'.`,
     );
-    encoded = appendEncodedArrayElement(encoded, element);
+    elements.push(element);
+    steps.push({
+      rowSelector: candidate.key,
+      effectOrdinal: candidate.access.mutationEffectOrdinals?.[0] ?? index,
+      kind: 'push',
+      elementRecipeId: `row-${index}`,
+    });
   }
-  return encoded;
+  return {
+    plan: {
+      collection: params.collection,
+      initialSource: 'empty',
+      steps,
+      leadingWitness: '__internal__leadingPushValue',
+      completeWitness: '__internal__completePushValue',
+    },
+    elements,
+    valueType: params.valueType,
+  };
+}
+
+export function foldLeadingRouteArrayPushes(params: {
+  rowArguments: readonly RouteExpressionKeyRow[];
+  collection: string;
+  valueType: string;
+  structs: Artifact['structs'];
+  timestamp?: bigint;
+  /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
+  legacyJobEventCompatibility?: boolean;
+  /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
+  resolveElement?: (
+    row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
+  ) => Uint8Array | undefined;
+}): { leading: Uint8Array; complete: Uint8Array; plan: ResourceFoldPlan } | undefined {
+  const built = buildChunkablePushFoldPlan(params);
+  if (!built) return undefined;
+  // Gate B authority: leading/complete are fold outputs, not a hand-rolled push loop.
+  const folded = foldChunkableResource(built.plan, {
+    resolveElement: (step) => {
+      const index = built.plan.steps.indexOf(step);
+      return index >= 0 ? built.elements[index] : undefined;
+    },
+    appendElement: appendEncodedArrayElement,
+    emptyValue: () => encodePushdataValue([], built.valueType, params.structs),
+  });
+  if (folded.leading === undefined) return undefined;
+  return { leading: folded.leading, complete: folded.complete, plan: built.plan };
+}
+
+export function encodeLeadingRouteArrayPushes(params: {
+  rowArguments: readonly RouteExpressionKeyRow[];
+  collection: string;
+  valueType: string;
+  structs: Artifact['structs'];
+  timestamp?: bigint;
+  /** Historical legacy-unroll JobEventData adapter; never inferred from arbitrary field names. */
+  legacyJobEventCompatibility?: boolean;
+  /** Evaluate the compiler-authenticated element recipe in this row's exact ABI/state environment. */
+  resolveElement?: (
+    row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
+  ) => Uint8Array | undefined;
+}): Uint8Array | undefined {
+  return foldLeadingRouteArrayPushes(params)?.leading;
 }
 
 /** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */
@@ -7557,6 +7625,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (input.name === '__internal__dynamicChunkInputBase') return -1n;
         if (input.name.startsWith('__internal__valueWitness_')
           || input.name.startsWith('__internal__leadingPushValue_')
+          || input.name.startsWith('__internal__completePushValue_')
           || input.name.startsWith('__internal__vmapBatchRows_')) return new Uint8Array();
         if (/^__internal__vmapBatch(?:Slot|Next)_\d+$/.test(input.name)) return new Uint8Array(32);
         if (/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return -1n;
@@ -20030,7 +20099,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const legacyTimestamp = legacyCompatibility
                   && typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
-                const leadingValue = encodeLeadingRouteArrayPushes({
+                const foldedPushes = foldLeadingRouteArrayPushes({
                   rowArguments: selectedRows,
                   collection: access.collection,
                   valueType: collection.valueType,
@@ -20042,16 +20111,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     onChainState.state as Record<string, unknown>,
                   ),
                 });
+                const leadingValue = foldedPushes?.leading;
+                const completeValue = foldedPushes?.complete;
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__leadingPushValue_${slotIndex}`);
-                kernelEncodedValue = leadingValue;
+                const completeIndex = entryAbiFunction!.inputs.findIndex((input) =>
+                  input.name === `__internal__completePushValue_${slotIndex}`
+                  || input.name === '__internal__completePushValue');
+                // Complete folded value is the kernel-encoded array after every active row; leading is prior rows.
+                kernelEncodedValue = completeValue ?? leadingValue;
                 if (leadingValue && leadingIndex >= 0) {
                   entryArgs[leadingIndex] = leadingValue;
                   if (entryAbiFunction === abiFunction) finalArgs[leadingIndex] = leadingValue;
                   if (entryCompilerRoute) {
-                    const name = entryAbiFunction!.inputs[leadingIndex].name;
+                    const name = entryAbiFunction!.inputs[leadingIndex]!.name;
                     entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [name]: leadingValue };
                   }
+                }
+                if (completeValue && completeIndex >= 0) {
+                  entryArgs[completeIndex] = completeValue;
+                  if (entryAbiFunction === abiFunction) finalArgs[completeIndex] = completeValue;
+                  if (entryCompilerRoute) {
+                    const name = entryAbiFunction!.inputs[completeIndex]!.name;
+                    entryCompilerRoute.internalArgs = { ...entryCompilerRoute.internalArgs, [name]: completeValue };
+                  }
+                } else if (completeValue && entryCompilerRoute) {
+                  // Published fold plan names completeWitness even when the ABI has not yet injected a slot.
+                  entryCompilerRoute.internalArgs = {
+                    ...entryCompilerRoute.internalArgs,
+                    __internal__completePushValue: completeValue,
+                    [`__internal__completePushValue_${slotIndex}`]: completeValue,
+                  };
                 }
               }
               // A fixed message-bus route CAN reproduce its handler-computed value from the authenticated row
@@ -27573,9 +27663,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           return BigInt(appending ? plannedLocktime ?? providerTime : providerTime);
                         })();
                         const leadingName = `__internal__leadingPushValue_${routeSlot}`;
+                        const completeName = `__internal__completePushValue_${routeSlot}`;
                         const inheritedLeading = inheritedRouteInternalArgs[leadingName];
-                        const routeLeading = effectiveRowArguments
-                          ? encodeLeadingRouteArrayPushes({
+                        const foldedRoute = effectiveRowArguments
+                          ? foldLeadingRouteArrayPushes({
                             rowArguments: effectiveRowArguments,
                             collection: access.collection,
                             valueType: collection.valueType,
@@ -27587,12 +27678,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               (childState as { state?: Record<string, unknown> })?.state,
                             ),
                           }) : undefined;
+                        const routeLeading = foldedRoute?.leading;
                         const leadingPush = inheritedLeading instanceof Uint8Array
                           && inheritedLeading.length > 0 && routeLeading
                           ? concatenateEncodedArrays(inheritedLeading, routeLeading)
                           : routeLeading ?? (inheritedLeading instanceof Uint8Array
                             ? inheritedLeading : undefined);
                         if (leadingPush && leadingPush.length > 0) internalArgs[leadingName] = leadingPush;
+                        if (foldedRoute?.complete && foldedRoute.complete.length > 0) {
+                          const inheritedComplete = inheritedRouteInternalArgs[completeName];
+                          internalArgs[completeName] = inheritedComplete instanceof Uint8Array
+                            && inheritedComplete.length > 0
+                            ? concatenateEncodedArrays(inheritedComplete, foldedRoute.complete)
+                            : foldedRoute.complete;
+                          internalArgs.__internal__completePushValue = internalArgs[completeName];
+                        }
                         const emptyArray = encodePushdataValue([], collection.valueType, structs);
                         const storedPreValue = childStoredValues.get(routeSlot) ?? emptyArray;
                         const elementType = collection.valueType.slice(0, -2);

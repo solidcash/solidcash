@@ -1558,6 +1558,19 @@ export interface Artifact {
       /** @deprecated Compatibility with pre-merge split artifacts. */
       splitLifecycle?: true;
     };
+    /**
+     * Gate B: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via
+     * `foldChunkableResource` using this plan (not hand-rolled SDK reconstruction as authority).
+     */
+    resourceFoldPlans?: readonly {
+      collection: string;
+      collectionSignature?: string;
+      initialSource: 'empty' | 'prior-commitment' | 'leading-witness';
+      leadingWitness?: string;
+      completeWitness?: string;
+      /** Push steps expected when ≥2 selected rows mutate the same key. */
+      stepKind: 'push';
+    }[];
     route: AbiFunction;
     handlers: {
       name: string;

@@ -9573,6 +9573,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     const names = new Set(this.currentFunction.dynamicReads ?? []);
+    // Message-bus route handlers share one trailing band. Preserved dynamic resources (_name/_symbol, …)
+    // occupy slots from trailingBase before any mapping NEW; omitting those counts aliases NEW verifies onto
+    // chunk locks (take-job FakeToken input 225 EQUALVERIFY).
+    const routePreserved = new Set(this.currentFunction.messageBusRouteDynamicResources ?? []);
+    // Outlined entry-loop bodies often lose route dynamic projections; fall back so jobEvents NEWs do not
+    // land on preserved dynamic chunk slots (MDV1 take-job pad@163 vs entry@161).
+    if (routePreserved.size === 0 && (
+      this.currentFunction.messageBusRoute === true
+      || (this.currentFunction.name?.startsWith('__message_bus') === true)
+      || this.currentFunction.messageBusEligible === true
+      || (this.currentFunction.entryLoopWrites?.length ?? 0) > 0
+    )) {
+      for (const sv of this.stateVariables) {
+        if (sv.isDynamic) routePreserved.add(sv.name);
+      }
+    }
+    for (const name of routePreserved) names.add(name);
     if (includeWrittenOldChunks) {
       for (const name of written) names.add(name);
     }
@@ -9583,7 +9600,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const partialName = '(foreign_chunk_offset)';
     if (names.size > 0) this.pushToStack(partialName);
     for (const name of names) {
-      if (!includeWrittenOldChunks && written.has(name)) continue;
+      if (!includeWrittenOldChunks && written.has(name) && !routePreserved.has(name)) continue;
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
       if (!sv) continue;
       this.emitReadDynamicLen(sv, '(vmap_foreign_len)', locationData, callsiteDepth);
@@ -9597,9 +9614,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /** Add outputs emitted before scalar vmap NEW nodes: preserved iteration/read chunks and newly-written chunks. */
   private emitAddDynamicOutputsBeforeEntries(
-    locationData: SingleLocationData, callsiteDepth = 0,
+    locationData: SingleLocationData, callsiteDepth = 0, includeCollectionIterations = true,
   ): void {
-    this.emitAddCollectionIterCounts(locationData, callsiteDepth);
+    if (includeCollectionIterations) this.emitAddCollectionIterCounts(locationData, callsiteDepth);
     this.emitAddForeignReadOnlyChunkCounts(locationData, false, callsiteDepth);
     const dynamicValueNames = new Set([...this.pendingDynamicWrites.values()].map((w) => w.valueStackName));
     for (const name of this.currentFunction.dynamicWrites ?? []) {
@@ -21117,23 +21134,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitTakeFirst32(loc);
     this.pushToStack('(__new_entry_category)');
     this.emitSortedEntryAddress(collectionHash, loc);
-    this.emitTrailingBlockBase(blockSize, loc, undefined, 5); // NEW outIdx; five raw predecessor fields are live
-    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some(
-      (slot) => slot.kind === 'returnEvent',
-    ) ?? false;
-    if (hasReturnEventSlot) {
-      const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
-      if (returnOutputIdx >= 0) {
-        // Five raw vmap working fields (H, original address, predecessor slot/next/value) sit above the tracked
-        // function stack, plus the running output index itself.
-        this.emit(encodeInt(BigInt(returnOutputIdx + 6)), loc); this.emit(Op.OP_PICK, loc);
-        this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(Op.OP_SUB, loc);
+    // Chunkable-array mapping NEWs that sit after route-preserved sibling dyn chunks prefer the authenticated
+    // absolute base. Ordinary mapping INSERTs keep reconstruct-from-trailingBase (registerUser / initialize).
+    const preferAbsoluteDynBase = (this.currentFunction.entryAccesses ?? [])
+      .some((entry) => entry.chunkableArrayValue === true);
+    const emitInsertReconstructedBase = (): void => {
+      this.emitTrailingBlockBase(blockSize, loc, undefined, 5); // NEW outIdx; five raw predecessor fields are live
+      const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some(
+        (slot) => slot.kind === 'returnEvent',
+      ) ?? false;
+      if (hasReturnEventSlot) {
+        const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+        if (returnOutputIdx >= 0) {
+          // Five raw vmap working fields (H, original address, predecessor slot/next/value) sit above the tracked
+          // function stack, plus the running output index itself.
+          this.emit(encodeInt(BigInt(returnOutputIdx + 6)), loc); this.emit(Op.OP_PICK, loc);
+          this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
+          this.emit(Op.OP_SUB, loc);
+        }
       }
+      // X102. Five untracked vmap fields remain above the tracked frame here. Both the iteration-count terms and
+      // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
+      // Keep the legacy delegate skip on ordinary INSERTs; chunkable handlers take the absolute-base branch.
+      if (preferAbsoluteDynBase || !this.currentFunctionIsDelegate) {
+        this.emitAddDynamicOutputsBeforeEntries(loc, 5);
+      }
+    };
+    const explicitInsertBase = preferAbsoluteDynBase
+      ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
+    if (explicitInsertBase >= 0) {
+      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitAddDynamicOutputsBeforeEntries(loc, 5, false);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      emitInsertReconstructedBase();
+      this.emit(Op.OP_ENDIF, loc);
+    } else {
+      emitInsertReconstructedBase();
     }
-    // X102. Five untracked vmap fields remain above the tracked frame here. Both the iteration-count terms and
-    // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
-    if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc, 5);
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7, 6);               // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
     // Predecessor plus new node, plus one per co-spent read slot, is the whole footprint of an insert.
@@ -23567,8 +23609,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(loop_commit)');
 
-    // --- outIdx = masterInputIndex + blockSize + counter  (untracked, sits above the tracked (loop_commit)) ---
-    this.emitTrailingBlockBase(blockSize, loc);
+    // --- outIdx = trailingBase + preservedDynamicChunks + counter  (untracked, above tracked (loop_commit)) ---
+    // Without the dynamic-chunk offset, jobEvents loop NEWs land on preserved dynamic chunk outputs
+    // (measured take-job MDV1: verify at pad 163 / dyn band instead of entry 161).
+    // Prefer the authenticated absolute first-dynamic coordinate when threaded; reconstructing from
+    // owner+trailingBase can mis-pick the cospend entry as master (123+40=163 vs dynBase 159 → entry 161).
+    // Negative sentinel means no old chunk input — reconstruct like the dynamic-write path.
+    const emitLoopEntryReconstructedBase = (): void => {
+      const ownerFrameOffset = this.usesMessageBusOwnerBlockBase() ? 1 : 0;
+      this.emitTrailingBlockBase(blockSize, loc, undefined, ownerFrameOffset);
+      if ((this.currentFunction.messageBusRouteDynamicResources?.length ?? 0) > 0) {
+        this.emit(Op.OP_1SUB, loc);
+      }
+      this.emitAddDynamicOutputsBeforeEntries(loc, 0);
+    };
+    const explicitTrailingBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
+    if (explicitTrailingBase >= 0) {
+      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitAddDynamicOutputsBeforeEntries(loc, 0, false);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      emitLoopEntryReconstructedBase();
+      this.emit(Op.OP_ENDIF, loc);
+    } else {
+      emitLoopEntryReconstructedBase();
+    }
     this.emit(encodeInt(BigInt(this.getStackIndex(this.entryLoopCounterName) + 1)), loc); // +1: partial outIdx untracked
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc); // [..., (loop_commit), outIdx]

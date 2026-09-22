@@ -30,6 +30,23 @@ import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
 } from './artifact/Artifact.js';
 import {
+  resolveSolidcFeatureFlags,
+  solidcEnvFlagEnabled,
+  solidcFeatureIdentityBits,
+} from './solidc-env-registry.js';
+import { clearDefineFrameValidations } from './define-frame-validation.js';
+import {
+  admittedHandlerNamesFromAnalysis,
+  assertPublishedHandlersMatchAdmission,
+  buildAdmissionDecisionSet,
+  refusedHandlerNamesFromAnalysis,
+  type AdmissionDecisionSet,
+  type KernelAdmissionReason,
+} from './admission-decision.js';
+
+/** Survives binder rebuild: span-based analysis from the admission ladder. */
+let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
+import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
@@ -196,7 +213,7 @@ import {
 } from './deploymentRecipes.js';
 import { cloneNode } from './ast/clone.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
-import { retryMonotoneAttribution } from './admissionRetry.js';
+import { recoverCompileByMonotoneRefusal } from './admissionRetry.js';
 
 // A participant's row results are concatenated into one VM byte string before that complete return vector is
 // hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
@@ -884,12 +901,19 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
   // Debug switch for the whole run: emitting the code generator's bytecode verbatim makes an instruction pointer
   // name the exact source line that produced it, which is what a VM-failure investigation needs. An explicit
   // option still wins, and the resolved value lands in the artifact cache key.
+  // F28: instrumented no-optimise goes through the registry reader (unknown names cannot flip it).
   const optimise = options.optimise
-    ?? (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_NO_OPTIMISE !== '1';
+    ?? !solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE');
+  // Production-semantics SOLIDC_* features: explicit CompilerOptions win; else env via registry.
+  // Unknown SOLIDC_* keys are ignored (never silently alter bytecode).
+  const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+  const featureFlags = resolveSolidcFeatureFlags(env, { releaseMode: true });
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
     optimise,
+    ownerAltAnchor: options.ownerAltAnchor ?? featureFlags.ownerAltAnchor,
+    handlerBandModel: options.handlerBandModel ?? featureFlags.handlerBandModel,
     // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Once the AST
     // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
     messageBus: messageBusMode !== 'disabled',
@@ -1095,6 +1119,14 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   delete keyOptions.__strictNoInternalRecovery;
   delete keyOptions.__internalAttemptFailureState;
   delete keyOptions.__kernelReadCarrierAuthorizationBox;
+  // Fold enabled production-semantics features into the cache identity (item 4).
+  const featureBits = solidcFeatureIdentityBits({
+    ownerAltAnchor: options.ownerAltAnchor === true,
+    handlerBandModel: options.handlerBandModel === true,
+  });
+  if (Object.keys(featureBits).length > 0) {
+    keyOptions.__solidcFeatureIdentity = featureBits;
+  }
   return keyOptions;
 }
 
@@ -1281,6 +1313,122 @@ interface ExternalAdmissionAttribution {
   spans: { key: string; name: string; location?: Location }[];
   /** Optional KERNEL_* / named reason to apply instead of the generic attributed refusal. */
   reasons: Map<string, string>;
+}
+
+function attributionReason(reason: string | undefined): KernelAdmissionReason {
+  if (reason === 'KERNEL_UNBOUNDED_KEY') return 'KERNEL_UNBOUNDED_KEY';
+  if (reason === 'KERNEL_TX_SIGNATURE') return 'KERNEL_TX_SIGNATURE';
+  if (reason === 'KERNEL_OPAQUE_EFFECT') return 'KERNEL_OPAQUE_EFFECT';
+  if (reason === 'KERNEL_FOREIGN_DELEGATE') return 'KERNEL_FOREIGN_DELEGATE';
+  if (reason === 'KERNEL_LIFECYCLE') return 'KERNEL_LIFECYCLE';
+  return 'KERNEL_LAYOUT';
+}
+
+function applyAdmissionStamp(
+  artifact: Artifact,
+  analysis: AdmissionDecisionSet,
+  source: 'attribution-spans',
+): Artifact {
+  if (artifact.messageBus === undefined) return artifact;
+  const published = artifact.messageBus.handlers ?? [];
+  // Gate uses only codegen-published handlers — never re-filtered span keys.
+  assertPublishedHandlersMatchAdmission(analysis, published);
+  artifact.messageBus.admittedHandlerIds = admittedHandlerNamesFromAnalysis(analysis);
+  artifact.messageBus.refusedHandlerIds = refusedHandlerNamesFromAnalysis(analysis);
+  artifact.messageBus.admissionSource = source;
+  return artifact;
+}
+
+/**
+ * Item 13: build analysis from attribution spans (independent of codegen handlers), gate published
+ * eligible handlers against that analysis, and stamp `messageBus.admittedHandlerIds`.
+ */
+function stampMessageBusAdmission(
+  artifact: Artifact,
+  attribution: ExternalAdmissionAttribution,
+): Artifact {
+  if (artifact.messageBus === undefined) return artifact;
+  if (attribution.spans.length > 0) {
+    const published = artifact.messageBus.handlers ?? [];
+    const publishedByName = new Map(published.map((handler) => [handler.name, handler]));
+    // Span analysis is independent of published.eligible; refine with published ineligibility so
+    // KERNEL_LAYOUT (etc.) refusals appear in refusedHandlerIds even when attribution.refused is empty.
+    const analysis = buildAdmissionDecisionSet(attribution.spans.map((span) => {
+      const refusedByAttribution = attribution.refused.has(span.key);
+      const publishedHandler = publishedByName.get(span.name);
+      const refusedByPublish = publishedHandler?.eligible === false;
+      const refused = refusedByAttribution || refusedByPublish;
+      return {
+        handlerId: span.key,
+        handlerName: span.name,
+        admitted: !refused,
+        reason: refused
+          ? attributionReason(
+            attribution.reasons.get(span.key) ?? publishedHandler?.rejectionReason,
+          )
+          : 'ADMITTED',
+      };
+    }));
+    pendingSpanAdmissionAnalysis = analysis;
+    return applyAdmissionStamp(artifact, analysis, 'attribution-spans');
+  }
+  return ensureMessageBusAdmissionStamp(artifact);
+}
+
+/** Clear pending span analysis — tests drive fail-closed stamp without a prior ladder. */
+export function resetPendingSpanAdmissionAnalysis(): void {
+  pendingSpanAdmissionAnalysis = undefined;
+}
+
+/**
+ * Final-publish stamp: always present on messageBus artifacts after compileString.
+ * Prefers pending span-based analysis (non-tautological) when the admission ladder recorded spans.
+ * F13′: kernel without spans fails closed (published-fallback retired).
+ */
+export function ensureMessageBusAdmissionStamp(artifact: Artifact): Artifact {
+  if (artifact.messageBus === undefined) return artifact;
+  const pending = pendingSpanAdmissionAnalysis;
+  pendingSpanAdmissionAnalysis = undefined;
+  if (pending !== undefined) {
+    return applyAdmissionStamp(artifact, pending, 'attribution-spans');
+  }
+  if (artifact.messageBus.admissionSource === 'attribution-spans'
+    && artifact.messageBus.admittedHandlerIds !== undefined) {
+    // Already stamped from spans earlier; re-gate against final published handlers.
+    const refused = artifact.messageBus.refusedHandlerIds ?? [];
+    const analysis = buildAdmissionDecisionSet([
+      ...artifact.messageBus.admittedHandlerIds.map((name) => ({
+        handlerId: name,
+        handlerName: name,
+        admitted: true as const,
+        reason: 'ADMITTED' as const,
+      })),
+      ...refused.map((name) => ({
+        handlerId: name,
+        handlerName: name,
+        admitted: false as const,
+        reason: 'KERNEL_LAYOUT' as const,
+      })),
+    ]);
+    return applyAdmissionStamp(artifact, analysis, 'attribution-spans');
+  }
+  const published = artifact.messageBus.handlers ?? [];
+  // F13′: published-fallback is retired. Kernel requires attribution-spans; legacy leaves ids
+  // from eligibility without claiming analyzer authority via admissionSource.
+  if (artifact.messageBus.convention === 'kernel-row-loop') {
+    throw new Error(
+      `messageBus: kernel admission stamp requires attribution-spans analysis `
+      + `(contract '${artifact.contractName}'); published-fallback is retired`,
+    );
+  }
+  artifact.messageBus.admittedHandlerIds = published
+    .filter((handler) => handler.eligible === true)
+    .map((handler) => handler.name);
+  artifact.messageBus.refusedHandlerIds = published
+    .filter((handler) => handler.eligible !== true)
+    .map((handler) => handler.name);
+  delete artifact.messageBus.admissionSource;
+  return artifact;
 }
 
 /** Identity of one source handler: name plus declaration position, so two overloads stay distinct. */
@@ -1580,7 +1728,8 @@ function compileWithExternalAdmissionFallback(
         admitBareForwardingHandlers,
       };
     }
-    return artifact;
+    // Item 13: every successful ladder rung stamps admittedHandlerIds + gates published handlers.
+    return stampMessageBusAdmission(artifact, attribution);
   };
   if (!mergedCompilerOptions.messageBus) return compileOnce(true);
   // Large Solidity import graphs can spend most compilation time and memory speculatively cloning every external
@@ -1610,7 +1759,8 @@ function compileWithExternalAdmissionFallback(
       // straight to the public-only ladder both discarded valid external graph roots and paid for every narrow
       // rung before eventually emitting a direct-only artifact. Each retry removes at least one new source
       // handler, so this reaches a finite fixed point without an arbitrary refusal cap.
-      const recovered = retryMonotoneAttribution(
+      // F8′: monotone refusal recovers *codegen*, then stampMessageBusAdmission uses spans.
+      const recovered = recoverCompileByMonotoneRefusal(
         latestError,
         attribution.refused,
         (error) => attributeExternalHandlerRefusal(error, attribution),
@@ -1621,7 +1771,9 @@ function compileWithExternalAdmissionFallback(
           }
         },
       );
-      if (recovered.succeeded) return recovered.value;
+      if (recovered.succeeded) {
+        return recovered.value;
+      }
       latestError = recovered.error;
       if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
         console.error(
@@ -1745,7 +1897,8 @@ function compileWithExternalAdmissionFallback(
   // The throw, however, is attributable: it either names one of the internal clones synthesis pushed or carries a
   // position inside the handler that was cloned. Refuse THAT handler and try again, one handler per round, so the
   // outcome is a named refusal on the gapped handler with its siblings still routed.
-  const recovered = retryMonotoneAttribution(
+  // F8′: compile recovery only — admission authority remains attribution-spans stamp.
+  const recovered = recoverCompileByMonotoneRefusal(
     latestError,
     attribution.refused,
     (error) => attributeExternalHandlerRefusal(error, attribution),
@@ -1824,6 +1977,7 @@ function compileWithExternalAdmissionFallback(
 }
 
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  pendingSpanAdmissionAnalysis = undefined;
   // A binding identity authorizes exactly one compiler-owned code-generation pass. Sanitize it before even
   // considering a cache return: cached artifacts execute no pass and must not leave caller-visible authority live.
   clearKernelReadCarrierBindingToken(
@@ -2039,10 +2193,11 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const winningKernelJournalDispositions = kernelJournalDispositionsByArtifact.get(artifact);
   const needsReadCarrierBinding = KERNEL_READ_CARRIER_PROTOCOL_RELEASED
     && winningReadCarrierScopes.length > 0;
-  if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER === '1' && needsReadCarrierBinding) {
+  const skipMessageBusBinder = solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER');
+  if (skipMessageBusBinder && needsReadCarrierBinding) {
     throw new Error('kernel read-carrier authorization requires pristine message-bus binding');
   }
-  if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
+  if (!skipMessageBusBinder
     && (!alreadyVerifierBound || needsReadCarrierBinding)
     && !artifactCompilerOptions.__messageBusVerifierProgram
     && (artifact.messageBus?.verifierProgram || needsReadCarrierBinding)) {
@@ -2273,6 +2428,8 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
   );
+  // Item 13: binder/full-recompile can replace the admission-ladder artifact — restamp on the final publish.
+  ensureMessageBusAdmissionStamp(artifact);
   if (cacheable) {
     compileCacheSet(cacheKey, artifact);
     diskCacheSet(cacheKey, artifact);
@@ -2296,6 +2453,8 @@ function restoreSpeculativeMessageBusRefusals(
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  clearDefineFrameValidations();
+  pendingSpanAdmissionAnalysis = undefined;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
     try {
       return compileStringUnchecked(code, compilerOptions);
@@ -5363,13 +5522,22 @@ function synthesizeMessageBusRoute(
       });
       return found;
     })();
+    // Settled selfdestruct is a unique modifier-only entry (resource-free or fixed-scalar). A swarm of
+    // independently authored selfdestruct externals stays KERNEL_LIFECYCLE so attribution can refuse them
+    // one-by-one while retaining an eligible control (ExternalAdmissionRetry).
+    const selfdestructEntryCount = functions.filter((candidate) => (
+      candidate.modifiers.includes(FunctionModifier.SELFDESTRUCT)
+    )).length;
     const admitsFixedStateSelfdestruct = kernelLifecycleKind === 'selfdestruct'
+      && selfdestructEntryCount === 1
       && !hasSelfdestructStatement
       && fixedStateOnlyContract
       && !lifecycleFootprintDisallowed;
     const selfdestructNeedsRetirementGeometry = kernelLifecycleKind === 'selfdestruct'
-      && !masterOnlyLifecycleContract
-      && !admitsFixedStateSelfdestruct;
+      && (
+        selfdestructEntryCount !== 1
+        || (!masterOnlyLifecycleContract && !admitsFixedStateSelfdestruct)
+      );
     if (kernelLifecycleKind && (lifecycleFootprintDisallowed || lifecycleHasDetachedTransactionSignature
       || fn.messageBusUsesTransactionSignature === true || selfdestructNeedsRetirementGeometry)) {
       fn.messageBusEligible = false;
@@ -14209,7 +14377,7 @@ function compileResolvedAst(
   const detachedVerifierIntermediate = (mergedCompilerOptions as InternalCompilerOptions)
     .__synthesizeBoundRoutePlaceholder === true
     || (!!detachedVerifierProgram && !mergedCompilerOptions.__messageBusVerifierProgram
-      && process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1');
+      && !solidcEnvFlagEnabled('SOLIDC_SKIP_MESSAGE_BUS_BINDER'));
   if (artifactBytes > maximumInputBytes && !detachedVerifierIntermediate) {
     const message = `Contract '${artifact.contractName}' is ${artifactBytes} bytes, exceeding the configured `
       + `${maximumInputBytes}-byte input-script limit by ${artifactBytes - maximumInputBytes}. `

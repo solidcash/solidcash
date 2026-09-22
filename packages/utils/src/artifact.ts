@@ -91,6 +91,17 @@ export interface CompilerOptions {
   // block.chainid network constant, baked as a single byte (chainId & 0xff). Convention:
   // mainnet 0, chipnet 1, testnet4 2, regtest -1 (0xff). User-land; see docs/block-and-transaction-properties.md.
   chainId?: number;
+  /**
+   * Explicit production-semantics feature: capture message-bus owner onto alt-stack at DEFINE entry.
+   * When omitted, resolved from SOLIDC_OWNER_ALT_ANCHOR only via the solidc env registry; included in
+   * artifact/cache identity when enabled.
+   */
+  ownerAltAnchor?: boolean;
+  /**
+   * Explicit production-semantics feature: seed caller band names into the DEFINE frame model.
+   * When omitted, resolved from SOLIDC_HANDLER_BAND_MODEL; included in artifact/cache identity when enabled.
+   */
+  handlerBandModel?: boolean;
   // Brand a delegate library: its covenant verifies the co-spent proxy master's category == the library's
   // `__brand` ctor arg, so the library is spendable only alongside its owning consumer's master (rides one
   // master's serialization, zero marginal contention). See docs/library-contracts.md (3b contention).
@@ -1511,6 +1522,19 @@ export interface Artifact {
     convention?: 'legacy-unroll' | 'kernel-row-loop';
     /** False when every handler was refused and the published route is a non-executable stub. */
     available?: boolean;
+    /**
+     * Item 13: analysis-admitted handler names stamped after speculative admission.
+     * Independent of live `handlers[].eligible` mutation — dropping the compiler stamp drops this field.
+     */
+    admittedHandlerIds?: readonly string[];
+    /** Item 13: analysis-refused handler names (from attribution spans when present). */
+    refusedHandlerIds?: readonly string[];
+    /**
+     * Item 13 / F13′: how `admittedHandlerIds` was produced.
+     * Only `attribution-spans` remains (non-tautological vs published).
+     * `published-fallback` is retired — missing span analysis fails closed on kernel.
+     */
+    admissionSource?: 'attribution-spans';
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;

@@ -30,16 +30,37 @@ const normalizeFunctionSelector = (selector: string): string | undefined => {
   return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
 };
 
-/** Resolve one ABI entry point without guessing between distinct same-name selectors. */
+/**
+ * Resolve one ABI entry point.
+ * Kernel (`kernel-row-loop`) with a selector: selector is authority; diagnostic `name` is ignored.
+ * Legacy / no selector: name (+ optional selector among name matches) as before.
+ */
 export function resolveMessageBusAbiFunction(
   artifact: Artifact, name: string, selector?: string,
 ): Artifact['abi'][number] | undefined {
-  const matches = artifact.abi.filter((candidate) => candidate.name === name);
+  const convention = artifact.messageBus?.convention;
   if (selector !== undefined) {
     const normalized = normalizeFunctionSelector(selector);
     if (normalized === undefined) {
       throw new Error(`messageBus: function selector '${selector}' must be exactly four hexadecimal bytes`);
     }
+    if (convention === 'kernel-row-loop') {
+      const bySelector = artifact.abi.filter(
+        (candidate) => candidate.selector?.toLowerCase() === normalized,
+      );
+      if (bySelector.length === 1) return bySelector[0];
+      if (bySelector.length === 0) {
+        throw new Error(
+          `messageBus: selector ${normalized} does not identify an ABI function `
+          + `in '${artifact.contractName}'`,
+        );
+      }
+      throw new Error(
+        `messageBus: kernel ABI join ambiguous for selector ${normalized} `
+        + `in '${artifact.contractName}'`,
+      );
+    }
+    const matches = artifact.abi.filter((candidate) => candidate.name === name);
     const selected = matches.find((candidate) => candidate.selector?.toLowerCase() === normalized);
     if (!selected) {
       throw new Error(
@@ -48,6 +69,7 @@ export function resolveMessageBusAbiFunction(
     }
     return selected;
   }
+  const matches = artifact.abi.filter((candidate) => candidate.name === name);
   if (matches.length > 1
     && new Set(matches.map((candidate) => candidate.selector ?? '')).size > 1) {
     throw new Error(
@@ -57,12 +79,30 @@ export function resolveMessageBusAbiFunction(
   return matches[0];
 }
 
-/** Resolve the message-bus handler paired with one exact (or legacy-unambiguous) ABI entry point. */
+/**
+ * Resolve the message-bus handler for one entry point.
+ * Kernel with a selector: selector is authority; diagnostic `name` is ignored.
+ */
 export function resolveMessageBusHandler(
   artifact: Artifact, name: string, selector?: string,
 ): NonNullable<Artifact['messageBus']>['handlers'][number] | undefined {
+  const handlers = artifact.messageBus?.handlers ?? [];
+  const convention = artifact.messageBus?.convention;
+  if (convention === 'kernel-row-loop' && selector !== undefined) {
+    const normalized = normalizeFunctionSelector(selector);
+    if (normalized === undefined) {
+      throw new Error(`messageBus: function selector '${selector}' must be exactly four hexadecimal bytes`);
+    }
+    const bySelector = handlers.filter((candidate) => candidate.selector.toLowerCase() === normalized);
+    if (bySelector.length === 1) return bySelector[0];
+    if (bySelector.length === 0) return undefined;
+    throw new Error(
+      `messageBus: kernel handler join ambiguous for selector ${normalized} `
+      + `in '${artifact.contractName}'`,
+    );
+  }
   const abiFunction = resolveMessageBusAbiFunction(artifact, name, selector);
-  const matches = artifact.messageBus?.handlers.filter((candidate) => candidate.name === name) ?? [];
+  const matches = handlers.filter((candidate) => candidate.name === name);
   if (abiFunction?.selector !== undefined) {
     return matches.find((candidate) =>
       candidate.selector.toLowerCase() === abiFunction.selector!.toLowerCase());
@@ -74,6 +114,39 @@ export function resolveMessageBusHandler(
     );
   }
   return matches[0];
+}
+
+/**
+ * F26: whether a prepared call matches a planned graph invocation.
+ * Kernel: selector authority (transported selector, or plan selector resolved on the artifact).
+ * Legacy: diagnostic function-name equality.
+ */
+export function preparedCallMatchesPlanInvocation(
+  supplied: {
+    functionName: string;
+    selector?: string;
+    artifact?: Artifact;
+  },
+  invocation: { function: string; selectorHex: string },
+): boolean {
+  const convention = supplied.artifact?.messageBus?.convention;
+  if (convention === 'kernel-row-loop') {
+    const planned = normalizeFunctionSelector(invocation.selectorHex)
+      ?? invocation.selectorHex.toLowerCase();
+    if (supplied.selector !== undefined) {
+      const prepared = normalizeFunctionSelector(supplied.selector);
+      return prepared === planned;
+    }
+    if (supplied.artifact === undefined) return false;
+    try {
+      return resolveMessageBusAbiFunction(
+        supplied.artifact, supplied.functionName, invocation.selectorHex,
+      ) !== undefined;
+    } catch {
+      return false;
+    }
+  }
+  return supplied.functionName === invocation.function;
 }
 
 /** Framing fields a mixed-handler / multi-row consumer needs to slice one row's calldata from `blob`. */

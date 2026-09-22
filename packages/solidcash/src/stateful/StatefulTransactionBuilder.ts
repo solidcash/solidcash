@@ -107,6 +107,17 @@ import { resolveExternalResultEncoding } from './solidityAbi.js';
 import {
   buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from '../keccak/keccakComputeSidecar.js';
+import {
+  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
+  legacyGroupLooksLikePublishJobEvent,
+  legacyIsJobEventsCollection,
+  legacyIsPublishJobEventName,
+  legacyScalarNameHints,
+  permitsLegacyScalarNameHeuristics,
+} from './legacy-planning-heuristics.js';
+import {
+  absoluteValueChunkOutputBaseFromResolve,
+} from '../message-bus/layout-resolver.js';
 
 const decodeVmScriptNumber = (bytes: Uint8Array): bigint => {
   let value = 0n;
@@ -1183,16 +1194,11 @@ export function rememberJobEventsUnlockRecipe(categoryId: string): boolean {
       pairs.push({ value, lock });
     }
   }
-  const collections = [
-    'jobEvents',
-    'jobEvents:mapping(uint256 => JobEventData[])',
-    'jobEvents:mapping(uint256=>JobEventData[])',
-  ];
   for (const { value, lock } of pairs) {
     const root = sha256Sync(value);
     for (const slot of jobEventsSlotCandidates()) {
       for (const cat of new Set([categoryId, ...persistedJobEventsLocks.keys(), ...persistedJobEventsValues.keys()])) {
-        for (const collection of collections) {
+        for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
           try {
             const expected = getValueChunkLockingBytecode(cat, collection, slot, root);
             if (binToHex(expected) === binToHex(lock)) {
@@ -1252,11 +1258,7 @@ export function legacyJobEventsPersistValueChunkLock(
   }
   const root = sha256Sync(value);
   const slot = keyToSlot(new Uint8Array());
-  for (const collection of [
-    'jobEvents',
-    'jobEvents:mapping(uint256 => JobEventData[])',
-    'jobEvents:mapping(uint256=>JobEventData[])',
-  ]) {
+  for (const collection of LEGACY_JOB_EVENTS_COLLECTION_ALIASES) {
     try {
       return getValueChunkLockingBytecode(categoryId, collection, slot, root);
     } catch { /* collection rejected */ }
@@ -6474,18 +6476,73 @@ export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): 
 export function refreshCapturedValueChunkOutputBase(
   group: ExternalCallUtxoGroup,
   outputBase: number,
-  options: { shiftPredOut?: boolean } = { shiftPredOut: false },
+  options: {
+    shiftPredOut?: boolean;
+    /** When published trailing geometry is known, outputBase must equal one layout resolve. */
+    resolveAuthority?: {
+      publishedBase: number;
+      blockSize: number;
+      trailingBase: number;
+      trailingCapacity?: number;
+      valueChunkBandOffset?: number;
+      valueChunkCollection?: string;
+      valueChunkCount?: number;
+    };
+  } = { shiftPredOut: false },
 ): boolean {
   if (!ownsCapturedValueChunkOutputBase(group)) return false;
-  group.valueChunkOutputBase = outputBase;
+  let absolute = outputBase;
+  if (options.resolveAuthority !== undefined) {
+    absolute = absoluteValueChunkOutputBaseFromResolve({
+      ...options.resolveAuthority,
+      valueChunkCollection: options.resolveAuthority.valueChunkCollection
+        ?? group.valueChunkWrites?.[0]?.collection,
+    });
+    if (absolute !== outputBase) {
+      throw new Error(
+        `layout-authority: valueChunkOutputBase ${outputBase} !== resolve ${absolute}`,
+      );
+    }
+  }
+  group.valueChunkOutputBase = absolute;
   group.internalArgs = {
     ...group.internalArgs,
-    __internal__valueChunkOutputBase: BigInt(outputBase),
+    __internal__valueChunkOutputBase: BigInt(absolute),
   };
   group.refreshInternalArgs?.(
-    { __internal__valueChunkOutputBase: BigInt(outputBase) }, options,
+    { __internal__valueChunkOutputBase: BigInt(absolute) }, options,
   );
   return true;
+}
+
+/**
+ * Assign absolute valueChunkOutputBase from ResolvedLayout only (item 2 sole authority).
+ * Prefer this over inventing publishedBase+local outside the resolver.
+ */
+export function assignValueChunkOutputBaseFromResolve(
+  group: ExternalCallUtxoGroup,
+  resolveAuthority: {
+    publishedBase: number;
+    blockSize: number;
+    trailingBase: number;
+    trailingCapacity?: number;
+    valueChunkBandOffset?: number;
+    valueChunkCollection?: string;
+    valueChunkCount?: number;
+  },
+  options: { shiftPredOut?: boolean } = { shiftPredOut: false },
+): number {
+  const absolute = absoluteValueChunkOutputBaseFromResolve({
+    ...resolveAuthority,
+    valueChunkCollection: resolveAuthority.valueChunkCollection
+      ?? group.valueChunkWrites?.[0]?.collection,
+  });
+  refreshCapturedValueChunkOutputBase(group, absolute, {
+    ...options,
+    resolveAuthority: { ...resolveAuthority, valueChunkCollection: resolveAuthority.valueChunkCollection
+      ?? group.valueChunkWrites?.[0]?.collection },
+  });
+  return absolute;
 }
 
 export type ProtectedLoopEntryCollectionSelection =
@@ -6545,7 +6602,8 @@ export function selectProtectedLoopEntryCollections(
   }
   if (!described) return {
     status: 'absent',
-    collections: permitsLegacyNamedValueChunkFallback(groups, ownerConvention) ? ['jobEvents'] : [],
+    collections: permitsLegacyNamedValueChunkFallback(groups, ownerConvention)
+      ? [LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0]] : [],
   };
   return {
     status: ambiguous ? 'ambiguous' : 'exact',
@@ -8227,7 +8285,7 @@ export class StatefulTransactionBuilder {
     // Compatibility only for plans predating compiler/planner value-chunk descriptors.
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.includes('publishJobEvent')) continue;
+      if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
       const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
       if (shouldRematerializePersistUpdate({
         persistReady: isPersistedJobEventsReady(),
@@ -8256,7 +8314,7 @@ export class StatefulTransactionBuilder {
     if (plannedInserts > 0) return true;
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.includes('publishJobEvent')) continue;
+      if (!names.some((n) => legacyIsPublishJobEventName(n))) continue;
       const event = (group.logicalFunctionArgs ?? group.functionArgs)?.[1];
       if (isInsertShapedJobEvent(event)) return true;
     }
@@ -8441,10 +8499,11 @@ export class StatefulTransactionBuilder {
     if (!this._permitsLegacyNamedValueChunkFallback()) {
       return { externalIndex: -1, externalIndices: [], lowLevelIndex: -1 };
     }
+    // Legacy adapter only: name match stays behind permitsLegacyNamedValueChunkFallback.
     const externalIndex = this.externalCallUtxoGroups.findIndex((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent');
+      legacyIsPublishJobEventName(group.functionName ?? group.logicalFunctionName));
     const lowLevelIndex = this.lowLevelCallUtxoGroups.findIndex((group) =>
-      group.functionName === 'publishJobEvent');
+      legacyIsPublishJobEventName(group.functionName));
     return {
       external: externalIndex >= 0 ? this.externalCallUtxoGroups[externalIndex] : undefined,
       externalIndex,
@@ -8462,10 +8521,10 @@ export class StatefulTransactionBuilder {
     if (!this._permitsLegacyNamedValueChunkFallback()) return undefined;
     for (const group of [...this.lowLevelCallUtxoGroups, ...this.externalCallUtxoGroups]) {
       const abi = (group.externalContract?.inner?.artifact?.abi ?? []) as AbiFunction[];
-      const fromAbi = abi.find((fn) => fn.name === 'publishJobEvent');
+      const fromAbi = abi.find((fn) => legacyIsPublishJobEventName(fn.name));
       if (fromAbi) return fromAbi;
       const routed = group.compilerRoute?.abiFunction;
-      if (routed?.name === 'publishJobEvent') return routed;
+      if (legacyIsPublishJobEventName(routed?.name)) return routed;
     }
     return undefined;
   }
@@ -8536,11 +8595,11 @@ export class StatefulTransactionBuilder {
     for (const [index, input] of this.allInputs.entries()) {
       const name = (input as { unlocker?: { abiFunction?: { name?: string } } })
         .unlocker?.abiFunction?.name ?? '';
-      if (name === 'publishJobEvent' || name.includes('publishJobEvent')) candidates.push(index);
+      if (legacyIsPublishJobEventName(name)) candidates.push(index);
     }
     for (const [llcIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
       const names = [group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name];
-      if (!names.some((name) => name === 'publishJobEvent' || String(name ?? '').includes('publishJobEvent'))) {
+      if (!names.some((name) => legacyIsPublishJobEventName(name))) {
         continue;
       }
       const master = this.getLowLevelCallMasterInputIndex(llcIndex);
@@ -8681,7 +8740,7 @@ export class StatefulTransactionBuilder {
     const publishFn = structural?.abiFunction ?? (publishLlcIndex >= 0
       ? (this.lowLevelCallUtxoGroups[publishLlcIndex].compilerRoute?.abiFunction
         ?? this.lowLevelCallUtxoGroups[publishLlcIndex].externalContract?.inner.artifact.abi
-          .find((fn: { name: string }) => fn.name === 'publishJobEvent'))
+          .find((fn: { name: string }) => legacyIsPublishJobEventName(fn.name)))
       : publishExternal?.compilerRoute?.abiFunction
         ?? publishExternal?.blockLayout
         ?? undefined);
@@ -8865,8 +8924,9 @@ export class StatefulTransactionBuilder {
           ? []
           : [
             ...this.externalCallUtxoGroups.filter((group) =>
-              (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'),
-            ...this.lowLevelCallUtxoGroups.filter((group) => group.functionName === 'publishJobEvent'),
+              legacyGroupLooksLikePublishJobEvent(group)),
+            ...this.lowLevelCallUtxoGroups.filter((group) =>
+              legacyGroupLooksLikePublishJobEvent(group)),
           ];
     for (const group of groups) {
       const next = Math.max(group.valueChunkOutputCount ?? 0, nNew);
@@ -9084,7 +9144,8 @@ export class StatefulTransactionBuilder {
     }
     if (!this._permitsLegacyNamedValueChunkFallback()) return undefined;
     // Compatibility only for artifacts/plans predating compiler-authored valueChunkWrites.
-    const impl = this.lowLevelCallUtxoGroups.find((group) => group.functionName === 'publishJobEvent')?.categoryId;
+    const impl = this.lowLevelCallUtxoGroups.find((group) =>
+      legacyGroupLooksLikePublishJobEvent(group))?.categoryId;
     for (const categoryId of persistedJobEventsLocks.keys()) {
       if (categoryId && categoryId !== impl) return categoryId;
     }
@@ -9141,7 +9202,8 @@ export class StatefulTransactionBuilder {
         if (!info.exists || !info.utxo) continue;
         if (describedCollection !== undefined) {
           if (info.collection !== describedCollection) continue;
-        } else if (this._hasChunkableValueWriteMetadata() || !/jobEvents/i.test(info.collection ?? '')) {
+        } else if (this._hasChunkableValueWriteMetadata()
+          || !legacyIsJobEventsCollection(info.collection)) {
           // Metadata ambiguity is a refusal. The source-name match is compatibility-only for old plans.
           continue;
         }
@@ -10304,8 +10366,7 @@ export class StatefulTransactionBuilder {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
       const publishJobEventGroups = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-        .filter((group) => (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'
-          || group.compilerRoute?.abiFunction?.name === 'publishJobEvent');
+        .filter((group) => legacyGroupLooksLikePublishJobEvent(group));
       console.error('reassert-nested-emit-enter', {
         eventSelection: eventSelection.status,
         publishJobEventGroups: publishJobEventGroups.length,
@@ -10367,10 +10428,10 @@ export class StatefulTransactionBuilder {
       const earlyCategory = categoryId
         ?? this.externalCallUtxoGroups.find((group) => (
           (group.functionName ?? group.logicalFunctionName) === '__forward'
-          || (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'
+          || legacyGroupLooksLikePublishJobEvent(group)
         ))?.categoryId
         ?? this.lowLevelCallUtxoGroups.find((group) => (
-          (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'
+          legacyGroupLooksLikePublishJobEvent(group)
         ))?.categoryId;
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
@@ -10477,10 +10538,11 @@ export class StatefulTransactionBuilder {
         detachCommit(String(output.token.nft?.commitment ?? ''));
       }
       // Nested publishJobEvent rows may each learn a commitment even when only one
-      // physical event slot is reasserted onto the covenant dest.
-      const publishJobEventGroups = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-        .filter((group) => (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'
-          || group.compilerRoute?.abiFunction?.name === 'publishJobEvent');
+      // physical event slot is reasserted onto the covenant dest. Name discovery is legacy-only.
+      const publishJobEventGroups = this._permitsLegacyNamedValueChunkFallback()
+        ? [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+          .filter((group) => legacyGroupLooksLikePublishJobEvent(group))
+        : [];
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
         console.error('publishJobEvent-groups', publishJobEventGroups.map((group, index) => ({
@@ -10573,19 +10635,21 @@ export class StatefulTransactionBuilder {
   private _ensureDistinctJobEventNfts(_builder: TransactionBuilder): void {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DISABLE_JOBEVENT_DETACH === '1') return;
+    // Marketplace multi-emit receipt detach is legacy-name discovery; kernel uses descriptor emits.
+    if (!this._permitsLegacyNamedValueChunkFallback()) return;
     const eventSignature = 'JobEvent(uint256,JobEventData)';
     const publishers = [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups].filter((group) => {
-      const name = group.functionName ?? group.logicalFunctionName;
-      if (name === 'publishJobEvent' || group.compilerRoute?.abiFunction?.name === 'publishJobEvent') {
+      if (legacyGroupLooksLikePublishJobEvent(group)) {
         return true;
       }
+      const name = group.functionName ?? group.logicalFunctionName;
       return name === '__forward'
         && jobEventTypeOf((group.logicalFunctionArgs ?? group.functionArgs)?.[1]) !== undefined;
     });
     if (publishers.length === 0) return;
     const categoryId = publishers[0].categoryId
       ?? this.lowLevelCallUtxoGroups.find((group) => (
-        (group.functionName ?? group.logicalFunctionName) === 'publishJobEvent'
+        legacyGroupLooksLikePublishJobEvent(group)
       ))?.categoryId;
     if (!categoryId) return;
     const addressType = publishers[0].externalContract?.inner?.addressType ?? 'p2sh32';
@@ -12514,27 +12578,30 @@ export class StatefulTransactionBuilder {
       group.fields.forEach((field, offset) => tryAssign(field.name, pick[offset]));
     });
 
-    const decrement = /(?:dec|sub|minus|reduce|spend)/i.test(abiFunction.name);
-    const zero = /(?:reset|clear|zero)/i.test(abiFunction.name);
-    const enable = /(?:enable|arm|activate|start)/i.test(abiFunction.name);
-    const disable = /(?:disable|disarm|deactivate|stop)/i.test(abiFunction.name);
-    const twice = /(?:double|twice)/i.test(abiFunction.name);
     const leftoverInts = fields.filter((field) => !assigned.has(field.name) && isIntegerType(field.type));
     const leftoverBools = fields.filter((field) => !assigned.has(field.name) && field.type === 'bool');
     const unusedIntArgs = visibleInputs
       .map((input, index) => ({ input, index }))
       .filter(({ input, index }) => !usedArgs.has(index) && isIntegerType(input.type));
+    // Name-regex leftover probes are legacy-only. Kernel convention uses typed arg→field matching above.
+    const allowNameHeuristics = permitsLegacyScalarNameHeuristics(this.messageBusConvention);
+    const hints = allowNameHeuristics
+      ? legacyScalarNameHints(abiFunction.name)
+      : { decrement: false, zero: false, enable: false, disable: false, twice: false };
     // A leftover increment is only a good first-probe guess for a single unassigned counter. Blindly
     // +1-ing every leftover packed field (or zipping a uint256 slot word onto a uint16) aborts
     // derivation when encodePushdataValue rejects the out-of-range value.
-    const applyLeftoverInts = zero || decrement || twice
+    const applyLeftoverInts = hints.zero || hints.decrement || hints.twice
       || (leftoverInts.length === 1 && unusedIntArgs.length === 0);
-    const applyLeftoverBools = enable || disable || zero || leftoverBools.length === 1;
+    const applyLeftoverBools = hints.enable || hints.disable || hints.zero || leftoverBools.length === 1;
     if (applyLeftoverInts) {
       for (const field of leftoverInts) {
         const current = currentState[field.name];
         if (typeof current !== 'bigint') continue;
-        const nextInt = zero ? 0n : twice ? current * 2n : current + (decrement ? -1n : 1n);
+        // Kernel path: single leftover int may still +1 without a function-name regex.
+        const nextInt = hints.zero ? 0n
+          : hints.twice ? current * 2n
+            : current + (hints.decrement ? -1n : 1n);
         if (!canEncodeScalarStateValue(nextInt, field.type)) continue;
         this.setState(field.name, nextInt);
         assigned.add(field.name);
@@ -12544,7 +12611,10 @@ export class StatefulTransactionBuilder {
       for (const field of leftoverBools) {
         const current = currentState[field.name];
         if (typeof current !== 'boolean') continue;
-        this.setState(field.name, enable ? true : (disable || zero) ? false : !current);
+        this.setState(
+          field.name,
+          hints.enable ? true : (hints.disable || hints.zero) ? false : !current,
+        );
         assigned.add(field.name);
       }
     }
@@ -14947,15 +15017,37 @@ export class StatefulTransactionBuilder {
       for (const alias of physicalAliases) {
         const encoded = alias.internalArgs?.__internal__valueChunkOutputBase;
         if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)) continue;
-        alias.valueChunkOutputBase = absoluteStart;
-        alias.internalArgs = {
-          ...alias.internalArgs,
-          __internal__valueChunkOutputBase: BigInt(absoluteStart),
-        };
-        alias.refreshInternalArgs?.(
-          { __internal__valueChunkOutputBase: BigInt(absoluteStart) },
-          { shiftPredOut: false },
-        );
+        // Kernel sole authority: when trailing geometry is published, assign via resolve (not invent).
+        const trailingBase = alias.blockLayout?.trailingBase
+          ?? carrier.blockLayout?.trailingBase;
+        const blockSize = alias.blockLayout?.blockSize
+          ?? carrier.blockLayout?.blockSize;
+        const write = alias.valueChunkWrites?.[0] ?? carrier.valueChunkWrites?.[0];
+        if (trailingBase !== undefined && blockSize !== undefined
+          && this.messageBusConvention === 'kernel-row-loop') {
+          const bandOffset = write !== undefined && write.outputBase >= trailingBase
+            ? write.outputBase - trailingBase
+            : write?.outputBase ?? 0;
+          const resolveAuthority = {
+            publishedBase: coordinateBase,
+            blockSize: Math.max(blockSize, trailingBase + (write?.outputCount ?? 1)),
+            trailingBase,
+            trailingCapacity: alias.blockLayout?.trailingCapacity
+              ?? carrier.blockLayout?.trailingCapacity,
+            valueChunkBandOffset: Math.max(0, bandOffset),
+            valueChunkCollection: write?.collection,
+            valueChunkCount: write?.outputCount,
+          };
+          const resolvedAbsolute = absoluteValueChunkOutputBaseFromResolve(resolveAuthority);
+          // When scan and resolve agree, stamp through resolveAuthority so invent cannot drift.
+          // Exact resource observation may still move placement; then set without resolve gate.
+          refreshCapturedValueChunkOutputBase(alias, absoluteStart, {
+            shiftPredOut: false,
+            ...(resolvedAbsolute === absoluteStart ? { resolveAuthority } : {}),
+          });
+        } else {
+          refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });
+        }
         changedCarriers.add(alias);
       }
     }

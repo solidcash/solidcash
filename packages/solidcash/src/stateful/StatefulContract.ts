@@ -264,6 +264,10 @@ import {
   ownsCapturedValueChunkOutputBase,
 } from './StatefulTransactionBuilder.js';
 import {
+  legacyGroupLooksLikePublishJobEvent,
+  legacyIsPublishJobEventName,
+} from './legacy-planning-heuristics.js';
+import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
   readEventsFiltered, readAnonymousEventsFromChain, valuesEqual,
 } from './StateReader.js';
@@ -2954,7 +2958,8 @@ export function chunkableWriterGroupIndex(
   if (plannedLegacyCandidates.length === 1) return plannedLegacyCandidates[0];
   if (plannedLegacyCandidates.length > 1) return -1;
   // Compatibility only for artifacts predating compiler-published entry effects.
-  return groups.findIndex((group) => group.functionName === 'publishJobEvent');
+  // F19: last-resort name match stays behind permitsLegacyNamedValueChunkFallback above.
+  return groups.findIndex((group) => legacyIsPublishJobEventName(group.functionName));
 }
 
 /**
@@ -16011,7 +16016,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             const publishName = llc.functionName ?? llc.logicalFunctionName
               ?? llc.compilerRoute?.abiFunction?.name;
-            if (permitsLegacyValueCandidate && publishName === 'publishJobEvent') {
+            // F19: JobEvent value-candidate discovery only via legacy adapter under the gate above.
+            if (permitsLegacyValueCandidate && (
+              legacyIsPublishJobEventName(publishName)
+              || legacyGroupLooksLikePublishJobEvent({
+                functionName: llc.functionName,
+                logicalFunctionName: llc.logicalFunctionName,
+                compilerRoute: llc.compilerRoute,
+              })
+            )) {
               const args = llc.logicalFunctionArgs ?? llc.functionArgs;
               const structs = llc.logicalArtifact?.structs
                 ?? llc.externalContract?.inner?.artifact?.structs

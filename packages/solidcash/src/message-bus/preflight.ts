@@ -19,6 +19,13 @@ import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.j
 import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 import { inputMayExecuteOutputTokenCommitment } from './executable-opcode-eligibility.js';
+import {
+  assertUnlockerLayoutMatchesResolve,
+} from './layout-resolver.js';
+import {
+  refuseVmExtractedRepairsIfRecipe,
+} from './materialization-mode.js';
+import { MonotoneCell, freezeGeometry } from './monotone-lattice.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -222,6 +229,8 @@ const convergeMessageBusMutableResourceOutputs = (
   if (candidateCount === 0) return { repairs: 0, rounds: 0, outputs: [] };
 
   const changedOutputs = new Set<number>();
+  // Item 10: placeholders progress toward a frozen final geometry (resolved only at exit).
+  const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   // Input programs are authenticated by immutable source outputs. Cache only proofs of opcode absence; uncertain
@@ -238,6 +247,7 @@ const convergeMessageBusMutableResourceOutputs = (
       throw new Error('messageBus: mutable resource output convergence entered a repeated state');
     }
     seenStates.add(stateKey);
+    commitmentLattice.advance({ tag: 'placeholder', hint: stateKey });
 
     const transaction = builder.buildLibauthTransaction();
     const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
@@ -316,6 +326,8 @@ const convergeMessageBusMutableResourceOutputs = (
     }
 
     let changed = false;
+    // Item 9: recipe mode refuses VM-mined commitment repairs (failed-trace extraction).
+    refuseVmExtractedRepairsIfRecipe(proposals.size);
     for (const [outputIndex, { commitment: proposed }] of proposals) {
       const output = builder.outputs[outputIndex];
       if (!output?.token?.nft) continue;
@@ -333,7 +345,15 @@ const convergeMessageBusMutableResourceOutputs = (
       repairs += 1;
       changed = true;
     }
-    if (!changed) return { repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b) };
+    if (!changed) {
+      const finalKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+        .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
+        .join('|');
+      commitmentLattice.resolve(finalKey);
+      return freezeGeometry({
+        repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
+      });
+    }
   }
   throw new Error(
     `messageBus: mutable resource outputs did not converge after ${maximumRounds} complete-transaction passes`,
@@ -2958,12 +2978,119 @@ export const logComposedTransactionLayout = (
  * checks: the first establishes that the exact final transaction satisfies every covenant, the second that its
  * bytes are ones a peer would forward. `options` reaches only the byte rules.
  */
+/**
+ * F3′: published value-chunk bandOffset from block geometry.
+ * - filled at trailing base ⇒ bandOffset 0
+ * - filled equals a published `trailing` slot absolute ⇒ bandOffset = slot.offset - trailingBase
+ * Never invents an offset from a filled absolute that does not match published slots.
+ */
+export function publishedValueChunkBandOffsetFromGeometry(params: {
+  publishedBase: number;
+  trailingBase: number;
+  filledValueChunk: number;
+  slots: ReadonlyArray<{ kind: string; offset: number }>;
+}): number | undefined {
+  const trailingAbsolute = params.publishedBase + params.trailingBase;
+  if (params.filledValueChunk === trailingAbsolute) return 0;
+  const match = params.slots.find((slot) => (
+    slot.kind === 'trailing'
+    && params.publishedBase + slot.offset === params.filledValueChunk
+  ));
+  if (match === undefined) return undefined;
+  const bandOffset = match.offset - params.trailingBase;
+  return bandOffset >= 0 ? bandOffset : undefined;
+}
+
+export type AssemblyLayoutResolveOptions = {
+  /**
+   * Independently published PredOut physical locals (compose / compiler claims).
+   * Without these, PredOut remains compose-path-only (cannot non-tautologically derive from unlocker fill).
+   */
+  predOutClaimsByParticipant?: ReadonlyMap<number, ReadonlyArray<{
+    witnessName: string;
+    physicalLocalOffset: number;
+    concreteLocalSlot?: number;
+  }>>;
+};
+
+/**
+ * Item 2 + F3′ sole layout authority: unlocker valueChunk/dyn/(optional PredOut) absolutes must equal
+ * one `resolveParticipantAbsoluteWitnesses`. BandOffset comes from published trailing geometry
+ * (including non-zero offsets via `trailing` slots), never from inventing against filled-only values.
+ */
+export function assertAssemblyLayoutWitnessesMatchResolve(
+  builder: TransactionBuilder,
+  assembly: BalancedAssembly,
+  options?: AssemblyLayoutResolveOptions,
+): void {
+  for (const block of assembly.blocks) {
+    const trailingBase = block.blockLayout.trailingBase;
+    if (trailingBase === undefined) continue;
+    const input = builder.inputs[block.base] as {
+      unlocker?: {
+        params?: unknown[];
+        abiFunction?: { inputs?: Array<{ name: string }> };
+      };
+    } | undefined;
+    const unlocker = input?.unlocker;
+    if (!unlocker?.abiFunction?.inputs || !unlocker.params) continue;
+
+    const valueChunkIndex = unlocker.abiFunction.inputs.findIndex((entry) => (
+      entry.name === '__internal__valueChunkOutputBase'
+    ));
+    const dynIndex = unlocker.abiFunction.inputs.findIndex((entry) => (
+      entry.name === '__internal__dynamicChunkInputBase'
+    ));
+    const filledValueChunk = valueChunkIndex >= 0
+      ? Number(unlocker.params[valueChunkIndex] as bigint)
+      : -1;
+    const filledDyn = dynIndex >= 0 ? Number(unlocker.params[dynIndex] as bigint) : -1;
+    const trailingAbsolute = block.base + trailingBase;
+    const publishedBandOffset = filledValueChunk >= 0
+      ? publishedValueChunkBandOffsetFromGeometry({
+        publishedBase: block.base,
+        trailingBase,
+        filledValueChunk,
+        slots: block.blockLayout.slots,
+      })
+      : undefined;
+    const assertValueChunk = publishedBandOffset !== undefined;
+    const assertDyn = filledDyn === trailingAbsolute;
+    const predOutClaims = options?.predOutClaimsByParticipant?.get(block.participant);
+    if (!assertValueChunk && !assertDyn && (predOutClaims === undefined || predOutClaims.length === 0)) {
+      continue;
+    }
+
+    try {
+      assertUnlockerLayoutMatchesResolve({
+        inputs: unlocker.abiFunction.inputs,
+        params: unlocker.params,
+        publishedBase: block.base,
+        blockSize: Math.max(block.blockLayout.blockSize, trailingBase + 1),
+        trailingBase,
+        trailingCapacity: block.blockLayout.trailingCapacity,
+        dynChunkCount: assertDyn ? 0 : undefined,
+        valueChunkBandOffset: assertValueChunk ? publishedBandOffset : undefined,
+        valueChunkCount: assertValueChunk ? 1 : undefined,
+        predOuts: predOutClaims,
+        participant: block.participant,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `messageBus: layout resolve mismatch at participant ${block.participant} base ${block.base}: ${message}`,
+      );
+    }
+  }
+}
+
 export const preflightMessageBusTransaction = (
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,
 ): Transaction => {
   assertNoDerivationProbeOutpoints(builder);
   // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
   const assembly = requireMessageBusBlockAssembly(builder);
+  assertAssemblyLayoutWitnessesMatchResolve(builder, assembly);
   const transaction = builder.buildLibauthTransaction();
   logComposedTransactionLayout(builder, transaction, 'finalized');
   assertCanonicalMessageEnvelopePush(transaction, assembly);

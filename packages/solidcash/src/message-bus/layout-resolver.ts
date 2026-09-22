@@ -11,6 +11,11 @@
  */
 
 import type { FunctionBlockLayout } from '@solidcash/utils';
+import {
+  decodeLayoutCoordinate,
+  encodeLayoutCoordinate,
+  rebaseLayoutCoordinate,
+} from './layout-sentinels.js';
 
 /** Physical carrier kind for one state resource in a composed transaction. */
 export type ResourceCarrierKind =
@@ -53,6 +58,8 @@ export interface ResourceIdentity {
 /** One ownership row: identity + exclusive roles. */
 export interface ResourceOwnershipClaim extends ResourceIdentity {
   roles: ResourceOwnershipRoles;
+  /** When set, outputSlot occupies [outputSlot, outputSlot+rangeWidth). Default 1. */
+  rangeWidth?: number;
 }
 
 /** Symbolic band published by the compiler (offsets are participant-local). */
@@ -252,32 +259,169 @@ function bandsFromBlockLayout(
   return bands;
 }
 
-function assertUniqueOwnership(claims: readonly ResourceOwnershipClaim[]): void {
-  const seen = new Set<string>();
+function ownershipIdentityKey(claim: ResourceOwnershipClaim): string {
+  return [
+    claim.participant,
+    claim.carrier,
+    claim.collection ?? '',
+    claim.collectionHash ?? '',
+    claim.keyDomainId ?? '',
+    String(claim.effectOrdinal ?? ''),
+  ].join('|');
+}
+
+function roleCoordinateEntries(claim: ResourceOwnershipClaim): Array<{ kind: string; absolute: number }> {
+  const entries: Array<{ kind: string; absolute: number }> = [];
+  const { roles } = claim;
+  if (roles.consumeInput !== undefined && roles.consumeInput >= 0) {
+    entries.push({ kind: 'consumeInput', absolute: roles.consumeInput });
+  }
+  if (roles.produceOutput !== undefined && roles.produceOutput >= 0) {
+    entries.push({ kind: 'produceOutput', absolute: roles.produceOutput });
+  }
+  if (roles.outputSlot !== undefined && roles.outputSlot >= 0) {
+    entries.push({ kind: 'outputSlot', absolute: roles.outputSlot });
+  }
+  if (roles.proofInput !== undefined && roles.proofInput >= 0) {
+    entries.push({ kind: 'proofInput', absolute: roles.proofInput });
+  }
+  return entries;
+}
+
+/**
+ * Fail closed on:
+ * - duplicate resource identities
+ * - one identity receiving conflicting role coordinates
+ * - two distinct resources claiming the same input/output coordinate
+ * - overlapping variable-width output ranges (`roles.outputSlot` .. `outputSlot+rangeWidth-1`)
+ * - claims whose coordinates fall outside the owning participant's published block
+ *   (when `participantBlocks` is provided) or into a fixed-suffix band
+ */
+export function assertUniqueOwnership(
+  claims: readonly ResourceOwnershipClaim[],
+  participantBlocks?: ReadonlyMap<number, {
+    inputBase: number;
+    blockSize: number;
+    trailingBase?: number;
+    trailingCapacity?: number;
+    fixedSuffix?: number;
+  }>,
+): void {
+  const byIdentity = new Map<string, ResourceOwnershipClaim>();
+  const coordinateOwners = new Map<string, ResourceOwnershipClaim>();
+
   for (const claim of claims) {
-    const key = [
-      claim.participant,
-      claim.carrier,
-      claim.collection ?? '',
-      claim.collectionHash ?? '',
-      claim.keyDomainId ?? '',
-      String(claim.effectOrdinal ?? ''),
-    ].join('|');
-    if (seen.has(key)) {
-      const prior = [...seen].find((entry) => entry === key);
+    const key = ownershipIdentityKey(claim);
+    const prior = byIdentity.get(key);
+    if (prior !== undefined) {
+      // Same identity with different role coordinates ⇒ conflicting roles.
+      const priorCoords = roleCoordinateEntries(prior);
+      const nextCoords = roleCoordinateEntries(claim);
+      const conflict = nextCoords.some((entry) => {
+        const match = priorCoords.find((p) => p.kind === entry.kind);
+        return match !== undefined && match.absolute !== entry.absolute;
+      });
       throw new Error(
         formatLayoutInvariant({
-          invariantId: 'duplicate-ownership',
+          invariantId: conflict ? 'conflicting-roles' : 'duplicate-ownership',
           participant: claim.participant,
           resource: claim.collection ?? claim.carrier,
-          // Gate C: expected = first claim (unique), actual = colliding second claim.
-          expectedOutput: claim.roles.outputSlot ?? 0,
-          actualOutput: claim.roles.outputSlot ?? 1,
-          detail: `L3_LAYOUT_INVARIANT carrier=${claim.carrier} key=${prior ?? key}`,
+          expectedOutput: prior.roles.outputSlot ?? priorCoords[0]?.absolute ?? 0,
+          actualOutput: claim.roles.outputSlot ?? nextCoords[0]?.absolute ?? 1,
+          detail: `L3_LAYOUT_INVARIANT carrier=${claim.carrier} key=${key}`,
         }),
       );
     }
-    seen.add(key);
+    byIdentity.set(key, claim);
+
+    for (const entry of roleCoordinateEntries(claim)) {
+      const coordKey = `${entry.kind}@${entry.absolute}`;
+      const owner = coordinateOwners.get(coordKey);
+      if (owner !== undefined && ownershipIdentityKey(owner) !== key) {
+        throw new Error(
+          formatLayoutInvariant({
+            invariantId: 'coordinate-collision',
+            participant: claim.participant,
+            resource: claim.collection ?? claim.carrier,
+            expectedOutput: entry.absolute,
+            actualOutput: entry.absolute,
+            detail: `L3_LAYOUT_INVARIANT ${entry.kind} claimed by ${owner.collection ?? owner.carrier} and ${claim.collection ?? claim.carrier}`,
+          }),
+        );
+      }
+      coordinateOwners.set(coordKey, claim);
+    }
+
+    // Variable-width range overlap on outputSlot bands.
+    const rangeWidth = (claim as ResourceOwnershipClaim & { rangeWidth?: number }).rangeWidth ?? 1;
+    if (claim.roles.outputSlot !== undefined && claim.roles.outputSlot >= 0 && rangeWidth > 0) {
+      const start = claim.roles.outputSlot;
+      const end = start + rangeWidth;
+      for (const other of byIdentity.values()) {
+        if (other === claim) continue;
+        const otherWidth = (other as ResourceOwnershipClaim & { rangeWidth?: number }).rangeWidth ?? 1;
+        if (other.roles.outputSlot === undefined || other.roles.outputSlot < 0) continue;
+        const otherStart = other.roles.outputSlot;
+        const otherEnd = otherStart + otherWidth;
+        if (start < otherEnd && otherStart < end) {
+          throw new Error(
+            formatLayoutInvariant({
+              invariantId: 'overlapping-range',
+              participant: claim.participant,
+              resource: claim.collection ?? claim.carrier,
+              expectedOutput: otherStart,
+              actualOutput: start,
+              detail: `L3_LAYOUT_INVARIANT ranges [${start},${end}) and [${otherStart},${otherEnd}) overlap`,
+            }),
+          );
+        }
+      }
+    }
+
+    if (participantBlocks !== undefined) {
+      const block = participantBlocks.get(claim.participant);
+      if (block === undefined) {
+        throw new Error(
+          formatLayoutInvariant({
+            invariantId: 'participant-boundary',
+            participant: claim.participant,
+            resource: claim.collection ?? claim.carrier,
+            detail: 'L3_LAYOUT_INVARIANT claim references unknown participant',
+          }),
+        );
+      }
+      const minAbs = block.inputBase;
+      const maxAbs = block.inputBase + block.blockSize;
+      const suffixStart = block.trailingBase !== undefined && block.trailingCapacity !== undefined
+        ? block.inputBase + block.trailingBase + block.trailingCapacity
+        : undefined;
+      for (const entry of roleCoordinateEntries(claim)) {
+        if (entry.absolute < minAbs || entry.absolute >= maxAbs) {
+          throw new Error(
+            formatLayoutInvariant({
+              invariantId: 'participant-boundary',
+              participant: claim.participant,
+              resource: claim.collection ?? claim.carrier,
+              expectedOutput: minAbs,
+              actualOutput: entry.absolute,
+              detail: `L3_LAYOUT_INVARIANT ${entry.kind} crosses participant block [${minAbs},${maxAbs})`,
+            }),
+          );
+        }
+        if (suffixStart !== undefined && entry.kind === 'outputSlot' && entry.absolute >= suffixStart) {
+          throw new Error(
+            formatLayoutInvariant({
+              invariantId: 'fixed-suffix-crossing',
+              participant: claim.participant,
+              resource: claim.collection ?? claim.carrier,
+              expectedOutput: suffixStart - 1,
+              actualOutput: entry.absolute,
+              detail: 'L3_LAYOUT_INVARIANT outputSlot lands in fixed-suffix band',
+            }),
+          );
+        }
+      }
+    }
   }
 }
 
@@ -287,7 +431,6 @@ function assertUniqueOwnership(claims: readonly ResourceOwnershipClaim[]): void 
  */
 export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLayout {
   const ownership = input.ownership ?? [];
-  assertUniqueOwnership(ownership);
 
   const participantInputs: number[] = [];
   const resolvedParticipants: ResolvedParticipantLayout[] = [];
@@ -313,6 +456,17 @@ export function resolveTransactionLayout(input: LayoutResolverInput): ResolvedLa
   }
 
   const byParticipant = new Map(resolvedParticipants.map((entry) => [entry.participant, entry]));
+  const participantBlocks = new Map(resolvedParticipants.map((entry) => {
+    const source = input.participants.find((p) => p.participant === entry.participant);
+    return [entry.participant, {
+      inputBase: entry.inputBase,
+      blockSize: entry.blockSize,
+      trailingBase: entry.trailingBase,
+      trailingCapacity: entry.trailingCapacity,
+      fixedSuffix: source?.blockLayout?.fixedSuffix,
+    }] as const;
+  }));
+  assertUniqueOwnership(ownership, participantBlocks);
 
   const valueChunkBands: ResolvedValueChunkBand[] = (input.valueChunkClaims ?? []).map((claim) => {
     const resolved = byParticipant.get(claim.participant);
@@ -597,6 +751,122 @@ export function entryNewOutputBaseFor(
 }
 
 /**
+ * Absolute `__internal__valueChunkOutputBase` from one resolve — the only authority STB/preflight
+ * may use when published trailing geometry is known (no independent publishedBase+local invent).
+ */
+export function absoluteValueChunkOutputBaseFromResolve(params: {
+  publishedBase: number;
+  blockSize: number;
+  trailingBase: number;
+  trailingCapacity?: number;
+  valueChunkBandOffset?: number;
+  valueChunkCollection?: string;
+  valueChunkCount?: number;
+  participant?: number;
+}): number {
+  const witnesses = resolveParticipantAbsoluteWitnesses({
+    participant: params.participant ?? 0,
+    publishedBase: params.publishedBase,
+    blockSize: params.blockSize,
+    trailingBase: params.trailingBase,
+    trailingCapacity: params.trailingCapacity,
+    valueChunkBandOffset: params.valueChunkBandOffset ?? 0,
+    valueChunkCollection: params.valueChunkCollection,
+    valueChunkCount: params.valueChunkCount ?? 1,
+  });
+  if (witnesses.valueChunkOutputBase === undefined) {
+    throw new Error('layout-resolver: valueChunkOutputBase unresolved for published trailing geometry');
+  }
+  return Number(witnesses.valueChunkOutputBase);
+}
+
+/**
+ * Assert unlocker layout witnesses match one resolveParticipantAbsoluteWitnesses result.
+ * Used by preflight / STB so coordinates cannot be independently reconstructed.
+ */
+export function assertUnlockerLayoutMatchesResolve(params: {
+  inputs: ReadonlyArray<{ name: string }>;
+  params: readonly unknown[];
+  publishedBase: number;
+  blockSize: number;
+  trailingBase: number;
+  trailingCapacity?: number;
+  dynChunkCount?: number;
+  valueChunkBandOffset?: number;
+  valueChunkCollection?: string;
+  valueChunkCount?: number;
+  predOuts?: readonly {
+    witnessName: string;
+    physicalLocalOffset: number;
+    concreteLocalSlot?: number;
+  }[];
+  participant?: number;
+}): void {
+  const expected = resolveParticipantAbsoluteWitnesses({
+    participant: params.participant ?? 0,
+    publishedBase: params.publishedBase,
+    blockSize: params.blockSize,
+    trailingBase: params.trailingBase,
+    trailingCapacity: params.trailingCapacity,
+    dynChunkCount: params.dynChunkCount,
+    valueChunkBandOffset: params.valueChunkBandOffset,
+    valueChunkCollection: params.valueChunkCollection,
+    valueChunkCount: params.valueChunkCount,
+    predOuts: params.predOuts,
+  });
+  for (const [index, input] of params.inputs.entries()) {
+    const actual = params.params[index];
+    if (input.name === '__internal__valueChunkOutputBase'
+      && expected.valueChunkOutputBase !== undefined) {
+      if (actual !== expected.valueChunkOutputBase) {
+        throw new Error(
+          formatLayoutInvariant({
+            invariantId: 'valueChunk-resolve-mismatch',
+            participant: params.participant ?? 0,
+            resource: 'valueChunkOutputBase',
+            expectedOutput: Number(expected.valueChunkOutputBase),
+            actualOutput: typeof actual === 'bigint' ? Number(actual) : -1,
+            detail: 'unlocker valueChunk must equal resolveParticipantAbsoluteWitnesses',
+          }),
+        );
+      }
+    }
+    if (input.name === '__internal__dynamicChunkInputBase'
+      && expected.dynamicChunkInputBase !== undefined) {
+      if (actual !== expected.dynamicChunkInputBase) {
+        throw new Error(
+          formatLayoutInvariant({
+            invariantId: 'dyn-resolve-mismatch',
+            participant: params.participant ?? 0,
+            resource: 'dynamicChunkInputBase',
+            expectedOutput: Number(expected.dynamicChunkInputBase),
+            actualOutput: typeof actual === 'bigint' ? Number(actual) : -1,
+            detail: 'unlocker dyn base must equal resolveParticipantAbsoluteWitnesses',
+          }),
+        );
+      }
+    }
+    const predMatch = /^__internal__(vmapBatchPredOut_\d+)$/.exec(input.name);
+    if (predMatch && typeof actual === 'bigint' && actual >= 0n) {
+      const want = expected.predOuts.get(input.name)
+        ?? expected.predOuts.get(`__internal__${predMatch[1]}`);
+      if (want !== undefined && actual !== want) {
+        throw new Error(
+          formatLayoutInvariant({
+            invariantId: 'predOut-resolve-mismatch',
+            participant: params.participant ?? 0,
+            resource: input.name,
+            expectedOutput: Number(want),
+            actualOutput: Number(actual),
+            detail: 'unlocker PredOut must equal resolveParticipantAbsoluteWitnesses',
+          }),
+        );
+      }
+    }
+  }
+}
+
+/**
  * One-shot absolute witness table for a single participant frame published at `publishedBase`.
  * Compose/preflight must use this (or an equivalent single `resolveTransactionLayout` call) so
  * dyn / entry / valueChunk / PredOut absolutes cannot drift independently.
@@ -663,7 +933,10 @@ export function resolveParticipantAbsoluteWitnesses(params: {
     ownership: params.ownership,
   });
   // resolveTransactionLayout uses inputBase 0 for a single participant; rebase into the aggregate.
-  const rebase = (localAbsolute: number): bigint => BigInt(params.publishedBase + localAbsolute);
+  // Item 8: rebase through tagged coordinates so sentinels cannot be arithmetic-shifted into indices.
+  const rebase = (localAbsolute: number): bigint => encodeLayoutCoordinate(
+    rebaseLayoutCoordinate({ kind: 'coordinate', index: localAbsolute }, params.publishedBase),
+  );
   const dyn = dynamicChunkInputBaseFor(layout, params.participant);
   const entry = entryNewOutputBaseFor(layout, params.participant);
   const valueChunk = valueChunkOutputBaseFor(layout, params.participant);
@@ -708,8 +981,11 @@ export function applyParticipantAbsoluteWitnesses(args: {
     written.push({ name, index, from, to: String(next) });
   };
 
-  const isInactiveSentinel = (value: unknown): boolean =>
-    typeof value === 'bigint' && value < 0n;
+  const isInactiveSentinel = (value: unknown): boolean => {
+    if (typeof value !== 'bigint') return false;
+    const decoded = decodeLayoutCoordinate(value);
+    return decoded.kind === 'absent' || decoded.kind === 'inactive';
+  };
 
   for (const [index, input] of args.inputs.entries()) {
     if (input.name === '__internal__dynamicChunkInputBase') {

@@ -463,6 +463,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
    * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
   messageBusPhysicalEntrySlotAlternatives?: number[][];
+  /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
+  messageBusRouteDynamicResources?: string[];
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   messageBusUpgradeRoute?: boolean;
   /**

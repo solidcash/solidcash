@@ -63,6 +63,12 @@ import {
 } from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
+  applyParticipantAbsoluteWitnesses,
+  resolveParticipantAbsoluteWitnesses,
+  trailingCapacityExcludingFixedSuffix,
+} from './layout-resolver.js';
+import { layoutInvariantError } from './diagnostics.js';
+import {
   buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
   canonicalValueChunkProducerResourceClaim,
@@ -2965,12 +2971,20 @@ export class AtomicMessageBusComposition {
         if (continuationResourceClaims.length > 0 && orderedContinuationClaims === undefined) {
           throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
         }
+        // Defer absolute valueChunk/dyn/PredOut to ONE resolveParticipantAbsoluteWitnesses pass after the
+        // local frame exists (PredOut content-match needs outputs). Pass the participant-local slot offset
+        // here so `_batchRaw` can build; the unlocker sync below rebases every absolute from that single result.
+        const valueChunkSlotOffset = transportedChunkCount > 0
+          ? selectedValueChunkSlots[0]!.offset : undefined;
+        const pendingValueChunkClaim = valueChunkSlotOffset === undefined ? undefined : {
+          localSlotOffset: valueChunkSlotOffset,
+          chunkCount: transportedChunkCount,
+          collection: transportedValueChunks[0]?.production.write.collectionSignature ?? 'valueChunk',
+        };
         const internalRouteWitnesses = {
           ...graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
-          ...(transportedChunkCount > 0 && {
-            __internal__valueChunkOutputBase: BigInt(
-              participantInputBase + selectedValueChunkSlots[0]!.offset,
-            ),
+          ...(pendingValueChunkClaim !== undefined && {
+            __internal__valueChunkOutputBase: BigInt(pendingValueChunkClaim.localSlotOffset),
           }),
         };
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -3728,6 +3742,16 @@ export class AtomicMessageBusComposition {
               offset: lifecycleTrailingBase + index,
             }),
           );
+          // Identity anchors / executor suffixes live in fixedSuffix after the runtime trailing band.
+          // Capacity must not absorb those slots: `actualSize - fixedSize` alone folds a +1 identity
+          // anchor into trailing (measured FakeToken 87→88, capacity 64→65) and the OUTPUTBYTECODE
+          // lock loop then EQUALVERIFYs the SCID identity lock against a trailing/chunk expectation.
+          const fixedSuffix = effectiveLayout.fixedSuffix ?? 0;
+          const trailingCapacity = trailingCapacityExcludingFixedSuffix({
+            blockSize: actualSize,
+            trailingBase: fixedSize,
+            fixedSuffix,
+          });
           stateInputUnlocker.abiFunction = {
             ...stateInputUnlocker.abiFunction,
             blockLayout: {
@@ -3735,7 +3759,8 @@ export class AtomicMessageBusComposition {
               blockSize: actualSize,
               slots: [...effectiveSlots, ...lifecycleTailSlots],
               ...(lifecycleTailCount === 0 ? {} : { trailingBase: lifecycleTrailingBase }),
-              trailingCapacity: actualSize - fixedSize,
+              trailingCapacity,
+              fixedSuffix,
             },
           };
         }
@@ -3775,21 +3800,12 @@ export class AtomicMessageBusComposition {
           }
           const publishedRelocations: Array<{ name: string; from: string; to: string }> = [];
           const resyncedIndices: number[] = [];
-          const step = (index: number, name: string, next: bigint): void => {
-            if (masterUnlocker?.params === undefined) return;
-            const from = String(masterUnlocker.params[index]);
-            if (masterUnlocker.params[index] === next) return;
-            masterUnlocker.params[index] = next;
-            resyncedIndices.push(index);
-            publishedRelocations.push({ name, from, to: String(next) });
-          };
           // A `PredOut` witness names the output carrying the re-pointed predecessor (P') of an inserted node. The
           // batch planner publishes it in the CONCRETE callsite's coordinate space (measured: `approve` declares 4,
           // the first slot after its own four-slot block) while the covenant reads `tx.outputs[PredOut]` in the
           // PHYSICAL route frame, where the same P' is materialized in the route's trailing band (measured: block
-          // offset 23). Recover the coordinate from the output that actually carries it: for an insert,
-          // P' = pred.slot || targetSlot || pred.value, where the predecessor is the entry co-spent at
-          // `master + proof`. A content match is the only evidence accepted; without one the witness is left alone.
+          // offset 23). Absolute assignment goes through ONE canonical layout-resolver pass per participant so
+          // dyn / PredOut / value-chunk absolutes cannot drift (historical 203 vs 222; MDV1 pad 163 vs entry 161).
           const commitmentHex = (value: unknown): string => value instanceof Uint8Array ? binToHex(value)
             : typeof value === 'string' ? value : '';
           const predOutIndexByName = new Map<string, number>();
@@ -3800,12 +3816,24 @@ export class AtomicMessageBusComposition {
           }
           const participantCategory = participant.artifact.stateLayout === undefined
             ? undefined : (local.inputs[0]?.token?.category ?? undefined);
+          // Physical route trailing band (not concrete handler layout). Prefer the layout already
+          // applied to this participant frame (see effectiveLayout sync above).
+          const routeTrailingBase = participant.blockLayout?.trailingBase;
+          const routeTrailingCapacity = participant.blockLayout?.trailingCapacity;
+          const predOutPhysical: Array<{
+            index: number;
+            name: string;
+            witnessName: string;
+            physicalLocalOffset: number;
+            concreteLocalSlot: number;
+          }> = [];
+          let dynLocalBase: number | undefined;
           for (const candidate of relocatable) {
             const value = masterUnlocker?.params?.[candidate.index];
             if (publishedBase <= 0 || masterUnlocker?.params === undefined) continue;
             if (typeof value !== 'bigint' || value < 0n || value >= BigInt(candidate.limit)) continue;
             if (candidate.name === 'dynamicChunkInputBase') {
-              step(candidate.index, candidate.name, value + BigInt(publishedBase));
+              dynLocalBase = Number(value);
               continue;
             }
             const slot = /(\d+)$/.exec(candidate.name)?.[1];
@@ -3819,19 +3847,126 @@ export class AtomicMessageBusComposition {
             const predecessor = typeof proof === 'bigint' && proof >= 0n && proof < BigInt(local.inputs.length)
               ? local.inputs[Number(proof)] : undefined;
             const predecessorCommitment = commitmentHex(predecessor?.token?.nft?.commitment);
-            if (targetSlot === undefined || predecessorCommitment.length < 128) {
-              step(candidate.index, candidate.name, value + BigInt(publishedBase));
-              continue;
+            let physicalLocalOffset: number | undefined;
+            if (targetSlot !== undefined && predecessorCommitment.length >= 128) {
+              const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`
+                + predecessorCommitment.slice(128);
+              const found = local.outputs.findIndex((output) => output.token?.category === participantCategory
+                && commitmentHex(output.token?.nft?.commitment).toLowerCase() === plannedPredecessor.toLowerCase());
+              if (found >= 0) physicalLocalOffset = found;
             }
-            const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`
-              + predecessorCommitment.slice(128);
-            const found = local.outputs.findIndex((output) => output.token?.category === participantCategory
-              && commitmentHex(output.token?.nft?.commitment).toLowerCase() === plannedPredecessor.toLowerCase());
-            if (found < 0) {
-              step(candidate.index, candidate.name, value + BigInt(publishedBase));
-              continue;
+            if (physicalLocalOffset === undefined && routeTrailingBase !== undefined) {
+              physicalLocalOffset = routeTrailingBase;
             }
-            step(candidate.index, candidate.name, BigInt(publishedBase + found));
+            if (physicalLocalOffset === undefined) {
+              // Gate A′: never invent PredOut as concreteLocal+publishedBase — fail closed.
+              throw layoutInvariantError({
+                invariantId: 'pred-out-physical-unresolved',
+                message: `PredOut '${candidate.name}' has no physical trailing offset for participant `
+                  + `${participant.participant}`,
+                participant: participant.participant,
+                resource: candidate.name,
+                expectedOutput: routeTrailingBase,
+                actualOutput: Number(value),
+              });
+            }
+            predOutPhysical.push({
+              index: candidate.index,
+              name: candidate.name,
+              witnessName: `__internal__${candidate.name}`,
+              physicalLocalOffset,
+              concreteLocalSlot: Number(value),
+            });
+          }
+          if (
+            publishedBase > 0
+            && masterUnlocker?.params !== undefined
+            && routeTrailingBase !== undefined
+            && (
+              dynLocalBase !== undefined
+              || predOutPhysical.length > 0
+              || pendingValueChunkClaim !== undefined
+            )
+          ) {
+            const frameBlockSize = Math.max(
+              participant.blockLayout?.blockSize ?? 0,
+              local.outputs.length,
+              local.inputs.length,
+              routeTrailingBase + 1,
+              pendingValueChunkClaim?.localSlotOffset !== undefined
+                ? pendingValueChunkClaim.localSlotOffset + (pendingValueChunkClaim.chunkCount || 1)
+                : 0,
+              ...predOutPhysical.map((pred) => pred.physicalLocalOffset + 1),
+            );
+            // Gate A′: exactly one resolve per participant covering dyn + entry NEW + valueChunk + PredOut.
+            const inferredDynCount = dynLocalBase === undefined ? undefined
+              : (() => {
+                const nextOccupied = predOutPhysical[0]?.physicalLocalOffset
+                  ?? pendingValueChunkClaim?.localSlotOffset;
+                return nextOccupied === undefined
+                  ? 0
+                  : Math.max(0, nextOccupied - routeTrailingBase);
+              })();
+            const witnesses = resolveParticipantAbsoluteWitnesses({
+              participant: participant.participant,
+              contractName: participant.artifact.contractName,
+              publishedBase,
+              blockSize: frameBlockSize,
+              trailingBase: routeTrailingBase,
+              trailingCapacity: routeTrailingCapacity,
+              dynChunkCount: inferredDynCount,
+              entryNews: inferredDynCount === undefined ? undefined : [{ entryIndex: 0 }],
+              valueChunkBandOffset: pendingValueChunkClaim === undefined
+                ? undefined
+                : pendingValueChunkClaim.localSlotOffset - routeTrailingBase,
+              valueChunkCollection: pendingValueChunkClaim?.collection,
+              valueChunkCount: pendingValueChunkClaim?.chunkCount,
+              predOuts: predOutPhysical.map((pred) => ({
+                witnessName: pred.witnessName,
+                physicalLocalOffset: pred.physicalLocalOffset,
+                concreteLocalSlot: pred.concreteLocalSlot,
+              })),
+            });
+            // Dyn / valueChunk / PredOut absolutes are written only through the exported apply helper.
+            try {
+              const applied = applyParticipantAbsoluteWitnesses({
+                inputs: masterUnlocker.abiFunction?.inputs ?? [],
+                params: masterUnlocker.params,
+                witnesses,
+                participant: participant.participant,
+              });
+              for (const entry of applied.written) {
+                resyncedIndices.push(entry.index);
+                publishedRelocations.push({
+                  name: entry.name, from: entry.from, to: entry.to,
+                });
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw layoutInvariantError({
+                invariantId: 'layout-witness-apply-failed',
+                message,
+                participant: participant.participant,
+                resource: 'layout-witnesses',
+              });
+            }
+          } else if (
+            publishedBase > 0
+            && masterUnlocker?.params !== undefined
+            && routeTrailingBase === undefined
+            && (
+              dynLocalBase !== undefined
+              || predOutPhysical.length > 0
+              || pendingValueChunkClaim !== undefined
+            )
+          ) {
+            // Claims exist but trailing geometry is missing — fail closed rather than inventing absolutes.
+            throw layoutInvariantError({
+              invariantId: 'layout-trailing-missing',
+              message: `participant ${participant.participant} needs trailingBase to resolve layout witnesses`,
+              participant: participant.participant,
+              resource: 'trailingBase',
+            });
           }
           if (resyncedIndices.length > 0) masterUnlocker?.syncEncodedArgsFromParams?.(resyncedIndices);
           const rebased = publishedRelocations.find((entry) => entry.name === 'dynamicChunkInputBase')?.to;

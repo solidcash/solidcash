@@ -2773,7 +2773,13 @@ function describeMessageBusBatchRows(
       },
     );
   }
-  const unlockerParams = (builder.inputs[inputIndex] as { unlocker?: { params?: unknown[]; abiFunction?: { inputs?: Array<{ name: string }> } } })?.unlocker;
+  const unlockerParams = (builder.inputs[inputIndex] as {
+    unlocker?: {
+      params?: unknown[];
+      abiFunction?: { name?: string; inputs?: Array<{ name: string }> };
+      contract?: { artifact?: { contractName?: string } };
+    };
+  })?.unlocker;
   if (unlockerParams?.abiFunction?.inputs && unlockerParams.params) {
     const idxParams = unlockerParams.abiFunction.inputs.flatMap((input, i) => (
       /returnOutputIdx/i.test(input.name)
@@ -2781,7 +2787,26 @@ function describeMessageBusBatchRows(
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
-  return new Error(`messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}: ${rawVmReason}${requireSite}`);
+  // Gate C attribution: name the owning contract/function and layout coordinate witnesses so
+  // "input 225 OP_VERIFY" carries participant/resource/expected-output context without a full operand dump.
+  const layoutWitnesses = (unlockerParams?.abiFunction?.inputs && unlockerParams.params)
+    ? unlockerParams.abiFunction.inputs.flatMap((entry, i) => {
+      if (!/valueChunkOutputBase|dynamicChunkInputBase|vmapBatchPredOut_/i.test(entry.name)) return [];
+      return [`${entry.name.replace(/^__internal__/, '')}=${String(unlockerParams.params?.[i])}`];
+    })
+    : [];
+  const owner = [
+    unlockerParams?.contract?.artifact?.contractName,
+    unlockerParams?.abiFunction?.name,
+  ].filter((part): part is string => typeof part === 'string' && part.length > 0).join('.');
+  const attribution = [
+    owner.length > 0 ? `participant ${owner}` : undefined,
+    layoutWitnesses.length > 0 ? `layout ${layoutWitnesses.join(',')}` : undefined,
+  ].filter((part): part is string => part !== undefined).join('; ');
+  return new Error(
+    `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}`
+    + `${attribution.length > 0 ? ` (${attribution})` : ''}: ${rawVmReason}${requireSite}`,
+  );
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */

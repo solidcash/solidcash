@@ -3981,6 +3981,7 @@ function injectChunkableEntryWitnesses(ast: Ast): void {
       if (!fn.parameters.some((parameter) => parameter.name === leading)) {
         fn.parameters.push(new ParameterNode(new BytesType(), leading));
       }
+      // completePushValue is late-injected after route synthesis (early inject removes messageBus availability).
     });
     // Route source is synthesized before SymbolTableTraversal classifies fixed sorted writes into
     // `sortedBatchInfo`. Make the shared trailing-width witness part of the source handler now, so a row route
@@ -9146,8 +9147,10 @@ function synthesizeMessageBusRoute(
                 if (parameter.name.startsWith('__internal__collectionIter')
                   || parameter.name.startsWith('__internal__valueWitness_')
                   || parameter.name.startsWith('__internal__leadingPushValue_')
+                  || parameter.name.startsWith('__internal__completePushValue_')
                   || parameter.name === '__internal__vmapBatchTrailingCount'
-                  || parameter.name === '__internal__valueChunkOutputBase') return parameter.name;
+                  || parameter.name === '__internal__valueChunkOutputBase'
+                  || parameter.name === '__internal__dynamicChunkInputBase') return parameter.name;
                 return tokenCategoryInputByHandler.get(fn)?.get(i)
                   ?? witnessByInput.get(i) ?? decodedName(i);
               })()),
@@ -9433,6 +9436,7 @@ function synthesizeMessageBusRoute(
         && !parameter.name.startsWith('__internal__collectionIter')
         && !parameter.name.startsWith('__internal__valueWitness_')
         && !parameter.name.startsWith('__internal__leadingPushValue_')
+        && !parameter.name.startsWith('__internal__completePushValue_')
         && parameter.name !== '__internal__vmapBatchTrailingCount'
         && parameter.name !== '__internal__valueChunkOutputBase') return false;
       if (declaredPermNames.has(parameter.name)) return false;
@@ -12993,6 +12997,39 @@ function compileResolvedAst(
   }
   if (messageBusRoute?.blockLayout) {
     const handlerManagedEntrySlots = new Set<number>();
+    const dynamicStateNames = new Set(ast.contract.stateVariables
+      .filter((state) => state.isDynamic || state.isPacked || isDynamicStorageType(state.type))
+      .map((state) => state.name));
+    const functionsByName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of ast.contract.functions) {
+      const group = functionsByName.get(fn.name) ?? [];
+      group.push(fn);
+      functionsByName.set(fn.name, group);
+    }
+    const routeFootprintCache = createFootprintAnalysisCache(dynamicStateNames);
+    const footprintDynamicResources = ast.contract.functions
+      .filter((fn) => fn !== messageBusRoute && fn.messageBusEligible)
+      .flatMap((fn) => {
+        const footprint = analyseFunctionFootprint(fn, functionsByName, routeFootprintCache);
+        return [...footprint.reads, ...footprint.writes]
+          .filter((resource) => resource.startsWith('state:'))
+          .map((resource) => resource.slice('state:'.length))
+          .filter((name) => dynamicStateNames.has(name));
+      });
+    // Route dynReads/Writes may still be unpopulated this early; fall back to every dynamic state name when
+    // any eligible handler emits chunkable/entry-loop NEWs that must sit after the route-preserved dyn band.
+    const needsDynBandForChunkableOrLoop = ast.contract.functions.some((fn) => fn !== messageBusRoute
+      && fn.messageBusEligible
+      && (
+        (fn.entryLoopWrites?.length ?? 0) > 0
+        || (fn.entryAccesses ?? []).some((entry) => entry.chunkableArrayValue === true)
+      ));
+    const routeDynamicResources = [...new Set([
+      ...(messageBusRoute.dynamicReads ?? []),
+      ...(messageBusRoute.dynamicWrites ?? []),
+      ...footprintDynamicResources,
+      ...(needsDynBandForChunkableOrLoop ? [...dynamicStateNames] : []),
+    ].filter((name) => dynamicStateNames.has(name)))];
     type MessageBusClone = FunctionDefinitionNode & { messageBusCloneSourceKey?: string };
     const graphCloneBySource = new Map<FunctionDefinitionNode, FunctionDefinitionNode>();
     for (const clone of ast.contract.functions.filter((fn) =>
@@ -13005,6 +13042,8 @@ function compileResolvedAst(
     for (const fn of ast.contract.functions) {
       const routeClone = fn.graphEmissionHandler
         || MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => fn.name.startsWith(prefix));
+      const fixedHandlerEntries = fn.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
+      const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn);
       if (routeClone) {
         fn.blockLayout = messageBusRoute.blockLayout;
         // An empty projection is meaningful: this clone owns no fixed entry in the route-wide union. Without
@@ -13012,8 +13051,45 @@ function compileResolvedAst(
         // as a same-collection debit/merge entry, shifting the loop's output schedule.
         fn.messageBusPhysicalEntrySlots ??= [];
       }
-      const fixedHandlerEntries = fn.entryAccesses?.filter((entry) => !entry.inLoop) ?? [];
-      const directlyDispatchedSource = fn.messageBusEligible && !graphCloneBySource.has(fn);
+      // Clones always receive the route absolute base when the route preserves dyn chunks. Directly-dispatched
+      // sources only need it when they emit a chunkable-array / entry-loop NEW after those sibling chunks
+      // (measured: publishJobEvent / jobEvents push → MDV1 take-job pad@163 vs entry@161). Broader injection
+      // put a -1 sentinel on handlers that never address the dyn band.
+      const needsRouteAbsoluteDynBase = routeClone || (
+        directlyDispatchedSource
+        && (
+          (fn.entryLoopWrites?.length ?? 0) > 0
+          || (fn.entryAccesses ?? []).some((entry) => entry.chunkableArrayValue === true)
+        )
+      );
+      if (needsRouteAbsoluteDynBase
+        && routeDynamicResources.length > 0
+        && !fn.parameters.some((parameter) => parameter.name === '__internal__dynamicChunkInputBase')) {
+        const dynamicBase = new ParameterNode(PrimitiveType.BIGINT, '__internal__dynamicChunkInputBase');
+        dynamicBase.location = fn.location;
+        fn.parameters.push(dynamicBase);
+        fn.usesDynamicChunkInputBase = true;
+      }
+      // Gate B: inject completePushValue beside leadingPushValue after route synthesis (early inject broke
+      // messageBus availability). Fold fills both leading and complete witnesses. Must also hit the
+      // route function itself so `__message_bus1` ABI / unlocker expose completePushValue_*.
+      if (routeClone || directlyDispatchedSource || fn.messageBusRoute === true) {
+        for (const parameter of [...fn.parameters]) {
+          if (!parameter.name.startsWith('__internal__leadingPushValue_')) continue;
+          const complete = parameter.name.replace(
+            '__internal__leadingPushValue_',
+            '__internal__completePushValue_',
+          );
+          if (!fn.parameters.some((candidate) => candidate.name === complete)) {
+            const node = new ParameterNode(new BytesType(), complete);
+            node.location = fn.location;
+            fn.parameters.push(node);
+          }
+        }
+      }
+      if (routeClone || directlyDispatchedSource) {
+        fn.messageBusRouteDynamicResources = routeDynamicResources;
+      }
       if ((routeClone || directlyDispatchedSource)
         && fixedHandlerEntries.length > 0 && messageBusRoute.entryAccesses?.length) {
         fn.messageBusPhysicalEntrySlots = fixedHandlerEntries.map((entry) => {
@@ -13141,6 +13217,9 @@ function compileResolvedAst(
       }
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
+    // Route source was assembled before the late clone/handler ABI above. Fill the newly-authenticated hidden
+    // tail before TypeCheckTraversal resolves those generated calls.
+    padMessageBusCloneCalls(ast);
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.
   // Record the corresponding physical-slot alternatives after entry slots have been assigned, but before
@@ -14152,7 +14231,36 @@ function compileResolvedAst(
     console.warn(`Error: ${message}`);
   }
   const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
-  if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== messageBusRouteAbi);
+  // Gate B: ensure completePushValue_* sits beside every leadingPushValue_* on the published route ABI
+  // (late AST inject can miss the already-materialized ABI row that unlockers read).
+  const withCompletePushBesideLeading = <T extends { name: string; type: string }>(
+    inputs: readonly T[],
+  ): T[] => {
+    const extras: T[] = [];
+    for (const input of inputs) {
+      if (!input.name.startsWith('__internal__leadingPushValue_')) continue;
+      const complete = input.name.replace(
+        '__internal__leadingPushValue_',
+        '__internal__completePushValue_',
+      );
+      if (inputs.some((candidate) => candidate.name === complete)
+        || extras.some((candidate) => candidate.name === complete)) continue;
+      extras.push({ ...input, name: complete });
+    }
+    return extras.length === 0 ? [...inputs] : [...inputs, ...extras];
+  };
+  const publishedMessageBusRouteAbi = messageBusRouteAbi === undefined
+    ? undefined
+    : {
+      ...messageBusRouteAbi,
+      inputs: withCompletePushBesideLeading(messageBusRouteAbi.inputs),
+    };
+  // Also patch ordinary handler ABI rows so completePushValue_* is visible beside leading.
+  artifact.abi = artifact.abi.map((fn) => ({
+    ...fn,
+    inputs: withCompletePushBesideLeading(fn.inputs),
+  }));
+  if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn.name !== '__message_bus1');
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
   // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
@@ -14310,7 +14418,33 @@ function compileResolvedAst(
       },
       ...(extractedVerifierProgram && { verifierProgram: extractedVerifierProgram }),
       ...(verifiedKernelEntryJournal && { kernelEntryJournal: verifiedKernelEntryJournal }),
-      route: messageBusRouteAbi!,
+      ...(() => {
+        // Gate B: publish fold plans for chunkable array-push collections that inject leadingPushValue.
+        const plans = new Map<string, {
+          collection: string;
+          collectionSignature?: string;
+          initialSource: 'empty';
+          leadingWitness: string;
+          completeWitness: string;
+          stepKind: 'push';
+        }>();
+        for (const fn of artifact.abi) {
+          for (const access of fn.entryAccesses ?? []) {
+            if (access.chunkableArrayValue !== true || access.arrayMutation !== 'push') continue;
+            if (!fn.inputs.some((input) => input.name.startsWith('__internal__leadingPushValue_'))) continue;
+            if (plans.has(access.collection)) continue;
+            plans.set(access.collection, {
+              collection: access.collection,
+              initialSource: 'empty',
+              leadingWitness: '__internal__leadingPushValue',
+              completeWitness: '__internal__completePushValue',
+              stepKind: 'push',
+            });
+          }
+        }
+        return plans.size > 0 ? { resourceFoldPlans: [...plans.values()] } : {};
+      })(),
+      route: publishedMessageBusRouteAbi!,
       handlers: [
         ...ast.contract.functions,
         ...(mergedCompilerOptions.messageBusKernel === true && ast.contract.fallbackDef

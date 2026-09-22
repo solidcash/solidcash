@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { resolveDynamicChunkInputBase } from '../../../src/stateful/StatefulContract.js';
+import { resolveParticipantAbsoluteWitnesses } from '../../../src/message-bus/layout-resolver.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
@@ -91,16 +92,34 @@ describe('kernel local probe witness rebase', () => {
       (input) => input.name === '__internal__dynamicChunkInputBase',
     );
     expect(dynamicBasePosition).toBeGreaterThanOrEqual(0);
-    const publishedBase = Number(routeUnlocker.params[dynamicBasePosition] as bigint);
-    expect(publishedBase).toBeGreaterThanOrEqual(0);
+    const publishedAbsoluteDyn = Number(routeUnlocker.params[dynamicBasePosition] as bigint);
+    expect(publishedAbsoluteDyn).toBeGreaterThanOrEqual(0);
 
     // Aggregate absolute base must equal publishedBase + localSlot for the participant-local zero slot.
-    expect(resolveDynamicChunkInputBase(0, publishedBase)).toBe(BigInt(publishedBase));
+    expect(resolveDynamicChunkInputBase(0, publishedAbsoluteDyn)).toBe(BigInt(publishedAbsoluteDyn));
     // A non-zero local slot rebases by addition onto the published participant span.
-    expect(resolveDynamicChunkInputBase(2, publishedBase)).toBe(BigInt(publishedBase + 2));
+    expect(resolveDynamicChunkInputBase(2, publishedAbsoluteDyn)).toBe(BigInt(publishedAbsoluteDyn + 2));
+
+    // Gate A′: filled unlocker dyn base matches one resolveParticipantAbsoluteWitnesses (compose path).
+    const trailingBase = storeArtifact.messageBus?.route?.blockLayout?.trailingBase;
+    expect(typeof trailingBase).toBe('number');
+    const expected = resolveParticipantAbsoluteWitnesses({
+      participant: 0,
+      publishedBase: storeRouteInputIndex,
+      blockSize: Math.max(
+        storeArtifact.messageBus?.route?.blockLayout?.blockSize ?? 0,
+        (trailingBase as number) + 1,
+      ),
+      trailingBase: trailingBase as number,
+      trailingCapacity: storeArtifact.messageBus?.route?.blockLayout?.trailingCapacity,
+      dynChunkCount: 0,
+    });
+    expect(expected.dynamicChunkInputBase).toBeDefined();
+    expect(BigInt(publishedAbsoluteDyn)).toBe(expected.dynamicChunkInputBase);
+    expect(routeUnlocker.params[dynamicBasePosition]).toBe(expected.dynamicChunkInputBase);
 
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    expect(sourceOutputs[publishedBase]?.token).toMatchObject({
+    expect(sourceOutputs[publishedAbsoluteDyn]?.token).toMatchObject({
       category: hexToBin(storeSetup.categoryId),
       nft: { capability: 'mutable' },
     });

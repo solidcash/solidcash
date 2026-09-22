@@ -2444,6 +2444,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       return !!callerParam && callerParam.type.toString() === p.type.toString()
         && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_')
           || p.name.startsWith('__internal__leadingPushValue_')
+          || p.name.startsWith('__internal__completePushValue_')
           || p.name.startsWith('__internal__vmapCounter')
           || p.name.startsWith('__internal__vmapRuntime'));
     };

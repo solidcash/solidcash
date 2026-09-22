@@ -188,6 +188,13 @@ export default class AstTraversal extends AstVisitor<Node> {
     if (node.arrayIndex) {
       node.arrayIndex = this.visit(node.arrayIndex) as ExpressionNode;
     }
+    // The runtime old-value witness is evaluated by codegen before the computed assignment expression. Visit it
+    // in the same order so final-use analysis cannot OP_ROLL the shared witness array on that preliminary read.
+    if (node.messageBusRuntimeOldValueWitness) {
+      node.messageBusRuntimeOldValueWitness = this.visit(
+        node.messageBusRuntimeOldValueWitness,
+      ) as ArrayAccessNode;
+    }
     node.expression = this.visit(node.expression);
     return node;
   }

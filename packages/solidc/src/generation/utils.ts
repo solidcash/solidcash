@@ -16,6 +16,37 @@ import {
 import { UnaryOperator, BinaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction, TimeOp } from '../ast/Globals.js';
 
+const extractAddressHash = (offset: bigint): Script => [
+  encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
+];
+
+/** Convert a native variable-width BCH address into the SDK's canonical 20-byte Solidity ABI identity. */
+export function compileAddressToEvmIdentity(): Script {
+  return [
+    Op.OP_SIZE, encodeInt(0n), Op.OP_EQUAL,
+    Op.OP_IF,
+    Op.OP_DROP, new Uint8Array(20),
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(20n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // Raw 20-byte address: already narrowed.
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
+    Op.OP_IF,
+    ...extractAddressHash(2n),
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(35n), Op.OP_EQUAL,
+    Op.OP_IF,
+    Op.OP_HASH160,
+    Op.OP_ELSE,
+    ...extractAddressHash(3n),
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+  ];
+}
+
 export function compileTimeOp(op: TimeOp): Script {
   const mapping = {
     [TimeOp.CHECK_LOCKTIME]: [Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP],
@@ -167,47 +198,15 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   // offset 3 from P2PKH (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20
   // and int targets narrow; `bytes(address)` keeps the full locking bytecode. Other lengths take the
   // P2PKH path and fail closed at OP_SPLIT if they cannot contain a 20-byte payload.
-  const extractAddressHash = (offset: bigint): Script => [
-    encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
-  ];
-  const narrowAddressTo20: Script = [
-    Op.OP_SIZE, encodeInt(0n), Op.OP_EQUAL,
-    Op.OP_IF,
-    // SolidCash represents address(0) as an empty locking bytecode. Solidity narrowing materializes the
-    // corresponding 20-byte zero address rather than attempting to parse it as a P2PKH script.
-    Op.OP_DROP, new Uint8Array(20),
-    Op.OP_ELSE,
-    Op.OP_SIZE, encodeInt(20n), Op.OP_EQUAL,
-    Op.OP_IF,
-    // Raw 20-byte address: already narrowed.
-    Op.OP_ELSE,
-    Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
-    Op.OP_IF,
-    ...extractAddressHash(2n),
-    Op.OP_ELSE,
-    Op.OP_SIZE, encodeInt(35n), Op.OP_EQUAL,
-    Op.OP_IF,
-    // P2SH32 is 35 bytes; the P2PKH offset-3 extract would take script-hash[1:21], not an identity.
-    Op.OP_HASH160,
-    Op.OP_ELSE,
-    ...extractAddressHash(3n),
-    Op.OP_ENDIF,
-    Op.OP_ENDIF,
-    Op.OP_ENDIF,
-    Op.OP_ENDIF,
-  ];
   if (from instanceof AddressType && to instanceof BytesType && to.bound === 20) {
-    return narrowAddressTo20;
+    return compileAddressToEvmIdentity();
   }
   if (from instanceof AddressType && to instanceof IntType) {
-    // Solidity treats the narrowed address as a big-endian uint160. Script numbers are little-endian, so reverse
-    // in compatibility mode; abi.encodePacked(uint160(address)) reverses it back while emitting the declared
-    // integer width and therefore produces the same 20 bytes as abi.encodePacked(address). For unsigned targets,
-    // append a 0x00 sign byte so hashes with their numeric high bit set remain non-negative.
-    const endian = solidityCompat ? [Op.OP_REVERSEBYTES] : [];
+    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
+    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
     return to.signed
-      ? [...narrowAddressTo20, ...endian, Op.OP_BIN2NUM]
-      : [...narrowAddressTo20, ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+      ? [...compileAddressToEvmIdentity(), Op.OP_BIN2NUM]
+      : [...compileAddressToEvmIdentity(), new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
   // address casts are no-ops (stack value unchanged)

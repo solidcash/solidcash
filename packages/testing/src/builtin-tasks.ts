@@ -148,6 +148,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   .addFlag('quiet', 'Suppress per-file output')
   .addFlag('suppress-warnings', 'Suppress non-fatal compiler warnings')
   .addFlag('skip-split', 'Skip split-bundle attempts for oversized contracts')
+  .addOptionalParam(
+    'jobs',
+    'Compile Solidity roots in N worker threads (default 1, one process). Only a cold project build can '
+    + 'benefit: warm builds are cache hits. Measured on the marketplace corpus, 2 jobs is ~1.35x faster in wall '
+    + 'time for ~1.3x the CPU; more jobs buy less wall time for a much larger CPU and memory multiplier.',
+  )
   .addFlag(
     'iteration',
     'Compile only requested sources after compiler changes, leaving the artifact tree marked stale',
@@ -185,6 +191,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     const suppressWarnings = args['suppress-warnings'] === true
       || hre.config.solc?.suppressWarnings === true;
+    // Reuse compiled artifacts across CLI invocations. A cache entry is keyed by the compiler build id, the root
+    // source, the contents of the whole transitive import closure, the primary declaration and every published
+    // option, so a hit is equivalent to recompiling; editing an imported file or rebuilding the compiler misses.
+    // `SOLIDC_COMPILE_CACHE=0` forces a full compile.
+    // TODO(remove SOLIDC_COMPILE_CACHE): replace this environment check with a `--no-cache` flag once the
+    // variable is gone from the compiler (`packages/solidc/src/compiler.ts`, `artifactCacheEnabled`).
+    const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
     const compilerOptions = {
       ...hre.config.solc,
       suppressWarnings,
@@ -193,8 +206,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,
         maximumNftCommitmentBytes,
       ),
+      ...(artifactCache && { __artifactCache: true }),
     };
     const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
+    // The disk layer is what makes the cache survive between CLI invocations; without it only one process would
+    // benefit. An explicitly configured directory always wins.
+    if (artifactCache) process.env.SOLIDC_COMPILE_CACHE_DIR ??= cacheDir;
     const artifactContextFile = path.join(cacheDir, 'artifact-context');
     const artifactContext = artifactCompileContextIdentity(
       compilerCacheIdentity,
@@ -287,12 +304,18 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     // Hardhat project. solidityImportCompat is forced on for `.sol`; other solc opts (ecrecover: 'p2pkh', ...) flow
     // through. Each file's import graph yields many contracts; a name is written once (first compile wins).
     const solFiles = selectedSources.filter((file) => file.endsWith('.sol'));
+    // Opt-in worker fan-out. Keep the default single-process path: the fan-out trades CPU and memory per worker
+    // for wall time, which only pays on a cold build of a project with several expensive roots.
+    const compileJobs = args.jobs === undefined ? 1 : Number(args.jobs);
+    if (!Number.isInteger(compileJobs) || compileJobs < 1) {
+      throw new Error(`The compile --jobs flag expects a positive integer, got "${String(args.jobs)}".`);
+    }
     const writtenNames = new Set<string>();
     let solOk = 0;
     let compilerJobs = 0;
     let cacheHits = 0;
     try {
-      const result = compileSolidityProject(
+      const result = await compileSolidityProject(
         solFiles,
         { solidityImportCompat: true, ...compilerOptions },
         compileFileMulti,
@@ -300,6 +323,9 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           directory: path.join(hre.config.paths.cache, 'solidcash'),
           compilerVersion: compilerCacheIdentity,
         },
+        compileJobs > 1
+          ? { jobs: compileJobs, module: compilerEntry, exportName: 'compileFileMulti' }
+          : undefined,
       );
       for (const [name, artifact] of Object.entries(result.artifacts)) {
         writtenNames.add(name);

@@ -3,9 +3,16 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+    // Tests are authored in TypeScript. Build output can exist beside sources in a development worktree; never
+    // discover those stale JavaScript copies as a second, independently scheduled version of the same test.
+    include: ['test/**/*.{test,spec}.?(c|m)ts?(x)'],
     exclude: ['**/types/**'],
     globals: true,
+    // Stateful kernel E2E workers each retain the generated compiler/ANTLR graph plus large VM traces. Measured
+    // RSS reaches roughly 1.2-1.9 GiB per worker; running the default one-worker-per-core pool pushed a 10-core
+    // host into swap and made otherwise deterministic recurrence tests approach their timeout. Keep enough
+    // concurrency for the suite while bounding aggregate memory and scheduler contention.
+    maxWorkers: 3,
     silent: 'passed-only',
     coverage: {
       provider: 'v8',

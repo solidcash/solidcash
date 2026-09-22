@@ -1,5 +1,6 @@
 import {
   IntType, BytesType, AddressType, PrimitiveType, ValueType, Type, MappingType, StructType, ArrayType, EnumType,
+  FixedType,
   FunctionType,
   hash256, computeErc7201SlotNumber, isFixedWidthType,
 } from '@solidcash/utils';
@@ -13,7 +14,8 @@ import {
   ReturnNode, TupleAssignmentNode, LowLevelCallNode, NewArrayNode, EmitStatementNode, EventDefinitionNode,
   InstantiationNode, TypeIntrospectionNode, ArrayAccessNode, ArrayAssignNode, ArrayNode, StateArrayPopNode,
   TernaryOpNode, TupleIndexOpNode, SourceFileNode,
-  FunctionModifier,
+  FunctionModifier, AbiEncodeNode, AbiEncodePackedNode,
+  LiteralNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { GlobalFunction } from '../ast/Globals.js';
@@ -35,6 +37,7 @@ import {
   memZeroBytes,
   memGrowTo,
 } from './YulMemPrimitives.js';
+import { isKernelSafeNativeAssembly } from './NativeAssemblyKernelSafety.js';
 
 // Thrown when a Yul construct is outside the supported codegen subset; the block is then left as-is for the
 // inline-assembly diagnostic (GTT) to report. Internal to this pass.
@@ -66,8 +69,15 @@ let originalCalldataSnapshots = new Map<string, string>();
 // Constant hex-literal-initialized locals (`bytes memory b = hex"..."`), so Yul `create(0, add(b,0x20), n)` can
 // resolve b to a compile-time bytecode blob and derive the deployed contract's p2sh32 address.
 let currentVarValues = new Map<string, Uint8Array>();
-// `bytes X = type(C).creationCode` locals: X -> contract name C, so a Yul `create2` over X lowers to `new C{salt}()`.
-let currentCreationCodeLocals = new Map<string, string>();
+interface TypedCreationCode {
+  contractName: string;
+  constructorArgs: ExpressionNode[];
+}
+
+// Compiler-resolvable creation buffers: either `type(C).creationCode`, or that exact blob followed by one
+// `abi.encode(args)` constructor tuple. These lower to the ordinary typed `new C(args)` deployment path.
+let currentCreationCodeLocals = new Map<string, TypedCreationCode>();
+let currentMutatedVars = new Set<string>();
 let declaredLibraryNames = new Set<string>();
 let currentSourceFunction: FunctionDefinitionNode | undefined;
 
@@ -94,22 +104,89 @@ let bufferWrites = new Map<string, Array<{ off: bigint; value: YulExpressionNode
 
 // Record every local declaration's declared type (named returns are already locals here, after
 // NamedReturnTransformation). Shadowing is rare; the last write wins, which is fine for assembly lowering.
+function typedCreationCode(expression: ExpressionNode): TypedCreationCode | undefined {
+  if (expression instanceof TypeIntrospectionNode
+    && (expression.property === 'creationCode' || expression.property === 'runtimeCode')) {
+    return { contractName: expression.typeArgText, constructorArgs: [] };
+  }
+  const pieces = expression instanceof AbiEncodePackedNode || expression instanceof BytesConcatNode
+    ? expression.parameters : undefined;
+  if (pieces?.length === 2
+    && pieces[0] instanceof TypeIntrospectionNode && pieces[0].property === 'creationCode'
+    && pieces[1] instanceof AbiEncodeNode
+    && pieces[1].parameters.every(stableCreationArgument)) {
+    return { contractName: pieces[0].typeArgText, constructorArgs: pieces[1].parameters };
+  }
+  if (expression instanceof IdentifierNode) return currentCreationCodeLocals.get(expression.name);
+  return undefined;
+}
+
+// The encoded tuple is evaluated at the buffer declaration, while the synthesized `new C(args)` executes at
+// CREATE. Reusing an expression is exact only when it is a side-effect-free expression over values which are not
+// rebound anywhere in the function. Calls and aggregate/state reads are deliberately excluded: even a presently
+// pure call could observe state changed between the two source points, and a call with effects must never run twice.
+function stableCreationArgument(expression: ExpressionNode): boolean {
+  if (expression instanceof LiteralNode) return true;
+  if (expression instanceof IdentifierNode) {
+    const type = currentVars.get(expression.name);
+    const scalar = type instanceof IntType || type instanceof FixedType || type instanceof AddressType
+      || type instanceof EnumType || type instanceof ValueType
+      || (type instanceof BytesType && type.bound !== undefined)
+      || (typeof type === 'string' && type !== PrimitiveType.STRING
+        && type !== PrimitiveType.ANY && type !== PrimitiveType.VOID);
+    return scalar && !currentMutatedVars.has(expression.name);
+  }
+  if (expression instanceof CastNode || expression instanceof UnaryOpNode) {
+    return stableCreationArgument(expression.expression);
+  }
+  if (expression instanceof BinaryOpNode) {
+    return stableCreationArgument(expression.left) && stableCreationArgument(expression.right);
+  }
+  if (expression instanceof TernaryOpNode) {
+    return stableCreationArgument(expression.condition)
+      && stableCreationArgument(expression.ifTrue) && stableCreationArgument(expression.ifFalse);
+  }
+  if (expression instanceof BytesConcatNode) return expression.parameters.every(stableCreationArgument);
+  return false;
+}
+
 function collectVarTypes(node: Node, out: Map<string, Type>): void {
   if (node instanceof VariableDefinitionNode) {
     out.set(node.name, node.type);
     if (node.expression instanceof HexLiteralNode) currentVarValues.set(node.name, node.expression.value);
     else if (node.memoryLiteralValue) currentVarValues.set(node.name, node.memoryLiteralValue);
-    // `bytes X = type(C).creationCode` - record X -> C so a create2 over X lowers to `new C{salt}()`. Read the raw
-    // type name (typeArgText); TypeIntrospectionNode.contractName is only set later (SymbolTableTraversal).
-    if (node.expression instanceof TypeIntrospectionNode
-      && (node.expression.property === 'creationCode' || node.expression.property === 'runtimeCode')) {
-      currentCreationCodeLocals.set(node.name, node.expression.typeArgText);
+    // Read the raw type name (typeArgText): TypeIntrospectionNode.contractName is set only by the later symbol
+    // pass. Any source/Yul reassignment invalidates the value provenance before this collection begins.
+    const creation = node.expression && !currentMutatedVars.has(node.name)
+      ? typedCreationCode(node.expression) : undefined;
+    if (creation) {
+      currentCreationCodeLocals.set(node.name, creation);
     }
   }
   for (const key of Object.keys(node)) {
     const val = (node as any)[key];
     if (val instanceof Node) collectVarTypes(val, out);
     else if (Array.isArray(val)) for (const v of val) if (v instanceof Node) collectVarTypes(v, out);
+  }
+}
+
+function collectMutatedVars(node: Node, out: Set<string>): void {
+  if (node instanceof AssignNode && !node.isReferenceDataWrite) out.add(node.identifier.name);
+  if (node instanceof AssemblyStatementNode && node.yulBlock) {
+    const visitYul = (candidate: YulNode): void => {
+      if (candidate instanceof YulAssignmentNode) {
+        for (const path of candidate.paths) if (path.members.length === 0) out.add(path.base);
+      }
+      for (const value of Object.values(candidate)) {
+        if (value instanceof YulNode) visitYul(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof YulNode) visitYul(item);
+      }
+    };
+    visitYul(node.yulBlock);
+  }
+  for (const value of Object.values(node)) {
+    if (value instanceof Node) collectMutatedVars(value, out);
+    else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) collectMutatedVars(item, out);
   }
 }
 
@@ -204,6 +281,25 @@ function bodyHasAssembly(node: Node | undefined): boolean {
     const val = (node as any)[key];
     if (val instanceof Node) { if (bodyHasAssembly(val)) return true; } else if (Array.isArray(val)) {
       for (const v of val) if (v instanceof Node && bodyHasAssembly(v)) return true;
+    }
+  }
+  return false;
+}
+
+// Unsafe native BCH opcodes intentionally remain opaque to Yul lowering. Kernel admission can run this pass early,
+// but must leave a mixed Yul/unsafe-native function untouched so the ordinary late pass sees it exactly once.
+function bodyHasUnsafeNativeAssembly(node: Node | undefined): boolean {
+  if (!node) return false;
+  if (node instanceof AssemblyStatementNode) {
+    return node.yulBlock === undefined && !isKernelSafeNativeAssembly(node);
+  }
+  for (const key of Object.keys(node)) {
+    if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+    const value = (node as any)[key];
+    if (value instanceof Node) {
+      if (bodyHasUnsafeNativeAssembly(value)) return true;
+    } else if (Array.isArray(value)) {
+      for (const item of value) if (item instanceof Node && bodyHasUnsafeNativeAssembly(item)) return true;
     }
   }
   return false;
@@ -2361,20 +2457,24 @@ function lowerCond(expr: YulExpressionNode): ExpressionNode {
   return loc(new BinaryOpNode(lowerValue(expr), BinaryOperator.NE, intLit(0n, expr)), expr);
 }
 
-// `pair := create2(0, add(code, 0x20), mload(code), salt)` where `bytes code = type(C).creationCode`: deploy the
-// SolidCash contract C. Lower to `new C{salt: salt}()` (an InstantiationNode) - runs pre-semantic, so the deploy
-// modifier inference, self-pin covenant, salt bake and SDK deployFrom all engage downstream. The child's ctor args
-// come from creationCode (none extra here); a same-tx `C(pair).initialize(..)` folds as a deploy-then-call. Value
-// must be 0 (a funded deploy needs an output). Any un-recognised offset/size/type leaves it for the yul diagnostic.
-function tryCreate2Instantiation(value: YulExpressionNode, src: YulNode): InstantiationNode | undefined {
-  if (!(value instanceof YulFunctionCallNode) || value.name !== 'create2' || value.args.length !== 4) return undefined;
+// `pair := create(0, add(code, 0x20), mload(code))` (or CREATE2's salted four-argument form) where
+// `bytes code = type(C).creationCode` (optionally followed by `abi.encode(args)`): deploy the SolidCash contract
+// C. Lower to an InstantiationNode before
+// semantic analysis so both forms reuse the typed child-layout descriptor, self-pin covenant, and SDK genesis
+// materialization. A runtime bytes buffer has no compiler-authored child layout and deliberately stays on the
+// address-only lowering path below. Value must be zero: funded creation needs a separately modelled BCH output.
+function tryTypedCreateInstantiation(value: YulExpressionNode, src: YulNode): InstantiationNode | undefined {
+  if (!(value instanceof YulFunctionCallNode)) return undefined;
+  const salted = value.name === 'create2' && value.args.length === 4;
+  if (!(salted || (value.name === 'create' && value.args.length === 3))) return undefined;
   if (!(isIntLiteral(value.args[0]) && BigInt(value.args[0].raw) === 0n)) return undefined;
   const codeLocal = resolveWholeBytesLocal(value.args[1], value.args[2]);
   if (!codeLocal) return undefined;
-  const contractName = currentCreationCodeLocals.get(codeLocal);
-  if (!contractName) return undefined;
-  const inst = loc(new InstantiationNode(loc(new IdentifierNode(contractName), src), []), src);
-  inst.callOptions = { salt: lowerValue(value.args[3]) };
+  const creation = currentCreationCodeLocals.get(codeLocal);
+  if (!creation) return undefined;
+  const args = creation.constructorArgs.map((arg) => cloneNode(arg) as ExpressionNode);
+  const inst = loc(new InstantiationNode(loc(new IdentifierNode(creation.contractName), src), args), src);
+  if (salted) inst.callOptions = { salt: lowerValue(value.args[3]) };
   return inst;
 }
 
@@ -2435,12 +2535,11 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, stmt.names[0], true, stmt);
     }
-    // `let pair := create2(0, add(code,0x20), mload(code), salt)` -> `address pair = new C{salt}()` (deploy). Emit
-    // the InstantiationNode DIRECTLY (no CastNode wrap) so deploy-result-local registration + deploy-then-call fold
-    // (SymbolTableTraversal, keyed on `expression instanceof InstantiationNode`) engage.
-    const declCreate2 = tryCreate2Instantiation(stmt.value, stmt);
-    if (declCreate2) {
-      return loc(new VariableDefinitionNode(new AddressType(false), [], stmt.names[0], declCreate2), stmt);
+    // Typed CREATE/CREATE2 becomes `address pair = new C...` (deploy). Emit the InstantiationNode DIRECTLY (no
+    // CastNode wrap) so deploy-result-local registration and deploy-then-call folding engage.
+    const declaredCreate = tryTypedCreateInstantiation(stmt.value, stmt);
+    if (declaredCreate) {
+      return loc(new VariableDefinitionNode(new AddressType(false), [], stmt.names[0], declaredCreate), stmt);
     }
     // `let buf := mload(0x40)` allocates a fresh free-memory byte buffer; track its mstore writes, emit nothing.
     // In the runtime path there is no compile-time buffer - it lowers to a real `mload(0x40)` read (the free
@@ -2599,11 +2698,10 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, name, false, stmt);
     }
-    // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the
-    // InstantiationNode DIRECTLY (bypass the target-type CastNode wrap below) so the deploy-result-local /
-    // deploy-then-call fold machinery (keyed on `expression instanceof InstantiationNode`) engages.
-    const asgCreate2 = tryCreate2Instantiation(stmt.value, stmt);
-    if (asgCreate2) return loc(new AssignNode(loc(new IdentifierNode(name), stmt), asgCreate2), stmt);
+    // Typed CREATE/CREATE2 becomes `pair = new C...` (deploy). Keep the InstantiationNode direct so the
+    // deploy-result-local and deploy-then-call machinery can recognize it.
+    const assignedCreate = tryTypedCreateInstantiation(stmt.value, stmt);
+    if (assignedCreate) return loc(new AssignNode(loc(new IdentifierNode(name), stmt), assignedCreate), stmt);
     // `ok := call/staticcall/delegatecall(...)` -> a low-level call binding onto the existing var.
     if (isLowLevelCall(stmt.value)) return lowerLowLevelCall(stmt.value, name, false, stmt);
     // `slot := keccak256(0,64)` mapping-slot idiom (assignment form) -> record m[k]; drop the dead keccak binding.
@@ -3257,6 +3355,10 @@ function lowerBlock(block: YulBlockNode): BlockNode {
 // existing codegen (stack model, control flow, type checking). Unsupported Yul is left untouched for the
 // inline-assembly diagnostic. Native BCH-ASM (no yulBlock) is unaffected. See docs/yul-inline-assembly.md.
 export default class LowerInlineAssembly extends AstTraversal {
+  constructor(private readonly skipFunctionsWithNativeAssembly = false) {
+    super();
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     declaredLibraryNames = new Set(node.declaredLibraryNames);
     currentConstantTypes = new Map(node.constantDefinitions.map((constant) => [constant.name, constant.type]));
@@ -3322,6 +3424,7 @@ export default class LowerInlineAssembly extends AstTraversal {
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const hasAssembly = bodyHasAssembly(node.body);
     if (!hasAssembly) return node;
+    if (this.skipFunctionsWithNativeAssembly && bodyHasUnsafeNativeAssembly(node.body)) return node;
     const previousSourceFunction = currentSourceFunction;
     currentSourceFunction = node;
     const sourceStatements = node.body.statements ?? [];
@@ -3336,6 +3439,8 @@ export default class LowerInlineAssembly extends AstTraversal {
     originalCalldataSnapshots = new Map();
     currentVarValues = new Map();
     currentCreationCodeLocals = new Map();
+    currentMutatedVars = new Set();
+    collectMutatedVars(node.body, currentMutatedVars);
     currentMutableFnPtrSelectors = new Set();
     currentMutableFnPtrAddresses = new Set();
     collectMutableFnPtrComponents(node.body, currentMutableFnPtrSelectors, currentMutableFnPtrAddresses);
@@ -3524,6 +3629,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     originalCalldataSnapshots = new Map();
     currentVarValues = new Map();
     currentCreationCodeLocals = new Map();
+    currentMutatedVars = new Set();
     currentStorageAliases = new Map();
     currentYulLocalStorageAliases = new Map();
     currentExternalPointerAliases = new Map();

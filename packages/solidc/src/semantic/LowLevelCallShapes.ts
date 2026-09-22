@@ -57,6 +57,16 @@ interface Callsite {
   conditionalWithinLoop: boolean;
 }
 
+/** Compiler-authored occurrence facts required to allocate one authenticated low-level execution frame. */
+export interface LowLevelCallsiteShape {
+  callMode: string;
+  occurrence: 'once' | 'conditional' | 'loop';
+  /** Exact literal loop cardinality when the source proves one; absent is never an unboundedness proof. */
+  maximumOccurrences?: number;
+  returnsResult: boolean;
+  conditionalWithinLoop: boolean;
+}
+
 const LOW_LEVEL_METHOD_NAMES = new Set(['call', 'staticcall', 'delegatecall']);
 const LOOP_NODES = [WhileNode, DoWhileNode, CollectionIterationNode];
 const CONDITIONAL_NODES = [BranchNode, SwitchNode, TryCatchNode, TernaryOpNode];
@@ -159,6 +169,45 @@ function collectLowLevelCalls(
     return;
   }
 
+  // A control-flow predicate is evaluated whenever its enclosing statement is reached; only the selected arms
+  // are conditional. Propagating the arm context into the predicate turns a producer used to choose the branch
+  // into an optional callsite, which prevents later consumers from naming its authenticated result precisely.
+  const armContext: CallsiteContext = context === 'loop' ? 'loop' : 'conditional';
+  const armWithinLoop = conditionalWithinLoop || context === 'loop';
+  if (value instanceof BranchNode) {
+    collectLowLevelCalls(value.condition, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.ifBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    if (value.elseBlock) {
+      collectLowLevelCalls(value.elseBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+  if (value instanceof TernaryOpNode) {
+    collectLowLevelCalls(value.condition, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.ifTrue, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    collectLowLevelCalls(value.ifFalse, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    return;
+  }
+  if (value instanceof SwitchNode) {
+    collectLowLevelCalls(value.expression, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    for (const candidate of value.cases) {
+      collectLowLevelCalls(candidate.value, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+      collectLowLevelCalls(candidate.body, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    if (value.defaultCase) {
+      collectLowLevelCalls(value.defaultCase, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+  if (value instanceof TryCatchNode) {
+    collectLowLevelCalls(value.expression, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop);
+    collectLowLevelCalls(value.tryBlock, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    for (const clause of value.catchClauses) {
+      collectLowLevelCalls(clause.block, armContext, found, seen, fixedLoopOccurrences, armWithinLoop);
+    }
+    return;
+  }
+
   for (const child of Object.values(value)) {
     const nestedConditional = conditionalWithinLoop
       || (context === 'loop' && isInstanceOfAny(value, CONDITIONAL_NODES));
@@ -170,6 +219,27 @@ function collectLowLevelCalls(
       }
     }
   }
+}
+
+/**
+ * Describe every low-level callsite in the same deterministic source order used by semantic slot allocation.
+ *
+ * This is metadata, not admission: consumers must still reject conditional and unbounded delegate frames until
+ * the manifest has an explicit activation/cardinality encoding. Publishing the distinction prevents those
+ * shapes from being mistaken for a singular frame merely because all three previously serialized identically.
+ */
+export function describeFunctionLowLevelCallsites(fn: FunctionDefinitionNode): readonly LowLevelCallsiteShape[] {
+  const found: Callsite[] = [];
+  collectLowLevelCalls(fn.body, 'unconditional', found);
+  return found.map((call) => ({
+    callMode: call.callMode,
+    occurrence: call.context === 'unconditional' ? 'once' : call.context,
+    ...(call.context === 'conditional' ? { maximumOccurrences: 1 }
+      : call.fixedLoopOccurrences === undefined ? {}
+        : { maximumOccurrences: call.fixedLoopOccurrences }),
+    returnsResult: call.returnsResult,
+    conditionalWithinLoop: call.conditionalWithinLoop,
+  }));
 }
 
 /**

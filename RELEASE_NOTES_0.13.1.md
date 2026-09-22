@@ -25,11 +25,31 @@ chai mappings.
 ## Experimental profiles
 
 - Composed external state mutation and custom delegate-forwarding shapes beyond the built-in proxy profile.
-- Layer-3/message-bus composition outside the frozen application and integrity matrices.
+- Message-bus **kernel** composition (see below). Shapes outside the frozen proof inventory, including dormant
+  read-carrier publication, stay fail-closed.
 - Solidity source shapes outside the compatibility-manifest rows, even when the parser currently accepts them.
 
 Experimental behavior is not part of the stable compatibility promise. Construction must stop with a named
 diagnostic when the required transaction shape cannot be produced.
+
+## Kernel beta (message-bus calling convention)
+
+This is a compiler convention, not a second protocol. The envelope (`L3C1` / `L3BUS1`) and journal rules are
+unchanged. Admitted handlers compile as `OP_DEFINE` bodies behind one row-loop wrapper (`selector` `53434231`,
+`artifact.messageBus.convention === 'kernel-row-loop'`). Direct single-spend calls stay direct.
+
+**In this beta you can** compose kernel-admitted handlers through `messageBus.compose` / `call.batch` when the
+artifact says `available: true` and each selected handler is `eligible`. The executable surface is exactly
+`scripts/kernel-beta-manifest.json` (required proofs plus the two cold compiles). `yarn test:kernel-beta` is the
+gate.
+
+**In this beta you cannot** treat a green compile as a deployable contract: MarketplaceV1's kernel route is
+12,102 bytes (over BCH's 10,000-byte per-input limit) and is compile-compatibility evidence only. UnicrowClaim's
+kernel route is 2,918 bytes. Dormant `0x11` read-carrier / dense final-flush publication is off. `split` /
+`merge` / `selfdestruct` / `unsafe(0|1)` / foreign `delegatecall` remain `KERNEL_*`. `messageBusKernel: false`
+reproduces legacy unroll for tests; it is not a fallback when kernel refuses a handler.
+
+Further admission widening belongs on `grok/message-bus-kernel`, not this freeze.
 
 ## Explicit first-release deferrals
 
@@ -86,6 +106,22 @@ diagnostic when the required transaction shape cannot be produced.
 - Fresh-chain full BCHN diagnostic at `4f0d1bb53`: 128/482 files (16/61 batches) passed with zero failed batches
   before the run was intentionally stopped at a durable boundary to prepare the handoff. This partial result is
   not the final matrix attestation.
+
+## Kernel beta gate attestation (2026-09-09)
+
+The frozen kernel beta implementation at `50b50b32f5bc67d917493c48cda7f15287c2e149`, against census commit
+`95fbe8f3c`, passed the exact clean `yarn test:kernel-beta` gate (`diagnosticOnly: false`). The gate ran the root
+build, generated-artifact freshness (2/2), utility script/source-map checks (26/26), the compiler journal corpus
+(62 files, 1,341/1,341), the SDK journal corpus (96 files passed and 6 intentionally skipped; 608 passed and 18
+skipped tests), and the selected SDK regressions (10 files, 164/164). All 17 required kernel proof roles passed,
+covering 58 proof tests in total, with no hidden caught compile attempts.
+
+The gate's two fresh, cache-disabled samples per profile were deterministic and retained the pinned bytecode and
+metadata hashes. MarketplaceV1 legacy unroll measured 5,747/5,624 ms, 40,019 route bytes, and 115,060 full bytes
+(28/39 eligible handlers). Its kernel row loop measured 6,502/6,228 ms, 12,102 route bytes, and 126,967 full bytes
+(39/39 eligible). UnicrowClaim's kernel row loop measured 3,006/3,160 ms, 2,918 route bytes, and 14,462 full bytes
+(11/11 eligible). These sizes are compile-output measurements; they do not assert deployability for artifacts
+over Bitcoin Cash's 10,000-byte script limit.
 
 These are candidate-worktree results, not a final release attestation. Before publishing, complete the
 fresh-chain BCHN matrix at the exact tested commit, record the tag, and replace this paragraph with the final

@@ -12,48 +12,13 @@ import {
 import OptimisationsEquivFile from './cashproof-optimisations.js';
 import { optimisationReplacements } from './optimisations.js';
 
+const compiledOptimisationReplacements = optimisationReplacements.map(([pattern, replacement]) => ({
+  pattern,
+  replacement,
+  regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
+}));
 import { FullLocationData, PositionHint, SingleLocationData } from './types.js';
 import { LogEntry, RequireStatement } from './artifact.js';
-
-interface CompiledOptimisation {
-  pattern: string;
-  replacement: string;
-  regex: RegExp;
-  patternLength: number;
-  replacementLength: number;
-  patternTokens: string[];
-  firstToken: string;
-  requiredTokens: string[];
-  replacementTokens: string[];
-}
-
-const compiledOptimisationReplacements: CompiledOptimisation[] = optimisationReplacements.map(
-  ([pattern, replacement]) => {
-    const patternTokens = pattern.split(/\s+/g);
-    return {
-      pattern,
-      replacement,
-      regex: new RegExp(`${pattern}(\\s|$)`, 'g'),
-      patternLength: patternTokens.length,
-      replacementLength: replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1,
-      patternTokens,
-      firstToken: patternTokens[0],
-      requiredTokens: [...new Set(patternTokens.slice(1))].filter((token) => token !== patternTokens[0]),
-      replacementTokens: replacement === '' ? [] : replacement.split(/\s+/g),
-    };
-  },
-);
-const optimisationMaskWords = Math.ceil(compiledOptimisationReplacements.length / 32);
-const optimisationMasksByFirstToken = new Map<string, Uint32Array>();
-for (let index = 0; index < compiledOptimisationReplacements.length; index += 1) {
-  const token = compiledOptimisationReplacements[index].firstToken;
-  let mask = optimisationMasksByFirstToken.get(token);
-  if (mask === undefined) {
-    mask = new Uint32Array(optimisationMaskWords);
-    optimisationMasksByFirstToken.set(token, mask);
-  }
-  mask[index >>> 5] |= 1 << (index & 31);
-}
 
 export const Op = OpcodesBch;
 export type Op = number;
@@ -61,26 +26,7 @@ export type OpOrData = Op | Uint8Array;
 export type Script = OpOrData[];
 
 export function scriptToAsm(script: Script): string {
-  const parts = new Array<string>(script.length);
-  for (let i = 0; i < script.length; i += 1) {
-    const element = script[i];
-    if (typeof element === 'number') {
-      // A bare push opcode consumes following bytecode rather than standing alone. Retain the decoder round trip
-      // for these uncommon fragments; every other opcode maps independently to its canonical ASM name.
-      if (element >= Op.OP_PUSHBYTES_1 && element <= Op.OP_PUSHDATA_4) {
-        return bytecodeToAsm(scriptToBytecode(script));
-      }
-      parts[i] = Op[element] as string;
-    } else if (element.length === 0) {
-      parts[i] = 'OP_0';
-    } else if (foldsToPushNumberOpcode(element)) {
-      const opcode = element[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : element[0] + PUSH_NUMBER_OPCODE_OFFSET;
-      parts[i] = Op[opcode] as string;
-    } else {
-      parts[i] = binToHex(element);
-    }
-  }
-  return parts.join(' ');
+  return bytecodeToAsm(scriptToBytecode(script));
 }
 
 export function scriptToBitAuthAsm(script: Script): string {
@@ -88,18 +34,7 @@ export function scriptToBitAuthAsm(script: Script): string {
 }
 
 export function asmToScript(asm: string): Script {
-  asm = asm.replace(/\s+/g, ' ').trim();
-  if (asm === '') return [];
-  return asm.split(' ').map((token) => {
-    if (token.startsWith('OP_')) {
-      const opcode = Op[token as keyof typeof Op];
-      if (opcode === undefined) throw new Error(`asmToBytecode: unknown opcode "${token}"`);
-      return opcode as number;
-    }
-    const data = hexToBin(token.replace(/<|>/g, '').replace(/^0x/, ''));
-    if (!foldsToPushNumberOpcode(data)) return data;
-    return data[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : data[0] + PUSH_NUMBER_OPCODE_OFFSET;
-  });
+  return bytecodeToScript(asmToBytecode(asm));
 }
 
 // asmToBytecode also works for BitAuth ASM
@@ -482,176 +417,150 @@ function replaceOps(
   logs: LogEntry[],
   requires: RequireStatement[],
   constructorParamLength: number,
-  optimisations: CompiledOptimisation[],
+  optimisations: { pattern: string; replacement: string; regex: RegExp }[],
 ): ReplaceOpsResult {
   let asm = originalAsm;
-  let newLocationData = locationData;
-  let newLogs = logs;
-  let newRequires = requires;
-  const presentTokens = new Set(asm.match(/OP_\w+/g) ?? []);
-  const activeOptimisations = new Uint32Array(optimisationMaskWords);
-  const activateToken = (token: string): void => {
-    const mask = optimisationMasksByFirstToken.get(token);
-    if (mask === undefined) return;
-    for (let word = 0; word < mask.length; word += 1) activeOptimisations[word] |= mask[word];
-  };
-  for (const token of presentTokens) activateToken(token);
+  let newLocationData = [...locationData];
+  let newLogs = [...logs];
+  let newRequires = [...requires];
 
-  for (let word = 0; word < activeOptimisations.length; word += 1) {
-    let processed = 0;
-    while (true) {
-      const available = activeOptimisations[word] & ~processed;
-      if (available === 0) break;
-      const bit = available & -available;
-      // A replacement may activate another rule. Rules after this one still run in this pass; rules at or before
-      // it must wait for the next fixpoint round, matching the original ordered forEach traversal.
-      processed |= bit | (bit - 1);
-      const optimisationIndex = (word << 5) + 31 - Math.clz32(bit);
-      if (optimisationIndex >= optimisations.length) break;
-      const {
-        pattern, replacement, regex, patternLength, replacementLength, patternTokens, requiredTokens,
-        replacementTokens,
-      } = optimisations[optimisationIndex];
-      if (requiredTokens.length !== 0 && !presentTokens.has(requiredTokens[0])) continue;
-      let matchIndex = asm.search(regex);
-      // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
-      // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
-      // round, per function body, on both codegen passes.
-      if (matchIndex === -1) continue;
-      if (newLocationData === locationData) newLocationData = [...locationData];
-      for (const token of replacementTokens) {
-        if (presentTokens.has(token)) continue;
-        presentTokens.add(token);
-        activateToken(token);
-      }
+  optimisations.forEach(({ pattern, replacement, regex }) => {
+    let matchIndex = asm.search(regex);
+    // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
+    // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
+    // round, per function body, on both codegen passes.
+    if (matchIndex === -1) return;
 
-      // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
-      // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of
-      // copying a growing string on every append (which made large generated bodies pathologically slow to optimise).
-      const processedParts: string[] = [];
-      // Pre-normalised pieces (slices of the already single-spaced `asm`) only need a trim; the (small) replacement
-      // string from the optimisation table needs full whitespace normalisation. Re-running the regex on the large
-      // before-match slices was the dominant per-pass cost once the O(n^2) concat was gone.
-      const pushPre = (s: string): void => { const b = s.trim(); if (b !== '') processedParts.push(b); };
-      const pushAsm = (s: string): void => { const b = s.replace(/\s+/g, ' ').trim(); if (b !== '') processedParts.push(b); };
-      // Opcode count of processedAsm, tracked incrementally so scriptIndex is O(slice) per match rather than an
-      // O(len) matchAll rescan of the whole accumulated prefix - the latter made large scripts O(N^2).
-      let processedTokens = 0;
-      let asmToSearch = asm;
+    // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
+    // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of
+    // copying a growing string on every append (which made large generated bodies pathologically slow to optimise).
+    const processedParts: string[] = [];
+    // Pre-normalised pieces (slices of the already single-spaced `asm`) only need a trim; the (small) replacement
+    // string from the optimisation table needs full whitespace normalisation. Re-running the regex on the large
+    // before-match slices was the dominant per-pass cost once the O(n^2) concat was gone.
+    const pushPre = (s: string): void => { const b = s.trim(); if (b !== '') processedParts.push(b); };
+    const pushAsm = (s: string): void => { const b = s.replace(/\s+/g, ' ').trim(); if (b !== '') processedParts.push(b); };
+    // Opcode count of processedAsm, tracked incrementally so scriptIndex is O(slice) per match rather than an
+    // O(len) matchAll rescan of the whole accumulated prefix - the latter made large scripts O(N^2).
+    let processedTokens = 0;
+    let asmToSearch = asm;
 
-      while (matchIndex !== -1) {
+    while (matchIndex !== -1) {
       // We add the part before the match to the processed asm
-        const beforeMatch = asmToSearch.slice(0, matchIndex);
-        pushPre(beforeMatch);
-        processedTokens += (beforeMatch.match(/\S+/g) || []).length;
+      const beforeMatch = asmToSearch.slice(0, matchIndex);
+      pushPre(beforeMatch);
+      processedTokens += (beforeMatch.match(/\S+/g) || []).length;
 
-        // The script index is the opcode count of processedAsm (tracked incrementally above).
-        // We count the opcodes in the pattern and replacement the same way.
-        const scriptIndex = processedTokens;
-        // We get the locationData entries for every opcode in the pattern
-        const patternLocations = newLocationData.slice(scriptIndex, scriptIndex + patternLength);
+      // The script index is the opcode count of processedAsm (tracked incrementally above).
+      // We count the opcodes in the pattern and replacement the same way.
+      const scriptIndex = processedTokens;
+      const patternLength = [...pattern.matchAll(/\s+/g)].length + 1;
+      const replacementLength = replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1;
 
-        // We get the lowest start location and highest end location of the pattern
-        const lowestStart = getLowestStartLocation(patternLocations);
-        const highestEnd = getHighestEndLocation(patternLocations);
+      // We get the locationData entries for every opcode in the pattern
+      const patternLocations = newLocationData.slice(scriptIndex, scriptIndex + patternLength);
 
-        // Initially we set the position hint to END if any of the pattern locations have a position hint of END
-        // It turned out that this was not the correct approach in the case of OP_NOT OP_IF => OP_NOTIF,
-        // because OP_IF and OP_NOTIF are START opcodes, and OP_NOT is an END opcode.
-        // After reviewing the entire list of optimisations, we set the position hint to the last location's position hint
-        // which we believe to be the correct approach, but it is hard to reason about.
-        // We've also consulted with AI (o3-max) to help us reason about this, and it seems to be the correct approach.
-        const positionHint = patternLocations.at(-1)?.positionHint ?? PositionHint.START;
+      // Compiler-generated instructions can intentionally have no source range. Merge the concrete locations
+      // represented by the replacement; an entirely synthetic pattern remains synthetic.
+      const lowestStart = getLowestStartLocation(patternLocations);
+      const highestEnd = getHighestEndLocation(patternLocations);
 
-        // We merge the lowest start and highest end locations into a single location data entry
-        const mergedLocation = {
-          location: {
-            start: lowestStart.location.start,
-            end: highestEnd.location.end,
-          },
-          positionHint,
-        };
+      // Initially we set the position hint to END if any of the pattern locations have a position hint of END
+      // It turned out that this was not the correct approach in the case of OP_NOT OP_IF => OP_NOTIF,
+      // because OP_IF and OP_NOTIF are START opcodes, and OP_NOT is an END opcode.
+      // After reviewing the entire list of optimisations, we set the position hint to the last location's position hint
+      // which we believe to be the correct approach, but it is hard to reason about.
+      // We've also consulted with AI (o3-max) to help us reason about this, and it seems to be the correct approach.
+      const positionHint = patternLocations.at(-1)?.positionHint ?? PositionHint.START;
 
-        // We replace the pattern locations with the merged location
-        // (note that every opcode in the replacement has the same location)
-        const replacementLocations = new Array<SingleLocationData>(replacementLength).fill(mergedLocation);
-        newLocationData.splice(scriptIndex, patternLength, ...replacementLocations);
+      // We merge the lowest start and highest end locations into a single location data entry
+      const mergedLocation = {
+        location: lowestStart && highestEnd ? {
+          start: lowestStart.location.start,
+          end: highestEnd.location.end,
+        } : undefined,
+        positionHint,
+      } as SingleLocationData;
 
-        const lengthDiff = patternLength - replacementLength; // 2 or 1
+      // We replace the pattern locations with the merged location
+      // (note that every opcode in the replacement has the same location)
+      const replacementLocations = new Array<SingleLocationData>(replacementLength).fill(mergedLocation);
+      newLocationData.splice(scriptIndex, patternLength, ...replacementLocations);
 
-        // The IP of an opcode in the script is its index within the script + the constructor parameters, because
-        // the constructor parameters still have to get added to the front of the script when a new Contract is created.
-        const scriptIp = scriptIndex + constructorParamLength;
+      const lengthDiff = patternLength - replacementLength; // 2 or 1
 
-        if (newRequires.length !== 0) newRequires = newRequires.map((require) => {
+      // The IP of an opcode in the script is its index within the script + the constructor parameters, because
+      // the constructor parameters still have to get added to the front of the script when a new Contract is created.
+      const scriptIp = scriptIndex + constructorParamLength;
+
+      newRequires = newRequires.map((require) => {
         // We calculate the new ip of the require by subtracting the length diff between the matched pattern and replacement
-          const newCalculatedRequireIp = require.ip - lengthDiff;
+        const newCalculatedRequireIp = require.ip - lengthDiff;
 
-          return {
-            ...require,
-            // If the require is within the pattern, we want to make sure that the new ip is at least the scriptIp
-            // Note that this is impossible for the current set of optimisations, but future proofs the code
-            ip: require.ip >= scriptIp ? Math.max(scriptIp, newCalculatedRequireIp) : require.ip,
-          };
-        });
+        return {
+          ...require,
+          // If the require is within the pattern, we want to make sure that the new ip is at least the scriptIp
+          // Note that this is impossible for the current set of optimisations, but future proofs the code
+          ip: require.ip >= scriptIp ? Math.max(scriptIp, newCalculatedRequireIp) : require.ip,
+        };
+      });
 
-        if (newLogs.length !== 0) newLogs = newLogs.map((log) => {
+      newLogs = newLogs.map((log) => {
         // We calculate the new ip of the log by subtracting the length diff between the matched pattern and replacement
-          const newCalculatedLogIp = log.ip - lengthDiff;
+        const newCalculatedLogIp = log.ip - lengthDiff;
 
-          return {
+        return {
           // If the log is within the pattern, we want to make sure that the new ip is at least the scriptIp
-            ip: log.ip >= scriptIp ? Math.max(scriptIp, newCalculatedLogIp) : log.ip,
-            line: log.line,
-            data: log.data.map((data) => {
-              if (typeof data === 'string') return data;
+          ip: log.ip >= scriptIp ? Math.max(scriptIp, newCalculatedLogIp) : log.ip,
+          line: log.line,
+          data: log.data.map((data) => {
+            if (typeof data === 'string') return data;
 
-              // If the log is completely before the pattern, we don't need to change anything
-              if (data.ip < scriptIp) return data;
+            // If the log is completely before the pattern, we don't need to change anything
+            if (data.ip < scriptIp) return data;
 
-              // If the log is completely after the pattern, we just need to offset the ip by the length diff
-              if (data.ip >= scriptIp + patternLength) {
-                const newCalculatedDataIp = data.ip - lengthDiff;
-                return { ...data, ip: newCalculatedDataIp };
-              }
+            // If the log is completely after the pattern, we just need to offset the ip by the length diff
+            if (data.ip >= scriptIp + patternLength) {
+              const newCalculatedDataIp = data.ip - lengthDiff;
+              return { ...data, ip: newCalculatedDataIp };
+            }
 
-              const addedTransformationsCount = data.ip - scriptIp;
-              const addedTransformations = patternTokens.slice(0, addedTransformationsCount).join(' ');
-              const newTransformations = data.transformations ? `${addedTransformations} ${data.transformations}` : addedTransformations;
+            const addedTransformationsCount = data.ip - scriptIp;
+            const addedTransformations = [...pattern.split(/\s+/g)].slice(0, addedTransformationsCount).join(' ');
+            const newTransformations = data.transformations ? `${addedTransformations} ${data.transformations}` : addedTransformations;
 
-              // Only include transformations property if non-empty to avoid adding spurious empty strings
-              const result: typeof data = {
-                ...data,
-                ip: scriptIp,
-              };
-              if (newTransformations) {
-                result.transformations = newTransformations;
-              }
-              return result;
-            }),
-          };
-        });
+            // Only include transformations property if non-empty to avoid adding spurious empty strings
+            const result: typeof data = {
+              ...data,
+              ip: scriptIp,
+            };
+            if (newTransformations) {
+              result.transformations = newTransformations;
+            }
+            return result;
+          }),
+        };
+      });
 
-        // We add the replacement to the processed asm
-        pushAsm(replacement);
-        processedTokens += replacementLength;
+      // We add the replacement to the processed asm
+      pushAsm(replacement);
+      processedTokens += replacementLength;
 
-        // We do not add the matched pattern anywhere since it gets replaced
+      // We do not add the matched pattern anywhere since it gets replaced
 
-        // We set the asmToSearch to the part after the match
-        asmToSearch = asmToSearch.slice(matchIndex + pattern.length).trim();
+      // We set the asmToSearch to the part after the match
+      asmToSearch = asmToSearch.slice(matchIndex + pattern.length).trim();
 
-        // Find the next match
-        matchIndex = asmToSearch.search(regex);
-      }
-
-      // We add the remaining asm to the processed asm
-      pushPre(asmToSearch);
-
-      // We replace the original asm with the processed asm so that the next optimisation can use the updated asm
-      asm = processedParts.join(' ');
+      // Find the next match
+      matchIndex = asmToSearch.search(regex);
     }
-  }
+
+    // We add the remaining asm to the processed asm
+    pushPre(asmToSearch);
+
+    // We replace the original asm with the processed asm so that the next optimisation can use the updated asm
+    asm = processedParts.join(' ');
+  });
 
   // Nothing matched, so the caller is about to stop iterating with exactly the inputs it handed in.
   if (asm === originalAsm) return { asm: originalAsm, locationData, logs, requires, unchanged: true };
@@ -665,9 +574,16 @@ function replaceOps(
   };
 }
 
-const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((highest, current) => {
-    if (current.location.end.line > highest.location.end.line) {
+type LocatedLocationData = SingleLocationData & {
+  location: NonNullable<SingleLocationData['location']>;
+};
+
+const getHighestEndLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location != null,
+  );
+  return located.reduce<LocatedLocationData | undefined>((highest, current) => {
+    if (!highest || current.location.end.line > highest.location.end.line) {
       return current;
     }
 
@@ -678,12 +594,15 @@ const getHighestEndLocation = (locations: SingleLocationData[]): SingleLocationD
     }
 
     return highest;
-  }, locations[0]);
+  }, undefined);
 };
 
-const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocationData => {
-  return locations.reduce((lowest, current) => {
-    if (current.location.start.line < lowest.location.start.line) {
+const getLowestStartLocation = (locations: SingleLocationData[]): LocatedLocationData | undefined => {
+  const located = locations.filter(
+    (entry): entry is LocatedLocationData => entry.location != null,
+  );
+  return located.reduce<LocatedLocationData | undefined>((lowest, current) => {
+    if (!lowest || current.location.start.line < lowest.location.start.line) {
       return current;
     }
 
@@ -694,5 +613,5 @@ const getLowestStartLocation = (locations: SingleLocationData[]): SingleLocation
     }
 
     return lowest;
-  }, locations[0]);
+  }, undefined);
 };

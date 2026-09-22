@@ -1,0 +1,81 @@
+import { bytecodeToAsm } from '@solidcash/utils';
+import { compileString } from 'solidc';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract } from '../../../src/index.js';
+import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+
+const SOURCE = `contract ProducedFiniteKeys() {
+  mapping(int => int) records;
+  function element(int base) internal pure returns (int) { return base + 2; }
+  function element(bigint base) internal pure returns (bigint) { return base + 100; }
+  function make(int base) internal pure returns (int[3] memory) {
+    int[3] memory result;
+    result[0] = base;
+    result[1] = element(base);
+    result[2] = base + 4;
+    return result;
+  }
+  function apply(int count, int base) public {
+    int[3] memory keys = make(base);
+    for (int cursor = 0; cursor < count; cursor = cursor + 1) {
+      this.records[keys[cursor]] = cursor + 20;
+    }
+    require(true);
+  }
+  function check(int key, int expected) public { require(this.records[key] == expected); }
+}`;
+
+const compile = (kernel: boolean) => {
+  const failures: unknown[] = [];
+  const artifact = compileString(SOURCE, {
+    forceStateful: true,
+    messageBus: true,
+    messageBusKernel: kernel,
+    maximumInputBytes: 1_000_000,
+    ...(kernel && {
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+      __attemptFailureBox: { failures },
+    }),
+  });
+  if (kernel) expect(failures).toEqual([]);
+  return artifact;
+};
+
+describe('pure fixed key-vector producer', () => {
+  it('matches legacy producer results and preserves returned-array bounds', async () => {
+    for (const kernel of [false, true]) {
+      const provider = createTestProvider();
+      const artifact = compile(kernel);
+      const inner = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      const contract = StatefulContract.withCategory(inner, categoryId);
+
+      if (kernel) {
+        expect(bytecodeToAsm(Buffer.from(artifact.functionBodies!['53434231'], 'hex')))
+          .toContain('OP_INVOKE');
+        expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'apply'))
+          .toMatchObject({ eligible: true });
+      }
+      const apply = kernel
+        ? contract.batch([{ function: 'apply', args: [3n, 120n] }])
+        : contract.call.apply(3n, 120n);
+      await expect(apply.send()).resolves.toBeDefined();
+      for (const [key, value] of [[120n, 20n], [122n, 21n], [124n, 22n]] as const) {
+        await expect(contract.call.check(key, value).send()).resolves.toBeDefined();
+      }
+    }
+
+    const provider = createTestProvider();
+    const artifact = compile(true);
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(inner, categoryId);
+    await expect(contract.batch([{ function: 'apply', args: [4n, 140n] }]).send())
+      .rejects.toThrow();
+  }, 180_000);
+});

@@ -1,5 +1,6 @@
 import {
   Node,
+  ExpressionNode,
   SourceFileNode,
   ContractNode,
   FunctionDefinitionNode,
@@ -26,9 +27,14 @@ import {
   FunctionCallNode,
   IndirectCallNode,
   MethodCallNode,
+  InstantiationNode,
   NewArrayNode,
   CollectionIterationNode,
   ArrayAccessNode,
+  CastNode,
+  StateAccessNode,
+  BranchNode,
+  BoolLiteralNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -47,21 +53,23 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, or an indirect
- * external function-pointer call (else unrolling is needless), never when the body has break/continue/return
- * (unrolling changes their control flow), and
+ * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, a contract
+ * instantiation, or an indirect external function-pointer call (else unrolling is needless). A break/continue is
+ * admitted only when substituting each fixed induction value makes every reached escape decision static; returns
+ * and runtime-selected escapes remain rolled. Also requires
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
  */
 export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
+  private contractNames = new Set<string>();
   private varTypes = new Map<string, Type>();
   private stateVarTypes = new Map<string, Type>();
   private collectionTypes = new Map<string, Type>();
   // Locals initialized to a `new T[](N)` literal (N compile-time), for folding `local.length`. Populated
-  // post-inline: `_updateJobWhitelist(id, allowed, new address[](0))` binds the arg to an inline local
-  // `__inlN_disallowed_ = new address[](0)`, so the loop's `disallowed_.length` bound is constant. Only names
+  // post-inline when a literal array argument binds to an inline local, so the local's `.length` bound is
+  // constant. Only names
   // NOT in mutatedNames (never reassigned / pushed / popped anywhere in the fn) are tracked, so the recorded
   // size always holds - the length can't change out from under the fold.
   private newArrayLocalSizes = new Map<string, bigint>();
@@ -79,6 +87,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.contractNames = new Set([node.contract.name, ...node.importedContracts.map((contract) => contract.name)]);
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.importedContracts = node.importedContracts.map((c) => this.visit(c) as ContractNode);
     node.freeFunctions = node.freeFunctions.map((f) => this.visit(f) as FunctionDefinitionNode);
@@ -184,7 +193,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // empty). A `new T[](N)` binding is only trusted for the length fold if its name is NOT here, so the recorded
   // size can never be stale (sound regardless of control flow / scoping). Length-PRESERVING ops are deliberately
   // excluded so they don't over-block the fold: an element write `arr[i]=v` (ArrayAssignNode) and an element
-  // delete `delete arr[i]` (ArrayDeleteNode) keep the length - e.g. EACC's `new address[](1); a[0]=w;` stays foldable.
+  // delete `delete arr[i]` (ArrayDeleteNode) keep the length, so `new T[](1); a[0]=v;` stays foldable.
   private collectMutatedNames(body: Node | undefined): {
     names: Set<string>; hasCandidateLoop: boolean; hasIndirectCall: boolean;
   } {
@@ -254,6 +263,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return node;
   }
 
+
   private tryUnroll(init: VariableDefinitionNode, w: WhileNode): StatementNode[] | undefined {
     const varName = init.name;
     if (!(init.expression instanceof IntLiteralNode)) return undefined;
@@ -293,19 +303,29 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // which belong only to the unused direct source body. Empty loops above are still erased as dead code.
     if (this.currentGraphRuntime) return undefined;
 
-    // Only unroll a NON-empty loop whose body writes a mapping OR calls keccak256 (else needless). A keccak256 in
+    // This pass runs both before route admission and again after break/continue normalization. Remember a
+    // source escape on the loop itself: the normalization necessarily replaces the raw ContinueNode/BreakNode,
+    // but that must not make a later pass mistake the rewritten loop for an exactly-repeatable resource set.
+    if (w.fixedUnrollForbidden) return undefined;
+
+    // Only unroll a NON-empty loop whose body writes a mapping, calls keccak256, or deploys a child (else
+    // needless). A child deployment has the same fixed-resource requirement as a mapping write: each exact
+    // iteration owns an independent genesis input/output span and must therefore become an ordinary syntactic
+    // site before message-bus admission assigns site and transfer ordinals. A keccak256 in
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
-    // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
+    // slot, resolved by the complex-arg probe). Static break/continue replay below preserves their source target;
+    // returns and runtime-selected escapes remain rolled.
     // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus route) mode.
     // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
     // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
     // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
+    const hasMappingWrite = this.hasMappingWrite(bodyStmts);
     if (this.indirectCallsOnly ? !hasIndirectCall
-      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts))) return undefined;
-    if (this.hasControlFlowEscape(bodyStmts)) return undefined;
-
+      : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
+        && !this.hasChildDeployment(bodyStmts))) return undefined;
+    const hasSourceEscape = this.hasControlFlowEscape(bodyStmts);
     // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
     if (hasIndirectCall
@@ -317,7 +337,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
-    // across the N copies (Solidity block scoping). The loop variable is substituted by its per-iteration literal.
+    // across the N copies (Solidity block scoping). A single iteration is inlined into the enclosing block so
+    // message-bus admission still sees a top-level mapping write (computed-key journal).
     const result: StatementNode[] = [];
     for (const v of values) {
       const iterStmts: StatementNode[] = [];
@@ -326,25 +347,117 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         this.substituteVar(clone, varName, v);
         iterStmts.push(clone);
       }
-      const block = new BlockNode(iterStmts);
-      block.location = w.block.location;
-      result.push(this.visit(block) as StatementNode); // recurse into the wrapped body (nested loops)
+      const replay = hasSourceEscape ? this.replayStaticEscapes(iterStmts) : {
+        statements: iterStmts, escape: undefined,
+      };
+      if (!replay) {
+        w.fixedUnrollForbidden = true;
+        return undefined;
+      }
+      if (values.length === 1) {
+        for (const st of replay.statements) result.push(this.visit(st) as StatementNode);
+      } else {
+        const block = new BlockNode(replay.statements);
+        block.location = w.block.location;
+        result.push(this.visit(block) as StatementNode);
+      }
+      if (replay.escape === 'break') break;
     }
     return result;
   }
 
+  /**
+   * Execute only loop-control decisions which became compile-time booleans after substituting the fixed
+   * induction value. Statements before an escape remain in source order; continue drops the rest of this
+   * iteration and break also drops every later iteration. Any runtime-selected escape fails closed.
+   */
+  private replayStaticEscapes(
+    statements: readonly StatementNode[],
+  ): { statements: StatementNode[]; escape?: 'break' | 'continue' } | undefined {
+    const output: StatementNode[] = [];
+    for (const statement of statements) {
+      if (statement instanceof ReturnNode) return undefined;
+      if (statement instanceof BreakNode) return { statements: output, escape: 'break' };
+      if (statement instanceof ContinueNode) return { statements: output, escape: 'continue' };
+      if (statement instanceof BlockNode) {
+        const nested = this.replayStaticEscapes(statement.statements ?? []);
+        if (!nested) return undefined;
+        const block = new BlockNode(nested.statements);
+        block.location = statement.location;
+        output.push(block);
+        if (nested.escape) return { statements: output, escape: nested.escape };
+        continue;
+      }
+      if (statement instanceof BranchNode && this.hasControlFlowEscape([statement])) {
+        const condition = this.staticValue(statement.condition);
+        if (typeof condition !== 'boolean') return undefined;
+        const selected = condition ? statement.ifBlock : statement.elseBlock;
+        if (!selected) continue;
+        const nested = this.replayStaticEscapes(selected.statements ?? []);
+        if (!nested) return undefined;
+        const block = new BlockNode(nested.statements);
+        block.location = selected.location;
+        output.push(block);
+        if (nested.escape) return { statements: output, escape: nested.escape };
+        continue;
+      }
+      // A switch break, nested-loop escape, or any other unmodelled abrupt construct is not an outer-loop
+      // decision. Retaining it during unrolling would change its target, so leave the whole loop rolled.
+      if (this.hasControlFlowEscape([statement])) return undefined;
+      output.push(statement);
+    }
+    return { statements: output };
+  }
+
+  private staticValue(node: ExpressionNode): bigint | boolean | undefined {
+    if (node instanceof IntLiteralNode || node instanceof BoolLiteralNode) return node.value;
+    if (node instanceof UnaryOpNode) {
+      const value = this.staticValue(node.expression);
+      if (node.operator === UnaryOperator.NOT && typeof value === 'boolean') return !value;
+      return undefined;
+    }
+    if (!(node instanceof BinaryOpNode)) return undefined;
+    const left = this.staticValue(node.left);
+    const right = this.staticValue(node.right);
+    if (left === undefined || right === undefined) return undefined;
+    if (typeof left === 'boolean' && typeof right === 'boolean') {
+      if (node.operator === BinaryOperator.AND) return left && right;
+      if (node.operator === BinaryOperator.OR) return left || right;
+      if (node.operator === BinaryOperator.EQ) return left === right;
+      if (node.operator === BinaryOperator.NE) return left !== right;
+      return undefined;
+    }
+    if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
+    // Modulo by a non-zero literal cannot overflow. Other arithmetic and casts are deliberately not folded:
+    // this pre-semantic pass has no checked-width authority, so bigint evaluation could disagree with source.
+    if (node.operator === BinaryOperator.MOD) return right === 0n ? undefined : left % right;
+    if (node.operator === BinaryOperator.EQ) return left === right;
+    if (node.operator === BinaryOperator.NE) return left !== right;
+    if (node.operator === BinaryOperator.LT) return left < right;
+    if (node.operator === BinaryOperator.LE) return left <= right;
+    if (node.operator === BinaryOperator.GT) return left > right;
+    if (node.operator === BinaryOperator.GE) return left >= right;
+    return undefined;
+  }
+
   // A compile-time-constant loop bound: an int literal, `fixedArray.length` (a declared ArrayType with a bound),
   // or `(new T[](N)).length` with N an int literal. The last only appears AFTER inlining substitutes a
-  // `new T[](N)` literal for an array param (`_updateJobWhitelist(id, allowed, new address[](0))`); N==0 unrolls
+  // `new T[](N)` literal for an array parameter; N==0 unrolls
   // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a vmap
   // sorted mapping write over an empty array). This is why the pass is run a second time, post-inline.
   private evalBound(expr: Node): bigint | undefined {
+    if (expr instanceof CastNode) return this.evalBound(expr.expression);
     if (expr instanceof IntLiteralNode) return expr.value;
     if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) {
       if (expr.expression instanceof IdentifierNode) {
         const local = this.newArrayLocalSizes.get(expr.expression.name);
         if (local !== undefined) return local;
-        const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name);
+        const t = this.varTypes.get(expr.expression.name) ?? this.stateVarTypes.get(expr.expression.name)
+          ?? this.collectionTypes.get(expr.expression.name);
+        if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
+      }
+      if (expr.expression instanceof StateAccessNode) {
+        const t = this.stateVarTypes.get(expr.expression.name);
         if (t instanceof ArrayType && t.bound !== undefined) return BigInt(t.bound);
       }
       if (expr.expression instanceof NewArrayNode && expr.expression.size instanceof IntLiteralNode) {
@@ -372,8 +485,8 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   }
 
   private hasMappingWrite(stmts: Node[]): boolean {
-    // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a NESTED / multi-key write `m[a][b]=v` (EACC
-    // whitelistWorkers), a struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
+    // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a nested / multi-key write `m[a][b]=v`, a
+    // struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
     // Delete}Node. All must count so a fixed-bound loop writing one gets unrolled (else it falls to the
     // runtime-loop vmap path unnecessarily).
     return this.anyNode(stmts, (n) => (
@@ -384,6 +497,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private hasKeccakCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
+  }
+
+  private hasChildDeployment(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof InstantiationNode
+      && this.contractNames.has(n.identifier.name));
   }
 
   private hasIndirectCall(stmts: Node[]): boolean {
@@ -424,8 +542,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
       }
       return undefined;
     };
+    if (node instanceof InstantiationNode && node.callOptions) {
+      for (const option of ['value', 'gas', 'salt'] as const) {
+        const expression = node.callOptions[option];
+        if (!expression) continue;
+        const replaced = replace(expression);
+        if (replaced) node.callOptions[option] = replaced as typeof expression;
+        else this.substituteVar(expression, varName, value);
+      }
+    }
     for (const key in node) {
-      if (key === 'location') continue;
+      if (key === 'location' || key === 'callOptions') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       const rep = replace(v);
       if (rep) {

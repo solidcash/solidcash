@@ -41,6 +41,9 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
   `delegateArtifact` for `.delegatecall`
 
 **Cross-contract & introspection**
+- Message bus: inferred composition route for multi-call transactions; default **kernel** convention
+  (`OP_DEFINE` handlers, one row-loop wrapper). Unsupported handlers fail closed with `KERNEL_*`. Experimental
+  in 0.13.1; see `packages/solidc/docs/message-bus-kernel.md`.
 - External reads `IFoo(category).stateVar`; external calls + low-level `.call/.staticcall/.delegatecall`; `address.transfer/.send`
 - `tx.version/locktime/time/age/origin/inputs/outputs`, `this.activeBytecode/activeInputIndex/age`,
   `msg.sender/value/data/sig`, and oracle-backed `block.*` properties/`blockhash`

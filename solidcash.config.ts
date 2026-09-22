@@ -12,6 +12,7 @@ export default defineConfig({
   compiler: {
     solidityImportCompat: true,
     messageBus: true,
+    messageBusKernel: true,
     messageBusGraphContext: true,
     // SolidCash addresses are locking bytecode. Recover the native P2PKH identity so an imported Solidity
     // `ecrecover(...) == msg.sender` comparison stays in one address domain and needs no EVM-keccak sidecar.

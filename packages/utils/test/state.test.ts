@@ -38,6 +38,7 @@ import {
   scriptToBytecode,
   StructDefinitionInfo,
 } from '../src/index.js';
+import { childStateLayoutDigest, validateChildDeploymentGenesisState } from '../src/state.ts';
 import { binToHex, hexToBin, lockingBytecodeToCashAddress, utf8ToBin } from '@bitauth/libauth';
 
 describe('getDefaultStateValue', () => {
@@ -220,6 +221,40 @@ describe('buildPushdataCommitment / parsePushdataCommitment', () => {
   });
 });
 
+describe('validateChildDeploymentGenesisState', () => {
+  const layout: StateLayout = {
+    variables: [
+      { name: 'count', type: 'int256', nftIndex: 0, fieldIndex: 0 },
+      { name: 'tag', type: 'bytes4', nftIndex: 1, fieldIndex: 0 },
+    ],
+    dataNftCount: 2,
+    commitmentLimit: 128,
+  };
+  const field = {
+    name: 'count', type: 'int256', nftIndex: 0, fieldIndex: 0,
+    value: { kind: 'intLiteral', value: '1', resultType: 'int256' } as const,
+  };
+  const validate = (fields: readonly any[]): void => validateChildDeploymentGenesisState(
+    layout, { kind: 'constructor', fields },
+  );
+
+  it('accepts fields which exactly identify their registered layout coordinates', () => {
+    expect(() => validate([field])).not.toThrow();
+  });
+
+  it('rejects duplicate fields and duplicate physical coordinates', () => {
+    expect(() => validate([field, field])).toThrow(/duplicate constructor-genesis field 'count'/);
+    expect(() => validate([field, { ...field, name: 'tag', type: 'bytes4' }]))
+      .toThrow(/duplicate constructor-genesis coordinate 0:0/);
+  });
+
+  it('rejects unknown fields, wrong coordinates, and wrong types', () => {
+    expect(() => validate([{ ...field, name: 'missing' }])).toThrow(/unknown constructor-genesis field/);
+    expect(() => validate([{ ...field, nftIndex: 1 }])).toThrow(/coordinate 1:0, expected 0:0/);
+    expect(() => validate([{ ...field, type: 'uint256' }])).toThrow(/type 'uint256', expected 'int256'/);
+  });
+});
+
 describe('buildInitialStateCommitments with defaults', () => {
   const layout: StateLayout = {
     variables: [
@@ -325,8 +360,8 @@ describe('encodeEventCommitment', () => {
   });
 });
 
-describe('encodePushdataValue CashAddress bytes', () => {
-  it('encodes a CashAddress string as locking bytecode, not UTF-8', () => {
+describe('encodePushdataValue CashAddress values', () => {
+  it('keeps CashAddress-looking bytes opaque and converts only address-typed values', () => {
     const pkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
     const lock = new Uint8Array(25);
     lock.set([0x76, 0xa9, 0x14], 0);
@@ -337,8 +372,26 @@ describe('encodePushdataValue CashAddress bytes', () => {
     });
     const address = typeof cashaddr === 'string' ? cashaddr : cashaddr.address;
     expect(address.includes(':')).toBe(true);
-    expect(encodePushdataValue(address, 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
-    expect(encodePushdataValue(utf8ToBin(address), 'bytes')).toEqual(encodePushdataValue(lock, 'bytes'));
+    const text = utf8ToBin(address);
+    expect(encodePushdataValue(address, 'bytes')).toEqual(encodePushdataValue(text, 'bytes'));
+    expect(encodePushdataValue(text, 'bytes')).not.toEqual(encodePushdataValue(lock, 'bytes'));
+    expect(encodePushdataValue(address, 'address')).toEqual(encodePushdataValue(lock, 'address'));
+    expect(encodePushdataValue(text, 'address')).toEqual(encodePushdataValue(lock, 'address'));
+  });
+
+  it('does not reinterpret a fixed-bytes value from its contents', () => {
+    const pkh = hexToBin('71782e8159265ed94bd35b8e699c08f53a6f38c6');
+    const lock = new Uint8Array(25);
+    lock.set([0x76, 0xa9, 0x14], 0);
+    lock.set(pkh, 3);
+    lock.set([0x88, 0xac], 23);
+    const cashaddr = lockingBytecodeToCashAddress({
+      bytecode: lock, prefix: 'bchtest', tokenSupport: false,
+    });
+    const address = typeof cashaddr === 'string' ? cashaddr : cashaddr.address;
+
+    expect(encodePushdataValue(lock, 'bytes25')).toEqual(encodePushdataValue(lock, 'bytes'));
+    expect(() => encodePushdataValue(address, 'bytes25')).toThrow('bytes25 must be exactly 25 bytes');
   });
 
   it('encodes ethers.ZeroAddress as empty locking bytecode, not UTF-8', () => {
@@ -684,6 +737,16 @@ describe('nested struct encode/decode roundtrip', () => {
     expect(inner.y).toBe(8n);
     expect(outer.z).toBe(9n);
   });
+
+  it('roundtrips a fixed array of nested structs', () => {
+    const aggregateStructs: readonly StructDefinitionInfo[] = [
+      ...structs,
+      { name: 'Batch', fields: [{ name: 'items', type: 'Inner[2]' }] },
+    ];
+    const value = { items: [{ x: 1n, y: 2n }, { x: 3n, y: 4n }] };
+    const encoded = encodePushdataValue(value, 'Batch', aggregateStructs);
+    expect(decodePushdataValue(encoded, 0, 'Batch', aggregateStructs).value).toEqual(value);
+  });
 });
 
 describe('nested struct getDefaultStateValue', () => {
@@ -734,6 +797,42 @@ describe('nested struct state commitment roundtrip', () => {
     commitmentLimit: 128,
     structs,
   };
+
+  it('binds reachable nested field geometry into the child layout digest', () => {
+    const digest = childStateLayoutDigest(layout);
+    expect(childStateLayoutDigest({
+      ...layout,
+      structs: [...structs, { name: 'Unused', fields: [{ name: 'value', type: 'bool' }] }],
+    })).toBe(digest);
+    expect(childStateLayoutDigest({
+      ...layout,
+      structs: structs.map((definition) => definition.name === 'Inner' ? {
+        ...definition,
+        fields: [{ name: 'x', type: 'uint8' }, ...definition.fields.slice(1)],
+      } : definition),
+    })).not.toBe(digest);
+  });
+
+  it('binds entry-backed collection geometry into the child layout digest', () => {
+    const scalarOnly = childStateLayoutDigest(layout);
+    const fixedArray = {
+      ...layout,
+      collections: [{
+        name: 'values', signature: 'values:int256[2]', kind: 'array' as const,
+        keyType: 'bigint', valueType: 'int256', elementType: 'int256', bound: 2,
+      }],
+    };
+    const digest = childStateLayoutDigest(fixedArray);
+    expect(digest).not.toBe(scalarOnly);
+    expect(childStateLayoutDigest({
+      ...fixedArray,
+      collections: [{ ...fixedArray.collections[0], bound: 3, signature: 'values:int256[3]' }],
+    })).not.toBe(digest);
+    expect(childStateLayoutDigest({
+      ...fixedArray,
+      collections: [{ ...fixedArray.collections[0], name: 'other', signature: 'other:int256[2]' }],
+    })).not.toBe(digest);
+  });
 
   it('should build and parse commitment with nested struct state', () => {
     const values = { data: { inner: { x: 7n, y: 8n }, z: 9n } };

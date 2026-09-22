@@ -62,6 +62,13 @@ function decodeAuthenticationInstructionViews(bytecode: Uint8Array): DecodedInst
 // the provider lifetime and bound it so long-running mock/miner-direct processes cannot retain every script seen.
 const decodedP2shByProvider = new WeakMap<NetworkProvider, Map<string, DecodedInstructions>>();
 const MAX_CACHED_P2SH_SCRIPTS = 64;
+const observerlessVmByProvider = new WeakMap<
+  NetworkProvider, Map<string, ReturnType<typeof createVirtualMachineBch2026>>
+>();
+
+function observerlessVmCacheKey(provider: NetworkProvider, standard: boolean): string {
+  return `${standard ? '1' : '0'}:${JSON.stringify(provider.consensusLimits ?? null)}`;
+}
 
 function decodeCachedP2sh(
   provider: NetworkProvider,
@@ -76,7 +83,7 @@ function decodeCachedP2sh(
   const key = binToHex(lockingBytecode);
   const cached = cache.get(key);
   if (cached !== undefined) return cached;
-  const decoded = decodeAuthenticationInstructionViews(redeemBytecode);
+  const decoded = decodeAuthenticationInstructions(redeemBytecode);
   if (cache.size >= MAX_CACHED_P2SH_SCRIPTS) {
     const oldest = cache.keys().next().value as string | undefined;
     if (oldest !== undefined) cache.delete(oldest);
@@ -90,6 +97,7 @@ function installCachedP2shEvaluator(
   instructionSet: ReturnType<typeof createInstructionSetBch2026>,
   provider: NetworkProvider,
   maximumBytecodeLength: number,
+  onPhaseComplete?: (state: unknown) => void,
 ): void {
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   instructionSet.evaluate = (program, { stateEvaluate, stateInitialize, stateOverride }) => {
@@ -150,6 +158,9 @@ function installCachedP2shEvaluator(
       );
     }
     const unlockingResult = stateEvaluate(initialState);
+    // A faithful trace records each evaluation phase's exit state: `debug()` appends the state every phase ends
+    // with, and the observed operations alone cannot express a phase boundary.
+    onPhaseComplete?.(unlockingResult);
     if (unlockingResult.error !== undefined) return unlockingResult;
     if (unlockingResult.controlStack.length !== 0) {
       return applyError(
@@ -166,6 +177,7 @@ function installCachedP2shEvaluator(
       program,
       stack: unlockingResult.stack,
     } as State);
+    onPhaseComplete?.(lockingResult);
     if (lockingResult.error !== undefined) return lockingResult;
     if (lockingResult.controlStack.length !== 0) {
       return applyError(
@@ -194,14 +206,12 @@ function installCachedP2shEvaluator(
         `Top stack item: "${binToHex(top)}".`,
       );
     }
-    // Exclude the authenticated redeem script before cloning the argument-stack container. VM operations consume
-    // and replace Uint8Array stack items; they never edit an existing item in place (byte-transforming opcodes
-    // first take a slice). A shallow container clone therefore provides the same isolation as libauth's deep
-    // clone without copying every routed argument on every fixed-point probe. Generated message-bus frames can
-    // contain megabytes of immutable arguments, so deep-cloning here otherwise dominates both time and memory.
+    // Exclude the authenticated redeem script before deep-cloning the argument stack. Cloning it only to pop it
+    // immediately is particularly expensive for generated contracts, while cloning the evaluated arguments keeps
+    // libauth's isolation semantics for the P2SH execution.
     const unlockingStack = [...unlockingResult.stack];
     const p2shScript = unlockingStack.pop() ?? Uint8Array.of();
-    const p2shStack = unlockingStack.slice();
+    const p2shStack = structuredClone(unlockingStack);
     if (p2sh20 && p2shStack.length === 0 && isWitnessProgram(p2shScript)) return lockingResult;
     const p2shInstructions = decodeCachedP2sh(provider, lockingBytecode, p2shScript);
     const p2shResult = authenticationInstructionsAreMalformed(p2shInstructions)
@@ -214,6 +224,7 @@ function installCachedP2shEvaluator(
         program,
         stack: p2shStack,
       } as State);
+    onPhaseComplete?.(p2shResult);
     if (p2shResult.controlStack.length !== 0) {
       return applyError(
         p2shResult,
@@ -364,28 +375,92 @@ function installSparseProbeBranchSkips(
  *   state array into `push`, which exceeds V8's argument limit between 100,014 and 124,014 states. Past that
  *   point the observer is the only usable instrument, which is exactly what the gate selects it for.
  */
+type ProviderVmObserver = {
+  opcodes: ReadonlySet<number>;
+  beforeOperation: (state: unknown) => void;
+  /** Probe-only operation wrapper. Consensus callers must omit this; their operation remains byte-for-byte stock. */
+  operation?: (
+    opcode: number, state: unknown, operation: (state: never) => unknown,
+  ) => unknown;
+  /**
+   * Record inactive conditional branches instead of jumping over them.
+   *
+   * The sparse probe deliberately skips them: it keeps only the six inspected opcodes, so an inactive branch
+   * cannot contribute an observation, and skipping keeps its instruction cost in the metrics. A faithful trace
+   * must not skip: `extractCommitmentMapFromTrace` reads adjacency, and `debug()` steps through every inactive
+   * instruction, so a jumped-over region would silently change which introspections pair with which equality.
+   */
+  recordInactiveBranches?: boolean;
+  /**
+   * Called with the state each top-level evaluation phase (unlocking, locking, redeem) ends with.
+   *
+   * `debug()` appends that state to its trace; an operation observer alone cannot see it, so a faithful trace
+   * built from observations needs this to reproduce the reference sequence exactly.
+   */
+  onPhaseComplete?: (state: unknown) => void;
+};
+
+/** Every opcode of the BCH-2026 instruction set: the faithful tracer observes the whole execution, not a subset. */
+const ALL_OPCODES: ReadonlySet<number> = new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode));
+
+/**
+ * Build a VM that records a faithful, `debug()`-equivalent trace without deep-cloning each program state.
+ *
+ * libauth's `debug()` runs `partiallyCloneProgramState` before every operation, which `structuredClone`s every
+ * state key outside `instructions`/`program` and the four shallow-cloned arrays. On BCH-2026 the state also
+ * carries `functionTable` - the whole OP_DEFINE'd body table, tens of kilobytes for an outlined contract - so
+ * each step pays a deep copy of the entire program: a 6,132-state probe measured 2.4 s, of which the state
+ * copies are ~99%. Sharing the table here is observationally equivalent: identifiers can never be redefined
+ * (a repeated identifier is a VM error), so the table only grows, and no trace consumer reads it from a
+ * historical state.
+ */
+export function createFaithfulTraceVmForProvider(
+  provider: NetworkProvider,
+  beforeOperation: (state: unknown) => void,
+  onPhaseComplete?: (state: unknown) => void,
+): ReturnType<typeof createVirtualMachineBch2026> {
+  return buildVirtualMachineBch2026ForProvider(provider, {
+    opcodes: ALL_OPCODES,
+    beforeOperation,
+    recordInactiveBranches: true,
+    onPhaseComplete,
+  }, true);
+}
+
+
 export function createVirtualMachineBch2026ForProvider(
   provider?: NetworkProvider,
-  observer?: {
-    opcodes: ReadonlySet<number>;
-    beforeOperation: (state: unknown) => void;
-    /** Probe-only operation wrapper. Consensus callers must omit this; their operation remains byte-for-byte stock. */
-    operation?: (
-      opcode: number, state: unknown, operation: (state: never) => unknown,
-    ) => unknown;
-  },
-  options?: { standard?: boolean; operationCostBudgetPerByte?: number },
+  observer?: ProviderVmObserver,
+  options?: { standard?: boolean },
 ): ReturnType<typeof createVirtualMachineBch2026> {
   const standard = options?.standard ?? true;
+  if (observer === undefined && provider !== undefined) {
+    const key = observerlessVmCacheKey(provider, standard);
+    let byKey = observerlessVmByProvider.get(provider);
+    if (byKey === undefined) {
+      byKey = new Map();
+      observerlessVmByProvider.set(provider, byKey);
+    }
+    const cached = byKey.get(key);
+    if (cached !== undefined) return cached;
+    const built = buildVirtualMachineBch2026ForProvider(provider, undefined, standard);
+    byKey.set(key, built);
+    return built;
+  }
+  return buildVirtualMachineBch2026ForProvider(provider, observer, standard);
+}
+
+function buildVirtualMachineBch2026ForProvider(
+  provider: NetworkProvider | undefined,
+  observer: ProviderVmObserver | undefined,
+  standard: boolean,
+): ReturnType<typeof createVirtualMachineBch2026> {
   const limits = provider?.consensusLimits;
   // Nothing to customise. This is not a silent drop: with no limits AND no observer, libauth's own factory
   // builds precisely the instruction set the rest of this function would assemble.
-  if (limits === undefined && observer === undefined && options?.operationCostBudgetPerByte === undefined) {
-    return createVirtualMachineBch2026(standard);
-  }
-  const consensus = {
+  if (limits === undefined && observer === undefined) return createVirtualMachineBch2026(standard);
+  const consensus = limits === undefined ? ConsensusBch2026 : {
     ...ConsensusBch2026,
-    ...(limits === undefined ? {} : {
     maximumBytecodeLength: limits.maximumInputBytes,
     maximumStackItemLength: limits.maximumStackItemBytes,
     maximumTransactionLengthBytes: limits.maximumTransactionBytes,
@@ -399,18 +474,124 @@ export function createVirtualMachineBch2026ForProvider(
       limits.hashDigestIterationsPerByteStandard ?? limits.hashDigestIterationsPerByte,
     hashDigestIterationsPerByteNonstandard:
       limits.hashDigestIterationsPerByteNonstandard ?? limits.hashDigestIterationsPerByte,
-    }),
-    ...(options?.operationCostBudgetPerByte === undefined ? {} : {
-      operationCostBudgetPerByte: options.operationCostBudgetPerByte,
-    }),
   };
   const instructionSet = createInstructionSetBch2026(standard, {
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
-    installCachedP2shEvaluator(instructionSet, provider!, limits.maximumInputBytes);
+    installCachedP2shEvaluator(
+      instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
+    );
     installCachedInvokeEvaluator(instructionSet);
-    if (observer !== undefined) installSparseProbeBranchSkips(instructionSet);
+
+  // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
+  // value's root), so a probe's staged value can be compared against the covenant's own expectation.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_ROOT === '1') {
+    type DomainState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const hash256Opcode = (OpcodesBch2026 as unknown as { OP_HASH256?: number }).OP_HASH256 ?? 0xaa;
+    const originalHash = instructionSet.operations[hash256Opcode];
+    const tag = [118, 97, 108, 117, 101, 45, 99, 104, 117, 110, 107];
+    const containsTag = (bytes: Uint8Array): boolean => {
+      for (let start = 0; start + tag.length <= bytes.length; start += 1) {
+        let match = true;
+        for (let offset = 0; offset < tag.length; offset += 1) {
+          if (bytes[start + offset] !== tag[offset]) { match = false; break; }
+        }
+        if (match) return true;
+      }
+      return false;
+    };
+    instructionSet.operations[hash256Opcode] = ((state: DomainState) => {
+      const top = (state as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      // The domain preimage is exactly the 11-byte tag followed by 20 + 32 + 32 bytes.
+      if (top !== undefined && top.length === 95 && containsTag(top)) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-domain', JSON.stringify({ length: top.length, preimage: hex.slice(0, 240) }));
+      }
+      return (originalHash as (inner: DomainState) => unknown)(state);
+    }) as typeof originalHash;
+  }
+
+  // Companion diagnostic: the covenant's value is the PREIMAGE of a sha256 whose digest is the value root, so log
+  // every sha256 preimage of a plausible struct length; its bytes can be compared with the SDK's staged value.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_PREIMAGE === '1') {
+    type ShaState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const sha256Opcode = 0xa8;
+    const originalSha = instructionSet.operations[sha256Opcode];
+    instructionSet.operations[sha256Opcode] = ((state: ShaState) => {
+      const top = (state as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      if (top !== undefined && top.length >= 150 && top.length <= 260) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-preimage', JSON.stringify({ length: top.length, value: hex.slice(0, 420) }));
+      }
+      return (originalSha as (inner: ShaState) => unknown)(state);
+    }) as typeof originalSha;
+  }
+
+  // Companion diagnostic: the chunked-value tail is `len4 || sha256(value) || value[0..28]` (64 bytes). Logging it
+  // exposes the covenant's own value HEAD, which can be compared member-by-member with the SDK's staged value.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_TAIL === '1') {
+    type CatState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const catOpcode = 0x7e;
+    const originalCat = instructionSet.operations[catOpcode];
+    instructionSet.operations[catOpcode] = ((state: CatState) => {
+      const evaluated = (originalCat as (inner: CatState) => CatState)(state);
+      const top = (evaluated as unknown as { stack?: Uint8Array[] }).stack?.at(-1);
+      if (top !== undefined && top.length === 64) {
+        const hex = Array.from(top).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        console.error('value-tail', JSON.stringify({ head: hex.slice(8, 64), length: hex.slice(0, 8) }));
+      }
+      return evaluated;
+    }) as typeof originalCat;
+  }
+
+  // Diagnostic: report every failed `OP_EQUALVERIFY` with the operands it compared and the shape of the program
+  // that ran it. A covenant's identity/commitment checks all end here, and the trace recorders can be sparse (or
+  // run on a different VM instance), so this hooks the operation itself.
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_EQUALVERIFY_FAIL === '1') {
+    type EqState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const equalVerifyOpcode = 0x88;
+    const originalEqualVerify = instructionSet.operations[equalVerifyOpcode];
+    const hexOf = (bytes: Uint8Array): string =>
+      Array.from(bytes.slice(0, 64)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    instructionSet.operations[equalVerifyOpcode] = ((state: EqState) => {
+      const stack = (state as unknown as { stack?: Uint8Array[] }).stack ?? [];
+      const top = stack.at(-1);
+      const second = stack.at(-2);
+      if (top !== undefined && second !== undefined
+        && (top.length !== second.length
+          || top.some((byte, index) => byte !== second[index]))) {
+        const instructions = (state as unknown as { instructions?: Array<{ opcode: number }> }).instructions ?? [];
+        const controlStack = (state as unknown as { controlStack?: unknown[] }).controlStack ?? [];
+        console.error('equalverify-fail', JSON.stringify({
+          inputIndex: (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex,
+          ip: (state as unknown as { ip?: number }).ip,
+          instrLen: instructions.length,
+          head: instructions.slice(0, 6).map((instruction) => instruction.opcode).join(','),
+          stackLen: stack.length,
+          frameDepth: controlStack.length,
+          callers: controlStack.flatMap((frame) => (typeof frame === 'object' && frame !== null
+            ? [{
+              len: (frame as { instructions?: unknown[] }).instructions?.length,
+              ip: (frame as { ip?: number }).ip,
+              head: ((frame as { instructions?: Array<{ opcode: number }> }).instructions ?? [])
+                .slice(0, 4).map((instruction) => instruction.opcode).join(','),
+            }] : [])).slice(-4),
+          below: stack.slice(-8, -2).map((item) => `${item.length}:${hexOf(item)}`),
+          second: `${second.length}:${hexOf(second)}`,
+          top: `${top.length}:${hexOf(top)}`,
+        }));
+      }
+      return (originalEqualVerify as (inner: EqState) => unknown)(state);
+    }) as typeof originalEqualVerify;
+  }
+    if (observer !== undefined && observer.recordInactiveBranches !== true) {
+      installSparseProbeBranchSkips(instructionSet);
+    }
   }
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {

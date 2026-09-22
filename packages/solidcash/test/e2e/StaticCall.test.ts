@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { compileString as compileKernelString } from 'solidc';
 import { binToHex } from '@bitauth/libauth';
+import { encodePushdataValue } from '@solidcash/utils';
 import { Contract, StatefulContract } from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { aliceAddress } from '../fixture/vars.js';
 
 // ethers-style `contract.fn.staticCall()`: read a view function's return value(s) via a read-only VM probe (no
 // send), decoded against the ABI output type(s). This is the value-returning read pattern (EA getJob/getUsers).
@@ -32,6 +36,65 @@ describe('StatefulFunctionCall.staticCall() - value-returning reads', () => {
     const sc = await deploy() as unknown as { set: Function; sum: Function };
     await (sc.set(3n, 4n) as { send: () => Promise<unknown> }).send();
     expect(await (sc.sum() as { staticCall: () => Promise<bigint> }).staticCall()).toBe(7n);
+  });
+
+  it('keeps kernel struct decoding independent of timestamp_ and address_ field names', async () => {
+    const payloadHex = '31'.repeat(20);
+    const art = compileKernelString(`pragma solidcash >=0.8.0;
+      contract Names() {
+        struct Named { bytes address_; bigint timestamp_; }
+        struct Renamed { bytes payload; bigint observedAt; }
+        function named() view returns (Named) { return Named(hex"${payloadHex}", 0); }
+        function renamed() view returns (Renamed) { return Renamed(hex"${payloadHex}", 0); }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(art.messageBus?.convention).toBe('kernel-row-loop');
+    const namedHandlers = art.messageBus?.handlers
+      .filter((handler) => ['named', 'renamed'].includes(handler.name)) ?? [];
+    expect(namedHandlers).toHaveLength(2);
+    expect(namedHandlers.every((handler) => handler.eligible)).toBe(true);
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, {}, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      named: () => { staticCall: () => Promise<{ toObject: () => Record<string, unknown> }> };
+      renamed: () => { staticCall: () => Promise<{ toObject: () => Record<string, unknown> }> };
+    };
+    const named = (await sc.named().staticCall()).toObject();
+    const renamed = (await sc.renamed().staticCall()).toObject();
+    expect(binToHex(named.address_ as Uint8Array)).toBe(payloadHex);
+    expect(named.timestamp_).toBe(0n);
+    expect(binToHex(renamed.payload as Uint8Array)).toBe(payloadHex);
+    expect(renamed.observedAt).toBe(0n);
+  });
+
+  it('keeps kernel struct argument encoding independent of address_ field names', async () => {
+    const lockingBytecodeHex = binToHex(addressToLockScript(aliceAddress));
+    const art = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ArgumentNames() {
+        struct Named { address address_; bigint timestamp_; }
+        struct Renamed { address payload; bigint observedAt; }
+        function named(Named value) view returns (bool) {
+          return value.address_ == hex"${lockingBytecodeHex}" && value.timestamp_ == 0;
+        }
+        function renamed(Renamed value) view returns (bool) {
+          return value.payload == hex"${lockingBytecodeHex}" && value.observedAt == 0;
+        }
+      }`, { forceStateful: true, messageBus: true, messageBusKernel: true });
+    expect(art.messageBus?.convention).toBe('kernel-row-loop');
+    const provider = createTestProvider();
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, art.stateLayout!, {}, { saltContract: true },
+    );
+    const sc = new StatefulContract(categoryId, art, provider) as unknown as {
+      named: (value: Record<string, unknown>) => { staticCall: () => Promise<boolean> };
+      renamed: (value: Record<string, unknown>) => { staticCall: () => Promise<boolean> };
+    };
+
+    expect(await sc.named({ address_: aliceAddress, timestamp_: 0n }).staticCall()).toBe(true);
+    expect(await sc.renamed({ payload: aliceAddress, observedAt: 0n }).staticCall()).toBe(true);
   });
 
   it('reads a struct view return with .toObject()', async () => {
@@ -81,6 +144,67 @@ describe('StatefulFunctionCall.staticCall() - with arguments', () => {
     await sc.set(10n).send();
     expect(await sc.plus(5n).staticCall()).toBe(15n);
     expect(await sc.plus(0n).staticCall()).toBe(10n);
+  });
+});
+
+describe('StatefulFunctionCall.staticCall() - exact loop-array returns', () => {
+  it('replaces a preseeded one-row parent result with the resolved external value', async () => {
+    const options = { forceStateful: true, messageBus: true, messageBusKernel: true } as const;
+    const artifact = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ArrayView() {
+        function rows() public pure returns (int[] memory) {
+          int[] memory result = new int[](1);
+          result[0] = 0;
+          return result;
+        }
+      }`, options);
+    const producerArtifact = compileKernelString(`pragma solidcash >=0.8.0;
+      contract ScalarProducer() {
+        function value() public pure returns (int) { return 0; }
+      }`, options);
+    const provider = createTestProvider();
+    const view = new StatefulContract('ab'.repeat(32), artifact, provider);
+    type ProbeBuilder = {
+      __derivedReturnBlob?: Uint8Array;
+      getExternalCallUtxoGroups: () => Array<{
+        loopResultArrayOutput: number;
+        loopMaximumOccurrences: number;
+        loopReturnCommitments: Uint8Array[];
+        logicalArtifact: typeof producerArtifact;
+        logicalFunctionName: string;
+        resolveLoopReturnCommitment: (occurrence: number) => Promise<Uint8Array>;
+        resolveLoopReturnValue: (occurrence: number) => Promise<bigint>;
+      }>;
+    };
+    const provisional = encodePushdataValue([0n], 'int[]', artifact.structs);
+    const resolved = encodePushdataValue(Uint8Array.of(41), 'int', producerArtifact.structs);
+    let commitmentResolutions = 0;
+    const builder: ProbeBuilder = {
+      __derivedReturnBlob: provisional,
+      getExternalCallUtxoGroups: () => [{
+        loopResultArrayOutput: 0,
+        loopMaximumOccurrences: 1,
+        loopReturnCommitments: [resolved],
+        logicalArtifact: producerArtifact,
+        logicalFunctionName: 'value',
+        resolveLoopReturnCommitment: async () => {
+          commitmentResolutions += 1;
+          return resolved;
+        },
+        // The parent must consume the authenticated commitment, never a separately re-evaluated value.
+        resolveLoopReturnValue: async () => 99n,
+      }],
+    };
+    const internals = view as unknown as {
+      _createBuilder: (...args: unknown[]) => Promise<ProbeBuilder>;
+      _deriveReturnValue: (functionName: string, args: unknown[]) => Promise<unknown>;
+    };
+    internals._createBuilder = async () => builder;
+
+    expect(await internals._deriveReturnValue('rows', [])).toEqual([41n]);
+    // reached=1 and one commitment was already seeded: replacement must not depend on growing this array.
+    expect(builder.getExternalCallUtxoGroups()[0].loopReturnCommitments).toHaveLength(1);
+    expect(commitmentResolutions).toBe(0);
   });
 });
 

@@ -1,7 +1,7 @@
 import { ImportResolverFn } from '@solidcash/utils';
 import { SourceFileNode, ImportNode } from './ast/AST.js';
 import { cloneNode } from './ast/clone.js';
-import { parseCode } from './compiler.js';
+import { parseImportedFileCached } from './compiler.js';
 import { UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError } from './Errors.js';
 
 export class ImportResolver {
@@ -58,13 +58,9 @@ export class ImportResolver {
       // InheritanceExpansionTransformation / the interface-inheritance check.
       let importedAst = this.resolvedFiles.get(resolvedId);
       if (!importedAst) {
-        importedAst = parseCode(
-          resolved.source,
-          undefined,
-          this.solidityImportCompat,
-          true,
-          resolvedId,
-        );
+        // Clone-on-hit across compilations in this process: a project compile resolves the same shared imports
+        // once per root, and the lowered tree of one compilation must never be handed to the next.
+        importedAst = parseImportedFileCached(resolved.source, this.solidityImportCompat, resolvedId);
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);
       }

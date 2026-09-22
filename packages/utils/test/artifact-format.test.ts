@@ -7,26 +7,47 @@ describe('artifact formatting', () => {
     expect(formatArtifact(artifact, 'ts')).toContain('ast: null');
   });
 
-  it('restores jobs.length-1 on publishJobPost upsert ABI that omitted fixedKeySources', () => {
+  it('does not invent a fixed upsert key from an unrelated dynamic write', () => {
     const artifact = {
-      contractName: 'MarketplaceV1',
+      contractName: 'Registry',
       abi: [{
-        name: 'publishJobPost',
-        dynamicWrites: ['jobs'],
+        name: 'update',
+        dynamicWrites: ['records'],
         sortedUpsertLoopInfo: [{
-          collection: 'whitelistWorkers',
+          collection: 'permissions',
           fixedKeyParams: [],
-          varyingArrayParam: 'allowedWorkers_',
+          varyingArrayParam: 'members',
           valueConst: '1',
           op: 'set',
         }],
       }],
     } as any;
     const parsed = JSON.parse(formatArtifact(artifact, 'json'));
-    expect(parsed.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual([{
+    expect(parsed.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toBeUndefined();
+    expect(artifact.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toBeUndefined();
+  });
+
+  it('preserves the compiler-published fixed upsert key exactly', () => {
+    const fixedKeySources = [{
       kind: 'expression',
-      expressionLabel: 'binop:-(unop:.length(state:jobs),lit:1)',
-    }]);
+      expressionLabel: 'binop:-(unop:.length(state:records),lit:1)',
+    }];
+    const artifact = {
+      contractName: 'Registry',
+      abi: [{
+        name: 'append',
+        dynamicWrites: ['records'],
+        sortedUpsertLoopInfo: [{
+          collection: 'permissions',
+          fixedKeySources,
+          varyingArrayParam: 'members',
+          valueConst: '1',
+          op: 'set',
+        }],
+      }],
+    } as any;
+    const parsed = JSON.parse(formatArtifact(artifact, 'json'));
+    expect(parsed.abi[0].sortedUpsertLoopInfo[0].fixedKeySources).toEqual(fixedKeySources);
   });
 
   it('publishes the proxy mapping-growth certificate for delegate initializers', () => {

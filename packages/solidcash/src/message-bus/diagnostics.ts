@@ -5,6 +5,7 @@ export type MessageBusDiagnosticCode =
   | 'L3_DUPLICATE_OUTPOINT'
   | 'L3_INPUT_AUTHORITY_CONFLICT'
   | 'L3_INVOCATION_LIMIT'
+  | 'L3_LAYOUT_INVARIANT'
   | 'L3_MUTABLE_ARTIFACT_UNSUPPORTED'
   | 'L3_PARTICIPANT_LIMIT'
   | 'L3_OWNER_ARTIFACT_CONFLICT'
@@ -53,6 +54,11 @@ export interface MessageBusDiagnosticContext {
   cyclicEdge?: readonly [number, number];
   keyIdentity?: string;
   rule?: string;
+  /** Layout-invariant id (e.g. final-chunk-locking-bytecode, pred-out-physical-offset). */
+  invariantId?: string;
+  expectedOutput?: number;
+  actualOutput?: number;
+  resource?: string;
 }
 
 /** Machine-stable code plus the human context required by callManifest-v1 section 12. */
@@ -67,4 +73,28 @@ export class MessageBusDiagnosticError extends Error {
   ) {
     super(preserveMessage ? message : `messageBus [${code}]: ${message}`);
   }
+}
+
+/** Layout-drift / ownership fail-closed path with Gate C attribution fields. */
+export function layoutInvariantError(params: {
+  invariantId: string;
+  message: string;
+  participant?: number;
+  resource?: string;
+  expectedOutput?: number;
+  actualOutput?: number;
+  handler?: string;
+}): MessageBusDiagnosticError {
+  return new MessageBusDiagnosticError('L3_LAYOUT_INVARIANT', params.message, {
+    invariantId: params.invariantId,
+    participant: params.participant,
+    resource: params.resource,
+    resourceIdentity: params.resource,
+    expectedOutput: params.expectedOutput,
+    actualOutput: params.actualOutput,
+    expected: params.expectedOutput,
+    actual: params.actualOutput,
+    handler: params.handler,
+    rule: params.invariantId,
+  });
 }

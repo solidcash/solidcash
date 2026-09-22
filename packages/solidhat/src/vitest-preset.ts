@@ -1,8 +1,13 @@
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
+
+export interface SolidHatPresetOptions {
+  /**
+   * Install the hermetic offline runtime: an in-memory IPFS service, a guard that fails any request no registered
+   * service claims, and EVM JSON-RPC shims for ported deployment scripts. See `./offline-setup.js`.
+   */
+  offline?: boolean;
+}
+
 export interface AliasRule { find: string | RegExp; replacement: string }
 export interface ViteLikeConfig {
   test?: { setupFiles?: string | string[]; [key: string]: unknown };
@@ -11,17 +16,23 @@ export interface ViteLikeConfig {
   [key: string]: unknown;
 }
 
-const require = createRequire(import.meta.url);
-const packageRoot = (name: string): string => path.dirname(require.resolve(`${name}/package.json`));
-const testingRoot = packageRoot('@solidcash/testing');
-const solidcashRoot = packageRoot('solidcash');
-const solidhatRoot = fileURLToPath(new URL('..', import.meta.url));
-const testingEntry = (name: string): string => path.join(testingRoot, 'dist', `${name}.js`);
+const testingEntry = (name: string): string => fileURLToPath(
+  new URL(`../../testing/dist/${name}.js`, import.meta.url),
+);
 const testingStub = (name: string): string => testingEntry(`stubs/${name}`);
-const solidhatEntry = (name: string): string => path.join(solidhatRoot, 'dist', `${name}.js`);
-const solidcashEntry = (name: string): string => path.join(solidcashRoot, 'dist', `${name}.js`);
-const solidcashVitest = path.join(solidcashRoot, 'dist/test/TestExtensions.js');
-const testingSetup = path.join(testingRoot, 'dist/vitest-setup.js');
+const solidhatEntry = (name: string): string => fileURLToPath(
+  new URL(`../dist/${name}.js`, import.meta.url),
+);
+const solidcashEntry = (name: string): string => fileURLToPath(
+  new URL(`../../solidcash/dist/${name}.js`, import.meta.url),
+);
+const solidcashVitest = fileURLToPath(
+  new URL('../../solidcash/dist/test/TestExtensions.js', import.meta.url),
+);
+const testingSetup = fileURLToPath(
+  new URL('../../testing/dist/vitest-setup.js', import.meta.url),
+);
+const offlineSetup = solidhatEntry('offline-setup');
 
 export function compatibilityAliases(target: CompatibilityTarget): Record<string, string> {
   return {
@@ -51,7 +62,11 @@ export function compatibilityAliases(target: CompatibilityTarget): Record<string
   };
 }
 
-export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig = {}): ViteLikeConfig {
+export function solidhatPreset(
+  target: CompatibilityTarget,
+  user: ViteLikeConfig = {},
+  options: SolidHatPresetOptions = {},
+): ViteLikeConfig {
   const setup = user.test?.setupFiles;
   const setupFiles = Array.isArray(setup) ? setup : setup ? [setup] : [];
   const aliases = compatibilityAliases(target);
@@ -77,7 +92,9 @@ export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig
       globals: true,
       environment: 'node',
       ...user.test,
-      setupFiles: [testingSetup, ...setupFiles],
+      // The offline runtime installs after the testing setup, which is what creates the HRE it attaches to.
+      setupFiles: [testingSetup, ...(options.offline ? [offlineSetup] : []), ...setupFiles],
     },
   };
 }
+import { fileURLToPath } from 'url';

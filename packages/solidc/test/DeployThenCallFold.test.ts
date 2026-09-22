@@ -140,7 +140,7 @@ contract Factory(pubkey deployer) {
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 
-  it('rejects a callee with control flow (not yet foldable - only straight-line assignments fold)', () => {
+  it('folds a deterministic conditional child-state initializer', () => {
     const src = `
 contract Child(bytes20 owner) {
     int counter;
@@ -155,6 +155,9 @@ contract Factory(pubkey deployer) {
         this.deployed = this.deployed + 1;
     }
 }`;
-    expect(() => compileString(src)).toThrow(/Cannot call 'configure\(\)'/);
+    const artifact = compileString(src);
+    expect(artifact.abi.find((entry) => entry.name === 'make')).toMatchObject({
+      deployTargets: [{ contractName: 'Child', hasFoldedChildCall: true }],
+    });
   });
 });

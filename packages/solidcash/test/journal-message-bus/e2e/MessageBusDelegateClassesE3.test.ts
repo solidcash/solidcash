@@ -7,7 +7,7 @@ import {
 } from '@solidcash/utils';
 import {
   Contract, SignatureTemplate, StatefulTransactionBuilder, TransactionBuilder, messageBus,
-  getDataNftAddress, createDataNftUnlocker,
+  getDataNftAddress, createDataNftUnlocker, createReadOnlyDataNftUnlocker,
 } from '../../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../../src/stateful/defaultProxyArtifact.js';
@@ -308,6 +308,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
       coSpentImplementation?: 'pinned' | 'foreign';
       proxyMasterIndexWitness?: bigint;
       settledCounter?: bigint;
+      relocateImplementation?: boolean;
     } = {}): Promise<{ send: Promise<any>; proxyCategory: string }> {
       const provider = createMessageBusSemanticTestProvider();
       const pinned = await deploy(provider, implArtifact, [], { counter: 0n });
@@ -318,19 +319,30 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
       const useForeign = options.coSpentImplementation === 'foreign';
       const co = useForeign ? foreign : pinned;
       const coArtifact = useForeign ? foreignArtifact : implArtifact;
+      const implementationInputIndex = options.relocateImplementation ? 3 : 2;
       const send = new StatefulTransactionBuilder({
         provider,
         stateLayout: pinnedProxyArtifact.stateLayout!,
         categoryId: proxy.categoryId,
         masterUtxo: {
           ...proxy.master,
-          unlocker: (proxy.contract.unlock as any).up(selectorOf(implArtifact, 'increment'), 2n),
+          unlocker: (proxy.contract.unlock as any).up(
+            selectorOf(implArtifact, 'increment'), BigInt(implementationInputIndex),
+          ),
         },
         dataNftUtxos: proxy.dataNfts.map((nft) => ({
           ...nft, unlocker: createDataNftUnlocker(proxy.contract, 0, proxy.categoryId),
         })),
+        ...(options.relocateImplementation ? {
+          readOnlyDataNftUtxos: [{
+            ...foreign.dataNfts[0],
+            unlocker: createReadOnlyDataNftUnlocker(foreign.contract, foreign.categoryId),
+          }],
+        } : {}),
         externalCallUtxoGroups: [
-          delegateGroup(coArtifact, co, 'increment', [options.proxyMasterIndexWitness ?? 0n], 2),
+          delegateGroup(
+            coArtifact, co, 'increment', [options.proxyMasterIndexWitness ?? 0n], implementationInputIndex,
+          ),
         ],
       }).setState('counter', options.settledCounter ?? (useForeign ? 999n : 6n)).send();
       return { send, proxyCategory: proxy.categoryId };
@@ -369,6 +381,17 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
         expectPreflightRefusal(message, 2, 'Program failed an OP_VERIFY operation.');
       }, 120_000,
     );
+
+    /**
+     * Attacks the delegate-to-owner adjacency relation without changing either identity witness. The proxy pins
+     * the honest implementation at its actual input index, while one independently self-preserving read-only NFT
+     * separates that implementation from the proxy block. The proxy therefore accepts its code-identity check;
+     * only the implementation's `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)` check can refuse.
+     */
+    it('rejects a relocated implementation even when the proxy pins its actual input index', async () => {
+      const message = await outcome((await build({ relocateImplementation: true })).send);
+      expectPreflightRefusal(message, 3, 'Program failed an OP_VERIFY operation.');
+    }, 120_000);
 
     /**
      * Attacks OUTPUT AUTHORITY, and nothing else: a proxy post-state the delegate covenant did not compute.
@@ -535,15 +558,14 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
   });
 
   // =========================================================================
-  // Occurrence: the classes this gate cannot see
+  // Occurrence: compiler-authored frame cardinality
   // =========================================================================
-  describe('occurrence classes the published metadata cannot distinguish', () => {
+  describe('occurrence classes are explicit in published metadata', () => {
     /**
-     * A conditional and a singular delegate edge STILL compile to byte-identical published metadata, so no SDK
-     * gate can separate them - which is exactly why both cases below are settled in the COMPILER instead. The
-     * iterated edge no longer reaches an artifact at all.
+     * A conditional and a singular edge differ in the compiler-authored occurrence field. The compiler remains
+     * the covenant authority; the SDK gate can now fail closed before attempting to allocate a singular frame.
      */
-    it('publishes identical metadata for singular and conditional delegate edges', () => {
+    it('publishes and rejects a conditional delegate frame distinctly from a singular frame', () => {
       const published = (artifact: Artifact): string => {
         const fn = artifact.abi.find((entry) => entry.name === 'up')!;
         return JSON.stringify({
@@ -552,12 +574,19 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
           slots: (fn.blockLayout?.slots ?? []).map((slot) => slot.kind),
         });
       };
-      expect(published(conditionalProxyArtifact)).toBe(published(pinnedProxyArtifact));
-      // ROUND 16 (X43): the two `bytes`-typed entries are GONE from this list, because the gate now detects
-      // them. Occurrence, plus the decoy residual measured below, is what is left.
-      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual([
-        'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
-      ]);
+      expect(published(conditionalProxyArtifact)).not.toBe(published(pinnedProxyArtifact));
+      const implementationLbc = binToHex(addressToLockScript(
+        new Contract(implArtifact, [], { provider: createMessageBusSemanticTestProvider() }).address,
+      ));
+      const proxy = new Contract(
+        conditionalProxyArtifact, [hexToBin(implementationLbc)] as never[],
+        { provider: createMessageBusSemanticTestProvider() },
+      );
+      expect(() => messageBus.classifyDelegateParticipant({
+        proxy: { artifact: conditionalProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
+        implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
+      })).toThrow(/class 'conditional-delegate-edge' is not admitted/);
+      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual(['decoy-committed-target']);
     });
 
     async function spendProxy(
@@ -601,14 +630,16 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
      * minting-NFT presence, so any spender wrote an arbitrary commitment (measured: 5 -> 999 ACCEPTED).
      *
      * The compiler now carries a runtime "delegate edge reached" flag and requires the proxy's own data NFTs to
-     * be preserved (category ++ commitment, input -> output) on every path that did NOT reach the edge. The
-     * forgery is refused at input 0 - the proxy's own covenant, not an incidental mismatch elsewhere.
+     * be preserved (category ++ commitment, input -> output) on every path that did NOT reach the edge. Exact
+     * footprint derivation therefore omits the requested forged commitment and emits the preserved value.
      */
-    it('refuses a forged proxy state from a conditional delegate edge whose branch was not taken', async () => {
+    it('does not materialize a forged proxy state when a conditional delegate edge is not taken', async () => {
       const forged = await spendProxy(conditionalProxyArtifact, [false], 999n, {
         coSpendImplementation: false,
       });
-      expectPreflightRefusal(forged.result, 0, 'Program failed an OP_VERIFY operation.');
+      // Exact footprint derivation owns no delegate result on the untaken path, so the requested forged value is
+      // never emitted: the transaction settles only with the original commitment.
+      expect(forged.result).toBe('ACCEPTED counter=5');
 
       // Same shape, same absent implementation, only the branch condition differs: also refused at input 0.
       const control = await spendProxy(conditionalProxyArtifact, [true], 999n, {
@@ -629,14 +660,15 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
     /**
      * The not-taken path is FROZEN, not forbidden: a spend that leaves the proxy state exactly as it was is what
      * `if (flag)` means when flag is false, and it still settles. Its sibling - not taken, but a co-spent
-     * implementation writing 5 -> 6 - is now refused, because the source said not to delegate on that path.
+     * implementation writing 5 -> 6 - is now refused by the implementation executor, because the source said
+     * not to delegate on that path.
      */
     it('settles a not-taken spend that preserves state, and refuses one that writes', async () => {
       const noop = await spendProxy(conditionalProxyArtifact, [false], 5n, { coSpendImplementation: false });
       expect(noop.result).toBe('ACCEPTED counter=5');
 
       const wrote = await spendProxy(conditionalProxyArtifact, [false], 6n, { coSpendImplementation: true });
-      expectPreflightRefusal(wrote.result, 0, 'Program failed an OP_VERIFY operation.');
+      expectPreflightRefusal(wrote.result, 2, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
 
     /**
@@ -1027,8 +1059,12 @@ contract E3ComputedProxy(address impl, address alt) {
      */
     it('refuses an artifact that publishes no target provenance, rather than falling through to admitted', () => {
       const stripped = JSON.parse(JSON.stringify(pinnedProxyArtifact)) as Artifact;
-      const fn = stripped.abi.find((entry) => entry.name === 'up')! as { lowLevelCalls: { callMode: string }[] };
-      fn.lowLevelCalls = fn.lowLevelCalls.map((call) => ({ callMode: call.callMode }));
+      const fn = stripped.abi.find((entry) => entry.name === 'up')! as {
+        lowLevelCalls: { callMode: string; dataParamIndex?: number; occurrence?: string }[];
+      };
+      fn.lowLevelCalls = fn.lowLevelCalls.map(({ callMode, dataParamIndex, occurrence }) => ({
+        callMode, dataParamIndex, occurrence,
+      }));
       expect(classify(stripped, [hexToBin(implementationLbc)]))
         .toThrow(/class 'unpublished-target-provenance' is not admitted.*recompile the proxy/s);
       // The unstripped original is the same artifact and IS admitted, so the refusal is the missing field.
@@ -1135,7 +1171,10 @@ contract E3Hash160Proxy(bytes20 pkh) {
       // is regenerated: the shipped row and a fresh compile of its own source now agree, which is what stops
       // those 13 refusing for an absent field. Kept as an assertion so the fix cannot silently regress.
       const shipped = defaultProxyArtifact.abi.find((entry) => entry.name === '__forward')!;
-      const published = [{ callMode: 'delegatecall', target: { kind: 'constructorArg', name: 'implementation' } }];
+      const published = [{
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once',
+        target: { kind: 'constructorArg', name: 'implementation' },
+      }];
       expect(shipped.lowLevelCalls).toEqual(published);
       expect(compileString(DEFAULT_PROXY_SOURCE, { forceStateful: true })
         .abi.find((entry) => entry.name === '__forward')!.lowLevelCalls)
@@ -1171,6 +1210,7 @@ contract E3Hash160Proxy(bytes20 pkh) {
         'multi-edge-proxy',
         'conditional-delegate-edge',
         'iterated-delegate-edge',
+        'unpublished-delegate-frame',
         'computed-delegate-target',
         'unpublished-target-provenance',
         'decoy-committed-target',

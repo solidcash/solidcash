@@ -33,19 +33,7 @@ describe('Fallback/Receive ABI metadata', () => {
       expect(fallback!.isFallback).toBe(true);
       expect(fallback!.lowLevelCalls).toBeDefined();
       expect(fallback!.lowLevelCalls).toEqual([{
-        callMode: 'delegatecall',
-        targetSource: {
-          kind: 'expression',
-          expression: {
-            kind: 'source',
-            source: {
-              kind: 'literal',
-              value: '76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac',
-              type: 'bytes25',
-            },
-          },
-        },
-        target: { kind: 'literal' },
+        callMode: 'delegatecall', dataParamIndex: 0, occurrence: 'once', target: { kind: 'literal' },
       }]);
     });
 
@@ -165,20 +153,42 @@ describe('Fallback/Receive ABI metadata', () => {
       const artifact = compileString(source);
       const fallback = artifact.abi.find((f) => f.name === '__fallback');
       expect(fallback!.lowLevelCalls).toEqual([{
-        callMode: 'call',
-        targetSource: {
-          kind: 'expression',
-          expression: {
-            kind: 'source',
-            source: {
-              kind: 'literal',
-              value: '76a91489abcdefabbaabbaabbaabbaabbaabbaabbaabba88ac',
-              type: 'bytes25',
-            },
-          },
-        },
-        target: { kind: 'literal' },
+        callMode: 'call', dataParamIndex: 0, occurrence: 'once', target: { kind: 'literal' },
       }]);
     });
+  });
+
+  it('publishes the exact visible parameter carrying low-level calldata', () => {
+    const artifact = compileString(`
+      pragma solidcash >=0.8.0;
+      contract ParameterizedCall() {
+        function forward(address target, bytes payload) external {
+          target.delegatecall(payload);
+          require(payload.length > 0);
+        }
+      }
+    `);
+    const forward = artifact.abi.find((f) => f.name === 'forward');
+    expect(forward!.lowLevelCalls).toEqual([{
+      callMode: 'delegatecall', dataParamIndex: 1, occurrence: 'once',
+      target: { kind: 'parameter', name: 'target' },
+    }]);
+  });
+
+  it('does not mispublish a conditional delegate frame as singular', () => {
+    const artifact = compileString(`
+      pragma solidcash >=0.8.0;
+      contract ConditionalCall() {
+        function forward(address target, bytes payload, bool enabled) external {
+          if (enabled) { target.delegatecall(payload); }
+          require(payload.length > 0);
+        }
+      }
+    `);
+    const forward = artifact.abi.find((f) => f.name === 'forward');
+    expect(forward!.lowLevelCalls).toEqual([{
+      callMode: 'delegatecall', dataParamIndex: 1, occurrence: 'conditional', maximumOccurrences: 1,
+      target: { kind: 'parameter', name: 'target' },
+    }]);
   });
 });

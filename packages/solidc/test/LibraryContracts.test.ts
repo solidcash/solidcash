@@ -133,8 +133,7 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     // contract's own p2sh32 commits to - a caller cannot substitute a library.
     expect(bump.lowLevelCalls).toEqual([
       {
-        callMode: 'delegatecall',
-        targetSource: { kind: 'constructorArg', paramName: '__libAddr_Counter' },
+        callMode: 'delegatecall', occurrence: 'once',
         target: { kind: 'constructorArg', name: '__libAddr_Counter' },
       },
     ]);

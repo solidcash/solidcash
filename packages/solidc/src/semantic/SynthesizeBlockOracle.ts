@@ -1,6 +1,7 @@
 import {
   ContractNode,
   FunctionDefinitionNode,
+  FunctionModifier,
   SourceFileNode,
   Node,
   StatementNode,
@@ -13,12 +14,13 @@ import {
   RequireNode,
   TimeOpNode,
   FunctionCallNode,
+  IndirectCallNode,
   IdentifierNode,
   IntLiteralNode,
   BinaryOpNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { DeprecatedNowError } from '../Errors.js';
+import { DeprecatedNowError, MixedBlockOracleOwnershipError } from '../Errors.js';
 import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { TimeOp, GlobalFunction } from '../ast/Globals.js';
@@ -89,6 +91,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private fnBlockhashArgs = new Set<string>();
   // Per-function counter for computed-n blockhash reads (each is its own slot).
   private fnComputedBlockhashCount = 0;
+  private fnUsesOracle = false;
+  private oracleConsumers = new WeakSet<FunctionDefinitionNode>();
   // Names declared in the contract (state vars) and current function (params + locals), so a bare `now` that is
   // actually a declared variable is NOT aliased to block.timestamp (Solidity <0.7 global; a plain var in >=0.7).
   private stateVarNames = new Set<string>();
@@ -96,7 +100,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private warnedShims = new Set<string>();
   private userGasleft = false;
 
-  constructor(private strictSolidityValidation = false) {
+  constructor(
+    private strictSolidityValidation = false,
+    private delegateExecutionContext = false,
+  ) {
     super();
   }
 
@@ -143,9 +150,11 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const prev = this.fnUsesBlockhash;
     const prevArgs = this.fnBlockhashArgs;
     const prevComputed = this.fnComputedBlockhashCount;
+    const prevOracle = this.fnUsesOracle;
     this.fnUsesBlockhash = false;
     this.fnBlockhashArgs = new Set();
     this.fnComputedBlockhashCount = 0;
+    this.fnUsesOracle = false;
     this.fnDeclaredNames = new Set([...this.stateVarNames]);
     for (const p of node.parameters) this.fnDeclaredNames.add(p.name);
     for (const rn of node.returnNames ?? []) if (rn) this.fnDeclaredNames.add(rn);
@@ -155,9 +164,11 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       result.usesBlockhash = true;
       result.blockhashSlotCount = this.fnBlockhashArgs.size;
     }
+    if (this.fnUsesOracle) this.oracleConsumers.add(result);
     this.fnUsesBlockhash = prev;
     this.fnBlockhashArgs = prevArgs;
     this.fnComputedBlockhashCount = prevComputed;
+    this.fnUsesOracle = prevOracle;
     return result;
   }
 
@@ -198,6 +209,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.used = new Set();
+    this.oracleConsumers = new WeakSet();
     this.loc = node.location;
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     // Solidity permits a contract function to shadow the gasleft builtin (with a compiler warning). Preserve
@@ -220,7 +232,8 @@ export default class SynthesizeBlockOracle extends AstTraversal {
         node.stateVariables.push(this.at(new StateVariableNode(registerType(varName), varName)) as StateVariableNode);
       }
     }
-    this.injectOwnerUpdate(node, fields);
+    const delegateOwner = this.oracleDelegateOwner(node);
+    this.injectOwnerUpdate(node, fields, delegateOwner);
     return node;
   }
 
@@ -228,6 +241,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const varName = FIELD_VAR[node.operator];
     if (varName) {
       this.used.add(varName);
+      this.fnUsesOracle = true;
       return this.stateAccess(varName, node);
     }
     // block.prevrandao: BCH has no randomness source. Lowered (in codegen) to a transaction-local value -
@@ -260,6 +274,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
       }
       this.used.add('__block_totalFees');
       this.used.add('__block_size');
+      this.fnUsesOracle = true;
       const lit = new IntLiteralNode(1000n);
       lit.location = node.location;
       const mul = new BinaryOpNode(lit, BinaryOperator.MUL, this.stateAccess('__block_totalFees', node));
@@ -272,7 +287,63 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   }
 
   // Inject the immutable owner-key register + the owner-gated, freshness-bound update function.
-  private injectOwnerUpdate(node: ContractNode, fields: string[]): void {
+  private oracleDelegateOwner(node: ContractNode): boolean {
+    if (this.delegateExecutionContext) return true;
+    const functions = node.functions;
+    const byName = new Map<string, FunctionDefinitionNode[]>();
+    for (const fn of functions) byName.set(fn.name, [...(byName.get(fn.name) ?? []), fn]);
+    const reachesOracle = (
+      fn: FunctionDefinitionNode, active = new Set<FunctionDefinitionNode>(),
+    ): boolean => {
+      if (this.oracleConsumers.has(fn)) return true;
+      if (active.has(fn)) return false;
+      const next = new Set(active).add(fn);
+      let found = false;
+      const walk = (candidate: Node | undefined): void => {
+        if (!candidate || found) return;
+        if (candidate instanceof FunctionCallNode) {
+          // Before symbol resolution, keep overload handling conservative: every same-name, same-arity target
+          // is a possible edge. A false positive produces an explicit ownership diagnostic, never a wrong owner.
+          const targets = (byName.get(candidate.identifier.name) ?? []).filter((target) =>
+            target.parameters.length === candidate.parameters.length);
+          if (targets.some((target) => reachesOracle(target, next))) {
+            found = true;
+            return;
+          }
+        }
+        if (candidate instanceof IndirectCallNode) {
+          // Target-set lowering runs later. Treat every arity-compatible oracle helper as reachable here; this
+          // can conservatively reject an ambiguous mixed-owner program but cannot assign its register wrongly.
+          if (functions.some((target) => target.parameters.length === candidate.parameters.length
+            && reachesOracle(target, next))) {
+            found = true;
+            return;
+          }
+        }
+        for (const [key, value] of Object.entries(candidate)) {
+          if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
+            || key === 'resolvedFunction' || key === 'functionReference') continue;
+          if (value instanceof Node) walk(value);
+          else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+        }
+      };
+      walk(fn.body);
+      return found;
+    };
+    const roots = [
+      ...functions, node.fallbackDef, node.receiveDef,
+    ].filter((fn): fn is FunctionDefinitionNode => fn?.isEntryPoint === true);
+    const consumers = roots.filter((fn) => reachesOracle(fn));
+    // Constructors execute against the deployed contract, never a proxy delegate frame. If one consumes the
+    // same synthesized register as a delegated entry, one updater cannot honestly own both state locations.
+    const direct = (node.constructorDef !== undefined && reachesOracle(node.constructorDef))
+      || consumers.some((fn) => !fn.modifiers.includes(FunctionModifier.DELEGATE));
+    const delegated = consumers.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
+    if (direct && delegated) throw new MixedBlockOracleOwnershipError(node);
+    return delegated;
+  }
+
+  private injectOwnerUpdate(node: ContractNode, fields: string[], delegateOwner: boolean): void {
     if (!node.stateVariables.some((sv) => sv.name === OWNER_VAR)) {
       const owner = new StateVariableNode(PrimitiveType.PUBKEY, OWNER_VAR);
       owner.immutable = true;
@@ -313,14 +384,15 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const updateFn = this.at(
       new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
     ) as FunctionDefinitionNode;
-    // X72. This pass can run AFTER message-bus route synthesis (compiler.ts runs route synthesis early
-    // whenever a handler touches a collection, has an effect or returns). Route synthesis only names a
-    // rejection reason for the entry points that exist when it runs, so this one reached the artifact as
-    // `eligible: false` with the reason key absent - a refusal with no reason. State the reason the absence
-    // channel already uses for the same condition (compiler.ts `messageBusAbsenceMessage`). When route
-    // synthesis runs after this pass it examines this function like any other and overwrites both fields.
-    updateFn.messageBusEligible = false;
-    updateFn.messageBusRejectionReason = 'not-examined-by-route-synthesis';
+    // A compiler-synthesized state entry belongs to the same physical owner as the contract surface which
+    // caused it to exist. In particular, Solidity initializer inference marks the existing public surface as
+    // delegate before this pass appends the oracle updater. Leaving the new entry direct makes an early
+    // message-bus snapshot omit it from the delegate route and makes its direct ABI target implementation state
+    // instead of proxy state. Carry the already-established execution context onto the synthetic entry before
+    // route admission and symbol/code generation assign its physical frame.
+    if (delegateOwner) {
+      updateFn.modifiers.push(FunctionModifier.DELEGATE);
+    }
     node.functions.push(updateFn);
   }
 

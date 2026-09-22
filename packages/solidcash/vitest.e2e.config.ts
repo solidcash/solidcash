@@ -6,6 +6,6 @@ import baseConfig from './vitest.config.js';
 // entire e2e suite; an include pattern composes correctly with CLI file filters.
 export default mergeConfig(baseConfig, defineConfig({
   test: {
-    include: ['test/e2e/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
+    include: ['test/e2e/**/*.{test,spec}.?(c|m)ts?(x)'],
   },
 }));

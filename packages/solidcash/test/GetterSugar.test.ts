@@ -8,6 +8,7 @@ import {
 import {
   buildInitialStateCommitments, type StateLayout,
 } from '@solidcash/utils';
+import { selectMappingEntryByKeys } from '../src/stateful/StatefulContract.js';
 import { alicePkh, bobPkh } from './fixture/vars.js';
 import { createTestProvider } from './test-util.js';
 
@@ -24,6 +25,13 @@ contract Bank() {
   mapping(bytes20 => mapping(bytes20 => bigint)) public allowances;
   mapping(address => bool) public members;
   function poke(pubkey pk, sig s) { require(checkSig(s, pk)); this.counter = this.counter + 1; }
+}`;
+
+const ADDRESS_SRC = `pragma solidcash >=0.8.0;
+contract AddressBook() {
+  mapping(address => bool) public members;
+  mapping(bytes20 => bool) public rawMembers;
+  function poke() { require(true); }
 }`;
 
 interface EntrySpec { collection: string; commitment: string; }
@@ -118,5 +126,70 @@ describe('Solidity-getter sugar (sc.<name>() / sc.<mapping>(key))', () => {
     const sc = await deploy();
     expect(BigInt(await sc.state.counter())).toBe(7n);
     expect(BigInt(await sc.state.balances(alicePkh))).toBe(100n);
+  });
+
+  it('matches a 20-byte Solidity account alias only for address-typed mapping keys', async () => {
+    const addressArtifact = compileString(ADDRESS_SRC);
+    const addressLayout = addressArtifact.stateLayout!;
+    const provider = createTestProvider();
+    const contract = new Contract(addressArtifact, [], { provider });
+    const p2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac);
+    const zero = slotValueToBytes(0n);
+    const storedAtP2pkh = binToHex(encodeEntryCommitment(
+      keyToSlot(p2pkh), zero, bigIntToVmNumber(1n),
+    ));
+    const members = addressLayout.collections!.find((collection) => collection.name === 'members')!;
+    const rawMembers = addressLayout.collections!.find((collection) => collection.name === 'rawMembers')!;
+    const categoryId = await setupWithEntries(provider, contract, addressLayout, {}, [
+      { collection: members.signature, commitment: storedAtP2pkh },
+      { collection: rawMembers.signature, commitment: storedAtP2pkh },
+    ]);
+    const sc = StatefulContract.withCategory(contract, categoryId) as any;
+    const solidityAccount = `0x${binToHex(alicePkh)}`;
+
+    expect(await sc.members(solidityAccount)).toBe(true);
+    expect(await sc.members(alicePkh)).toBe(true);
+    expect(await sc.rawMembers(solidityAccount)).toBe(false);
+  });
+
+  it('prefers an exact address slot over its compatibility alias in either provider order', () => {
+    const p2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac);
+    const exact = { slot: keyToSlot(alicePkh), value: 7n };
+    const alias = { slot: keyToSlot(p2pkh), value: 9n };
+
+    expect(selectMappingEntryByKeys([exact, alias], [alicePkh], ['address'])?.value).toBe(7n);
+    expect(selectMappingEntryByKeys([alias, exact], [alicePkh], ['address'])?.value).toBe(7n);
+  });
+
+  it('rejects duplicate entries at the exact mapping slot', () => {
+    const slot = keyToSlot(alicePkh);
+    expect(() => selectMappingEntryByKeys([
+      { slot, value: 1n },
+      { slot: slot.slice(), value: 2n },
+    ], [alicePkh], ['address'])).toThrow(/duplicate entries for the exact key slot/);
+  });
+
+  it('applies address compatibility to nested keys without provider-order selection', () => {
+    const aliceP2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac);
+    const bobP2pkh = Uint8Array.of(0x76, 0xa9, 0x14, ...bobPkh, 0x88, 0xac);
+    const wrappedPair = {
+      slot: keyToSlotMulti([aliceP2pkh, bobP2pkh]),
+      value: 11n,
+    };
+
+    expect(selectMappingEntryByKeys(
+      [wrappedPair], [alicePkh, bobPkh], ['address', 'address'],
+    )?.value).toBe(11n);
+
+    const partiallyWrapped = {
+      slot: keyToSlotMulti([alicePkh, bobP2pkh]),
+      value: 12n,
+    };
+    expect(() => selectMappingEntryByKeys(
+      [wrappedPair, partiallyWrapped], [alicePkh, bobPkh], ['address', 'address'],
+    )).toThrow(/multiple entries for compatibility key aliases/);
+    expect(() => selectMappingEntryByKeys(
+      [partiallyWrapped, wrappedPair], [alicePkh, bobPkh], ['address', 'address'],
+    )).toThrow(/multiple entries for compatibility key aliases/);
   });
 });

@@ -28,6 +28,7 @@ for (const fixture of fixtures) {
   const actual = JSON.parse(JSON.stringify(artifact));
   delete actual.invocationAnalysis;
   delete actual.compiler.options.messageBus;
+  delete actual.compiler.options.messageBusKernel;
 
   const drifted: string[] = [];
   const walk = (now: unknown, was: unknown, at: string): void => {

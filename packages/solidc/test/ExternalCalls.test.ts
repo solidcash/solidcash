@@ -51,6 +51,101 @@ describe('returned external-call loop metadata', () => {
     const mismatchedLength = makeBody(1n, false, 'otherCount');
     expect(resultArrayOutputOf(mismatchedLength.body, mismatchedLength.target)).toBeUndefined();
   });
+
+  it('publishes each semantic aggregate loop callsite exactly once', () => {
+    const source = `pragma solidity ^0.8.19;
+      struct Pair { uint left; address right; }
+
+      interface ISource {
+        function size() external view returns (uint);
+        function read(uint index) external view returns (Pair memory);
+      }
+
+      contract Collector {
+        ISource source;
+
+        constructor(ISource source_) {
+          source = source_;
+        }
+
+        function collect(uint offset) public view returns (Pair[] memory) {
+          uint length = source.size() - offset;
+          Pair[] memory output = new Pair[](length);
+          for (uint index = 0; index < length; index++) {
+            output[index] = source.read(index + offset);
+          }
+          return output;
+        }
+      }
+    `;
+    const compileAt = (messageBusKernel: boolean) => compileMessageBus(source, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: false,
+      suppressWarnings: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+
+    const kernel = compileAt(true);
+    const legacy = compileAt(false);
+    expect(kernel.messageBus?.convention).toBe('kernel-row-loop');
+    expect(legacy.messageBus?.convention).toBe('legacy-unroll');
+
+    for (const artifact of [kernel, legacy]) {
+      const calls = artifact.abi.find((entry) => entry.name === 'collect')?.externalCalls ?? [];
+      expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
+        { callsiteId: 0, functionName: 'size' },
+        { callsiteId: 1, functionName: 'read' },
+      ]);
+      expect(new Set(calls.map(({ callsiteId }) => callsiteId)).size).toBe(calls.length);
+      expect(calls.filter(({ functionName }) => functionName === 'read')).toHaveLength(1);
+      expect(calls[1]).toMatchObject({ occurrence: 'loop', resultArrayOutput: 0 });
+    }
+  });
+
+  it('does not clone an effectful producer to derive a constructed collection key', () => {
+    const artifact = compileMessageBus(`
+      interface ISource { function keyAt(uint index) external view returns (uint); }
+      contract Registry(ISource source) {
+        mapping(uint => uint) records;
+
+        function apply(uint count) public {
+          uint[] memory keys = new uint[](count);
+          for (uint producer = 0; producer < count; producer++) {
+            keys[producer] = source.keyAt(producer);
+          }
+          for (uint consumer = 0; consumer < count; consumer++) {
+            this.records[keys[consumer]] = consumer;
+          }
+          require(true);
+        }
+
+        function control() public { require(true); }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: false,
+      suppressWarnings: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+    const calls = artifact.abi.find((entry) => entry.name === 'apply')?.externalCalls ?? [];
+    expect(calls.map(({ callsiteId, functionName }) => ({ callsiteId, functionName }))).toEqual([
+      { callsiteId: 0, functionName: 'keyAt' },
+    ]);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'apply')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
+    });
+  });
 });
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
@@ -111,6 +206,25 @@ describe('Low-level call options + tuple-slot modifiers + value units', () => {
 
 describe('state-backed external-call expected address', () => {
   const IFACE = 'interface IData { function ping() external; }';
+  it('publishes the declared type for an imported-style struct constructor argument', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Packet { uint256 code; bytes payload; }
+      interface IData { function put(Packet value) external; }
+      contract C {
+        IData data;
+        function forward(uint256 code, bytes payload) public {
+          data.put(Packet(code, payload));
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, forceStateful: true });
+    expect(artifact.abi.find((candidate) => candidate.name === 'forward')
+      ?.externalCalls?.[0]?.argSources?.[0]).toMatchObject({
+      kind: 'expression',
+      expression: { kind: 'call', name: 'Packet', type: 'Packet' },
+    });
+  });
+
   it('publishes an explicit empty argument-source list for zero-argument calls', () => {
     const artifact = compileString(`${IFACE}
       contract C(IData data) {
@@ -565,6 +679,38 @@ describe('value-returning low-level-call helpers are inlined at direct call site
         ]),
       }),
     ]);
+  });
+
+  it('publishes the typed selector for abi.encodeCall graph arguments derived from address(this)', () => {
+    const src = 'interface ITarget { function approve(address spender, uint256 value) external returns (bool); }'
+      + ' library Raw { function call(address target, bytes memory payload) internal returns (bytes) {'
+      + ' (bool ok, bytes memory result) = target.call(payload); require(ok); return result; } }'
+      + ' contract C { uint256 marker; function run(address target, uint256 value) public {'
+      + ' Raw.call(target, abi.encodeCall(ITarget.approve, (address(this), value)));'
+      + ' this.marker = value; require(true); } }';
+    const artifact = compileString(src, {
+      solidityImportCompat: true,
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      maximumInputBytes: 1_000_000,
+      optimizeForCompilationSpeed: true,
+      __artifactCache: false,
+      __strictNoInternalRecovery: true,
+    });
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run')?.eligible).toBe(true);
+    const call = artifact.abi.find((candidate) => candidate.name === 'run')?.externalCalls?.[0];
+    expect(call).toEqual(expect.objectContaining({
+      interfaceName: '__raw__',
+      functionName: '__raw__',
+      rawFunctionName: 'approve',
+      rawSelector: '9f0bb8a9',
+      rawArgSources: [
+        expect.objectContaining({ kind: 'selfAddress' }),
+        expect.objectContaining({ kind: 'forward' }),
+      ],
+    }));
   });
 
   // Inlining the SAME low-level-call helper through two paths (`fcv` directly and via `fcv2`) must not collide:

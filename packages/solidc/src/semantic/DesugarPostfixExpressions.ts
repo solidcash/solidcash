@@ -231,6 +231,7 @@ export default class DesugarPostfixExpressions extends AstTraversal {
       declaration.isLoopVariable = stmt.isLoopVariable;
       declaration.loopInitialValue = stmt.loopInitialValue;
       declaration.loopStepValue = stmt.loopStepValue;
+      declaration.loopStepExpression = stmt.loopStepExpression;
       declaration.location = stmt.location;
       makeAssign = (expression) => {
         const target = new IdentifierNode(stmt.name); target.location = stmt.location;

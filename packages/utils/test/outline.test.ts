@@ -1,4 +1,4 @@
-import { PositionHint, Op, Script, outlineSharedSpans, scriptToBytecode } from '../src/index.js';
+import { PositionHint, Op, Script, encodeInt, outlineSharedSpans, scriptToBytecode } from '../src/index.js';
 import type { FullLocationData, SingleLocationData } from '../src/index.js';
 
 const location: SingleLocationData = { location: undefined, positionHint: PositionHint.START };
@@ -125,6 +125,15 @@ describe('cross-function bytecode outlining', () => {
     const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
     expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 8).functions.length).toBeGreaterThan(0);
     expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 5).functions.length).toBeGreaterThan(0);
+  });
+
+  it('two-round window-8 search still shares the long span', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const two = outlineSharedSpans(source, allocateId, () => 1, 'savings', 8, 12288, undefined, 2);
+    const four = outlineSharedSpans(source, allocateId, () => 1, 'savings', 8, 12288, undefined, 4);
+    expect(two.functions.length).toBeGreaterThan(0);
+    expect(two.savedBytes).toBeGreaterThan(0);
+    expect(two.savedBytes).toBe(four.savedBytes);
   });
 
   it('still leftover-outlines when later rounds reuse interned fingerprints', () => {
@@ -258,6 +267,44 @@ describe('cross-function bytecode outlining', () => {
       expect(result.functions.length).toBeGreaterThan(0);
       for (const shared of result.functions) expect(shared.script).not.toContain(barrier);
     }
+  });
+
+  it('keeps a complete encoded-id and OP_INVOKE pair behind the default invocation barrier', () => {
+    const nestedId = 73;
+    const invokePair: Script = [encodeInt(BigInt(nestedId)), Op.OP_INVOKE];
+    const guarded: Script = [...REPEATED.slice(0, 12), ...invokePair, ...REPEATED.slice(12)];
+    const result = outlineSharedSpans(
+      [body([...guarded, ...FILLER]), body([...FILLER, ...guarded])],
+      allocateId,
+      () => 1,
+    );
+
+    expect(result.functions.length).toBeGreaterThan(0);
+    for (const shared of result.functions) expect(shared.script).not.toContain(Op.OP_INVOKE);
+  });
+
+  it('relocates only complete allowlisted encoded-id and OP_INVOKE pairs', () => {
+    const nestedId = 73;
+    const encodedId = encodeInt(BigInt(nestedId));
+    const guarded: Script = [...REPEATED.slice(0, 12), encodedId, Op.OP_INVOKE, ...REPEATED.slice(12)];
+    const source = [body([...guarded, ...FILLER]), body([...FILLER, ...guarded])];
+    const cache = new Map<string, unknown>();
+    const allowed = new Set<number>();
+    const run = (): ReturnType<typeof outlineSharedSpans> => outlineSharedSpans(
+      source, allocateId, () => 1, 'savings', 12, 1024, cache, 6, allowed,
+    );
+
+    // The same policy object may be populated between conservative compiler passes. Candidate caches must be
+    // scoped to its current contents or this first, barrier-bound result would poison the allowlisted retry.
+    expect(run().functions.every((shared) => !shared.script.includes(Op.OP_INVOKE))).toBe(true);
+    allowed.add(nestedId);
+    const result = run();
+
+    const nested = result.functions.find((shared) => shared.script.includes(Op.OP_INVOKE));
+    expect(nested).toBeDefined();
+    const invokeIndex = nested!.script.indexOf(Op.OP_INVOKE);
+    expect(invokeIndex).toBeGreaterThan(0);
+    expect(nested!.script[invokeIndex - 1]).toEqual(encodedId);
   });
 
   it('preserves the concatenated bytes of every body plus its shared functions', () => {

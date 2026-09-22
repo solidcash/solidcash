@@ -1,4 +1,6 @@
-import { AbiFunction, Artifact, StateLayout, StateVariableInfo, StructDefinitionInfo } from './artifact.js';
+import {
+  AbiFunction, Artifact, ChildDeploymentGenesisStateAbi, StateLayout, StateVariableInfo, StructDefinitionInfo,
+} from './artifact.js';
 import { bytecodeToAsm, Op, Script, scriptToBytecode } from './script.js';
 import { encodeInt, encodeIntAsFixedBytes, decodeIntFixedWidth } from './data.js';
 import {
@@ -10,6 +12,100 @@ import {
 } from '@bitauth/libauth';
 import { hash256, sha256 } from './hash.js';
 import { keccak_256 } from '@noble/hashes/sha3.js';
+
+/** Stable digest of the physical state geometry used by child-genesis recipes. */
+export function childStateLayoutDigest(
+  layout: Pick<StateLayout, 'variables' | 'dataNftCount' | 'commitmentLimit' | 'structs' | 'collections'>,
+): string {
+  const definitions = new Map((layout.structs ?? []).map((definition) => [definition.name, definition]));
+  const reachable = new Map<string, StructDefinitionInfo>();
+  const visitType = (type: string): void => {
+    const name = [...definitions.keys()].find((candidate) =>
+      type === candidate || type.startsWith(`${candidate}[`));
+    if (!name || reachable.has(name)) return;
+    const definition = definitions.get(name)!;
+    reachable.set(name, definition);
+    for (const field of definition.fields) visitType(field.type);
+  };
+  for (const variable of layout.variables) visitType(variable.type);
+  const structs = [...reachable.values()]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((definition) => ({
+      name: definition.name,
+      fields: definition.fields.map((field) => ({
+        name: field.name, type: field.type.replace(/address payable/g, 'address'),
+      })),
+    }));
+  const collections = [...(layout.collections ?? [])]
+    .sort((left, right) => left.signature.localeCompare(right.signature))
+    .map((collection) => ({
+      name: collection.name,
+      signature: collection.signature,
+      kind: collection.kind,
+      bound: collection.bound ?? null,
+      immutable: collection.immutable === true,
+      sorted: collection.sorted === true,
+      enumerable: collection.enumerable === true,
+    }));
+  const canonical = {
+    // Preserve the established digest for collection-free children. Collection-bearing layouts were previously
+    // undercommitted and intentionally acquire the additive topology below.
+    version: 1,
+    dataNftCount: layout.dataNftCount,
+    commitmentLimit: layout.commitmentLimit,
+    variables: [...layout.variables]
+      .sort((left, right) => left.nftIndex - right.nftIndex || left.fieldIndex - right.fieldIndex)
+      .map((variable) => ({
+        name: variable.name,
+        type: variable.type.replace(/address payable/g, 'address'),
+        nftIndex: variable.nftIndex,
+        fieldIndex: variable.fieldIndex,
+        dynamic: variable.dynamic === true,
+        packed: variable.packed === true,
+      })),
+    ...(collections.length > 0 && { collections }),
+    ...(structs.length > 0 && { structs }),
+  };
+  return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
+}
+
+/** Fail closed unless every published constructor-genesis field names one exact physical layout coordinate. */
+export function validateChildDeploymentGenesisState(
+  layout: Pick<StateLayout, 'variables'>,
+  genesisState: ChildDeploymentGenesisStateAbi,
+): void {
+  if (genesisState.kind !== 'constructor') {
+    throw new Error(`unsupported child-genesis descriptor kind '${String(genesisState.kind)}'`);
+  }
+  const seenNames = new Set<string>();
+  const seenCoordinates = new Set<string>();
+  for (const field of genesisState.fields) {
+    if (seenNames.has(field.name)) {
+      throw new Error(`duplicate constructor-genesis field '${field.name}'`);
+    }
+    seenNames.add(field.name);
+    const coordinate = `${field.nftIndex}:${field.fieldIndex}`;
+    if (seenCoordinates.has(coordinate)) {
+      throw new Error(`duplicate constructor-genesis coordinate ${coordinate}`);
+    }
+    seenCoordinates.add(coordinate);
+    const variable = layout.variables.find((candidate) => candidate.name === field.name);
+    if (!variable) throw new Error(`unknown constructor-genesis field '${field.name}'`);
+    if (variable.nftIndex !== field.nftIndex || variable.fieldIndex !== field.fieldIndex) {
+      throw new Error(
+        `constructor-genesis field '${field.name}' has coordinate ${coordinate}, expected `
+        + `${variable.nftIndex}:${variable.fieldIndex}`,
+      );
+    }
+    const expectedType = variable.type.replace(/address payable/g, 'address');
+    const actualType = field.type.replace(/address payable/g, 'address');
+    if (actualType !== expectedType) {
+      throw new Error(
+        `constructor-genesis field '${field.name}' has type '${field.type}', expected '${variable.type}'`,
+      );
+    }
+  }
+}
 
 /** A primitive pushdata value: integer, boolean, byte array, or string (UTF-8 encoded). */
 export type PrimitiveStateValue = bigint | boolean | Uint8Array | string;
@@ -465,21 +561,19 @@ export function encodePushdataValue(
     }
   }
 
-  // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig
-  // At this point, struct types have already been handled and returned above
+  // Generic pushdata encode for int, int-like types, bytes1, bytes0, unbounded bytes, sig, datasig.
+  // At this point, struct types have already been handled and returned above. In particular, bytes remain
+  // opaque: a byte string which happens to contain a valid CashAddress spelling is still that byte string.
+  // CashAddress conversion belongs exclusively to the address-typed branch below (and to any explicitly gated
+  // compatibility adapter whose historical wire schema stored an address in a bytes field).
   let primitiveValue = value as PrimitiveStateValue;
-  // JobEventData.address_ is `bytes` but holds a packed BCH address (p2pkh=25, p2sh20=23, p2sh32=35).
-  // A CashAddress string (or UTF-8 of one) must become locking bytecode, not UTF-8 pushdata.
-  if (type === 'bytes' || /^bytes\d+$/.test(type)) {
-    primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
-  }
   // Solidity address(0) is empty locking bytecode. ethers.ZeroAddress is the 20-zero hex string; encoding
   // that as UTF-8 or 20 zero bytes fails the emit EQUALVERIFY against the compiler's OP_0.
   if (type === 'address' || type === 'address payable') {
     if (typeof primitiveValue === 'string' && /^(0x)?0*$/i.test(primitiveValue)) {
       primitiveValue = new Uint8Array(0);
     } else {
-      primitiveValue = lockingBytecodeFromAddressBytes(primitiveValue);
+      primitiveValue = lockingBytecodeFromAddressValue(primitiveValue);
       if (
         primitiveValue instanceof Uint8Array
         && primitiveValue.length > 0
@@ -543,8 +637,8 @@ export function concatPushdataParts(parts: readonly Uint8Array[]): Uint8Array {
 
 /**
  * Encode an event NFT commitment the way `visitEmitStatement` does: each parameter is
- * pushdata-encoded, then the parts are concatenated. `emit JobEvent(0, ev)` is therefore
- * `encode(0) || encode(ev)` (`00` + struct), not the struct alone.
+ * pushdata-encoded, then the parts are concatenated. `emit Update(0, record)` is therefore
+ * `encode(0) || encode(record)` (`00` + struct), not the struct alone.
  */
 export function encodeEventCommitment(
   parameters: readonly { type: string }[],
@@ -606,7 +700,8 @@ function isPackedLockingBytecode(bytes: Uint8Array): boolean {
       && bytes[2] === 0x14 && bytes[23] === 0x88 && bytes[24] === 0xac);
 }
 
-function lockingBytecodeFromAddressBytes(value: PrimitiveStateValue): PrimitiveStateValue {
+/** Normalize the SDK spellings accepted only for an address-typed value. */
+function lockingBytecodeFromAddressValue(value: PrimitiveStateValue): PrimitiveStateValue {
   const fromCashAddress = (text: string): Uint8Array | undefined => {
     if (!text.includes(':')) return undefined;
     const decoded = cashAddressToLockingBytecode(text);
@@ -941,6 +1036,37 @@ export function decodePushdataValue(
   }
 
   return genericResult;
+}
+
+/**
+ * Encoded length of the pushdata operation at `offset`, resolved from its length prefix alone.
+ *
+ * Mirrors `decodeGenericPushdata`'s acceptance exactly (including the one-byte constant opcodes, which decode
+ * to a one-byte value) but never reads or copies the payload. A caller holding candidates that are usually not
+ * pushes can therefore reject one for the cost of a byte comparison instead of paying for a slice and, on the
+ * ordinary rejection path, an exception with a captured stack trace.
+ *
+ * Returns `undefined` when the bytes at `offset` are not a push or the declared payload runs past the buffer.
+ */
+export function peekPushdataEncodedLength(data: Uint8Array, offset = 0): number | undefined {
+  if (offset < 0 || offset >= data.length) return undefined;
+  const firstByte = data[offset];
+  // OP_0 pushes an empty item; OP_1NEGATE / OP_1-OP_16 push one byte.
+  if (firstByte === 0x00 || firstByte === 0x4f) return 1;
+  if (firstByte >= 0x51 && firstByte <= 0x60) return 1;
+  if (firstByte === 0x4c) {
+    if (offset + 2 > data.length) return undefined;
+    const length = data[offset + 1];
+    return offset + 2 + length <= data.length ? 2 + length : undefined;
+  }
+  if (firstByte === 0x4d) {
+    if (offset + 3 > data.length) return undefined;
+    const length = data[offset + 1] | (data[offset + 2] << 8);
+    return offset + 3 + length <= data.length ? 3 + length : undefined;
+  }
+  // Any other byte is either a direct length (1-75) or not a push at all (OP_PUSHDATA_4 and ordinary opcodes).
+  if (firstByte > 75) return undefined;
+  return offset + 1 + firstByte <= data.length ? 1 + firstByte : undefined;
 }
 
 /**
@@ -1497,7 +1623,7 @@ export function decodePackedEventArray(
   }
   // User-defined struct names are resolved by decodePushdataValue below, not by the primitive type parser.
   // Calling parseTypeStrict first made every chunked `Struct[]` mapping unreadable even when its artifact
-  // supplied the complete struct table (MarketplaceData.jobEvents is the representative shape).
+  // supplied the complete struct table (a mapping value containing a struct array is a representative shape).
   const structElement = structs?.some((definition) => definition.name === arrInfo.elementType) === true;
   const elemType = structElement ? undefined : parseTypeStrict(arrInfo.elementType);
   if (elemType !== undefined && isFixedWidthType(elemType)) {

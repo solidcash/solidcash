@@ -1,4 +1,4 @@
-import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg } from '@solidcash/utils';
+import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -252,6 +252,13 @@ export interface EntryAccessInfo {
   keyParams: string[];          // kept for backward compat
   keySources: KeySourceInfo[];  // detailed source info per key
   operations: ('read' | 'write' | 'delete')[];
+  /**
+   * Shared function-local source-effect identities of mutations collapsed into this physical entry access.
+   * This is not a reachability or terminality proof: conditional/loop occurrences require a separate schedule.
+   */
+  mutationEffectOrdinals?: number[];
+  /** The collection stores a dynamic-array value in authenticated continuation chunks. */
+  chunkableArrayValue?: true;
   slotIndex: number;
   // A pure-write mapping assign whose key varies per iteration of a RUNTIME loop (`for(i<n) m[k[i]]=v[i]`). It
   // has no fixed entry slot; the covenant emits a runtime-counter-indexed trailing entry output per iteration
@@ -271,6 +278,24 @@ export interface EntryAccessInfo {
   valueParam?: string;
   // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
   valueSource?: string;
+  /**
+   * Exact off-chain replay recipe for the element consumed by one chunkable sorted-array push. The recipe is
+   * attached to the mutation's compiler-owned source-effect ordinal; omission means the push must not be
+   * reconstructed from ABI type similarity.
+   */
+  storedElementSource?: {
+    version: 1;
+    mutationEffectOrdinal: number;
+    elementType: string;
+    expression: ExternalCallExpression;
+  };
+  /** Exact collection-array mutation represented by this access. */
+  arrayMutation?: 'push' | 'pop' | 'indexed' | 'mixed';
+  /**
+   * Optional fixed-chunkable activation recipe. Absent means the write is unconditional. When present, the SDK
+   * evaluates it against authenticated row arguments and omits continuation bands / write planning when false.
+   */
+  activation?: ExternalCallExpression;
 }
 
 export interface TokenContainerAccessInfo {
@@ -297,6 +322,15 @@ export interface GraphEffectFrame {
   tokenTransferWidth: number;
   tokenTransferOffset?: number;
   tokenNftTransfers: boolean;
+  ecrecoverBase?: number;
+  ecrecoverWidth?: number;
+  ecrecoverOffset?: number;
+  deployBase?: number;
+  /** Output slots per selected row: one child master followed by its data NFTs. */
+  deployWidth?: number;
+  deployOffset?: number;
+  /** Input-relative offset of the first row's vout-0 genesis input. */
+  deployInputOffset?: number;
 }
 
 export interface CustomModifierInvocation {
@@ -304,6 +338,106 @@ export interface CustomModifierInvocation {
   args: ExpressionNode[];
   location: Location;
 }
+
+/**
+ * Lossless, typed source snapshot for a locally constructed mapping-key vector.
+ *
+ * This deliberately remains compiler-internal: a later descriptor lowering projects the replayable subset into
+ * the SDK ABI. Keeping the complete source program here means that lowering/inlining cannot manufacture a
+ * provenance proof after the fact. `sourceFunctionIdentity`, rather than a local variable spelling, is the
+ * durable key shared by all physical route clones of the source function.
+ */
+export interface MessageBusConstructedKeyVectorProofProgram {
+  version: 1;
+  sourceFunctionIdentity: string;
+  sourceFunctionSignature: string;
+  sourceParameterTypes: string[];
+  /** Ordinals of qualifying `new T[](n)` allocations in source preorder; never local identifiers. */
+  candidateVectorOrdinals: number[];
+  /** Detached typed source body, captured before symbolic-key lowering and helper inlining. */
+  sourceProgram: BlockNode;
+}
+
+/**
+ * Compiler-only execution coordinate.  It intentionally contains neither source spellings nor source locations:
+ * statement paths give the source execution nesting and preorder gives a deterministic tie-breaker inside a
+ * statement.  It is retained solely to bind a future journal witness protocol to the source program which was
+ * actually analysed before lowering.
+ */
+export interface KernelJournalStreamExecutionCoordinate {
+  readonly statementPath: readonly number[];
+  readonly preorder: number;
+}
+
+/**
+ * One exact locally-constructed-vector data-flow edge discovered before kernel admission.
+ *
+ * This is deliberately not an ABI and must never influence route selection.  In particular, it lets later
+ * carrier work distinguish one allocation feeding one producer write and one mapping-key consumer from a
+ * merely similar lowered array expression, without using a local variable name as an identity.
+ */
+export interface KernelJournalStreamPlanEdge {
+  readonly allocationOrdinal: number;
+  readonly allocation: KernelJournalStreamExecutionCoordinate;
+  readonly producerLoop: KernelJournalStreamExecutionCoordinate;
+  readonly producerWrite: KernelJournalStreamExecutionCoordinate;
+  readonly consumerLoop: KernelJournalStreamExecutionCoordinate;
+  readonly consumerWrite: KernelJournalStreamExecutionCoordinate;
+  readonly consumerKeyComponent: number;
+}
+
+export interface KernelJournalStreamPlan {
+  readonly version: 1;
+  readonly edges: readonly KernelJournalStreamPlanEdge[];
+}
+
+/**
+ * Immutable, compiler-private proof that source control/data flow contains one exact read-to-set carrier family.
+ * Collection and parameter ordinals deliberately replace source spellings. The concrete class is frozen and is
+ * therefore shared (rather than structurally recopied) by `cloneNode`, keeping one authority across route clones.
+ */
+export class KernelReadCarrierDiscoveryPlan {
+  readonly version = 1 as const;
+
+  constructor(
+    readonly digest: string,
+    readonly sourceCollectionOrdinal: number,
+    readonly destinationCollectionOrdinals: readonly number[],
+    readonly valueType: string,
+    readonly keyArity: number,
+    readonly executionCoordinate: readonly number[],
+    /** Canonical JSON using parameter/counter roles, never identifiers. */
+    readonly loopShape: string,
+    /** Canonical JSON for the complete mapping-key tuple. */
+    readonly keyShape: string,
+  ) {
+    Object.freeze(destinationCollectionOrdinals);
+    Object.freeze(executionCoordinate);
+    Object.freeze(this);
+  }
+}
+
+/** Late, completed-ABI confirmation of a source-owned carrier discovery. Never serialized or used as capability. */
+export class KernelReadCarrierAuthorization {
+  readonly version = 1 as const;
+
+  constructor(
+    readonly digest: string,
+    readonly discoveryDigest: string,
+    readonly selectorHex: string,
+    /** One digest per journal stream, ordered by its authenticated access-stream index. */
+    readonly streamDescriptorDigests: readonly string[],
+    readonly completedDescriptorDigest: string,
+  ) {
+    Object.freeze(streamDescriptorDigests);
+    Object.freeze(this);
+  }
+}
+
+/** Compiler-owned meaning of a parameter introduced while lowering a read-carrier loop. */
+export type KernelReadCarrierSyntheticParameterRole =
+  | 'counter-permutation'
+  | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
@@ -321,26 +455,69 @@ export class FunctionDefinitionNode extends Node implements Named {
   selfExternalFunctionAliases?: Record<string, string>;
   requiredNftIndices?: number[];
   entryAccesses?: EntryAccessInfo[];
+  /** Whether shared source-effect ordinals are complete for this straight-line handler. */
+  sourceEffectOrder?: 'linear' | 'unsupported-flow';
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
-  /** Compiler-owned handler state-owner basis. Zero means the active route input; a positive value is the
-   * authenticated distance from the route executor to the participant master. Unlike a stack argument, this
-   * consensus-derived relation remains stable while the handler creates runtime-only operands. */
+  /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
+   * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
+  messageBusPhysicalEntrySlotAlternatives?: number[][];
+  /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
+  messageBusRouteDynamicResources?: string[];
+  /** Authenticated participant-master offset used by message-bus handler code generation. */
   messageBusOwnerInputOffset?: number;
+  /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
+  messageBusUpgradeRoute?: boolean;
+  /**
+   * Route synthesis pushed this clone's owner operand as the call's LAST argument, so at body entry it is the top
+   * item (depth 0) and can be captured without depending on any frame-model position.
+   */
+  messageBusOwnerIsLastArgument?: boolean;
+  /**
+   * The message-bus route's declared input names, in push order. A route handler shares the caller's stack, so these
+   * values are physically BELOW the handler's argument block; seeding them into the handler's frame model is what
+   * makes a deep read address the item the runtime actually has there.
+   */
+  messageBusCallerBandNames?: string[];
+  /**
+   * This OP_DEFINE body captured its authenticated participant owner into the ALT STACK at entry.
+   *
+   * A DEFINE'd route handler shares the caller's stack, so the owner parameter's distance from the bottom depends
+   * on what the caller leaves under the argument band - which the frame model does not know. The owner's distance
+   * from the TOP is exact at entry (the caller pushes the argument vector last), so the value is read once there
+   * and re-read from the alt stack, whose depth no main-stack push can shift.
+   */
+  messageBusOwnerAltAnchor?: boolean;
+  /** The exact named-call closure can execute CHECKSIG/CHECKMULTISIG (excluding data signatures). */
+  messageBusUsesTransactionSignature?: boolean;
+  /** Direct scalar or one-dimensional signature-array parameters constrained to SIGHASH_ALL by the route. */
+  messageBusAllOutputSignatureParameters?: number[];
+  /** Exact OP_INVOKE signing body per detached root parameter and signature leaf. */
+  messageBusSignatureCoveredFunctionKeys?: Record<number, Record<number, string>>;
+  /** Compiler-owned row clone kept as a stable OP_INVOKE signing body on delegate routes. */
+  messageBusDetachedSignatureHandler?: boolean;
+  /** Stable KTS1 identity captured before journal lowering appends physical value-threading parameters. */
+  messageBusSignatureIdentity?: string;
   /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
   messageBusHandlerManagedEntrySlots?: number[];
-  /** Compiler-generated locals allocated before a message-bus route can invoke a handler. Their tracked
-   * top-relative depths can be shadowed by handler runtime operands, but their bottom ordinals remain stable. */
-  messageBusRouteFrameLocals?: string[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
+  /** Number of statically allocated token-transfer output coordinates after branch alternatives share indices. */
+  tokenContainerTransferSiteCount?: number;
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];
   externalOutStateReads?: ExternalOutStateSlot[];
   emitInfos?: EmitInfo[];
+  /** Ordered fixed/repeated event segments lowered into the runtime trailing stream by a counter loop. */
+  runtimeLoopEvents?: RuntimeLoopEventInfo[];
+  /** Repeated BCH-transfer segments lowered into the runtime trailing stream by a counter loop. */
+  runtimeLoopTransfers?: RuntimeLoopTransferInfo[];
+  /** Worst-case trailing outputs across all lowered counter loops and their source-ordered fixed event peers.
+   * Internal layout metadata; each loop independently admits at most 64 iterations. */
+  runtimeCounterLoopOutputCapacity?: number;
   transferInfos?: TransferInfo[];
   deployTargets?: {
-    contractName: string; dataNftCount: number;
+    contractName: string; dataNftCount: number; entryNftCount?: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (a direct `new C(param)`
     // reference), or null if it is a non-trivial expression. Lets the SDK derive childConstructorArgs from the
     // deploy-function args instead of requiring them again.
@@ -353,9 +530,17 @@ export class FunctionDefinitionNode extends Node implements Named {
     creationBytecode?: string;
     // True when a same-transaction child call is folded into the authenticated child genesis.
     hasFoldedChildCall?: boolean;
+    childLayoutDigest?: string;
+    genesisState?: import('@solidcash/utils').ChildDeploymentGenesisStateAbi;
+    genesisEntries?: readonly import('@solidcash/utils').ChildDeploymentGenesisEntryAbi[];
   }[];
 
-  lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
+  lowLevelCalls?: {
+    callMode: 'call' | 'staticcall' | 'delegatecall';
+    dataParamIndex?: number;
+    occurrence?: 'once' | 'conditional' | 'loop';
+    maximumOccurrences?: number;
+  }[];
   // Delegate-library calls desugared from `L.f()` (SynthesizeLibraryDelegateCalls), in source order. The SDK
   // auto-wires the delegatecall co-spend from a registered library instance, so the caller need not name the
   // library function again. `args` are positional: a forwarded enclosing-function parameter or a literal; the
@@ -385,20 +570,168 @@ export class FunctionDefinitionNode extends Node implements Named {
   // op is '+', '-', 'set', or 'delete'. The per-iteration value v is one of: valueArrayParam (per-key vs[i]),
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
-    collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    collection: string; collectionHash: string; journalAccessStreamIndex: number; journalExecutionGroup: number;
+    settlementIdentity: JournalSettlementIdentityAbi;
+    fixedKeyParams: string[]; varyingArrayParam: string;
     fixedKeySources?: KeySourceInfo[];
+    /** Composite-key positions populated from the same varying array element. Omitted for the usual final key. */
+    varyingKeyIndices?: number[];
+    /** Original complete key tuple, serialized for SDK reconstruction when components derive from the counter. */
+    varyingKeyExpressions?: ExpressionNode[];
+    /** The key recipe replays a historical constructed-array resize without an authenticated prefix identity. */
+    constructedKeyReplay?: boolean;
+    /** The key recipe selects among more than two branch-merged constructed-array definitions. */
+    multiArmConstructedKeyReplay?: boolean;
+    /** The key recipe consumes a mutable helper array whose history reads a distinct mutable array identity. */
+    crossArrayKeyReplay?: boolean;
+    /** The key recipe replays a forwarded array mutated by a nested helper which also returns a value. */
+    nestedHelperReturnReplay?: boolean;
+    /** The write predicate consumes a mutable local assigned earlier in the same logical iteration. */
+    sameIterationMutableSelectionReplay?: boolean;
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
     valueRuntimeLocal?: string;
     valueRuntimeExpression?: boolean;
+    /** Source-ordered values for a loop-carried expression, authenticated in the executable source loop. */
+    valueTraceWitnessParam?: string;
+    valueTraceLocal?: string;
+    valueTraceInitial?: ExpressionNode;
+    valueTraceUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    valueTraceAfterUpdates?: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    /** Authenticated prefix-boundary counts (N+1 values) used by a constructed-array key recurrence. */
+    prefixCountWitnessParam?: string;
+    prefixCountCondition?: ExpressionNode;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
+    mutationValueArrayIndexParam?: string;
+    mutationValueExpression?: ExpressionNode;
     mutationIndexArrayParam?: string; mutationIndexScalarParam?: string; mutationIndexConst?: string;
+    mutationIndexArrayIndexParam?: string;
+    mutationIndexExpression?: ExpressionNode;
     oldValuesWitnessParam?: string;
-    op: '+' | '-' | 'set' | 'delete';
+
+    /** Compiler-owned exact physical widths for this independently sorted runtime stream. */
+    inputCountParam?: string;
+    outputCountParam?: string;
+
+    /** Source-path predicate for a conditionally reached runtime loop. */
+    condition?: ExpressionNode;
+    /** Per-source-iteration predicate selecting the exact logical mapping-write domain. */
+    iterationCondition?: ExpressionNode;
+    /** Per-source-iteration predicate terminating the source loop after this iteration. */
+    iterationBreakCondition?: ExpressionNode;
+    /** Expanded public-argument expression computing a non-affine loop bound. */
+    iterationBound?: ExpressionNode;
+    /** The source condition is `counter != bound`, so the signed step must reach the endpoint exactly. */
+    iterationExactBound?: boolean;
+    iterationCounter?: {
+      name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+      exactBound?: boolean;
+    };
+    op: '+' | '-' | 'set' | 'delete' | 'read';
   }>;
+
+  /** Source-path predicate keyed by the compiler-owned counter permutation parameter. */
+  runtimeCounterLoopConditions?: Map<string, ExpressionNode>;
+  /** Per-iteration selection predicate keyed by compiler-owned counter permutation parameter. */
+  runtimeCounterLoopIterationConditions?: Map<string, {
+    expression: ExpressionNode;
+    breakCondition?: ExpressionNode;
+    counter: { name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode };
+  }>;
+
+  /** Inverse permutation for compact selected streams, keyed by their physical permutation parameter. */
+  runtimeCounterLoopSourceOrderIndices?: Map<string, string>;
+
+  /** Expanded public-argument expression which computes a non-affine counter-loop bound. */
+  runtimeCounterLoopBounds?: Map<string, ExpressionNode>;
+  /** Original key tuples keyed by `<permutation>\0<collection>`, before physical-loop rewriting. */
+  runtimeCounterLoopKeyExpressions?: Map<string, ExpressionNode[]>;
+  /** Key recipes which replay historical constructed-array resizes without authenticated prefix identities. */
+  runtimeCounterLoopConstructedKeyReplays?: Set<string>;
+  /** Key recipes selecting among more than two branch-merged constructed-array definitions. */
+  runtimeCounterLoopMultiArmConstructedKeyReplays?: Set<string>;
+  /** Key recipes fed by a mutable helper array history which reads a distinct mutable array identity. */
+  runtimeCounterLoopCrossArrayKeyReplays?: Set<string>;
+  /** Key recipes fed by a forwarded array mutation from a nested helper which also returns a value. */
+  runtimeCounterLoopNestedHelperReturnReplays?: Set<string>;
+  /** Permutation parameters whose selection predicate replays a same-iteration mutable local. */
+  runtimeCounterLoopSameIterationSelectionReplays?: Set<string>;
+  /** Constructed-array prefix-count trace keyed by `<permutation>\0<collection>`. */
+  runtimeCounterLoopPrefixCountTraces?: Map<string, {
+    witnessParam: string;
+    condition: ExpressionNode;
+  }>;
+
+  /** Source counter descriptor keyed by compiler-owned permutation parameter. */
+  runtimeCounterLoopCounters?: Map<string, {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+    exactBound?: boolean;
+    /** Visible source-parameter ordinal supplying the canonical loop bound, when direct. */
+    boundParameterOrdinal?: number;
+  }>;
+
+  /** Physical stream widths keyed by the compiler-owned permutation parameter. */
+  runtimeCounterLoopCardinalityParams?: Map<string, { input: string; output: string }>;
+
+  /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
+   * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
+  messageBusUnboundedConstructedArray?: boolean;
+  /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
+  messageBusConstructedKeyVectorCandidate?: boolean;
+  /**
+   * Normalized compiler-owned vector proof programs ready for artifact publication. Raw AST provenance is never
+   * serialized here: an unsupported expression leaves this absent and preserves the KERNEL_LAYOUT fence.
+   */
+  messageBusConstructedKeyVectorDescriptors?: readonly ConstructedKeyVectorV1Abi[];
+  /** Stable source-level identity used to attach pre-lowering constructed-key proof programs. */
+  messageBusSourceFunctionIdentity?: string;
+  /** Source snapshots indexed exclusively by stable source-function identity. */
+  messageBusConstructedKeyVectorProofPrograms?: Map<string, MessageBusConstructedKeyVectorProofProgram>;
+  /** Internal pre-admission source-flow plan. Never serialized and never an admission capability. */
+  messageBusKernelJournalStreamPlan?: KernelJournalStreamPlan;
+  /** Immutable first-pass read-carrier discovery; source names and locations never cross into this record. */
+  messageBusKernelReadCarrierDiscovery?: KernelReadCarrierDiscoveryPlan;
+  /** Exact source ABI arity captured before any physical/compiler-owned operands are appended. */
+  messageBusKernelReadCarrierSourceParameterCount?: number;
+  /** Explicit roles for carrier operands. Authorization never infers authority from reserved-name prefixes. */
+  messageBusKernelReadCarrierSyntheticParameterRoles?: Map<string, KernelReadCarrierSyntheticParameterRole>;
+  /** Completed-descriptor validation of the discovery. Still compiler-private while the release gate is false. */
+  messageBusKernelReadCarrierAuthorization?: KernelReadCarrierAuthorization;
+  /**
+   * Stable source selector carried by compiler-generated physical clones. This is compiler-private identity:
+   * clone names and locations are never authorization, and the value is useful only beside the binder's exact
+   * completed-descriptor scope.
+   */
+  messageBusKernelReadCarrierSourceSelectorHex?: string;
+  /** Stable selector carried by every generated kernel handler clone for disposition authorization. */
+  messageBusKernelJournalDispositionSelectorHex?: string;
+  /** Exact completed-descriptor families owned by this generated aggregate route. Compiler-private. */
+  messageBusKernelReadCarrierRouteScopes?: readonly {
+    selectorHex: string;
+    completedDescriptorDigest: string;
+    streamDescriptorDigests: readonly string[];
+  }[];
+  /** Ordered compiler-private disposition manifest owned by this generated aggregate route. */
+  messageBusKernelJournalDispositions?: readonly {
+    selectorHex: string;
+    completedDescriptorDigest: string;
+    mode: 'carrier' | 'eager-journal' | 'neutral';
+    streams: readonly {
+      journalAccessStreamIndex: number;
+      descriptorDigest: string;
+      disposition: 'carrier' | 'eager-journal' | 'neutral';
+    }[];
+  }[];
+  /** Digest emitted only by the authenticated aggregate route as the SCJD v1 bytecode marker. */
+  messageBusKernelJournalDispositionCommitmentDigest?: string;
+
+  /** Names-free affine recursive mapping-frame proof; metadata only, never an admission capability. */
+  messageBusAffineRecursiveFrameDescriptors?: readonly AffineRecursiveFrameV1Abi[];
+  /** Idempotence marker for the pre-admission constructed-array replay normalization. */
+  messageBusConstructedArrayKeysNormalized?: boolean;
 
   // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[]; linear?: boolean }>;
@@ -419,6 +752,12 @@ export class FunctionDefinitionNode extends Node implements Named {
   // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
   // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
   returnedSelfFunctionName?: string;
+  // Per-result form of returnedSelfFunctionName. An entry exists only when every reachable explicit return fixes
+  // that external-function result slot to the same `this.method`; absent slots retain their ordinary ABI type.
+  returnedSelfFunctionNames?: Array<string | undefined>;
+  // Complete finite direct-self target set for each external-function result. Multiple entries mean source
+  // control flow selects among immutable local function IDs; no foreign address or caller pointer is admitted.
+  returnedSelfFunctionTargetSets?: Array<string[] | undefined>;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).
@@ -446,6 +785,18 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-owned: this entry's reachable scalar-handler call graph contains
   // a direct or mutual recursion cycle and requires SDK VM preflight.
   scalarJournalRecursive?: boolean;
+  /** A recursive varying-key mapping read which no authenticated affine stream claimed. Kernel admission must
+   * retain this marker across speculative clones and refuse the generic tail-loop representation. */
+  unloweredVaryingRecursiveMappingRead?: boolean;
+  /** An indirect internal call may reach a journal-context ABI without a statically complete target set. The
+   * kernel must refuse that handler rather than invoke a context-bearing OP_DEFINE with the source-only frame. */
+  kernelJournalContextUnsafeCall?: boolean;
+  /** A source entry reaches an internal effect helper which closes over a contract constructor parameter.
+   * External-call lowering appends a physical settlement frame to that helper, but the constructor-captured
+   * value has no source-row slot from which that frame can be rebuilt. Kernel admission records this before
+   * graph lowering so the handler remains a deterministic KERNEL_LAYOUT refusal rather than reaching type/codegen
+   * with a source-arity helper call. */
+  kernelConstructorCapturedHelperGraphEffect?: boolean;
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
@@ -458,6 +809,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
+  /** Resolved route dispatch. Stamped at synthesis; published as `artifact.messageBus.convention`. */
+  messageBusDispatch?: 'legacy-unroll' | 'kernel-row-loop';
   messageBusMaximumRows?: number;
   /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
   messageBusBlockhashReadWidth?: number;
@@ -467,6 +820,25 @@ export class FunctionDefinitionNode extends Node implements Named {
 
   messageBusEligible?: boolean;
   messageBusRejectionReason?: string;
+  /** This source handler was included in the synthesized route dispatch. Late fences may still demote it. */
+  messageBusDispatched?: boolean;
+  /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
+   * activated). The generated participant route authenticates that at most one row from the complete marked
+   * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
+   * bound, not permission to chain mutations. */
+  messageBusFixedChunkableWriteMaxRows?: 1;
+  /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
+  messageBusFixedChunkableWriteEffectOrdinal?: number;
+  /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
+  messageBusFixedChunkableResources?: Array<{
+    collection: string;
+    effectOrdinal: number;
+    activation?: ExternalCallExpression;
+  }>;
+  /** This handler owns one unconditional direct push into a chunkable sorted mapping-array entry. Kernel route
+   * lowering threads the typed pending array through every selected OP_INVOKE row and flushes it exactly once,
+   * so repeated same-key rows compose without intermediate continuation outputs. */
+  messageBusPooledChunkableArrayPush?: true;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
@@ -478,6 +850,12 @@ export class FunctionDefinitionNode extends Node implements Named {
     perRow?: boolean;
     /** This key and its `_row` sibling may exchange the shared/row-local physical entry for this invocation. */
     swappable?: boolean;
+    /** Opaque compiler identity shared by every component of one fixed collection-key tuple. */
+    entryTupleGroup?: number;
+    /** Component ordinal within entryTupleGroup; prevents independently mixing nested-mapping coordinates. */
+    keyComponentIndex?: number;
+    /** The same tuple component in the route's one fixed alternate physical lane. */
+    alternateRouteInput?: string;
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
@@ -500,6 +878,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
   // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
   delegatecallIsConditional: boolean = false;
+  /** Compiler-owned split-root forwarder whose mutating facet owns the published return-event output. */
+  splitDelegateReturnForwarder: boolean = false;
+  /** Physical implementation-relative event offsets published by the selected split facet. Delegate-only data
+   * NFT slots are already removed, so the root's immutable-event pin and the facet covenant name one output. */
+  splitDelegateEventOffsets?: number[];
   /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
@@ -521,6 +904,10 @@ export class FunctionDefinitionNode extends Node implements Named {
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
+  /** This function, or a named internal callee, reads chunk-backed dynamic state. Its first physical chunk input
+   * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
+   * the function's maximum block width. */
+  usesDynamicChunkInputBase?: boolean;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
   /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
@@ -555,6 +942,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
   // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
+  /** Exact number of formal recovery effects in this function's expanded named-call closure. Unlike the
+   * codegen-local ecrecoverArgParams length, repeated invocations of one helper each contribute their own
+   * concrete effect. Used to thread authenticated side-car coordinates through OP_INVOKE. */
+  recoveryEffectCount?: number;
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
   // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
@@ -599,6 +990,11 @@ export class ParameterNode extends Node implements Named, Typed {
   // reference (a delegate-library forwarded arg `L.f(x)`, or a branded library's `__brand` ctor arg). The
   // unused-variable warning must skip it.
   syntheticallyUsed = false;
+  /**
+   * Physical kernel-journal context copied from a callee solely to keep an internal OP_INVOKE chain's frame
+   * uniform. This operand belongs to the generated route, not to the source entry point's published ABI.
+   */
+  kernelJournalForwardedContext = false;
 
   constructor(
     public type: Type,
@@ -766,12 +1162,21 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // updates, so metadata generation fails closed rather than guessing how a mutable local evolves.
   loopInitialValue?: bigint;
   loopStepValue?: bigint;
+  /** Signed runtime step expression when the canonical update is not a literal. */
+  loopStepExpression?: ExpressionNode;
   // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
   // itself a direct function reference (for example `function() external f = callbacks[1]`).
   functionPointerMethodAlias?: string;
   // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
   // Yul create-address lowering still needs the compile-time blob after that representation change.
   memoryLiteralValue?: Uint8Array;
+  // Return temporary produced by InlineReturningStateHelpers. Counter-loop admission uses the callee's declared
+  // purity after the surface FunctionCallNode has been normalized into statements plus this SSA result, or the
+  // separate proof below when the complete non-pure effect closure contains only source-ordered events.
+  inlinedReturningHelperPure?: boolean;
+  // A non-pure helper whose complete effect closure contains only events. Its return expression may be replayed
+  // independently while the event statements retain their source-ordered runtime occurrence plan.
+  inlinedReturningHelperSeparableEvent?: boolean;
 
   constructor(
     public type: Type,
@@ -936,6 +1341,10 @@ export class CatchClauseNode extends Node {
 
 export class DoWhileNode extends StatementNode {
   forLoopUpdateCount: number = 0;
+  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
+  sourceAuthoredLoop?: boolean;
+  /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
+  fixedUnrollForbidden: boolean = false;
 
   constructor(
     public condition: ExpressionNode,
@@ -953,6 +1362,17 @@ export class WhileNode extends StatementNode {
   // Number of trailing block statements that form a desugared for-loop update (see AstBuilder.visitForStatement).
   // Used by BreakContinueTransformation so `continue` still runs the update.
   forLoopUpdateCount: number = 0;
+  /** Retains source-loop provenance across early kernel lowering and pristine binder recompilation. */
+  sourceAuthoredLoop?: boolean;
+  /** A fixed-loop expansion saw source break/continue/return and must stay rolled on later passes. */
+  fixedUnrollForbidden: boolean = false;
+  /**
+   * Exact source-loop ceiling proved before a lowering rewrites the canonical condition or update.
+   *
+   * This is compiler-owned evidence, not an admission hint: consumers may use it only as an upper bound. In
+   * particular, early-exit lowering can invalidate the matching lower bound while leaving this ceiling sound.
+   */
+  compilerAuthenticatedMaximumIterations?: number;
 
   constructor(
     public condition: ExpressionNode,
@@ -1093,6 +1513,13 @@ export abstract class ExpressionNode extends Node {
   // returned expression. Try/catch validation still needs to distinguish this external self-call spelling
   // from an internal call after getter/helper inlining.
   fromExternalSelfCall?: boolean;
+  // The counter-loop lowering has proved this is the same-key old-value read of a compact `+`/`-` mapping
+  // transition. Its value comes from the authenticated runtime journal entry; route admission must not reserve
+  // an additional fixed-key witness for the loop-local identity.
+  messageBusRuntimeLoopTransitionRead?: boolean;
+  // A runtime-sized local-array key reconstructed from dominating writes. LowerVMapCounterLoops may treat this
+  // expression as counter-derived without broadening that rule to arbitrary source array reads.
+  messageBusDeterministicArrayKey?: boolean;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
@@ -1190,6 +1617,30 @@ export class MappingAssignNode extends StatementNode implements Named {
   noArg?: boolean;     // Set for `map[k].push()`: `expression` is a placeholder, replaced with the element default
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
+  // A counter-loop general RMW (`m[i] = f(m[i], ...)`) replaces the same-entry read in `expression` with this
+  // SDK-supplied value. The sorted-entry loop authenticates it against the co-spent entry (or the absent default)
+  // before accepting the computed output commitment.
+  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
+  /** The old-value witness contains only taken source-path occurrences, in source order. */
+  messageBusRuntimeOldValueWitnessDomain?: 'selected-source';
+  /** Source-order replay recipe for a counter-loop mapping-array mutation operand. */
+  messageBusRuntimeMutationValueExpression?: ExpressionNode;
+  /** Source-order replay recipe for a counter-loop mapping-array element index. */
+  messageBusRuntimeMutationIndexExpression?: ExpressionNode;
+  /** Set only after LowerVMapCounterLoops successfully publishes this write's authenticated journal stream. */
+  messageBusJournalTransport?: { collection: string; varyingArrayParam: string };
+  /** Compiler-synthesized no-op transition authenticating a counter-keyed read from another mapping. */
+  messageBusRuntimeReadOnly?: boolean;
+  /** Hidden source-order value vector used when physical key sorting cannot replay a loop-carried local. */
+  messageBusRuntimeValueTrace?: {
+    witnessParam: string;
+    local: string;
+    initial: ExpressionNode;
+    updates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+    afterUpdates: Array<{ condition?: ExpressionNode; expression: ExpressionNode }>;
+  };
 
   constructor(
     public name: string,
@@ -1211,6 +1662,8 @@ export class MappingFieldAssignNode extends StatementNode implements Named {
   // Deeper member names after `fieldName` for an imported-struct field write whose struct was unknown at parse
   // (`x[i].a.b = v` -> fieldName 'a', trailingMembers ['b']); the redesugar pass reconstructs the nested rebuild.
   trailingMembers?: string[];
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
 
   constructor(
     public name: string,
@@ -1258,6 +1711,8 @@ export class MappingDeleteNode extends StatementNode implements Named {
   entrySlotIndex: number = -1;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
   keySources?: KeySourceInfo[]; // canonical sources retained for runtime-loop ABI planning
+  /** Function-local program point shared with external-call effects. */
+  sourceEffectOrdinal?: number;
 
   constructor(
     public name: string,
@@ -1292,7 +1747,13 @@ export class CastNode extends ExpressionNode implements Typed {
 }
 
 export class FunctionCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this call lowers to an external graph edge. */
+  sourceEffectOrdinal?: number;
+  /** Lexical predicates captured before helper/control-flow lowering. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   resolvedFunction?: FunctionDefinitionNode;
+  /** A raw address transfer/send call cloned from an inline library helper. */
+  inlinedLibraryEffect?: boolean;
   fieldNames?: string[];
   // Call options are retained here for calls through a function-pointer identifier, then transferred to the
   // MethodCallNode synthesized by the external-function-pointer lowering.
@@ -1315,6 +1776,11 @@ export class FunctionCallNode extends ExpressionNode {
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
   graphEffectSite?: number;
+  // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
+  graphEffectSiteFromRow?: boolean;
+  /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
+   * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
+  recoveryEffectOrdinal?: number;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1352,16 +1818,34 @@ export class InstantiationNode extends ExpressionNode {
   transferIndex: number = 0;
   isStatefulDeploy: boolean = false;
   deployedDataNftCount: number = 0;
+  deployedEntryNftCount: number = 0;
   deployedStateVars: StateVariableNode[] = [];
   // Deploy-then-call fold: a same-tx `a.foo(x)` on this deploy result is folded into the genesis - the
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
   // its value should hold; the deploy covenant emits this instead of the default for that field.
   foldedStateInit?: Map<string, ExpressionNode>;
+
+  // Replayable constructor preconditions, rewritten into the deploying function's expression context.
+  foldedConstructorPredicates?: ExpressionNode[];
+
+  // Finite collection entries created by a child constructor. The first admitted form is a top-level,
+  // fixed-size scalar array addressed by a literal index; both key and value are rewritten into the parent
+  // handler's expression context so the deploy covenant and SDK can independently reproduce the entry NFT.
+  foldedCollectionEntries?: Array<{
+    collection: CollectionNode;
+    key: ExpressionNode;
+    value: ExpressionNode;
+  }>;
+
   // Unlike constructor folding, this requires the SDK to derive the child's post-call genesis from the VM.
   hasFoldedChildCall?: boolean;
   // The child has a constructor whose writes could NOT be folded: the true genesis of unwritten fields is
   // unknown, so later call-folds must not resolve their reads to type defaults.
   ctorFoldFailed?: boolean;
+  /** True only when every constructor statement is a pure straight-line local/state assignment/require and folded. */
+  constructorStateFoldComplete?: boolean;
+  /** Compiler-pinned child body used to independently reproduce a stateless value recipient. */
+  creationBytecode?: string;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1438,9 +1922,7 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
-  // Marks Solidity's `this` expression after lowering to active-input locking-bytecode introspection. Logical
-  // stateful identity may then use the participant's authenticated identity anchor without changing an explicit
-  // tx.inputs[i].lockingBytecode expression, which remains physical introspection.
+  /** Preserves source-level `this` after lowering to active-input bytecode introspection. */
   isThisExpression = false;
 
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
@@ -1572,8 +2054,11 @@ export class ArrayPopNode extends StatementNode implements Named {
 }
 
 export class ArrayAssignNode extends StatementNode implements Named {
+  /** Pre-semantic source program point copied if this lowers to a mapping mutation. */
+  sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
   fromModifier?: string; // see StateAssignNode.fromModifier (inlined-helper origin for the private-collection check)
+  messageBusRuntimeOldValueWitness?: ArrayAccessNode;
 
   constructor(
     public name: string,
@@ -1589,6 +2074,8 @@ export class ArrayAssignNode extends StatementNode implements Named {
 }
 
 export class ArrayDeleteNode extends StatementNode implements Named {
+  /** Pre-semantic source program point copied if this lowers to a mapping mutation. */
+  sourceEffectOrdinal?: number;
   arrayType?: ArrayType;
 
   constructor(
@@ -2184,6 +2671,10 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
   /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
+  /** Function-local program point shared with mapping-write effects. */
+  sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -2193,6 +2684,12 @@ export class ExternalFunctionCallNode extends ExpressionNode {
   // EVM-parity expression-form low-level call `(bool, bytes) = addr.call(payload)`: the callee's type/function
   // are unknown at compile time, the return is read as a single opaque bytes blob, identity-bound to addr.
   opaqueReturn?: boolean;
+  // Statement-form `addr.call(payload);` authenticates the same opaque result frame so it can target either a
+  // returning or void handler, but deliberately does not reconstruct `(success, data)` on the source stack.
+  discardedOpaqueReturn?: boolean;
+  // An empty-calldata `{value:}` call is a BCH transfer effect, not a selector-bearing graph invocation. The
+  // compiler still reconstructs its Solidity `(success, data)` result, but excludes it from callsite metadata.
+  rawValueTransferOnly?: boolean;
   // Set for a same-address varying-method function pointer `f = cond ? c.a : c.b; f(args)`: the RUNTIME selector
   // expression (`cond ? c.a.selector : c.b.selector`). Codegen stashes it into a temp and the covenant asserts
   // the co-spent callee's selector == it (instead of the compile-time witness), binding the co-spent method to
@@ -2218,25 +2715,31 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 
 export interface ExternalCallArgSource {
   kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'loopIndex'
-    | 'expression';
+  | 'expression';
   paramIndex?: number;
   indexParamIndex?: number;
   indexValue?: number;
+  indexStepValue?: number;
   initialValue?: string;
   stepValue?: string;
+  stepExpression?: ExternalCallExpression;
   paramName?: string;
   value?: string;
   type?: string;
   expression?: ExternalCallExpression;
-  /** Source-level `address(this)`, distinct from explicit physical active-input bytecode introspection. */
+  /** Source-level `address(this)`, distinct from physical active-input bytecode introspection. */
   logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {
   kind: string;
   name?: string;
-  /** Compiler-stable producer identity within the containing function. */
+  /** Physical producer/consumer lane after repeated-owner collapse. */
   callsiteId?: number;
+  /** Pre-collapse source callsite; distinct from `callsiteId` for batched producers. */
+  sourceCallsiteId?: number;
+  /** Zero-based ABI result position selected from the producer (also explicit for a sole result). */
+  resultIndex?: number;
   /** Authenticated receiver expression for a returning external call. */
   target?: ExternalCallExpression;
   type?: string;
@@ -2268,6 +2771,17 @@ export interface ExternalCallStatement {
 export interface ExternalCallSlot {
   interfaceName: string;
   functionName: string;
+  /**
+   * Authenticated caller subject for this outgoing edge. Default is the physical state-owner master; CREATE /
+   * proxy / executor roles are published only when the call expression authenticates that subject.
+   */
+  callerIdentity?: {
+    version: 1;
+    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+    auth: 'input-bytecode' | 'category' | 'literal';
+    authOffset: number;
+    subjectLockingBytecode?: string;
+  };
   addressParam?: string;
   addressStateVar?: string; // interface-typed state var holding the callee address (read from state)
   // Code-baked address literal target `IFoo(0x..).m()` (hex): the covenant pushes this constant as the
@@ -2298,6 +2812,8 @@ export interface ExternalCallSlot {
   addressIsMsgSender?: boolean;
   addressSource?: ExternalCallArgSource;
   slotIndex: number;
+  /** Function-local program point of this source call before any physical batching. */
+  sourceEffectOrdinal?: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
   returnTypes?: Type[];
@@ -2346,6 +2862,10 @@ export interface ExternalCallSlot {
     parameters: ExpressionNode[];
     parameterTypes: Type[];
     logicalIndex: number;
+    /** @internal Traversal-stable source callsite used to prove producer dominance before physical batching. */
+    sourceCallsiteId: number;
+    /** Function-local program point retained independently of physical batch order. */
+    sourceEffectOrdinal?: number;
     argSources?: ExternalCallArgSource[];
     /** Runtime cardinality of this source callsite within the grouped physical route. */
     occurrence?: 'once' | 'conditional' | 'loop';
@@ -2413,6 +2933,10 @@ export interface ExternalOutStateSlot {
 }
 
 export class MethodCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
+  /** Lexical predicates captured before helper/control-flow lowering. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callOptions?: CallOptions;
   valueTransferIndex: number = -1; // temporary carrier for pre-scan before transformation
   fieldNames?: string[]; // set for named-arg calls obj.f({a: x}); reordered against the callee's params
@@ -2422,9 +2946,7 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
-  // Set by function-pointer-array lowering for a loop spelling that means "call every table element". This is
-  // independent of selectorArrayVar: a fixed-method table has no selector sidecar but still needs its collection
-  // receiver preserved until semantic analysis derives loopArrayVar.
+  // A fixed-method pointer table still broadcasts across every table element even without a selector sidecar.
   pointerTableBroadcast: boolean = false;
   // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
   // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
@@ -2512,7 +3034,48 @@ export interface EmitInfo {
   eventSignature: string;
   emitIndex: number;
   chunkCount: number;
+  // The definition this site resolved to. Retained because later lowering may inline or erase the emit statement
+  // itself (an inherited internal helper such as OpenZeppelin's `_approve`), leaving this metadata as the only
+  // surviving record that the handler really emits the event. Overload resolution replaces it in TypeCheck.
+  eventDefinition?: EventDefinitionNode;
 }
+
+export interface RuntimeLoopEventInfo {
+  /** Stable per-function segment ordinal assigned by LowerVMapCounterLoops. */
+  loopIndex: number;
+  /** Hidden authenticated permutation whose length is the exact trip count for a repeated segment. */
+  permutationParam?: string;
+  /** Exact repeat count for a source-ordered event outside the loop. */
+  repeatCount?: number;
+  /** Exact do-while affine recurrence domain. Mutually exclusive with permutationParam and repeatCount. */
+  iterationDomain?: {
+    counterName: string;
+    initialValue: ExternalCallExpression;
+    stepValue: ExternalCallExpression;
+    continueCondition: ExternalCallExpression;
+    maximumIterations: number;
+  };
+  /** Compiler-only marker: serialize per-site arguments for this permutation-backed logical domain. */
+  staticArguments?: true;
+  /** Source-order predicate which ends this runtime event segment after the current logical iteration. */
+  iterationBreakCondition?: ExpressionNode;
+  /** Function-local execution segment shared by every runtime effect produced at this source position. */
+  effectSequence?: number;
+}
+
+export interface RuntimeLoopTransferInfo {
+  /** Stable per-function segment ordinal assigned by LowerVMapCounterLoops. */
+  loopIndex: number;
+  /** Hidden authenticated permutation whose length is the exact trip count for a repeated segment. */
+  permutationParam: string;
+  /** Function-local execution segment shared with runtime events in the same source loop. */
+  effectSequence?: number;
+  /** Effect kind per source site. Stored on the segment because synthetic route bodies need not retain the
+   * concrete source statement nodes from which this information was first derived. */
+  siteKinds?: RuntimeLoopTransferKind[];
+}
+
+export type RuntimeLoopTransferKind = 'bch' | 'token' | 'nft';
 
 export interface TransferInfo {
   transferIndex: number;
@@ -2536,6 +3099,19 @@ export class EmitStatementNode extends StatementNode {
   eventCandidates?: EventDefinitionNode[];
   eventQualifier?: string;
   emitIndex: number = 0;
+  /** Runtime event site within a lowered counter-keyed mapping loop; excluded from fixed event slots. */
+  runtimeLoopEvent?: { loopIndex: number; siteIndex: number };
+  /** Source predicate controlling this runtime event, evaluated by the SDK to plan the exact output stream. */
+  runtimeLoopEventCondition?: ExpressionNode;
+  /** SDK-visible replay recipe when the executable argument itself must retain source state semantics. */
+  runtimeLoopEventArguments?: ExpressionNode[];
+  /** Counter progression available to runtimeLoopEventCondition as a per-occurrence value. */
+  runtimeLoopEventCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
+  /** Relative source order among all runtime effects in this repeated segment. */
+  runtimeLoopEffectOrder?: number;
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
   constructor(
@@ -2552,6 +3128,19 @@ export class EmitStatementNode extends StatementNode {
 
 export class TransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
+  /** Runtime transfer site within a lowered counter-keyed mapping loop; excluded from fixed transfer slots. */
+  runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
+  /** Source predicate controlling this transfer, evaluated by the SDK to plan the exact output stream. */
+  runtimeLoopTransferCondition?: ExpressionNode;
+  /** Counter progression available to runtimeLoopTransferCondition as a per-occurrence value. */
+  runtimeLoopTransferCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
+  /** Relative source order among all runtime effects in this repeated segment. */
+  runtimeLoopEffectOrder?: number;
 
   constructor(
     public lockingBytecode: ExpressionNode,
@@ -2581,6 +3170,10 @@ export class SelfdestructStatementNode extends StatementNode {
 
 export class AddressTransferStatementNode extends StatementNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
+  /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
+  inlinedLibraryEffect: boolean = false;
 
   constructor(
     public addressExpression: ExpressionNode,  // payable address or connected address
@@ -2596,6 +3189,10 @@ export class AddressTransferStatementNode extends StatementNode {
 
 export class AddressSendExpressionNode extends ExpressionNode {
   transferIndex: number = 0;
+  /** Fixed-effect replay proof captured before helper/value lowering rewrites this operand. */
+  sourceEffectRecipeProvenanceSafe?: boolean;
+  /** The intrinsic came from an inlined library helper and already follows the ordinary BCH transfer lowering. */
+  inlinedLibraryEffect: boolean = false;
 
   constructor(
     public addressExpression: ExpressionNode,  // payable address or connected address
@@ -2646,6 +3243,14 @@ export class TypeIntrospectionNode extends ExpressionNode {
 export class TokenContainerMethodStatementNode extends StatementNode {
   tokenContainerSlotIndex: number = 0;
   transferIndex: number = 0;
+  /** Runtime counter-loop effect stream ownership for fungible-token or NFT transfer sites. */
+  runtimeLoopTransfer?: { loopIndex: number; siteIndex: number };
+  runtimeLoopTransferCondition?: ExpressionNode;
+  runtimeLoopTransferCounter?: {
+    name: string; initialValue: bigint; stepValue: bigint; stepExpression?: ExpressionNode;
+  };
+
+  runtimeLoopEffectOrder?: number;
 
   constructor(
     public tokenContainerKeyExpression: ExpressionNode,  // the category expression
@@ -2750,6 +3355,10 @@ export class PlaceholderStatementNode extends StatementNode {
 }
 
 export class LowLevelCallNode extends ExpressionNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -2773,6 +3382,10 @@ export class LowLevelCallNode extends ExpressionNode {
 }
 
 export class LowLevelCallStatementNode extends StatementNode {
+  /** Pre-semantic source program point copied if this lowers to an external graph call. */
+  sourceEffectOrdinal?: number;
+  /** Lexical predicates which must hold before this callsite is reached, captured before helper flattening. */
+  sourceActivationConditions?: readonly { expression: ExpressionNode; negated: boolean }[];
   callIndex: number = 0;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;

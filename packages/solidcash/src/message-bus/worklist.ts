@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import {
   scriptToBytecode,
   occurrenceBoundOf, type AbiFunction, type ArgSource, type ExternalCallAbi,
@@ -12,6 +12,27 @@ import { MessageBusDiagnosticError, type MessageBusDiagnosticContext } from './d
 
 const MAX_WORKLIST_DEPTH = 7;
 
+const artifactExecutionIdentities = new WeakMap<object, string>();
+
+/**
+ * Content identity for the complete compiler publication consumed by graph planning.
+ *
+ * Stateful proxy handles may expose a fresh immutable artifact object on each access. Object identity therefore
+ * cannot identify the artifact installed at one physical owner: separate callsites to that owner would look like
+ * conflicting programs. Hash the JSON publication instead. This intentionally includes ABI, state layout and
+ * message-bus metadata in addition to bytecode/fingerprint, so equal normalized bytecode alone cannot make two
+ * incompatible resource geometries alias one owner.
+ */
+const artifactExecutionIdentity = (artifact: WorklistParticipant['artifact']): string => {
+  const cached = artifactExecutionIdentities.get(artifact);
+  if (cached !== undefined) return cached;
+  const serialized = JSON.stringify(artifact);
+  if (serialized === undefined) throw new Error('messageBus: participant artifact is not serializable');
+  const identity = binToHex(sha256.hash(new TextEncoder().encode(serialized)));
+  artifactExecutionIdentities.set(artifact, identity);
+  return identity;
+};
+
 export interface WorklistParticipant extends CompiledGraphParticipant {
   /** Constructor values are needed only when an emitted call argument forwards a constructor parameter. */
   constructorArgs?: readonly FunctionArgument[];
@@ -19,6 +40,8 @@ export interface WorklistParticipant extends CompiledGraphParticipant {
 
 export interface WorklistTargetResolution {
   participant: WorklistParticipant;
+  /** Exact ABI entry point selected on this target. */
+  selector?: string;
   /** Exact address evaluated by this call edge when it differs from the participant's default public identity. */
   targetLockingBytecode?: string;
 }
@@ -30,6 +53,8 @@ string, WorklistParticipant | readonly WorklistParticipant[]
 export interface DeriveCompiledGraphOptions {
   root: WorklistParticipant;
   function: string;
+  /** Exact root ABI entry point. Required when `function` names distinct overloads. */
+  selector?: string;
   args?: readonly FunctionArgument[];
   /** Transaction-origin locking bytecode authenticated by the messageEnvelope's root row. */
   rootCaller?: Uint8Array;
@@ -42,6 +67,7 @@ export interface DeriveCompiledGraphOptions {
   target?: (context: {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     invocation: number;
     callsiteId: number;
     occurrence: number;
@@ -51,10 +77,6 @@ export interface DeriveCompiledGraphOptions {
   }) => WorklistParticipant | WorklistTargetResolution | undefined;
   /** Correctness bound for source recursion and runtime-sized shapes. The callManifest v1 ceiling is 24. */
   maximumInvocations?: number;
-  /** Admit runtime-sized loop counts proven by a prepared call list and capped by maximumInvocations. */
-  allowRuntimeBoundedLoops?: boolean;
-  /** Provider-authenticated stack-item envelope; omitted keeps the BCH production 520-byte default. */
-  maximumBlobBytes?: number;
   /**
    * Runtime occurrence supplied by the same derivation probe which evaluated the root call. It selects only
    * how many rows the SDK constructs; source emission and participant projections authenticate the count.
@@ -62,6 +84,7 @@ export interface DeriveCompiledGraphOptions {
   occurrence?: (context: {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     /** Stable parent invocation identity; recursive re-entry must not share a traversal-global cursor. */
     invocation: number;
     callsiteId: number;
@@ -75,6 +98,7 @@ export interface DeriveCompiledGraphOptions {
   batchOccurrences?: (context: {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     invocation: number;
     callsiteId: number;
     batchLogicalIndex: number;
@@ -87,6 +111,7 @@ export interface DeriveCompiledGraphOptions {
   expressionArgument?: (context: {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     invocation: number;
     callsiteId: number;
     argument: number;
@@ -100,6 +125,7 @@ export interface DeriveCompiledGraphOptions {
   dynamicCall?: (context: {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     invocation: number;
     callsiteId: number;
     occurrence: number;
@@ -107,13 +133,14 @@ export interface DeriveCompiledGraphOptions {
   }) => {
     participant: WorklistParticipant;
     function: string;
+    selector?: string;
     args?: readonly FunctionArgument[];
     targetLockingBytecode?: string;
   };
 }
 
-const functionAbi = (participant: WorklistParticipant, name: string): AbiFunction => {
-  const resolved = resolveGraphAbiFunction(participant.artifact, name);
+const functionAbi = (participant: WorklistParticipant, name: string, selector?: string): AbiFunction => {
+  const resolved = resolveGraphAbiFunction(participant.artifact, name, selector);
   if (!resolved) throw new Error(`messageBus: symbolic worklist requires one ABI function '${name}'`);
   return resolved;
 };
@@ -150,6 +177,7 @@ const resolveArguments = (
   visibleArgs: readonly FunctionArgument[],
   call: ExternalCallAbi,
   functionName: string,
+  functionSelector: string | undefined,
   invocation: number,
   occurrence: number,
   expressionArgument: DeriveCompiledGraphOptions['expressionArgument'],
@@ -171,26 +199,38 @@ const resolveArguments = (
     return value;
   }
   if (source.kind === 'literal') return literal(source);
-  if (source.kind === 'loopIndex' && source.initialValue !== undefined && source.stepValue !== undefined) {
-    return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+  if (source.kind === 'loopIndex' && source.initialValue !== undefined) {
+    if (source.stepValue !== undefined) {
+      return BigInt(source.initialValue) + BigInt(source.stepValue) * BigInt(occurrence);
+    }
+    if (source.stepExpression) {
+      const value = expressionArgument?.({
+        participant: sourceParticipant,
+        function: functionName,
+        ...(functionSelector !== undefined && { selector: functionSelector }),
+        invocation,
+        callsiteId: call.callsiteId!,
+        argument,
+        occurrence,
+      });
+      if (value !== undefined) return value;
+    }
   }
   if (source.kind === 'selfAddress') {
-    // Source-level `address(this)` uses the stable identity anchor. An explicit active-input bytecode expression
-    // remains physical; both forms share this source kind for compatibility and are distinguished by metadata.
-    if (source.logicalIdentity && sourceParticipant.logicalLockingBytecode) {
-      return hexToBin(sourceParticipant.logicalLockingBytecode);
+    // This source is emitted on an outgoing CALL edge. The implementation input authenticates delegate execution,
+    // but the participant master is the Solidity-visible state owner and therefore the exact identity observed by
+    // the callee as `msg.sender`. Keeping the owner bytecode here also keeps address(this)-derived arguments and
+    // the finalized call-manifest caller subject identical.
+    if (!sourceParticipant.lockingBytecode) {
+      throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }
-    const executionLockingBytecode = sourceParticipant.executionKind === 'delegate'
-      ? sourceParticipant.executorLockingBytecode : sourceParticipant.lockingBytecode;
-    if (!executionLockingBytecode) {
-      throw new Error('messageBus: delegate participant has no authenticated execution locking bytecode');
-    }
-    return hexToBin(executionLockingBytecode);
+    return hexToBin(sourceParticipant.lockingBytecode);
   }
   if (source.kind === 'expression' || source.kind === 'msgSender' || source.kind === 'arrayElement') {
     const value = expressionArgument?.({
       participant: sourceParticipant,
       function: functionName,
+      ...(functionSelector !== undefined && { selector: functionSelector }),
       invocation,
       callsiteId: call.callsiteId!,
       argument,
@@ -237,7 +277,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const lbc = participant.lockingBytecode.toLowerCase();
     const existing = participantByLbc.get(lbc);
     if (existing !== undefined) {
-      if (participants[existing].artifact !== participant.artifact) {
+      const priorArtifact = participants[existing].artifact;
+      if (priorArtifact !== participant.artifact
+        && artifactExecutionIdentity(priorArtifact) !== artifactExecutionIdentity(participant.artifact)) {
         throw new MessageBusDiagnosticError(
           'L3_OWNER_ARTIFACT_CONFLICT',
           `one physical owner '${lbc}' was registered with different artifacts while deriving `
@@ -269,7 +311,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     batchLogicalIndex?: number,
   ): WorklistTargetResolution => {
     const resolved = options.target?.({
-      participant, function: functionName, invocation, callsiteId: call.callsiteId!, occurrence,
+      participant, function: functionName, ...(fn.selector !== undefined && { selector: fn.selector }),
+      invocation, callsiteId: call.callsiteId!, occurrence,
       interfaceName: call.interfaceName,
       ...(batchLogicalIndex !== undefined && { batchLogicalIndex }),
     });
@@ -338,12 +381,19 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   const expand = (
     participant: WorklistParticipant,
     functionName: string,
+    selector: string | undefined,
     args: readonly FunctionArgument[],
     parent: number | null,
     callMode?: 'call' | 'staticcall',
     boundedRecursiveEdge = false,
     consumerCallsiteId?: number,
     targetLockingBytecode?: string,
+    sourceOccurrence?: {
+      sourceCallsiteId: number;
+      sourceLogicalIndex?: number;
+      occurrenceIndex: number;
+      sourceEffectOrdinal?: number;
+    },
   ): void => {
     if (invocations.length >= maximum) {
       throw new MessageBusDiagnosticError(
@@ -366,8 +416,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const owner = intern(participant);
     const invocation = invocations.length;
     invocations.push({
-      parent, callee: owner, function: functionName, args, ...(callMode && { callMode }),
+      parent, callee: owner, function: functionName, args,
+      ...(selector !== undefined && { selector }), ...(callMode && { callMode }),
       ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
+      ...(sourceOccurrence !== undefined && sourceOccurrence),
       ...(parent !== null && {
         targetLockingBytecode: targetLockingBytecode
           ?? participant.logicalLockingBytecode
@@ -376,11 +428,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
     });
     activeInvocations.push(invocation);
-    const fn = functionAbi(participant, functionName);
+    const fn = functionAbi(participant, functionName, selector);
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, fn, functionName,
     );
-    const key = `${owner}:${functionName}`;
+    const key = `${owner}:${fn.selector ?? functionName}`;
     const activeCount = active.get(key) ?? 0;
     if (activeCount > 0 && !boundedRecursiveEdge) {
       throw new MessageBusDiagnosticError(
@@ -422,6 +474,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             : options.occurrence?.({
               participant,
               function: functionName,
+              ...(fn.selector !== undefined && { selector: fn.selector }),
               invocation,
               callsiteId: call.callsiteId!,
               kind: 'conditional',
@@ -434,6 +487,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           const resolved = options.dynamicCall?.({
             participant,
             function: functionName,
+            ...(fn.selector !== undefined && { selector: fn.selector }),
             invocation,
             callsiteId: call.callsiteId!,
             occurrence: reached,
@@ -442,18 +496,17 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           if (!resolved?.args) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} lacks decoded calldata proof ${reached}`);
           }
-          const targetFunction = functionAbi(resolved.participant, resolved.function);
+          const targetFunction = functionAbi(resolved.participant, resolved.function, resolved.selector);
           if (!targetFunction.selector) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} resolved to a selectorless function`);
           }
           const structs = resolved.participant.artifact.structs
           ?? resolved.participant.artifact.stateLayout?.structs;
-          let expansionArgs = resolved.args;
-          if (expansionArgs.length !== targetFunction.inputs.filter((input) =>
+          if (resolved.args.length !== targetFunction.inputs.filter((input) =>
             !input.name.startsWith('__internal__')).length) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded argument count is wrong`);
           }
-          const encoded = expansionArgs.map((argument, index) =>
+          const encoded = resolved.args.map((argument, index) =>
             encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
           if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
             throw new Error(`messageBus: raw callsite ${call.callsiteId} contains a transaction signature`);
@@ -471,14 +524,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded selector disagrees with source`);
             }
             const expectedArgs = resolveArguments(
-              participant, args, { ...call, argSources: call.rawArgSources }, functionName,
+              participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument,
             );
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
-            if (expectedEncoded.some((argument) => !(argument instanceof Uint8Array))) {
-              throw new Error(`messageBus: raw callsite ${call.callsiteId} source projection contains a signature`);
-            }
             if (expectedEncoded.length !== encoded.length
               || expectedEncoded.some((argument, index) => {
                 const actual = encoded[index];
@@ -495,15 +545,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                   rawArgSources: call.rawArgSources,
                 });
               }
-              // Construction traces are optimistic: before all graph outputs and identity anchors exist, a raw
-              // calldata probe can expose an otherwise valid intermediate payload. Prefer the compiler-published
-              // source projection as the next fixed-point seed. The completed transaction still executes the
-              // ordinary covenant under the strict VM, so an incorrect projection cannot be admitted or sent.
-              expansionArgs = expectedArgs;
+              throw new Error(`messageBus: raw callsite ${call.callsiteId} decoded arguments disagree with source`);
             }
           } else {
             const payload = resolveArguments(
-              participant, args, call, functionName, invocation, reached, options.expressionArgument,
+              participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
             )[0];
             if (!(payload instanceof Uint8Array)) {
               throw new Error(`messageBus: raw callsite ${call.callsiteId} calldata is not bytes`);
@@ -520,12 +566,20 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           expand(
             resolved.participant,
             resolved.function,
-            expansionArgs,
+            targetFunction.selector,
+            resolved.args,
             invocation,
             edgeCallMode(call),
             false,
             call.callsiteId,
             provedTarget ?? resolved.targetLockingBytecode,
+            {
+              sourceCallsiteId: call.callsiteId!,
+              occurrenceIndex: reached,
+              ...(call.sourceEffectOrdinal !== undefined && {
+                sourceEffectOrdinal: call.sourceEffectOrdinal,
+              }),
+            },
           );
         }
         continue;
@@ -544,6 +598,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           let reached = kind === 'once' ? [0] : options.batchOccurrences?.({
             participant,
             function: functionName,
+            ...(fn.selector !== undefined && { selector: fn.selector }),
             invocation,
             callsiteId: call.callsiteId!,
             batchLogicalIndex: row.logicalIndex,
@@ -553,6 +608,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             const count = options.occurrence?.({
               participant,
               function: functionName,
+              ...(fn.selector !== undefined && { selector: fn.selector }),
               invocation,
               callsiteId: call.callsiteId!,
               kind,
@@ -626,14 +682,23 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 `messageBus: batched callsite ${call.callsiteId} selector ${row.selector} is absent from its target`,
               );
             }
+            const isKernel = participant.artifact.messageBus?.convention === 'kernel-row-loop';
+            if (isKernel && row.sourceCallsiteId === undefined) {
+              throw new Error(
+                `messageBus: kernel batched callsite ${call.callsiteId} row ${row.logicalIndex} `
+                + 'omits sourceCallsiteId',
+              );
+            }
             expand(
               target,
               targetFunction.name,
+              targetFunction.selector,
               resolveArguments(
                 participant,
                 args,
                 { ...call, functionName: targetFunction.name, argSources: row.argSources },
                 functionName,
+                fn.selector,
                 invocation,
                 occurrence,
                 options.expressionArgument,
@@ -643,6 +708,15 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               false,
               call.callsiteId,
               resolvedTarget.targetLockingBytecode,
+              {
+                // Kernel rows must publish source identity; legacy may alias physical only explicitly above.
+                sourceCallsiteId: row.sourceCallsiteId ?? call.callsiteId!,
+                sourceLogicalIndex: row.logicalIndex,
+                occurrenceIndex: occurrence,
+                ...(row.sourceEffectOrdinal !== undefined && {
+                  sourceEffectOrdinal: row.sourceEffectOrdinal,
+                }),
+              },
             );
           });
         });
@@ -654,6 +728,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         count = options.occurrence?.({
           participant,
           function: functionName,
+          ...(fn.selector !== undefined && { selector: fn.selector }),
           invocation,
           callsiteId: call.callsiteId!,
           kind: occurrenceKind,
@@ -669,13 +744,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         // the shared helper's, so this entry point and `planCompiledGraph` refuse the same counts with the same
         // words. The ceiling legs used to be spelled out again in the gate above, which refused the same counts
         // with a coarser message and was free to drift from the bound it was duplicating.
-        assertPlannedOccurrenceCount(call, count, options.allowRuntimeBoundedLoops === true);
+        assertPlannedOccurrenceCount(call, count);
       }
       if (call.selectorArrayVar || call.fnPtrCall) {
         for (let reached = 0; reached < count; reached += 1) {
           const resolved = options.dynamicCall?.({
             participant,
             function: functionName,
+            ...(fn.selector !== undefined && { selector: fn.selector }),
             invocation,
             callsiteId: call.callsiteId!,
             occurrence: reached,
@@ -684,7 +760,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           if (!resolved) {
             throw new Error(`messageBus: callsite ${call.callsiteId} lacks a dynamic call proof`);
           }
-          const resolvedFunction = functionAbi(resolved.participant, resolved.function);
+          const resolvedFunction = functionAbi(resolved.participant, resolved.function, resolved.selector);
           if (call.possibleTargets?.length && !call.possibleTargets.some((candidate) =>
             candidate.functionName === resolved.function
             && candidate.selector.toLowerCase() === resolvedFunction.selector?.toLowerCase())) {
@@ -695,11 +771,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           expand(
             resolved.participant,
             resolved.function,
+            resolvedFunction.selector,
             resolveArguments(
               participant,
               args,
               { ...call, functionName: resolved.function },
               functionName,
+              fn.selector,
               invocation,
               reached,
               options.expressionArgument,
@@ -709,6 +787,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
             call.callsiteId,
             resolved.targetLockingBytecode,
+            {
+              sourceCallsiteId: call.callsiteId!,
+              occurrenceIndex: reached,
+              ...(call.sourceEffectOrdinal !== undefined && {
+                sourceEffectOrdinal: call.sourceEffectOrdinal,
+              }),
+            },
           );
         }
         continue;
@@ -716,18 +801,27 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       for (let reached = 0; reached < count; reached += 1) {
         const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, reached);
         const target = resolvedTarget.participant;
+        const targetFunction = functionAbi(target, call.functionName, resolvedTarget.selector);
         const provedTarget = assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,
           call.functionName,
+          targetFunction.selector,
           resolveArguments(
-            participant, args, call, functionName, invocation, reached, options.expressionArgument,
+            participant, args, call, functionName, fn.selector, invocation, reached, options.expressionArgument,
           ),
           invocation,
           edgeCallMode(call),
           occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
           call.callsiteId,
           provedTarget ?? resolvedTarget.targetLockingBytecode,
+          {
+            sourceCallsiteId: call.callsiteId!,
+            occurrenceIndex: reached,
+            ...(call.sourceEffectOrdinal !== undefined && {
+              sourceEffectOrdinal: call.sourceEffectOrdinal,
+            }),
+          },
         );
       }
     }
@@ -736,9 +830,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     activeInvocations.pop();
   };
 
-  expand(options.root, options.function, options.args ?? [], null);
-  return planCompiledGraph(participants, invocations, {
-    allowRuntimeBoundedLoops: options.allowRuntimeBoundedLoops,
-    maximumBlobBytes: options.maximumBlobBytes,
-  });
+  const rootFunction = functionAbi(options.root, options.function, options.selector);
+  expand(options.root, options.function, rootFunction.selector, options.args ?? [], null);
+  return planCompiledGraph(participants, invocations);
 }

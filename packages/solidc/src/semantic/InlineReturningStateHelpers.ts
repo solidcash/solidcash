@@ -15,6 +15,7 @@ import {
   ReturnNode,
   MappingAccessNode,
   ArrayAccessNode,
+  ArrayAssignNode,
   AssignNode,
   StateAccessNode,
   StateAssignNode,
@@ -37,7 +38,20 @@ import {
   MethodCallNode,
   CastNode,
   AbiEncodeCallNode,
+  BoolLiteralNode,
+  LiteralNode,
+  EmitStatementNode,
+  AssemblyStatementNode,
+  DeleteStateNode,
+  MappingDeleteNode,
+  ArrayDeleteNode,
+  ArrayPushNode,
+  ArrayPopNode,
+  TransferStatementNode,
+  TokenContainerMethodStatementNode,
+  InstantiationNode,
   NullaryOpNode,
+  RequireNode,
   FunctionModifier,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
@@ -47,7 +61,7 @@ import {
 import {
   StructType, AddressType, BytesType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
 } from '@solidcash/utils';
-import { Modifier } from '../ast/Globals.js';
+import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
@@ -55,11 +69,12 @@ import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
 
 /**
- * Inlines internal/private functions that RETURN a value and READ a state entry (a mapping/collection
- * element). Entry-access input slots live only in an entry-point's block layout, so such a function cannot
- * compile as an OP_INVOKE subroutine ("Block layout not available"). The sibling InlineStoragePointerCalls
- * pass handles the VOID case at statement call sites; this handles the RETURNING case at EXPRESSION call
- * sites by hoisting the callee body before the enclosing statement and replacing the call with a temp:
+ * Inlines internal/private functions that RETURN a value and need their physical caller's context: state-entry
+ * reads, scalar journals, event effects, and typed/low-level call frames. Entry-access input slots and event
+ * settlement frames live only in an entry point, so such a function cannot compile as an ordinary OP_INVOKE
+ * subroutine. The sibling InlineStoragePointerCalls pass handles the VOID case at statement call sites; this
+ * handles the RETURNING case at EXPRESSION call sites by hoisting the callee body before the enclosing statement
+ * and replacing the call with a temp:
  *
  * ```
  * function f() external view returns (uint) { return earned[a] + _calc(a); }
@@ -72,10 +87,67 @@ import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
  * ```
  *
  * Runs pre-semantic (before InlineStoragePointerCalls). Restricted to single-tail-return helpers; hoisting is
- * suppressed at conditionally-evaluated positions (loop conditions, ternary branches, short-circuit right
- * operands) to preserve revert/effect semantics. An un-hoistable call keeps its helper.
+ * suppressed at conditionally-evaluated positions unless the enclosing statement has an explicit continuation
+ * which can be split into branch-owned statements without changing evaluation order. An un-hoistable call keeps
+ * its helper.
  */
 const PREFIX = '__rh';
+
+const captureCallsiteActivationInNode = (
+  value: Node,
+  conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+  seen = new Set<Node>(),
+): void => {
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (value instanceof FunctionCallNode || value instanceof MethodCallNode
+    || value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+    if (value.sourceActivationConditions === undefined) {
+      value.sourceActivationConditions = conditions.map(({ expression, negated }) => ({
+        expression: cloneNode(expression) as ExpressionNode,
+        negated,
+      }));
+    }
+  }
+  if (value instanceof BranchNode) {
+    captureCallsiteActivationInNode(value.condition, conditions, seen);
+    captureCallsiteActivationInNode(value.ifBlock, [
+      ...conditions, { expression: value.condition, negated: false },
+    ], seen);
+    if (value.elseBlock) captureCallsiteActivationInNode(value.elseBlock, [
+      ...conditions, { expression: value.condition, negated: true },
+    ], seen);
+    return;
+  }
+  if (value instanceof TernaryOpNode) {
+    captureCallsiteActivationInNode(value.condition, conditions, seen);
+    captureCallsiteActivationInNode(value.ifTrue, [
+      ...conditions, { expression: value.condition, negated: false },
+    ], seen);
+    captureCallsiteActivationInNode(value.ifFalse, [
+      ...conditions, { expression: value.condition, negated: true },
+    ], seen);
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+      'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+      'sourceActivationConditions'].includes(key)) continue;
+    if (child instanceof Node) captureCallsiteActivationInNode(child, conditions, seen);
+    else if (Array.isArray(child)) {
+      for (const item of child) if (item instanceof Node) {
+        captureCallsiteActivationInNode(item, conditions, seen);
+      }
+    }
+  }
+};
+
+/** Capture source lexical callsite activation before helper/control-flow normalization. */
+export function captureCallsiteActivations(source: SourceFileNode): void {
+  for (const fn of [...source.contract.functions, ...(source.freeFunctions ?? [])]) {
+    if (fn.body) captureCallsiteActivationInNode(fn.body, []);
+  }
+}
 
 export default class InlineReturningStateHelpers extends AstTraversal {
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
@@ -100,7 +172,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stack: string[] = [];
   private suppress = false;
   private stateValueTypes: Map<string, Type> = new Map();
+  private collectionValueTypes: Map<string, Type> = new Map();
   private currentValueTypes: Map<string, Type> = new Map();
+  /** Lexically scoped types used only by lazy event-helper continuation lowering. */
+  private lazyValueTypes: Map<string, Type> = new Map();
   private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
   private readonly analysisNodes = new Map<FunctionDefinitionNode, Node[]>();
 
@@ -268,7 +343,50 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return false;
   }
 
+  /** Snapshot lexical call activation before returning-helper rewrites nest straight-line continuations. */
+  private captureSourceActivations(
+    value: Node,
+    conditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    captureCallsiteActivationInNode(value, conditions, seen);
+  }
+
+  /** Add the caller arm to every call cloned from a returning helper. */
+  private prependSourceActivations(
+    value: Node,
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[],
+    seen = new Set<Node>(),
+  ): void {
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof FunctionCallNode || value instanceof MethodCallNode
+      || value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+      value.sourceActivationConditions = [
+        ...callerConditions,
+        ...(value.sourceActivationConditions ?? []),
+      ].map(({ expression, negated }) => ({
+        expression: cloneNode(expression) as ExpressionNode,
+        negated,
+      }));
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection', 'sourceCallNode',
+        'sourceActivationConditions'].includes(key)) continue;
+      if (child instanceof Node) this.prependSourceActivations(child, callerConditions, seen);
+      else if (Array.isArray(child)) {
+        for (const item of child) if (item instanceof Node) {
+          this.prependSourceActivations(item, callerConditions, seen);
+        }
+      }
+    }
+  }
+
   visitContract(node: ContractNode): Node {
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (fn.body) this.captureSourceActivations(fn.body, []);
+    }
     this.funcByName = new Map();
     this.funcByKey = new Map();
     this.overloadsByKey = new Map();
@@ -284,7 +402,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // transitively performs a low-level/external call inline into its entry point instead of becoming an
     // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
     for (const fn of [...node.functions, ...this.freeFns]) {
-      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+        || this.transitivelyContainsEvent(fn)) {
         this.normalizeForwardedMultiReturn(fn);
         this.normalizeSimpleEarlyReturn(fn);
         this.analysisNodes.delete(fn);
@@ -295,6 +414,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     this.stateValueTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
+    this.collectionValueTypes = new Map(node.collections.map((collection) => [
+      collection.name, collection.innermostValueType,
+    ]));
 
     this.inlinedFns = new Set();
     this.rawSlotFreeFns = new Set();
@@ -303,7 +425,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      if (fn.graphEmissionHandler) continue;
+      if (fn.graphEmissionHandler || fn.messageBusDetachedSignatureHandler) continue;
       if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn)) {
         this.inlinedFns.add(fn.name);
       }
@@ -314,11 +436,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // entry, so it cannot be an OP_INVOKE subroutine - an internal call to it must inline (Multicall2 `tryAggregate`
     // called by `tryBlockAndAggregate`). The public definition still stands as its own dispatched entry.
     for (const fn of node.functions) {
-      if (!fn.graphEmissionHandler && !fn.collectionJournal
+      if (!fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
           || this.containsMsgSender(fn) || this.containsKeccak(fn)
-          || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
+          || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+          || this.transitivelyContainsEvent(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -337,9 +460,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
         || fn.name.startsWith('__message_bus_resource_')
         || (fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler
-          && (fn.externalCalls?.length ?? 0) === 0);
+          && !this.transitivelyContainsExternalCall(fn)
+          && !this.transitivelyContainsLowLevelCall(fn));
       const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
-        && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn);
+        && fn.graphEmissionHandler && !fn.graphRuntimeEmissionHandler && this.eligibleShape(fn)
+        // An IERC20/SafeERC20 edge must keep its graph OP_INVOKE frame. Flattening it into the kernel
+        // dispatch loop makes SymbolTableTraversal treat the row iterator as a callee-target index and
+        // rewrite the call target to an unbound compiler-owned loop-target element.
+        && !this.transitivelyContainsExternalCall(fn)
+        && !this.transitivelyContainsLowLevelCall(fn);
       if (returningEntryEffectClone || (compilerOwnedRouteClone
         && fn.collectionJournal && writesDynamicArray
         && (fn.parameters[0]?.name === `__dj_${fn.name}`
@@ -402,8 +531,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too.
       } else if (this.eligibleShape(fn)
-        && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
+        && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)
+          || this.transitivelyContainsEvent(fn))) {
         this.inlinedFns.add(fn.name);
+      }
+    }
+    // Kernel/graph clones must stay OP_INVOKE bodies. Inlining one into `__message_bus1` puts typed
+    // calls inside the row loop, and SymbolTableTraversal then rewrites their targets to an unbound
+    // `__internal__loopTargets[rowArg]`.
+    for (const fn of node.functions) {
+      if (!(fn.name.startsWith('__message_bus_entry_') || fn.name.startsWith('__message_bus_handler_')
+        || fn.name.startsWith('__message_bus_resource_'))) continue;
+      if (fn.messageBusDetachedSignatureHandler || fn.graphEmissionHandler
+        || this.transitivelyContainsExternalCall(fn)
+        || this.transitivelyContainsLowLevelCall(fn)) {
+        this.inlinedFns.delete(fn.name);
       }
     }
     if (this.inlinedFns.size === 0) return node;
@@ -418,6 +560,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (fn?.body) {
         this.currentValueTypes = new Map(this.stateValueTypes);
         for (const p of fn.parameters) this.currentValueTypes.set(p.name, p.type);
+        this.lazyValueTypes = new Map(this.currentValueTypes);
         // Names DEFINED as locals in this body. A forwarded parameter (OZ Address's `errorMessage`) is not one
         // and stays aliasable; a `bytes memory x = ...` buffer (SafeERC20's `approvalCall`) is, and must keep
         // its own binding because the memory lowering can relocate it.
@@ -527,7 +670,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
-      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn);
+      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn)
+      || this.transitivelyContainsEvent(fn);
   }
 
   /**
@@ -556,7 +700,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     );
   }
 
-  // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
+  // Contains an EXTERNAL contract call (`receiver.lookup(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic
   // this is a DOTTED FunctionCall whose full name is NOT a known internal/library function (those are in funcByName)
   // - i.e. the receiver is a state var / param / `this`, an interface/contract-typed value. Like a low-level call
   // it injects the external-call covenant param (input index / return slot), threaded only at an entry point, so a
@@ -682,6 +826,70 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         && this.transitivelyContainsExternalCall(callee, seen)) return true;
     }
     return false;
+  }
+
+  /**
+   * Events, like external-call and entry journals, are owned by the physical entry-point frame. A returning
+   * helper cannot independently settle its event when invoked through OP_INVOKE: its temporary event value is
+   * discarded when the helper frame returns. Inline every structurally linearizable helper in the call chain so
+   * the event stays at its exact source position in the caller. This is deliberately transitive and
+   * overload/arity-aware; it neither guesses from names nor hoists calls from short-circuit/conditional positions.
+   */
+  private transitivelyContainsEvent(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    if (this.nodesOf(fn).some((node) => node instanceof EmitStatementNode)) return true;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    const next = new Set(seen).add(key);
+    for (const node of this.nodesOf(fn)) {
+      if (!(node instanceof FunctionCallNode)) continue;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyContainsEvent(callee, next)) return true;
+    }
+    return false;
+  }
+
+  /** Prove that a non-pure helper's effects can be separated from replay of its returned value. Event statements
+   * have an independent runtime occurrence protocol; every other observable effect or resource dependency stays
+   * fenced. Unknown non-pure calls are rejected rather than inferred from their spelling. */
+  private hasOnlySeparableEventEffects(
+    fn: FunctionDefinitionNode, seen = new Set<string>(),
+  ): boolean {
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key) || !this.transitivelyContainsEvent(fn)
+      || this.touchesScalarState(fn) || this.readsEntry(fn)
+      || this.containsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) return false;
+    const next = new Set(seen).add(key);
+    const pureGlobals = new Set<string>([
+      GlobalFunction.ABS, GlobalFunction.MIN, GlobalFunction.MAX, GlobalFunction.WITHIN,
+      GlobalFunction.ADDMOD, GlobalFunction.MULMOD, GlobalFunction.RIPEMD160, GlobalFunction.SHA1,
+      GlobalFunction.SHA256, GlobalFunction.HASH160, GlobalFunction.HASH256,
+      GlobalFunction.TO_PADDED_BYTES, GlobalFunction.INT_TO_STRING, GlobalFunction.STRING_TO_INT,
+    ]);
+    for (const node of this.nodesOf(fn)) {
+      if (node instanceof WhileNode || node instanceof DoWhileNode
+        || node instanceof AssemblyStatementNode || node instanceof InstantiationNode
+        || node instanceof StateAssignNode || node instanceof DeleteStateNode
+        || node instanceof MappingAssignNode || node instanceof MappingFieldAssignNode
+        || node instanceof MappingDeleteNode || node instanceof StateArrayAssignNode
+        || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+        || node instanceof StateArrayDeleteNode || node instanceof ArrayPushNode
+        || node instanceof ArrayPopNode || node instanceof ArrayDeleteNode
+        || node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode
+        || (node instanceof ArrayAssignNode && this.mappingNames.has(node.name))) return false;
+      if (!(node instanceof FunctionCallNode)) continue;
+      if ([GlobalFunction.CHECKSIG, GlobalFunction.CHECKMULTISIG, GlobalFunction.CHECKDATASIG]
+        .includes(node.identifier.name as GlobalFunction)) return false;
+      if (this.ambiguousInlineKeys.has(inlineKey(node.identifier.name, node.parameters.length))) return false;
+      const callee = this.lookupOverload(node.identifier.name, node.parameters.length);
+      if (!callee) {
+        if (!pureGlobals.has(node.identifier.name)) return false;
+        continue;
+      }
+      if (!callee.modifiers.includes(FunctionModifier.PURE)
+        && !this.hasOnlySeparableEventEffects(callee, next)) return false;
+    }
+    return true;
   }
 
   private transitivelyTouchesRawEvmStorage(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
@@ -843,17 +1051,226 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // Per statement: visit it (replacing inlined calls with temps + filling this.hoists), then emit
   // [hoists, statement]. Nested blocks recurse through the standard traversal and flush their own hoists.
   visitBlock(node: BlockNode): Node {
+    const savedLazyTypes = this.lazyValueTypes;
+    this.lazyValueTypes = new Map(savedLazyTypes);
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
+      const expanded = this.expandLazyEventContinuation(stmt);
+      if (expanded) {
+        for (const replacement of expanded) {
+          const saved = this.hoists;
+          this.hoists = [];
+          const visited = this.visit(replacement) as StatementNode;
+          const mine = this.hoists;
+          this.hoists = saved;
+          out.push(...mine, visited);
+          if (visited instanceof VariableDefinitionNode) this.lazyValueTypes.set(visited.name, visited.type);
+        }
+        continue;
+      }
       const saved = this.hoists;
       this.hoists = [];
       const visited = this.visit(stmt) as StatementNode;
       const mine = this.hoists;
       this.hoists = saved;
       out.push(...mine, visited);
+      if (visited instanceof VariableDefinitionNode) this.lazyValueTypes.set(visited.name, visited.type);
     }
     node.statements = out;
+    this.lazyValueTypes = savedLazyTypes;
     return node;
+  }
+
+  /** Resolve a direct, uniquely named event helper which the ordinary returning-helper pass can inline. */
+  private lazyEventHelper(call: FunctionCallNode): FunctionDefinitionNode | undefined {
+    const key = inlineKey(call.identifier.name, call.parameters.length);
+    // Overload choice is a semantic/type decision. This pre-semantic rewrite must never guess between same-arity
+    // declarations, even when only one candidate happens to contain an event.
+    if (this.ambiguousInlineKeys.has(key)) return undefined;
+    const callee = this.lookupOverload(call.identifier.name, call.parameters.length)
+      ?? this.funcByName.get(call.identifier.name);
+    if (!callee || !this.inlinedFns.has(call.identifier.name)
+      || !this.transitivelyContainsEvent(callee)) return undefined;
+    // A recursive body is deliberately left to the established diagnostic. Expanding one frame would neither
+    // make the call graph finite nor provide an exact event occurrence domain.
+    const reachesSelf = (fn: FunctionDefinitionNode, target: string, seen = new Set<string>()): boolean => {
+      const fnKey = inlineKey(fn.name, fn.parameters.length);
+      if (seen.has(fnKey)) return false;
+      const next = new Set(seen).add(fnKey);
+      for (const candidate of this.nodesOf(fn)) {
+        if (!(candidate instanceof FunctionCallNode)) continue;
+        const candidateKey = inlineKey(candidate.identifier.name, candidate.parameters.length);
+        if (candidateKey === target) return true;
+        const nested = this.lookupOverload(candidate.identifier.name, candidate.parameters.length);
+        if (nested && reachesSelf(nested, target, next)) return true;
+      }
+      return false;
+    };
+    return reachesSelf(callee, key) ? undefined : callee;
+  }
+
+  private containsLazyEventHelper(node: Node): boolean {
+    if (node instanceof FunctionCallNode && this.lazyEventHelper(node)) return true;
+    for (const [key, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'collection', 'stateVariable', 'type'].includes(key)) continue;
+      if (value instanceof Node && this.containsLazyEventHelper(value)) return true;
+      if (Array.isArray(value)
+        && value.some((item) => item instanceof Node && this.containsLazyEventHelper(item))) return true;
+    }
+    return false;
+  }
+
+  /** True only when an event helper occurs in an expression position whose evaluation is conditional. */
+  private needsLazyEventExpansion(expression: ExpressionNode): boolean {
+    if (expression instanceof TernaryOpNode) {
+      return this.containsLazyEventHelper(expression.ifTrue)
+        || this.containsLazyEventHelper(expression.ifFalse)
+        || this.needsLazyEventExpansion(expression.condition);
+    }
+    if (expression instanceof BinaryOpNode
+      && (expression.operator === BinaryOperator.AND || expression.operator === BinaryOperator.OR)) {
+      return this.containsLazyEventHelper(expression.right)
+        || this.needsLazyEventExpansion(expression.left);
+    }
+    return false;
+  }
+
+  /**
+   * Convert one lazy value expression into an explicit branch-owned SSA result. The branch blocks are revisited
+   * normally, so an event helper is beta-reduced *inside* the exact arm which evaluates it. Nested `&&`/`||` and
+   * ternaries close recursively through `visitBlock`; no event is moved ahead of its controlling predicate.
+   */
+  private lowerLazyEventValue(expression: TernaryOpNode | BinaryOpNode, type: Type): {
+    statements: StatementNode[]; value: IdentifierNode;
+  } {
+    const location = expression.location;
+    const resultName = `${PREFIX}${this.counter++}_lazyResult`;
+    const result = new VariableDefinitionNode(type, [], resultName);
+    result.location = location;
+    const assign = (value: ExpressionNode): AssignNode => {
+      const identifier = new IdentifierNode(resultName);
+      identifier.location = value.location ?? location;
+      const statement = new AssignNode(identifier, value);
+      statement.location = value.location ?? location;
+      return statement;
+    };
+    const conditionName = `${PREFIX}${this.counter++}_lazyCondition`;
+    const condition = expression instanceof TernaryOpNode ? expression.condition : expression.left;
+    const conditionBinding = new VariableDefinitionNode(PrimitiveType.BOOL, [], conditionName, condition);
+    conditionBinding.location = condition.location ?? location;
+    const conditionValue = (): IdentifierNode => {
+      const identifier = new IdentifierNode(conditionName);
+      identifier.location = condition.location ?? location;
+      return identifier;
+    };
+    const arm = (armExpression: ExpressionNode): BlockNode => {
+      const armName = `${PREFIX}${this.counter++}_lazyArm`;
+      const armValue = new VariableDefinitionNode(type, [], armName, armExpression);
+      armValue.location = armExpression.location ?? location;
+      const identifier = new IdentifierNode(armName);
+      identifier.location = armExpression.location ?? location;
+      const block = new BlockNode([armValue, assign(identifier)]);
+      block.location = armExpression.location ?? location;
+      return block;
+    };
+    let branch: BranchNode;
+    if (expression instanceof TernaryOpNode) {
+      branch = new BranchNode(
+        conditionValue(),
+        arm(expression.ifTrue),
+        arm(expression.ifFalse),
+      );
+    } else if (expression.operator === BinaryOperator.AND) {
+      branch = new BranchNode(conditionValue(), arm(expression.right));
+      // The absent short-circuit arm yields false without evaluating the right operand.
+      branch.elseBlock = arm(new BoolLiteralNode(false));
+    } else {
+      branch = new BranchNode(conditionValue(), arm(new BoolLiteralNode(true)), arm(expression.right));
+    }
+    branch.location = location;
+    branch.ifBlock.location = location;
+    if (branch.elseBlock) branch.elseBlock.location = location;
+    const value = new IdentifierNode(resultName);
+    value.location = location;
+    const conditionStatements = this.expandLazyEventContinuation(conditionBinding) ?? [conditionBinding];
+    return { statements: [result, ...conditionStatements, branch], value };
+  }
+
+  /**
+   * Lower expression positions with a single, explicit continuation: local declarations/assignments, direct
+   * scalar-state assignments, stable-key mapping assignments, require predicates, and branch predicates. The
+   * complete lazy value is evaluated into a temporary before that continuation executes, preserving old-value
+   * reads and require/branch timing. A stable mapping key contains no state read, call, array access, or other
+   * observable evaluation, so moving only the RHS ahead of its write cannot reorder a key effect; the counter-loop
+   * pass can then keep that value in source order while independently permuting the key. Other mapping/array
+   * lvalues, returns, call arguments, and loop conditions retain their established fence until a general
+   * expression-continuation IR owns key/argument order and repeated condition evaluation.
+   */
+  private expandLazyEventContinuation(statement: StatementNode): StatementNode[] | undefined {
+    const target = (() => {
+      if (statement instanceof VariableDefinitionNode && statement.expression) {
+        return { expression: statement.expression, type: statement.type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof AssignNode) {
+        const type = this.lazyValueTypes.get(statement.identifier.name);
+        return type && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof StateAssignNode) {
+        const type = this.stateValueTypes.get(statement.name);
+        return type && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof MappingAssignNode && !statement.arrayIndex
+        && !statement.arrayPush && !statement.arrayPop
+        && statement.keys.every((key) => this.stableLazyMappingKey(key))) {
+        const type = this.collectionValueTypes.get(statement.name);
+        return type && !(type instanceof ArrayType) && { expression: statement.expression, type,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      // Before semantic resolution, a single-key mapping assignment uses the same surface node as an ordinary
+      // array element write. The declared mapping-name gate keeps local and state arrays on their existing fence.
+      if (statement instanceof ArrayAssignNode && this.mappingNames.has(statement.name)
+        && this.stableLazyMappingKey(statement.index)) {
+        const type = this.collectionValueTypes.get(statement.name);
+        return type && !(type instanceof ArrayType) && { expression: statement.value, type,
+          replace: (value: ExpressionNode): void => { statement.value = value; } };
+      }
+      if (statement instanceof RequireNode) {
+        return { expression: statement.expression, type: PrimitiveType.BOOL,
+          replace: (value: ExpressionNode): void => { statement.expression = value; } };
+      }
+      if (statement instanceof BranchNode) {
+        return { expression: statement.condition, type: PrimitiveType.BOOL,
+          replace: (value: ExpressionNode): void => { statement.condition = value; } };
+      }
+      return undefined;
+    })();
+    if (!target || !this.needsLazyEventExpansion(target.expression)
+      || !(target.expression instanceof TernaryOpNode || target.expression instanceof BinaryOpNode)) return undefined;
+    const lowered = this.lowerLazyEventValue(target.expression, target.type);
+    target.replace(lowered.value);
+    return [...lowered.statements, statement];
+  }
+
+  /** An expression whose evaluation cannot observe or be changed by effects in a subsequently expanded RHS. */
+  private stableLazyMappingKey(expression: ExpressionNode): boolean {
+    if (expression instanceof LiteralNode) return true;
+    if (expression instanceof IdentifierNode) {
+      // Loop counters can be introduced by the for-loop desugaring outside the lexical block visited here, so
+      // their pre-semantic type is not always present in lazyValueTypes. A plain non-state identifier read is
+      // nevertheless effect-free; ordinary semantic analysis still rejects an invalid aggregate mapping key.
+      return !this.stateVarNames.has(expression.name);
+    }
+    if (expression instanceof CastNode) return this.stableLazyMappingKey(expression.expression);
+    if (expression instanceof UnaryOpNode) {
+      return [UnaryOperator.NOT, UnaryOperator.NEGATE, UnaryOperator.INVERT]
+        .includes(expression.operator) && this.stableLazyMappingKey(expression.expression);
+    }
+    return expression instanceof BinaryOpNode
+      && this.stableLazyMappingKey(expression.left) && this.stableLazyMappingKey(expression.right);
   }
 
   // A call STATEMENT whose call gets expression-inlined must not keep the bare temp inside the
@@ -917,7 +1334,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
-      const result = this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      const result = this.inlineCall(
+        callee, node.parameters as ExpressionNode[], node.sourceActivationConditions,
+      )[0];
       if (node.fromThisCall) result.fromExternalSelfCall = true;
       return result;
     }
@@ -991,7 +1410,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!callee || !this.inlinedFns.has(name) || this.stack.includes(inlineKey(name, arity))
       || arity !== callee.parameters.length || callee.returnTypes.length < 2) return undefined;
     expr.parameters = this.visitList(expr.parameters) as ExpressionNode[]; // inline nested scalar calls in args
-    return this.inlineCall(callee, expr.parameters as ExpressionNode[]);
+    return this.inlineCall(callee, expr.parameters as ExpressionNode[], expr.sourceActivationConditions);
   }
 
   // Suppress hoisting where the call is only conditionally evaluated; hoisting it unconditionally would
@@ -1069,9 +1488,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
   // Expand one returning-helper call: push [param bindings, body-minus-return, per-value return-temp defs] to
   // this.hoists, return an identifier per return value (one for a scalar helper, N for a multi-value helper).
-  private inlineCall(callee: FunctionDefinitionNode, args: ExpressionNode[]): IdentifierNode[] {
+  private inlineCall(
+    callee: FunctionDefinitionNode, args: ExpressionNode[],
+    callerConditions: readonly { expression: ExpressionNode; negated: boolean }[] = [],
+  ): IdentifierNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    this.prependSourceActivations(cloned.body, callerConditions);
     if (this.operatorFns.has(callee.name)) {
       this.walk(cloned.body, (node) => {
         if (node instanceof MethodCallNode && node.object instanceof FunctionCallNode) {
@@ -1175,6 +1598,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const retName = `${PREFIX}${n}__ret${k}`;
       const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
       retDef.location = callee.location;
+      retDef.inlinedReturningHelperPure = callee.modifiers.includes(FunctionModifier.PURE);
+      retDef.inlinedReturningHelperSeparableEvent = this.hasOnlySeparableEventEffects(callee);
       retDefs.push(retDef);
       const id = new IdentifierNode(retName);
       id.location = callee.location;
@@ -1267,8 +1692,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       } else if (n instanceof FieldAccessNode) {
         // n.name is a STRUCT FIELD MEMBER, never a variable - never rename it. The base `expression` is still
         // walked as a child, so a renamed receiver is applied there. Without this guard, an inlined local that
-        // shares a struct field's name (Unicrow `uint16 arbitratorFee` vs `arbitrator.arbitratorFee`) corrupts
-        // the field access to `arbitrator.__rhN_arbitratorFee` -> "Struct has no field __rhN_arbitratorFee".
+        // shares a struct field's name (`uint16 fee` vs `terms.fee`) corrupts the field access to
+        // `terms.__rhN_fee` -> "Struct has no field __rhN_fee".
       } else if (n instanceof TupleAssignmentNode) {
         // New element objects, not in-place mutation: cloneNode shares the plain-object `elements` across clones,
         // so mutating a name would stomp another inline frame's rename (dangling `__rhN_<slot>`).

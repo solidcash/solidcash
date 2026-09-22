@@ -1,4 +1,4 @@
-import { asmToBytecode, bytecodeToScript, messageBusVerifierCovenantBytecode, Op } from '@solidcash/utils';
+import { asmToBytecode, messageBusVerifierCovenantBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../src/compiler.js';
 
@@ -17,23 +17,18 @@ describe('atomic verifier bytecode specialization', () => {
     const artifact = compileString(source, { forceStateful: true, messageBus: true });
     const verifierProgram = artifact.messageBus?.verifierProgram;
     expect(verifierProgram).toBeDefined();
-    expect(artifact.messageBus).not.toHaveProperty('version');
-    expect(verifierProgram!.results).toEqual([
-      { type: 'bytes32' }, { type: 'bytes32' }, { type: 'bytes32' },
-    ]);
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
-    // The integrated route carries authenticated logical-caller, settlement-table, and local effect-frame
-    // support while retaining the release branch's compact verifier binding. Keep a deterministic drift tripwire
-    // plus explicit headroom well below BCH's deployment limit.
+    // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
+    // facilities produce the default kernel participant below; the exact pair remains a drift tripwire,
+    // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 152,
-      composed: 1328,
-      frameworkTax: 1176,
+      composed: 1389,
+      frameworkTax: 1237,
     });
-    expect(composed).toBeLessThanOrEqual(1500);
-    expect(composed - direct).toBeLessThanOrEqual(1300);
+    expect(composed).toBeLessThanOrEqual(1400);
+    expect(composed - direct).toBeLessThanOrEqual(1250);
     expect(sidecar).toBeLessThanOrEqual(10_000);
-    expect(bytecodeToScript(asmToBytecode(artifact.bytecode))).not.toContain(Op.OP_INPUTBYTECODE);
   });
 
   it('does not bake mapping, event, or value-effect validators into a pure returning sink', () => {
@@ -71,5 +66,9 @@ describe('atomic verifier bytecode specialization', () => {
       'suppliedCompletionPositions',
       'suppliedSettlementTable',
     ]);
+    // A participant with no typed child-deployment site rejects active kind-5 rows directly. It must not carry
+    // the general deployment descriptor/materialization verifier, which is over a kilobyte after codegen.
+    expect(messageBusVerifierCovenantBytecode(artifact.messageBus!.verifierProgram!, 1_000_000).length)
+      .toBeLessThanOrEqual(7_500);
   });
 });

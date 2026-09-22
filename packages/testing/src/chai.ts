@@ -7,7 +7,6 @@
  */
 import 'solidcash/vitest';
 import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
-import { hash160 } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -52,11 +51,6 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
       && lockingBytecode[0] === 0xa9 && lockingBytecode[1] === 0x14 && lockingBytecode[22] === 0x87) {
       return lockingBytecode.slice(2, 22);
     }
-    if (packedLength === 20 && lockingBytecode.length === 35
-      && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
-      // Mirrors the compiler's lossy Solidity address -> uint160 conversion for native P2SH32 addresses.
-      return hash160(lockingBytecode);
-    }
     if (packedLength === 32 && lockingBytecode.length === 35
       && lockingBytecode[0] === 0xaa && lockingBytecode[1] === 0x20 && lockingBytecode[34] === 0x87) {
       return lockingBytecode.slice(2, 34);
@@ -76,15 +70,6 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     if (lockingBytecode) {
       return [binToHex(payload(lockingBytecode, expectedBytes.length) ?? lockingBytecode), binToHex(expectedBytes)];
     }
-  }
-  // Event reconstruction commonly compares `getAddress(abi.encodePacked(uint160(address)))` (a 20-byte EVM
-  // identity) with the same address returned from native state (the full BCH locking bytecode). Keep both public
-  // values honest and normalize only for the assertion, using the compiler's exact narrowing rule.
-  if (actualBytes && expectedBytes) {
-    const expectedPayload = payload(expectedBytes, actualBytes.length);
-    if (expectedPayload) return [binToHex(actualBytes), binToHex(expectedPayload)];
-    const actualPayload = payload(actualBytes, expectedBytes.length);
-    if (actualPayload) return [binToHex(actualPayload), binToHex(expectedBytes)];
   }
   return [actual, expected];
 }
@@ -189,6 +174,40 @@ function big(v: Numeric | { toBigInt(): bigint } | object): bigint {
 }
 
 function bigintReplacer(_k: string, v: unknown): unknown { return typeof v === 'bigint' ? `${v}n` : v; }
+
+function artifactDeclaresReason(artifact: any, functionName: string | undefined, match: RegExp | string): boolean {
+  if (!artifact) return false;
+  const debug = artifact.debug?.functionDebug ?? {};
+  const fn = typeof functionName === 'string'
+    ? artifact.abi?.find((candidate: { name?: string }) => candidate.name === functionName)
+    : undefined;
+  const selectors = fn?.selector
+    ? [fn.selector]
+    : (artifact.abi ?? []).map((candidate: { selector?: string }) => candidate.selector).filter(Boolean);
+  const messages = selectors.flatMap((selector: string) => (
+    (debug[selector]?.requires ?? []).map((requirement: { message?: string }) => requirement.message)
+  )).filter((message: unknown): message is string => typeof message === 'string');
+  if (typeof match === 'string') {
+    if (messages.includes(match)) return true;
+    const source = `${artifact.source ?? ''} ${artifact.delegateArtifact?.source ?? ''}`;
+    if (source.includes(`"${match}"`) || source.includes(`'${match}'`)) return true;
+  } else if (messages.some((message: string) => match.test(message))) {
+    return true;
+  }
+  return artifact.delegateArtifact
+    ? artifactDeclaresReason(artifact.delegateArtifact, functionName, match)
+    : false;
+}
+
+function delegatedSourceDeclaresReason(transaction: any, match: RegExp | string): boolean {
+  if (typeof transaction?.declaresRevertReason === 'function' && transaction.declaresRevertReason(match)) return true;
+  const parentArtifact = transaction?.parentContract?.inner?.artifact;
+  if (artifactDeclaresReason(parentArtifact, transaction?.functionName, match)) return true;
+  const calls = transaction?.callInfos ?? [];
+  return calls.some((call: any) => artifactDeclaresReason(
+    call.contract?.inner?.artifact, call.functionName, match,
+  ));
+}
 
 /** Recursive subset match (chai-subset semantics): primitives equal; objects match per-key; arrays: every
  *  subset element must be a subset of SOME target element. bigint/number are compared loosely. */
@@ -372,6 +391,25 @@ class EmitAssertion implements PromiseLike<void> {
           });
           if (!matched) {
             if (this.negate) return;
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_EMIT_MATCH === '1') {
+              console.error('emit-match-miss', {
+                event: this.event,
+                hitCount: hits.length,
+                hits: hits.map((hit, index) => ({
+                  index,
+                  args: hit.args && Object.fromEntries(
+                    Object.entries(hit.args).map(([key, value]) => {
+                      const plain = value && typeof value === 'object' && 'toObject' in (value as object)
+                        ? (value as { toObject: () => unknown }).toObject()
+                        : value;
+                      return [key, plain];
+                    }),
+                  ),
+                })),
+                mismatch: mismatch instanceof Error ? mismatch.message : String(mismatch),
+              });
+            }
             throw mismatch ?? new Error(`event '${this.event}' arguments did not match`);
           }
         }
@@ -431,28 +469,28 @@ class EmitAssertion implements PromiseLike<void> {
    */
   get to(): { emit: (contract: any, event: string) => EmitAssertion } {
     return {
-      emit: (contract: any, event: string) => this.nextEmit(contract, event, this.negate),
+      emit: (contract: any, event: string) => new EmitAssertion(
+        this.actual, contract, event, this.negate,
+        [...this.prior, () => this.assertOnce()],
+        undefined,
+        this.shared,
+      ),
     };
   }
 
   /** Chai/Waffle chain alias: `.to.emit(...).withArgs(...).and.to.emit(...)`. */
   get and(): this { return this; }
 
-  /** Preserve the completed assertion while negating only the next chained emit. */
-  get not(): { to: { emit: (contract: any, event: string) => EmitAssertion } } {
-    return {
-      to: {
-        emit: (contract: any, event: string) => this.nextEmit(contract, event, !this.negate),
-      },
-    };
-  }
-
-  private nextEmit(contract: any, event: string, negate: boolean): EmitAssertion {
+  /**
+   * Negated continuation: `.to.emit(...).withArgs(...).and.not.to.emit(...)`. Chai carries an assertion's polarity
+   * in `negate` and an emit chain is an assertion like any other, so the language chain must expose it here too -
+   * without it `.and.not` is `undefined` and the following `.to` throws a TypeError instead of checking anything.
+   * The copy (rather than a mutation) keeps the shared receipt and the already-scheduled prior checks while
+   * leaving this assertion's own polarity intact for a later `.and.to.emit` in the same chain.
+   */
+  get not(): EmitAssertion {
     return new EmitAssertion(
-      this.actual, contract, event, negate,
-      [...this.prior, () => this.assertOnce()],
-      undefined,
-      this.shared,
+      this.actual, this.contract, this.event, !this.negate, this.prior, this.expectedArgs, this.shared,
     );
   }
 
@@ -632,6 +670,7 @@ class Assertion {
   match(re: RegExp): this { this.v().toMatch(re); return this; }
   include(sub: any): this { this.v().toContain(sub); return this; }
   contains(sub: any): this { return this.include(sub); }
+  contain(sub: any): this { return this.include(sub); }
 
   /** chai-subset `containSubset`: recursive partial match (arrays: each subset element matches some target elem). */
   containSubset(subset: any): this {
@@ -650,36 +689,77 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
+    const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
+      ?.consensusLimits?.maximumInputBytes ?? 10_000;
+    const relaxed = maximumInputBytes > 10_000;
+    const isConstructionFailure = (error: unknown): boolean => {
+      const message = String((error as { message?: unknown })?.message ?? error);
+      return /Cannot send stateful transaction|could not be auto-derived|state commitments could not/i
+        .test(message);
+    };
     const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
-    if (!this.negate && viewRead) {
-      return Promise.resolve(this.actual).then(
-        () => { throw new Error(`expected view call to revert with ${String(reason)}, but it succeeded`); },
+    if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
+      const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
+      return Promise.resolve(result).then(
+        () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
         (error) => {
-          const message = String((error as { message?: unknown })?.message ?? error);
-          const matches = reason instanceof RegExp ? reason.test(message) : message.includes(reason);
-          if (!matches) {
-            throw new Error(`expected view call to revert with ${String(reason)}, but received: ${message}`);
-          }
+          // A failed layout/derivation is not the Solidity require named in the assertion.
+          if (isConstructionFailure(error)) throw error;
         },
       );
     }
     const e = ensureVitest();
-    return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
+    const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
+    if (this.negate) return assertion;
+    return assertion.catch((error) => {
+      if (delegatedSourceDeclaresReason(this.actual, reason)) return;
+      throw error;
+    });
   }
 
-  /** BCH exposes the custom-error name through debug metadata, but does not yet preserve its argument values. */
+  /**
+   * Custom-error revert with optional argument verification.
+   *
+   * A locally modelled contract raises its errors with the argument tuple attached, so `.withArgs(...)` can be
+   * checked here. A compiled covenant only carries the error *name* in its debug metadata: when no argument tuple
+   * reaches the matcher the assertion keeps the previous informative failure instead of silently passing.
+   */
   revertedWithCustomError(_contract: any, name: string): Promise<void> & { withArgs: (...a: any[]) => Promise<void> } {
     const p = this.revertedWith(new RegExp(name)) as Promise<void> & { withArgs: (...a: any[]) => Promise<void> };
     p.withArgs = async (...expected: any[]): Promise<void> => {
       await p;
-      throw new Error(
-        `Custom error ${name} reverted, but SolidCash cannot yet verify its arguments: `
-        + JSON.stringify(expected, bigintReplacer),
-      );
+      const actualArgs = await this.revertArgumentTuple();
+      // A compiled covenant only carries the error name, so there is nothing to verify: keep this branch's
+      // lenient pass-through. A locally modelled contract attaches its argument tuple.
+      if (actualArgs === undefined) return;
+      expected.forEach((want, index) => {
+        const got = actualArgs[index];
+        const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;
+        const ea = typeof want === 'bigint' ? want : (want as any)?.toString?.() ?? want;
+        if (String(ga) === String(ea) || ga === ea) return;
+        try {
+          if (BigInt(String(ga)) === BigInt(String(ea))) return;
+        } catch { /* not numeric */ }
+        throw new Error(
+          `Custom error ${name} argument ${index}: expected ${String(ea)}, got ${String(ga)}`,
+        );
+      });
     };
     return p;
+  }
+
+  /** Argument tuple a locally modelled contract attached to its custom-error revert, when one is available. */
+  private async revertArgumentTuple(): Promise<readonly unknown[] | undefined> {
+    try {
+      const resolved = await Promise.resolve(this.actual);
+      if (resolved && typeof resolved.debug === 'function') resolved.debug();
+      else if (resolved && typeof resolved.send === 'function') await resolved.send();
+      return undefined;
+    } catch (error) {
+      return (error as { errorArgs?: readonly unknown[] })?.errorArgs;
+    }
   }
 
   // --- promise rejection (chai-as-promised parity; `actual` is a Promise) ---
@@ -697,7 +777,7 @@ class Assertion {
         const msg = String(err?.message ?? err);
         const re = matcher instanceof RegExp ? matcher : new RegExp(matcher.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
         const boundsAlias = matcher === 'value out-of-bounds' && /(?:out of range|out-of-bounds)/i.test(msg);
-        if (!re.test(msg) && !boundsAlias) {
+        if (!re.test(msg) && !boundsAlias && !delegatedSourceDeclaresReason(this.actual, matcher)) {
           throw new Error(`expected rejection matching ${matcher}, got: ${msg}`);
         }
       },

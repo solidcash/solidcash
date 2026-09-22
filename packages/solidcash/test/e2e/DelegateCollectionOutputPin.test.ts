@@ -64,8 +64,9 @@ const FORGED_VALUE = new Uint8Array([0x63]); // 99
 // The proxy's own-category conservation counts inputs and outputs with two identical loops, so the whole
 // count - including the OP_0 it is compared against - is shared into one invoked helper. Relaxing it is still
 // a one-opcode edit to what follows the invoke: `== 0` becomes `<= 0`. Kept in step with X50's copy.
-const STRICT_TAIL = 'OP_1 OP_INVOKE OP_NUMEQUALVERIFY OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_1 OP_INVOKE OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+// Matches X50 / the regenerated default proxy: compare remaining against 0 after the inline count loop.
+const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
+const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
 const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
 async function fundedSigner(): Promise<{ signer: Signer; provider: any }> {

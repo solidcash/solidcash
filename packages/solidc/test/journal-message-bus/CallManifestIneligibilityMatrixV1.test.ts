@@ -3,7 +3,14 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { classifyMessageBusRejection } from '../../src/compiler.js';
-import { compileString } from '../../src/index.js';
+import { compileString as compileStringRaw } from '../../src/index.js';
+
+// This matrix pins the historical diagnostic vocabulary. KernelAdmission pins the replacement KERNEL_* catalog;
+// keep this suite as an explicit compatibility contract rather than letting omission select the kernel.
+const compileString = (
+  source: string,
+  options: Parameters<typeof compileStringRaw>[1] = {},
+): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { ...options, messageBusKernel: false });
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const compiler = readFileSync(resolve(root, 'src/compiler.ts'), 'utf8');

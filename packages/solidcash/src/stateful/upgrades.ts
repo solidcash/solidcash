@@ -21,6 +21,7 @@ import {
   findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -203,8 +204,10 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
   constructor(
     readonly proxy: DeployedContract,
     readonly implementation: DeployedContract<TImpl>,
-    private readonly forwardShape: ForwardShape,
-    private readonly auth: (signer: Signer) => FunctionArgument[],
+    /** Forwarding convention detected at deploy (`baked` / `param` / `fallback`). */
+    readonly forwardShape: ForwardShape,
+    /** Builds trailing auth args for param-mode forwarders from the connected signer. */
+    readonly auth: (signer: Signer) => FunctionArgument[],
     readonly runner: ContractRunner,
   ) {}
 
@@ -414,31 +417,28 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         // enumerate mapping entry NFTs directly, so provide that conventional pagination surface when a compact
         // BCH port omits the otherwise redundant view function. A zero limit means "all remaining", matching the
         // prevalent Solidity implementation.
-        const paged = prop.match(/^get([A-Z].*)$/)?.[1];
-        if (paged) {
-          const collectionName = paged[0].toLowerCase() + paged.slice(1);
-          if (stateVars.has(collectionName)) {
-            return async (indexValue: bigint | number, limitValue: bigint | number) => {
-              const index = Number(indexValue);
-              const limit = Number(limitValue);
-              const entries = await target.proxy.getEntries(collectionName);
-              if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
-                throw new Error('index out of bounds');
+        const collectionName = proxySyntheticPaginationCollection(implArtifact, prop);
+        if (collectionName) {
+          return async (indexValue: bigint | number, limitValue: bigint | number) => {
+            const index = Number(indexValue);
+            const limit = Number(limitValue);
+            const entries = await target.proxy.getEntries(collectionName);
+            if (!Number.isSafeInteger(index) || index < 0 || index >= entries.length) {
+              throw new Error('index out of bounds');
+            }
+            const selected = entries.slice(index, limit === 0 ? undefined : index + limit);
+            const values = await Promise.all(selected.map(async (entry) => {
+              const value = entry.value;
+              if (value && typeof value === 'object' && stateVars.has('publicKeys')) {
+                const keys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
+                const publicKey = await (target.proxy.state as any).publicKeys(...keys);
+                if (publicKey !== undefined) Object.assign(value as object, { publicKey });
               }
-              const selected = entries.slice(index, limit === 0 ? undefined : index + limit);
-              const values = await Promise.all(selected.map(async (entry) => {
-                const value = entry.value;
-                if (value && typeof value === 'object' && stateVars.has('publicKeys')) {
-                  const keys = entry.keys ?? (entry.key !== undefined ? [entry.key] : []);
-                  const publicKey = await (target.proxy.state as any).publicKeys(...keys);
-                  if (publicKey !== undefined) Object.assign(value as object, { publicKey });
-                }
-                return value;
-              }));
-              for (const value of values) attachDecodedAccessors(value);
-              return values;
-            };
-          }
+              return value;
+            }));
+            for (const value of values) attachDecodedAccessors(value);
+            return values;
+          };
         }
         if (stateVars.has(prop) || inheritedStateAlias.has(prop)) {
           const connected = target.runner instanceof Signer ? target.proxy.connect(target.runner) : target.proxy;
@@ -471,6 +471,20 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
         // forwarding the getter would build and send a delegate transaction instead of returning its value.
         if (implAbi.has(prop)) return (...args: FunctionArgument[]) => {
           const fn = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
+          const visibleInputs = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+          const directRead = fn?.directMappingReturn;
+          if (directRead && fn?.writesState === false) {
+            const keyArgs = directRead.keyParams.map((name) => {
+              const index = visibleInputs.findIndex((input) => input.name === name);
+              return index < 0 ? undefined : args[index];
+            });
+            const stateAccessor = (target.proxy.state as unknown as Record<
+              string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
+            >)[directRead.collection];
+            if (keyArgs.every((value) => value !== undefined) && stateAccessor) {
+              return stateAccessor(...keyArgs as FunctionArgument[]);
+            }
+          }
           const call = target.forward(prop, args);
           const selector = fn?.selector;
           const requirements = selector
@@ -506,7 +520,14 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             if (declared.length === 1) {
               return result.catch((error: unknown) => {
                 const message = error instanceof Error ? error.message : String(error);
-                if (/could not derive the return value/i.test(message)) throw new Error(declared[0]);
+                if (/could not derive the return value/i.test(message)) {
+                  // Keep the declared revert reason as the message PREFIX (callers assert on it) but carry the
+                  // probe diagnostic through: it is the only thing that says WHICH predicate refused, and
+                  // dropping it here re-hides exactly the information that makes these reads debuggable.
+                  const detail = message.slice(message.indexOf(' Probe detail:'));
+                  throw new Error(detail.startsWith(' Probe detail:')
+                    ? `${declared[0]}${detail}` : declared[0]);
+                }
                 throw error;
               });
             }
@@ -526,7 +547,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
             );
             return call;
           }
-          const visible = fn?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+          const visible = visibleInputs;
           const byName = new Map<string, FunctionArgument>();
           visible.forEach((input, index) => {
             byName.set(input.name, args[index]);
@@ -575,7 +596,8 @@ function resolveInitializer(opt: string | false | undefined, impl: Artifact): st
 }
 
 // Graft an implementation's state layout onto the layout-independent default proxy: its bytecode never reads its
-// own state fields, so it holds any implementation's state. Keep the proxy's own constructorInputs (`implementation`).
+// own state fields (and ships with dataNftCount 0), so event-only and state-holding implementations both fit.
+// Keep the proxy's own constructorInputs (`implementation`).
 function graftDefaultProxy(impl: Artifact): Artifact {
   const dataNftCount = impl.stateLayout?.dataNftCount ?? 0;
   const requiredNftIndices = Array.from({ length: dataNftCount }, (_, index) => index);
@@ -585,6 +607,7 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       ...entry,
       requiredNftIndices,
       blockLayout: {
+        // Executor follows the grafted data band. Event/resource slots come from the impl route at compose time.
         blockSize: 1 + dataNftCount,
         slots: [
           { kind: 'master' as const, offset: 0 },
@@ -625,7 +648,7 @@ function graftDefaultProxy(impl: Artifact): Artifact {
     // that verifier capability on the grafted deployment artifact so genesis mints a verifier branded to the
     // proxy category; the implementation's own verifier is branded to its executor category and cannot
     // authenticate a proxy-owned atomic participant.
-    ...(impl.messageBus && { messageBus: impl.messageBus }),
+    ...(impl.messageBus && { messageBus: { ...impl.messageBus, routeInBytecode: false } }),
   } as Artifact;
 }
 
@@ -826,5 +849,104 @@ export async function deployProxy<TImpl extends Artifact>(
   }
 }
 
+export interface UpgradeProxyOptions {
+  /** Runner for the new implementation deploy and the returned handle. Defaults to the existing proxy runner. */
+  runner?: ContractRunner;
+  /** Deploy overrides for the new implementation genesis. */
+  implementationOverrides?: DeployContractOptions;
+}
+
+/**
+ * Assert proxy-held state layout stays append-only when retargeting to a new implementation (OZ storage
+ * layout discipline adapted to NFT commitment fields).
+ */
+function assertAppendOnlyProxyLayout(previous: Artifact, next: Artifact): void {
+  const prevLayout = previous.stateLayout;
+  const nextLayout = next.stateLayout;
+  if (!prevLayout || !nextLayout) return;
+  for (const oldVar of prevLayout.variables) {
+    const newVar = nextLayout.variables.find((variable) => variable.name === oldVar.name);
+    if (!newVar) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' exists in the old contract `
+        + 'but is missing in the new contract. State layouts must be append-only - '
+        + 'existing variables cannot be removed.',
+      );
+    }
+    if (newVar.nftIndex !== oldVar.nftIndex || newVar.fieldIndex !== oldVar.fieldIndex) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed position `
+        + `(old: nft=${oldVar.nftIndex}/field=${oldVar.fieldIndex}, `
+        + `new: nft=${newVar.nftIndex}/field=${newVar.fieldIndex}). `
+        + 'State layouts must be append-only - existing variables cannot be reordered.',
+      );
+    }
+    if (newVar.type !== oldVar.type) {
+      throw new Error(
+        `Upgrade layout incompatibility: state variable '${oldVar.name}' changed type `
+        + `(old: ${oldVar.type}, new: ${newVar.type}). `
+        + 'State variable types cannot change during upgrade.',
+      );
+    }
+  }
+}
+
+/**
+ * OZ-shaped `upgrades.upgradeProxy(proxy, NewImplFactory)` for **param-mode** proxies (implementation is a
+ * call argument). Re-wraps the same state-holding proxy with a newly deployed implementation; no on-chain
+ * proxy mutation. Default baked `SolidCashProxy` refuses — its implementation lock is a constructor pin, so
+ * same-address upgrade requires a new P2SH (migrate) or a param-mode custom proxy.
+ */
+export async function upgradeProxy<TImpl extends Artifact>(
+  proxy: ProxyContract,
+  newImplementationFactory: ContractFactory<TImpl>,
+  options: UpgradeProxyOptions = {},
+): Promise<ProxyContract<TImpl>> {
+  if (proxy.forwardShape.mode !== 'param') {
+    throw new Error(
+      `upgrades.upgradeProxy only supports param-mode proxies (forwarder takes address impl). `
+      + `This proxy uses '${proxy.forwardShape.mode}' mode with a constructor-baked implementation pin; `
+      + 'deploy a new proxy and migrate state, or use a custom param-mode proxy.',
+    );
+  }
+
+  const runner = options.runner ?? proxy.runner;
+  const sourceArtifact = newImplementationFactory.artifact;
+  const implArtifact = sourceArtifact.delegateArtifact
+    ?? (sourceArtifact.abi.some((fn) => fn.modifiers?.includes('delegate')) ? sourceArtifact : undefined);
+  if (!implArtifact) {
+    throw new Error(
+      `Implementation '${sourceArtifact.contractName}' has no inferred delegate variant and cannot be `
+      + 'deployed behind a proxy. It needs an externally-callable function that mutates proxy-owned state.',
+    );
+  }
+
+  // Param-mode keeps the proxy's own state layout (not grafted). Compare new impl fields against the
+  // live proxy holder so append-only discipline still applies to shared commitment slots.
+  assertAppendOnlyProxyLayout(proxy.proxy.inner.artifact, implArtifact);
+  assertAppendOnlyProxyLayout(proxy.implementation.inner.artifact, implArtifact);
+
+  const delegateFactory = new ContractFactory(implArtifact as TImpl, runner);
+  const implementation = await delegateFactory.deploy({
+    ...(options.implementationOverrides ?? {}),
+    logicalNonce: false,
+  }) as DeployedContract<TImpl>;
+
+  const handle = wrapDispatch(new ProxyContract<TImpl>(
+    proxy.proxy,
+    implementation,
+    proxy.forwardShape,
+    proxy.auth,
+    runner,
+  ));
+  registerDeployment(proxy.proxy.inner.provider, {
+    contractName: implArtifact.contractName,
+    address: handle.address,
+    lockingBytecode: proxy.proxy.inner.lockingBytecode,
+    contract: handle,
+  });
+  return handle;
+}
+
 /** The ethers/hardhat `upgrades` namespace. */
-export const upgrades = { deployProxy };
+export const upgrades = { deployProxy, upgradeProxy };

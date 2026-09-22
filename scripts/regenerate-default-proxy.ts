@@ -14,7 +14,12 @@ import { DEFAULT_PROXY_SOURCE } from '../packages/solidcash/src/stateful/default
 const here = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.resolve(here, '../packages/solidcash/src/stateful/defaultProxyArtifact.ts');
 
-const artifact = compileString(DEFAULT_PROXY_SOURCE) as Record<string, unknown>;
+// forceStateful: the forwarder has no state fields of its own (layout is grafted from the implementation), but
+// it must still compile as a covenant so master preservation and the delegate co-spend pin are emitted.
+const artifact = compileString(DEFAULT_PROXY_SOURCE, {
+  forceStateful: true,
+  suppressWarnings: true,
+}) as Record<string, unknown>;
 delete artifact.updatedAt;
 
 const source = fs.readFileSync(FILE, 'utf-8');

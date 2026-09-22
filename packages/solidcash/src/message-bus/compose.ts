@@ -1,49 +1,82 @@
-import { binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex, binToUtf8, hexToBin, sha1, utf8ToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, encodePushdataValue, scriptToBytecode,
-  MESSAGE_BUS_BINDING_DOMAIN, MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, buildEventNftCovenantScript,
-  buildAnonymousEventNftCovenantScript, computeEventNameHash,
+  MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN, sha256, ripemd160, hash160, hash256, buildEventNftCovenantScript,
+  buildAnonymousEventNftCovenantScript, computeEventNameHash, parseArrayTypeString,
+  buildEntryCommitment, buildInitialStateCommitments, bytecodeToScript, scriptToAsm,
+  AddressType, BytesType, FixedType, IntType,
+  parseTypeStrict, PrimitiveType,
+  childStateLayoutDigest,
+  validateChildDeploymentGenesisState,
+  getDefaultStateValue,
 } from '@solidcash/utils';
-import type { Artifact } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import type {
+  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateValue,
+  StructDefinitionInfo,
+} from '@solidcash/utils';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type {
   ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
+import { isContractUnlocker } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
+import { Contract } from '../Contract.js';
 import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import {
-  decodeEvmReturnValue, evalComputedKey, isCanonicalEvmScalarReturnVector,
+  decodeAuthenticatedProducerResultVector, evalComputedKey, isCanonicalEvmScalarReturnVector,
   StatefulContract, StatefulFunctionCall,
 } from '../stateful/StatefulContract.js';
 import {
-  reassertCompilerReadOnlyBatchProofOutputs, valueChunkIndexFromCommitment,
+  chunksFromValue, persistValueChunkLock, valueChunkIndexFromCommitment,
+  valueChunkWriteResourceIdentity, type ValueChunkWriteDescriptor,
 } from '../stateful/StatefulTransactionBuilder.js';
-import { artifactUsesSolidityAbi } from '../stateful/solidityAbi.js';
+import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   resolveLogicalIdentity, type ResolvedLogicalIdentity,
 } from '../stateful/logical-identity.js';
 import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repair.js';
 import { tryParseEventCommitment } from '../stateful/StateReader.js';
 import {
-  createMessageBusVerifierUnlocker, getMessageBusVerifierLockingBytecodeForArtifact,
+  createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
+  getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
+import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
 import {
   finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
-  type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
+  type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
   type AtomicSidecarSlotEffect, type AtomicTokenSlotEffect, type AtomicValueSlotEffect,
+  type PlannedGraphInvocation,
 } from './graph.js';
-import { encodeMessageBatch } from './message-bus.js';
 import {
-  convergeMessageBusComputedResourceOutputs, convergeMessageBusVerifierDensityReserves,
-  finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
+  encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+} from './message-bus.js';
+import {
+  convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
+import {
+  convergeMessageBusComputedDynamicChunkOutputs,
+  dynamicChunkPlaceholdersRemain,
+} from './computed-dynamic-chunks.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 import {
-  MESSAGE_BUS_DELEGATE_EXECUTOR_SLOT, messageBusParticipantLayout,
-} from './participant-layout.js';
+  applyParticipantAbsoluteWitnesses,
+  resolveParticipantAbsoluteWitnesses,
+  trailingCapacityExcludingFixedSuffix,
+} from './layout-resolver.js';
+import { layoutInvariantError } from './diagnostics.js';
+import {
+  buildTransportedContinuationResourceClaim,
+  canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
+  canonicalValueChunkProducerResourceClaim,
+  canonicalValueChunkProducerResourceIdentity, canonicalValueChunkStateOwner,
+  orderTransportedContinuationResourceClaims,
+  type TransportedContinuationResourceClaim,
+  type ValueChunkProducerPathDisposition, type ValueChunkProducerResourceClaim,
+} from '../stateful/ValueChunkProducerIdentity.js';
 
 export interface AtomicMessageBusFunder {
   utxo: Utxo;
@@ -55,18 +88,66 @@ export interface ComposeAtomicMessageBusOptions {
   calls?: readonly StatefulFunctionCall[];
   /** @internal Resolved calls used by transparent SDK graph promotion. */
   preparedCalls?: readonly PreparedAtomicMessageBusCall[];
+  /** @internal Prepared calls came from compiler graph discovery and must carry an exact source tuple. */
+  requirePreparedIdentity?: boolean;
   /** The one ordinary fee input. Its unlocker signs only after the messageEnvelope and all blocks are final. */
   funder: AtomicMessageBusFunder | UnlockableUtxo;
   changeAddress: string | Uint8Array;
   feeRate?: number;
+  /** One token-free vout-0 genesis input for each selected compiler-published deployment site. */
+  childDeployments?: readonly {
+    invocationIndex: number;
+    siteIndex: number;
+    funder: AtomicMessageBusFunder | UnlockableUtxo;
+  }[];
+  /** Explicit participant-tail funding for one compiler-authenticated split invocation. */
+  lifecycleSplits?: readonly {
+    invocationIndex: number;
+    funders: readonly (AtomicMessageBusFunder | UnlockableUtxo)[];
+    /** Positive satoshi value assigned to each created minting master, in participant-relative order. */
+    createdValues: readonly bigint[];
+  }[];
+  /** Exact minting masters consumed by one compiler-authenticated merge invocation. */
+  lifecycleMerges?: readonly {
+    invocationIndex: number;
+    consumedMasters: readonly Utxo[];
+  }[];
+  /** Recipient locking bytecode for one compiler-authenticated resource-free selfdestruct invocation. */
+  lifecycleSelfdestructs?: readonly {
+    invocationIndex: number;
+    recipient: string | Uint8Array;
+  }[];
 }
 
 export interface PreparedAtomicMessageBusCall {
   contract: StatefulContract;
   functionName: string;
+  /** Exact ABI entry-point selector. Required when `functionName` names distinct overloads. */
+  selector?: string;
   args: readonly FunctionArgument[];
   /** @internal Compiler-stable identity of this invocation in its parent function. */
   callsiteId?: number;
+  /** @internal Source callsite before physical repeated-owner collapsing. */
+  sourceCallsiteId?: number;
+  /** @internal Source-ordered row within a collapsed repeated-owner callsite. */
+  sourceLogicalIndex?: number;
+  /** @internal Reached runtime occurrence of the source callsite or source row. */
+  occurrenceIndex?: number;
+  /** @internal Compiler-authored program point shared with entry mutations in the parent handler. */
+  sourceEffectOrdinal?: number;
+  /** @internal Independently derived root-to-invocation compiler source path. */
+  producerPath?: ValueChunkProducerPathDisposition;
+  /** @internal Exact terminal post-values authenticated while discovering this compiler call edge. */
+  valueChunkProductions?: readonly {
+    write: ValueChunkWriteDescriptor;
+    claim: ValueChunkProducerResourceClaim;
+    stateOwner: { categoryId: string; lockingBytecode: string };
+    value: Uint8Array;
+  }[];
+  /** @internal Recompute terminal productions after authenticated sibling results change this call's arguments. */
+  resolveValueChunkProductionsFromArgs?: (
+    args: readonly FunctionArgument[],
+  ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */
@@ -77,6 +158,12 @@ export interface PreparedAtomicMessageBusCall {
   executionArtifact?: Artifact;
   /** Pinned delegate executor co-spent inside this participant's block. */
   executor?: StatefulContract;
+  /** Authenticated in-place replacement selected for this participant's upgrade row. */
+  upgradeTarget?: {
+    artifact: Artifact;
+    constructorArgs: readonly ConstructorArgument[];
+    appendedState?: Readonly<Record<string, StateValue>>;
+  };
   /**
    * Return-event commitment already derived while discovering this call graph. This is only an optimistic
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
@@ -88,28 +175,642 @@ export interface PreparedAtomicMessageBusCall {
   ) => readonly FunctionArgument[] | undefined;
 }
 
+/** Validate one prepared compiler edge against the planner's canonical producer occurrence. */
+export function assertPreparedInvocationIdentity(
+  descriptor: PreparedAtomicMessageBusCall,
+  invocation: PlannedGraphInvocation,
+  index: number,
+): void {
+  const preparedPath = descriptor.producerPath;
+  const plannedPath = invocation.producerPath;
+  const preparedPathKey = preparedPath?.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(preparedPath.context)
+    : preparedPath?.status === 'unavailable' ? 'unavailable' : undefined;
+  const plannedPathKey = plannedPath.status === 'complete'
+    ? canonicalValueChunkProducerPathContext(plannedPath.context)
+    : 'unavailable';
+  if (preparedPathKey === undefined || preparedPathKey !== plannedPathKey) {
+    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`);
+  }
+  // A transported selector authorizes a producer effect domain, so it must be the graph's own dispatch target.
+  // The prepared side may legitimately withhold a selector (runtime-dispatched edges carry none), but a
+  // selector it does transport can never be a name-derived guess at a different overload.
+  if (descriptor.selector !== undefined
+    && descriptor.selector.toLowerCase() !== invocation.selectorHex.toLowerCase()) {
+    throw new Error(`messageBus: prepared invocation ${index} selector disagrees with the compiled graph`);
+  }
+  for (const production of descriptor.valueChunkProductions ?? []) {
+    const claim = canonicalValueChunkProducerResourceClaim(production.claim);
+    const claimPath = claim && canonicalValueChunkProducerPathContext({
+      version: 1, sourcePath: claim.producer.sourcePath,
+    });
+    if (!claim || preparedPathKey === undefined || preparedPathKey === 'unavailable'
+      || claimPath !== preparedPathKey) {
+      throw new Error(
+        `messageBus: prepared invocation ${index} value production disagrees with its producer path`,
+      );
+    }
+  }
+  if (index === 0) return;
+  if (descriptor.callsiteId === undefined) {
+    throw new Error(`messageBus: prepared invocation ${index} omits its physical callsite identity`);
+  }
+  if (descriptor.sourceLogicalIndex !== undefined && descriptor.batchLogicalIndex !== undefined
+    && descriptor.sourceLogicalIndex !== descriptor.batchLogicalIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} has conflicting logical row identities`);
+  }
+  if (descriptor.occurrenceIndex !== undefined && descriptor.batchOccurrenceIndex !== undefined
+    && descriptor.occurrenceIndex !== descriptor.batchOccurrenceIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} has conflicting occurrence identities`);
+  }
+  const isBatched = invocation.sourceLogicalIndex !== undefined
+    || descriptor.sourceLogicalIndex !== undefined
+    || descriptor.batchLogicalIndex !== undefined;
+  if (isBatched) {
+    // Batched edges must carry the full four-tuple; never invent source identity from the physical lane.
+    if (descriptor.sourceCallsiteId === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source callsite identity`);
+    }
+    if (descriptor.sourceLogicalIndex === undefined && descriptor.batchLogicalIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source logical row`);
+    }
+    if (descriptor.occurrenceIndex === undefined && descriptor.batchOccurrenceIndex === undefined) {
+      throw new Error(`messageBus: prepared invocation ${index} omits its source occurrence`);
+    }
+  }
+  const sourceCallsiteId = isBatched
+    ? descriptor.sourceCallsiteId!
+    : (descriptor.sourceCallsiteId ?? descriptor.callsiteId);
+  const sourceLogicalIndex = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+  const occurrenceIndex = isBatched
+    ? (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex)!
+    : (descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex ?? 0);
+  if (descriptor.callsiteId !== invocation.consumerCallsiteId) {
+    throw new Error(`messageBus: prepared invocation ${index} physical callsite disagrees with the compiled graph`);
+  }
+  if (sourceCallsiteId !== invocation.sourceCallsiteId) {
+    throw new Error(`messageBus: prepared invocation ${index} source callsite disagrees with the compiled graph`);
+  }
+  if (sourceLogicalIndex !== invocation.sourceLogicalIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} source logical row disagrees with the compiled graph`);
+  }
+  if (occurrenceIndex !== invocation.occurrenceIndex) {
+    throw new Error(`messageBus: prepared invocation ${index} source occurrence disagrees with the compiled graph`);
+  }
+  if (descriptor.sourceEffectOrdinal !== invocation.sourceEffectOrdinal) {
+    throw new Error(`messageBus: prepared invocation ${index} source-effect ordinal disagrees with the graph`);
+  }
+}
+
+/** Rebuild a prepared call after authenticated producer results change its arguments, retaining edge identity. */
+export function rebuildPreparedInvocation(
+  descriptor: PreparedAtomicMessageBusCall,
+  args: readonly FunctionArgument[],
+  provisionalResultHex?: string,
+  options: { refreshValueProductions?: boolean } = {},
+): PreparedAtomicMessageBusCall {
+  const argsChanged = semanticJson(args) !== semanticJson(descriptor.args);
+  if (argsChanged && descriptor.valueChunkProductions?.length
+    && !descriptor.resolveValueChunkProductionsFromArgs) {
+    throw new Error('messageBus: changed producer arguments have no value-production refresher');
+  }
+  const valueChunkProductions = (argsChanged || options.refreshValueProductions === true)
+    ? descriptor.resolveValueChunkProductionsFromArgs?.(args)
+    : descriptor.valueChunkProductions;
+  return {
+    ...descriptor,
+    args,
+    valueChunkProductions,
+    ...(provisionalResultHex !== undefined && {
+      provisionalResultCommitment: hexToBin(provisionalResultHex),
+    }),
+  };
+}
+
+export interface SemanticClaimObservation<T = unknown> {
+  previous: T;
+  observed: T;
+  apply: (observed: T) => void;
+}
+
+/** Apply every independently derived semantic class before deciding whether the graph needs another pass. */
+export function applySemanticClaimObservationPass(
+  observations: readonly SemanticClaimObservation[],
+): boolean {
+  let changed = false;
+  for (const observation of observations) {
+    if (semanticJson(observation.previous) === semanticJson(observation.observed)) continue;
+    observation.apply(observation.observed);
+    changed = true;
+  }
+  return changed;
+}
+
+/** Exact authority predicate for replacing a balanced dummy with a computed continuation output. */
+export function canSeedComputedValueChunkClaim(
+  input: Pick<UnlockableUtxo, 'satoshis' | 'token' | 'unlocker'> | undefined,
+  output: Pick<Output, 'amount' | 'token'> | undefined,
+  claim: Pick<ComputedValueChunkClaim, 'tokenCategory' | 'commitment'>,
+): boolean {
+  return input !== undefined
+    && input.token === undefined
+    && binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
+      === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+    && input.satoshis === output?.amount
+    && output?.token?.category === claim.tokenCategory
+    && output.token.amount === 0n
+    && output.token.nft?.capability === 'mutable'
+    && valueChunkIndexFromCommitment(output.token.nft.commitment)
+      === valueChunkIndexFromCommitment(claim.commitment);
+}
+
+/** Display-order category hex without an optional capability suffix, for token/artifact comparisons. */
+const comparableTokenCategory = (category: string | undefined): string | undefined =>
+  category === undefined ? undefined : category.replace(/^0x/i, '').slice(0, 64).toLowerCase();
+
+/**
+ * Exact authority predicate for replacing a balanced continuation slot's output with a transported chunk.
+ *
+ * The composer overwrites that output, so the slot must belong to the transported continuation. Two funding
+ * shapes prove it: the balanced dummy, which reserves a slot the participant did not previously occupy, and a
+ * value-chunk predecessor of the same resource - a mutable token input of the transported category whose
+ * commitment parses as a canonical value chunk - which the executing participant consumes there when the
+ * continuation already existed in the prior state. A wider continuation shifts the transported band, so a
+ * predecessor is not necessarily the chunk at the same index; requiring the shared category, the mutable
+ * capability, and a canonical chunk index keeps an unrelated token input from authorizing the replacement. The
+ * completed block is still authenticated by the participant's own covenant VM.
+ */
+export function canOwnTransportedContinuationSlot(
+  input: Pick<UnlockableUtxo, 'token' | 'unlocker'> | undefined,
+  claim: { categoryId: string | undefined; commitment: string },
+): boolean {
+  if (input === undefined) return false;
+  if (input.token === undefined) {
+    return binToHex(input.unlocker.generateLockingBytecode()) === BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX;
+  }
+  return valueChunkIndexFromCommitment(claim.commitment) !== undefined
+    && input.token.nft?.capability === 'mutable'
+    && valueChunkIndexFromCommitment(input.token.nft.commitment) !== undefined
+    && comparableTokenCategory(input.token.category) !== undefined
+    && comparableTokenCategory(input.token.category) === comparableTokenCategory(claim.categoryId);
+}
+
+const recipeType = (
+  recipe: ChildDeploymentValueRecipe,
+  inputTypes: readonly string[],
+): string => recipe.resultType
+  ?? (recipe.kind === 'handlerInput' ? inputTypes[recipe.inputIndex] : undefined)
+  ?? (() => { throw new Error('messageBus: deployment recipe has no result type'); })();
+
+const numericRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): bigint => {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return BigInt(value);
+  if (typeof value === 'boolean') return value ? 1n : 0n;
+  if (typeof value === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(value)) return BigInt(value);
+  if (value instanceof Uint8Array) {
+    const type = parseTypeStrict(typeName);
+    const bytes = solidityAbi && type instanceof BytesType && type.bound !== undefined
+      ? value.slice().reverse() : value;
+    const decoded = vmNumberToBigInt(bytes);
+    if (typeof decoded !== 'bigint') {
+      throw new Error(`messageBus: deployment recipe has a non-minimal numeric ${typeName}`);
+    }
+    return decoded;
+  }
+  throw new Error(`messageBus: deployment recipe expected a scalar numeric ${typeName}`);
+};
+
+const byteRecipeValue = (value: FunctionArgument, typeName: string, solidityAbi: boolean): Uint8Array => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT
+    || type instanceof IntType || type instanceof FixedType) {
+    return bigIntToVmNumber(numericRecipeValue(value, typeName, solidityAbi));
+  }
+  if (type === PrimitiveType.STRING) {
+    if (typeof value === 'string') return utf8ToBin(value);
+    if (value instanceof Uint8Array) return value;
+    throw new Error('messageBus: deployment recipe expected string bytes');
+  }
+  if (type instanceof AddressType && typeof value === 'string' && value.includes(':')) {
+    return addressToLockScript(value);
+  }
+  const byteType = type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG;
+  if (!byteType) throw new Error(`messageBus: deployment recipe type ${typeName} is not byte-represented`);
+  if (value instanceof Uint8Array) return value;
+  if (typeof value === 'string') {
+    return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+  }
+  throw new Error(`messageBus: deployment recipe expected byte sequence ${typeName}`);
+};
+
+const fixedVmNumber = (value: bigint, width: number): Uint8Array => {
+  const minimal = bigIntToVmNumber(value);
+  if (minimal.length > width) throw new Error(`messageBus: deployment recipe value does not fit bytes${width}`);
+  if (minimal.length === width) return minimal;
+  const result = new Uint8Array(width);
+  result.set(minimal);
+  if (value < 0n && minimal.length > 0) {
+    result[minimal.length - 1] &= 0x7f;
+    result[width - 1] |= 0x80;
+  }
+  return result;
+};
+
+const coerceRecipeValue = (
+  value: FunctionArgument,
+  sourceTypeName: string,
+  resultTypeName: string,
+  solidityAbi: boolean,
+): FunctionArgument => {
+  const sourceType = parseTypeStrict(sourceTypeName);
+  const resultType = parseTypeStrict(resultTypeName);
+  if (resultType === PrimitiveType.BOOL) {
+    return numericRecipeValue(value, sourceTypeName, solidityAbi) !== 0n;
+  }
+  if (resultType === PrimitiveType.BIGINT || resultType instanceof IntType || resultType instanceof FixedType) {
+    let numeric = numericRecipeValue(value, sourceTypeName, solidityAbi);
+    if ((sourceType === PrimitiveType.BIGINT || sourceType instanceof IntType)
+      && resultType instanceof FixedType) numeric *= resultType.scaleFactor;
+    if (sourceType instanceof FixedType
+      && (resultType === PrimitiveType.BIGINT || resultType instanceof IntType)) numeric /= sourceType.scaleFactor;
+    if (sourceType instanceof FixedType && resultType instanceof FixedType) {
+      numeric = resultType.decimals > sourceType.decimals
+        ? numeric * 10n ** BigInt(resultType.decimals - sourceType.decimals)
+        : numeric / 10n ** BigInt(sourceType.decimals - resultType.decimals);
+    }
+    if ((resultType instanceof IntType || resultType instanceof FixedType)
+      && (numeric < resultType.minValue || numeric > resultType.maxValue)) {
+      throw new Error(`messageBus: deployment recipe value ${numeric} is out of bounds for ${resultTypeName}`);
+    }
+    return numeric;
+  }
+  if (resultType instanceof AddressType) {
+    // The compiler's bytes/int -> address cast is a VM-level no-op: an address is the locking-bytecode stack
+    // item itself. Reproduce that representation here so constructor genesis replay authenticates the same
+    // value. CashAddress spelling is only possible for an address-typed source; bytes strings remain hex.
+    if (value instanceof Uint8Array) return value;
+    if (typeof value === 'string' && sourceType instanceof AddressType && value.includes(':')) {
+      return addressToLockScript(value);
+    }
+    if (typeof value === 'string' && sourceType instanceof BytesType) {
+      return hexToBin(value.startsWith('0x') ? value.slice(2) : value);
+    }
+    return bigIntToVmNumber(numericRecipeValue(value, sourceTypeName, solidityAbi));
+  }
+  if (resultType instanceof BytesType) {
+    if (value instanceof Uint8Array) {
+      if (resultType.bound === undefined) return value;
+      if (!(sourceType instanceof BytesType)) {
+        throw new Error(`messageBus: deployment recipe cannot cast ${sourceTypeName} to ${resultTypeName}`);
+      }
+      return value.length > resultType.bound
+        ? value.slice(0, resultType.bound)
+        : Uint8Array.from([...value, ...new Uint8Array(resultType.bound - value.length)]);
+    }
+    const numeric = numericRecipeValue(value, sourceTypeName, solidityAbi);
+    if (resultType.bound === undefined) return bigIntToVmNumber(numeric);
+    const encoded = fixedVmNumber(numeric, resultType.bound);
+    return solidityAbi ? encoded.reverse() : encoded;
+  }
+  throw new Error(`messageBus: deployment recipe type ${resultTypeName} is not materializable`);
+};
+
+const canonicalRecipeEqualityValue = (
+  value: FunctionArgument,
+  typeName: string,
+  solidityAbi: boolean,
+): bigint | string => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL || type === PrimitiveType.BIGINT
+    || type instanceof IntType || type instanceof FixedType) {
+    return numericRecipeValue(value, typeName, solidityAbi);
+  }
+  if (type === PrimitiveType.STRING) {
+    if (typeof value === 'string') return binToHex(utf8ToBin(value));
+    if (value instanceof Uint8Array) return binToHex(value);
+    throw new Error('messageBus: deployment recipe expected string');
+  }
+  if (type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+    let bytesValue = value;
+    if (typeof bytesValue === 'string' && type instanceof AddressType && bytesValue.includes(':')) {
+      bytesValue = addressToLockScript(bytesValue);
+    } else if (typeof bytesValue === 'string' && type instanceof AddressType && /^(?:0x)?0*$/i.test(bytesValue)) {
+      bytesValue = new Uint8Array(0);
+    } else if (typeof bytesValue === 'string') {
+      bytesValue = hexToBin(bytesValue.startsWith('0x') ? bytesValue.slice(2) : bytesValue);
+    }
+    if (!(bytesValue instanceof Uint8Array)) {
+      throw new Error(`messageBus: deployment recipe expected byte sequence ${typeName}`);
+    }
+    return binToHex(bytesValue);
+  }
+  throw new Error(`messageBus: deployment recipe equality type ${typeName} is not materializable`);
+};
+
+export const evaluateChildDeploymentRecipe = (
+  recipe: ChildDeploymentValueRecipe,
+  args: readonly FunctionArgument[],
+  inputTypes: readonly string[],
+  solidityAbi: boolean,
+  state: Readonly<Record<string, FunctionArgument>> = {},
+  logicalCaller?: FunctionArgument,
+): FunctionArgument => {
+  const resultType = recipeType(recipe, inputTypes);
+  if (recipe.kind === 'handlerInput') {
+    if (recipe.inputIndex < 0 || recipe.inputIndex >= args.length) {
+      throw new Error(`messageBus: deployment recipe input ${recipe.inputIndex} is out of range`);
+    }
+    return args[recipe.inputIndex];
+  }
+  if (recipe.kind === 'state') {
+    if (!Object.hasOwn(state, recipe.name)) {
+      throw new Error(`messageBus: authenticated state recipe '${recipe.name}' is unavailable`);
+    }
+    return state[recipe.name];
+  }
+  if (recipe.kind === 'logicalCaller') {
+    if (logicalCaller === undefined) {
+      throw new Error('messageBus: authenticated logical caller recipe is unavailable');
+    }
+    return logicalCaller;
+  }
+  if (recipe.kind === 'aggregate') {
+    return recipe.elements.map((element) =>
+      evaluateChildDeploymentRecipe(element, args, inputTypes, solidityAbi, state)) as ConstructorArgument[];
+  }
+  if (recipe.kind === 'concat') {
+    if (recipe.operands.length === 0) {
+      throw new Error('messageBus: deployment concat recipe requires at least one operand');
+    }
+    const parsedResult = parseTypeStrict(resultType);
+    if (!(parsedResult instanceof BytesType) && parsedResult !== PrimitiveType.STRING) {
+      throw new Error(`messageBus: deployment concat recipe cannot produce ${resultType}`);
+    }
+    const values = recipe.operands.map((operand) => {
+      const operandTypeName = recipeType(operand, inputTypes);
+      const operandType = parseTypeStrict(operandTypeName);
+      if (!(operandType instanceof BytesType) && operandType !== PrimitiveType.STRING) {
+        throw new Error(`messageBus: deployment concat operand ${operandTypeName} is not concatenable`);
+      }
+      return byteRecipeValue(
+        evaluateChildDeploymentRecipe(operand, args, inputTypes, solidityAbi, state), operandTypeName, solidityAbi,
+      );
+    });
+    const joined = Uint8Array.from(values.flatMap((value) => [...value]));
+    if (parsedResult instanceof BytesType && parsedResult.bound !== undefined && joined.length !== parsedResult.bound) {
+      throw new Error(`messageBus: deployment concat recipe produced ${joined.length} bytes for ${resultType}`);
+    }
+    return parsedResult === PrimitiveType.STRING ? binToUtf8(joined) : joined;
+  }
+  if (recipe.kind === 'hash') {
+    const expectedResultTypes = {
+      ripemd160: 'bytes20', sha1: 'bytes20', sha256: 'bytes32', hash160: 'bytes20', hash256: 'bytes32',
+    } as const;
+    if (resultType !== expectedResultTypes[recipe.algorithm]) {
+      throw new Error(`messageBus: deployment ${recipe.algorithm} recipe cannot produce ${resultType}`);
+    }
+    const operand = byteRecipeValue(
+      evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state),
+      recipeType(recipe.operand, inputTypes),
+      solidityAbi,
+    );
+    switch (recipe.algorithm) {
+      case 'ripemd160': return ripemd160(operand);
+      case 'sha1': return sha1.hash(operand);
+      case 'sha256': return sha256(operand);
+      case 'hash160': return hash160(operand);
+      case 'hash256': return hash256(operand);
+      default: throw new Error('messageBus: unsupported deployment hash recipe');
+    }
+  }
+  if (recipe.kind === 'intLiteral') return coerceRecipeValue(BigInt(recipe.value), 'bigint', resultType, solidityAbi);
+  if (recipe.kind === 'boolLiteral') return coerceRecipeValue(recipe.value, 'bool', resultType, solidityAbi);
+  if (recipe.kind === 'bytesLiteral') {
+    return coerceRecipeValue(hexToBin(recipe.value), `bytes${recipe.value.length / 2}`, resultType, solidityAbi);
+  }
+  if (recipe.kind === 'cast') {
+    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    return coerceRecipeValue(operand, recipeType(recipe.operand, inputTypes), resultType, solidityAbi);
+  }
+  if (recipe.kind === 'unary') {
+    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    const operandTypeName = recipeType(recipe.operand, inputTypes);
+    const operandType = parseTypeStrict(operandTypeName);
+    const result = parseTypeStrict(resultType);
+    const numeric = numericRecipeValue(operand, operandTypeName, solidityAbi);
+    if (recipe.operator === '!') {
+      if (operandType instanceof FixedType) {
+        throw new Error('messageBus: fixed deployment recipe does not support logical negation');
+      }
+      return coerceRecipeValue(numeric === 0n, 'bool', resultType, solidityAbi);
+    }
+    if (recipe.operator === '-') {
+      if ((operandType instanceof FixedType || result instanceof FixedType)
+        && (!(operandType instanceof FixedType) || !(result instanceof FixedType)
+          || operandType.decimals !== result.decimals)) {
+        throw new Error('messageBus: fixed deployment recipe unary operands must use one scale');
+      }
+      return coerceRecipeValue(-numeric, operandTypeName, resultType, solidityAbi);
+    }
+    throw new Error(`messageBus: unsupported deployment recipe unary operator ${recipe.operator}`);
+  }
+  if (recipe.kind === 'conditional') {
+    const conditionType = recipeType(recipe.condition, inputTypes);
+    if (conditionType !== 'bool'
+      || recipeType(recipe.ifTrue, inputTypes) !== resultType
+      || recipeType(recipe.ifFalse, inputTypes) !== resultType) {
+      throw new Error('messageBus: conditional recipe branches must match its declared type');
+    }
+    const condition = evaluateChildDeploymentRecipe(recipe.condition, args, inputTypes, solidityAbi, state);
+    const selected = numericRecipeValue(condition, conditionType, solidityAbi) !== 0n
+      ? recipe.ifTrue : recipe.ifFalse;
+    return evaluateChildDeploymentRecipe(selected, args, inputTypes, solidityAbi, state);
+  }
+  const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi, state);
+  const leftType = recipeType(recipe.left, inputTypes);
+  if (recipe.operator === '&&' || recipe.operator === '||') {
+    const rightType = recipeType(recipe.right, inputTypes);
+    if (parseTypeStrict(leftType) instanceof FixedType || parseTypeStrict(rightType) instanceof FixedType) {
+      throw new Error('messageBus: fixed deployment recipe does not support logical operators');
+    }
+    const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
+    if (recipe.operator === '&&' && !left) return false;
+    if (recipe.operator === '||' && left) return true;
+    const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+    const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
+    return recipe.operator === '&&' ? left && right : left || right;
+  }
+  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+  const rightType = recipeType(recipe.right, inputTypes);
+  const leftParsedType = parseTypeStrict(leftType);
+  const rightParsedType = parseTypeStrict(rightType);
+  const resultParsedType = parseTypeStrict(resultType);
+  const hasFixedOperand = leftParsedType instanceof FixedType || rightParsedType instanceof FixedType;
+  if (hasFixedOperand || resultParsedType instanceof FixedType) {
+    if (!(leftParsedType instanceof FixedType) || !(rightParsedType instanceof FixedType)
+      || leftParsedType.decimals !== rightParsedType.decimals) {
+      throw new Error('messageBus: fixed deployment recipe binary operands must use one scale');
+    }
+    const booleanResult = ['==', '!=', '<', '<=', '>', '>='].includes(recipe.operator);
+    if (booleanResult ? resultParsedType !== PrimitiveType.BOOL
+      : !(resultParsedType instanceof FixedType)
+        || resultParsedType.decimals !== leftParsedType.decimals) {
+      throw new Error('messageBus: fixed deployment recipe result must preserve operand scale');
+    }
+  }
+  if (recipe.operator === '==' || recipe.operator === '!=') {
+    const equal = canonicalRecipeEqualityValue(leftValue, leftType, solidityAbi)
+      === canonicalRecipeEqualityValue(rightValue, rightType, solidityAbi);
+    return recipe.operator === '==' ? equal : !equal;
+  }
+  const left = numericRecipeValue(leftValue, leftType, solidityAbi);
+  const right = numericRecipeValue(rightValue, rightType, solidityAbi);
+  let value: bigint | boolean;
+  const fixedScale = resultParsedType instanceof FixedType ? resultParsedType.scaleFactor : undefined;
+  switch (recipe.operator) {
+    case '+': value = left + right; break;
+    case '-': value = left - right; break;
+    case '*': value = fixedScale === undefined ? left * right : left * right / fixedScale; break;
+    case '/':
+      if (right === 0n) throw new Error('messageBus: division by zero in deployment recipe');
+      value = fixedScale === undefined ? left / right : left * fixedScale / right; break;
+    case '%':
+      if (right === 0n) throw new Error('messageBus: modulo by zero in deployment recipe');
+      value = left % right; break;
+    case '<': value = left < right; break;
+    case '<=': value = left <= right; break;
+    case '>': value = left > right; break;
+    case '>=': value = left >= right; break;
+    default: throw new Error(`messageBus: unsupported deployment recipe binary operator ${recipe.operator}`);
+  }
+  return coerceRecipeValue(
+    value,
+    typeof value === 'boolean' ? 'bool' : fixedScale === undefined ? 'bigint' : resultType,
+    resultType,
+    solidityAbi,
+  );
+};
+
+/** Materialize one compiler-authenticated fixed BCH effect without probing placeholder outputs. */
+export const materializeFixedBchTransfer = (
+  transfer: FixedBchTransferAbi,
+  args: readonly FunctionArgument[],
+  inputTypes: readonly string[],
+  executionArtifact: Artifact,
+  provider: NetworkProvider,
+  state: Readonly<Record<string, FunctionArgument>> = {},
+  logicalCaller?: FunctionArgument,
+): { lockingBytecode: Uint8Array; amount: bigint } => {
+  const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
+  const recipientValue = transfer.derivedRecipient
+    ? (() => {
+      const derived = transfer.derivedRecipient!;
+      const constructorArgs = derived.constructorArgs.map((recipe) =>
+        evaluateChildDeploymentRecipe(recipe, args, inputTypes, solidityAbi));
+      const saltValue = derived.salt
+        ? evaluateChildDeploymentRecipe(derived.salt, args, inputTypes, solidityAbi)
+        : undefined;
+      const salt = saltValue instanceof Uint8Array ? saltValue
+        : typeof saltValue === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(saltValue)
+          ? hexToBin(saltValue.replace(/^0x/i, '')) : undefined;
+      if (derived.salt && !salt) {
+        throw new Error('messageBus: stateless child recipient has an invalid salt');
+      }
+      const childArtifact = {
+        contractName: derived.contractName,
+        constructorInputs: derived.constructorInputs,
+        abi: [],
+        bytecode: scriptToAsm(bytecodeToScript(hexToBin(derived.creationBytecode))),
+        source: '',
+        compiler: executionArtifact.compiler,
+        updatedAt: executionArtifact.updatedAt,
+      } as Artifact;
+      const child = new Contract(childArtifact, constructorArgs as never[], {
+        provider,
+        // Language-level `new T(...)` always derives a P2SH32 expression, regardless of the parent's wrapper.
+        addressType: 'p2sh32',
+        ...(salt && { salt }),
+      });
+      return hexToBin(child.lockingBytecode);
+    })()
+    : transfer.recipientRecipe
+      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+      : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
+        ? args[transfer.recipient.paramIndex] : undefined;
+  let lockingBytecode = recipientValue;
+  if (typeof lockingBytecode === 'string') {
+    lockingBytecode = lockingBytecode.includes(':') ? addressToLockScript(lockingBytecode)
+      : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
+  }
+  const amountValue = transfer.amountRecipe
+    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+    : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
+      ? args[transfer.amount.paramIndex]
+      : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
+        ? BigInt(transfer.amount.value) : undefined;
+  if (!(lockingBytecode instanceof Uint8Array) || typeof amountValue !== 'bigint') {
+    throw new Error('messageBus: BCH transfer is not a canonical typed effect');
+  }
+  return { lockingBytecode, amount: amountValue };
+};
+
+/** Normalize a replayed scalar into the physical state-codec domain used by entry commitments. */
+export const materializeChildDeploymentEntryScalar = (
+  value: FunctionArgument, typeName: string, solidityAbi: boolean,
+): bigint | boolean | Uint8Array => {
+  const type = parseTypeStrict(typeName);
+  if (type === PrimitiveType.BOOL) return numericRecipeValue(value, typeName, solidityAbi) !== 0n;
+  if (type === PrimitiveType.BIGINT || type instanceof IntType || type instanceof FixedType) {
+    return numericRecipeValue(value, typeName, solidityAbi);
+  }
+  if (type instanceof AddressType || type instanceof BytesType
+    || type === PrimitiveType.PUBKEY || type === PrimitiveType.DATASIG) {
+    return hexToBin(canonicalRecipeEqualityValue(value, typeName, solidityAbi) as string);
+  }
+  throw new Error(`messageBus: deployment entry scalar type ${typeName} is not materializable`);
+};
+
+/** Normalize a replayed fixed-layout aggregate into the state codec's positional representation. */
+export const materializeChildDeploymentEntryValue = (
+  value: FunctionArgument, typeName: string, solidityAbi: boolean,
+  structs: readonly StructDefinitionInfo[] = [], visited: ReadonlySet<string> = new Set(),
+): StateValue => {
+  const struct = structs.find((candidate) => candidate.name === typeName);
+  if (struct) {
+    if (visited.has(typeName)) {
+      throw new Error(`messageBus: cyclic deployment entry struct ${typeName} is not materializable`);
+    }
+    if (!Array.isArray(value) || value.length !== struct.fields.length) {
+      throw new Error(`messageBus: deployment entry struct ${typeName} has an invalid aggregate value`);
+    }
+    const nested = new Set(visited);
+    nested.add(typeName);
+    return struct.fields.map((field, index) => materializeChildDeploymentEntryValue(
+      value[index], field.type, solidityAbi, structs, nested,
+    ));
+  }
+  const array = parseArrayTypeString(typeName);
+  if (array) {
+    if (array.bound === undefined || !Array.isArray(value) || value.length !== array.bound) {
+      throw new Error(`messageBus: deployment entry array ${typeName} is not a fixed-layout aggregate`);
+    }
+    return value.map((element) => materializeChildDeploymentEntryValue(
+      element, array.elementType, solidityAbi, structs, visited,
+    ));
+  }
+  return materializeChildDeploymentEntryScalar(value, typeName, solidityAbi);
+};
+
 interface CallDescriptor extends PreparedAtomicMessageBusCall {
   artifact: Artifact;
 }
 
-/**
- * Maximum number of consecutive prepared descriptors which may prove one runtime callsite occurrence class.
- * An unbounded source loop has no compiler maximum; in that case the prepared call sequence itself is the
- * runtime proof, bounded globally by the call-manifest capacity. Treating an absent maximum as zero silently
- * omitted every invocation from such loops.
- */
-export function preparedExternalCallOccurrenceScanLimit(
-  call: Pick<NonNullable<Artifact['abi'][number]['externalCalls']>[number], 'maximumOccurrences'>,
-  kind: 'conditional' | 'loop',
-  remainingPreparedCalls: number,
-): number {
-  return call.maximumOccurrences ?? (kind === 'conditional' ? 1 : remainingPreparedCalls);
-}
-
-const EVM_DYNAMIC_RESULT_TYPES = new Set(['bytes', 'string']);
 const evmStaticResultType = (type: string): boolean => type === 'bool'
   || type === 'int' || type === 'uint' || type === 'bigint'
   || /^u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)$/.test(type)
+  || /^u?fixed(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256)x\d+$/.test(type)
   || type === 'address' || type === 'address payable'
   || /^bytes(?:[1-9]|[12][0-9]|3[0-2])$/.test(type);
 
@@ -125,37 +826,109 @@ const evmWord = (value: number): Uint8Array => {
   return word;
 };
 
-/** Optimistic, type-correct seed which lets a route expose its authenticated result during fixed-point assembly. */
-const provisionalInvocationResult = (
-  artifact: Artifact, resultTypes: readonly string[],
-): string => {
-  if (!artifactUsesSolidityAbi(artifact)) {
-    return binToHex(Uint8Array.from(resultTypes.flatMap((type) => [
-      ...encodePushdataValue(type === 'bool' ? true : 0n, type, artifact.structs),
-    ])));
+interface EvmResultLayout {
+  type: string;
+  kind: 'scalar' | 'bytes' | 'array' | 'struct';
+  dynamic: boolean;
+  staticSize: number;
+  bound?: number;
+  children: readonly EvmResultLayout[];
+}
+
+const concatBytes = (parts: readonly Uint8Array[]): Uint8Array =>
+  Uint8Array.from(parts.flatMap((part) => [...part]));
+
+/** Resolve the compiler's named result types against the artifact ABI into recursive Solidity layouts. */
+const evmResultLayout = (
+  artifact: Artifact, type: string, activeStructs = new Set<string>(),
+): EvmResultLayout | undefined => {
+  if (type === 'bytes' || type === 'string') {
+    return { type, kind: 'bytes', dynamic: true, staticSize: 0, children: [] };
   }
-  const unsupported = resultTypes.find((type) => !evmStaticResultType(type)
-    && !EVM_DYNAMIC_RESULT_TYPES.has(type));
-  if (unsupported) {
-    throw new Error(`messageBus: EVM ABI result type '${unsupported}' has no canonical provisional encoding`);
+  if (evmStaticResultType(type) || artifact.enums?.some((candidate) => candidate.name === type)) {
+    return { type, kind: 'scalar', dynamic: false, staticSize: 32, children: [] };
   }
-  const head = new Uint8Array(resultTypes.length * 32);
+  const array = parseArrayTypeString(type);
+  if (array) {
+    const child = evmResultLayout(artifact, array.elementType, activeStructs);
+    if (!child) return undefined;
+    const dynamic = array.bound === undefined || child.dynamic;
+    return {
+      type, kind: 'array', dynamic, staticSize: dynamic ? 0 : array.bound! * child.staticSize,
+      ...(array.bound !== undefined && { bound: array.bound }), children: [child],
+    };
+  }
+  const struct = artifact.structs?.find((candidate) => candidate.name === type);
+  if (!struct || activeStructs.has(type)) return undefined;
+  const nested = new Set(activeStructs); nested.add(type);
+  const children = struct.fields.map((field) => evmResultLayout(artifact, field.type, nested));
+  if (children.some((child) => child === undefined)) return undefined;
+  const fields = children as EvmResultLayout[];
+  const dynamic = fields.some((field) => field.dynamic);
+  return {
+    type, kind: 'struct', dynamic,
+    staticSize: dynamic ? 0 : fields.reduce((sum, field) => sum + field.staticSize, 0), children: fields,
+  };
+};
+
+const evmTupleHeadSize = (fields: readonly EvmResultLayout[]): number =>
+  fields.reduce((sum, field) => sum + (field.dynamic ? 32 : field.staticSize), 0);
+
+const provisionalEvmValue = (layout: EvmResultLayout): Uint8Array => {
+  if (layout.kind === 'scalar') {
+    const word = new Uint8Array(32);
+    // Preserve the existing optimistic boolean seed at every recursively addressable result position.
+    if (layout.type === 'bool') word[31] = 1;
+    return word;
+  }
+  if (layout.kind === 'bytes' || (layout.kind === 'array' && layout.bound === undefined)) return evmWord(0);
+  if (layout.kind === 'array') {
+    return provisionalEvmTuple(Array.from({ length: layout.bound! }, () => layout.children[0]));
+  }
+  return provisionalEvmTuple(layout.children);
+};
+
+const provisionalEvmTuple = (fields: readonly EvmResultLayout[]): Uint8Array => {
+  const head: Uint8Array[] = [];
   const tails: Uint8Array[] = [];
-  let tailOffset = head.length;
-  for (let index = 0; index < resultTypes.length; index += 1) {
-    const type = resultTypes[index];
-    if (EVM_DYNAMIC_RESULT_TYPES.has(type)) {
-      head.set(evmWord(tailOffset), index * 32);
-      const empty = evmWord(0);
-      tails.push(empty);
-      tailOffset += empty.length;
-    } else if (type === 'bool') {
-      // Boolean gates are seeded true so a later caller can advance far enough to expose the authoritative
-      // callee result. A false result replaces this claim on the next authenticated convergence pass.
-      head[index * 32 + 31] = 1;
+  let tailOffset = evmTupleHeadSize(fields);
+  for (const field of fields) {
+    const encoded = provisionalEvmValue(field);
+    if (field.dynamic) {
+      head.push(evmWord(tailOffset));
+      tails.push(encoded);
+      tailOffset += encoded.length;
+    } else {
+      head.push(encoded);
     }
   }
-  return binToHex(Uint8Array.from([...head, ...tails.flatMap((tail) => [...tail])]));
+  return concatBytes([...head, ...tails]);
+};
+
+/** @internal Optimistic, type-correct seed used during fixed-point assembly and schema conformance tests. */
+export const provisionalInvocationResult = (
+  artifact: Artifact, resultTypes: readonly string[], publishedEncoding?: ExternalResultEncoding,
+): string => {
+  const encoding = resolveExternalResultEncoding(
+    publishedEncoding, artifact, resultTypes, 'provisional invocation result',
+  );
+  if (encoding === 'compact-pushdata-v1') {
+    return binToHex(Uint8Array.from(resultTypes.flatMap((type) => [
+      // A transaction signature used as result data is a compact byte string, not a deferred signer. Seed it
+      // with canonical empty bytes; passing numeric zero to the byte encoder is neither typed nor encodable.
+      // Keep the optimistic `true` seed used to discover conditional graph edges, but derive every other seed from
+      // the compiler-authored type graph. Numeric zero is not a value of bytes, arrays, or structs, and attempting
+      // to encode it made otherwise supported native aggregate results fail before the first discovery pass.
+      ...encodePushdataValue(type === 'bool' ? true : getDefaultStateValue(type, artifact.structs),
+        type, artifact.structs),
+    ])));
+  }
+  const layouts = resultTypes.map((type) => evmResultLayout(artifact, type));
+  const unsupported = layouts.findIndex((layout) => layout === undefined);
+  if (unsupported >= 0) throw new Error(
+    `messageBus: EVM ABI result type '${resultTypes[unsupported]}' has no canonical provisional encoding`,
+  );
+  return binToHex(provisionalEvmTuple(layouts as EvmResultLayout[]));
 };
 
 const decodeEvmWord = (bytes: Uint8Array, offset: number): number => {
@@ -166,56 +939,141 @@ const decodeEvmWord = (bytes: Uint8Array, offset: number): number => {
   return Number(value);
 };
 
-/** Length of one concatenated abi.encode(tuple) result in an EVM-framed route return vector. */
-const evmInvocationResultLength = (
-  vector: Uint8Array, cursor: number, resultTypes: readonly string[],
+const canonicalEvmScalar = (word: Uint8Array, layout: EvmResultLayout, artifact: Artifact): boolean => {
+  const enumeration = artifact.enums?.find((candidate) => candidate.name === layout.type);
+  if (!enumeration) return isCanonicalEvmScalarReturnVector(word, [layout.type]);
+  if (!isCanonicalEvmScalarReturnVector(word, ['uint8'])) return false;
+  const value = word.reduce((result, byte) => (result << 8n) | BigInt(byte), 0n);
+  return enumeration.members.some((member) => BigInt(member.value) === value);
+};
+
+const canonicalEvmValueLength = (
+  vector: Uint8Array, start: number, layout: EvmResultLayout, artifact: Artifact,
+): number | undefined => {
+  if (layout.kind === 'scalar') {
+    if (start + 32 > vector.length) return undefined;
+    return canonicalEvmScalar(vector.slice(start, start + 32), layout, artifact) ? 32 : undefined;
+  }
+  if (layout.kind === 'bytes') {
+    const length = decodeEvmWord(vector, start);
+    if (length === undefined) return undefined;
+    const padded = Math.ceil(length / 32) * 32;
+    const end = start + 32 + padded;
+    if (!Number.isSafeInteger(end) || end > vector.length) return undefined;
+    const padding = vector.slice(start + 32 + length, end);
+    return padding.every((byte) => byte === 0) ? 32 + padded : undefined;
+  }
+  if (layout.kind === 'array' && layout.bound === undefined) {
+    const count = decodeEvmWord(vector, start);
+    if (count === undefined || count > Math.floor(vector.length / 32)) return undefined;
+    const fields = Array.from({ length: count }, () => layout.children[0]);
+    const tupleLength = canonicalEvmTupleLength(vector, start + 32, fields, artifact);
+    return tupleLength === undefined ? undefined : 32 + tupleLength;
+  }
+  const fields = layout.kind === 'array'
+    ? Array.from({ length: layout.bound! }, () => layout.children[0]) : layout.children;
+  return canonicalEvmTupleLength(vector, start, fields, artifact);
+};
+
+const canonicalEvmTupleLength = (
+  vector: Uint8Array, start: number, fields: readonly EvmResultLayout[], artifact: Artifact,
+): number | undefined => {
+  const headLength = evmTupleHeadSize(fields);
+  if (!Number.isSafeInteger(headLength) || start + headLength > vector.length) return undefined;
+  let headOffset = 0;
+  let tailOffset = headLength;
+  for (const field of fields) {
+    if (field.dynamic) {
+      const relative = decodeEvmWord(vector, start + headOffset);
+      if (relative !== tailOffset || relative % 32 !== 0) return undefined;
+      const length = canonicalEvmValueLength(vector, start + relative, field, artifact);
+      if (length === undefined) return undefined;
+      tailOffset += length;
+      headOffset += 32;
+    } else {
+      const length = canonicalEvmValueLength(vector, start + headOffset, field, artifact);
+      if (length !== field.staticSize) return undefined;
+      headOffset += field.staticSize;
+    }
+  }
+  return tailOffset;
+};
+
+/** @internal Length of one canonical ABI tuple within a concatenated route result vector. */
+export const evmInvocationResultLength = (
+  vector: Uint8Array, cursor: number, resultTypes: readonly string[], artifact: Artifact,
 ): number => {
-  const unsupported = resultTypes.find((type) => !evmStaticResultType(type)
-    && !EVM_DYNAMIC_RESULT_TYPES.has(type));
-  if (unsupported) throw new Error(`messageBus: cannot split EVM ABI result type '${unsupported}'`);
-  const headLength = resultTypes.length * 32;
-  if (cursor + headLength > vector.length) throw new Error('messageBus: truncated EVM ABI result head');
-  const staticTypes = resultTypes.every((type) => evmStaticResultType(type));
-  if (staticTypes
-    && !isCanonicalEvmScalarReturnVector(vector.slice(cursor, cursor + headLength), resultTypes)) {
-    throw new Error('messageBus: non-canonical EVM ABI scalar result');
-  }
-  let length = headLength;
-  for (let index = 0; index < resultTypes.length; index += 1) {
-    if (!EVM_DYNAMIC_RESULT_TYPES.has(resultTypes[index])) continue;
-    const relative = decodeEvmWord(vector, cursor + index * 32);
-    const dataLength = decodeEvmWord(vector, cursor + relative);
-    length = Math.max(length, relative + 32 + Math.ceil(dataLength / 32) * 32);
-  }
-  if (cursor + length > vector.length) throw new Error('messageBus: truncated EVM ABI result tail');
+  const layouts = resultTypes.map((type) => evmResultLayout(artifact, type));
+  const unsupported = layouts.findIndex((layout) => layout === undefined);
+  if (unsupported >= 0) throw new Error(`messageBus: cannot split EVM ABI result type '${resultTypes[unsupported]}'`);
+  const length = canonicalEvmTupleLength(vector, cursor, layouts as EvmResultLayout[], artifact);
+  if (length === undefined) throw new Error('messageBus: malformed or non-canonical EVM ABI result');
   return length;
 };
 
 /** Accept either a raw invocation vector or the one-push aggregate used by participant return events. */
+const canonicalNativeResultField = (
+  vector: Uint8Array, cursor: number, type: string, structs: readonly StructDefinitionInfo[] | undefined,
+): { bytesConsumed: number; encoded: Uint8Array } => {
+  try {
+    const decoded = decodePushdataValue(vector, cursor, type, structs);
+    return {
+      bytesConsumed: decoded.bytesConsumed,
+      encoded: encodePushdataValue(decoded.value, type, structs),
+    };
+  } catch (error) {
+    // `encodeFunctionArgument` protects an empty top-level dynamic array count from an enclosing unlocking push by
+    // spelling the value as `01 00`. If that transport spelling is forwarded into a provisional result vector,
+    // consume it as exactly one empty array field and immediately restore the canonical result spelling (`00`).
+    const array = parseArrayTypeString(type);
+    if (array?.bound === undefined && vector[cursor] === 0x01 && vector[cursor + 1] === 0x00) {
+      return { bytesConsumed: 2, encoded: encodePushdataValue([], type, structs) };
+    }
+    throw error;
+  }
+};
+
 const preparedInvocationResult = (
   commitment: Uint8Array | undefined, artifact: Artifact, resultTypes: readonly string[],
+  publishedEncoding?: ExternalResultEncoding,
 ): string | undefined => {
   if (!commitment) return undefined;
-  const consumesExactly = (candidate: Uint8Array): boolean => {
+  const encoding = resolveExternalResultEncoding(
+    publishedEncoding, artifact, resultTypes, 'prepared invocation result',
+  );
+  const canonical = (candidate: Uint8Array): Uint8Array | undefined => {
     try {
-      if (artifactUsesSolidityAbi(artifact)) {
-        return evmInvocationResultLength(candidate, 0, resultTypes) === candidate.length;
+      if (encoding === 'evm-abi-v1') {
+        return evmInvocationResultLength(candidate, 0, resultTypes, artifact) === candidate.length
+          ? candidate : undefined;
       }
       let cursor = 0;
+      const fields: Uint8Array[] = [];
       for (const type of resultTypes) {
-        cursor += decodePushdataValue(candidate, cursor, type, artifact.structs).bytesConsumed;
+        const decoded = canonicalNativeResultField(candidate, cursor, type, artifact.structs);
+        cursor += decoded.bytesConsumed;
+        fields.push(decoded.encoded);
       }
-      return cursor === candidate.length;
+      return cursor === candidate.length ? concatBytes(fields) : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   };
-  if (consumesExactly(commitment)) return binToHex(commitment);
+  const direct = canonical(commitment);
+  if (direct) return binToHex(direct);
   try {
     const outer = decodePushdataValue(commitment, 0, 'bytes');
-    if (outer.value instanceof Uint8Array
-      && outer.bytesConsumed === commitment.length
-      && consumesExactly(outer.value)) return binToHex(outer.value);
+    if (outer.value instanceof Uint8Array && outer.bytesConsumed === commitment.length) {
+      const inner = canonical(outer.value);
+      if (inner) return binToHex(inner);
+      // An empty top-level dynamic array requires `01 00` when transported as an unlocking argument so its count
+      // byte survives the outer push. That transport escape is not the array value itself: result vectors use the
+      // canonical one-byte `00` count. Accept it only for this exact schema/value and normalize it immediately.
+      const only = resultTypes.length === 1 ? parseArrayTypeString(resultTypes[0]) : undefined;
+      if (only?.bound === undefined && outer.value.length === 0) {
+        return binToHex(encodePushdataValue([], resultTypes[0], artifact.structs));
+      }
+    }
   } catch {
     // The caller below reports one stable error for malformed prepared data.
   }
@@ -233,16 +1091,22 @@ const ownerParticipantArtifact = (artifact: Artifact, identityAnchorCount: numbe
   const capability = artifact.messageBus;
   const layout = capability?.route.blockLayout;
   if (!capability || !layout) throw new Error('messageBus: owner route publishes no block layout');
-  const { blockLayout } = messageBusParticipantLayout(layout, {
-    delegated: false, identityAnchorCount,
-  });
+  const identitySlots = Array.from({ length: identityAnchorCount }, (_unused, index) => ({
+    kind: 'identityAnchor' as const,
+    offset: layout.blockSize + index,
+  }));
   const effective = {
     ...artifact,
     messageBus: {
       ...capability,
       route: {
         ...capability.route,
-        blockLayout,
+        blockLayout: {
+          ...layout,
+          blockSize: layout.blockSize + identityAnchorCount,
+          slots: [...layout.slots, ...identitySlots],
+          fixedSuffix: (layout.fixedSuffix ?? 0) + identityAnchorCount,
+        },
       },
     },
   } as Artifact;
@@ -259,16 +1123,36 @@ const delegateParticipantArtifact = (artifact: Artifact, identityAnchorCount: nu
   const capability = artifact.messageBus;
   const layout = capability?.route.blockLayout;
   if (!capability || !layout) throw new Error('messageBus: delegate route publishes no block layout');
-  const { blockLayout } = messageBusParticipantLayout(layout, {
-    delegated: true, identityAnchorCount,
-  });
+  // The implementation executor and optional identity anchors follow the compiler-owned route block. Preserve
+  // that block's bounded runtime-resource region: moving trailingBase to the executor loses every route chunk.
+  const existingExecutor = layout.slots.find((slot) => slot.kind === 'lowLevelCall');
+  const executorOffset = existingExecutor?.offset ?? layout.blockSize;
+  const executorSlots = existingExecutor ? [] : [
+    { kind: 'lowLevelCall' as const, offset: executorOffset, slotIndex: 0 },
+  ];
+  const baseBlockSize = layout.blockSize + executorSlots.length;
+  const identitySlots = Array.from({ length: identityAnchorCount }, (_unused, index) => ({
+    kind: 'identityAnchor' as const,
+    offset: baseBlockSize + index,
+  }));
+  const slots = [
+    ...layout.slots,
+    ...executorSlots,
+    ...identitySlots,
+  ];
+  const blockSize = baseBlockSize + identityAnchorCount;
   const effective = {
     ...artifact,
     messageBus: {
       ...capability,
       route: {
         ...capability.route,
-        blockLayout,
+        blockLayout: {
+          ...layout,
+          blockSize,
+          slots,
+          fixedSuffix: (layout.fixedSuffix ?? 0) + executorSlots.length + identityAnchorCount,
+        },
       },
     },
   } as Artifact;
@@ -284,6 +1168,7 @@ const funderUtxo = (funder: AtomicMessageBusFunder | UnlockableUtxo): Unlockable
 const participantOf = (
   descriptor: CallDescriptor,
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+  outputLockingBytecode?: string,
 ): WorklistParticipant => {
   const logicalLockingBytecode = binToHex(addressToLockScript(descriptor.contract.target));
   const representedLogicalIdentity = [
@@ -294,10 +1179,14 @@ const participantOf = (
   const effectiveArtifact = descriptor.executor
     ? delegateParticipantArtifact(descriptor.artifact, identityAnchorCount)
     : ownerParticipantArtifact(descriptor.artifact, identityAnchorCount);
-  const effectiveLayout = effectiveArtifact.messageBus!.route.blockLayout!;
+  const effectiveLayout = effectiveArtifact.messageBus?.route?.blockLayout;
+  if (!effectiveLayout) {
+    throw new Error(
+      `messageBus: participant '${descriptor.artifact.contractName}' function '${descriptor.functionName}' has no compiled route`,
+    );
+  }
   const executorOffset = descriptor.executor
-    ? effectiveLayout.slots.find((slot) => slot.kind === 'lowLevelCall'
-      && slot.slotIndex === MESSAGE_BUS_DELEGATE_EXECUTOR_SLOT)?.offset
+    ? effectiveLayout.slots.find((slot) => slot.kind === 'lowLevelCall')?.offset
     : undefined;
   const logicalIdentityOffset = logicalLockingBytecode === descriptor.contract.inner.lockingBytecode
     ? 0
@@ -322,6 +1211,7 @@ const participantOf = (
   return {
     artifact: effectiveArtifact,
     lockingBytecode: descriptor.contract.inner.lockingBytecode,
+    ...(outputLockingBytecode !== undefined && { outputLockingBytecode }),
     ...(logicalLockingBytecode !== descriptor.contract.inner.lockingBytecode && {
       logicalLockingBytecode,
       logicalIdentityOffset,
@@ -342,21 +1232,102 @@ const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   return result;
 };
 
-const uint16 = (value: number): Uint8Array => {
-  if (!Number.isSafeInteger(value) || value < 0 || value > 0xffff) {
-    throw new Error(`messageBus: value ${value} does not fit canonical uint16-le framing`);
-  }
-  return Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
-};
+const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
 const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), value);
 const semanticJson = (value: unknown): string => JSON.stringify(
   value, (_key, field) => typeof field === 'bigint' ? field.toString() : field,
 );
 
+const hasDynamicStateMember = (
+  type: string,
+  structs: readonly StructDefinitionInfo[] | undefined,
+  visiting = new Set<string>(),
+): boolean => {
+  if (type === 'bytes' || type === 'string') return true;
+  const array = parseArrayTypeString(type);
+  if (array) return array.bound === undefined || hasDynamicStateMember(array.elementType, structs, visiting);
+  const definition = structs?.find((candidate) => candidate.name === type);
+  if (!definition) return false;
+  if (visiting.has(type)) return true;
+  const nested = new Set(visiting);
+  nested.add(type);
+  return definition.fields.some((field) => hasDynamicStateMember(field.type, structs, nested));
+};
+
+const appendOnlyStateSuffix = (
+  previous: Artifact,
+  replacement: Artifact,
+  supplied: Readonly<Record<string, StateValue>> = {},
+): Uint8Array => {
+  const oldLayout = previous.stateLayout;
+  const newLayout = replacement.stateLayout;
+  if (!oldLayout || !newLayout) throw new Error('messageBus: upgrade requires two stateful artifacts');
+  if (oldLayout.dataNftCount !== newLayout.dataNftCount
+    || oldLayout.commitmentLimit !== newLayout.commitmentLimit) {
+    throw new Error('messageBus: replacement does not preserve the existing data NFT geometry');
+  }
+  if (semanticJson(oldLayout.collections ?? []) !== semanticJson(newLayout.collections ?? [])
+    || semanticJson(oldLayout.mappings ?? []) !== semanticJson(newLayout.mappings ?? [])) {
+    throw new Error('messageBus: replacement does not preserve the existing collection geometry');
+  }
+  if (newLayout.variables.length < oldLayout.variables.length
+    || oldLayout.variables.some((variable, index) =>
+      semanticJson(variable) !== semanticJson(newLayout.variables[index]))) {
+    throw new Error('messageBus: replacement does not preserve the existing state-variable geometry');
+  }
+  const oldStructs = new Map((oldLayout.structs ?? []).map((definition) => [definition.name, definition]));
+  const newStructs = new Map((newLayout.structs ?? []).map((definition) => [definition.name, definition]));
+  for (const [name, definition] of oldStructs) {
+    if (semanticJson(definition) !== semanticJson(newStructs.get(name))) {
+      throw new Error(`messageBus: replacement changes existing struct '${name}'`);
+    }
+  }
+  const appended = newLayout.variables.slice(oldLayout.variables.length);
+  if (appended.length === 0) {
+    if (Object.keys(supplied).length > 0) {
+      throw new Error('messageBus: appendedState names fields which were not appended');
+    }
+    return new Uint8Array();
+  }
+  if (oldLayout.dataNftCount === 0) {
+    throw new Error('messageBus: append-only upgrade requires an existing data NFT');
+  }
+  const finalNft = oldLayout.dataNftCount - 1;
+  const oldTail = oldLayout.variables.filter((variable) => variable.nftIndex === finalNft);
+  let nextField = oldTail.length === 0 ? 0 : Math.max(...oldTail.map((variable) => variable.fieldIndex)) + 1;
+  for (const variable of appended) {
+    if (variable.nftIndex !== finalNft || variable.fieldIndex !== nextField
+      || variable.dynamic === true || variable.packed === true
+      || hasDynamicStateMember(variable.type, newLayout.structs)) {
+      throw new Error(
+        'messageBus: replacement fields must be a contiguous fixed-size suffix in the final existing data NFT',
+      );
+    }
+    nextField += 1;
+  }
+  const appendedNames = new Set(appended.map((variable) => variable.name));
+  const unknown = Object.keys(supplied).filter((name) => !appendedNames.has(name));
+  if (unknown.length > 0) {
+    throw new Error(`messageBus: appendedState may only initialize new fields (${unknown.join(', ')})`);
+  }
+  const parts = appended.map((variable) => encodePushdataValue(
+    supplied[variable.name] ?? getDefaultStateValue(variable.type, newLayout.structs),
+    variable.type,
+    newLayout.structs,
+  ));
+  return concat(...parts);
+};
+
 interface DeferredComputeController {
   hasUnresolved(): boolean;
+  /** Pending compute work, for naming what a stalled resolution could not learn. */
+  remaining?(): {
+    keccakUnresolved: number; keccakTotal: number;
+    ecrecoverUnresolved: number; ecrecoverTotal: number;
+  };
   resolve(
     program: ReturnType<TransactionBuilder['buildLibauthProgram']>, executionInput: number, inputBase: number,
+    candidateExecutions?: readonly number[],
   ): boolean;
   refresh(): TransactionBuilder;
 }
@@ -369,12 +1340,124 @@ interface ComputedValueChunkClaim {
   commitment: string;
 }
 
+export interface ComputedValueChunkSpanClaim {
+  offset: number;
+  resourceIdentity?: string;
+  resourcePart?: string;
+}
+
+/**
+ * Keep compiler-authenticated continuation slots inside their participant while compacting a published block.
+ * Claim offsets are absolute transaction coordinates; the returned size is participant-relative and never
+ * exceeds the compiler-published maximum.
+ */
+export function minimumActualSizeForComputedValueChunkClaims(
+  participant: number,
+  participantBase: number,
+  fixedSize: number,
+  maximumSize: number,
+  claims: readonly ComputedValueChunkSpanClaim[],
+): number {
+  if (![participant, participantBase, fixedSize, maximumSize].every(Number.isSafeInteger)
+    || participant < 0 || participantBase < 0 || fixedSize < 0 || maximumSize < fixedSize) {
+    throw new Error(`messageBus: participant ${participant} has invalid computed value-chunk span geometry`);
+  }
+  let minimumSize = fixedSize;
+  const offsets = new Map<number, string>();
+  const parts = new Map<string, number>();
+  const starts = new Map<string, number>();
+  const indices = new Map<string, Set<number>>();
+  for (const claim of claims) {
+    if (claim.resourceIdentity === undefined) continue;
+    const resourceIdentity = canonicalValueChunkProducerResourceIdentity(claim.resourceIdentity);
+    if (resourceIdentity === undefined || resourceIdentity !== claim.resourceIdentity) {
+      throw new Error(`messageBus: participant ${participant} has a non-canonical computed value-chunk resource identity`);
+    }
+    const part = /^(?:chunk:)(0|[1-9][0-9]*)$/.exec(claim.resourcePart ?? '');
+    if (part === null) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has a non-canonical resource part',
+      );
+    }
+    if (!Number.isSafeInteger(claim.offset)) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has an invalid absolute offset',
+      );
+    }
+    const localOffset = claim.offset - participantBase;
+    if (localOffset < fixedSize || localOffset >= maximumSize) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `offset ${claim.offset} is outside its published trailing range `
+        + `[${participantBase + fixedSize}, ${participantBase + maximumSize})`,
+      );
+    }
+    const chunkIndex = Number(part[1]);
+    if (!Number.isSafeInteger(chunkIndex)) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has an invalid chunk index',
+      );
+    }
+    const partIdentity = `${resourceIdentity}\u0000${part[0]}`;
+    const priorPartOffset = parts.get(partIdentity);
+    if (priorPartOffset !== undefined && priorPartOffset !== claim.offset) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `moves ${part[0]} from ${priorPartOffset} to ${claim.offset}`,
+      );
+    }
+    if (priorPartOffset === claim.offset) continue;
+    parts.set(partIdentity, claim.offset);
+    const priorOffsetOwner = offsets.get(claim.offset);
+    if (priorOffsetOwner !== undefined) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk offset ${claim.offset} is claimed by both `
+        + `'${priorOffsetOwner}' and '${resourceIdentity}'`,
+      );
+    }
+    offsets.set(claim.offset, resourceIdentity);
+    const runStart = localOffset - chunkIndex;
+    const priorStart = starts.get(resourceIdentity);
+    if (priorStart !== undefined && priorStart !== runStart) {
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + 'has conflicting chunk geometry',
+      );
+    }
+    starts.set(resourceIdentity, runStart);
+    const resourceIndices = indices.get(resourceIdentity) ?? new Set<number>();
+    resourceIndices.add(chunkIndex);
+    indices.set(resourceIdentity, resourceIndices);
+    minimumSize = Math.max(minimumSize, localOffset + 1);
+  }
+  for (const [resourceIdentity, resourceIndices] of indices) {
+    const maximumIndex = Math.max(...resourceIndices);
+    for (let index = 0; index <= maximumIndex; index += 1) {
+      if (resourceIndices.has(index)) continue;
+      throw new Error(
+        `messageBus: participant ${participant} computed value-chunk resource '${resourceIdentity}' `
+        + `omits chunk:${index}`,
+      );
+    }
+  }
+  return minimumSize;
+}
+
 type DeferredComputeBuilder = TransactionBuilder & {
   __messageBusDeferredCompute?: DeferredComputeController;
+  /** Counts the builder's own pending compute work, so a stall can name what stayed unresolved. */
+  getDeferredComputeRemainingForDiagnostics?: () => {
+    keccakUnresolved: number; keccakTotal: number;
+    ecrecoverUnresolved: number; ecrecoverTotal: number;
+  };
 };
 
 const graphRouteContext = (
   finalized: ReturnType<typeof finalizeAtomicInvocationGraph>, participant: number,
+  upgradeStateSuffixes: ReadonlyMap<string, Uint8Array> = new Map(),
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
   const rows = finalized.callManifest.rows;
@@ -394,6 +1477,20 @@ const graphRouteContext = (
       return concat(framed(targetLbc), Uint8Array.of(row.mode), selector, framed(args), framed(result));
     });
   const ownedRows = rows.filter((row) => row.kind === 0 && row.consumer === participant);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_GRAPH_EMISSIONS === '1') {
+    console.error('graph-emissions', JSON.stringify({
+      participant,
+      emissionCount: emissions.length,
+      emissionBytes: emissions.reduce((sum, entry) => sum + entry.length, 0),
+      emissionsHex: binToHex(concat(...emissions)),
+      rows: rows.map((row, index) => ({
+        index, kind: row.kind, parent: row.parent, owner: row.owner, consumer: row.consumer,
+        function: finalized.plan.invocations[index]?.function,
+        argsBytes: row.argsHex.length / 2, resultBytes: row.resultHex.length / 2,
+      })),
+    }));
+  }
   const callers = ownedRows.map((row) => framed(hexToBin(row.subjectHex)));
   const completions = ownedRows.map((row) => uint16(row.position));
   // Older/smaller routes authenticate one scalar caller category instead of the per-row graph caller stream.
@@ -401,6 +1498,9 @@ const graphRouteContext = (
   // its state-token category; root calls use the all-zero sentinel and resolve to authenticated tx.origin.
   const needsScalarCaller = execution.artifact.messageBus?.route.inputs.some(
     (input) => input.name === '__internal__msgSenderCategory',
+  ) === true;
+  const needsUpgradeBytecode = execution.artifact.messageBus?.route.inputs.some(
+    (input) => input.name === '__internal__upgradeBytecode',
   ) === true;
   const scalarCallerCategories = !needsScalarCaller ? [] : [...new Set(ownedRows.map((row) => {
     if (row.sourceOffset === 0xffff) return '00'.repeat(32);
@@ -434,13 +1534,32 @@ const graphRouteContext = (
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
+    __internal__lifecycleOwnerInput: BigInt(finalized.layout.participantInputs[participant]),
     ...(needsScalarCaller ? {
       __internal__msgSenderCategory: hexToBin(scalarCallerCategories[0] ?? '00'.repeat(32)),
+    } : {}),
+    ...(needsUpgradeBytecode ? {
+      __internal__upgradeBytecode: hexToBin(execution.outputLockingBytecode ?? execution.lockingBytecode),
+      __internal__upgradeStateSuffix: upgradeStateSuffixes.get(execution.lockingBytecode.toLowerCase())
+        ?? new Uint8Array(),
     } : {}),
     ...(execution.executionKind === 1 ? {
       // The delegate route executes against the owner block rooted at this participant's physical master. The
       // distinct implementation executor is pinned by executorOffset; it is not the state/master identity.
-      __internal__proxyMasterIndex: BigInt(finalized.layout.participantInputs[participant]),
+      //
+      // SOLIDC_DEBUG_OWNER_SENTINEL=1 substitutes a distinctive value for the participant owner. It exists to
+      // answer one question that stack dumps cannot: the outlined keccak fragment computes `base + 3` from
+      // whatever the route handed it as the owner, and with the real value (0) the resulting coordinate is
+      // indistinguishable from several other frame slots. With the sentinel the fragment's coordinate reads back
+      // as `sentinel + 3` if the owner argument really is its base, and unchanged if the base comes from another
+      // slot. The value is PER PARTICIPANT (0x11 + index) so a frame that resolves a coordinate from another
+      // participant's owner - the failure a single shared sentinel cannot distinguish from a neighbouring
+      // witness - reads back as that participant's sentinel instead. Debug only: never set outside a measurement.
+      __internal__proxyMasterIndex: BigInt(
+        (globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_OWNER_SENTINEL === '1'
+          ? 0x11 + participant : finalized.layout.participantInputs[participant],
+      ),
     } : {}),
     ...(blockhashSlot !== undefined && blockhashParameter !== undefined ? {
       [blockhashParameter]: BigInt(finalized.layout.participantInputs[participant] + blockhashSlot.offset),
@@ -465,6 +1584,12 @@ export class AtomicMessageBusComposition {
         const descriptor = call._messageBusCompositionDescriptor();
         return { ...descriptor, artifact: descriptor.contract.inner.artifact };
       });
+    for (const descriptor of descriptors) {
+      const selected = resolveMessageBusAbiFunction(
+        descriptor.artifact, descriptor.functionName, descriptor.selector,
+      );
+      if (selected?.selector !== undefined) descriptor.selector = selected.selector;
+    }
     if (descriptors.length < 2) {
       throw new Error('messageBus: atomic composition requires at least two prepared calls');
     }
@@ -480,6 +1605,41 @@ export class AtomicMessageBusComposition {
     if (descriptors.some((descriptor) => descriptor.contract.inner.provider !== provider)) {
       throw new Error('messageBus: all participants must use the same network provider');
     }
+    const upgradeOutputs = new Map<string, string>();
+    const upgradeStateSuffixes = new Map<string, Uint8Array>();
+    const upgradeDeclarations = new Map<string, number>();
+    for (const descriptor of descriptors) {
+      if (!descriptor.upgradeTarget) continue;
+      if (descriptor.executor !== undefined || descriptor.executionArtifact !== undefined) {
+        throw new Error('messageBus: upgrade targets cannot be attached to delegate execution routes');
+      }
+      const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
+      const declarations = (upgradeDeclarations.get(owner) ?? 0) + 1;
+      upgradeDeclarations.set(owner, declarations);
+      if (declarations !== 1) {
+        throw new Error('messageBus: an upgraded participant requires exactly one replacement target');
+      }
+      const stateSuffix = appendOnlyStateSuffix(
+        descriptor.contract.inner.artifact,
+        descriptor.upgradeTarget.artifact,
+        descriptor.upgradeTarget.appendedState,
+      );
+      const replacement = new Contract(
+        descriptor.upgradeTarget.artifact,
+        [...descriptor.upgradeTarget.constructorArgs] as ConstructorArgument[],
+        {
+          provider,
+          addressType: descriptor.contract.inner.addressType,
+          category: hexToBin(descriptor.contract.categoryId),
+        },
+      );
+      const outputLockingBytecode = replacement.lockingBytecode.toLowerCase();
+      if (outputLockingBytecode === owner) {
+        throw new Error('messageBus: an upgrade replacement must change the participant locking bytecode');
+      }
+      upgradeOutputs.set(owner, outputLockingBytecode);
+      upgradeStateSuffixes.set(owner, stateSuffix);
+    }
 
     const stateByContract = new Map<StatefulContract, Promise<Record<string, unknown>>>();
     const stateOf = (contract: StatefulContract): Promise<Record<string, unknown>> => {
@@ -492,12 +1652,11 @@ export class AtomicMessageBusComposition {
     };
     const descriptorWitnesses = await Promise.all(descriptors.map(async (descriptor) => {
       const artifact = descriptor.artifact;
-      const handler = artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === descriptor.functionName);
+      const abi = resolveMessageBusAbiFunction(artifact, descriptor.functionName, descriptor.selector);
+      const handler = resolveMessageBusHandler(artifact, descriptor.functionName, abi?.selector);
       const expressionBindings = handler?.batchKeyWitnesses?.filter((binding) =>
         binding.source === 'expression') ?? [];
       if (expressionBindings.length === 0) return Object.freeze({}) as Readonly<Record<string, FunctionArgument>>;
-      const abi = artifact.abi.find((candidate) => candidate.name === descriptor.functionName);
       if (!abi) throw new Error(`messageBus: ABI for '${descriptor.functionName}' is missing`);
       const state = await stateOf(descriptor.contract);
       const witnesses: Record<string, FunctionArgument> = {};
@@ -530,13 +1689,22 @@ export class AtomicMessageBusComposition {
     // row numbering before planning, so a route input named `_rN` receives the Nth invocation's proven key.
     const ownerWitnesses = new Map<string, Record<string, FunctionArgument>>();
     const ownerRows = new Map<string, number>();
+    const ownerActiveRouteKeys = new Map<string, Set<string>>();
     descriptors.forEach((descriptor, index) => {
       const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
       const row = ownerRows.get(owner) ?? 0;
       ownerRows.set(owner, row + 1);
       const aggregate = ownerWitnesses.get(owner) ?? {};
-      const handler = descriptor.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === descriptor.functionName);
+      const abi = resolveMessageBusAbiFunction(
+        descriptor.artifact, descriptor.functionName, descriptor.selector,
+      );
+      const handler = resolveMessageBusHandler(descriptor.artifact, descriptor.functionName, abi?.selector);
+      const activeRouteKeys = ownerActiveRouteKeys.get(owner) ?? new Set<string>();
+      for (const binding of handler?.batchKeyWitnesses ?? []) {
+        activeRouteKeys.add(binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput);
+        if (binding.alternateRouteInput) activeRouteKeys.add(binding.alternateRouteInput);
+      }
+      ownerActiveRouteKeys.set(owner, activeRouteKeys);
       for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>
         candidate.source === 'expression') ?? []) {
         const value = descriptorWitnesses[index][binding.routeInput];
@@ -575,8 +1743,13 @@ export class AtomicMessageBusComposition {
     for (const descriptor of descriptors) {
       const owner = descriptor.contract.inner.lockingBytecode.toLowerCase();
       const aggregate = ownerWitnesses.get(owner) ?? {};
+      const activeRouteKeys = ownerActiveRouteKeys.get(owner) ?? new Set<string>();
       for (const input of descriptor.artifact.messageBus?.route.inputs ?? []) {
         if (!input.name.startsWith('__message_bus_key_') || aggregate[input.name] !== undefined) continue;
+        // Direct-argument and msg.sender bindings are derived by encodeMessageBatch from the authenticated
+        // invocation row. Supplying an inactive filler for one of these active positions creates an artificial
+        // conflict with the real key and can never identify a physical entry.
+        if (activeRouteKeys.has(input.name)) continue;
         // An unrolled route's collection journal initializes every bounded row cache before dispatch. Reuse an
         // actually bound value from the same row-parameter family for unused capacity: those inactive caches then
         // alias one real logical entry and can share its proof safely. A distinct filler per row creates distinct
@@ -589,33 +1762,53 @@ export class AtomicMessageBusComposition {
       }
       ownerWitnesses.set(owner, aggregate);
     }
+    // Diagnostic (`SOLIDC_DEBUG_WITNESS_SIZES=min,max`): the route witness entries whose byte length falls in a
+    // window, with their names. A value the program compares as two covenant-sized pieces has to be found by
+    // length first: the parameter name then says where the composer filled it.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_WITNESS_SIZES !== undefined) {
+      const [minBytes, maxBytes] = String(
+        (globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_WITNESS_SIZES,
+      ).split(',').map((part) => Number(part));
+      for (const [owner, aggregate] of ownerWitnesses) {
+        const hits = Object.entries(aggregate).flatMap(([name, value]) => (
+          value instanceof Uint8Array && value.length >= (minBytes || 200) && value.length <= (maxBytes || 900)
+            ? [{ name, bytes: value.length, hex: binToHex(value).slice(0, 64) }] : []
+        ));
+        if (hits.length > 0) console.error('route-witness-sizes', { owner, hits });
+      }
+    }
     const workParticipants = descriptors.map((descriptor) => participantOf(
       descriptor,
       Object.freeze(ownerWitnesses.get(descriptor.contract.inner.lockingBytecode.toLowerCase()) ?? {}),
+      upgradeOutputs.get(descriptor.contract.inner.lockingBytecode.toLowerCase()),
     ));
 
     let next = 1;
     const plan = deriveCompiledGraphPlan({
       root: workParticipants[0],
       function: descriptors[0].functionName,
+      ...(descriptors[0].selector !== undefined && { selector: descriptors[0].selector }),
       args: descriptors[0].args,
       rootCaller,
       targets: {},
-      allowRuntimeBoundedLoops: this.options.preparedCalls !== undefined,
-      maximumBlobBytes: descriptors[0].contract.inner.provider.consensusLimits?.maximumStackItemBytes,
       target: ({ callsiteId, batchLogicalIndex, occurrence }) => {
         const descriptor = descriptors[next];
         if (!descriptor) return undefined;
         if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+        const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+        const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== undefined
-          && descriptor.batchLogicalIndex !== batchLogicalIndex) return undefined;
+          && descriptorLogical !== undefined
+          && descriptorLogical !== batchLogicalIndex) return undefined;
         if (batchLogicalIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== undefined
-          && descriptor.batchOccurrenceIndex !== occurrence) return undefined;
+          && descriptorOccurrence !== undefined
+          && descriptorOccurrence !== occurrence) return undefined;
         next += 1;
         return {
           participant: workParticipants[next - 1],
+          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
           ...(descriptor.targetLockingBytecode !== undefined && {
             targetLockingBytecode: descriptor.targetLockingBytecode,
           }),
@@ -625,21 +1818,32 @@ export class AtomicMessageBusComposition {
         const reached: number[] = [];
         for (let cursor = next; cursor < descriptors.length; cursor += 1) {
           const descriptor = descriptors[cursor];
+          const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
+          const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
           if (descriptor.callsiteId !== callsiteId
-            || descriptor.batchLogicalIndex !== batchLogicalIndex) break;
-          reached.push(descriptor.batchOccurrenceIndex ?? reached.length);
+            || descriptorLogical !== batchLogicalIndex) break;
+          if (descriptorOccurrence === undefined) {
+            // Transparent promotion always stamps occurrence; positional fallback is legacy `calls:` only.
+            if (this.options.requirePreparedIdentity === true) {
+              throw new Error(
+                `messageBus: prepared batched callsite ${callsiteId} row ${batchLogicalIndex} `
+                + 'omits its source occurrence',
+              );
+            }
+            reached.push(reached.length);
+            continue;
+          }
+          reached.push(descriptorOccurrence);
         }
         return reached.length > 0 || this.options.preparedCalls ? reached : undefined;
       },
-      occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
-        const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
+      occurrence: ({ participant, function: ownerFunction, selector, callsiteId, kind }) => {
+        const abiFunction = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
         const callsite = abiFunction?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
         if (!callsite) {
           throw new Error(`messageBus: compiler omitted occurrence metadata for callsite ${callsiteId}`);
         }
-        const maximum = preparedExternalCallOccurrenceScanLimit(
-          callsite, kind, descriptors.length - next,
-        );
+        const maximum = callsite.maximumOccurrences ?? (kind === 'conditional' ? 1 : 0);
         // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
         // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
         let count = 0;
@@ -654,8 +1858,9 @@ export class AtomicMessageBusComposition {
           const matches = callsite.rawFunctionName
             ? reached.functionName === callsite.rawFunctionName
             : callsite.rawSelector
-              ? reached.artifact.abi.find((candidate) => candidate.name === reached.functionName)
-                ?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
+              ? resolveMessageBusAbiFunction(
+                reached.artifact, reached.functionName, reached.selector,
+              )?.selector?.toLowerCase() === callsite.rawSelector.toLowerCase()
               : reached.functionName === callsite.functionName;
           if (!matches) break;
           count += 1;
@@ -687,6 +1892,7 @@ export class AtomicMessageBusComposition {
         return {
           participant: workParticipants[next - 1],
           function: descriptor.functionName,
+          ...(descriptor.selector !== undefined && { selector: descriptor.selector }),
           args: descriptor.args,
           ...(descriptor.targetLockingBytecode !== undefined && {
             targetLockingBytecode: descriptor.targetLockingBytecode,
@@ -717,6 +1923,180 @@ export class AtomicMessageBusComposition {
         + `${plan.invocations.length}`,
       );
     }
+    if (this.options.requirePreparedIdentity === true) {
+      // The SDK transport tags every descriptor it builds, starting with the root (`__preparedAtomicCalls` sets
+      // `producerPath` unconditionally), while a hand-written prepared call - the public
+      // `messageBus.compose({ preparedCalls })` API - carries no compiler identity at all and has nothing to
+      // agree with. Keying on the whole set rather than per descriptor keeps a transported descriptor that lost
+      // its path a refusal here instead of a silent skip.
+      const transported = descriptors.some((descriptor) => descriptor.producerPath !== undefined);
+      if (transported) {
+        plan.invocations.forEach((invocation, index) => {
+          assertPreparedInvocationIdentity(descriptors[index], invocation, index);
+        });
+      }
+    }
+    const suppliedSplits = this.options.lifecycleSplits ?? [];
+    const splitByParticipant = new Map<number, {
+      invocationIndex: number; funders: readonly UnlockableUtxo[]; createdValues: readonly bigint[];
+    }>();
+    for (const supplied of suppliedSplits) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) throw new Error(`messageBus: split invocation ${supplied.invocationIndex} is absent`);
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'split'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(`messageBus: invocation ${supplied.invocationIndex} is not one exact split participant`);
+      }
+      if (splitByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate split funding`);
+      }
+      if (supplied.funders.length !== participant.lifecycle.count
+        || supplied.createdValues.length !== participant.lifecycle.count
+        || supplied.createdValues.some((value) => typeof value !== 'bigint' || value <= 0n)) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funding does not match its exact count`);
+      }
+      const funders = supplied.funders.map(funderUtxo);
+      if (funders.some((funder) => funder.token !== undefined)) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funders must be token-free`);
+      }
+      const outpoints = new Set(funders.map((funder) => `${funder.txid.toLowerCase()}:${funder.vout}`));
+      if (outpoints.size !== funders.length) {
+        throw new Error(`messageBus: split participant ${invocation.callee} funder outpoints must be unique`);
+      }
+      splitByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex, funders, createdValues: supplied.createdValues,
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'split' && !splitByParticipant.has(participant.participant)) {
+        throw new Error(`messageBus: split participant ${participant.participant} lacks explicit funding`);
+      }
+    }
+    const suppliedMerges = this.options.lifecycleMerges ?? [];
+    const mergeByParticipant = new Map<number, {
+      invocationIndex: number; consumedMasters: readonly Utxo[];
+    }>();
+    for (const supplied of suppliedMerges) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) throw new Error(`messageBus: merge invocation ${supplied.invocationIndex} is absent`);
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'merge'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(`messageBus: invocation ${supplied.invocationIndex} is not one exact merge participant`);
+      }
+      if (mergeByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate merge inputs`);
+      }
+      if (supplied.consumedMasters.length !== participant.lifecycle.count) {
+        throw new Error(`messageBus: merge participant ${invocation.callee} inputs do not match its exact count`);
+      }
+      const outpoints = new Set(supplied.consumedMasters.map((input) =>
+        `${input.txid.toLowerCase()}:${input.vout}`));
+      if (outpoints.size !== supplied.consumedMasters.length) {
+        throw new Error(`messageBus: merge participant ${invocation.callee} input outpoints must be unique`);
+      }
+      mergeByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex,
+        consumedMasters: Object.freeze([...supplied.consumedMasters]),
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'merge' && !mergeByParticipant.has(participant.participant)) {
+        throw new Error(`messageBus: merge participant ${participant.participant} lacks explicit consumed masters`);
+      }
+    }
+    const suppliedSelfdestructs = this.options.lifecycleSelfdestructs ?? [];
+    const selfdestructByParticipant = new Map<number, {
+      invocationIndex: number; recipient: string | Uint8Array;
+    }>();
+    for (const supplied of suppliedSelfdestructs) {
+      const invocation = plan.invocations[supplied.invocationIndex];
+      if (!invocation) {
+        throw new Error(`messageBus: selfdestruct invocation ${supplied.invocationIndex} is absent`);
+      }
+      const participant = plan.participants[invocation.callee];
+      if (participant.lifecycle?.kind !== 'selfdestruct'
+        || participant.invocations.length !== 1 || participant.invocations[0] !== supplied.invocationIndex) {
+        throw new Error(
+          `messageBus: invocation ${supplied.invocationIndex} is not one exact selfdestruct participant`,
+        );
+      }
+      if (selfdestructByParticipant.has(invocation.callee)) {
+        throw new Error(`messageBus: participant ${invocation.callee} has duplicate selfdestruct recipient`);
+      }
+      const recipient = supplied.recipient;
+      if (typeof recipient === 'string' ? recipient.length === 0 : recipient.length === 0) {
+        throw new Error(`messageBus: selfdestruct participant ${invocation.callee} recipient is empty`);
+      }
+      selfdestructByParticipant.set(invocation.callee, {
+        invocationIndex: supplied.invocationIndex, recipient,
+      });
+    }
+    for (const participant of plan.participants) {
+      if (participant.lifecycle?.kind === 'selfdestruct'
+        && !selfdestructByParticipant.has(participant.participant)) {
+        throw new Error(
+          `messageBus: selfdestruct participant ${participant.participant} lacks an explicit recipient`,
+        );
+      }
+    }
+    for (const [index, descriptor] of descriptors.entries()) {
+      if (!descriptor.upgradeTarget) continue;
+      const invocation = plan.invocations[index];
+      const artifact = plan.participants[invocation.callee].artifact;
+      const handler = artifact.messageBus?.handlers.find((candidate) =>
+        candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      if (handler?.lifecycle?.kind !== 'upgrade') {
+        throw new Error('messageBus: a replacement target must be attached to its compiler-authored upgrade call');
+      }
+    }
+    if (upgradeOutputs.size > 0) {
+      const legacyParticipant = plan.participants.find((participant) =>
+        !participant.artifact.messageBus?.atomicMessageBus?.protocolVersions?.includes(2));
+      if (legacyParticipant) {
+        throw new Error(
+          `messageBus: participant '${legacyParticipant.artifact.contractName}' does not advertise atomic V2 support`,
+        );
+      }
+    }
+    for (const participant of plan.participants) {
+      const owner = participant.lockingBytecode.toLowerCase();
+      const selectedHandlers = participant.invocations.map((invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        return participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      });
+      const upgradeRows = selectedHandlers.flatMap((handler, index) =>
+        handler?.lifecycle?.kind === 'upgrade' ? [index] : []);
+      const hasTarget = upgradeOutputs.has(owner);
+      if (upgradeRows.length === 0 && hasTarget) {
+        throw new Error('messageBus: a replacement target requires a selected compiler-authored upgrade handler');
+      }
+      if (upgradeRows.length > 0 && !hasTarget) {
+        throw new Error('messageBus: a selected upgrade handler requires exactly one replacement target');
+      }
+      if (upgradeRows.length > 1) {
+        throw new Error('messageBus: an upgraded participant may select exactly one upgrade row');
+      }
+      if (upgradeRows.length === 1 && upgradeRows[0] !== selectedHandlers.length - 1) {
+        throw new Error('messageBus: the participant upgrade row must be its final invocation');
+      }
+    }
+    if (upgradeOutputs.size > 0) {
+      const signedInvocation = plan.invocations.find((invocation) => {
+        const artifact = plan.participants[invocation.callee].artifact;
+        const handler = artifact.messageBus?.handlers.find((candidate) =>
+          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+        return handler?.usesTransactionSignature === true
+          && handler.transactionSignaturePolicy?.hashType !== 'all';
+      });
+      if (signedInvocation) {
+        throw new Error(
+          `messageBus: upgrade graphs cannot include transaction-signature checks in '${signedInvocation.function}'`,
+        );
+      }
+    }
     assertAtomicParticipantCapacity(plan.participants.length);
     const hasResultDependentAncestor = (invocationIndex: number): boolean => {
       let parent = plan.invocations[invocationIndex]?.parent;
@@ -735,7 +2115,8 @@ export class AtomicMessageBusComposition {
         );
       }
       const handler = supplied.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === supplied.functionName);
+        candidate.name === supplied.functionName
+        && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
       const validationWitnesses = Object.fromEntries((handler?.batchKeyWitnesses ?? [])
         .filter((binding) => binding.source === 'expression')
         .map((binding) => [
@@ -748,9 +2129,11 @@ export class AtomicMessageBusComposition {
         .map((input, witnessIndex) => [input.name, participantExecution.batch.routeWitnesses[witnessIndex]]));
       const suppliedRow = encodeMessageBatch(supplied.artifact, [{
         function: supplied.functionName,
+        selector: invocation.selectorHex,
         args: supplied.args,
         callMode: invocation.callMode,
-        ...(invocation.caller !== null && handler?.usesMsgValue && { msgValue: 0n }),
+        ...(invocation.caller !== null && handler?.usesMsgValue
+          && (handler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
         logicalCaller: invocation.caller === null
           ? rootCaller : hexToBin(graphInvocationCallerIdentity(
             plan.participants, plan.invocations, invocation,
@@ -779,6 +2162,17 @@ export class AtomicMessageBusComposition {
       if (!contract?.categoryId) throw new Error('messageBus: every participant must have a resolved master category');
       return contract.categoryId;
     });
+    // Diagnostic (`SOLIDC_DEBUG_PARTICIPANT_CATEGORIES=1`): the master category of every participant, in plan
+    // order. A covenant that embeds the wrong category is only diagnosable against this list.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_PARTICIPANT_CATEGORIES === '1') {
+      console.error('participant-categories', plan.participants.map((participant, index) => ({
+        participant: participant.participant,
+        executionKind: participant.executionKind,
+        category: categories[index],
+        locking: participant.lockingBytecode.slice(0, 16),
+      })));
+    }
     // Public CREATE/proxy identities are authenticated by immutable SCID anchors. Resolve each required anchor
     // once per fixed-point assembly pass and supply it explicitly to the local builder: address(this) still comes
     // from the active covenant input, while an ordinary nested msg.sender can select this stable public identity.
@@ -797,29 +2191,18 @@ export class AtomicMessageBusComposition {
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
     const preparedResults = Object.fromEntries(returning.flatMap((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
-      let prepared: string | undefined;
-      try {
-        prepared = preparedInvocationResult(
-          descriptors[invocation.index]?.provisionalResultCommitment,
-          artifact,
-          invocation.resultTypes,
-        );
-      } catch (error) {
-        throw new Error(
-          `messageBus: prepared return for invocation ${invocation.index} '${invocation.function}' `
-          + `does not match [${invocation.resultTypes.join(', ')}]: `
-          + `participant framing=${artifactUsesSolidityAbi(artifact) ? 'evm' : 'native'}, `
-          + `descriptor framing=${artifactUsesSolidityAbi(descriptors[invocation.index].artifact) ? 'evm' : 'native'}; `
-          + `${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        );
-      }
+      const prepared = preparedInvocationResult(
+        descriptors[invocation.index]?.provisionalResultCommitment,
+        artifact,
+        invocation.resultTypes,
+        invocation.resultEncoding,
+      );
       return prepared === undefined ? [] : [[invocation.index, prepared] as const];
     }));
     const provisionalResults = Object.fromEntries(returning.map((invocation) => {
       const artifact = plan.participants[invocation.callee].artifact;
       return [invocation.index, preparedResults[invocation.index]
-        ?? provisionalInvocationResult(artifact, invocation.resultTypes)];
+        ?? provisionalInvocationResult(artifact, invocation.resultTypes, invocation.resultEncoding)];
     }));
     const propagateResultDependentArguments = (
       results: Readonly<Record<number, string>>,
@@ -828,30 +2211,47 @@ export class AtomicMessageBusComposition {
       for (const invocation of returning) {
         if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
         const resultHex = results[invocation.index];
-        if (resultHex === undefined || invocation.resultTypes.length !== 1) continue;
+        if (resultHex === undefined) continue;
         const artifact = plan.participants[invocation.callee].artifact;
-        let value: FunctionArgument | undefined;
-        if (artifactUsesSolidityAbi(artifact)) {
-          value = decodeEvmReturnValue(hexToBin(resultHex), invocation.resultTypes[0]);
-        } else {
-          try {
-            const bytes = hexToBin(resultHex);
-            const decoded = decodePushdataValue(bytes, 0, invocation.resultTypes[0], artifact.structs);
-            if (decoded.bytesConsumed === bytes.length) value = decoded.value as FunctionArgument;
-          } catch {
-            // Unsupported result shapes remain ordinary fixed-point claims; no argument is guessed.
-          }
-        }
+        const decoded = decodeAuthenticatedProducerResultVector(
+          hexToBin(resultHex), invocation.resultTypes,
+          artifact.structs ?? artifact.stateLayout?.structs,
+          invocation.resultEncoding === 'evm-abi-v1', artifact.enums,
+        );
+        const value = decoded === undefined
+          ? undefined
+          : (decoded.length === 1 ? decoded[0] : decoded) as FunctionArgument;
         if (value === undefined) continue;
         const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+        if (siblings.has(invocation.consumerCallsiteId)) {
+          throw new Error(
+            `Atomic graph has duplicate authenticated producer lane ${invocation.parent}:${invocation.consumerCallsiteId}.`,
+          );
+        }
         siblings.set(invocation.consumerCallsiteId, value);
         resultsByParent.set(invocation.parent, siblings);
       }
       let propagated = false;
-      const calls = descriptors.map((descriptor, index): PreparedAtomicMessageBusCall => {
+      const resolvedArguments = descriptors.map((descriptor, index): readonly FunctionArgument[] => {
         const invocation = plan.invocations[index];
         const siblingResults = invocation.parent === null
           ? undefined : resultsByParent.get(invocation.parent);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
+          console.error('atomic-result-descriptor', JSON.stringify({
+            invocation: index,
+            functionName: descriptor.functionName,
+            callee: plan.participants[invocation.callee]?.artifact.contractName,
+            parent: invocation.parent,
+            consumerCallsiteId: invocation.consumerCallsiteId,
+            nodeCallsiteId: descriptor.callsiteId,
+            sourceCallsiteId: descriptor.sourceCallsiteId,
+            sourceLogicalIndex: descriptor.sourceLogicalIndex,
+            batchLogicalIndex: descriptor.batchLogicalIndex,
+            hasResolver: descriptor.resolveArgsFromResults !== undefined,
+            siblingCallsites: siblingResults === undefined ? null : [...siblingResults.keys()],
+          }));
+        }
         const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
@@ -868,28 +2268,16 @@ export class AtomicMessageBusComposition {
         let args = descriptor.args;
         if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
           propagated = true;
-          args = resolved;
+          return resolved;
         }
-        return {
-          contract: descriptor.contract,
-          functionName: descriptor.functionName,
-          args,
-          ...(descriptor.callsiteId !== undefined && { callsiteId: descriptor.callsiteId }),
-          ...(descriptor.targetLockingBytecode !== undefined && {
-            targetLockingBytecode: descriptor.targetLockingBytecode,
-          }),
-          ...(descriptor.executionArtifact && { executionArtifact: descriptor.executionArtifact }),
-          ...(descriptor.executor && { executor: descriptor.executor }),
-          ...(results[index] !== undefined
-            ? { provisionalResultCommitment: hexToBin(results[index]) }
-            : descriptor.provisionalResultCommitment && {
-              provisionalResultCommitment: descriptor.provisionalResultCommitment,
-            }),
-          ...(descriptor.resolveArgsFromResults && {
-            resolveArgsFromResults: descriptor.resolveArgsFromResults,
-          }),
-        };
+        return args;
       });
+      // A changed row can alter a terminal collection value produced by a later sibling even when that later
+      // sibling's own public arguments are unchanged. Refresh all capable rows against the now-complete shared
+      // producer-path argument epoch, in source order, after argument propagation has been decided.
+      const calls = descriptors.map((descriptor, index) => rebuildPreparedInvocation(
+        descriptor, resolvedArguments[index], results[index], { refreshValueProductions: propagated },
+      ));
       return { propagated, calls };
     };
     // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions
@@ -908,10 +2296,26 @@ export class AtomicMessageBusComposition {
         this.resultPropagationDepth + 1,
       )._build();
     }
-    const eventSlots = plan.participants.flatMap((participant) =>
+    const fixedEventSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
         participant: participant.participant, offset: slot.offset,
       })));
+    const runtimeEventSlots = new Map<number, Array<{
+      participant: number; offset: number; runtimeRow: number; eventSignature: string;
+    }>>();
+    const eventSlots = () => [
+      ...fixedEventSlots,
+      ...[...runtimeEventSlots.values()].flat(),
+    ];
+    const hasRuntimeLoopEvents = plan.participants.some((participant) => participant.invocations.some(
+      (invocationIndex) => {
+        const invocation = plan.invocations[invocationIndex];
+        return participant.artifact.messageBus?.handlers.some((handler) =>
+          handler.name === invocation.function
+          && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase()
+          && (handler.runtimeLoopEvents?.length ?? 0) > 0);
+      },
+    ));
     const resourceSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots
         .filter((slot) => [
@@ -937,6 +2341,282 @@ export class AtomicMessageBusComposition {
         })));
     const hasComputedValueChunks = plan.participants.some((participant) =>
       participant.routeInputs.some((input) => input.name === '__internal__valueChunkOutputBase'));
+    const suppliedDeployments = this.options.childDeployments ?? [];
+    const usedDeployments = new Set<number>();
+    const materializedDeployments = plan.participants.flatMap((participant) => {
+      const owner = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+      const deploymentSlots = participant.blockLayout!.slots
+        .filter((slot) => slot.kind === 'deploy')
+        .sort((left, right) => left.offset - right.offset);
+      const transferSlots = participant.blockLayout!.slots
+        .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+      const transferFrameWidth = maximumRows > 0 && transferSlots.length % maximumRows === 0
+        ? transferSlots.length / maximumRows : 0;
+      return participant.invocations.flatMap((invocationIndex, row) => {
+        const descriptor = descriptors[invocationIndex];
+        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
+          candidate.selector === plan.invocations[invocationIndex].selectorHex);
+        const sites = handler?.childDeployments ?? [];
+        if (sites.length === 0) return [];
+        let expectedSpanOffset = 0;
+        if (sites.some((site, index) => {
+          const valid = site.siteIndex === index
+            && (site.occurrence === 'once'
+              || (site.occurrence === 'conditional' && site.activation !== undefined))
+            && (site.spanOffset ?? expectedSpanOffset) === expectedSpanOffset
+            && (site.spanWidth ?? site.totalOutputCount) === site.totalOutputCount;
+          expectedSpanOffset += site.totalOutputCount;
+          return !valid;
+        })) {
+          throw new Error(`messageBus: invocation ${invocationIndex} has no canonical deployment sequence`);
+        }
+        const deploymentSlot = deploymentSlots[row];
+        if (deploymentSlot?.slotIndex === undefined) {
+          throw new Error(`messageBus: compiler layout has no deployment slot for selected row ${row}`);
+        }
+        return sites.map((site) => {
+          const offset = deploymentSlot.offset + (site.spanOffset ?? sites.slice(0, site.siteIndex)
+            .reduce((width, prior) => width + prior.totalOutputCount, 0));
+          const inputTypes = handler?.inputs.map((input) => input.type) ?? [];
+          const solidityAbi = artifactUsesSolidityAbi(participant.artifact);
+          const activation = site.activation === undefined ? true
+            : evaluateChildDeploymentRecipe(site.activation, descriptor.args, inputTypes, solidityAbi);
+          if (typeof activation !== 'boolean') {
+            throw new Error(`messageBus: child deployment activation at site ${site.siteIndex} is not boolean`);
+          }
+          const suppliedIndex = suppliedDeployments.findIndex((candidate) =>
+            candidate.invocationIndex === invocationIndex && candidate.siteIndex === site.siteIndex);
+          if (!activation) {
+            if (suppliedIndex >= 0) {
+              throw new Error(
+                `messageBus: inactive child deployment at invocation ${invocationIndex}, site ${site.siteIndex} must not supply genesis`,
+              );
+            }
+            return {
+              participant: participant.participant,
+              invocation: invocationIndex,
+              siteIndex: site.siteIndex,
+              offset,
+              slotOffset: offset,
+              active: false as const,
+              outputs: [] as Output[],
+            };
+          }
+          if (suppliedIndex < 0) {
+            throw new Error(`messageBus: missing child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
+          }
+          if (usedDeployments.has(suppliedIndex)) {
+            throw new Error(`messageBus: duplicate child genesis for invocation ${invocationIndex}, site ${site.siteIndex}`);
+          }
+          usedDeployments.add(suppliedIndex);
+          const genesis = funderUtxo(suppliedDeployments[suppliedIndex].funder);
+          if (genesis.vout !== 0 || genesis.token) {
+            throw new Error(
+              `messageBus: child genesis for invocation ${invocationIndex}, site ${site.siteIndex} must be token-free vout 0`,
+            );
+          }
+          const childArtifact = owner._getChild(site.contractName);
+          if (!childArtifact?.stateLayout) {
+            throw new Error(`messageBus: registered stateful child artifact '${site.contractName}' is required`);
+          }
+          if (childArtifact.stateLayout.dataNftCount !== site.dataNftOutputCount) {
+            throw new Error(
+              `messageBus: registered child artifact '${site.contractName}' has deployment state geometry ${childArtifact.stateLayout.dataNftCount}, expected ${site.dataNftOutputCount}`,
+            );
+          }
+          if ((site.entryNftOutputCount ?? 0) !== (site.genesisEntries?.length ?? 0)) {
+            throw new Error(
+              `messageBus: child deployment site ${site.siteIndex} has inconsistent entry-genesis geometry`,
+            );
+          }
+          if (site.childLayoutDigest
+            && childStateLayoutDigest(childArtifact.stateLayout) !== site.childLayoutDigest.toLowerCase()) {
+            throw new Error(
+              `messageBus: registered child artifact '${site.contractName}' does not match deployment state layout`,
+            );
+          }
+          if (site.hasFoldedChildCall && !site.genesisState) {
+            throw new Error(
+              `messageBus: folded child initialization at site ${site.siteIndex} has no authenticated genesis state`,
+            );
+          }
+          if (site.genesisState) {
+            try {
+              validateChildDeploymentGenesisState(childArtifact.stateLayout, site.genesisState);
+            } catch (error) {
+              throw new Error(
+                `messageBus: invalid constructor genesis for '${site.contractName}': `
+                + `${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+          const constructorArgs = site.constructorArgs.slice(0, childArtifact.constructorInputs.length).map((source) => {
+            if (source.kind === 'expression') {
+              throw new Error(`messageBus: child constructor expression at site ${site.siteIndex} is not materializable`);
+            }
+            return evaluateChildDeploymentRecipe(source, descriptor.args, inputTypes, solidityAbi);
+          });
+          let salt: Uint8Array | undefined;
+          if (site.salt?.kind === 'handlerInput') {
+            const value = descriptor.args[site.salt.inputIndex];
+            salt = value instanceof Uint8Array ? value
+              : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
+                ? hexToBin(value.replace(/^0x/i, '')) : undefined;
+          } else if (site.salt?.kind === 'literal') salt = hexToBin(site.salt.value);
+          else if (site.salt?.kind === 'expression') {
+            throw new Error(`messageBus: child salt expression at site ${site.siteIndex} is not materializable`);
+          } else if (site.salt) {
+            const value = evaluateChildDeploymentRecipe(site.salt, descriptor.args, inputTypes, solidityAbi);
+            salt = value instanceof Uint8Array ? value
+              : typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)
+                ? hexToBin(value.replace(/^0x/i, '')) : undefined;
+          }
+          if (site.salt && !salt) throw new Error(`messageBus: invalid child salt at site ${site.siteIndex}`);
+          const effectiveArtifact = {
+            ...childArtifact,
+            bytecode: scriptToAsm(bytecodeToScript(hexToBin(site.creationBytecode))),
+          } as Artifact;
+          // Only contract-level parameters are baked into the locking bytecode. Solidity-style constructor
+          // parameters are consumed by the authenticated genesis recipe without changing the child's address.
+          const child = new Contract(effectiveArtifact, constructorArgs as never[], {
+            provider,
+            addressType: owner.inner.addressType,
+            category: hexToBin(genesis.txid),
+            ...(salt && { salt }),
+          });
+          let valueTransfer: { outputSlot: number; lockingBytecode: Uint8Array; amount: bigint } | undefined;
+          if (site.value) {
+            const amount = site.value.amount.kind === 'expression' ? undefined
+              : evaluateChildDeploymentRecipe(site.value.amount, descriptor.args, inputTypes, solidityAbi);
+            if (typeof amount !== 'bigint' || amount <= 0n || amount > 0xffff_ffff_ffff_ffffn) {
+              throw new Error(
+                `messageBus: child deployment value at site ${site.siteIndex} must be a positive uint64`,
+              );
+            }
+            const outputSlot = row * transferFrameWidth + site.value.transferIndex;
+            if (transferFrameWidth < 1 || !Number.isSafeInteger(site.value.transferIndex)
+              || site.value.transferIndex < 0 || site.value.transferIndex >= transferFrameWidth
+              || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
+              throw new Error(
+                `messageBus: child deployment site ${site.siteIndex} has no canonical transfer slot`,
+              );
+            }
+            valueTransfer = {
+              outputSlot,
+              lockingBytecode: addressToLockScript(child.address),
+              amount,
+            };
+          }
+          const genesisState = Object.fromEntries((site.genesisState?.fields ?? []).map((field) => [
+            field.name,
+            evaluateChildDeploymentRecipe(field.value, descriptor.args, inputTypes, solidityAbi),
+          ]));
+          const commitments = buildInitialStateCommitments(
+            childArtifact.stateLayout, genesisState as never,
+            provider.consensusLimits?.maximumNftCommitmentBytes,
+          );
+          if (commitments.length !== site.dataNftOutputCount) {
+            throw new Error(`messageBus: child deployment site ${site.siteIndex} produced incomplete default state`);
+          }
+          const outputs: Output[] = [{
+            to: addressToLockScript(child.address), amount: 1200n,
+            token: { category: genesis.txid, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+          }];
+          const dataAddress = getDataNftAddress(child, genesis.txid);
+          for (let nftIndex = 0; nftIndex < site.dataNftOutputCount; nftIndex++) {
+            outputs.push({
+              to: dataAddress, amount: 1200n,
+              token: {
+                category: genesis.txid, amount: 0n,
+                nft: { capability: 'mutable', commitment: commitments[nftIndex] },
+              },
+            });
+          }
+          for (const entry of site.genesisEntries ?? []) {
+            const collection = childArtifact.stateLayout.collections?.find((candidate) =>
+              candidate.name === entry.collection && candidate.signature === entry.collectionSignature);
+            if (!collection || !['array', 'mapping'].includes(collection.kind)
+              || (collection.kind === 'array' && collection.bound === undefined)
+              || collection.keyType !== entry.keyType || collection.valueType !== entry.valueType) {
+              throw new Error(
+                `messageBus: child deployment entry '${entry.collection}' does not match the authenticated layout`,
+              );
+            }
+            const key = evaluateChildDeploymentRecipe(entry.key, descriptor.args, inputTypes, solidityAbi);
+            const value = evaluateChildDeploymentRecipe(entry.value, descriptor.args, inputTypes, solidityAbi);
+            if (collection.kind === 'array'
+              && (typeof key !== 'bigint' || key < 0n || key >= BigInt(collection.bound!))) {
+              throw new Error(`messageBus: child deployment entry '${entry.collection}' has an invalid fixed-array key`);
+            }
+            const materializedKey = materializeChildDeploymentEntryScalar(key, entry.keyType, solidityAbi);
+            const materializedValue = materializeChildDeploymentEntryValue(
+              value, entry.valueType, solidityAbi, childArtifact.stateLayout.structs,
+            );
+            outputs.push({
+              to: getEntryNftLockingBytecode(child, genesis.txid, entry.collectionSignature),
+              amount: 1200n,
+              token: {
+                category: genesis.txid,
+                amount: 0n,
+                nft: {
+                  capability: 'mutable',
+                  commitment: buildEntryCommitment(
+                    materializedKey, entry.keyType, materializedValue, entry.valueType,
+                    childArtifact.stateLayout.structs,
+                    provider.consensusLimits?.maximumNftCommitmentBytes,
+                  ),
+                },
+              },
+            });
+          }
+          return {
+            participant: participant.participant,
+            invocation: invocationIndex,
+            siteIndex: site.siteIndex,
+            offset,
+            slotOffset: offset,
+            active: true as const,
+            genesis,
+            outputs,
+            ...(valueTransfer && { valueTransfer }),
+          };
+        });
+      });
+    });
+    if (usedDeployments.size !== suppliedDeployments.length) {
+      throw new Error('messageBus: child genesis input does not name a selected compiler-published deployment site');
+    }
+    const activeDeployments = materializedDeployments.filter((deployment) => deployment.active);
+    const genesisOutpoints = new Set(activeDeployments.map((deployment) =>
+      `${deployment.genesis!.txid.toLowerCase()}:${deployment.genesis!.vout}`));
+    if (genesisOutpoints.size !== activeDeployments.length) {
+      throw new Error('messageBus: child deployment genesis outpoints must be unique');
+    }
+    const deploymentEffects: AtomicDeploymentSlotEffect[] = materializedDeployments.map((deployment) => ({
+      participant: deployment.participant,
+      invocation: deployment.invocation,
+      siteIndex: deployment.siteIndex,
+      offset: deployment.offset,
+      active: deployment.active,
+      ...(deployment.active && {
+        genesisTransactionHashHex: deployment.genesis!.txid,
+        genesisOutputIndex: deployment.genesis!.vout,
+      }),
+      outputs: deployment.outputs.map((output) => {
+        if (!output.token?.nft) throw new Error('messageBus: child deployment output is missing its NFT');
+        return {
+          lockingBytecodeHex: binToHex(
+            typeof output.to === 'string' ? addressToLockScript(output.to) : output.to,
+          ),
+          tokenCategoryHex: output.token.category,
+          capability: output.token.nft.capability as 'minting' | 'mutable',
+          commitmentHex: output.token.nft.commitment,
+          tokenAmount: output.token.amount,
+          value: output.amount,
+        };
+      }),
+    }));
     const provisionalEventEffects: AtomicEventSlotEffect[] = [];
     const provisionalResourceEffects: AtomicResourceSlotEffect[] = [];
     const provisionalValueEffects: AtomicValueSlotEffect[] = [];
@@ -947,6 +2627,8 @@ export class AtomicMessageBusComposition {
       provisionalValueEffects,
       provisionalTokenEffects,
       provisionalSidecarEffects,
+      undefined,
+      deploymentEffects,
     );
 
     const participantReturnBlob = (
@@ -975,6 +2657,7 @@ export class AtomicMessageBusComposition {
       graphKey: string;
       resources: ReadonlyMap<number, { input: UnlockableUtxo; output: Output }>;
     }>();
+
     const rebalanceFeeTail = (builder: TransactionBuilder, subject: string): void => {
       const tail = builder.outputs.length - 1;
       const totalInput = builder.inputs.reduce((sum, input) => sum + input.satoshis, 0n);
@@ -991,20 +2674,56 @@ export class AtomicMessageBusComposition {
       return participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
         const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function);
-        return (handler?.emits ?? []).flatMap((emitted) => {
+          candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+        const signatures = [
+          ...(handler?.emits ?? []).map((emitted) => emitted.eventSignature),
+          ...(handler?.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures),
+        ];
+        return [...new Set(signatures)].flatMap((eventSignature) => {
           const event = participant.artifact.events?.find((candidate) =>
-            candidate.signature === emitted.eventSignature);
+            candidate.signature === eventSignature);
           if (!event) return [];
           const script = event?.anonymous
             ? buildAnonymousEventNftCovenantScript(category)
-            : buildEventNftCovenantScript(category, computeEventNameHash(emitted.eventSignature));
+            : buildEventNftCovenantScript(category, computeEventNameHash(eventSignature));
           return [{ event, lockingBytecode: binToHex(scriptToLockingBytecode(script, contract.inner.addressType)) }];
         });
       });
     };
     const eventLockingBytecodes = (participant: (typeof plan.participants)[number]): string[] =>
       eventCandidates(participant).map((candidate) => candidate.lockingBytecode);
+    // The lock the compiler published for one physical event site: frame row -> selected invocation -> selected
+    // handler -> the schema that handler emits at that slot index. Purely resource geometry: no handler, event or
+    // contract name participates, only the compiler's own published mapping.
+    const eventLockingBytecodeAtOffset = (
+      participant: (typeof plan.participants)[number], offset: number,
+    ): string | undefined => {
+      const frame = participant.artifact.messageBus?.route.graphEffectFrame;
+      if (!frame || frame.eventWidth < 1) return undefined;
+      const slot = participant.blockLayout!.slots.find((candidate) =>
+        candidate.kind === 'event' && candidate.offset === offset && candidate.slotIndex !== undefined);
+      if (slot?.slotIndex === undefined || slot.slotIndex < frame.eventBase) return undefined;
+      const relative = slot.slotIndex - frame.eventBase;
+      const localRow = Math.floor(relative / frame.eventWidth);
+      const emitIndex = relative % frame.eventWidth;
+      if (localRow >= frame.sites) return undefined;
+      const invocationIndex = participant.invocations[localRow];
+      const invocation = invocationIndex === undefined ? undefined : plan.invocations[invocationIndex];
+      const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers.find(
+        (candidate) => candidate.name === invocation.function
+          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase(),
+      );
+      const signature = handler?.emits?.find((emitted) => emitted.emitIndex === emitIndex)?.eventSignature;
+      const event = participant.artifact.events?.find((candidate) => candidate.signature === signature);
+      if (!event) return undefined;
+      const category = hexToBin(categories[participant.participant]);
+      const script = event.anonymous
+        ? buildAnonymousEventNftCovenantScript(category)
+        : buildEventNftCovenantScript(category, computeEventNameHash(event.signature));
+      const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+      return binToHex(scriptToLockingBytecode(script, contract.inner.addressType));
+    };
     const eventLockingBytecodeForCommitment = (
       participant: (typeof plan.participants)[number], commitment: string,
     ): string | undefined => {
@@ -1048,6 +2767,19 @@ export class AtomicMessageBusComposition {
         participant: number; variable: string; resolved: number; total: number;
       }> = [];
       const aggregateOutpoints = new Map<string, { participant: number; localIndex: number }>();
+      const registerAggregateInput = (
+        input: Pick<Utxo, 'txid' | 'vout'>, participant: number, localIndex: number, role: string,
+      ): void => {
+        const outpoint = `${input.txid.toLowerCase()}:${input.vout}`;
+        const prior = aggregateOutpoints.get(outpoint);
+        if (prior) {
+          throw new Error(
+            `messageBus: duplicate input outpoint ${outpoint} at ${role}; `
+            + `already used by participant ${prior.participant} input ${prior.localIndex}`,
+          );
+        }
+        aggregateOutpoints.set(outpoint, { participant, localIndex });
+      };
       const deferredBlocks: Array<{
         participant: number;
         inputBase: number;
@@ -1057,17 +2789,299 @@ export class AtomicMessageBusComposition {
         offsets: readonly number[];
       }> = [];
 
+      // Resource locks each participant's own build published, tagged by resource family. A stall diagnostic
+      // attributes an introspected aggregate coordinate in the TAIL - which lies beyond every participant
+      // block - by the lock its owner published, since no block layout can label it.
+      const resourceLocksByParticipant = new Map<number, ReadonlyArray<readonly [string, string]>>();
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const descriptor = descriptorByLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
-        const blockSize = participant.blockLayout!.blockSize;
+        const blockSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
         const returnCommitment = participantReturnCommitment(returnBlob);
-        const routeContext = graphRouteContext(graph, participant.participant);
+        const valueChunkProductions = new Map<
+          string, NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>[number]
+        >();
+        for (const invocationIndex of participant.invocations) {
+          for (const production of descriptors[invocationIndex].valueChunkProductions ?? []) {
+            const claim = canonicalValueChunkProducerResourceClaim(production.claim);
+            const resourceIdentity = claim?.resourceIdentity;
+            const writeResourceIdentity = canonicalValueChunkProducerResourceIdentity(
+              valueChunkWriteResourceIdentity(production.write),
+            );
+            const producerIdentity = claim && canonicalValueChunkProducerIdentity(claim.producer);
+            const stateOwner = canonicalValueChunkStateOwner(production.stateOwner);
+            const producerStateOwner = claim && canonicalValueChunkStateOwner(claim.producer.stateOwner);
+            if (!resourceIdentity || resourceIdentity !== writeResourceIdentity
+              || !producerIdentity || !stateOwner || stateOwner !== producerStateOwner) {
+              throw new Error(
+                `messageBus: invocation ${invocationIndex} carries an invalid value-chunk production identity`,
+              );
+            }
+            const identity = JSON.stringify([resourceIdentity, producerIdentity]);
+            const shape = JSON.stringify([
+              production.write.categoryId.toLowerCase(), production.write.collection,
+              production.write.collectionSignature, production.write.collectionHash.toLowerCase(),
+              production.write.keySlot.toLowerCase(), production.write.entryAccessSlot,
+              production.write.routeSlot, production.write.operation, production.write.outputBase,
+              production.write.outputCount, stateOwner, binToHex(production.value),
+            ]);
+            const prior = valueChunkProductions.get(identity);
+            if (prior) {
+              const priorShape = JSON.stringify([
+                prior.write.categoryId.toLowerCase(), prior.write.collection,
+                prior.write.collectionSignature, prior.write.collectionHash.toLowerCase(),
+                prior.write.keySlot.toLowerCase(), prior.write.entryAccessSlot, prior.write.routeSlot,
+                prior.write.operation, prior.write.outputBase, prior.write.outputCount,
+                canonicalValueChunkStateOwner(prior.stateOwner), binToHex(prior.value),
+              ]);
+              if (priorShape !== shape) {
+                throw new Error(
+                  `messageBus: conflicting value-chunk productions for invocation ${invocationIndex}`,
+                );
+              }
+              continue;
+            }
+            valueChunkProductions.set(identity, production);
+          }
+        }
+        // One storage resource written by several batched rows of the same route accumulates a chain of
+        // productions: the first row's claim is the value after row 1, the next row's claim the value after
+        // row 2, and so on. Only the terminal write persists, so keep the highest mutation ordinal per resource
+        // and drop the intermediate lanes: the routed builder accepts exactly one terminal claim per resource
+        // (selectSingletonValueChunkProducer), and a superseded lane's value would never be observable.
+        const terminalProducerByResource = new Map<string, string>();
+        const terminalOrdinalByResource = new Map<string, number>();
+        for (const production of valueChunkProductions.values()) {
+          const resource = valueChunkWriteResourceIdentity(production.write);
+          const ordinal = production.claim.producer.mutationSourceEffectOrdinal;
+          const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
+          if (producer === undefined) continue;
+          if ((terminalOrdinalByResource.get(resource) ?? -1) > ordinal) continue;
+          terminalOrdinalByResource.set(resource, ordinal);
+          terminalProducerByResource.set(resource, producer);
+        }
+        for (const [identity, production] of [...valueChunkProductions]) {
+          const resource = valueChunkWriteResourceIdentity(production.write);
+          const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
+          if (terminalProducerByResource.get(resource) !== producer) valueChunkProductions.delete(identity);
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && valueChunkProductions.size > 0) {
+          console.error('atomic-transported-value-productions', {
+            participant: participant.participant,
+            count: valueChunkProductions.size,
+            resources: [...valueChunkProductions.values()].map((production) => (
+              valueChunkWriteResourceIdentity(production.write)
+            )),
+          });
+        }
+        const valueChunkSlots = participant.blockLayout!.slots
+          .filter((slot) => slot.kind === 'trailing')
+          .sort((left, right) => left.offset - right.offset);
+        const transportedValueChunks = [...valueChunkProductions.values()].map((production) => {
+          const lockingBytecode = persistValueChunkLock(
+            production.stateOwner.categoryId, production.value, production.write,
+          );
+          if (!lockingBytecode) {
+            throw new Error('messageBus: transported value production has no continuation covenant');
+          }
+          return {
+            production,
+            chunks: chunksFromValue(production.value, {
+              lockingBytecode, write: production.write, categoryId: production.stateOwner.categoryId,
+            }),
+          };
+        });
+        const transportedChunkCount = transportedValueChunks.reduce(
+          (count, candidate) => count + candidate.chunks.length, 0,
+        );
+        if (transportedChunkCount > valueChunkSlots.length) {
+          throw new Error(
+            `messageBus: participant ${participant.participant} needs ${transportedChunkCount} continuation `
+            + `slots but publishes ${valueChunkSlots.length}`,
+          );
+        }
+        // After terminal-per-resource selection, each distinct storage resource contributes one lane. Multiple
+        // lanes are packed as consecutive trailing bands under one owner; the scalar
+        // `__internal__valueChunkOutputBase` remains band[0], and ordered continuationResourceClaims authenticate
+        // every later band. Multi-owner productions on one carrier remain refused downstream.
+        const ownerKeys = new Set(transportedValueChunks.map((candidate) => (
+          canonicalValueChunkStateOwner(candidate.production.stateOwner)
+        )));
+        if (ownerKeys.has(undefined) || ownerKeys.size > 1) {
+          throw new Error('One routed execution carrier cannot own value productions from multiple state owners.');
+        }
+        const selectedValueChunkSlots = transportedChunkCount === 0
+          ? [] : valueChunkSlots.slice(-transportedChunkCount);
+        if (selectedValueChunkSlots.some((slot, index) => index > 0
+          && slot.offset !== selectedValueChunkSlots[index - 1]!.offset + 1)) {
+          throw new Error('messageBus: transported continuation slots are not one consecutive trailing run');
+        }
+        const participantInputBase = graph.layout.participantInputs[participant.participant];
+        let bandCursor = 0;
+        const continuationResourceClaims: TransportedContinuationResourceClaim[] = [];
+        for (const candidate of transportedValueChunks) {
+          const chunkCount = candidate.chunks.length;
+          if (chunkCount === 0) {
+            throw new Error('messageBus: transported value production published an empty continuation band');
+          }
+          const bandOffset = selectedValueChunkSlots[bandCursor]!.offset;
+          const absoluteBase = participantInputBase + bandOffset;
+          const write = {
+            ...candidate.production.write,
+            outputBase: absoluteBase,
+            outputCount: chunkCount,
+          };
+          // Productions arriving from graph promotion are frozen; replace the map entry rather than mutate.
+          const nextProduction = Object.freeze({
+            ...candidate.production,
+            write: Object.freeze({ ...write }),
+          });
+          const producerIdentity = canonicalValueChunkProducerIdentity(nextProduction.claim.producer);
+          const resourceIdentity = canonicalValueChunkProducerResourceIdentity(
+            valueChunkWriteResourceIdentity(write),
+          );
+          if (!producerIdentity || !resourceIdentity) {
+            throw new Error('messageBus: transported continuation production lost its canonical identity');
+          }
+          valueChunkProductions.set(JSON.stringify([resourceIdentity, producerIdentity]), nextProduction);
+          candidate.production = nextProduction;
+          const claim = buildTransportedContinuationResourceClaim({
+            owner: nextProduction.stateOwner,
+            collectionSignature: write.collectionSignature,
+            collectionHash: write.collectionHash,
+            keySlot: write.keySlot,
+            digest: binToHex(sha256(nextProduction.value)),
+            chunkCount,
+            bandOffset,
+            producerClaim: nextProduction.claim,
+          });
+          if (!claim) {
+            throw new Error('messageBus: transported continuation resource claim is not canonical');
+          }
+          continuationResourceClaims.push(claim);
+          bandCursor += chunkCount;
+        }
+        const orderedContinuationClaims = continuationResourceClaims.length === 0
+          ? [] : orderTransportedContinuationResourceClaims(continuationResourceClaims);
+        if (continuationResourceClaims.length > 0 && orderedContinuationClaims === undefined) {
+          throw new Error('messageBus: transported continuation resource claims are not an ordered band list');
+        }
+        // Defer absolute valueChunk/dyn/PredOut to ONE resolveParticipantAbsoluteWitnesses pass after the
+        // local frame exists (PredOut content-match needs outputs). Pass the participant-local slot offset
+        // here so `_batchRaw` can build; the unlocker sync below rebases every absolute from that single result.
+        const valueChunkSlotOffset = transportedChunkCount > 0
+          ? selectedValueChunkSlots[0]!.offset : undefined;
+        const pendingValueChunkClaim = valueChunkSlotOffset === undefined ? undefined : {
+          localSlotOffset: valueChunkSlotOffset,
+          chunkCount: transportedChunkCount,
+          collection: transportedValueChunks[0]?.production.write.collectionSignature ?? 'valueChunk',
+        };
+        const internalRouteWitnesses = {
+          ...graphRouteContext(graph, participant.participant, upgradeStateSuffixes),
+          ...(pendingValueChunkClaim !== undefined && {
+            __internal__valueChunkOutputBase: BigInt(pendingValueChunkClaim.localSlotOffset),
+          }),
+        };
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+          console.error('atomic-lane-bind', JSON.stringify({
+            participant: participant.participant,
+            transportedChunkCount,
+            valueChunkSlots: valueChunkSlots.length,
+            selected: selectedValueChunkSlots.map((slot) => slot.offset),
+            claims: (orderedContinuationClaims ?? []).map((claim) => ({
+              resource: claim.producerClaim.resourceIdentity,
+              bandOffset: claim.bandOffset,
+              chunkCount: claim.chunkCount,
+              digest: claim.digest.slice(0, 16),
+            })),
+            transported: transportedValueChunks.map((candidate) => ({
+              bytes: candidate.production.value.length,
+              chunks: candidate.chunks.length,
+              digest: binToHex(sha256(candidate.production.value)).slice(0, 16),
+              outputBase: candidate.production.write.outputBase,
+            })),
+            base: transportedChunkCount > 0
+              ? participantInputBase + selectedValueChunkSlots[0]!.offset
+              : undefined,
+          }));
+        }
+        // Each row's `msg.sender` is the compiler-published caller identity of the participant that CALLS that
+        // row - never the transaction origin, and never inferred from proxy/delegate executor geometry. The
+        // `__internal__graphCallers` stream already carries per-row subjects from finalization; the frame probe
+        // annotation below uses the shared subject only when every local row publishes the same one.
+        const graphCallers = participant.invocations.map((invocationIndex) => {
+          const planned = plan.invocations[invocationIndex];
+          if (planned === undefined || planned.caller === null) return undefined;
+          return planned.callerIdentity
+            ?? graphInvocationCallerIdentity(plan.participants, plan.invocations, planned);
+        });
+        const sharedCallerLocks = [...new Set(graphCallers
+          .filter((identity): identity is NonNullable<typeof identity> => identity !== undefined)
+          .map((identity) => identity.lockingBytecode.toLowerCase()))];
+        const frameInvocation = plan.invocations[participant.invocations[0]!];
+        const frameCaller = sharedCallerLocks.length === 1
+          ? graphCallers.find((identity) => identity !== undefined)
+          : undefined;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_PARTICIPANT_ROWS === '1') {
+          // One participant frame batches several rows, and each row's `msg.sender` is the identity of the
+          // participant that called THAT row - a frame-level caller is only valid when every row agrees.
+          console.error('participant-rows', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            frameCaller: frameCaller === undefined ? undefined
+              : `${frameInvocation?.caller === null ? 'root' : plan.participants[frameInvocation!.caller!]
+                ?.artifact.contractName}:${frameCaller.lockingBytecode.slice(0, 16)}`,
+            rows: participant.invocations.map((invocationIndex, rowIndex) => {
+              const planned = plan.invocations[invocationIndex];
+              const descriptor = descriptors[invocationIndex];
+              const caller = planned?.caller === null || planned?.caller === undefined
+                ? undefined : plan.participants[planned.caller];
+              const resolved = graphCallers[rowIndex];
+              return {
+                function: descriptor?.functionName,
+                localRow: planned?.localRow,
+                caller: caller?.artifact.contractName,
+                callerLock: resolved?.lockingBytecode.slice(0, 16),
+                callerRole: resolved?.role,
+                authOffset: resolved?.authOffset,
+              };
+            }),
+          }));
+        }
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+          // The hidden witnesses ARE the coordinates a frame computes its block slots from. Printing the band each
+          // participant's own batch receives is the only way to tell a frame that was handed another participant's
+          // base from one whose own slot offset is wrong.
+          const band = (name: string): string => {
+            const value = (internalRouteWitnesses as Record<string, unknown>)[name];
+            return value instanceof Uint8Array
+              ? `${value.length}b:${binToHex(value).slice(0, 24)}` : String(value);
+          };
+          console.error('participant-witness-band', JSON.stringify({
+            participant: participant.participant,
+            contract: participant.artifact.contractName,
+            executionKind: participant.executionKind,
+            base: graph.layout.participantInputs[participant.participant],
+            executorOffset: participant.executorOffset,
+            proxyMasterIndex: band('__internal__proxyMasterIndex'),
+            activeVerifierIndex: band('__internal__activeVerifierIndex'),
+            returnOutputIdx: band('__internal__returnOutputIdx'),
+            dynamicChunkInputBase: band('__internal__dynamicChunkInputBase'),
+            calls: participant.invocations.map((invocationIndex) => ({
+              function: plan.invocations[invocationIndex]?.function,
+              callee: plan.invocations[invocationIndex]?.callee,
+            })),
+          }));
+        }
         const localCall = contract._batchRaw(
           participant.batch.blob,
           participant.batch.routeWitnesses as FunctionArgument[],
-          routeContext,
+          internalRouteWitnesses,
           graph.layout.participantInputs[participant.participant],
           returnBlob !== undefined,
           returnCommitment,
@@ -1075,44 +3089,152 @@ export class AtomicMessageBusComposition {
           descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
           participant.invocations.map((invocationIndex) => {
             const invocation = descriptors[invocationIndex];
+            const plannedInvocation = plan.invocations[invocationIndex];
             const handler = participant.artifact.abi.find((candidate) =>
-              candidate.name === invocation.functionName);
+              candidate.name === invocation.functionName
+              && candidate.selector?.toLowerCase() === plannedInvocation.selectorHex.toLowerCase());
             if (!handler) {
               throw new Error(`messageBus: handler ABI '${invocation.functionName}' is missing`);
             }
-            return { args: invocation.args, handler };
+            return {
+              args: invocation.args,
+              handler,
+              sourceCallsiteId: plannedInvocation.sourceCallsiteId,
+              sourceLogicalIndex: plannedInvocation.sourceLogicalIndex,
+              occurrenceIndex: plannedInvocation.occurrenceIndex,
+              sourceEffectOrdinal: plannedInvocation.sourceEffectOrdinal,
+              producerPath: plannedInvocation.producerPath,
+            };
           }),
           logicalIdentities.get(participant.participant),
+          Object.freeze([...valueChunkProductions.values()]),
+          frameCaller === undefined ? undefined : hexToBin(frameCaller.lockingBytecode),
         );
+        // `_withChildDeployment` / `_withCompilerTransfer*` below force `StatefulFunctionCall._applyOverrides` to
+        // REBUILD the frame, and that rebuild carries the call object's identity - so record it on the call too,
+        // not only in the initial build above.
+        // The category of the participant that CALLS this frame (the compiler resolves `msg.sender` from it).
+        if (frameCaller !== undefined) {
+          const callerParticipant = frameInvocation?.caller === null || frameInvocation?.caller === undefined
+            ? undefined : plan.participants[frameInvocation.caller];
+          const callerDescriptor = callerParticipant === undefined
+            ? undefined : descriptors[callerParticipant.invocations[0]!];
+          localCall.withCallerIdentity(
+            hexToBin(frameCaller.lockingBytecode),
+            callerDescriptor?.contract.categoryId,
+          );
+        }
+        for (const deployment of materializedDeployments) {
+          if (deployment.participant !== participant.participant || !deployment.active
+            || !('genesis' in deployment)) continue;
+          localCall._withChildDeployment(
+            deployment.slotOffset, deployment.genesis, deployment.outputs,
+          );
+          if (deployment.valueTransfer) {
+            localCall._withCompilerTransfer(
+              deployment.valueTransfer.outputSlot,
+              deployment.valueTransfer.lockingBytecode,
+              deployment.valueTransfer.amount,
+            );
+          }
+        }
         // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
         // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
         // invocation manifest, so materialize them directly instead of asking the isolated probe to discover an
         // output at a shifted absolute index. The final covenant still verifies recipient and amount in-place.
+        const occupiedCompilerTransferSlots = new Set<number>();
         for (const invocationIndex of participant.invocations) {
           const invocation = plan.invocations[invocationIndex];
           const handler = participant.artifact.messageBus?.handlers.find(
             (candidate) => candidate.selector === invocation.selectorHex,
           );
           const supplied = descriptors[invocationIndex];
+          const authenticatedState = await stateOf(contract) as Readonly<Record<string, FunctionArgument>>;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process
+            ?.env?.SOLIDC_DEBUG_PARTICIPANT_STATE === '1') {
+            // Address-typed state fields are the identities a graph row publishes: the contract reads them from its
+            // own cache lane and the plan builds the expected emission rows from the same values. Printing the plan's
+            // values per participant is what decides whether a mismatching row lane is a plan defect or a read defect.
+            const stateLayout = participant.artifact.stateLayout;
+            const addressFields = (stateLayout?.variables ?? []).filter(
+              (variable) => /address|bytes20|bytes32/.test(String(variable.type)),
+            );
+            console.error('participant-state', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              fields: addressFields.map((variable) => ({
+                name: variable.name,
+                type: String(variable.type),
+                nftIndex: variable.nftIndex,
+                fieldIndex: variable.fieldIndex,
+                value: String(authenticatedState[variable.name] ?? '(undefined)').slice(0, 80),
+              })),
+            }));
+          }
           for (const transfer of handler?.transfers ?? []) {
-            const recipient = transfer.recipient.kind === 'forward'
-              && transfer.recipient.paramIndex !== undefined
-              ? supplied.args[transfer.recipient.paramIndex] : undefined;
-            const amountValue = transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
-              ? supplied.args[transfer.amount.paramIndex]
-              : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
-                ? BigInt(transfer.amount.value) : undefined;
-            if (!(recipient instanceof Uint8Array) || typeof amountValue !== 'bigint') {
+            if (transfer.condition === null) {
               throw new Error(
-                `messageBus: BCH transfer in '${invocation.function}' is not a forwarded/literal canonical effect`,
+                `messageBus: BCH transfer predicate in '${invocation.function}' is not a canonical recipe`,
               );
             }
-            localCall.transfer(recipient, amountValue);
+            if (transfer.condition !== undefined && !(await contract._resolveCompilerEffectPredicate(
+              transfer.condition, supplied.args, handler!, supplied.executionArtifact ?? participant.artifact,
+              authenticatedState,
+            ))) continue;
+            const executionArtifact = supplied.executionArtifact ?? participant.artifact;
+            const inputTypes = handler!.inputs.map((input) => input.type);
+            const logicalCaller = invocation.caller === null
+              ? rootCaller : hexToBin(graphInvocationCallerIdentity(
+                plan.participants, plan.invocations, invocation,
+              ).lockingBytecode);
+            const materialized = materializeFixedBchTransfer(
+              transfer, supplied.args, inputTypes, executionArtifact, provider,
+              authenticatedState, logicalCaller,
+            );
+            const transferSlots = participant.blockLayout!.slots
+              .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);
+            const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
+            const frameWidth = maximumRows > 0 && transferSlots.length % maximumRows === 0
+              ? transferSlots.length / maximumRows : 0;
+            const outputSlot = invocation.localRow * frameWidth + transfer.transferIndex;
+            if (frameWidth < 1 || transfer.transferIndex < 0 || transfer.transferIndex >= frameWidth
+              || !transferSlots.some((slot) => slot.slotIndex === outputSlot)) {
+              throw new Error(`messageBus: BCH transfer in '${invocation.function}' has no canonical slot`);
+            }
+            if (occupiedCompilerTransferSlots.has(outputSlot)) {
+              throw new Error(
+                `messageBus: multiple BCH transfer recipes selected physical slot ${outputSlot}`,
+              );
+            }
+            occupiedCompilerTransferSlots.add(outputSlot);
+            localCall._withCompilerTransfer(
+              outputSlot, materialized.lockingBytecode, materialized.amount,
+            );
           }
         }
         let local: TransactionBuilder;
         try {
           local = await localCall.build();
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-local-placement', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              base: graph.layout.participantInputs[participant.participant],
+              outputs: local.outputs.map((output, index) => ({
+                index,
+                lock: typeof output.to === 'string' ? output.to : binToHex(output.to as Uint8Array),
+                commitment: output.token?.nft?.commitment,
+                capability: output.token?.nft?.capability,
+              })),
+            }));
+          }
+        const publishedLocks = (local as {
+          __messageBusResourceLocks?: ReadonlyArray<readonly [string, string]>;
+        }).__messageBusResourceLocks;
+        if (publishedLocks && publishedLocks.length > 0) {
+          resourceLocksByParticipant.set(participant.participant, publishedLocks);
+        }
         } catch (error) {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
@@ -1124,91 +3246,176 @@ export class AtomicMessageBusComposition {
             { cause: error },
           );
         }
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_DYNAMIC_ACTIVITY === '1' && (participant.blockLayout?.trailingCapacity ?? 0) > 0) {
-          const trailingBase = participant.blockLayout?.trailingBase ?? participant.blockLayout!.blockSize;
-          console.error('atomic-local-trailing-resource-ownership', JSON.stringify({
-            participant: participant.participant,
-            contract: participant.artifact.contractName,
-            trailingBase,
-            resources: local.inputs.slice(trailingBase).flatMap((input, offset) => {
-              if (input.token?.nft?.capability !== 'mutable') return [];
-              const index = trailingBase + offset;
-              const output = local.outputs[index];
-              return [{
-                index,
-                inputLock: binToHex(input.unlocker.generateLockingBytecode()),
-                outputLock: output && binToHex(typeof output.to === 'string'
-                  ? addressToLockScript(output.to) : output.to),
-                inputCommitment: input.token.nft.commitment,
-                outputCommitment: output?.token?.nft?.commitment,
-              }];
-            }),
-          }));
-        }
-        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-          ?.SOLIDC_DEBUG_OUTPUT_PLAN === '1') {
-          const byMutableLock = new Map<string, number[]>();
-          local.outputs.forEach((output, index) => {
-            const lockingBytecode = typeof output.to === 'string'
-              ? addressToLockScript(output.to) : output.to;
-            if (output.token?.nft?.capability !== 'mutable' || lockingBytecode.length !== 35) return;
-            const key = binToHex(lockingBytecode);
-            const indices = byMutableLock.get(key) ?? [];
-            indices.push(index);
-            byMutableLock.set(key, indices);
-          });
-          const duplicateLocks = [...byMutableLock.entries()]
-            .filter(([, indices]) => indices.length > 1)
-            .map(([lockingBytecode, indices]) => ({ lockingBytecode, indices }));
-          if (duplicateLocks.length > 0) {
-            const neighborhoodIndices = new Set(duplicateLocks.flatMap(({ indices }) => indices.flatMap(
-              (index) => [index - 1, index, index + 1],
-            )).filter((index) => index >= 0 && index < local.outputs.length));
-            console.error('atomic-local-duplicate-mutable-locks', JSON.stringify({
-              participant: participant.participant,
-              duplicateLocks,
-              neighborhood: [...neighborhoodIndices].sort((left, right) => left - right).map((index) => {
-                const input = local.inputs[index];
-                const output = local.outputs[index];
-                const outputLock = typeof output.to === 'string'
-                  ? addressToLockScript(output.to) : output.to;
-                return {
-                  index,
-                  inputLock: input && binToHex(input.unlocker.generateLockingBytecode()),
-                  inputCommitment: input?.token?.nft?.commitment,
-                  outputLock: binToHex(outputLock),
-                  outputCommitment: output.token?.nft?.commitment,
-                };
-              }),
-            }));
+        let transportedChunkIndex = 0;
+        for (const candidate of transportedValueChunks) {
+          for (const chunk of candidate.chunks) {
+            const slot = selectedValueChunkSlots[transportedChunkIndex++];
+            if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
+            const input = local.inputs[slot.offset];
+            const chunkCategoryId = chunk.categoryId ?? candidate.production.stateOwner.categoryId;
+            if (!canOwnTransportedContinuationSlot(input, {
+              categoryId: chunkCategoryId, commitment: chunk.commitment,
+            })) {
+              throw new Error('messageBus: transported continuation output does not own a balanced trailing slot');
+            }
+            local.outputs[slot.offset] = {
+              to: chunk.lockingBytecode,
+              amount: input!.satoshis,
+              token: {
+                category: chunkCategoryId,
+                amount: 0n,
+                nft: { capability: 'mutable', commitment: chunk.commitment },
+              },
+            };
           }
         }
-        const logicalReturnSlots = participant.blockLayout!.slots
-          .filter((slot) => slot.kind === 'returnEvent' && slot.slotIndex !== undefined)
-          .sort((left, right) => left.slotIndex! - right.slotIndex!);
-        const logicalResults = participant.invocations
-          .filter((invocation) => plan.invocations[invocation].resultTypes.length > 0)
-          .map((invocation) => results[invocation])
-          .filter((result): result is string => result !== undefined);
-        for (const slot of logicalReturnSlots) {
-          const result = logicalResults[slot.slotIndex!];
-          if (result === undefined) continue;
-          local.outputs[slot.offset] = {
-            to: Uint8Array.of(0x51),
-            amount: 1200n,
-            token: {
-              category: categories[participant.participant], amount: 0n,
-              nft: { capability: 'none', commitment: result },
-            },
+        const split = splitByParticipant.get(participant.participant);
+        if (split) {
+          local.addInputs([...split.funders]);
+          for (const value of split.createdValues) {
+            local.addOutput({
+              to: hexToBin(participant.lockingBytecode), amount: value,
+              token: {
+                category: categories[participant.participant], amount: 0n,
+                nft: { capability: 'minting', commitment: '' },
+              },
+            });
+          }
+        }
+        const merge = mergeByParticipant.get(participant.participant);
+        if (merge) {
+          const routeUnlocker = local.inputs[0]?.unlocker;
+          const masterOutput = local.outputs[0];
+          if (!routeUnlocker || !masterOutput?.token?.nft
+            || masterOutput.token.nft.capability !== 'minting') {
+            throw new Error(`messageBus: merge participant ${participant.participant} lacks its survivor`);
+          }
+          let mergedTokenAmount = masterOutput.token.amount;
+          for (const consumed of merge.consumedMasters) {
+            if (consumed.token?.category.toLowerCase() !== categories[participant.participant].toLowerCase()
+              || consumed.token.nft?.capability !== 'minting') {
+              throw new Error(
+                `messageBus: merge participant ${participant.participant} input is not one exact category master`,
+              );
+            }
+            mergedTokenAmount += consumed.token.amount ?? 0n;
+            local.addInput(consumed, routeUnlocker);
+            local.addOutput({ to: this.options.changeAddress, amount: consumed.satoshis });
+          }
+          local.outputs[0] = {
+            ...masterOutput,
+            token: { ...masterOutput.token, amount: mergedTokenAmount },
           };
         }
+        const retired = selfdestructByParticipant.get(participant.participant);
+        if (retired) {
+          const masterInput = local.inputs[0];
+          if (!masterInput?.token?.nft || masterInput.token.nft.capability !== 'minting'
+            || masterInput.token.category.toLowerCase() !== categories[participant.participant].toLowerCase()) {
+            throw new Error(
+              `messageBus: selfdestruct participant ${participant.participant} lacks its retired master`,
+            );
+          }
+          local.outputs[0] = { to: retired.recipient, amount: masterInput.satoshis };
+          const dataNftCount = participant.artifact.stateLayout?.dataNftCount ?? 0;
+          const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
+          if (!isContractUnlocker(masterInput.unlocker)) {
+            throw new Error(
+              `messageBus: selfdestruct participant ${participant.participant} master unlocker is not a contract unlocker`,
+            );
+          }
+          const masterContract = masterInput.unlocker.contract;
+          for (let nftOffset = 1; nftOffset <= dataNftCount; nftOffset += 1) {
+            const nftInput = local.inputs[nftOffset];
+            if (!nftInput || nftInput.token?.nft?.capability !== 'mutable'
+              || nftInput.token.category.toLowerCase() !== categories[participant.participant].toLowerCase()) {
+              throw new Error(
+                `messageBus: selfdestruct participant ${participant.participant} lacks dataNft ${nftOffset - 1}`,
+              );
+            }
+            local.outputs[nftOffset] = { to: retired.recipient, amount: nftInput.satoshis };
+            // Preserve unlockers require category recreation; retirement pads are token-free.
+            local.inputs[nftOffset] = {
+              ...nftInput,
+              unlocker: createDestroyDataNftUnlocker(
+                masterContract, publishedBase, categories[participant.participant],
+              ),
+            };
+          }
+        }
+        const authenticatedOutputLockingBytecode = participant.outputLockingBytecode?.toLowerCase();
+        if (authenticatedOutputLockingBytecode !== undefined) {
+          const masterInput = local.inputs[0];
+          const masterOutput = local.outputs[0];
+          if (!masterInput || !masterOutput || !masterInput.token || !masterOutput.token
+            || masterInput.token.category !== masterOutput.token.category
+            || masterInput.token.amount !== masterOutput.token.amount
+            || masterInput.token.nft?.capability !== masterOutput.token.nft?.capability
+            || masterInput.token.nft?.commitment !== masterOutput.token.nft?.commitment
+            || masterInput.satoshis !== masterOutput.amount) {
+            throw new Error(
+              `messageBus: participant ${participant.participant} master geometry is not preserved across upgrade`,
+            );
+          }
+          local.outputs[0] = { ...masterOutput, to: hexToBin(authenticatedOutputLockingBytecode) };
+          const suffix = upgradeStateSuffixes.get(participant.lockingBytecode.toLowerCase())
+            ?? new Uint8Array();
+          if (suffix.length > 0) {
+            const dataNftCount = participant.artifact.stateLayout?.dataNftCount ?? 0;
+            const tailOffset = dataNftCount;
+            const tailInput = local.inputs[tailOffset];
+            const tailOutput = local.outputs[tailOffset];
+            const prefixHex = tailOutput?.token?.nft?.commitment;
+            if (!tailInput?.token?.nft || !tailOutput?.token?.nft || prefixHex === undefined
+              || tailInput.token.category !== tailOutput.token.category
+              || tailInput.token.amount !== tailOutput.token.amount
+              || tailInput.token.nft.capability !== tailOutput.token.nft.capability
+              || tailInput.satoshis !== tailOutput.amount) {
+              throw new Error(
+                `messageBus: participant ${participant.participant} final data NFT geometry is not preserved`,
+              );
+            }
+            const prefix = hexToBin(prefixHex);
+            const limit = participant.artifact.stateLayout?.commitmentLimit ?? 128;
+            if (prefix.length + suffix.length > limit) {
+              throw new Error(
+                `messageBus: appended state exceeds the ${limit}-byte final NFT commitment limit`,
+              );
+            }
+            local.outputs[tailOffset] = {
+              ...tailOutput,
+              token: {
+                ...tailOutput.token!,
+                nft: { ...tailOutput.token!.nft!, commitment: binToHex(concat(prefix, suffix)) },
+              },
+            };
+          }
+        }
+        // Runtime event occurrences occupy compiler-owned trailing slots, so they cannot appear as fixed
+        // `blockLayout.kind === event` coordinates. Preserve the exact row, schema, and physical offset published
+        // by the participant builder; later graph passes turn only these observed occurrences into kind-2 rows.
+        // This is resource geometry, independent of contract/function/event names.
+        const runtimeEvents = (local as TransactionBuilder & {
+          __messageBusRuntimeLoopEvents?: readonly {
+            eventSignature: string; rowIndex: number; offset: number;
+          }[];
+        }).__messageBusRuntimeLoopEvents ?? [];
+        runtimeEventSlots.set(participant.participant,
+          runtimeEvents.map((event) => ({
+            participant: participant.participant,
+            offset: event.offset,
+            runtimeRow: event.rowIndex,
+            eventSignature: event.eventSignature,
+          })));
         // Event effects are fixed-point claims just like return values and mutable resources. Once a prior pass
         // has authenticated an event commitment, feed it back into the exact compiler-published participant slot;
         // otherwise every assembly pass recreates the empty probe placeholder and convergence can never advance
         // past the handler's OUTPUTTOKENCOMMITMENT equality.
+        const fixedEventOffsets = participant.blockLayout!.slots
+          .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
         const eventClaims = graph.callManifest.rows.filter((row) =>
-          row.kind === 2 && row.owner === participant.participant && row.mode === 1);
+          row.kind === 2 && row.owner === participant.participant && row.mode === 1
+          && fixedEventOffsets.includes(row.targetOffset));
         if (eventClaims.length > 0) {
           const eventOffsets = participant.blockLayout!.slots
             .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
@@ -1220,17 +3427,36 @@ export class AtomicMessageBusComposition {
               && eventLockSet.has(binToHex(lockingBytecode))
               ? [offset] : [];
           });
-          const inactive = eventOffsets.map((offset) => local.outputs[offset]).find((output) => !output?.token);
-          if (eventLocks.length < eventClaims.length || !inactive) {
+          // The participant builder materializes one event output per compiler-published site, so every reserved
+          // slot already carries the event covenant's lock and the site's satoshi value; only its commitment
+          // identifies an occurrence. A token-less slot is therefore NOT the normal blank template - derive the
+          // canonical blank frame from a published site (identical lock/value, empty commitment) and only fall
+          // back to a token-less slot when this participant published no site at all. Requiring a token-less slot
+          // rejected a correct frame whose union slots were all already materialized.
+          const plainEventTemplate = (): (typeof local.outputs)[number] | undefined => {
+            const site = [...eventClaims].reverse()
+              .map((row) => local.outputs[row.targetOffset])
+              .find((output) => output?.token?.nft?.capability === 'none');
+            if (!site) return undefined;
+            return { ...site, token: { ...site.token!, nft: { ...site.token!.nft!, commitment: '' } } };
+          };
+          const inactive = eventOffsets.map((offset) => local.outputs[offset]).find((output) => !output?.token)
+            ?? plainEventTemplate();
+          if (!inactive) {
             throw new Error(
               `messageBus: participant ${participant.participant} cannot materialize its authenticated event frame`,
             );
           }
+          // Save the compiler-built site templates before clearing the union frame: a previously authenticated
+          // graph row is the authority for identity and payload even when the consumer artifact lacks a redundant
+          // event-schema table.
+          const claimTemplates = new Map(eventClaims.map((row) => [row.targetOffset, local.outputs[row.targetOffset]]));
           for (const offset of new Set([...eventOffsets, ...templateOffsets])) local.outputs[offset] = { ...inactive };
           eventClaims.forEach((row) => {
+            const template = claimTemplates.get(row.targetOffset) ?? inactive;
             local.outputs[row.targetOffset] = {
               to: hexToBin(row.subjectHex),
-              amount: inactive.amount,
+              amount: template.amount,
               token: {
                 category: categories[participant.participant], amount: 0n,
                 nft: { capability: 'none', commitment: row.effectHex },
@@ -1265,6 +3491,62 @@ export class AtomicMessageBusComposition {
               local,
               controller,
               offsets: computeOffsets,
+            });
+          }
+        }
+        if (publishedComputeOffsets.length > 0
+          && (globalThis as { process?: { env?: Record<string, string> } }).process
+            ?.env?.SOLIDC_DEBUG_ECRECOVER_READINESS === '1') {
+          // Which participant block owns the compute side-car slots, what the composer decided about them, and
+          // what actually sits there. `deferredBlocks` staying empty is only meaningful together with these: a
+          // cache hit refreshes the slots without consulting the controller, while an empty `computeOffsets` or a
+          // non-mutable input means nothing was ever placed at the offsets the program reads.
+          console.error('composer-compute-slots', {
+            participant: participant.participant,
+            cacheHit: cachedCompute?.graphKey === deferredComputeGraphKey,
+            controllerDefined: (local as DeferredComputeBuilder).__messageBusDeferredCompute !== undefined,
+            publishedComputeOffsets,
+            computeOffsets,
+            slots: publishedComputeOffsets.map((offset) => ({
+              offset,
+              inputCapability: local.inputs[offset]?.token?.nft?.capability ?? null,
+              inputCategory: String(local.inputs[offset]?.token?.category ?? '').slice(0, 16),
+              outputCapability: local.outputs[offset]?.token?.nft?.capability ?? null,
+              outputCategory: String(local.outputs[offset]?.token?.category ?? '').slice(0, 16),
+            })),
+          });
+        }
+        // Diagnostic (`SOLIDC_DEBUG_SLOT_LOCKS=1`): every slot whose input and output locking bytecode disagree.
+        // A covenant-equality check inside the program compares a slot with its preserved copy and fails when the
+        // two locks differ only in an address embedded in both, so the mismatching slots are the whole evidence.
+        // Only mismatches print, and the printed windows straddle the first differing byte.
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process
+          ?.env?.SOLIDC_DEBUG_SLOT_LOCKS === '1') {
+          const mismatches = (participant.blockLayout?.slots ?? []).flatMap((slot) => {
+            const inputLock = local.inputs[slot.offset]?.unlocker?.generateLockingBytecode?.();
+            const output = local.outputs[slot.offset];
+            if (!inputLock || !(output?.to instanceof Uint8Array)) return [];
+            const inputHex = binToHex(inputLock);
+            const outputHex = binToHex(output.to);
+            if (inputHex === outputHex) return [];
+            const firstDifference = [...inputHex].findIndex((nibble, index) => nibble !== outputHex[index]);
+            return [{
+              kind: slot.kind,
+              offset: slot.offset,
+              slotIndex: slot.slotIndex,
+              inputBytes: inputLock.length,
+              outputBytes: output.to.length,
+              firstDifference,
+              inputSlice: firstDifference < 0 ? inputHex.slice(0, 96)
+                : inputHex.slice(Math.max(0, firstDifference - 40), firstDifference + 56),
+              outputSlice: firstDifference < 0 ? outputHex.slice(0, 96)
+                : outputHex.slice(Math.max(0, firstDifference - 40), firstDifference + 56),
+            }];
+          });
+          if (mismatches.length > 0) {
+            console.error('composer-slot-lock-mismatch', {
+              participant: participant.participant,
+              slots: mismatches.slice(0, 12),
             });
           }
         }
@@ -1316,7 +3598,19 @@ export class AtomicMessageBusComposition {
             ...(executorInput.token && { token: executorInput.token }),
           };
         }
-        aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
+        // Stateful builders normally stamp the provider's current Unix time, but a selected blockhash row can
+        // require height-mode CLTV (< 500M). Taking a numeric maximum silently changes the height requirement
+        // into timestamp mode and makes the otherwise valid oracle spend fail by type. Preserve a concrete
+        // height-mode requirement over ambient timestamp defaults. If another participant genuinely requires a
+        // timestamp lock as well, final VM preflight still rejects the inherently incompatible composition.
+        const aggregateIsHeight = aggregate.locktime > 0 && aggregate.locktime < 500_000_000;
+        const localIsHeight = local.locktime > 0 && local.locktime < 500_000_000;
+        if (local.locktime > 0) {
+          if (localIsHeight && !aggregateIsHeight) aggregate.locktime = local.locktime;
+          else if (localIsHeight === aggregateIsHeight) {
+            aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
+          }
+        }
         while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
           const input = local.inputs[local.outputs.length];
           local.addOutput({
@@ -1369,10 +3663,49 @@ export class AtomicMessageBusComposition {
             + `slots, expected balanced block size ${blockSize}`,
           );
         }
-        const fixedSize = participant.blockLayout!.fixedSuffix
+        const fixedSize = transportedChunkCount > 0
+          ? participant.blockLayout!.trailingBase ?? blockSize
+          : participant.blockLayout!.fixedSuffix
           ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
+        const computedValueChunkMetadata = local as TransactionBuilder & {
+          __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
+          __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
+        };
+        const computedValueChunkClaims = [
+          ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+          ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
+        ];
+        const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
+          participant.participant,
+          graph.layout.participantInputs[participant.participant],
+          fixedSize,
+          blockSize,
+          computedValueChunkClaims,
+        );
+        const minimumActualSize = participant.blockLayout!.fixedSuffix
+          ? blockSize : computedMinimumActualSize;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1'
+          && (computedValueChunkClaims.length > 0 || participant.routeInputs.some(
+            (input) => input.name === '__internal__valueChunkOutputBase',
+          ))) {
+          console.error('atomic-computed-value-chunk-span', {
+            participant: participant.participant,
+            participantBase: graph.layout.participantInputs[participant.participant],
+            fixedSize,
+            maximumSize: blockSize,
+            minimumActualSize,
+            spanClaimCount: computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims?.length ?? 0,
+            materializedClaimCount: computedValueChunkMetadata.__messageBusComputedValueChunks?.length ?? 0,
+            claims: computedValueChunkClaims.map((claim) => ({
+              offset: claim.offset,
+              resourceIdentity: claim.resourceIdentity,
+              resourcePart: claim.resourcePart,
+            })),
+          });
+        }
         let actualSize = blockSize;
-        while (actualSize > fixedSize) {
+        while (actualSize > minimumActualSize) {
           const input = local.inputs[actualSize - 1];
           const output = local.outputs[actualSize - 1];
           const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
@@ -1395,30 +3728,266 @@ export class AtomicMessageBusComposition {
             .map((slot) => slot.kind === 'returnEvent' && returnBlob === undefined
               ? { ...slot, conditional: true }
               : slot);
+          const lifecycleTailCount = split?.funders.length ?? merge?.consumedMasters.length ?? 0;
+          const lifecyclePrefix = participant.lifecycle === undefined ? 0
+            : (effectiveLayout.slots.filter((slot) =>
+              slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft').length);
+          const lifecycleTrailingBase = 1 + lifecyclePrefix;
+          const lifecycleTailSlots = Array.from(
+            { length: lifecycleTailCount }, (_, index) => ({
+              kind: merge === undefined ? 'trailing' as const : 'lifecycleMaster' as const,
+              offset: lifecycleTrailingBase + index,
+            }),
+          );
+          // Identity anchors / executor suffixes live in fixedSuffix after the runtime trailing band.
+          // Capacity must not absorb those slots: `actualSize - fixedSize` alone folds a +1 identity
+          // anchor into trailing (measured FakeToken 87→88, capacity 64→65) and the OUTPUTBYTECODE
+          // lock loop then EQUALVERIFYs the SCID identity lock against a trailing/chunk expectation.
+          const fixedSuffix = effectiveLayout.fixedSuffix ?? 0;
+          const trailingCapacity = trailingCapacityExcludingFixedSuffix({
+            blockSize: actualSize,
+            trailingBase: fixedSize,
+            fixedSuffix,
+          });
           stateInputUnlocker.abiFunction = {
             ...stateInputUnlocker.abiFunction,
             blockLayout: {
               ...effectiveLayout,
               blockSize: actualSize,
-              slots: effectiveSlots,
-              trailingCapacity: actualSize - fixedSize,
+              slots: [...effectiveSlots, ...lifecycleTailSlots],
+              ...(lifecycleTailCount === 0 ? {} : { trailingBase: lifecycleTrailingBase }),
+              trailingCapacity,
+              fixedSuffix,
             },
           };
         }
         actualSizes.push(actualSize);
-        for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
-          const input = local.inputs[localIndex];
-          const outpoint = `${input.txid.toLowerCase()}:${input.vout}`;
-          const prior = aggregateOutpoints.get(outpoint);
-          if (prior && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
-            console.error('atomic-participant-input-collision', {
-              outpoint, participant: participant.participant, localIndex, prior,
-              blockBase: graph.layout.participantInputs[participant.participant],
-              lockingBytecode: binToHex(input.unlocker.generateLockingBytecode()),
+        {
+          // The aggregate publishes this participant's block at `base`, so an absolute input coordinate witness
+          // must be relocated by it. The participant's own build resolves such witnesses against its LOCAL frame
+          // (measured: the root dynamic-chunk base is the local index 23), and `addInputs` below copies that
+          // unlocker verbatim - so the published bytecode addresses an unrelated input.
+          const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
+          const masterUnlocker = local.inputs[0]?.unlocker as {
+            abiFunction?: { name?: string; inputs?: readonly { name: string }[] };
+            params?: unknown[];
+            syncEncodedArgsFromParams?: (onlyIndices?: readonly number[]) => void;
+          } | undefined;
+          const chunkIndex = masterUnlocker?.abiFunction?.inputs?.findIndex(
+            (input) => input.name === '__internal__dynamicChunkInputBase',
+          ) ?? -1;
+          const localChunkBase = chunkIndex < 0 ? undefined : masterUnlocker?.params?.[chunkIndex];
+          // The participant resolved these witnesses against its own frame, but the aggregate publishes that frame
+          // at `publishedBase`, so a witness the covenant addresses in TRANSACTION coordinates must be relocated.
+          // The unlocker documents `syncEncodedArgsFromParams` for exactly this: it re-encodes the mutated slot and
+          // drops the cached unlocking bytecode. Without the resync the edit is invisible and the published script
+          // keeps addressing the participant-local coordinate.
+          //   `__internal__dynamicChunkInputBase`  - read with OP_UTXOBYTECODE (measured: a funder instead of the
+          //                                          chunk NFT).
+          //   `__internal__vmapBatchPredOut_<slot>` - read with OP_OUTPUTBYTECODE (measured: the displaced
+          //                                          predecessor's P' output instead of this participant's).
+          // Sentinel values stay untouched: they are negative by construction (-1 no predecessor, -2 inactive or
+          // same-target alias), and a value outside this frame's extent cannot be a participant-local coordinate.
+          const relocatable: Array<{ index: number; name: string; limit: number }> = [];
+          if (chunkIndex >= 0) relocatable.push({ index: chunkIndex, name: 'dynamicChunkInputBase', limit: local.inputs.length });
+          for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
+            if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) {
+              relocatable.push({ index, name: input.name.replace('__internal__', ''), limit: local.outputs.length });
+            }
+          }
+          const publishedRelocations: Array<{ name: string; from: string; to: string }> = [];
+          const resyncedIndices: number[] = [];
+          // A `PredOut` witness names the output carrying the re-pointed predecessor (P') of an inserted node. The
+          // batch planner publishes it in the CONCRETE callsite's coordinate space (measured: `approve` declares 4,
+          // the first slot after its own four-slot block) while the covenant reads `tx.outputs[PredOut]` in the
+          // PHYSICAL route frame, where the same P' is materialized in the route's trailing band (measured: block
+          // offset 23). Absolute assignment goes through ONE canonical layout-resolver pass per participant so
+          // dyn / PredOut / value-chunk absolutes cannot drift (historical 203 vs 222; MDV1 pad 163 vs entry 161).
+          const commitmentHex = (value: unknown): string => value instanceof Uint8Array ? binToHex(value)
+            : typeof value === 'string' ? value : '';
+          const predOutIndexByName = new Map<string, number>();
+          for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
+            if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) {
+              predOutIndexByName.set(input.name, index);
+            }
+          }
+          const participantCategory = participant.artifact.stateLayout === undefined
+            ? undefined : (local.inputs[0]?.token?.category ?? undefined);
+          // Physical route trailing band (not concrete handler layout). Prefer the layout already
+          // applied to this participant frame (see effectiveLayout sync above).
+          const routeTrailingBase = participant.blockLayout?.trailingBase;
+          const routeTrailingCapacity = participant.blockLayout?.trailingCapacity;
+          const predOutPhysical: Array<{
+            index: number;
+            name: string;
+            witnessName: string;
+            physicalLocalOffset: number;
+            concreteLocalSlot: number;
+          }> = [];
+          let dynLocalBase: number | undefined;
+          for (const candidate of relocatable) {
+            const value = masterUnlocker?.params?.[candidate.index];
+            if (publishedBase <= 0 || masterUnlocker?.params === undefined) continue;
+            if (typeof value !== 'bigint' || value < 0n || value >= BigInt(candidate.limit)) continue;
+            if (candidate.name === 'dynamicChunkInputBase') {
+              dynLocalBase = Number(value);
+              continue;
+            }
+            const slot = /(\d+)$/.exec(candidate.name)?.[1];
+            const proofIndex = slot === undefined ? undefined : predOutIndexByName.get(`__internal__vmapBatchProof_${slot}`);
+            const proof = proofIndex === undefined ? undefined : masterUnlocker.params[proofIndex];
+            const targetSlot = (() => {
+              const name = `__internal__vmapBatchSlot_${slot}`;
+              const at = masterUnlocker.abiFunction?.inputs?.findIndex((input) => input.name === name) ?? -1;
+              return at < 0 ? undefined : commitmentHex(masterUnlocker.params?.[at]);
+            })();
+            const predecessor = typeof proof === 'bigint' && proof >= 0n && proof < BigInt(local.inputs.length)
+              ? local.inputs[Number(proof)] : undefined;
+            const predecessorCommitment = commitmentHex(predecessor?.token?.nft?.commitment);
+            let physicalLocalOffset: number | undefined;
+            if (targetSlot !== undefined && predecessorCommitment.length >= 128) {
+              const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`
+                + predecessorCommitment.slice(128);
+              const found = local.outputs.findIndex((output) => output.token?.category === participantCategory
+                && commitmentHex(output.token?.nft?.commitment).toLowerCase() === plannedPredecessor.toLowerCase());
+              if (found >= 0) physicalLocalOffset = found;
+            }
+            if (physicalLocalOffset === undefined && routeTrailingBase !== undefined) {
+              physicalLocalOffset = routeTrailingBase;
+            }
+            if (physicalLocalOffset === undefined) {
+              // Gate A′: never invent PredOut as concreteLocal+publishedBase — fail closed.
+              throw layoutInvariantError({
+                invariantId: 'pred-out-physical-unresolved',
+                message: `PredOut '${candidate.name}' has no physical trailing offset for participant `
+                  + `${participant.participant}`,
+                participant: participant.participant,
+                resource: candidate.name,
+                expectedOutput: routeTrailingBase,
+                actualOutput: Number(value),
+              });
+            }
+            predOutPhysical.push({
+              index: candidate.index,
+              name: candidate.name,
+              witnessName: `__internal__${candidate.name}`,
+              physicalLocalOffset,
+              concreteLocalSlot: Number(value),
             });
           }
-          aggregateOutpoints.set(outpoint, { participant: participant.participant, localIndex });
+          if (
+            publishedBase > 0
+            && masterUnlocker?.params !== undefined
+            && routeTrailingBase !== undefined
+            && (
+              dynLocalBase !== undefined
+              || predOutPhysical.length > 0
+              || pendingValueChunkClaim !== undefined
+            )
+          ) {
+            const frameBlockSize = Math.max(
+              participant.blockLayout?.blockSize ?? 0,
+              local.outputs.length,
+              local.inputs.length,
+              routeTrailingBase + 1,
+              pendingValueChunkClaim?.localSlotOffset !== undefined
+                ? pendingValueChunkClaim.localSlotOffset + (pendingValueChunkClaim.chunkCount || 1)
+                : 0,
+              ...predOutPhysical.map((pred) => pred.physicalLocalOffset + 1),
+            );
+            // Gate A′: exactly one resolve per participant covering dyn + entry NEW + valueChunk + PredOut.
+            const inferredDynCount = dynLocalBase === undefined ? undefined
+              : (() => {
+                const nextOccupied = predOutPhysical[0]?.physicalLocalOffset
+                  ?? pendingValueChunkClaim?.localSlotOffset;
+                return nextOccupied === undefined
+                  ? 0
+                  : Math.max(0, nextOccupied - routeTrailingBase);
+              })();
+            const witnesses = resolveParticipantAbsoluteWitnesses({
+              participant: participant.participant,
+              contractName: participant.artifact.contractName,
+              publishedBase,
+              blockSize: frameBlockSize,
+              trailingBase: routeTrailingBase,
+              trailingCapacity: routeTrailingCapacity,
+              dynChunkCount: inferredDynCount,
+              entryNews: inferredDynCount === undefined ? undefined : [{ entryIndex: 0 }],
+              valueChunkBandOffset: pendingValueChunkClaim === undefined
+                ? undefined
+                : pendingValueChunkClaim.localSlotOffset - routeTrailingBase,
+              valueChunkCollection: pendingValueChunkClaim?.collection,
+              valueChunkCount: pendingValueChunkClaim?.chunkCount,
+              predOuts: predOutPhysical.map((pred) => ({
+                witnessName: pred.witnessName,
+                physicalLocalOffset: pred.physicalLocalOffset,
+                concreteLocalSlot: pred.concreteLocalSlot,
+              })),
+            });
+            // Dyn / valueChunk / PredOut absolutes are written only through the exported apply helper.
+            try {
+              const applied = applyParticipantAbsoluteWitnesses({
+                inputs: masterUnlocker.abiFunction?.inputs ?? [],
+                params: masterUnlocker.params,
+                witnesses,
+                participant: participant.participant,
+              });
+              for (const entry of applied.written) {
+                resyncedIndices.push(entry.index);
+                publishedRelocations.push({
+                  name: entry.name, from: entry.from, to: entry.to,
+                });
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw layoutInvariantError({
+                invariantId: 'layout-witness-apply-failed',
+                message,
+                participant: participant.participant,
+                resource: 'layout-witnesses',
+              });
+            }
+          } else if (
+            publishedBase > 0
+            && masterUnlocker?.params !== undefined
+            && routeTrailingBase === undefined
+            && (
+              dynLocalBase !== undefined
+              || predOutPhysical.length > 0
+              || pendingValueChunkClaim !== undefined
+            )
+          ) {
+            // Claims exist but trailing geometry is missing — fail closed rather than inventing absolutes.
+            throw layoutInvariantError({
+              invariantId: 'layout-trailing-missing',
+              message: `participant ${participant.participant} needs trailingBase to resolve layout witnesses`,
+              participant: participant.participant,
+              resource: 'trailingBase',
+            });
+          }
+          if (resyncedIndices.length > 0) masterUnlocker?.syncEncodedArgsFromParams?.(resyncedIndices);
+          const rebased = publishedRelocations.find((entry) => entry.name === 'dynamicChunkInputBase')?.to;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+            console.error('atomic-published-unlocker', JSON.stringify({
+              participant: participant.participant,
+              contract: participant.artifact.contractName,
+              base: publishedBase,
+              fn: masterUnlocker?.abiFunction?.name,
+              localChunkBase: localChunkBase === undefined ? undefined : String(localChunkBase),
+              localFrameLength: local.inputs.length,
+              params: masterUnlocker?.params?.length,
+              selector: participant.artifact.messageBus?.selector,
+              constructorInputs: participant.artifact.constructorInputs.length,
+              rebased,
+              relocations: publishedRelocations,
+              resynced: resyncedIndices.length > 0,
+            }));
+          }
+        }
+        for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
+          const input = local.inputs[localIndex];
+          registerAggregateInput(input, participant.participant, localIndex, 'participant block');
         }
         aggregate.addInputs(local.inputs);
         aggregate.addOutputs(local.outputs as Output[]);
@@ -1432,7 +4001,6 @@ export class AtomicMessageBusComposition {
       const verifierDomain = binToHex(MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN);
       const messageEnvelope = encodeAtomicMessageEnvelope(graph.callManifest);
       const callManifest = encodeAtomicMessageBusCallManifest(graph.callManifest);
-      const selectedVerifierOutpoints = new Set<string>();
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {
         console.error('atomic-graph-summary', JSON.stringify({
@@ -1440,9 +4008,11 @@ export class AtomicMessageBusComposition {
             participant,
             base: graph.layout.participantInputs[participant],
             lockingBytecode: entry.lockingBytecode,
+            outputLockingBytecode: entry.outputLockingBytecode,
             fixedSize: entry.fixedSize,
             actualSize: entry.actualSize,
             maximumSize: entry.maximumSize,
+            lifecycle: entry.lifecycle,
           })),
           rows: graph.callManifest.rows.map((row, index) => ({
             index,
@@ -1466,10 +4036,8 @@ export class AtomicMessageBusComposition {
           participant.artifact, provider.consensusLimits?.maximumInputBytes ?? 10_000,
         );
         const verifier = (await provider.getUtxosForLockingBytecode(verifierLock)).find((utxo) =>
-          !selectedVerifierOutpoints.has(`${utxo.txid}:${utxo.vout}`)
-          && utxo.token?.category.toLowerCase() === categories[participant.participant].toLowerCase()
+          utxo.token?.category.toLowerCase() === categories[participant.participant].toLowerCase()
           && utxo.token.nft?.capability === 'mutable'
-          && (utxo.token.nft.commitment.length === 12 || utxo.token.nft.commitment.length === 140)
           && utxo.token.nft.commitment.toLowerCase().startsWith(verifierDomain));
         if (!verifier) {
           throw new Error(
@@ -1477,38 +4045,80 @@ export class AtomicMessageBusComposition {
             + 'deploy with messageBusVerificationInputCount >= 1',
           );
         }
-        selectedVerifierOutpoints.add(`${verifier.txid}:${verifier.vout}`);
         const verifierProgram = participant.artifact.messageBus!.verifierProgram!;
         // A direct route carries the blob in master param 0, but a proxy master carries only the forwarded
         // selector while its implementation unlocker owns the route arguments. The compiler-planned participant
         // batch is the common canonical source used to build either shape and is what the verifier must bind.
         const batchBlob = participant.batch.blob;
-        const routeContext = graphRouteContext(graph, participant.participant);
+        const routeContext = graphRouteContext(graph, participant.participant, upgradeStateSuffixes);
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_GRAPH_EMISSIONS === '1') {
+          const lengths = Object.fromEntries(Object.entries(routeContext).map(([key, value]) => [
+            key, value instanceof Uint8Array ? value.length
+              : typeof value === 'bigint' ? value.toString() : typeof value,
+          ]));
+          console.error('verifier-route-context', JSON.stringify({
+            participant: participant.participant, lengths,
+          }));
+          // The verifier compares each row's manifest arguments against a slice of THIS blob
+          // (`require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength))`), so the
+          // blob's own row layout must be inspected next to the manifest rows when that comparison fails.
+          const blobHex = binToHex(batchBlob);
+          console.error('verifier-batch-blob', JSON.stringify({
+            participant: participant.participant, bytes: batchBlob.length,
+          }));
+          for (let offset = 0; offset < blobHex.length; offset += 400) {
+            console.error('verifier-batch-blob-hex', `${participant.participant}:${offset / 2}:${blobHex.slice(offset, offset + 400)}`);
+          }
+          for (const [rowIndex, row] of graph.callManifest.rows.entries()) {
+            if (row.owner !== participant.participant && row.consumer !== participant.participant) continue;
+            console.error('verifier-manifest-row', JSON.stringify({
+              rowIndex, kind: row.kind, owner: row.owner, consumer: row.consumer, mode: row.mode,
+              slot: row.slot, sourceOffset: row.sourceOffset, targetOffset: row.targetOffset,
+              position: row.position, parent: row.parent, depth: row.depth, subtreeEnd: row.subtreeEnd,
+              selectorHex: row.selectorHex,
+              subjectHex: row.subjectHex, argsHex: row.argsHex, resultHex: row.resultHex, effectHex: row.effectHex,
+            }));
+          }
+        }
         const verifierGraphArgumentNames = [
           '__internal__graphFixedSize', '__internal__graphBlockSize', '__internal__graphEmissions',
           '__internal__graphCallers', '__internal__graphSettlementBoundary',
           '__internal__graphCompletionPositions', '__internal__graphSettlementTable',
         ] as const;
-        const graphArguments = verifierProgram.inputs.slice(3).map((input: { name: string }, index: number) => {
-          const argument = routeContext[verifierGraphArgumentNames[index]];
+        const graphInputNames = new Map<string, typeof verifierGraphArgumentNames[number]>([
+          ['suppliedFixedSize', '__internal__graphFixedSize'],
+          ['suppliedBlockSize', '__internal__graphBlockSize'],
+          ['suppliedEmissions', '__internal__graphEmissions'],
+          ['suppliedCallers', '__internal__graphCallers'],
+          ['suppliedSettlementBoundary', '__internal__graphSettlementBoundary'],
+          ['suppliedCompletionPositions', '__internal__graphCompletionPositions'],
+          ['suppliedSettlementTable', '__internal__graphSettlementTable'],
+        ]);
+        const fixedVerifierArguments: Readonly<Record<string, FunctionArgument>> = {
+          activeInputIndex: BigInt(graph.layout.participantInputs[participant.participant]),
+          expectedLocalRows: BigInt(batchBlob[6]),
+          localBatch: batchBlob,
+        };
+        const verifierArgs = verifierProgram.inputs.map((input): FunctionArgument => {
+          const graphName = graphInputNames.get(input.name);
+          const argument = graphName === undefined
+            ? fixedVerifierArguments[input.name] ?? routeContext[input.name]
+            : routeContext[graphName];
           if (argument === undefined) {
             throw new Error(`messageBus: verifier argument '${input.name}' has no compiler-authored value`);
           }
           return argument;
         });
-        const verifierArgs: FunctionArgument[] = [
-          BigInt(graph.layout.participantInputs[participant.participant]),
-          BigInt(batchBlob[6]),
-          batchBlob,
-          ...graphArguments,
-        ];
+        // The compiler's binding digest has one stable graph-field order. Lifecycle targets are independently
+        // bound by the V2 participant output identity and therefore intentionally do not enter this digest.
+        const graphArguments = verifierProgram.inputs.flatMap((input, index) =>
+          graphInputNames.has(input.name) ? [verifierArgs[index]] : []);
         const bindingDigestParts = [
-          MESSAGE_BUS_BINDING_DOMAIN,
           sha256(callManifest),
           uint16(graph.layout.participantInputs[participant.participant]),
           uint16(batchBlob[6]),
           sha256(batchBlob),
-          Uint8Array.of(graphArguments.length === 0 ? 0 : 1),
         ];
         for (const argument of graphArguments) {
           bindingDigestParts.push(typeof argument === 'bigint'
@@ -1532,8 +4142,32 @@ export class AtomicMessageBusComposition {
             digest: binToHex(bindingDigest),
           }));
         }
+        // Report the verifier arguments by their DECLARED names and actual values. Positional decoding of the
+        // unlocking bytecode cannot do this: the script carries non-ABI items too, and a positional mapping
+        // mislabelled the 21-byte batch blob as `expectedLocalRows` (ROUND 119's reading was wrong for that
+        // reason). This is the only place where the names and the values are both known.
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+          const describe = (argument: FunctionArgument | undefined): unknown => {
+            if (argument === undefined) return null;
+            if (typeof argument === 'bigint') return argument.toString();
+            const bytes = argument as Uint8Array;
+            return { bytes: bytes.length, hex: binToHex(bytes).slice(0, 32) };
+          };
+          console.error('verifier-arguments', JSON.stringify({
+            buildId: peekBuilderBuildId(),
+            participant: participant.participant,
+            batchBlob: { bytes: batchBlob.length, hex: binToHex(batchBlob).slice(0, 32) },
+            arguments: verifierProgram.inputs.map((input, index) => ({
+              name: input.name, value: describe(verifierArgs[index]),
+            })),
+          }));
+        }
         const verifierUnlocker = createMessageBusVerifierUnlocker(
           contract.inner, categories[participant.participant], messageEnvelope, verifierArgs, participant.artifact,
+        );
+        registerAggregateInput(
+          verifier, participant.participant, aggregate.inputs.length, 'participant verifier',
         );
         aggregate.addInput(verifier, verifierUnlocker);
         aggregate.addOutput({
@@ -1544,11 +4178,24 @@ export class AtomicMessageBusComposition {
             amount: verifier.token!.amount ?? 0n,
             nft: {
               ...verifier.token!.nft!,
-              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(sha256(callManifest))}${binToHex(bindingDigest)}`,
+              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`
+                + (verifierProgram.lifecycle === true || verifierProgram.splitLifecycle === true
+                  ? (() => {
+                    // Prefer explicit compose supply for retirement: graph planning can omit lifecycle on a
+                    // nested callee while lifecycleSelfdestructs still names this participant.
+                    const code = selfdestructByParticipant.has(participant.participant)
+                      || participant.lifecycle?.kind === 'selfdestruct'
+                      ? -32767n
+                      : participant.lifecycle?.kind === 'merge'
+                        ? -BigInt(participant.lifecycle.count) : BigInt(participant.lifecycle?.count ?? 0);
+                    return binToHex(fixedVmNumber(code, 2));
+                  })()
+                  : ''),
             },
           },
         });
       }
+      registerAggregateInput(feeFunder, -1, aggregate.inputs.length, 'fee funder');
       aggregate.addInputs([feeFunder]);
       aggregate.addBchChangeOutputIfNeeded({
         to: this.options.changeAddress,
@@ -1566,6 +4213,27 @@ export class AtomicMessageBusComposition {
       // admitted as kind-6 rows. Before those rows exist, the route verifier stops before the compute call and
       // no complete-graph argument can be observed. Resolve only blocks whose sidecar slots are already present
       // in the authenticated manifest; the ordinary effect pass below will add them and rebuild this assembly.
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+        const needle = 'bac4afa31b5925f5';
+        const commitments = aggregate.inputs.map((input) =>
+          String(input?.token?.nft?.commitment ?? '').toLowerCase());
+        console.error('entry-cospend', JSON.stringify({
+          calls: (this.options.preparedCalls ?? []).map((call) => {
+            const described = call as unknown as {
+              functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+            };
+            return described.logicalFunctionName ?? described.functionName
+              ?? described.selectorHex ?? '?';
+          }).slice(0, 6),
+          inputCount: aggregate.inputs.length,
+          whitelistEntryInputs: commitments.flatMap((commitment, index) =>
+            commitment.includes(needle) ? [index] : []),
+          entryLikeInputs: commitments.filter((commitment) => commitment.length >= 128).length,
+          entryLikeOutputs: aggregate.outputs.filter((output) =>
+            String(output?.token?.nft?.commitment ?? '').length >= 128).length,
+        }));
+      }
       const resolvableDeferredBlocks = deferredBlocks.filter((block) => block.offsets.every((offset) =>
         graph.callManifest.rows.some((row) => row.kind === 6
           && row.owner === block.participant && row.sourceOffset === offset)));
@@ -1622,10 +4290,9 @@ export class AtomicMessageBusComposition {
             args: row.argsHex,
             result: row.resultHex,
           })),
-          userKeyWitnesses: plan.participants.flatMap((participant) => participant.routeInputs
+          keyWitnesses: plan.participants.flatMap((participant) => participant.routeInputs
             .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
             .map((input, index) => ({ input, value: participant.batch.routeWitnesses[index] }))
-            .filter(({ input }) => input.name.includes('__message_bus_key_users_'))
             .map(({ input, value }) => ({
               participant: participant.participant,
               name: input.name,
@@ -1661,6 +4328,20 @@ export class AtomicMessageBusComposition {
           resolvable: resolvableDeferredBlocks.map((block) => block.participant),
         });
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_PARTICIPANT_SLOTS === '1') {
+        // Which state/entry slots each participant publishes for THIS composition. An external call's write can
+        // only land if the CALLEE participant declares that slot here; otherwise the compiler never lowered the
+        // effect for this transaction and the missing write is a lowering gap, not a promotion gap.
+        console.error('participant-slots', JSON.stringify(plan.participants.map((candidate) => ({
+          participant: candidate.participant,
+          base: graph.layout.participantInputs[candidate.participant],
+          executionKind: candidate.executionKind,
+          slots: (candidate.blockLayout?.slots ?? [])
+            .filter((slot) => /entry|state/i.test(slot.kind))
+            .map((slot) => ({ kind: slot.kind, offset: slot.offset })),
+        }))));
+      }
       if (resolvableDeferredBlocks.length > 0) {
         const maximumRounds = resolvableDeferredBlocks.reduce((sum, block) => sum + block.offsets.length, 0) + 1;
         for (let round = 0; round < maximumRounds; round += 1) {
@@ -1669,7 +4350,34 @@ export class AtomicMessageBusComposition {
           const program = aggregate.buildLibauthProgram();
           let progressed = false;
           for (const block of unresolved) {
-            if (!block.controller.resolve(program, block.executionInput, block.inputBase)) continue;
+            const candidateExecutions = plan.participants.map((candidate) => {
+              const base = graph.layout.participantInputs[candidate.participant];
+              return candidate.executionKind === 1 && candidate.executorOffset !== null
+                ? base + candidate.executorOffset : base;
+            });
+            // The deferred-argument probe can only learn from an input whose SCRIPT executes the read site, and a
+            // kernel participant publishes more than one such input: its block's master/logical identity and its
+            // identity anchor run the participant's own row/verifier bodies, while `base + executorOffset` runs the
+            // executor. Probing only the executor left the compute reads unreached (measured on the marketplace
+            // corpus: participant 0's executor executes 955 steps and never enters the 2408-instruction row body
+            // that carries both keccak preimage reads, while its own block input executes a 155-instruction body for
+            // 957 steps). Try every block input that can execute participant code; a trace that teaches nothing is
+            // discarded by the resolver, and a learned value is re-checked against the authenticated expectation.
+            const ownedBlockExecutions = plan.participants.flatMap((candidate) => {
+              const base = graph.layout.participantInputs[candidate.participant];
+              const offsets = new Set<number>([0]);
+              for (const slot of candidate.blockLayout?.slots ?? []) {
+                if (slot.kind === 'master' || slot.kind === 'identityAnchor'
+                  || slot.kind === 'lowLevelCall') offsets.add(slot.offset);
+              }
+              return [...offsets].map((offset) => base + offset);
+            });
+            for (const owned of ownedBlockExecutions) {
+              if (!candidateExecutions.includes(owned)) candidateExecutions.push(owned);
+            }
+            if (!block.controller.resolve(
+              program, block.executionInput, block.inputBase, candidateExecutions,
+            )) continue;
             progressed = true;
             const refreshed = block.controller.refresh();
             for (const offset of block.offsets) {
@@ -1695,8 +4403,316 @@ export class AtomicMessageBusComposition {
             }
           }
           if (!progressed) {
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              // The EXECUTOR frame's own calldata, as raw pushes. The stalled participant's route context is not
+              // enough: a delegate participant's block belongs to the proxy while its rows run in the
+              // implementation's input, so coordinates such as `__internal__proxyMasterIndex` are relative to that
+              // owner - and a base that resolves to the executor input instead is invisible in every other dump.
+              // Deliberately NOT mapped onto declared route inputs: a delegate frame does not pack its arguments
+              // one-for-one with the route ABI (measured: the first push is the 4-byte message-bus magic, not the
+              // blob), so a positional name table would be a guess. Small numeric pushes are printed as values
+              // because that is how compiler-owned coordinates travel.
+              const executorCalldata = resolvableDeferredBlocks.map((block) => {
+                const unlocking = program.transaction.inputs[block.executionInput]?.unlockingBytecode
+                  ?? new Uint8Array();
+                const pushes: string[] = [];
+                for (let cursor = 0; cursor < unlocking.length && pushes.length < 64;) {
+                  const opcode = unlocking[cursor];
+                  let width = 0;
+                  let length = 0;
+                  if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; } else if (opcode === 0x4c) {
+                    width = 2; length = unlocking[cursor + 1] ?? 0;
+                  } else if (opcode === 0x4d) {
+                    width = 3; length = (unlocking[cursor + 1] ?? 0) | ((unlocking[cursor + 2] ?? 0) << 8);
+                  } else if (opcode === 0x00) { width = 1; length = 0; } else break;
+                  const payload = unlocking.slice(cursor + width, cursor + width + length);
+                  const numeric = length === 0 ? '0'
+                    : opcode >= 0x51 && opcode <= 0x60 ? String(opcode - 0x50)
+                      : length === 1 && payload[0] <= 16 ? String(payload[0])
+                        : undefined;
+                  pushes.push(`${cursor}:${length}b${numeric === undefined
+                    ? `:${binToHex(payload).slice(0, 24)}` : `=${numeric}`}`);
+                  cursor += width + length;
+                }
+                return { participant: block.participant, executionInput: block.executionInput,
+                  inputBase: block.inputBase, bytes: unlocking.length, pushes };
+              });
+              console.error('deferred-stall-executor-calldata', JSON.stringify(executorCalldata));
+              const needle = 'bac4afa31b5925f5';
+              const commitments = aggregate.inputs.map((input) =>
+                String(input?.token?.nft?.commitment ?? '').toLowerCase());
+              const lockOf = (item: unknown): string => {
+                const input = item as { unlocker?: { generateLockingBytecode: () => Uint8Array } } | undefined;
+                return input?.unlocker ? binToHex(input.unlocker.generateLockingBytecode()) : '';
+              };
+              const p2pkhBefore = aggregate.inputs.flatMap((input, index) => {
+                const lock = lockOf(input);
+                return lock.startsWith('76a914') && index <= graph.layout.feeInput ? [{ index, lock }] : [];
+              });
+              // A runtime coordinate is only attributable when the lock an ACTUAL input carries can be matched to the
+              // participant that published it. Every owner publishes a distinct set: the physical owner lock, the
+              // logical identity lock and the delegate executor lock - which differ exactly when the block belongs to
+              // a proxy while the rows execute in its implementation.
+              console.error('deferred-stall-identities', JSON.stringify({
+                participants: plan.participants.map((candidate) => ({
+                  participant: candidate.participant,
+                  contract: candidate.artifact.contractName,
+                  executionKind: candidate.executionKind,
+                  base: graph.layout.participantInputs[candidate.participant],
+                  blockSize: candidate.blockLayout?.blockSize,
+                  logicalIdentityOffset: candidate.logicalIdentityOffset,
+                  executorOffset: candidate.executorOffset,
+                  executorInputIndex: candidate.executorInputIndex,
+                  lock: candidate.lockingBytecode.slice(0, 40),
+                  logicalLock: candidate.logicalLockingBytecode?.slice(0, 40),
+                  executorLock: candidate.executorLockingBytecode.slice(0, 40),
+                })),
+                inputLocks: aggregate.inputs.map((input, index) => {
+                  const lock = lockOf(input);
+                  const category = (input as { token?: { category?: string } })?.token?.category ?? '';
+                  return `${index}:${lock.slice(0, 14)}:${category.slice(0, 12)}`;
+                }),
+                // A frame authenticates its callee against the call expression's address, while the block it reads
+                // is the CALLEE PARTICIPANT's. When those two disagree the check can never pass, and the pair is
+                // only comparable here, where both the prepared descriptors and the finalized plan are in scope.
+                invocations: plan.invocations.map((invocation) => ({
+                  function: invocation.function,
+                  caller: invocation.caller,
+                  callee: invocation.callee,
+                  target: invocation.targetLockingBytecode.slice(0, 40),
+                  calleeContract: plan.participants[invocation.callee]?.artifact.contractName,
+                  calleeLock: plan.participants[invocation.callee]?.lockingBytecode.slice(0, 40),
+                  argsBytes: invocation.argsHex.length / 2,
+                })),
+                prepared: descriptors.map((descriptor) => ({
+                  function: descriptor.functionName,
+                  contract: descriptor.contract.inner.artifact.contractName,
+                  inner: descriptor.contract.inner.lockingBytecode.slice(0, 40),
+                  target: descriptor.targetLockingBytecode?.slice(0, 40),
+                })),
+              }));
+              const describe = (item: { token?: { category?: string; nft?: { capability?: string; commitment?: string } } } | undefined, index: number): unknown => ({
+                index,
+                cat: item?.token?.category?.slice(0, 10),
+                cap: item?.token?.nft?.capability,
+                commitBytes: (item?.token?.nft?.commitment?.length ?? 0) / 2,
+              });
+              const sidecarSlots = plan.participants.flatMap((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                return (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'ecrecoverSideCar' || slot.kind === 'keccakSideCar')
+                  .map((slot) => ({
+                    participant: candidate.participant,
+                    kind: slot.kind,
+                    offset: slot.offset,
+                    input: describe(aggregate.inputs[base + slot.offset] as never, base + slot.offset),
+                    output: describe(aggregate.outputs[base + slot.offset] as never, base + slot.offset),
+                  }));
+              });
+              console.error('deferred-stall-band', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                participants: plan.participants.map((candidate) => {
+                  const artifact = candidate.artifact as {
+                    messageBus?: { route?: { graphEffectFrame?: Record<string, unknown> } };
+                  };
+                  const slots = candidate.blockLayout?.slots ?? [];
+                  return {
+                    participant: candidate.participant,
+                    slots: slots.map((slot) => [slot.offset, slot.kind, slot.slotIndex, slot.nftIndex,
+                      slot.conditional === true ? 1 : 0]),
+                    frame: artifact.messageBus?.route?.graphEffectFrame,
+                  };
+                }),
+              }));
+              // A stall is reported by ONE participant's builder, but the program that runs is the atomic verifier,
+              // which addresses every participant's outputs. Label each aggregate coordinate with its owner and
+              // block slot so an aborting read can be attributed without recomputing any participant's addresses.
+              const slotLabels = aggregate.outputs.map((_output, index) => {
+                for (const candidate of plan.participants) {
+                  const base = graph.layout.participantInputs[candidate.participant];
+                  const slot = (candidate.blockLayout?.slots ?? [])
+                    .find((entry) => base + entry.offset === index);
+                  if (slot) {
+                    return `p${candidate.participant}:${slot.kind}`
+                      + (slot.slotIndex !== undefined ? `#${slot.slotIndex}` : '');
+                  }
+                }
+                return 'other';
+              });
+              const resourceKinds = new Map<string, string>();
+              for (const [participantIndex, published] of resourceLocksByParticipant) {
+                for (const [lock, kind] of published) {
+                  if (!resourceKinds.has(lock)) resourceKinds.set(lock, `p${participantIndex}:${kind}`);
+              }
+              }
+              const tailKinds = aggregate.outputs.flatMap((output, index) => {
+                if (slotLabels[index] !== 'other') return [];
+                const lock = output.to instanceof Uint8Array ? binToHex(output.to).toLowerCase() : '';
+                const commitment = output.token?.nft?.commitment;
+                return [`${index}:${resourceKinds.get(lock) ?? 'unknown'}:${(commitment?.length ?? 0) / 2}`];
+              });
+              // How much of each participant's trailing run was actually PUBLISHED (token-bearing). The
+              // range-splice chain walk addresses output[master + blockSize + 1 + counter], so a mismatch between
+              // this count and the counter the covenant reached in the SDK's read window is the chain-length
+              // mismatch itself, visible without another round of instrumentation.
+              const trailingPublished = plan.participants.map((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                const trailing = (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'trailing').map((slot) => slot.offset).sort((a, b) => a - b);
+                const published = trailing.filter((offset) =>
+                  aggregate.outputs[base + offset]?.token?.nft !== undefined);
+                return `p${candidate.participant}:${published.length}/${trailing.length}`
+                  + `[${published.slice(0, 6).join(',')}]`;
+              });
+              // The published sorted-chain nodes carry `slot(32) || nextKey(32) || value`; the covenant's
+              // range-splice walk follows `nextKey` until it reaches the predecessor's old successor, so the LAST
+              // node's nextKey is what terminates the walk. Print both sides' commitment heads so the chain links
+              // can be compared directly (input = the co-spent resource, output = the published node).
+              const trailingCommitments = plan.participants.flatMap((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                return (candidate.blockLayout?.slots ?? [])
+                  .filter((slot) => slot.kind === 'trailing')
+                  .map((slot) => ({ participant: candidate.participant, offset: slot.offset }))
+                  .filter(({ offset }) => aggregate.outputs[base + offset]?.token?.nft !== undefined)
+                  .map(({ participant, offset }) => {
+                    const input = aggregate.inputs[base + offset]?.token?.nft?.commitment ?? '';
+                    const output = aggregate.outputs[base + offset]?.token?.nft?.commitment ?? '';
+                    return `p${participant}@${offset} in=${String(input).slice(0, 80)}`
+                      + ` out=${String(output).slice(0, 80)}`;
+                  });
+              });
+              // The participant's ROUTE arguments, named from the route ABI. The program is fully built here, so
+              // the master input's unlocking bytecode is the packed ABI argument vector - and unlike the
+              // verifier's script it is packed exactly as declared, so a positional mapping is sound. An EMPTY
+              // item names the route parameter the covenant computed an empty address from.
+              const routeArguments = plan.participants.map((candidate) => {
+                const base = graph.layout.participantInputs[candidate.participant];
+                const declared = (candidate.artifact.messageBus as {
+                  route?: { inputs?: Array<{ name?: string }> };
+                } | undefined)?.route?.inputs ?? [];
+                const unlocking = program.transaction.inputs[base]?.unlockingBytecode ?? new Uint8Array();
+                const lengths: number[] = [];
+                for (let cursor = 0; cursor < unlocking.length && lengths.length <= declared.length;) {
+                  const opcode = unlocking[cursor];
+                  if (opcode >= 1 && opcode <= 75) { lengths.push(opcode); cursor += 1 + opcode; }
+                  else if (opcode === 0x4c && cursor + 1 < unlocking.length) {
+                    const size = unlocking[cursor + 1]; lengths.push(size); cursor += 2 + size;
+                  } else if (opcode === 0x00) { lengths.push(0); cursor += 1; }
+                  else break;
+                }
+                // Full name=length table, not just the empty entries: the failing comparison reads a witness by
+                // its ABI position, so the table lets the empty COMPUTED operands be matched to the parameter that
+                // produced them.
+                const table = lengths.slice(0, declared.length).map((length, index) =>
+                  `${declared[index]?.name ?? index}=${length}`);
+                const empty = lengths.map((length, index) => ({ length, index }))
+                  .filter((item) => item.length === 0)
+                  .map((item) => declared[item.index]?.name ?? `<${item.index}>`);
+                return `p${candidate.participant}:empty[${empty.join(',')}]:${table.join(' ')}`;
+              });
+              console.error('deferred-stall-io-full', JSON.stringify({
+                routeArguments,
+                buildId: peekBuilderBuildId(),
+                labels: slotLabels,
+                trailingPublished,
+                trailingCommitments,
+                tailKinds,
+                out: aggregate.outputs.map((item, index) => {
+                  const lock = item?.to instanceof Uint8Array ? binToHex(item.to).slice(0, 10) : '';
+                  return item?.token?.nft
+                    ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}:${lock}`
+                    : `${index}:-:${lock}`;
+                }),
+                in: aggregate.inputs.map((item, index) => item?.token?.nft
+                  ? `${index}:${item.token.category?.slice(0, 8)}:${(item.token.nft.commitment?.length ?? 0) / 2}`
+                  : `${index}:-`),
+              }));
+              console.error('deferred-stall-io', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                inputs: aggregate.inputs.slice(0, 24).map((item, index) => ({
+                  index,
+                  cat: item?.token?.category?.slice(0, 10),
+                  cap: item?.token?.nft?.capability,
+                  commitBytes: (item?.token?.nft?.commitment?.length ?? 0) / 2,
+                  lock: (() => {
+                    const unlocker = (item as { unlocker?: { generateLockingBytecode: () => Uint8Array } })
+                      ?.unlocker;
+                    return unlocker ? binToHex(unlocker.generateLockingBytecode()).slice(0, 12) : '';
+                  })(),
+                })),
+              }));
+              console.error('deferred-stall-outputs', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                outputs: aggregate.outputs.slice(0, 24).map((output, index) => ({
+                  index,
+                  cat: output.token?.category?.slice(0, 10),
+                  cap: output.token?.nft?.capability,
+                  commitBytes: (output.token?.nft?.commitment?.length ?? 0) / 2,
+                  lock: (output.to instanceof Uint8Array ? binToHex(output.to) : String(output.to)).slice(0, 12),
+                })),
+              }));
+              console.error('deferred-stall-sidecars', JSON.stringify({
+                buildId: peekBuilderBuildId(),
+                slots: sidecarSlots.slice(0, 8),
+                tokenlessOutputs: sidecarSlots.filter((slot) =>
+                  (slot.output as { cat?: string }).cat === undefined).length,
+              }));
+              console.error('deferred-stall-composition', JSON.stringify({
+                lastBuildId: peekBuilderBuildId(),
+                firstP2pkh: p2pkhBefore[0],
+                p2pkhCount: p2pkhBefore.length,
+                feeInputLock: lockOf(aggregate.inputs[graph.layout.feeInput]),
+                calls: (this.options.preparedCalls ?? []).map((call) => {
+                  const described = call as unknown as {
+                    functionName?: string; logicalFunctionName?: string; selectorHex?: string;
+                  };
+                  return described.logicalFunctionName ?? described.functionName
+                    ?? described.selectorHex ?? '?';
+                }).slice(0, 8),
+                inputCount: aggregate.inputs.length,
+                whitelistEntryInputs: commitments.flatMap((commitment, index) =>
+                  commitment.includes(needle) ? [index] : []),
+                entryLikeInputs: commitments.filter((commitment) => commitment.length >= 128).length,
+              }));
+            }
+            // "No progress" alone cannot distinguish a keccak preimage the trace never exposed from an ecrecover
+            // argument that stayed a placeholder, and the two have different causes. The builder already counts
+            // both, so name them in the failure.
+            const stalled = resolvableDeferredBlocks.filter((block) => block.controller.hasUnresolved())
+              .map((block) => {
+                const counter = block.controller.remaining?.();
+                return counter === undefined ? `participant ${block.participant}`
+                  : `participant ${block.participant}: keccak ${counter.keccakUnresolved}/`
+                    + `${counter.keccakTotal} unresolved, ecrecover ${counter.ecrecoverUnresolved}/`
+                    + `${counter.ecrecoverTotal} unresolved`;
+              });
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ENTRY_COUNTS === '1') {
+              // Whether the probe program is layout-COMPLETE: every participant's block is placed from the plan, so
+              // if the aggregate is smaller than the plan's own spans, every absolute coordinate baked into a row
+              // body (callee indices, entry offsets, executor-relative families) addresses an input that does not
+              // exist yet, and the probe aborts before the compute read sites it exists to observe.
+              console.error('deferred-stall-plan-size', JSON.stringify({
+                probeInputs: aggregate.inputs.length,
+                probeOutputs: aggregate.outputs.length,
+                participants: plan.participants.map((candidate) => ({
+                  participant: candidate.participant,
+                  base: graph.layout.participantInputs[candidate.participant],
+                  blockSize: candidate.blockLayout?.blockSize ?? 0,
+                  executionKind: candidate.executionKind,
+                  executorOffset: candidate.executorOffset ?? null,
+                  invocationCount: candidate.invocations.length,
+                })),
+              }));
+            }
             throw new Error(
-              'messageBus: complete graph did not expose arguments for all deferred compute resources',
+              'messageBus: complete graph did not expose arguments for all deferred compute resources'
+              + (stalled.length > 0 ? ` (${stalled.join('; ')})` : '')
+              // The probe is built from this aggregate, and its own coordinate space is what a generated read
+              // addresses. A coordinate past the end aborts the probe before the compute read sites - which is
+              // indistinguishable from "the graph did not expose the arguments" without these counts.
+              + ` [probe program: ${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs]`,
             );
           }
           rebalanceFeeTail(aggregate, 'resolved compute-sidecar witnesses');
@@ -1714,18 +4730,42 @@ export class AtomicMessageBusComposition {
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
       const convergence = convergeMessageBusComputedResourceOutputs(builder);
       const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(builder);
-      if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
+      const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(builder);
+      if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0
+        || dynamicChunkConvergence.repairs > 0) {
         throw new Error(
           'messageBus: mutable resources changed after semantic-manifest convergence; refusing a stale manifest',
         );
       }
-      if (reassertCompilerReadOnlyBatchProofOutputs(builder.outputs, builder.inputs) > 0) {
-        rebalanceFeeTail(builder, 'compiler-owned read-only batch proofs');
-      }
-      if (convergeMessageBusVerifierDensityReserves(builder) > 0) {
-        rebalanceFeeTail(builder, 'message-bus verifier density reserves');
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FINAL_OUTPUTS === '1') {
+        console.error('message-bus-final-outputs', JSON.stringify(builder.outputs.map((output, index) => ({
+          index,
+          lock: typeof output.to === 'string' ? output.to.slice(0, 24) : binToHex(output.to).slice(0, 24),
+          commitment: (output.token?.nft as { commitment?: string } | undefined)?.commitment,
+        })).slice(120, 230)));
       }
       preflightMessageBusTransaction(builder, finalizedByteGateOptionsForProvider(builder.provider));
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+        const digests = (this.options.preparedCalls ?? []).flatMap((call) =>
+          (call.valueChunkProductions ?? []).map((production) => ({
+            call: call.functionName,
+            bytes: production.value.length,
+            digest: binToHex(sha256(production.value)),
+          })));
+        const commitments = builder.outputs.map((output) => {
+          const raw = (output.token?.nft as { commitment?: string } | undefined)?.commitment;
+          return typeof raw === 'string' ? raw : undefined;
+        });
+        console.error('atomic-production-digests', JSON.stringify(digests));
+        console.error('atomic-production-output-hits', JSON.stringify(digests.map((entry) => ({
+          call: entry.call,
+          digest: entry.digest.slice(0, 16),
+          outputs: commitments.flatMap((commitment, index) =>
+            commitment?.includes(entry.digest) ? [index] : []),
+        }))));
+      }
       return builder;
     };
     const actualSpansMatch = (
@@ -1741,6 +4781,7 @@ export class AtomicMessageBusComposition {
       priorResults: Readonly<Record<number, string>>, missingParticipants: Set<number>,
     ): Record<number, string> => {
       const derivedResults: Record<number, string> = { ...priorResults };
+      let normalizedNativeReturnOutput = false;
       // Every participant probe observes the same immutable provisional transaction. Materialize its unlocking
       // bytecode and source-output vector once per derivation pass; rebuilding both for each participant is
       // quadratic in large atomic graphs and cannot change the observed program.
@@ -1764,7 +4805,7 @@ export class AtomicMessageBusComposition {
           {
             resultTypes: owned.flatMap((invocation) => plan.invocations[invocation].resultTypes),
             resultTypeGroups: owned.map((invocation) => plan.invocations[invocation].resultTypes),
-            solidityAbi: artifactUsesSolidityAbi(participant.artifact),
+            resultEncodings: owned.map((invocation) => plan.invocations[invocation].resultEncoding!),
           },
         );
         if (!blob) {
@@ -1818,14 +4859,24 @@ export class AtomicMessageBusComposition {
         for (const invocationIndex of owned) {
           const invocation = plan.invocations[invocationIndex];
           const start = cursor;
-          if (artifactUsesSolidityAbi(participant.artifact)) {
-            cursor += evmInvocationResultLength(outer.value, cursor, invocation.resultTypes);
+          if (invocation.resultEncoding === 'evm-abi-v1') {
+            cursor += evmInvocationResultLength(
+              outer.value, cursor, invocation.resultTypes, participant.artifact,
+            );
           } else {
+            const canonicalFields: Uint8Array[] = [];
             for (const type of invocation.resultTypes) {
-              cursor += decodePushdataValue(outer.value, cursor, type, participant.artifact.structs).bytesConsumed;
+              const decoded = canonicalNativeResultField(
+                outer.value, cursor, type, participant.artifact.structs,
+              );
+              cursor += decoded.bytesConsumed;
+              canonicalFields.push(decoded.encoded);
             }
+            derivedResults[invocationIndex] = binToHex(concatBytes(canonicalFields));
           }
-          derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+          if (invocation.resultEncoding === 'evm-abi-v1') {
+            derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+          }
         }
         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
           ?.SOLIDC_DEBUG_RETURN_VECTOR === '1') {
@@ -1844,11 +4895,33 @@ export class AtomicMessageBusComposition {
         if (cursor !== outer.value.length) {
           throw new Error(`messageBus: participant ${participant.participant} return vector has an unchecked suffix`);
         }
+        if (owned.some((invocation) => plan.invocations[invocation].resultEncoding === 'compact-pushdata-v1')) {
+          // The trace extractor can observe the provisional output before the route's completed result still live
+          // above it. Re-materialize the output from the completely decoded, canonical field vector; final BCH VM
+          // preflight remains the authority and rejects this claim if it differs from the producer's actual result.
+          const canonicalBlob = participantReturnBlob(participant.participant, derivedResults);
+          const canonicalCommitment = participantReturnCommitment(canonicalBlob);
+          const outputIndex = participantBase + returnSlot.offset;
+          const output = provisional.outputs[outputIndex];
+          if (!canonicalCommitment || !output?.token?.nft) {
+            throw new Error(`messageBus: participant ${participant.participant} lost its native return output`);
+          }
+          const commitmentHex = binToHex(canonicalCommitment);
+          if (output.token.nft.commitment !== commitmentHex) {
+            provisional.outputs[outputIndex] = {
+              ...output,
+              token: { ...output.token, nft: { ...output.token.nft, commitment: commitmentHex } },
+            };
+            normalizedNativeReturnOutput = true;
+          }
+        }
       }
+      if (normalizedNativeReturnOutput) rebalanceFeeTail(provisional, 'canonicalized native return results');
       return derivedResults;
     };
 
-    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0 || hasComputedValueChunks
+    if (returning.length > 0 || fixedEventSlots.length > 0 || hasRuntimeLoopEvents
+      || resourceSlots.length > 0 || hasComputedValueChunks
       || valueSlots.length > 0 || tokenSlots.length > 0 || sidecarSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly AtomicEventSlotEffect[] = provisionalEventEffects;
@@ -1862,7 +4935,8 @@ export class AtomicMessageBusComposition {
       // allowance even though another pass reached a valid fixed point. Allow one discovery pass per mutable
       // claim, one pass per returning invocation (results can propagate along the call graph), and one final
       // confirmation pass. Repeated complete states are rejected immediately as cycles.
-      const mutableClaimCount = returning.length + eventSlots.length + resourceSlots.length
+      const mutableClaimCount = returning.length + fixedEventSlots.length + resourceSlots.length
+        + (hasRuntimeLoopEvents ? 1 : 0)
         + valueSlots.length + tokenSlots.length + sidecarSlots.length + (hasComputedValueChunks ? 1 : 0);
       const maximumPasses = mutableClaimCount + 2;
       const seenClaimStates = new Set<string>();
@@ -1884,12 +4958,15 @@ export class AtomicMessageBusComposition {
           plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
           claimedTokenEffects,
           claimedSidecarEffects,
+          undefined,
+          deploymentEffects,
         );
         let assembled = await assemble(finalized, claimedResults);
         if (!actualSpansMatch(finalized, assembled.actualSizes)) {
           finalized = finalizeAtomicInvocationGraph(
             plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
             claimedTokenEffects, claimedSidecarEffects, assembled.actualSizes,
+            deploymentEffects,
           );
           assembled = await assemble(finalized, claimedResults);
           if (!actualSpansMatch(finalized, assembled.actualSizes)) {
@@ -1971,34 +5048,35 @@ export class AtomicMessageBusComposition {
           const absolute = finalized.layout.participantInputs[claim.participant] + claim.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
-          if (input?.token !== undefined
-            || binToHex(input?.unlocker.generateLockingBytecode() ?? new Uint8Array())
-              !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
-            || output?.token?.category !== claim.tokenCategory
-            || output.token.amount !== 0n
-            || output.token.nft?.capability !== 'mutable'
-            || valueChunkIndexFromCommitment(output.token.nft.commitment)
-              !== valueChunkIndexFromCommitment(claim.commitment)) continue;
+          if (!canSeedComputedValueChunkClaim(input, output, claim)) continue;
           const lockingBytecode = hexToBin(claim.lockingBytecodeHex);
           const currentLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
           if (binToHex(currentLockingBytecode) !== claim.lockingBytecodeHex) {
             output.to = lockingBytecode;
             seededComputedValueChunk = true;
           }
-          if (output.token.nft.commitment !== claim.commitment) {
-            output.token.nft.commitment = claim.commitment;
+          if (output.token!.nft!.commitment !== claim.commitment) {
+            output.token!.nft!.commitment = claim.commitment;
             seededComputedValueChunk = true;
           }
         }
         // State derived by a delegated or cross-participant call is unknowable to the isolated local builders.
         // Converge it on the complete graph before reading resource effects, so the next manifest authenticates
         // the repaired commitment rather than treating the late write as an unclaimed output mutation.
+        // Top-level dynamic chunk RMW is the same class: local probes freeze the prior chunk commitment while the
+        // route already authenticates the concat-derived replacement (aa→aabb) on the complete graph.
         const resourceConvergence = convergeMessageBusComputedResourceOutputs(provisional);
         const valueChunkConvergence = convergeMessageBusComputedValueChunkOutputs(provisional);
+        const dynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(provisional);
         if (seededComputedResource || seededComputedValueChunk
-          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0) {
+          || resourceConvergence.repairs > 0 || valueChunkConvergence.repairs > 0
+          || dynamicChunkConvergence.repairs > 0) {
           rebalanceFeeTail(provisional, 'converged mutable resource outputs');
         }
+        // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
+        // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
+        // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.
+        const semanticObservations: SemanticClaimObservation[] = [];
         const derivedComputedValueChunks: ComputedValueChunkClaim[] = [];
         for (const absolute of valueChunkConvergence.ownedOutputs) {
           let participant = -1;
@@ -2022,12 +5100,11 @@ export class AtomicMessageBusComposition {
             commitment: output.token.nft.commitment,
           });
         }
-        if (semanticJson(derivedComputedValueChunks) !== semanticJson(claimedComputedValueChunks)) {
-          // Chunk outputs can be inputs to later resource/event observations. Authenticate their exact graph
-          // coordinates in the next manifest before accepting claims derived from those dependent slots.
-          claimedComputedValueChunks = derivedComputedValueChunks;
-          continue;
-        }
+        semanticObservations.push({
+          previous: claimedComputedValueChunks,
+          observed: derivedComputedValueChunks,
+          apply: (observed) => { claimedComputedValueChunks = observed as ComputedValueChunkClaim[]; },
+        });
         const derivedResourceEffects: AtomicResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -2108,7 +5185,11 @@ export class AtomicMessageBusComposition {
           const lockingBytecodeChanges = inputMutable && outputMutable
             && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
           const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
-          if (slot.kind !== 'entry' && slot.kind !== 'trailing' && mode !== 0) {
+          const retirementConsume = mode === 2
+            && (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft')
+            && (selfdestructByParticipant.has(slot.participant)
+              || plan.participants[slot.participant]?.lifecycle?.kind === 'selfdestruct');
+          if (slot.kind !== 'entry' && slot.kind !== 'trailing' && mode !== 0 && !retirementConsume) {
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
               console.error('atomic-fixed-resource-not-preserved', {
@@ -2128,8 +5209,10 @@ export class AtomicMessageBusComposition {
             throw new Error(`messageBus: fixed resource slot ${slot.participant}:${slot.offset} is not preserved`);
           }
           const activeToken = inputMutable ? inputToken : outputToken!;
+          // Trailing value-chunk slots rewrite commitments and may re-dust satoshis; category must still match.
           if (activeToken.amount !== 0n || (inputMutable && outputMutable
-            && (inputToken.category !== outputToken!.category || input.satoshis !== output.amount))) {
+            && (inputToken.category !== outputToken!.category
+              || (slot.kind !== 'trailing' && input.satoshis !== output.amount)))) {
             throw new Error(`messageBus: resource slot ${slot.participant}:${slot.offset} has an invalid NFT transition`);
           }
           const resourceLockingBytecode = inputMutable ? inputLockingBytecode : outputLockingBytecode;
@@ -2142,12 +5225,11 @@ export class AtomicMessageBusComposition {
             outputCommitmentHex: outputMutable ? outputToken!.nft!.commitment : '',
           });
         }
-        if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
-          // Resource transitions are authenticated manifest inputs to later event/effect discovery. Rebuild with
-          // them committed before accepting observations which may have executed under the provisional manifest.
-          claimedResourceEffects = derivedResourceEffects;
-          continue;
-        }
+        semanticObservations.push({
+          previous: claimedResourceEffects,
+          observed: derivedResourceEffects,
+          apply: (observed) => { claimedResourceEffects = observed as AtomicResourceSlotEffect[]; },
+        });
         const derivedValueEffects: AtomicValueSlotEffect[] = [];
         for (const slot of valueSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -2164,10 +5246,11 @@ export class AtomicMessageBusComposition {
             ...slot, lockingBytecodeHex: binToHex(lockingBytecode), amount: output.amount,
           });
         }
-        if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
-          claimedValueEffects = derivedValueEffects;
-          continue;
-        }
+        semanticObservations.push({
+          previous: claimedValueEffects,
+          observed: derivedValueEffects,
+          apply: (observed) => { claimedValueEffects = observed as AtomicValueSlotEffect[]; },
+        });
         const derivedTokenEffects: AtomicTokenSlotEffect[] = [];
         for (const slot of tokenSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -2192,10 +5275,11 @@ export class AtomicMessageBusComposition {
             capability: output.token.nft?.capability ?? 'ft',
           });
         }
-        if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
-          claimedTokenEffects = derivedTokenEffects;
-          continue;
-        }
+        semanticObservations.push({
+          previous: claimedTokenEffects,
+          observed: derivedTokenEffects,
+          apply: (observed) => { claimedTokenEffects = observed as AtomicTokenSlotEffect[]; },
+        });
         const derivedSidecarEffects: AtomicSidecarSlotEffect[] = [];
         for (const slot of sidecarSlots) {
           if (slot.offset >= finalized.callManifest.participants[slot.participant].actualSize) continue;
@@ -2235,15 +5319,16 @@ export class AtomicMessageBusComposition {
             outputCommitmentHex: output.token.nft?.commitment ?? '', value: input.satoshis,
           });
         }
-        if (semanticJson(derivedSidecarEffects) !== semanticJson(claimedSidecarEffects)) {
-          claimedSidecarEffects = derivedSidecarEffects;
-          continue;
-        }
+        semanticObservations.push({
+          previous: claimedSidecarEffects,
+          observed: derivedSidecarEffects,
+          apply: (observed) => { claimedSidecarEffects = observed as AtomicSidecarSlotEffect[]; },
+        });
         const derivedEventEffects: AtomicEventSlotEffect[] = [];
         const eventProgram = provisional.buildLibauthProgram();
         const discoveredEvents = new Map<number, { commitment: string; lockingBytecode?: string }>();
         for (const participant of plan.participants) {
-          const ownedSlots = eventSlots.filter((slot) => slot.participant === participant.participant);
+          const ownedSlots = eventSlots().filter((slot) => slot.participant === participant.participant);
           const participantBase = finalized.layout.participantInputs[participant.participant];
           const eventIndices = ownedSlots.map((slot) => participantBase + slot.offset);
           if (eventIndices.length === 0) continue;
@@ -2262,7 +5347,7 @@ export class AtomicMessageBusComposition {
         for (const participant of plan.participants) {
           const participantBase = finalized.layout.participantInputs[participant.participant];
           const selectedEventOffsets = selectedGraphEventOffsets(plan, participant);
-          const indices = eventSlots.filter((slot) => slot.participant === participant.participant)
+          const indices = eventSlots().filter((slot) => slot.participant === participant.participant)
             .map((slot) => participantBase + slot.offset);
           if (indices.length === 0) continue;
           const eventLocks = eventLockingBytecodes(participant);
@@ -2278,16 +5363,46 @@ export class AtomicMessageBusComposition {
             return nft?.capability === 'none' && lockingBytecode !== undefined
               && eventLockSet.has(binToHex(lockingBytecode));
           });
+          // A kind-2 row is an authenticated producer result from the preceding fixed-point pass. A faithful VM
+          // trace normally stops reporting that event once its output is correct, so retain the stable row by
+          // physical participant slot rather than reading the absence of a new mismatch as an inactive event.
+          const authenticated = new Map(finalized.callManifest.rows.flatMap((row) =>
+            row.kind === 2 && row.mode === 1 && row.owner === participant.participant
+              ? [[participantBase + row.targetOffset, {
+                commitment: row.effectHex, lockingBytecode: row.subjectHex,
+              }] as const] : []));
+          const expectationAt = (index: number): { commitment: string; lockingBytecode?: string } | undefined => {
+            const observed = discoveredEvents.get(index);
+            const prior = authenticated.get(index);
+            if (!observed) return prior;
+            return {
+              commitment: observed.commitment,
+              lockingBytecode: observed.lockingBytecode
+                ?? (prior?.commitment === observed.commitment ? prior.lockingBytecode : undefined),
+            };
+          };
           // Inactive route slots only bind an empty commitment. A relaxed trace can carry that introspection into
           // a neighboring equality and produce a false commitment match, but it cannot invent the event covenant's
           // independently verified locking bytecode. The executing covenant's commitment+lock pair is authoritative
           // for proxy/delegate routes, where the logical handler artifact need not publish the physical event lock.
           const targets = indices.filter((index) => {
-            const expectation = discoveredEvents.get(index);
+            const expectation = expectationAt(index);
+            const schemaLock = expectation === undefined ? undefined
+              : eventLockingBytecodeForCommitment(participant, expectation.commitment);
+            // The SDK materialized this immutable output from the selected handler's compiler-published event
+            // site, so its lock is exact site evidence even when a commitment mismatch stopped the VM immediately
+            // before the following OUTPUTBYTECODE pin and the trace cannot reconstruct the payload.
+            const callsiteLock = eventLockingBytecodeAtOffset(participant, index - participantBase);
+            const activeTemplate = active.includes(index);
             return (selectedEventOffsets === undefined
               || selectedEventOffsets.has(index - participantBase))
               && (expectation?.commitment.length ?? 0) > 0
-              && expectation?.lockingBytecode !== undefined;
+              // A commitment mismatch stops the faithful VM trace before the handler can execute its following
+              // output-bytecode pin. The emitted commitment still carries the compiler-published event schema;
+              // when that schema identifies exactly one selected-handler covenant, it is an equally exact output
+              // template for the next fixed-point pass. Ambiguous or unknown schemas remain trace-only.
+              && (expectation?.lockingBytecode !== undefined || schemaLock !== undefined
+                || callsiteLock !== undefined || activeTemplate);
           });
           const inactive = indices.map((index) => provisional.outputs[index]).find((output) => !output.token);
           if (!inactive && targets.some((target) => !active.includes(target))) {
@@ -2299,18 +5414,31 @@ export class AtomicMessageBusComposition {
           if (targets.length === 0 && active.length === 0) continue;
           const template = inactive ?? provisional.outputs[targets[0]];
           if (!template) throw new Error('messageBus: active event frame has no output template');
+          const targetTemplates = new Map(targets.map((target) => [target, provisional.outputs[target]]));
           if (inactive) {
             for (const index of new Set([...indices, ...active])) provisional.outputs[index] = { ...inactive };
           }
           targets.forEach((target, index) => {
-            const expectation = discoveredEvents.get(target)!;
+            const expectation = expectationAt(target)!;
             // A flattened route trace can expose a sibling event identity beside the reached handler's payload.
             // Prefer the unique event schema published by the selected handlers; retain the trace for genuinely
             // ambiguous same-schema events, where the commitment alone cannot identify a named covenant.
             const decodedLock = eventLockingBytecodeForCommitment(participant, expectation.commitment);
+            const callsiteLock = eventLockingBytecodeAtOffset(participant, target - participantBase);
+            const current = targetTemplates.get(target);
+            const currentLock = typeof current?.to === 'string'
+              ? addressToLockScript(current.to) : current?.to;
             provisional.outputs[target] = {
-              to: hexToBin(decodedLock ?? expectation.lockingBytecode ?? eventLocks[index]),
-              amount: template.amount,
+              to: decodedLock !== undefined
+                ? hexToBin(decodedLock)
+                : expectation.lockingBytecode !== undefined
+                  ? hexToBin(expectation.lockingBytecode)
+                  : callsiteLock !== undefined
+                    ? hexToBin(callsiteLock)
+                    : currentLock ?? hexToBin(eventLocks[index]),
+              // Preserve the value the compiler-built site at this target already carried: `template` can be a
+              // different (inactive) index's output, and its satoshi amount is an observable part of the frame.
+              amount: current?.amount ?? template.amount,
               token: {
                 category: categories[participant.participant], amount: 0n,
                 nft: { capability: 'none', commitment: expectation.commitment },
@@ -2319,7 +5447,7 @@ export class AtomicMessageBusComposition {
           });
           rebalanceFeeTail(provisional, 'relocated compiler-authenticated event outputs');
         }
-        for (const slot of eventSlots) {
+        for (const slot of eventSlots()) {
           const outputIndex = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const output = provisional.outputs[outputIndex];
           if (!output) throw new Error(`messageBus: event slot ${slot.participant}:${slot.offset} has no output`);
@@ -2340,7 +5468,8 @@ export class AtomicMessageBusComposition {
             });
           }
         }
-        let stable = true;
+        const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
+        let stable = !semanticClaimsChanged;
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
         if (stable) {
           if (missingReturnParticipants.size > 0) {
@@ -2349,7 +5478,11 @@ export class AtomicMessageBusComposition {
               + [...missingReturnParticipants].join(', '),
             );
           }
-          if (assembled.incompleteDynamicChunks.length > 0) {
+          // Local builders freeze `00` placeholders; complete-graph OTC convergence above may already have
+          // replaced them. Only fail closed when a placeholder still remains on the owned trailing chunk run.
+          if (dynamicChunkPlaceholdersRemain(
+            provisional, dynamicChunkConvergence, assembled.incompleteDynamicChunks,
+          )) {
             const detail = assembled.incompleteDynamicChunks.map((item) =>
               `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
             throw new Error(`messageBus: stable graph retains incomplete dynamic chunks: ${detail}`);
@@ -2376,6 +5509,7 @@ export class AtomicMessageBusComposition {
         claimedResourceEffects = derivedResourceEffects;
         claimedValueEffects = derivedValueEffects;
         claimedTokenEffects = derivedTokenEffects;
+        claimedSidecarEffects = derivedSidecarEffects;
       }
       throw new Error(
         `messageBus: semantic derivation did not converge after ${maximumPasses} claim-bounded passes`,
@@ -2386,13 +5520,17 @@ export class AtomicMessageBusComposition {
       finalized = finalizeAtomicInvocationGraph(
         plan, categories, provisionalResults, provisionalEventEffects, provisionalResourceEffects,
         provisionalValueEffects, provisionalTokenEffects, provisionalSidecarEffects, assembled.actualSizes,
+        deploymentEffects,
       );
       assembled = await assemble(finalized, provisionalResults);
       if (!actualSpansMatch(finalized, assembled.actualSizes)) {
         throw new Error('messageBus: participant spans did not converge after compact assembly');
       }
     }
-    if (assembled.incompleteDynamicChunks.length > 0) {
+    const finalDynamicChunkConvergence = convergeMessageBusComputedDynamicChunkOutputs(assembled.builder);
+    if (dynamicChunkPlaceholdersRemain(
+      assembled.builder, finalDynamicChunkConvergence, assembled.incompleteDynamicChunks,
+    )) {
       const detail = assembled.incompleteDynamicChunks.map((item) =>
         `${item.participant}:${item.variable} (${item.resolved}/${item.total})`).join(', ');
       throw new Error(`messageBus: final graph retains incomplete dynamic chunks: ${detail}`);
@@ -2406,14 +5544,37 @@ export class AtomicMessageBusComposition {
   async send(): Promise<TransactionDetails> { return (await this._build()).send() as Promise<TransactionDetails>; }
 }
 
+/**
+ * Composition is deferred, so its public inputs must not retain caller-owned mutable arrays, byte vectors, or
+ * plain struct records. Preserve class instances (contracts, unlockers, signature templates) by identity: they
+ * are capabilities rather than ABI values and cloning them would change their behavior. The resulting private
+ * snapshot is never exposed, so copied Uint8Arrays cannot subsequently be mutated by the caller.
+ */
+const snapshotCompositionValue = <T>(value: T): T => {
+  if (value instanceof Uint8Array) return Uint8Array.from(value) as T;
+  if (Array.isArray(value)) return Object.freeze(value.map(snapshotCompositionValue)) as T;
+  if (!value || typeof value !== 'object') return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  return Object.freeze(Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .map(([key, child]) => [key, snapshotCompositionValue(child)]))) as T;
+};
+
+const snapshotPreparedCall = (call: PreparedAtomicMessageBusCall): PreparedAtomicMessageBusCall =>
+  snapshotCompositionValue(call);
+
 export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageBusComposition {
-  // Snapshot the caller-owned array so later mutation cannot alter the graph between compose() and send().
+  // Capture StatefulFunctionCall descriptors immediately. A prepared call is a value-level graph statement;
+  // retaining the call object deferred both its externally-owned ABI args and any later imperative mutation.
   if (!options.calls && !options.preparedCalls) {
     throw new Error('messageBus: composition requires calls or preparedCalls');
   }
-  return new AtomicMessageBusComposition({
-    ...options,
-    ...(options.calls && { calls: Object.freeze([...options.calls]) }),
-    ...(options.preparedCalls && { preparedCalls: Object.freeze([...options.preparedCalls]) }),
-  });
+  const preparedCalls = options.preparedCalls
+    ?? options.calls!.map((call) => call._messageBusCompositionDescriptor());
+  const { calls: _calls, preparedCalls: _preparedCalls, ...rest } = options;
+  return new AtomicMessageBusComposition(Object.freeze({
+    ...snapshotCompositionValue(rest),
+    requirePreparedIdentity: options.preparedCalls !== undefined,
+    preparedCalls: Object.freeze(preparedCalls.map(snapshotPreparedCall)),
+  }));
 }

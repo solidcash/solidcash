@@ -8,7 +8,9 @@ import {
   AddressTransferStatementNode,
   AddressSendExpressionNode,
   LowLevelCallStatementNode,
+  MethodCallNode,
   MethodCallStatementNode,
+  ExternalFunctionCallNode,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
   StateAssignNode,
@@ -30,6 +32,7 @@ import {
   ConstantDefinitionNode,
   CastNode,
   UnaryOpNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { UnaryOperator } from '../ast/Operator.js';
 
@@ -110,6 +113,9 @@ function isValueTransferNode(node: Node): boolean {
     || node instanceof AddressSendExpressionNode
     || (node instanceof LowLevelCallStatementNode && hasEffectiveCallValue(node.callOptions?.value))
     || (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value))
+    || (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value))
+    || (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+      || hasEffectiveCallValue(node.callOptions?.value)))
     // `new C{value: x}()` transfers x from the contract's satoshi container to the child - a value transfer.
     || (node instanceof InstantiationNode && hasEffectiveCallValue(node.callOptions?.value));
 }
@@ -119,22 +125,29 @@ function isValueTransferNode(node: Node): boolean {
 // sequential statements sum. This pins how many transfer slots to pre-allocate (max) and which are conditional
 // (min < max => may not execute). A plain count sums nested/else-if arms, over-allocating slots AND mis-marking a
 // conditional transfer as always-happening. Flat if/else has no nested branch, so min===max===count (unchanged).
-export function countTransfersMinMax(node: Node): { min: number; max: number } {
+export function isDirectOwnerTransferNode(node: Node): boolean {
+  return node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+    || node instanceof AddressSendExpressionNode;
+}
+
+export function countTransfersMinMax(
+  node: Node, isTransfer: (candidate: Node) => boolean = isValueTransferNode,
+): { min: number; max: number } {
   if (node instanceof BranchNode) {
-    const i = countTransfersMinMax(node.ifBlock);
-    const e = node.elseBlock ? countTransfersMinMax(node.elseBlock) : { min: 0, max: 0 };
+    const i = countTransfersMinMax(node.ifBlock, isTransfer);
+    const e = node.elseBlock ? countTransfersMinMax(node.elseBlock, isTransfer) : { min: 0, max: 0 };
     return { min: Math.min(i.min, e.min), max: Math.max(i.max, e.max) };
   }
   if (node instanceof SwitchNode) {
-    const arms = node.cases.map((c) => countTransfersMinMax(c.body));
-    if (node.defaultCase) arms.push(countTransfersMinMax(node.defaultCase));
+    const arms = node.cases.map((c) => countTransfersMinMax(c.body, isTransfer));
+    if (node.defaultCase) arms.push(countTransfersMinMax(node.defaultCase, isTransfer));
     // No default: the value may match no case, so a path with zero transfers exists (min 0).
     const min = node.defaultCase && arms.length > 0 ? Math.min(...arms.map((a) => a.min)) : 0;
     const max = arms.length > 0 ? Math.max(...arms.map((a) => a.max)) : 0;
     return { min, max };
   }
-  if (node instanceof TryCatchNode) return countTransfersMinMax(node.tryBlock);
-  const self = isValueTransferNode(node) ? 1 : 0;
+  if (node instanceof TryCatchNode) return countTransfersMinMax(node.tryBlock, isTransfer);
+  const self = isTransfer(node) ? 1 : 0;
   let min = self;
   let max = self;
   const children: Node[] = [];
@@ -146,8 +159,12 @@ export function countTransfersMinMax(node: Node): { min: number; max: number } {
   if (anyNode.block) children.push(anyNode.block as Node);
   // A var-def / expression-statement initializer may BE a `new C{value:}()` (a value transfer).
   if (anyNode.expression instanceof Node) children.push(anyNode.expression);
+  if (node instanceof TupleAssignmentNode) {
+    if (node.tupleExpressions) children.push(...node.tupleExpressions);
+    else if (node.tuple instanceof Node) children.push(node.tuple);
+  }
   for (const child of children) {
-    const c = countTransfersMinMax(child);
+    const c = countTransfersMinMax(child, isTransfer);
     min += c.min;
     max += c.max;
   }
@@ -166,6 +183,13 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
     // Don't return - we still need to recurse into child nodes
   }
   if (node instanceof MethodCallStatementNode && hasEffectiveCallValue(node.call.callOptions?.value)) {
+    result.transfers++;
+  }
+  if (node instanceof MethodCallNode && hasEffectiveCallValue(node.callOptions?.value)) {
+    result.transfers++;
+  }
+  if (node instanceof ExternalFunctionCallNode && (node.rawValueTransferOnly
+    || hasEffectiveCallValue(node.callOptions?.value))) {
     result.transfers++;
   }
   // `new C{value: x}()` transfers x from the contract's satoshi container to the child.
@@ -237,6 +261,11 @@ function countBranchOpsRecursive(node: Node, result: OpCounts): void {
   if ('expression' in node && (node as any).expression instanceof Node) {
     countBranchOpsRecursive((node as any).expression, result);
   }
+  if (node instanceof TupleAssignmentNode) {
+    if (node.tupleExpressions) {
+      for (const expression of node.tupleExpressions) countBranchOpsRecursive(expression, result);
+    } else if (node.tuple instanceof Node) countBranchOpsRecursive(node.tuple, result);
+  }
 }
 
 // Assemble the BranchOps for an if/else pair, or undefined when neither arm has a restricted operation. Used by
@@ -255,11 +284,19 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
 
   if (!hasOps) return undefined;
 
-  // Transfers use the min/max path model (mutually-exclusive branch arms don't sum), so nested/else-if value
-  // transfers pre-allocate the right slot count and mark conditional transfers correctly. Emits/token-container
-  // keep the existing per-arm count (their nested-branch handling is unchanged here).
+  // Every fixed effect family uses the min/max path model. Nested mutually-exclusive arms share physical slots;
+  // summing the raw recursive counts here would make an enclosing branch reserve phantom slots even though the
+  // individual effect nodes already carry shared indices.
   const ifT = countTransfersMinMax(ifBlock);
   const elseT = elseBlock ? countTransfersMinMax(elseBlock) : { min: 0, max: 0 };
+  const isEmit = (candidate: Node): boolean => candidate instanceof EmitStatementNode;
+  const isTokenContainerTransfer = (candidate: Node): boolean =>
+    candidate instanceof TokenContainerMethodStatementNode;
+  const ifE = countTransfersMinMax(ifBlock, isEmit);
+  const elseE = elseBlock ? countTransfersMinMax(elseBlock, isEmit) : { min: 0, max: 0 };
+  const ifTc = countTransfersMinMax(ifBlock, isTokenContainerTransfer);
+  const elseTc = elseBlock
+    ? countTransfersMinMax(elseBlock, isTokenContainerTransfer) : { min: 0, max: 0 };
   const ifTerminates = blockTerminates(ifBlock);
   const elseTerminates = blockTerminates(elseBlock);
   const reachableMin = (ifValue: number, elseValue: number): number => {
@@ -275,13 +312,11 @@ export function computeBranchOps(ifBlock: BlockNode, elseBlock?: BlockNode): Bra
     transferCount: Math.max(ifT.max, elseT.max),
     minTransferCount: reachableMin(ifT.min, elseT.min),
     ifTransferCount: ifT.max,
-    emitCount: Math.max(ifCounts.emits, elseCounts.emits),
-    minEmitCount: reachableMin(ifCounts.emits, elseCounts.emits),
-    ifEmitCount: ifCounts.emits,
-    tokenContainerTransferCount: Math.max(ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers),
-    minTokenContainerTransferCount: reachableMin(
-      ifCounts.tokenContainerTransfers, elseCounts.tokenContainerTransfers,
-    ),
-    ifTokenContainerTransferCount: ifCounts.tokenContainerTransfers,
+    emitCount: Math.max(ifE.max, elseE.max),
+    minEmitCount: reachableMin(ifE.min, elseE.min),
+    ifEmitCount: ifE.max,
+    tokenContainerTransferCount: Math.max(ifTc.max, elseTc.max),
+    minTokenContainerTransferCount: reachableMin(ifTc.min, elseTc.min),
+    ifTokenContainerTransferCount: ifTc.max,
   };
 }

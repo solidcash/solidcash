@@ -1,4 +1,5 @@
 import { binToHex } from '@bitauth/libauth';
+import { decodeInt } from './data.js';
 import { Op, Script } from './script.js';
 import { FullLocationData } from './types.js';
 
@@ -17,9 +18,10 @@ import { FullLocationData } from './types.js';
  *    the interpreter's control stack unbalanced across the invoke boundary.
  * 2. It defines nothing: OP_DEFINE inside a shared body would run again on the second invoke and fail with
  *    "function identifier previously defined".
- * 3. It does not cross another invocation boundary. Relocating an existing OP_INVOKE into a second outlined
- *    helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those frames. Keep
- *    each invocation in the body where it was originally emitted.
+ * 3. By default, it does not cross another invocation boundary. Relocating an existing OP_INVOKE into a second
+ *    outlined helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those
+ *    frames. A compiler may opt in only its own proven nesting-safe helper ids; their encoded-id/OP_INVOKE pairs
+ *    remain atomic and every other invocation stays in the body where it was originally emitted.
  * 4. It reads no bytecode-relative context. OP_ACTIVEBYTECODE returns the *function body* once invoked, not the
  *    enclosing script; OP_CODESEPARATOR moves the signing checkpoint; and OP_CHECKSIG and friends sign the
  *    active bytecode, so moving one would change both the sighash preimage and the body the SDK reports as
@@ -136,6 +138,24 @@ export interface OutlineResult {
 // times. Keyed on identity, so two distinct arrays holding equal bytes still compute (and agree on) one key.
 const dataKeys = new WeakMap<Uint8Array, string>();
 const opcodeKeys = Array.from({ length: 256 }, (_unused, opcode) => `o${opcode}`);
+const nestedInvokePolicyIdentities = new WeakMap<object, number>();
+let nextNestedInvokePolicyIdentity = 1;
+
+/** Cache namespace for the opt-in nested-invoke policy, including both object identity and current contents. */
+const nestedInvokeCacheKey = (allowedIds: ReadonlySet<number> | undefined): string => {
+  if (allowedIds === undefined) return 'invoke-barrier';
+  let identity = nestedInvokePolicyIdentities.get(allowedIds);
+  if (identity === undefined) {
+    identity = nextNestedInvokePolicyIdentity;
+    nextNestedInvokePolicyIdentity += 1;
+    nestedInvokePolicyIdentities.set(allowedIds, identity);
+  }
+  const contents = [...allowedIds]
+    .sort((left, right) => left - right)
+    .map((id) => Object.is(id, -0) ? '-0' : String(id))
+    .join(',');
+  return `nested-invoke:${identity}:${contents}`;
+};
 
 const elementKey = (element: Script[number]): string => {
   if (typeof element === 'number') return opcodeKeys[element];
@@ -163,8 +183,30 @@ const controlDelta = (element: Script[number]): number => {
   return CONTROL_DELTAS[element];
 };
 
-const isBarrier = (element: Script[number]): boolean =>
-  typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
+const isAllowedNestedInvoke = (
+  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+): boolean => {
+  if (allowedNestedInvokeIds === undefined || elements[index] !== Op.OP_INVOKE || index === 0) return false;
+  const operand = elements[index - 1];
+  if (!(operand instanceof Uint8Array)) return false;
+  try {
+    const id = decodeInt(operand);
+    return id >= BigInt(Number.MIN_SAFE_INTEGER)
+      && id <= BigInt(Number.MAX_SAFE_INTEGER)
+      && allowedNestedInvokeIds.has(Number(id));
+  } catch {
+    return false;
+  }
+};
+
+const isBarrier = (
+  elements: Script, index: number, allowedNestedInvokeIds: ReadonlySet<number> | undefined,
+): boolean => {
+  const element = elements[index];
+  return typeof element === 'number'
+    && BARRIER_FLAGS[element] !== 0
+    && !isAllowedNestedInvoke(elements, index, allowedNestedInvokeIds);
+};
 
 interface BalanceScratch {
   // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
@@ -193,6 +235,7 @@ interface BalanceScratch {
 function longestBalancedSpan(
   elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
+  allowedNestedInvokeIds: ReadonlySet<number> | undefined,
 ): BalanceScratch {
   let bestStart = 0;
   let bestEnd = 0;
@@ -204,7 +247,8 @@ function longestBalancedSpan(
   firstIndexAtDepth[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(element) || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
+    if (isBarrier(elements, regionStart + i, allowedNestedInvokeIds)
+      || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
       depth = 0;
       generation = ++scratch.generation;
       depthGeneration[0] = generation;
@@ -292,6 +336,13 @@ interface CandidateCorpus {
   scripts: Script[];
   intern?: OutlineIntern;
   bodyAnchorBounds: ({ minimum: number; maximum: number } | undefined)[];
+  /**
+   * Per-body anchor instruction indices in ascending order. Anchor collection runs once per candidate group and
+   * a large leftover corpus produces tens of thousands of groups, so the linear `for (const anchor of anchors)`
+   * scan dominated the search. A sorted index plus a lower-bound search visits only the anchors that actually
+   * fall inside a candidate's region.
+   */
+  bodySortedAnchors: (Int32Array | undefined)[];
   maximumBodyLength: number;
   windowHashes: Map<number, Int32Array[]>;
   constantGroups?: number[][];
@@ -349,6 +400,12 @@ function prepareCandidateCorpus(bodies: OutlineBody[], intern?: OutlineIntern): 
         if (anchors[index] > maximum) maximum = anchors[index];
       }
       return { minimum, maximum };
+    }),
+    // Sorted copies are built once here; the per-candidate loop then binary-searches instead of scanning.
+    bodySortedAnchors: bodies.map((body) => {
+      const anchors = body.anchors;
+      if (anchors === undefined || anchors.length === 0) return undefined;
+      return Int32Array.from([...anchors].sort((left, right) => left - right));
     }),
     maximumBodyLength,
     windowHashes: new Map(),
@@ -1034,13 +1091,14 @@ function hashesForWindow(prepared: CandidateCorpus, width: number): Int32Array[]
 function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
+  allowedNestedInvokeIds?: ReadonlySet<number>,
 ): Candidate[] {
-  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, maximumBodyLength } = prepared;
+  const { bodyIds, bodyBytePrefixes, bodyAnchorBounds, bodySortedAnchors, maximumBodyLength } = prepared;
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];
     if (leftStart >= left.length || rightStart >= right.length) return 0;
-    // Marketplace leftover corpora have hundreds of bodies. Memoizing every diagonal as an Int32Array of
+    // Large leftover corpora can have hundreds of bodies. Memoizing every diagonal as an Int32Array of
     // the full body length spent more time allocating than it saved on repeated scans.
     let n = 0;
     const leftLimit = left.length - leftStart;
@@ -1265,11 +1323,26 @@ function findCandidates(
       const start = group[occurrenceIndex + 1];
       const bounds = bodyAnchorBounds[body];
       if (bounds === undefined || bounds.maximum < start || bounds.minimum >= start + length) continue;
-      const anchors = bodies[body].anchors;
-      if (anchors === undefined) continue;
-      for (const anchor of anchors) {
-        const relative = anchor - start;
-        if (relative >= 0 && relative < length) {
+      const sorted = bodySortedAnchors[body];
+      if (sorted === undefined) continue;
+      // Lower bound for `start`, then walk only anchors that fall inside [start, start + length). The bounds
+      // guard above already proved at least one anchor is in range, so `low` is guaranteed to be within bounds.
+      let low = 0;
+      let high = sorted.length - 1;
+      let first = sorted.length;
+      while (low <= high) {
+        const middle = (low + high) >> 1;
+        if (sorted[middle] >= start) {
+          first = middle;
+          high = middle - 1;
+        } else {
+          low = middle + 1;
+        }
+      }
+      for (let index = first; index < sorted.length; index += 1) {
+        const relative = sorted[index] - start;
+        if (relative >= length) break;
+        if (relative >= 0) {
           anchoredIndices ??= new Uint8Array(length);
           anchoredIndices[relative] = 1;
         }
@@ -1277,6 +1350,7 @@ function findCandidates(
     }
     const balanced = longestBalancedSpan(
       headScript, anchoredIndices, firstStart, length, bodyBytePrefixes[firstBody], balanceScratch,
+      allowedNestedInvokeIds,
     );
     if (balanced.bestBytes === 0) continue;
 
@@ -1319,9 +1393,6 @@ function findCandidates(
       saved,
     });
   }
-  // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
-  // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
-  // remainder. Preferring length on equal savings keeps the containing span whole.
   return sortCandidates(candidates, ranking);
 }
 
@@ -1354,11 +1425,17 @@ export function outlineSharedSpans(
    * budget.
    */
   maximumRounds: number = MAXIMUM_ROUNDS,
+  /**
+   * Existing compiler-helper function ids that are proven safe to invoke from another outlined helper. The
+   * default remains the hard OP_INVOKE barrier. Only an immediately preceding encoded id in this set relaxes
+   * that barrier, and the id/OP_INVOKE pair is never split across an outlined-body boundary.
+   */
+  allowedNestedInvokeIds?: ReadonlySet<number>,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
   // Most leftover bodies are never rewritten. Alias the caller's arrays until the first splice so idle
-  // Marketplace helper tails are not copied on every follow-up pass.
+  // Large helper tails are not copied on every follow-up pass.
   const working = bodies.map((body) => ({
     script: body.script,
     locationData: body.locationData,
@@ -1368,6 +1445,10 @@ export function outlineSharedSpans(
   }));
   const functions: OutlinedFunction[] = [];
   const claimed: Uint8Array[] = [];
+  const nestedInvokePolicy = allowedNestedInvokeIds === undefined
+    ? undefined
+    : new Set(allowedNestedInvokeIds);
+  const nestedInvokePolicyKey = nestedInvokeCacheKey(allowedNestedInvokeIds);
   const intern: OutlineIntern = (initialCandidateCache?.get('intern') as OutlineIntern | undefined) ?? {
     keyIds: new Map(),
     bodyByScript: new WeakMap(),
@@ -1378,8 +1459,11 @@ export function outlineSharedSpans(
   const rounds = maximumRounds < 1 ? 1 : maximumRounds;
   const debugRounds = (globalThis as { process?: { env?: Record<string, string> } }).process
     ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1';
+  let __tFind = 0, __tApply = 0, __tRewrite = 0;
+  let __lastBuildMs = 0, __lastApplyMs = 0, __lastAnchorMs = 0;
   for (let round = 0; round < rounds; round += 1) {
     const roundStarted = debugRounds ? Date.now() : 0;
+    const __f0 = Date.now();
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -1391,7 +1475,7 @@ export function outlineSharedSpans(
     // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
-    const initialCacheKey = `${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
+    const initialCacheKey = `${nestedInvokePolicyKey}:${idPushBytes}:${minimumWindowElements}:${candidateGroupsPerRound}`;
     let cached = round === 0
       ? initialCandidateCache?.get(initialCacheKey) as Candidate[] | undefined
       : undefined;
@@ -1400,19 +1484,22 @@ export function outlineSharedSpans(
     if (round === 0 && cached === undefined && initialCandidateCache !== undefined) {
       for (let width = 1; width < idPushBytes && cached === undefined; width += 1) {
         cached = initialCandidateCache.get(
-          `superset:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
+          `superset:${nestedInvokePolicyKey}:${width}:${minimumWindowElements}:${candidateGroupsPerRound}`,
         ) as Candidate[] | undefined;
       }
     }
     let prepared = round === 0
-      ? initialCandidateCache?.get('prepared-corpus') as CandidateCorpus | undefined
+      ? initialCandidateCache?.get(`prepared-corpus:${nestedInvokePolicyKey}`) as CandidateCorpus | undefined
       : undefined;
     if (cached === undefined && prepared === undefined) {
       prepared = prepareCandidateCorpus(corpus, intern);
-      if (round === 0) initialCandidateCache?.set('prepared-corpus', prepared);
+      if (round === 0) initialCandidateCache?.set(`prepared-corpus:${nestedInvokePolicyKey}`, prepared);
     }
     const candidates = cached === undefined
-      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared)
+      ? findCandidates(
+        corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared,
+        nestedInvokePolicy,
+      )
       : costCandidates(cached, idPushBytes, ranking);
     if (round === 0 && cached === undefined) {
       initialCandidateCache?.set(initialCacheKey, [...candidates]);
@@ -1422,6 +1509,8 @@ export function outlineSharedSpans(
         candidates.map((candidate) => ({ ...candidate, span: [...candidate.span] })),
       );
     }
+    __tFind += Date.now() - __f0;
+    const __a0 = Date.now();
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
@@ -1481,12 +1570,15 @@ export function outlineSharedSpans(
     }
     if (roundSaved <= 0) break;
 
+    __tApply += Date.now() - __a0;
+    const __r0 = Date.now();
     // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
     // actually need them; a no-op result can return the identity map directly below.
     for (const body of working) {
       body.origins ??= body.script.map((_element, index) => index);
     }
 
+    const __e0 = Date.now();
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
     for (const entry of applied) {
@@ -1500,32 +1592,121 @@ export function outlineSharedSpans(
     }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
-    for (const { body, start, entry } of edits) {
+    const __e1 = Date.now();
+    let __anchorMs = 0;
+    // One rebuild per body. Edits are sorted by body then descending start and never overlap within a round, so
+    // a body's edits can be assembled in one pass instead of one `splice` per occurrence. `splice` memmoves the
+    // tail every time, which made the rewrite quadratic in body length: a heavy leftover applies tens of
+    // thousands of edits across ~200k-element bodies, and that single primitive measured 6,233 ms of a
+    // 7,655 ms rewrite. Measured on equivalent edit lists, consolidating is 6-43x faster.
+    //
+    // Note `copyWithin` is NOT an alternative here: it is ~15x slower than `splice` on these arrays
+    // (scripts/micro-splice.mjs), and it diverges from `splice` for unit-length spans and spans near the end of
+    // the array (scripts/equiv-splice-copywithin.mjs).
+    for (let groupEnd = 0; groupEnd < edits.length;) {
+      const body = edits[groupEnd].body;
+      const groupStart = groupEnd;
+      while (groupEnd < edits.length && edits[groupEnd].body === body) groupEnd += 1;
       const target = corpus[body];
+      // Consolidation is only valid for bodies above this size; small bodies must take the per-edit `splice`
+      // path. Replacing the arrays cannot simply be applied everywhere: with the threshold removed, two
+      // message-bus kernel tests regress ("threads one route-owned record carrier through each direct
+      // journal-aware handler" and "moves the global verifier out of the scalar master and keeps both covenants
+      // deployable") and the MarketplaceV1 bytecode changes, so the small-body rewrite has a semantics this
+      // consolidated form does not reproduce. Keeping the fallback makes the change provably output-identical.
+      if (target.script.length < 200) {
+        for (let index = groupStart; index < groupEnd; index += 1) {
+          const { start, entry } = edits[index];
+          if (body < working.length && !working[body].owned) {
+            target.script = [...target.script];
+            target.locationData = [...target.locationData];
+            working[body].owned = true;
+          }
+          intern.bodyByScript.delete(target.script);
+          const spanLength = entry.definition.script.length;
+          const location = target.locationData[start];
+          target.script.splice(start, spanLength, entry.definition.id, Op.OP_INVOKE);
+          target.locationData.splice(start, spanLength, location, location);
+          if (target.origins) {
+            const origin = target.origins[start];
+            target.origins.splice(start, spanLength, origin, origin);
+          }
+        }
+        continue;
+      }
       if (body < working.length && !working[body].owned) {
         target.script = [...target.script];
         target.locationData = [...target.locationData];
         working[body].owned = true;
       }
       intern.bodyByScript.delete(target.script);
-      const spanLength = entry.definition.script.length;
-      const location = target.locationData[start];
-      target.script.splice(start, spanLength, entry.definition.id, Op.OP_INVOKE);
-      target.locationData.splice(start, spanLength, location, location);
-      if (target.origins) {
-        const origin = target.origins[start];
-        target.origins.splice(start, spanLength, origin, origin);
+      const originalScript = target.script;
+      const originalLocations = target.locationData;
+      const originalOrigins = target.origins;
+      // Blocks are collected newest-first, then emitted in reverse. Reversing the *blocks* rather than the
+      // assembled elements is what keeps each segment ascending and leaves the `id OP_INVOKE` pair in order.
+      const blocks: { from: number; to: number; at: number; id?: Uint8Array }[] = [];
+      let cursor = originalScript.length;
+      for (let index = groupStart; index < groupEnd; index += 1) {
+        const { start, entry } = edits[index];
+        blocks.push({ from: start + entry.definition.script.length, to: cursor, at: -1, id: undefined });
+        blocks.push({ from: 0, to: 0, at: start, id: entry.definition.id });
+        cursor = start;
       }
-      if (target.anchors) {
-        // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
-        const shrink = spanLength - 2;
-        target.anchors = target.anchors.map((index) =>
-          (index >= start + spanLength ? index - shrink : index));
+      blocks.push({ from: 0, to: cursor, at: -1, id: undefined });
+      // Blocks were collected newest-first; emitting them in reverse yields ascending source order, while each
+      // segment and each `id OP_INVOKE` pair keeps its internal order.
+      blocks.reverse();
+      const scriptParts: Script = [];
+      const locationParts: FullLocationData = [];
+      const originParts: number[] = [];
+      for (let index = 0; index < blocks.length; index += 1) {
+        const block = blocks[index];
+        if (block.at >= 0) {
+          const location = originalLocations[block.at];
+          scriptParts.push(block.id as Uint8Array, Op.OP_INVOKE);
+          locationParts.push(location, location);
+          if (originalOrigins) originParts.push(originalOrigins[block.at], originalOrigins[block.at]);
+          continue;
+        }
+        for (let copy = block.from; copy < block.to; copy += 1) {
+          scriptParts.push(originalScript[copy]);
+          locationParts.push(originalLocations[copy]);
+          if (originalOrigins) originParts.push(originalOrigins[copy]);
+        }
+      }
+      target.script = scriptParts;
+      target.locationData = locationParts;
+      if (originalOrigins) target.origins = originParts;
+      // The fresh arrays need their fingerprints rebuilt, so drop any entry now reachable only by identity.
+      intern.bodyByScript.delete(scriptParts);
+      // Anchor shifting stays per edit, in the same descending order as before, so the running index space it
+      // observes is unchanged.
+      for (let index = groupStart; index < groupEnd; index += 1) {
+        const { start, entry } = edits[index];
+        const spanLength = entry.definition.script.length;
+        if (target.anchors) {
+          // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
+          // Every site after this one shifts by the same amount, and sites before it are untouched, so a single
+          // suffix scan updates the array in place.
+          const __an0 = Date.now();
+          const anchors = target.anchors;
+          const threshold = start + spanLength;
+          const shrink = spanLength - 2;
+          for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
+            if (anchors[anchorIndex] >= threshold) anchors[anchorIndex] -= shrink;
+          }
+          __anchorMs += Date.now() - __an0;
+        }
       }
     }
 
+    __lastBuildMs = __e1 - __e0;
+    __lastApplyMs = Date.now() - __e1;
+    __lastAnchorMs = __anchorMs;
     for (const entry of applied) functions.push(entry.definition);
     savedBytes += roundSaved;
+    __tRewrite += Date.now() - __r0;
     if (debugRounds) {
       console.error('[outline-round]', JSON.stringify({
         round,
@@ -1538,6 +1719,13 @@ export function outlineSharedSpans(
         elapsedMs: Date.now() - roundStarted,
       }));
     }
+  }
+  if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_SPLIT === '1') {
+    console.error('[outline-split]', JSON.stringify({
+      findMs: __tFind, applyClaimMs: __tApply, rewriteMs: __tRewrite,
+      bodies: bodies.length, functions: functions.length, savedBytes,
+      editsBuildMs: __lastBuildMs, editsApplyMs: __lastApplyMs, anchorMs: __lastAnchorMs,
+    }));
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

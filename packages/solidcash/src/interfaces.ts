@@ -53,10 +53,12 @@ export interface ContractUnlocker extends Unlocker {
   params: FunctionArgument[];
   abiFunction: AbiFunction;
   covenantUnlocker?: boolean;
-  /** The covenant authorizes a different resource at this input's aligned output coordinate. Absent is false. */
+  /** The covenant authorizes a different resource at this input's aligned output coordinate. */
   allowsAlignedOutputReplacement?: boolean;
-  /** Rebuild this unlocker with enough dropped bytes to meet an exact finalized-program density requirement. */
+  /** Rebuild this unlocker with enough dropped bytes to meet the finalized-program density requirement. */
   withMinimumUnlockingBytecodeBytes?: (minimumBytes: number) => ContractUnlocker;
+  /** Re-encode `params` into the unlocking-bytecode cache after in-place param edits. */
+  syncEncodedArgsFromParams?: (onlyIndices?: readonly number[]) => void;
 }
 
 export interface P2PKHUnlocker extends Unlocker {

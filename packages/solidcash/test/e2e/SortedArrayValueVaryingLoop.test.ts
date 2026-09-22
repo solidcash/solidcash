@@ -8,9 +8,9 @@ import { createTestProvider } from '../test-util.js';
 
 // Boundary #4 (per-key sub-case): a loop that assigns a PER-KEY rawbytes value to N sorted-mapping keys -
 // `for(i) m[ks[i]] = vs[i]` where vs is a bytes[] / int[][] param. Each vs[i] is committed as its own inline
-// chunkable tail (len4 ++ value, size<=60 asserted - chunked-in-loop fails closed). The covenant visits vs[i] per
-// iteration; the SDK encodes each key's own tail. Present reads verify each key got ITS value (independence);
-// a duplicate key is last-wins.
+// chunkable tail (len4 ++ inline value, or len4 ++ digest ++ head for a long value). The covenant visits vs[i] per
+// iteration and pins its slot-specific chunk outputs; the SDK encodes each key's own tail. Present reads verify each
+// key got ITS value (independence); a duplicate key is last-wins.
 describe('vmap per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
@@ -80,8 +80,8 @@ describe('vmap per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
     }`;
     const art = compileString(SRC, { forceStateful: true });
     const c = await deploy(art);
-    const first = Uint8Array.from([0x11, 0x11]);
-    const last = Uint8Array.from([0x99, 0x99, 0x99]);
+    const first = new Uint8Array(70).fill(0x11);
+    const last = Uint8Array.from({ length: 170 }, (_unused, i) => (i * 11 + 9) & 0xff);
     await fund(c.address);
     // key 4 listed twice: Solidity `= ` semantics keep the LAST write.
     expect((await c.fill([4n, 4n], [first, last], alicePub, sig).send()).txid).toBeDefined();
@@ -89,15 +89,22 @@ describe('vmap per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
     expect((await c.chk(4n, last, alicePub, sig).send()).txid).toBeDefined();
   });
 
-  it('per-key value >60 B fails closed (chunked-in-loop unsupported)', async () => {
+  it('persists distinct per-key values across the inline/chunk boundary', async () => {
     const SRC = `contract C() {
       mapping(int => bytes) m;
       function fill(int[] ks, bytes[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); for (int i = 0; i < ks.length; i++) { m[ks[i]] = vs[i]; } }
+      function chk(int k, bytes exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k] == exp); }
     }`;
     const art = compileString(SRC, { forceStateful: true });
     const c = await deploy(art);
     await fund(c.address);
-    const big = new Uint8Array(70).fill(0x5a); // 70 B > 60
-    await expect(c.fill([2n, 8n], [Uint8Array.from([0x01]), big], alicePub, sig).send()).rejects.toThrow(/> 60|unsupported/i);
+    const short = Uint8Array.from([0x01]);
+    const big = Uint8Array.from({ length: 170 }, (_unused, i) => (i * 17 + 3) & 0xff);
+    const boundary = new Uint8Array(60).fill(0x6b);
+    expect((await c.fill([2n, 8n, 5n], [short, big, boundary], alicePub, sig).send()).txid).toBeDefined();
+    for (const [key, expected] of [[2n, short], [8n, big], [5n, boundary]] as const) {
+      await fund(c.address);
+      expect((await c.chk(key, expected, alicePub, sig).send()).txid).toBeDefined();
+    }
   });
 });

@@ -76,7 +76,10 @@ export default class InlineMappingReturnFunctions extends AstTraversal {
   // A mapping-returning function with a body - a potential reassignable-pointer return (single-return ones are
   // already inlined + dropped by InlineStoragePointerCalls, so only reassignable multi-statement bodies reach here).
   private isCandidate(fn: FunctionDefinitionNode): boolean {
-    return fn.returnTypes.length === 1 && fn.returnTypes[0] instanceof MappingType && !!fn.body;
+    // A graph or detached-signature handler is a physical OP_INVOKE body. Its invocation owns hidden protocol
+    // context which cannot follow mapping-pointer side effects spliced into the enclosing route.
+    return !fn.graphEmissionHandler && !fn.messageBusDetachedSignatureHandler
+      && fn.returnTypes.length === 1 && fn.returnTypes[0] instanceof MappingType && !!fn.body;
   }
 
   // Resolve a candidate at a call site: bind params to the call args (plain mapping identifiers), then walk the

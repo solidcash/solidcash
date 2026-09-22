@@ -20,6 +20,10 @@ import {
   type ValueChunkProducerPathContext,
   type ValueChunkProducerPathDisposition,
 } from '../stateful/ValueChunkProducerIdentity.js';
+import {
+  findMessageBusHandlerByNameOrSelector,
+  findMessageBusHandlerForInvocation,
+} from './graph-handler-join.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
@@ -215,8 +219,7 @@ export function selectedGraphEventOffsets(
     const maximumRows = capability?.maximumRows ?? 0;
     const selectedHandlers = participant.invocations.map((invocationIndex) => {
       const invocation = plan.invocations[invocationIndex];
-      return capability?.handlers.find((handler) => handler.name === invocation.function
-        && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+      return findMessageBusHandlerForInvocation(participant.artifact, invocation);
     });
     const canonicalPrefix = maximumRows > 0 && eventSlots.length === maximumRows
       && eventSlots.slice(0, maximumRows).every((slot, index) => slot.slotIndex === index);
@@ -234,9 +237,7 @@ export function selectedGraphEventOffsets(
   participant.invocations.forEach((invocationIndex, localRow) => {
     if (localRow >= frame.sites) return;
     const invocation = plan.invocations[invocationIndex];
-    const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-      candidate.name === invocation.function
-      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+    const handler = findMessageBusHandlerForInvocation(participant.artifact, invocation);
     for (const emitted of handler?.emits ?? []) {
       if (emitted.emitIndex < 0 || emitted.emitIndex >= frame.eventWidth) continue;
       const offset = offsetBySlot.get(frame.eventBase + localRow * frame.eventWidth + emitted.emitIndex);
@@ -767,9 +768,7 @@ export function finalizeAtomicInvocationGraph(
       eventOrdinals.set(effect.participant, eventOrdinal + 1);
       const emittingInvocations = participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
-        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function
-          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+        const handler = findMessageBusHandlerForInvocation(participant.artifact, invocation);
         return Array.from({ length: handler?.emits?.length ?? 0 }, () => invocationIndex);
       });
       if (maximumRows < 1 || (effect.runtimeRow === undefined && slot.slotIndex === undefined)
@@ -790,8 +789,9 @@ export function finalizeAtomicInvocationGraph(
         const candidate = participant.invocations.find((invocationIndex) =>
           plan.invocations[invocationIndex].localRow === effect.runtimeRow);
         const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
-        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
-          .find((entry) => entry.name === invocation.function);
+        const handler = invocation === undefined
+          ? undefined
+          : findMessageBusHandlerForInvocation(participant.artifact, invocation);
         const publishedSignatures = new Set((handler?.runtimeLoopEvents ?? [])
           .flatMap((loop) => loop.eventSignatures));
         if (candidate !== undefined && effect.eventSignature !== undefined
@@ -804,8 +804,9 @@ export function finalizeAtomicInvocationGraph(
         const emitIndex = relative % graphFrame.eventWidth;
         const candidate = participant.invocations[localRow];
         const invocation = candidate === undefined ? undefined : plan.invocations[candidate];
-        const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers
-          .find((entry) => entry.name === invocation.function);
+        const handler = invocation === undefined
+          ? undefined
+          : findMessageBusHandlerForInvocation(participant.artifact, invocation);
         if (handler?.emits?.some((emitted) => emitted.emitIndex === emitIndex)) parent = candidate;
       } else {
         parent = emittingInvocations[eventOrdinal]
@@ -923,9 +924,9 @@ export function finalizeAtomicInvocationGraph(
   const canonicalDeploymentSites = (invocationIndex: number) => {
     const invocation = plan.invocations[invocationIndex];
     const participant = invocation === undefined ? undefined : plan.participants[invocation.callee];
-    const handler = participant?.artifact.messageBus?.handlers.find((candidate) =>
-      candidate.name === invocation.function
-      && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+    const handler = participant === undefined
+      ? undefined
+      : findMessageBusHandlerForInvocation(participant.artifact, invocation);
     const sites = handler?.childDeployments ?? [];
     let expectedSpanOffset = 0;
     if (sites.some((site, index) => {
@@ -1838,8 +1839,10 @@ export function graphInvocationCallerIdentity(
 export function measureUnboundCallOptions(
   artifact: Artifact, fn: AbiFunction, name: string,
 ): { optionBits: number; detail?: string } {
-  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name
-    && (fn.selector === undefined || candidate.selector === fn.selector));
+  const handler = findMessageBusHandlerByNameOrSelector(artifact, {
+    name,
+    selector: fn.selector,
+  });
   const routeKinds = new Set((artifact.messageBus?.route.blockLayout?.slots ?? [])
     .map((slot) => slot.kind as string));
   const deploymentValues = handler?.childDeployments?.filter((site) => site.value !== undefined).length ?? 0;

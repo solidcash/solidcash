@@ -4,6 +4,7 @@ import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
+import { refuseVmExtractedRepairsIfRecipe } from './materialization-mode.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
 
 export interface ComputedDynamicChunkConvergence {
@@ -24,6 +25,39 @@ const isDynamicChunkCommitmentAtIndex = (commitmentHex: string, index: number): 
     return false;
   }
 };
+
+type DynamicChunkRepairBuilder = {
+  outputs: ReadonlyArray<{
+    token?: { nft?: { commitment: string; capability?: string } };
+  }>;
+};
+
+/**
+ * Count OTC commitment proposals that would mutate builder outputs.
+ * Recipe refuse uses this count so already-matching observations are no-ops.
+ */
+export function countWouldApplyDynamicChunkRepairs(
+  builder: DynamicChunkRepairBuilder,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): number {
+  let wouldApply = 0;
+  for (const [outputIndex, expected] of commitmentProposals) {
+    const output = builder.outputs[outputIndex];
+    if (!output?.token?.nft || output.token.nft.capability !== 'mutable') continue;
+    if (output.token.nft.commitment !== binToHex(expected)) wouldApply += 1;
+  }
+  return wouldApply;
+}
+
+/** F9′: refuse VM-mined dynamic-chunk repairs that would change state under recipe. */
+export function gateWouldApplyDynamicChunkRepairsIfRecipe(
+  builder: DynamicChunkRepairBuilder,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): number {
+  const wouldApply = countWouldApplyDynamicChunkRepairs(builder, commitmentProposals);
+  refuseVmExtractedRepairsIfRecipe(wouldApply);
+  return wouldApply;
+}
 
 /**
  * Converge top-level dynamic-storage chunk commitments on the complete atomic graph.
@@ -162,6 +196,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         })),
       }));
     }
+    gateWouldApplyDynamicChunkRepairsIfRecipe(builder, commitmentProposals);
     let changed = false;
     for (const [outputIndex, expected] of commitmentProposals) {
       const output = builder.outputs[outputIndex];

@@ -1,0 +1,119 @@
+/**
+ * Compose-path kernel authority (items 5–7, 9, 11–12).
+ * Called from compose relocatable sync — results are consumed (digest stamped, budgets enforced).
+ */
+
+import {
+  assertKernelPlanComplete,
+  assertWithinKernelBudgets,
+  createKernelExecutionPlan,
+  digestKernelExecutionPlan,
+  type KernelExecutionPlan,
+  type KernelResourceBudget,
+} from './kernel-execution-plan.js';
+import { requireStableId, stableJoinKey } from './stable-ids.js';
+import {
+  advancePhase,
+  assertGeometryFrozen,
+  startPhase,
+  type PhaseArtifact,
+} from './planning-phases.js';
+import { getMaterializationMode } from './materialization-mode.js';
+
+export type ComposeKernelAuthorityResult = {
+  plan: KernelExecutionPlan;
+  digest: string;
+  handlerJoinKey: string;
+  phase: PhaseArtifact<{
+    participant: number;
+    handlerId: string;
+    claims: number;
+    publishedBase: number;
+    materializationMode: string;
+  }>;
+};
+
+/** Last authority results from compose (tests assert these are populated and digests match). */
+const lastResults: ComposeKernelAuthorityResult[] = [];
+
+export function clearComposeKernelAuthorityResults(): void {
+  lastResults.length = 0;
+}
+
+export function getComposeKernelAuthorityResults(): readonly ComposeKernelAuthorityResult[] {
+  return lastResults;
+}
+
+/**
+ * Build + enforce a KernelExecutionPlan for one participant layout sync.
+ * Fail-closed on incomplete plans or over-budget envelopes.
+ */
+export function authorizeComposeParticipantLayout(params: {
+  participant: number;
+  /** Compiler-stable handler selector (hex), never a diagnostic name. */
+  handlerSelector: string;
+  handlerDiagnosticName?: string;
+  publishedBase: number;
+  claimCount: number;
+  dynamicWrites?: readonly string[];
+  selectedResources?: readonly string[];
+  budgets?: KernelResourceBudget;
+  usage?: Partial<KernelResourceBudget>;
+}): ComposeKernelAuthorityResult {
+  const handlerStable = requireStableId(
+    'handler',
+    params.handlerSelector,
+    params.handlerDiagnosticName,
+  );
+  const plan = createKernelExecutionPlan({
+    handlerId: stableJoinKey(handlerStable),
+    handlerName: handlerStable.diagnosticName,
+    dynamicWrites: params.dynamicWrites ?? [],
+    selectedResources: params.selectedResources ?? [],
+    budgets: params.budgets ?? {
+      maximumParticipants: 32,
+      maximumRows: 64,
+      maximumDynamicChunks: 256,
+      maximumValueContinuationChunks: 256,
+    },
+  });
+  assertKernelPlanComplete(plan);
+  assertWithinKernelBudgets(plan, {
+    maximumParticipants: (params.usage?.maximumParticipants ?? params.participant) + 1,
+    maximumRows: params.usage?.maximumRows ?? 1,
+    maximumDynamicChunks: params.usage?.maximumDynamicChunks ?? 0,
+    maximumValueContinuationChunks: params.usage?.maximumValueContinuationChunks
+      ?? (params.selectedResources?.length ?? 0),
+    ...params.usage,
+  });
+  const digest = digestKernelExecutionPlan(plan);
+  const mode = getMaterializationMode();
+  const phase = advancePhase(
+    advancePhase(
+      advancePhase(
+        startPhase({
+          participant: params.participant,
+          handlerId: plan.handlerId,
+          claims: 0,
+          publishedBase: 0,
+          materializationMode: mode,
+        }),
+        'admittedHandlerIr',
+        (p) => ({ ...p, handlerId: plan.handlerId }),
+      ),
+      'symbolicResourcePlan',
+      (p) => ({ ...p, claims: params.claimCount }),
+    ),
+    'absoluteLayout',
+    (p) => ({ ...p, publishedBase: params.publishedBase, materializationMode: mode }),
+  );
+  assertGeometryFrozen(phase.phase);
+  const result: ComposeKernelAuthorityResult = {
+    plan,
+    digest,
+    handlerJoinKey: stableJoinKey(handlerStable),
+    phase,
+  };
+  lastResults.push(result);
+  return result;
+}

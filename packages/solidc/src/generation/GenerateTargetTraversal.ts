@@ -80,6 +80,9 @@ import {
   type AbiFunction,
 } from '@solidcash/utils';
 import {
+  validateDefineEmission,
+} from '../define-frame-validation.js';
+import {
   analyzeChildDeploymentRecipes, childDeploymentCollectionDefinitions, childDeploymentGenesisEntries,
   childDeploymentGenesisState, childDeploymentStructDefinitions, type ChildDeploymentRecipeAnalysis,
 } from '../deploymentRecipes.js';
@@ -4579,6 +4582,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
+
+    // Item 3: validate DEFINE frame against the shipped handler-frame-abi (same path unit tests drive).
+    // Count leftover tracked temps that are not named parameters as anonymous live cells.
+    const parameterNames = new Set(func.parameters.map((parameter) => parameter.name));
+    const bandNames = new Set(func.messageBusCallerBandNames ?? []);
+    const leftover = subTraversal.stack.filter((name) => (
+      !parameterNames.has(name)
+      && !bandNames.has(name)
+      && !name.startsWith('__internal__')
+    ));
+    const frameResult = validateDefineEmission({
+      handlerId: String(func.functionId ?? func.name),
+      handlerName: func.name,
+      parameters: func.parameters,
+      callerBandNames: func.messageBusCallerBandNames,
+      anonymousLive: leftover.length,
+      altStackDepth: 0,
+    });
+    if (!frameResult.ok && this.compilerOptions.messageBusKernel === true
+      && (func.messageBusPhysicalEntrySlots?.length ?? 0) > 0) {
+      throw new Error(
+        `DEFINE frame validation failed for ${func.name}: `
+        + frameResult.failures.map((failure) => failure.invariantId).join(','),
+      );
+    }
   }
 
   // OP_DEFINE the just-pushed/loaded library blob (on the data stack) so its function(s) are callable.
@@ -6013,7 +6041,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ownerIndex: node.parameters.findIndex((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT),
         }));
       }
-      const ownerAnchorEnabled = defineEnv?.SOLIDC_OWNER_ALT_ANCHOR === '1';
+      // Feature flag from CompilerOptions (normalized from explicit option or SOLIDC_OWNER_ALT_ANCHOR).
+      const ownerAnchorEnabled = this.compilerOptions.ownerAltAnchor === true;
       // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
       // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that
@@ -6046,8 +6075,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callerBandNames = node.messageBusCallerBandNames ?? this.messageBusRouteParameterNames;
     if (this.isDefineSubTraversal && callerBandNames.length > 0
       && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT)
-      && (globalThis as { process?: { env?: Record<string, string> } }).process
-        ?.env?.SOLIDC_HANDLER_BAND_MODEL === '1') {
+      && this.compilerOptions.handlerBandModel === true) {
       // Every route input is seeded, INCLUDING `batchBlob`: the SDK pushes `[blob, ...routeWitnesses]`, so the blob
       // is physically the deepest band item. Omitting it under-counts the band by one and every deep read lands one
       // slot off (measured: a 32-byte token category compared against a 35-byte locking bytecode - a comparison that
@@ -32693,9 +32721,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * never disagree.
    */
   private ownerAnchorPreconditionHolds(
-    debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
+    _debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
   ): boolean {
-    return debugEnv?.SOLIDC_OWNER_ALT_ANCHOR === '1'
+    return this.compilerOptions.ownerAltAnchor === true
       && node.messageBusOwnerIsLastArgument === true
       && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT);
   }

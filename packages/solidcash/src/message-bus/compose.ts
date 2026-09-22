@@ -51,7 +51,8 @@ import {
   type PlannedGraphInvocation,
 } from './graph.js';
 import {
-  encodeMessageBatch, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+  encodeMessageBatch, preparedCallMatchesPlanInvocation,
+  resolveMessageBusAbiFunction, resolveMessageBusHandler,
 } from './message-bus.js';
 import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
@@ -67,7 +68,15 @@ import {
   resolveParticipantAbsoluteWitnesses,
   trailingCapacityExcludingFixedSuffix,
 } from './layout-resolver.js';
+import {
+  authorizeComposeParticipantLayout,
+  clearComposeKernelAuthorityResults,
+} from './compose-kernel-authority.js';
+import {
+  findMessageBusHandlerForInvocation,
+} from './graph-handler-join.js';
 import { layoutInvariantError } from './diagnostics.js';
+import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import {
   buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
@@ -2045,8 +2054,7 @@ export class AtomicMessageBusComposition {
       if (!descriptor.upgradeTarget) continue;
       const invocation = plan.invocations[index];
       const artifact = plan.participants[invocation.callee].artifact;
-      const handler = artifact.messageBus?.handlers.find((candidate) =>
-        candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+      const handler = findMessageBusHandlerForInvocation(artifact, invocation);
       if (handler?.lifecycle?.kind !== 'upgrade') {
         throw new Error('messageBus: a replacement target must be attached to its compiler-authored upgrade call');
       }
@@ -2064,8 +2072,7 @@ export class AtomicMessageBusComposition {
       const owner = participant.lockingBytecode.toLowerCase();
       const selectedHandlers = participant.invocations.map((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
-        return participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+        return findMessageBusHandlerForInvocation(participant.artifact, invocation);
       });
       const upgradeRows = selectedHandlers.flatMap((handler, index) =>
         handler?.lifecycle?.kind === 'upgrade' ? [index] : []);
@@ -2086,8 +2093,7 @@ export class AtomicMessageBusComposition {
     if (upgradeOutputs.size > 0) {
       const signedInvocation = plan.invocations.find((invocation) => {
         const artifact = plan.participants[invocation.callee].artifact;
-        const handler = artifact.messageBus?.handlers.find((candidate) =>
-          candidate.selector?.toLowerCase() === invocation.selectorHex.toLowerCase());
+        const handler = findMessageBusHandlerForInvocation(artifact, invocation);
         return handler?.usesTransactionSignature === true
           && handler.transactionSignaturePolicy?.hashType !== 'all';
       });
@@ -2108,15 +2114,18 @@ export class AtomicMessageBusComposition {
     };
     plan.invocations.forEach((invocation, index) => {
       const supplied = descriptors[index];
-      if (!supplied || supplied.functionName !== invocation.function) {
+      // F26: kernel prepared-call match is selector authority; diagnostic name alone cannot refuse.
+      if (!supplied || !preparedCallMatchesPlanInvocation(supplied, invocation)) {
         throw new Error(
-          `messageBus: prepared call ${index} is '${supplied?.functionName ?? '<missing>'}', `
-          + `expected '${invocation.function}'`,
+          `messageBus: prepared call ${index} is '${supplied?.functionName ?? '<missing>'}' `
+          + `(selector '${supplied?.selector ?? '<none>'}'), `
+          + `expected '${invocation.function}' (selector '${invocation.selectorHex}')`,
         );
       }
-      const handler = supplied.artifact.messageBus?.handlers.find((candidate) =>
-        candidate.name === supplied.functionName
-        && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+      const handler = findMessageBusHandlerForInvocation(supplied.artifact, {
+        function: supplied.functionName,
+        selectorHex: invocation.selectorHex,
+      });
       const validationWitnesses = Object.fromEntries((handler?.batchKeyWitnesses ?? [])
         .filter((binding) => binding.source === 'expression')
         .map((binding) => [
@@ -2310,10 +2319,8 @@ export class AtomicMessageBusComposition {
     const hasRuntimeLoopEvents = plan.participants.some((participant) => participant.invocations.some(
       (invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
-        return participant.artifact.messageBus?.handlers.some((handler) =>
-          handler.name === invocation.function
-          && handler.selector.toLowerCase() === invocation.selectorHex.toLowerCase()
-          && (handler.runtimeLoopEvents?.length ?? 0) > 0);
+        const handler = findMessageBusHandlerForInvocation(participant.artifact, invocation);
+        return (handler?.runtimeLoopEvents?.length ?? 0) > 0;
       },
     ));
     const resourceSlots = plan.participants.flatMap((participant) =>
@@ -2355,8 +2362,10 @@ export class AtomicMessageBusComposition {
         ? transferSlots.length / maximumRows : 0;
       return participant.invocations.flatMap((invocationIndex, row) => {
         const descriptor = descriptors[invocationIndex];
-        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.selector === plan.invocations[invocationIndex].selectorHex);
+        const handler = findMessageBusHandlerForInvocation(
+          participant.artifact,
+          plan.invocations[invocationIndex],
+        );
         const sites = handler?.childDeployments ?? [];
         if (sites.length === 0) return [];
         let expectedSpanOffset = 0;
@@ -2673,9 +2682,7 @@ export class AtomicMessageBusComposition {
       const category = hexToBin(categories[participant.participant]);
       return participant.invocations.flatMap((invocationIndex) => {
         const invocation = plan.invocations[invocationIndex];
-        const handler = participant.artifact.messageBus?.handlers.find((candidate) =>
-          candidate.name === invocation.function
-          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase());
+        const handler = findMessageBusHandlerForInvocation(participant.artifact, invocation);
         const signatures = [
           ...(handler?.emits ?? []).map((emitted) => emitted.eventSignature),
           ...(handler?.runtimeLoopEvents ?? []).flatMap((loop) => loop.eventSignatures),
@@ -2710,10 +2717,9 @@ export class AtomicMessageBusComposition {
       if (localRow >= frame.sites) return undefined;
       const invocationIndex = participant.invocations[localRow];
       const invocation = invocationIndex === undefined ? undefined : plan.invocations[invocationIndex];
-      const handler = invocation === undefined ? undefined : participant.artifact.messageBus?.handlers.find(
-        (candidate) => candidate.name === invocation.function
-          && candidate.selector.toLowerCase() === invocation.selectorHex.toLowerCase(),
-      );
+      const handler = invocation === undefined
+        ? undefined
+        : findMessageBusHandlerForInvocation(participant.artifact, invocation);
       const signature = handler?.emits?.find((emitted) => emitted.emitIndex === emitIndex)?.eventSignature;
       const event = participant.artifact.events?.find((candidate) => candidate.signature === signature);
       if (!event) return undefined;
@@ -3090,9 +3096,17 @@ export class AtomicMessageBusComposition {
           participant.invocations.map((invocationIndex) => {
             const invocation = descriptors[invocationIndex];
             const plannedInvocation = plan.invocations[invocationIndex];
+            const published = findMessageBusHandlerForInvocation(participant.artifact, {
+              function: invocation.functionName,
+              selectorHex: plannedInvocation.selectorHex,
+            });
+            const selector = (published?.selector ?? plannedInvocation.selectorHex).toLowerCase();
+            // F17: ABI join is selector-first under kernel; diagnostic name is not authority.
             const handler = participant.artifact.abi.find((candidate) =>
-              candidate.name === invocation.functionName
-              && candidate.selector?.toLowerCase() === plannedInvocation.selectorHex.toLowerCase());
+              candidate.selector?.toLowerCase() === selector)
+              ?? (participant.artifact.messageBus?.convention === 'kernel-row-loop'
+                ? undefined
+                : participant.artifact.abi.find((candidate) => candidate.name === invocation.functionName));
             if (!handler) {
               throw new Error(`messageBus: handler ABI '${invocation.functionName}' is missing`);
             }
@@ -3145,9 +3159,7 @@ export class AtomicMessageBusComposition {
         const occupiedCompilerTransferSlots = new Set<number>();
         for (const invocationIndex of participant.invocations) {
           const invocation = plan.invocations[invocationIndex];
-          const handler = participant.artifact.messageBus?.handlers.find(
-            (candidate) => candidate.selector === invocation.selectorHex,
-          );
+          const handler = findMessageBusHandlerForInvocation(participant.artifact, invocation);
           const supplied = descriptors[invocationIndex];
           const authenticatedState = await stateOf(contract) as Readonly<Record<string, FunctionArgument>>;
           if ((globalThis as { process?: { env?: Record<string, string> } }).process
@@ -3786,8 +3798,8 @@ export class AtomicMessageBusComposition {
           //                                          chunk NFT).
           //   `__internal__vmapBatchPredOut_<slot>` - read with OP_OUTPUTBYTECODE (measured: the displaced
           //                                          predecessor's P' output instead of this participant's).
-          // Sentinel values stay untouched: they are negative by construction (-1 no predecessor, -2 inactive or
-          // same-target alias), and a value outside this frame's extent cannot be a participant-local coordinate.
+          // D7: tagged absent/inactive sentinels stay untouched — only active coordinates relocate.
+          // A value outside this frame's extent cannot be a participant-local coordinate.
           const relocatable: Array<{ index: number; name: string; limit: number }> = [];
           if (chunkIndex >= 0) relocatable.push({ index: chunkIndex, name: 'dynamicChunkInputBase', limit: local.inputs.length });
           for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
@@ -3828,7 +3840,8 @@ export class AtomicMessageBusComposition {
           for (const candidate of relocatable) {
             const value = masterUnlocker?.params?.[candidate.index];
             if (publishedBase <= 0 || masterUnlocker?.params === undefined) continue;
-            if (typeof value !== 'bigint' || value < 0n || value >= BigInt(candidate.limit)) continue;
+            // D7: decode tagged sentinels — raw `value < 0` alone is not the authority.
+            if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
             if (candidate.name === 'dynamicChunkInputBase') {
               dynLocalBase = Number(value);
               continue;
@@ -3904,6 +3917,31 @@ export class AtomicMessageBusComposition {
                   ? 0
                   : Math.max(0, nextOccupied - routeTrailingBase);
               })();
+            // Items 5–7/11–12: stable selector id + plan digest + budgets + phase freeze (results consumed).
+            const eligibleHandler = participant.artifact.messageBus?.handlers?.find((h) => h.eligible);
+            const handlerSelector = eligibleHandler?.selector
+              ?? participant.artifact.messageBus?.selector
+              ?? `participant:${participant.participant}`;
+            const kernelAuthority = authorizeComposeParticipantLayout({
+              participant: participant.participant,
+              handlerSelector,
+              handlerDiagnosticName: eligibleHandler?.name ?? participant.artifact.contractName,
+              publishedBase,
+              claimCount: predOutPhysical.length + (pendingValueChunkClaim ? 1 : 0),
+              dynamicWrites: pendingValueChunkClaim?.collection
+                ? [pendingValueChunkClaim.collection] : [],
+              selectedResources: pendingValueChunkClaim?.collection
+                ? [pendingValueChunkClaim.collection] : [],
+              usage: {
+                maximumValueContinuationChunks: pendingValueChunkClaim?.chunkCount ?? 0,
+              },
+            });
+            // Stamp digest into relocation log so dropping authorizeComposeParticipantLayout breaks sync metadata.
+            publishedRelocations.push({
+              name: `__kernel_plan_digest__${kernelAuthority.handlerJoinKey}`,
+              from: kernelAuthority.phase.payload.materializationMode,
+              to: kernelAuthority.digest,
+            });
             const witnesses = resolveParticipantAbsoluteWitnesses({
               participant: participant.participant,
               contractName: participant.artifact.contractName,
@@ -5569,6 +5607,7 @@ export function compose(options: ComposeAtomicMessageBusOptions): AtomicMessageB
   if (!options.calls && !options.preparedCalls) {
     throw new Error('messageBus: composition requires calls or preparedCalls');
   }
+  clearComposeKernelAuthorityResults();
   const preparedCalls = options.preparedCalls
     ?? options.calls!.map((call) => call._messageBusCompositionDescriptor());
   const { calls: _calls, preparedCalls: _preparedCalls, ...rest } = options;

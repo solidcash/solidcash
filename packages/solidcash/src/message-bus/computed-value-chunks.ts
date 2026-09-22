@@ -5,6 +5,7 @@ import { createVirtualMachineBch2026ForProvider } from '../network/createVirtual
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
+import { refuseVmExtractedRepairsIfRecipe } from './materialization-mode.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
 
 export interface ComputedValueChunkConvergence {
@@ -16,6 +17,54 @@ export interface ComputedValueChunkConvergence {
 
 const isP2sh32 = (bytecode: Uint8Array | undefined): bytecode is Uint8Array => !!bytecode
   && bytecode.length === 35 && bytecode[0] === 0xaa && bytecode[1] === 0x20 && bytecode[34] === 0x87;
+
+type ValueChunkRepairBuilder = {
+  outputs: ReadonlyArray<{
+    to?: string | Uint8Array;
+    token?: { nft?: { commitment: string; capability?: string } };
+  }>;
+};
+
+/**
+ * Count OTC proposals that would mutate builder outputs.
+ * Recipe refuse uses this count so already-matching observations are no-ops.
+ */
+export function countWouldApplyValueChunkRepairs(
+  builder: ValueChunkRepairBuilder,
+  lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): number {
+  let wouldApply = 0;
+  for (const [outputIndex, expected] of lockingBytecodeProposals) {
+    const output = builder.outputs[outputIndex];
+    if (!output) continue;
+    const current = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+    if (current === undefined) {
+      wouldApply += 1;
+      continue;
+    }
+    if (binToHex(current) !== binToHex(expected)) wouldApply += 1;
+  }
+  for (const [outputIndex, expected] of commitmentProposals) {
+    const output = builder.outputs[outputIndex];
+    if (!output?.token?.nft || output.token.nft.capability !== 'mutable') continue;
+    if (output.token.nft.commitment !== binToHex(expected)) wouldApply += 1;
+  }
+  return wouldApply;
+}
+
+/** F9′: refuse VM-mined value-chunk repairs that would change state under recipe. */
+export function gateWouldApplyValueChunkRepairsIfRecipe(
+  builder: ValueChunkRepairBuilder,
+  lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
+  commitmentProposals: ReadonlyMap<number, Uint8Array>,
+): number {
+  const wouldApply = countWouldApplyValueChunkRepairs(
+    builder, lockingBytecodeProposals, commitmentProposals,
+  );
+  refuseVmExtractedRepairsIfRecipe(wouldApply);
+  return wouldApply;
+}
 
 /**
  * Converge computed value-chunk outputs which exist only in the complete atomic graph.
@@ -119,6 +168,9 @@ export function convergeMessageBusComputedValueChunkOutputs(
       });
       vm.evaluate({ inputIndex, sourceOutputs, transaction });
     }
+    gateWouldApplyValueChunkRepairsIfRecipe(
+      builder, lockingBytecodeProposals, commitmentProposals,
+    );
     let changed = false;
     for (const [outputIndex, expected] of lockingBytecodeProposals) {
       const output = builder.outputs[outputIndex];

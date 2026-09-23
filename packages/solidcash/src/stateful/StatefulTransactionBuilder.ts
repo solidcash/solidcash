@@ -1361,8 +1361,12 @@ export function selectBuilderValueChunkOutputBase(
   composedBlockBase: number,
 ): number {
   if (composedBlockBase > 0) {
-    return publishedOutputBase === undefined
-      ? localOutputBase : publishedOutputBase - composedBlockBase;
+    if (publishedOutputBase === undefined) return localOutputBase;
+    // Route metadata can already be participant-local (notably when repeated physical calls share a transported
+    // lane). A non-negative coordinate below this participant's aggregate base cannot be absolute, so retain it;
+    // otherwise project the aggregate coordinate back into the builder's local domain.
+    return publishedOutputBase < composedBlockBase
+      ? publishedOutputBase : publishedOutputBase - composedBlockBase;
   }
   return publishedOutputBase ?? localOutputBase;
 }

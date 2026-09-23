@@ -40,6 +40,10 @@ describe('value-chunk write coordinates', () => {
     expect(selectBuilderValueChunkOutputBase(102, 220, 119)).toBe(101);
   });
 
+  it('retains a published lane that is already participant-local', () => {
+    expect(selectBuilderValueChunkOutputBase(102, 101, 119)).toBe(101);
+  });
+
   it('selects a unique transported lane only at the observed width', () => {
     const resourceIdentity = `${'11'.repeat(32)}:${'22'.repeat(20)}:${'33'.repeat(32)}`;
     const claims = [{

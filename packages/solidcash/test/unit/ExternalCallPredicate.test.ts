@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hash160 } from '@solidcash/utils';
 import type {
-  ArgSource, Artifact, ExternalCallExpression, FunctionArgument,
+  ArgSource, Artifact, ExternalCallAbi, ExternalCallExpression, FunctionArgument,
 } from '@solidcash/utils';
 import { compileString } from '../direct-compile.js';
 import { StatefulContract } from '../../src/index.js';
@@ -17,6 +17,7 @@ import {
   physicalExternalCallSelectorHex,
   rebaseRoutedBatchProofOffsets,
   selectedMessageBusResourceMetadata,
+  createGraphPlanningProducerResultContext,
 } from '../../src/stateful/StatefulContract.js';
 import { createTestProvider } from '../test-util.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -41,6 +42,10 @@ type PredicateEvaluator = {
     executionSelfAddress?: FunctionArgument,
     executionMsgSender?: FunctionArgument,
   ) => FunctionArgument[] | undefined;
+  _planExternalCallOccurrences: (
+    call: ExternalCallAbi,
+    frame: Record<string, unknown>,
+  ) => Promise<readonly { args: readonly FunctionArgument[] }[]>;
 };
 
 const artifact = compileString(`
@@ -175,6 +180,41 @@ describe('compiler-published external-call predicate evaluation', () => {
       [{ kind: 'msgSender' }, { kind: 'selfAddress' }], [], artifact,
       undefined, undefined, undefined, 0, false, executionAddress, executionSender,
     )).toEqual([executionSender, executionAddress]);
+  });
+
+  it('selects mutually exclusive callsites using the authenticated execution-frame sender', async () => {
+    const owner = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x24), 0x88, 0xac);
+    const recipient = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x42), 0x88, 0xac);
+    const sender: ExternalCallExpression = {
+      kind: 'source', type: 'address', source: { kind: 'msgSender' },
+    };
+    const ownerArgument: ExternalCallExpression = {
+      kind: 'source', type: 'address', source: { kind: 'forward', paramIndex: 0 },
+    };
+    const ownerMatchesSender: ExternalCallExpression = {
+      kind: 'binary', operator: '==', type: 'bool', left: ownerArgument, right: sender,
+    };
+    const calls: ExternalCallAbi[] = [{
+      callsiteId: 0, interfaceName: 'IReader', functionName: 'read', requiredDataNftIndices: [],
+      occurrence: 'conditional',
+      condition: { kind: 'unary', operator: '!', type: 'bool', expression: ownerMatchesSender },
+      argSources: [{ kind: 'msgSender' }],
+    }, {
+      callsiteId: 1, interfaceName: 'IReader', functionName: 'read', requiredDataNftIndices: [],
+      occurrence: 'conditional', condition: ownerMatchesSender,
+      argSources: [{ kind: 'forward', paramIndex: 1 }],
+    }];
+    const frame = {
+      functionArgs: [owner, recipient], artifact, registryOwner: evaluator, state: {},
+      callerInputs: [{ type: 'address' }, { type: 'address' }],
+      executionSelfAddress: new Uint8Array(35), executionMsgSender: owner,
+      producerCalls: calls, planningContext: createGraphPlanningProducerResultContext(),
+    };
+
+    await expect(evaluator._planExternalCallOccurrences(calls[0], frame)).resolves.toEqual([]);
+    await expect(evaluator._planExternalCallOccurrences(calls[1], frame)).resolves.toMatchObject([
+      { args: [recipient] },
+    ]);
   });
 
   it('uses the physical active input rather than a logical deployment identity by default', () => {

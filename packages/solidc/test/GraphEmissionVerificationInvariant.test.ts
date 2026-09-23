@@ -181,8 +181,8 @@ function auditCursorAccess(sourceText: string): CursorAuditResult {
   const reader = methodBody('emitGraphEmissionStreamRead');
   const writer = methodBody('emitReplaceGraphEmissionStream');
   for (const [label, body] of [['reader', reader], ['writer', writer]] as const) {
-    if (!body.includes('this.bandEmissionOrdinal()') || !body.includes('this.graphEmissionStreamSlot()')) {
-      errors.push(`graph-emission cursor ${label} does not share both route-band and threaded-slot coordinates`);
+    if (!body.includes('this.graphEmissionStreamSlot()')) {
+      errors.push(`graph-emission cursor ${label} does not use the tracked frame coordinate`);
     }
   }
 
@@ -241,6 +241,15 @@ describe('graph emission cursor ownership', () => {
     expect(result.writes).toBeGreaterThan(1);
   });
 
+  it('addresses a DEFINE handler cursor relative to the tracked frame top', () => {
+    const reader = methodText(traversalSource, 'emitGraphEmissionStreamRead');
+    const writer = methodText(traversalSource, 'emitReplaceGraphEmissionStream');
+    expect(reader).toContain('this.graphEmissionStreamSlot()');
+    expect(reader).not.toContain('this.emit(Op.OP_DEPTH, locationData)');
+    expect(writer).toContain('this.emitReplace(this.graphEmissionStreamSlot(), node)');
+    expect(writer).not.toContain('this.emitReplaceAtBottomOrdinal');
+  });
+
   it('rejects a direct named-slot read at a graph emission consumer', () => {
     const mutated = traversalSource.replace(
       'this.emitGraphEmissionStreamRead(locationData);\n      this.pushToStack(\'(__graph_expected_emissions)\');',
@@ -265,20 +274,15 @@ describe('graph emission cursor ownership', () => {
   });
 
   it.each([
-    {
-      accessor: 'reader',
-      signature: 'private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {',
-    },
-    {
-      accessor: 'writer',
-      signature: 'private emitReplaceGraphEmissionStream(node: Node): void {',
-    },
-  ])('rejects a $accessor that stops sharing the route-band coordinate', ({ accessor, signature }) => {
-    const original = `${signature}\n    const bandOrdinal = this.bandEmissionOrdinal();`;
-    const mutated = traversalSource.replace(original, `${signature}\n    const bandOrdinal = undefined;`);
-    expect(mutated).not.toBe(traversalSource);
+    ['reader', 'private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {'],
+    ['writer', 'private emitReplaceGraphEmissionStream(node: Node): void {'],
+  ])('rejects a $accessor that stops using the tracked frame coordinate', (accessor, signature) => {
+    const method = methodText(traversalSource, signature.slice('private '.length, signature.indexOf('(')));
+    const mutatedMethod = method.replace('this.graphEmissionStreamSlot()', '0');
+    expect(mutatedMethod).not.toBe(method);
+    const mutated = traversalSource.replace(method, mutatedMethod);
     expect(auditCursorAccess(mutated).errors).toContain(
-      `graph-emission cursor ${accessor} does not share both route-band and threaded-slot coordinates`,
+      `graph-emission cursor ${accessor} does not use the tracked frame coordinate`,
     );
   });
 

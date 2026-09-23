@@ -404,6 +404,21 @@ describe('encodeLeadingRouteArrayPushes', () => {
     ]);
   });
 
+  it('encodes a singleton terminal push from the empty array pre-state', () => {
+    const encoded = encodeCompleteRouteArrayPushes({
+      rowArguments: [row(7n, 2n)],
+      collection: 'history',
+      valueType: 'Pair[]',
+      structs,
+      resolveElement: resolveElement(structs),
+    });
+    expect(encoded).toBeDefined();
+    expect(decodePushdataValue(encoded!, 0, 'Pair[]', structs).value).toEqual([{
+      count: 2n,
+      active: true,
+    }]);
+  });
+
   it('does not merge pushes for different keys', () => {
     expect(encodeLeadingRouteArrayPushes({
       rowArguments: [row(7n, 2n), row(8n, 3n)],

@@ -19775,16 +19775,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   /** Read the authenticated emission stream for one consumer. */
   private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {
-    const bandOrdinal = this.bandEmissionOrdinal();
-    if (bandOrdinal !== undefined) {
-      // The band item carries the stream, and every write-back puts the peeled remainder back into the same band
-      // slot, so this read form is exact for the WHOLE body - no frame slot, no model index, no drift.
-      this.emit(Op.OP_DEPTH, locationData);
-      this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
-      this.emit(Op.OP_SUB, locationData);
-      this.emit(Op.OP_PICK, locationData);
-      return;
-    }
+    // A DEFINE'd handler executes above the caller's live frame. The route band is therefore not at an absolute
+    // bottom ordinal: participant-specific caller locals can sit beneath it. The tracked top-relative slot is
+    // unaffected by those lower items and remains paired with the writer below.
     this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
     this.emit(Op.OP_PICK, locationData);
   }
@@ -19804,19 +19797,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Store the peeled stream remainder (on top) back into the slot the next consumer reads.
    *
-   * For compiler-owned routes that slot is the band item itself, replaced in place at its constant bottom ordinal;
-   * the band keeps its layout, so every other ordinal stays valid. Non-route graph bodies retain the explicitly
-   * threaded model-index replacement.
+   * The model tracks the cursor relative to the top of both route and non-route frames, so the paired read and
+   * replacement remain stable even when a DEFINE caller has participant-specific locals beneath the route band.
    */
   private emitReplaceGraphEmissionStream(node: Node): void {
-    const bandOrdinal = this.bandEmissionOrdinal();
-    if (bandOrdinal === undefined) {
-      this.emitReplace(this.graphEmissionStreamSlot(), node);
-      return;
-    }
-    this.emitReplaceAtBottomOrdinal(
-      bandOrdinal, { location: node.location, positionHint: PositionHint.END },
-    );
+    this.emitReplace(this.graphEmissionStreamSlot(), node);
   }
 
   private graphEmissionStreamSlot(): number {

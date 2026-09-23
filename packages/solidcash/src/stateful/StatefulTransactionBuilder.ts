@@ -1360,7 +1360,26 @@ export function selectBuilderValueChunkOutputBase(
   publishedOutputBase: number | undefined,
   composedBlockBase: number,
 ): number {
-  return composedBlockBase > 0 ? localOutputBase : publishedOutputBase ?? localOutputBase;
+  if (composedBlockBase > 0) {
+    return publishedOutputBase === undefined
+      ? localOutputBase : publishedOutputBase - composedBlockBase;
+  }
+  return publishedOutputBase ?? localOutputBase;
+}
+
+/** Select the unique compiler-published local coordinate for one materialized continuation resource. */
+export function transportedContinuationLocalBase(
+  claims: readonly {
+    bandOffset: number;
+    chunkCount: number;
+    producerClaim: { resourceIdentity: string };
+  }[],
+  resourceIdentity: string,
+  observedWidth: number,
+): number | undefined {
+  const matches = claims.filter((claim) => claim.producerClaim.resourceIdentity === resourceIdentity
+    && claim.chunkCount === observedWidth);
+  return matches.length === 1 ? matches[0]!.bandOffset : undefined;
 }
 
 /** Move every resolved continuation lane with its carrier while preserving lane spacing. */
@@ -14959,6 +14978,17 @@ export class StatefulTransactionBuilder {
       let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
         ? undefined
         : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
+      const transportedClaims = aliasGroups.flatMap((group) => group?.continuationResourceClaims ?? []);
+      const canonicalLocalBases = [...resourceIdentities].flatMap((resourceIdentity) => {
+        const writeCount = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? [])
+          .find((write) => valueChunkWriteResourceIdentity(write) === resourceIdentity)?.outputCount;
+        if (writeCount === undefined) return [];
+        const base = transportedContinuationLocalBase(
+          transportedClaims, resourceIdentity, writeCount,
+        );
+        return base === undefined ? [] : [base];
+      });
+      if (canonicalLocalBases.length === 1) preferredLocalBase = canonicalLocalBases[0];
       const exactResourceStarts = [...this.derivedChunkOutputs.entries()]
         .filter(([, chunk]) => resourceIdentities.has(chunk.resourceIdentity ?? '')
           && chunk.resourcePart === 'chunk:0')
@@ -15075,7 +15105,15 @@ export class StatefulTransactionBuilder {
       }
       if (selectedStart < 0) continue;
       const selectedResourceIdentity = this.derivedChunkOutputs.get(selectedStart)?.resourceIdentity;
-      const absoluteStart = materializedValueChunkAbsoluteStart(
+      const selectedWriteCount = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? [])
+        .find((write) => valueChunkWriteResourceIdentity(write) === selectedResourceIdentity)?.outputCount;
+      const canonicalLocalBase = selectedResourceIdentity === undefined || selectedWriteCount === undefined
+        ? undefined : transportedContinuationLocalBase(
+          transportedClaims, selectedResourceIdentity, selectedWriteCount,
+        );
+      // A transported claim is the compiler/planner authority for its participant-local lane. VM observations
+      // from the provisional build may still name the prior suffix-packed base after the lane width changes.
+      const absoluteStart = canonicalLocalBase ?? materializedValueChunkAbsoluteStart(
         selectedStart, coordinateBase, selectedResourceIdentity,
       );
       occupiedBases.set(absoluteStart, physicalOwnerId);

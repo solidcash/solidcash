@@ -20573,7 +20573,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   ),
                 });
                 const leadingValue = foldedPushes?.leading;
-                const completeValue = foldedPushes?.complete;
+                // A singleton INSERT has no earlier same-key row, so the leading-value fold intentionally has
+                // nothing to publish. Its terminal element is nevertheless compiler-authenticated and is enough
+                // to materialize the complete value from the canonical empty-array pre-state. Without this
+                // singleton path the NEW entry remains the provisional `00` commitment and recipe mode can only
+                // discover it by mining a failed VM frame.
+                const completeValue = foldedPushes?.complete ?? (!list.has(slot)
+                  ? encodeCompleteRouteArrayPushes({
+                    rowArguments: selectedRows,
+                    collection: access.collection,
+                    valueType: collection.valueType,
+                    structs: stateLayout.structs,
+                    timestamp: legacyTimestamp,
+                    legacyJobEventCompatibility: legacyCompatibility,
+                    resolveElement: (row, rowAccess, elementType) => this._encodeStoredElementSource(
+                      rowAccess, elementType, [...row.args], row.handler, entryArtifact,
+                      onChainState.state as Record<string, unknown>,
+                    ),
+                  }) : undefined);
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__leadingPushValue_${slotIndex}`);
                 const completeIndex = entryAbiFunction!.inputs.findIndex((input) =>

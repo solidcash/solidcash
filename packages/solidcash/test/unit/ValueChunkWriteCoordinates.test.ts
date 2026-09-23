@@ -3,6 +3,7 @@ import {
   absoluteComposedValueChunkOutputBase,
   rebaseValueChunkWriteDescriptors,
   selectBuilderValueChunkOutputBase,
+  transportedContinuationLocalBase,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
 const write = (outputBase: number) => ({
@@ -33,6 +34,21 @@ describe('value-chunk write coordinates', () => {
     expect(absoluteComposedValueChunkOutputBase(
       selectBuilderValueChunkOutputBase(102, 221, 119), 119,
     )).toBe(221);
+  });
+
+  it('projects a repacked published lane back into the participant builder', () => {
+    expect(selectBuilderValueChunkOutputBase(102, 220, 119)).toBe(101);
+  });
+
+  it('selects a unique transported lane only at the observed width', () => {
+    const resourceIdentity = `${'11'.repeat(32)}:${'22'.repeat(20)}:${'33'.repeat(32)}`;
+    const claims = [{
+      bandOffset: 101,
+      chunkCount: 3,
+      producerClaim: { resourceIdentity },
+    }];
+    expect(transportedContinuationLocalBase(claims, resourceIdentity, 3)).toBe(101);
+    expect(transportedContinuationLocalBase(claims, resourceIdentity, 2)).toBeUndefined();
   });
 
   it('accepts a published coordinate outside composition', () => {

@@ -325,9 +325,15 @@ const convergeMessageBusMutableResourceOutputs = (
       }
     }
 
+    // F30: refuse only proposals that would apply (matching / canApply-skip are no-ops under recipe).
+    const maximumCommitmentBytes = builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
+    gateWouldApplyResourceRepairsIfRecipe(
+      builder,
+      proposals,
+      fixedStateOutputs,
+      maximumCommitmentBytes,
+    );
     let changed = false;
-    // Item 9: recipe mode refuses VM-mined commitment repairs (failed-trace extraction).
-    refuseVmExtractedRepairsIfRecipe(proposals.size);
     for (const [outputIndex, { commitment: proposed }] of proposals) {
       const output = builder.outputs[outputIndex];
       if (!output?.token?.nft) continue;
@@ -337,7 +343,7 @@ const convergeMessageBusMutableResourceOutputs = (
         proposed,
         hasLockingBytecode: false,
         fixedStateSlot: fixedStateOutputs.has(outputIndex),
-        maximumCommitmentBytes: builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128,
+        maximumCommitmentBytes,
       });
       if (action === 'skip') continue;
       output.token.nft.commitment = binToHex(proposed);
@@ -359,6 +365,57 @@ const convergeMessageBusMutableResourceOutputs = (
     `messageBus: mutable resource outputs did not converge after ${maximumRounds} complete-transaction passes`,
   );
 };
+
+type ResourceRepairBuilder = {
+  outputs: ReadonlyArray<{
+    token?: { nft?: { commitment: string; capability?: string } };
+  }>;
+};
+
+type ResourceCommitmentProposal = {
+  commitment: Uint8Array;
+};
+
+/**
+ * F30: count resource OTC proposals that `canApplyRepairedNftCommitment` would apply.
+ * Already-matching / skip observations must not trip the recipe refuse gate.
+ */
+export function countWouldApplyResourceRepairs(
+  builder: ResourceRepairBuilder,
+  proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
+  fixedStateOutputs: ReadonlySet<number>,
+  maximumCommitmentBytes = 128,
+): number {
+  let wouldApply = 0;
+  for (const [outputIndex, { commitment: proposed }] of proposals) {
+    const output = builder.outputs[outputIndex];
+    if (!output?.token?.nft) continue;
+    const action = canApplyRepairedNftCommitment({
+      capability: output.token.nft.capability,
+      currentCommitmentHex: output.token.nft.commitment,
+      proposed,
+      hasLockingBytecode: false,
+      fixedStateSlot: fixedStateOutputs.has(outputIndex),
+      maximumCommitmentBytes,
+    });
+    if (action !== 'skip') wouldApply += 1;
+  }
+  return wouldApply;
+}
+
+/** F30: refuse VM-mined resource repairs that would change state under recipe. */
+export function gateWouldApplyResourceRepairsIfRecipe(
+  builder: ResourceRepairBuilder,
+  proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
+  fixedStateOutputs: ReadonlySet<number>,
+  maximumCommitmentBytes = 128,
+): number {
+  const wouldApply = countWouldApplyResourceRepairs(
+    builder, proposals, fixedStateOutputs, maximumCommitmentBytes,
+  );
+  refuseVmExtractedRepairsIfRecipe(wouldApply);
+  return wouldApply;
+}
 
 /** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
 export const convergeMessageBusComputedResourceOutputs = (

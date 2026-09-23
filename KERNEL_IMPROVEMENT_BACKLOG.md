@@ -243,7 +243,7 @@ Fresh pass over fixtures tip + trackers. Items 1–13 stay **DONE (MVP)**; this 
 | **F2′** | Port sole-layout + compose authority onto **beta** | Fixtures-only; beta tip may lack resolver/apply/stamp | Without port, F1′ can fail for missing code not for drift |
 | **F5′** | Purge remaining `publishJobEvent` / JobEvent string compares in STB | **DONE** — `legacyGroupLooksLikePublishJobEvent`; kernel `_permitsLegacyNamedValueChunkFallback` gates; proofs `LegacyJobEventNamePurge` + `kimp-f5prime-jobevent-purge.log` | Completes item 1 depth |
 | **F5″** | Replace `graph.ts` `handlers.find(name === …)` joins with selector/`requireStableId` | **DONE** — `graph-handler-join.ts` `findMessageBusHandlerForInvocation` selector-first for `kernel-row-loop`; proof `GraphStableHandlerJoin` + `kimp-f5dprime-graph-stable-join.log` | Completes item 7 depth |
-| **F7′** | Finish SOLIDC registry coverage | Owner/band via options; dozens of raw `SOLIDC_DEBUG_*` / `SOLIDC_PROFILE` still read in GTT | Item 4 depth; unknown-reject strict CI mode |
+| **F7′** | Finish SOLIDC registry coverage / strict unknown-reject CI | Registry **49/49** (F28); GTT 0 raw `process.env.SOLIDC_*`; remainder = strict CI reject + residual compiler raw reads | Item 4 depth |
 | **F9′** | Cut over default materialization mode to `recipe` | **DONE** — default `recipe`; value/dyn converge refuse only would-apply OTC via `gateWouldApply*RepairsIfRecipe`; proof `RecipeDefaultMaterialization` + `kimp-f9prime-recipe-default.log` | Item 9 production semantics |
 | **F8′** | Analyzer-first admission (retire retry ladder) | **DONE** — `recoverCompileByMonotoneRefusal` is compile recovery only; stamps stay `attribution-spans`; proof `AnalyzerFirstAdmission` + `kimp-f8prime-analyzer-first.log` | Item 13 depth |
 | **F13′** | Eliminate `published-fallback` admission stamp | **DONE** — type + stamp path retired; kernel fails closed without spans; proof `AnalyzerFirstAdmission` + `kimp-f13prime-no-published-fallback.log` | Keeps item 13 honest on every contract shape |
@@ -271,16 +271,17 @@ Fresh pass over fixtures tip + trackers. Items 1–13 stay **DONE (MVP)**; this 
 
 **R4 layout-fold leftovers:** Gate A (beta); phases 3/5/6/7; MultiRow Dual residual negative kept.
 
-**R6 post-MVP residuals:** see **Post-F17/F19 scan → R8** for the latest table. Short list: F25/F26/F28/F3′/D7/F9′/F8′/F13′ DONE; still open — F20/F7′ strict CI; F18 callsite guess; F23 #9 token-container; F21–F24; AOT thin Kernel*; F1′/F2′ beta.
+**R6 post-MVP residuals:** see **Post-F9′/F8′/F13′ scan → R9** for the latest table. Short list: F30 DONE; still open — F18 callsite guess; F27 delegate name join; F7′ strict CI; F21–F24; F23 #9; F29 JobEvent API; F31 PredOut preflight; F32 legacy stamp; F1′/F2′ beta; AOT D8.
 
 ### Suggested next goal order (post-MVP)
 
 ```
 1. F1′ + F2′   — beta port + take-job verify (unblocks title ladder confidence)
 2. F18 + F27 + F21/F22 — callsite attribution + delegate join + digest/plan-version
-3. F20/F7′ + F23/F24 — SOLIDC strict CI; #9 token-container; look-ahead suites
-4. D8 AOT I/J  — coverage proofs once layout authority is on beta
-Landed: F5′ + F5″ + F16′ + F17 + F19 + F25 + F26 + F28 + F3′ + D7 + F9′ + F8′ + F13′ (+ F3 ownership depth)
+3. F31 + F7′   — PredOut preflight thread + SOLIDC strict CI
+4. F23/F24/F29 — #9 token-container; look-ahead suites; JobEvent API
+5. D8 AOT I/J  — coverage proofs once layout authority is on beta
+Landed: F5′ + F5″ + F16′ + F17 + F19 + F25 + F26 + F28 + F3′ + D7 + F9′ + F8′ + F13′ + F30 (+ F3 ownership depth)
 Never as architecture proof: R1 / Marketplace greening
 ```
 
@@ -297,7 +298,7 @@ Live fixtures tip after name-authority tranche. Items 1–13 MVP and F5′/F5″
 | **F17** | Route `compose.ts` handler joins through selector/`findMessageBusHandlerForInvocation` | **DONE** — compose call sites use `findMessageBusHandlerForInvocation`; proof `ComposeStableHandlerJoin` + `kimp-f17-compose-stable-join.log` | Same failure class as F5″ on the compose authority path |
 | **F18** | Replace `bindConsumerCallsites` name-first / first-match attribution | `graph.ts` still documents by-name guess that collapses same-name callsites; surplus capacity deliberately guess-free | Original **F5** depth beyond handler join |
 | **F19** | Route remaining `StatefulContract` `publishJobEvent` literals through legacy adapter | **DONE** — `legacyIsPublishJobEventName` / `legacyGroupLooksLikePublishJobEvent` in SC; proof `StatefulContractJobEventNamePurge` + `kimp-f19-sc-jobevent-purge.log` | Completes F5′ surface beyond STB |
-| **F20** | Register remaining `SOLIDC_*` reads + strict unknown-reject CI mode | Registry has **25** names; tree has **48** distinct `SOLIDC_*` refs → **23 unregistered** (cache, binder-skip, route dump/oracle, recovery/debug). GTT production switches already options-routed; `compiler.ts` still raw-reads | Item **4** / **F7′** depth; some affect cache identity / binder |
+| **F20** | Register remaining `SOLIDC_*` reads + strict unknown-reject CI mode | **Registration DONE via F28** (49/49 names). Remainder is **F7′** strict unknown-reject CI + route residual raw reads through registry helpers | Item **4** / **F7′** depth |
 | **F21** | Embed KernelExecutionPlan digest in route bytecode | Digest stamped into `publishedRelocations` only (item 5 follow-on) | Prevents transplanting plan metadata without bytecode change |
 | **F22** | Gate StatefulContract plan readers on `kernelPlanVersion` | Item 6 follow-on still open | Closes omitted-empty / legacy-missing plan ambiguity at SDK boundary |
 | **F23** | Inventory **#9** token-container co-layout proof object | `KernelAdmission` locks dynamic-bytes + `tokens[category]` as residual (missing `tokenContainer` block slot); fence map #9 partial column | Honest #9 residual; needs non-overlapping span descriptor before admit |
@@ -325,7 +326,7 @@ Live fixtures tip after name-authority tranche. Items 1–13 MVP and F5′/F5″
 | Compose name joins | F17 DONE — selector-first helper on compose path |
 | `bindConsumerCallsites` guess | F18; capacity path already guess-free |
 | SC JobEvent literals | F19 DONE — adapter-only; kernel gate unchanged |
-| Unregistered `SOLIDC_*` (23) | F20; includes `SOLIDC_SKIP_MESSAGE_BUS_BINDER`, cache keys, route oracles |
+| Unregistered `SOLIDC_*` | F28 registered 49/49; F7′ strict unknown-reject CI remains |
 | Plan digest not in bytecode | F21 |
 | `kernelPlanVersion` ungated at SC reader | F22 |
 | #9 token-container co-layout | F23 / inventory #9 |
@@ -346,10 +347,11 @@ Live fixtures tip after name-authority tranche. Items 1–13 MVP and F5′/F5″
 ```
 1. F1′ + F2′         — beta port + take-job verify (other agent / handoff)
 2. F18 + F27 + F21/F22 — callsite attribution + delegate join + digest/plan-version
-3. F23 / F24 / F29   — #9 token-container; look-ahead suites; JobEvent API migrate
-4. D13 ⊂ D8          — AOT I3→J1→I1 once layout on beta
+3. F31 + F7′         — PredOut preflight thread + SOLIDC strict CI
+4. F23 / F24 / F29   — #9 token-container; look-ahead suites; JobEvent API migrate
+5. D13 ⊂ D8          — AOT I3→J1→I1 once layout on beta
 Never: R1 / Marketplace greening as architecture proof
-Landed: items 1–13 MVP; F5′; F5″; F16′; F17; F19; F25; F26; F28; F3′; D7; F9′; F8′; F13′; F3 ownership depth
+Landed: items 1–13 MVP; F5′; F5″; F16′; F17; F19; F25; F26; F28; F3′; D7; F9′; F8′; F13′; F30; F3 ownership depth
 ```
 
 ### Source map for this scan
@@ -430,10 +432,11 @@ Live fixtures tip after compose + StatefulContract name-authority leftovers. Pri
 ```
 1. F1′ + F2′           — beta port + take-job verify (other agent)
 2. F18 + F27 + F21/F22 — callsite attribution + delegate join + digest/plan-version
-3. F29 → D15; F23/F24  — JobEvent API migrate; #9 proof; look-ahead suites
-4. D13 ⊂ D8            — AOT I3→J1→I1 once layout on beta
+3. F31 + F7′           — PredOut preflight thread + SOLIDC strict CI
+4. F29 → D15; F23/F24  — JobEvent API migrate; #9 proof; look-ahead suites
+5. D13 ⊂ D8            — AOT I3→J1→I1 once layout on beta
 Never: R1 / Marketplace greening as architecture proof
-Landed: 1–13 MVP; F5′; F5″; F16′; F17; F19; F25; F26; F28; F3′; D7; F9′; F8′; F13′; F3 ownership depth
+Landed: 1–13 MVP; F5′; F5″; F16′; F17; F19; F25; F26; F28; F3′; D7; F9′; F8′; F13′; F30; F3 ownership depth
 ```
 
 ### Source map for this scan
@@ -448,3 +451,88 @@ Landed: 1–13 MVP; F5′; F5″; F16′; F17; F19; F25; F26; F28; F3′; D7; F9
 | `assertUniqueOwnership` role/range/suffix checks | F3 DONE |
 | `handlers.find` in compose | still none (F17 holds) |
 | SC `'publishJobEvent'` literals | still none (F19 holds) |
+
+---
+
+## Post-F9′/F8′/F13′ scan (fresh residual pass)
+
+Live fixtures tip after recipe default + analyzer-first admission + published-fallback retirement. Prior DONE rows stay closed. New findings below are additive.
+
+### New followups
+
+| ID | Followup | Evidence now | Why next |
+|----|----------|--------------|----------|
+| **F30** | Resource-converge recipe gate: refuse only **would-apply** proposals | **DONE** — `gateWouldApplyResourceRepairsIfRecipe` respects `canApply…skip`; proof `ResourceWouldApplyRecipeGate` + `kimp-f30-resource-would-apply.log` | Same bug class F9′ just fixed for value/dyn; fixtures-small parity |
+| **F31** | Thread compose PredOut physical claims into preflight assert | F3′ added optional `predOutClaimsByParticipant`; default `preflightMessageBusTransaction` never supplies it — PredOut check stays compose-path unless claims are threaded | Completes F3′ PredOut half on the finalized-tx gate |
+| **F32** | Legacy messageBus stamp without spans | Non-kernel path leaves `admissionSource` unset and copies published eligible ids (F13′). Product may want documented legacy stamp or fail-closed for all conventions | Closes ambiguous “unstamped but has ids” SDK reads |
+| **F7′** *(refresh)* | Strict unknown-reject CI + registry-routed reads | Registry coverage **49/49**; GTT has **0** raw `process.env.SOLIDC_*` (options-routed). Remaining: `unknownSolidcEnvKeys` reject mode in CI; residual compiler raw reads for debug/cache | Item 4 depth after F28 registration |
+
+### Prior open (unchanged intent)
+
+| ID | Status note |
+|----|-------------|
+| **F18** | `bindConsumerCallsites` name-first guess still documented live |
+| **F27** | `delegate.ts` `findFunction` name-only ABI lookup |
+| **F21** | Plan digest in `publishedRelocations` / authority results only — not route bytecode |
+| **F22** | No `kernelPlanVersion` gate in StatefulContract readers |
+| **F23** | #9 token-container co-layout still locked (missing block slot) |
+| **F24** | Look-ahead property suites still thin (fragments only) |
+| **F29** | JobEvent-branded helper API surface (~452 STB / ~128 SC) |
+| **F1′/F2′** | Beta Gate A + layout port (other agent) |
+| **F8** | Plain `Error` → `KERNEL_*` (e.g. “do not share one exit”) |
+
+### New / refreshed deferrals
+
+| ID | Deferred | Trigger |
+|----|----------|---------|
+| **D17** | Unify all converge recipe gates through one `gateWouldApply*RepairsIfRecipe` family (resource + value + dyn) | After F30 |
+| **D18** | Fail-closed DEFINE for all DEFINE kinds (item 3 follow-on) | After F21 |
+| **D10–D16** | Unchanged (mega-class split, budgets, AOT subset, JobEvent API retire, resolver unify) | As before |
+
+### Residuals (R9 — post F9′/F8′/F13′)
+
+| Residual | Notes |
+|----------|-------|
+| Resource converge would-apply parity | F30 DONE — `gateWouldApplyResourceRepairsIfRecipe` |
+| PredOut preflight claims unthreaded | **F31** |
+| Legacy unstamped admissionSource | **F32** |
+| Strict unknown SOLIDC CI | **F7′** (registration complete) |
+| `bindConsumerCallsites` guess | F18 |
+| Delegate name-only find | F27 |
+| Digest not in bytecode / plan-version ungated | F21 / F22 |
+| #9 token-container co-layout | F23 |
+| Look-ahead suites thin | F24 |
+| JobEvent helper API | F29 |
+| DualRuntimeSet×keccak; collection/event/blockhash selfdestruct; detached lifecycle sig | R3 |
+| Inventory 7–18 residual shapes | R2 / fence map |
+| AOT thin Kernel* | D8/D13 |
+| Plain `Error` refuse paths | F8 |
+
+**R1 permanent fences unchanged.**
+
+### Suggested next goal order (updated)
+
+```
+1. F1′ + F2′           — beta port + take-job verify (other agent)
+2. F18 + F27 + F21/F22 — callsite attribution + delegate join + digest/plan-version
+3. F31 + F7′           — PredOut preflight thread + SOLIDC strict CI
+4. F23 / F24 / F29     — #9 proof; look-ahead suites; JobEvent API migrate
+5. D13 ⊂ D8            — AOT I3→J1→I1 once layout on beta
+Never: R1 / Marketplace greening as architecture proof
+Landed: … + F9′ + F8′ + F13′ + F30 (+ F3 ownership depth)
+```
+
+### Source map for this scan
+
+| Probe | Finding |
+|-------|---------|
+| `preflight.ts` `refuseVmExtractedRepairsIfRecipe(proposals.size)` before skip | F30 DONE — would-apply gate |
+| Value/dyn `gateWouldApply*RepairsIfRecipe` | F9′ DONE |
+| `predOutClaimsByParticipant` unused by default preflight | → **F31** |
+| Legacy stamp deletes `admissionSource` | → **F32** |
+| SOLIDC tree vs registry | 49 vs 49 → F28 DONE; F7′ = strict CI |
+| GTT `process.env.SOLIDC_*` | 0 raw reads |
+| `bindConsumerCallsites` guess comment | F18 live |
+| `delegate.ts` findFunction name-only | F27 live |
+| SC `kernelPlanVersion` | no hits → F22 |
+| Fence #9 token-container | F23 live |

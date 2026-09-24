@@ -8,6 +8,7 @@ import {
   decodePushdataValue,
   type AbiFunction,
   type Artifact,
+  type EntryAccessAbi,
   type ExternalCallExpression,
   type FixedBchTransferAbi,
   type SortedUpsertLoopAbi,
@@ -83,6 +84,15 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   graphEcrecoverCalls?: GraphEcrecoverCall[];
   /** Operations selected for each fixed route entry slot in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveEntryOperations?: ReadonlyMap<number, readonly string[]>;
+  /** Direct handler recipes selected for each route entry lane. */
+  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
+    rowIndex: number;
+    access: EntryAccessAbi;
+    args: FunctionArgument[];
+    inputs: AbiFunction['inputs'];
+  }[]>;
+  /** Physical route slots whose selected direct handlers use fixed sorted-batch geometry. */
+  messageBusActiveSortedBatchSlots?: ReadonlySet<number>;
   /** Collections written by the handlers selected in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveWriteCollections?: readonly string[];
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
@@ -689,6 +699,14 @@ callerLockingBytecode?: Uint8Array,
     return fallbackActive();
   };
   const activeRouteEntryOperations = new Map<number, readonly string[]>();
+  const activeRouteSortedBatchSlots = new Set<number>();
+  const activeRouteSortedBatches = new Map<string, { slots: Set<number>; linear: boolean }>();
+  const activeRouteEntryRecipes = new Map<number, Array<{
+    rowIndex: number;
+    access: EntryAccessAbi;
+    args: FunctionArgument[];
+    inputs: AbiFunction['inputs'];
+  }>>();
   reachedHandlers.forEach((handler, rowIndex) => {
     const selected = executionArtifact.abi.find((candidate) =>
       candidate.selector === handler.selector || candidate.name === handler.name);
@@ -718,6 +736,16 @@ callerLockingBytecode?: Uint8Array,
         if (!selectedAccess) continue;
         const selectedSlot = selectedAccess.slotIndex
           ?? capability.route.entryAccesses!.indexOf(selectedAccess);
+        const directSlot = directAccess.slotIndex ?? directIndex;
+        const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
+        if (directAccess.operations.includes('write') && selectedBatch !== undefined) {
+          activeRouteSortedBatchSlots.add(selectedSlot);
+          const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)
+            ?? { slots: new Set<number>(), linear: selectedBatch.linear === true };
+          activeBatch.slots.add(selectedSlot);
+          activeBatch.linear ||= selectedBatch.linear === true;
+          activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
+        }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         const operations = fixedChunkableAccessActive(
           directAccess,
@@ -734,6 +762,18 @@ callerLockingBytecode?: Uint8Array,
           selectedSlot,
           [...new Set([...prior, ...operations])],
         );
+        if (!activeRouteEntryRecipes.get(selectedSlot)?.some((recipe) => (
+          recipe.rowIndex === rowIndex && recipe.access === directAccess
+        ))) {
+          const recipes = activeRouteEntryRecipes.get(selectedSlot) ?? [];
+          recipes.push({
+            rowIndex,
+            access: { ...directAccess, operations },
+            args: rowArgs ? [...rowArgs] : [],
+            inputs: selected?.inputs ?? [],
+          });
+          activeRouteEntryRecipes.set(selectedSlot, recipes);
+        }
       }
     });
   });
@@ -937,6 +977,19 @@ callerLockingBytecode?: Uint8Array,
       ecrecoverCompute: selectedRecoveryHandlers.length > 0,
       ecrecoverEvmFlags: selectedEcrecoverEvmFlags,
     }),
+    ...([...activeRouteSortedBatches].some(([collection]) => (
+      executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
+        ?.chunkableValue !== true
+    )) && {
+      sortedBatchInfo: [...activeRouteSortedBatches].filter(([collection]) => (
+        executionArtifact.stateLayout?.collections?.find((candidate) => candidate.name === collection)
+          ?.chunkableValue !== true
+      )).map(([collection, batch]) => ({
+        collection,
+        slotIndices: [...batch.slots].sort((left, right) => left - right),
+        ...(batch.linear && { linear: true }),
+      })),
+    }),
   };
   if (graphOwnedRoute) {
     (effectiveRoute as MessageBusRuntimeAbiFunction).messageBusGraphExecution = true;
@@ -947,6 +1000,10 @@ callerLockingBytecode?: Uint8Array,
   }
   (effectiveRoute as MessageBusRuntimeAbiFunction)
     .messageBusActiveEntryOperations = activeRouteEntryOperations;
+  (effectiveRoute as MessageBusRuntimeAbiFunction)
+    .messageBusActiveEntryRecipes = activeRouteEntryRecipes;
+  (effectiveRoute as MessageBusRuntimeAbiFunction)
+    .messageBusActiveSortedBatchSlots = activeRouteSortedBatchSlots;
   (effectiveRoute as MessageBusRuntimeAbiFunction)
     .messageBusActiveWriteCollections = activeRouteWriteCollections;
   if (effectiveRowArguments !== undefined) {

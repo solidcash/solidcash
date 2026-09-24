@@ -1360,9 +1360,8 @@ export async function assembleAtomicComposition(
           const value = masterUnlocker?.params?.[candidate.index];
           // Discover claims for every publishedBase including 0 (participant 0 / atomic physical layout).
           if (masterUnlocker?.params === undefined) continue;
-          // layout-sentinel / PredOut: decode tagged sentinels — raw `value < 0` alone is not the authority.
-          if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
           if (candidate.name === 'dynamicChunkInputBase') {
+            if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
             dynLocalBase = Number(value);
             continue;
           }
@@ -1377,6 +1376,13 @@ export async function assembleAtomicComposition(
           const predecessor = typeof proof === 'bigint' && proof >= 0n && proof < BigInt(local.inputs.length)
             ? local.inputs[Number(proof)] : undefined;
           const predecessorCommitment = commitmentHex(predecessor?.token?.nft?.commitment);
+          const pendingInsert = value === -1n && targetSlot !== undefined
+            && predecessorCommitment.length >= 64
+            && predecessorCommitment.slice(0, 64).toLowerCase() !== targetSlot.toLowerCase();
+          // A route INSERT can retain -1 until its P' output exists in this physical frame. Other negative
+          // sentinels remain inactive; non-negative witnesses must still address the participant-local frame.
+          if ((!layoutWitnessIsActiveCoordinate(value) && !pendingInsert)
+            || (layoutWitnessIsActiveCoordinate(value) && value >= BigInt(candidate.limit))) continue;
           let physicalLocalOffset: number | undefined;
           if (targetSlot !== undefined && predecessorCommitment.length >= 128) {
             const plannedPredecessor = `${predecessorCommitment.slice(0, 64)}${targetSlot}`

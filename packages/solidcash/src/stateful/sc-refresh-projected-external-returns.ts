@@ -39,7 +39,7 @@ export async function refreshProjectedExternalReturns(
     })));
   }
   if (candidates.length === 0) return;
-  const projectedOutputs = stb.build().outputs;
+  const projectedOutputs = stb.materializeProjectedComputedValueChunks().outputs;
 
   for (const { groupIndex, abiFunction } of candidates) {
     const group = groups[groupIndex];

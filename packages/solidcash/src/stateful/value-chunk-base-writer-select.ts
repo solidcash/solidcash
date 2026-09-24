@@ -39,7 +39,13 @@ import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
 export function ownsCapturedValueChunkOutputBase(group: ExternalCallUtxoGroup): boolean {
   const inputNames = group.internalArgNames
     ?? group.compilerRoute?.abiFunction.inputs.map((input) => input.name);
-  return inputNames?.includes('__internal__valueChunkOutputBase') === true;
+  if (inputNames?.includes('__internal__valueChunkOutputBase') === true) return true;
+  const masterUnlocker = (group.masterUtxo as UnlockableUtxo | undefined)?.unlocker as {
+    abiFunction?: { inputs?: readonly { name: string }[] };
+  } | undefined;
+  return masterUnlocker?.abiFunction?.inputs?.some(
+    (input) => input.name === '__internal__valueChunkOutputBase',
+  ) === true;
 }
 
 export function refreshCapturedValueChunkOutputBase(

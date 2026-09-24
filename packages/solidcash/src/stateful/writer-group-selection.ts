@@ -8,13 +8,16 @@ import {
   computeCollectionHash,
   type AbiFunction,
   type Artifact,
+  type EntryAccessAbi,
 } from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
 import {
   decodeEntryCommitment,
 } from './SortedList.js';
 import {
   permitsLegacyNamedValueChunkFallback,
   legacyPlannedChunkableValueWriteCollection,
+  valueChunkWriteResourceIdentity,
   type ExternalCallUtxoGroup,
   type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
@@ -23,6 +26,12 @@ import { legacyIsPublishJobEventName } from './legacy-job-event-helpers.js';
 /** Minimal runtime ABI narrowing used by writer/chunkable selection. */
 type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveWriteCollections?: readonly string[];
+  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
+    rowIndex: number;
+    access: EntryAccessAbi;
+    args: FunctionArgument[];
+    inputs: AbiFunction['inputs'];
+  }[]>;
   messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
 };
 
@@ -168,38 +177,70 @@ export function describeValueChunkWrites(
   const activeWriteCollections = (abiFunction as MessageBusRuntimeAbiFunction)
     .messageBusActiveWriteCollections;
   const writes: ValueChunkWriteDescriptor[] = [];
-  for (const activeFunction of activeFunctions) {
-    for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
-      if (!access.operations.includes('write')) continue;
+  const appendWrite = (access: EntryAccessAbi, entryAccessSlot: number, routeSlot: number): void => {
+      if (!access.operations.includes('write')) return;
       const collection = group.stateLayout.collections?.find((candidate) =>
         candidate.name === access.collection || candidate.signature === access.collection);
-      if (!collection?.chunkableValue) continue;
+      if (!collection?.chunkableValue) return;
       if (activeWriteCollections !== undefined && !activeWriteCollections.some((candidate) =>
         candidate === access.collection || candidate === collection.name
-        || candidate === collection.signature)) continue;
-      const routeSlot = access.slotIndex ?? entryAccessSlot;
+        || candidate === collection.signature)) return;
       const blockSlot = layout.slots.find((slot) =>
         slot.kind === 'entry' && slot.slotIndex === routeSlot)?.offset;
-      if (blockSlot === undefined) continue;
+      if (blockSlot === undefined) return;
       const insert = group.plannedEntryInserts?.find((planned) => planned.blockSlot === blockSlot);
       const commitment = insert?.newCommitment
         ?? group.blockInputs?.[blockSlot]?.token?.nft?.commitment;
-      if (commitment === undefined) continue;
-      const bytes = typeof commitment === 'string' ? hexToBin(commitment) : commitment;
-      if (bytes.length < 32) continue;
-      const keySlot = decodeEntryCommitment(bytes).slot;
-      writes.push({
-        categoryId: stateOwnerCategoryId ?? group.categoryId,
+      const bytes = commitment === undefined ? undefined
+        : typeof commitment === 'string' ? hexToBin(commitment) : commitment;
+      const categoryId = (stateOwnerCategoryId ?? group.categoryId).toLowerCase();
+      const collectionHash = binToHex(computeCollectionHash(collection.signature));
+      const claimedKeySlots = [...new Set((group.valueChunkProducerClaims ?? []).flatMap((claim) => {
+        const [claimCategoryId, claimCollectionHash, claimKeySlot, ...extra] = claim.resourceIdentity.split(':');
+        return extra.length === 0
+          && claimCategoryId === categoryId
+          && claimCollectionHash === collectionHash
+          && /^[0-9a-f]{64}$/.test(claimKeySlot ?? '')
+          ? [claimKeySlot!] : [];
+      }))];
+      const publishedSlot = group.compilerRoute?.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`]
+        ?? group.internalArgs?.[`__internal__vmapBatchSlot_${routeSlot}`];
+      const keySlot = bytes !== undefined && bytes.length >= 32
+        ? decodeEntryCommitment(bytes).slot
+        : claimedKeySlots.length === 1 ? hexToBin(claimedKeySlots[0]!)
+          : publishedSlot instanceof Uint8Array && publishedSlot.length === 32
+            && publishedSlot.some((byte) => byte !== 0)
+            ? publishedSlot : undefined;
+      if (keySlot === undefined) return;
+      const write: ValueChunkWriteDescriptor = {
+        categoryId,
         collection: collection.name,
         collectionSignature: collection.signature,
-        collectionHash: binToHex(computeCollectionHash(collection.signature)),
+        collectionHash,
         keySlot: binToHex(keySlot),
         entryAccessSlot,
         routeSlot,
         operation: insert ? 'insert' : 'update',
         outputBase: group.valueChunkOutputBase ?? -1,
         outputCount: group.valueChunkOutputCount ?? 0,
-      });
+      };
+      const identity = valueChunkWriteResourceIdentity(write);
+      if (!writes.some((candidate) => valueChunkWriteResourceIdentity(candidate) === identity)) {
+        writes.push(write);
+      }
+  };
+  const activeRecipes = (abiFunction as MessageBusRuntimeAbiFunction).messageBusActiveEntryRecipes;
+  if (activeRecipes !== undefined && activeRecipes.size > 0) {
+    for (const [routeSlot, recipes] of activeRecipes) {
+      for (const recipe of recipes) {
+        appendWrite(recipe.access, recipe.access.slotIndex ?? 0, routeSlot);
+      }
+    }
+  } else {
+    for (const activeFunction of activeFunctions) {
+      for (const [entryAccessSlot, access] of (activeFunction.entryAccesses ?? []).entries()) {
+        appendWrite(access, entryAccessSlot, access.slotIndex ?? entryAccessSlot);
+      }
     }
   }
   return writes;

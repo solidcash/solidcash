@@ -126,6 +126,7 @@ export function deriveFullPhase2ApplyValueChunks(
           // The same authenticated value completes a batch TARGET node for this entry whose tail the
           // planner had to publish empty (the route row builds the value inside its handler).
           if (stb.completePendingEntryValueTail(vcv.collection, vcv.slot, matched)) commitmentProgress += 1;
+          if (stb.completeExistingEntryValueTail(vcv.collection, vcv.slot, matched)) commitmentProgress += 1;
           vcOffset += exact.length;
           continue;
         }

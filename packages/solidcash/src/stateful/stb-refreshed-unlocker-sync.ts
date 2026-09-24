@@ -50,6 +50,8 @@ export function syncRefreshedCarrierMasters(
   carriers: Iterable<ExternalCallUtxoGroup>,
 ): void {
   for (const carrier of carriers) {
+    // Shared logical calls reuse their owner's physical master and must not overwrite its top-level unlocker.
+    if (carrier.sharedGroupIndex !== undefined) continue;
     const master = carrier.masterUtxo as UnlockableUtxo | undefined;
     if (!master?.unlocker) continue;
     const inputIndex = host.allInputs.findIndex((input) => (

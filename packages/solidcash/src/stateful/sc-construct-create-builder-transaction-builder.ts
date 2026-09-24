@@ -391,8 +391,9 @@ export function constructCreateBuilderTransactionBuilder(
       if (position < 0 || position >= finalArgs.length || proofPosition < 0) continue;
       const current = finalArgs[position];
       const proofOffset = finalArgs[proofPosition];
-      // -1 (no predecessor output) and -2 (inactive row) are topology sentinels, not coordinates.
-      if (typeof current !== 'bigint' || current < 0n) continue;
+      // An active INSERT can retain the provisional -1 until its exact predecessor output is materialized.
+      // Inactive rows (-2), and ordinary update/read lanes with -1, remain topology sentinels.
+      if (typeof current !== 'bigint' || current === -2n) continue;
       if (typeof proofOffset !== 'bigint' || proofOffset < 0n) continue;
       const required = lockedBytecodeAt(masterIndex + Number(proofOffset));
       if (required === undefined) continue;
@@ -424,7 +425,10 @@ export function constructCreateBuilderTransactionBuilder(
         && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
         ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
         : undefined;
-      if (sameLock(outputLock(Number(current)), required)
+      const updatesExistingTarget = targetSlot instanceof Uint8Array && targetSlot.length === 32
+        && predecessorCommitment?.slice(0, 64).toLowerCase() === binToHex(targetSlot).toLowerCase();
+      if (current < 0n && updatesExistingTarget) continue;
+      if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
           || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;
       // The P' is materialized elsewhere in this frame: find the output that carries it, requiring both the

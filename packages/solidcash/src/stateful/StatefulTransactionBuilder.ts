@@ -118,8 +118,13 @@ export function findScidAnchorInputIndex(inputs: readonly Pick<Utxo, 'token'>[],
   }
   return found;
 }
+
+/** Convert a participant-local continuation coordinate into its aggregate transaction coordinate. */
+export function absoluteComposedValueChunkOutputBase(outputBase: number, blockBase: number): number {
+  return outputBase < 0 ? outputBase : outputBase + blockBase;
+}
 import {
-  encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot, keyToSlotMulti,
+  decodeEntryCommitment, encodeEntryCommitment, isEmptyValueEntryCommitment, keyToSlot, keyToSlotMulti,
 } from './SortedList.js';
 import {
   planKernelEntryJournalOutputLayout,
@@ -1485,6 +1490,8 @@ export class StatefulTransactionBuilder {
   private valueChunkVars: Map<string, {
     collection: string; lockingBytecode: Uint8Array; slot?: Uint8Array;
   }> = new Map();
+  /** Compiler-authenticated writes executed by this root frame rather than by a nested call group. */
+  private directValueChunkWriteDescriptors = new Map<string, ValueChunkWriteDescriptor>();
   private valueChunkRawCommitments: Map<string, string[]> = new Map(); // run id -> ordered chunk commitments (hex)
   private eventRawCommitments: Map<number, string> = new Map(); // emitIndex -> hex commitment (from auto-derivation)
   private pendingEventPlaceholders: Array<{ eventSignature: string; emitIndex: number }> = [];
@@ -1771,6 +1778,13 @@ export class StatefulTransactionBuilder {
     const key = `${categoryId.toLowerCase()}:${collection}`;
     const next = selectObservedValueChunkRun(settlement().observedValueChunksByCollection.get(key) ?? [], chunks);
     if (next.length > 0) settlement().observedValueChunksByCollection.set(key, next);
+  }
+
+  /** Retrieve one coherent VM-authenticated run for an exact compiler-described collection. */
+  getObservedValueChunks(categoryId: string, collection: string): ReadonlyArray<AuthenticatedValueChunk> {
+    return coherentAuthenticatedValueChunkRun(
+      settlement().observedValueChunksByCollection.get(`${categoryId.toLowerCase()}:${collection}`) ?? [],
+    );
   }
 
   static clearPersistedJobEvents(categoryId?: string): void {
@@ -3199,6 +3213,7 @@ export class StatefulTransactionBuilder {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
       externalOutStateUtxoGroups: this.externalOutStateUtxoGroups,
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
+      pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       readOnlyDataNftUtxos: this.readOnlyDataNftUtxos,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       getExternalCallMasterInputIndex: (groupIndex) => this.getExternalCallMasterInputIndex(groupIndex),
@@ -3217,6 +3232,9 @@ export class StatefulTransactionBuilder {
       setReturnEventOutput: (categoryId, commitment, identity, provisional) => (
         this.setReturnEventOutput(categoryId, commitment, identity, provisional)
       ),
+      syncRefreshedCarrierMasters: (builder, carriers) => {
+        this._syncRefreshedCarrierMasters(builder, carriers);
+      },
     };
   }
 
@@ -4802,6 +4820,28 @@ export class StatefulTransactionBuilder {
     return this.derivedChunkOutputs;
   }
 
+  /** Materialize authenticated computed value chunks needed by a projected read before final send convergence. */
+  materializeProjectedComputedValueChunks(): TransactionBuilder {
+    const writerInputs = new Set<number>();
+    for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
+      if (group.sharedGroupIndex === undefined) writerInputs.add(this.getExternalCallMasterInputIndex(groupIndex));
+    }
+    for (const [groupIndex, group] of this.lowLevelCallUtxoGroups.entries()) {
+      if (group.sharedGroupIndex === undefined) writerInputs.add(this.getLowLevelCallMasterInputIndex(groupIndex));
+    }
+    writerInputs.delete(-1);
+    let builder = this.build();
+    for (let pass = 0; pass < 3; pass += 1) {
+      let changed = false;
+      for (const inputIndex of writerInputs) {
+        changed = this._repairComputedChunkOutput(builder, inputIndex).changed || changed;
+      }
+      if (!changed) break;
+      builder = this.build();
+    }
+    return builder;
+  }
+
   /** Drop a stale fixed pin (e.g. prior probe entryIndex before layout settled). */
   clearDerivedChunkOutput(outputIndex: number): boolean {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -5431,6 +5471,31 @@ export class StatefulTransactionBuilder {
     return changed;
   }
 
+  /** Complete an existing chunkable entry update from the value authenticated by its continuation covenant. */
+  completeExistingEntryValueTail(collection: string, slot: Uint8Array, value: Uint8Array): boolean {
+    for (const entry of this.entryNfts) {
+      if (!entry.exists || entry.collection !== collection || !entry.utxo?.token?.nft) continue;
+      const priorHex = this.entryRawCommitments.get(entry.slotIndex)
+        ?? entry.utxo.token.nft.commitment;
+      if (!priorHex) continue;
+      let prior: ReturnType<typeof decodeEntryCommitment>;
+      try {
+        prior = decodeEntryCommitment(hexToBin(priorHex));
+      } catch {
+        continue;
+      }
+      if (!binsAreEqual(prior.slot, slot)) continue;
+      const commitment = binToHex(encodeEntryCommitment(
+        prior.slot, prior.nextKey, encodeChunkableValueTail(value),
+      ));
+      if (commitment === priorHex) return false;
+      this.entryRawCommitments.set(entry.slotIndex, commitment);
+      this.pinnedEntrySlots.add(entry.slotIndex);
+      return true;
+    }
+    return false;
+  }
+
   /** Register a collection whose value chunks are DERIVED from the trace (computed value, no direct param). */
   registerValueChunkVar(
     collection: string, lockingBytecode: Uint8Array, id = collection, slot?: Uint8Array,
@@ -5452,11 +5517,40 @@ export class StatefulTransactionBuilder {
     return [...this.valueChunkVars.entries()].map(([id, value]) => ({ id, ...value }));
   }
 
+  /** Publish a compiler-authenticated root-frame write to complete-graph value discovery. */
+  registerValueChunkWriteDescriptor(write: ValueChunkWriteDescriptor): this {
+    const identity = valueChunkWriteResourceIdentity(write);
+    const prior = this.directValueChunkWriteDescriptors.get(identity);
+    if (prior !== undefined && (prior.collection !== write.collection
+      || prior.collectionSignature !== write.collectionSignature
+      || prior.entryAccessSlot !== write.entryAccessSlot || prior.routeSlot !== write.routeSlot
+      || prior.operation !== write.operation || prior.outputBase !== write.outputBase
+      || prior.outputCount !== write.outputCount)) {
+      throw new Error(`Conflicting root value-chunk write descriptor for '${identity}'.`);
+    }
+    if (prior === undefined) this.directValueChunkWriteDescriptors.set(identity, { ...write });
+    return this;
+  }
+
   /** Compiler-authored value-chunk resources carried by this concrete call graph. */
   getValueChunkWriteDescriptors(): readonly ValueChunkWriteDescriptor[] {
-    return [...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
-      .flatMap((group) => group.valueChunkWrites ?? [])
-      .map((write) => ({ ...write }));
+    const blockBase = this.getComposedBlockBase();
+    const writes = [
+      ...[...this.directValueChunkWriteDescriptors.values()]
+        .map((write) => ({ write, blockSize: this.blockLayout?.blockSize })),
+      ...[...this.externalCallUtxoGroups, ...this.lowLevelCallUtxoGroups]
+        .flatMap((group) => (group.valueChunkWrites ?? [])
+          .map((write) => ({ write, blockSize: group.blockLayout?.blockSize }))),
+    ];
+    return writes.map(({ write, blockSize }) => {
+      const localOutputBase = blockBase > 0 && blockSize !== undefined
+        && write.outputBase >= blockBase && write.outputBase < blockBase + blockSize
+        ? write.outputBase - blockBase : write.outputBase;
+      return {
+        ...write,
+        outputBase: absoluteComposedValueChunkOutputBase(localOutputBase, blockBase),
+      };
+    });
   }
 
   setValueChunkRawCommitments(id: string, commitments: string[]): this {

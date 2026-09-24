@@ -3,9 +3,12 @@
  * failing covenant evaluation.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binsAreEqual, binToHex, hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import {
   Op,
+  VALUE_CHUNK_SIZE,
+  VALUE_HEAD_SIZE,
+  VALUE_INLINE_LIMIT,
   buildEventNftCovenantScript,
   computeEventNameHash,
   type AbiFunction,
@@ -19,6 +22,7 @@ import {
   scriptToLockingBytecode,
 } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import {
   canApplyRepairedNftCommitment,
   canMaterializeRepairedValueChunk,
@@ -30,15 +34,29 @@ import {
   isRepairableNftOutput,
 } from './computed-output-repair.js';
 import { isAuthenticatedEventRepairCommitment } from './delegate-event-jobevent-helpers.js';
-import { decodeVmScriptNumber } from './early-value-chunk-helpers.js';
+import { chunksFromValue, decodeVmScriptNumber } from './early-value-chunk-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
 import type { ComputedChunkRepairResult } from './stb-converged-final-transaction.js';
 import {
+  isDisposableAlignmentPad,
   selectExpectedP2sh32OutputLock,
 } from './value-chunk-band-helpers.js';
-import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
-import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
+import {
+  ownsCapturedValueChunkOutputBase,
+  refreshCapturedValueChunkOutputBase,
+} from './value-chunk-base-writer-select.js';
+import {
+  canonicalWriterReturnCommitment,
+  groupOwnsInBlockReturnEvent,
+} from './value-chunk-geometry.js';
+import {
+  type DerivedChunkOutputObservation,
+  persistValueChunkLock,
+  valueChunkIndexFromCommitment,
+  valueChunkWriteResourceIdentity,
+} from './value-chunk-persist.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 
 export type { ComputedChunkRepairResult };
 
@@ -54,6 +72,11 @@ export interface RepairComputedChunkOutputHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly externalOutStateUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
+  readonly pendingReturnEventOutputs: readonly {
+    categoryId: string;
+    commitment: Uint8Array;
+    identity?: string;
+  }[];
   readonly readOnlyDataNftUtxos: readonly UnlockableUtxo[];
   findMintingInputIndex(categoryId: string): number;
   getExternalCallMasterInputIndex(groupIndex: number): number;
@@ -69,6 +92,10 @@ export interface RepairComputedChunkOutputHost {
     identity?: string,
     provisional?: boolean,
   ): unknown;
+  syncRefreshedCarrierMasters(
+    builder: TransactionBuilder,
+    carriers: Iterable<ExternalCallUtxoGroup>,
+  ): void;
 }
 
 
@@ -97,6 +124,7 @@ export function repairComputedChunkOutput(
   reportRepairTiming('source-outputs-built');
   const repairs = new Map<number, {
     outputIndex: number; lockingBytecode?: Uint8Array; commitment: Uint8Array; categoryId?: string;
+    outputOnlyPad?: boolean;
   }>();
   const lockingBytecodeRepairs = new Map<number, Uint8Array>();
   const mutableTokenShellRepairs = new Map<number, { lockingBytecode: Uint8Array; categoryId: string }>();
@@ -174,6 +202,37 @@ export function repairComputedChunkOutput(
       }
     }
   }
+  const computedValueCarriers = [
+    ...host.externalCallUtxoGroups.flatMap((group, groupIndex) => (
+      host.getExternalCallMasterInputIndex(groupIndex) === inputIndex ? [group] : []
+    )),
+    ...host.lowLevelCallUtxoGroups.flatMap((group, groupIndex) => (
+      host.getLowLevelCallMasterInputIndex(groupIndex) === inputIndex ? [group] : []
+    )),
+  ];
+  const computedValueWrites = computedValueCarriers.flatMap((group) => group.valueChunkWrites ?? [])
+    .filter((write, index, all) => all.findIndex((candidate) => (
+      valueChunkWriteResourceIdentity(candidate) === valueChunkWriteResourceIdentity(write)
+    )) === index);
+  const computedValueUnlocker = builder.inputs[inputIndex]?.unlocker as {
+    abiFunction?: { inputs?: readonly { name: string }[] };
+    params?: readonly unknown[];
+  } | undefined;
+  const computedValueBaseArgument = computedValueUnlocker?.abiFunction?.inputs?.findIndex(
+    (input) => input.name === '__internal__valueChunkOutputBase',
+  ) ?? -1;
+  const computedValueBaseValue = computedValueBaseArgument < 0
+    ? undefined : computedValueUnlocker?.params?.[computedValueBaseArgument];
+  const compilerValueChunkOutputBase = typeof computedValueBaseValue === 'bigint'
+    && computedValueBaseValue >= 0n && computedValueBaseValue <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(computedValueBaseValue) : undefined;
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && computedValueWrites.length > 0) {
+    console.error('stateful-computed-value-repair', JSON.stringify({ inputIndex,
+      compilerValueChunkOutputBase,
+      writes: computedValueWrites.map((write) => ({ resource: valueChunkWriteResourceIdentity(write),
+        outputBase: write.outputBase, outputCount: write.outputCount })) }));
+  }
   reportRepairTiming('repair-slots-indexed');
   const failingCategory = builder.inputs[inputIndex]?.token?.category;
   let repairOwnerCategory = failingCategory;
@@ -193,9 +252,14 @@ export function repairComputedChunkOutput(
     associatedCategories.add(repairOwnerCategory);
   }
   const pendingOutputBytecodeIndices = new WeakMap<object, { outputIndex: number; ip: number }>();
+  const runtimeComputedValueBases = new Map<string, number>();
+  const runtimeComputedValueOutputs = new Set<number>();
+  const computedValueBaseRebases = new Map<ExternalCallUtxoGroup, number>();
+  const reachedCompilerBoundPhysicalReturns = new Set<number>();
   const vm = createVirtualMachineBch2026ForProvider(host.builderOptions.provider, {
     opcodes: new Set([
-      Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
+      Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_OUTPUTTOKENCOMMITMENT,
+      Op.OP_OUTPUTTOKENAMOUNT, Op.OP_EQUAL, Op.OP_EQUALVERIFY,
     ]),
     beforeOperation: (unknownState) => {
       const state = unknownState as {
@@ -208,11 +272,179 @@ export function repairComputedChunkOutput(
       // in untaken IF branches. Those stack values are not covenant assertions and must never become repairs.
       if (!isActiveVmControlBranch(state.controlStack)) return;
       const opcode = state.instructions[state.ip]?.opcode;
+      if ((opcode === Op.OP_OUTPUTBYTECODE || opcode === Op.OP_OUTPUTTOKENCATEGORY
+        || opcode === Op.OP_OUTPUTTOKENCOMMITMENT || opcode === Op.OP_OUTPUTTOKENAMOUNT)
+        && state.stack.length > 0) {
+        let outputIndex = -1;
+        try {
+          outputIndex = Number(decodeVmScriptNumber(state.stack[state.stack.length - 1]));
+        } catch { /* Not an output index. */ }
+        const groupIndex = tokenReturnSlots.get(outputIndex);
+        const group = groupIndex === undefined ? undefined : host.externalCallUtxoGroups[groupIndex];
+        const slot = group?.blockLayout?.slots.find((candidate) => candidate.kind === 'returnEvent');
+        const master = groupIndex === undefined ? -1 : host.getExternalCallMasterInputIndex(groupIndex);
+        const encoded = group?.internalArgs?.__internal__returnOutputIdx
+          ?? group?.compilerRoute?.internalArgs?.__internal__returnOutputIdx;
+        const encodedNumber = typeof encoded === 'bigint' ? Number(encoded)
+          : typeof encoded === 'number' ? encoded : -1;
+        if (group?.sharedGroupIndex === undefined && slot !== undefined
+          && master === inputIndex && outputIndex === master + slot.offset
+          && encodedNumber === outputIndex) {
+          reachedCompilerBoundPhysicalReturns.add(outputIndex);
+        }
+      }
       if (opcode === Op.OP_EQUAL) {
         pendingOutputBytecodeIndices.delete(state.instructions);
         return;
       }
       if (opcode === Op.OP_EQUALVERIFY && state.stack.length >= 2) {
+        // A computed chunkable mapping write exposes its value, persistence lock, and chunk count in the
+        // active equality frame. Match all three against compiler descriptors before materializing any output.
+        const counts = new Set<number>();
+        for (const operand of state.stack.slice(-2)) {
+          try {
+            const count = Number(vmNumberToBigInt(operand));
+            if (Number.isSafeInteger(count) && count > 0) counts.add(count);
+          } catch { /* Not a minimally encoded count. */ }
+        }
+        const locks = new Set(state.stack.filter((item) => (
+          item.length === 35 && item[0] === 0xaa && item[1] === 0x20 && item[34] === 0x87
+        )).map(binToHex));
+        for (const write of computedValueWrites) {
+          for (const value of state.stack) {
+            if (value.length <= VALUE_INLINE_LIMIT) continue;
+            const chunkCount = Math.ceil((value.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+            let outputBase = write.outputBase >= 0 ? write.outputBase : compilerValueChunkOutputBase;
+            if (outputBase === undefined || !counts.has(chunkCount)) continue;
+            const lockingBytecode = persistValueChunkLock(write.categoryId, value, write);
+            if (!lockingBytecode || !locks.has(binToHex(lockingBytecode))) continue;
+            const chunks = chunksFromValue(value, { lockingBytecode, write, categoryId: write.categoryId });
+            const isExistingResourceRun = (start: number): boolean => chunks.every((chunk, chunkIndex) => {
+              const output = builder.outputs[start + chunkIndex];
+              const outputLock = output?.to instanceof Uint8Array
+                ? output.to : output ? addressToLockScript(output.to) : undefined;
+              return output?.token?.category === write.categoryId && output.token.amount === 0n
+                && output.token.nft?.capability === 'mutable'
+                && output.token.nft.commitment === chunk.commitment
+                && outputLock !== undefined
+                && binToHex(outputLock) === binToHex(chunk.lockingBytecode);
+            });
+            if (!isExistingResourceRun(outputBase)) {
+              const existingBase = builder.outputs.findIndex((_output, start) => (
+                start + chunks.length <= builder.outputs.length && isExistingResourceRun(start)
+              ));
+              if (existingBase >= 0) {
+                outputBase = existingBase;
+              } else {
+                const resourceIdentity = valueChunkWriteResourceIdentity(write);
+                const priorRuntimeBase = runtimeComputedValueBases.get(resourceIdentity);
+                if (priorRuntimeBase !== undefined) {
+                  outputBase = priorRuntimeBase;
+                } else {
+                  const ownerBands = computedValueCarriers.flatMap((carrier) => {
+                    if (!(carrier.valueChunkWrites ?? []).some((candidate) => (
+                      valueChunkWriteResourceIdentity(candidate) === resourceIdentity
+                    ))) return [];
+                    const trailingBase = carrier.blockLayout?.trailingBase;
+                    const blockSize = carrier.blockLayout?.blockSize;
+                    const fixedSuffix = carrier.blockLayout?.fixedSuffix ?? 0;
+                    return trailingBase === undefined || blockSize === undefined
+                      ? [] : [{ start: inputIndex + trailingBase, end: inputIndex + blockSize - fixedSuffix }];
+                  }).filter((band, index, all) => all.findIndex((candidate) => (
+                    candidate.start === band.start && candidate.end === band.end
+                  )) === index);
+                  const ownerBand = ownerBands.length === 1 ? ownerBands[0] : undefined;
+                  let insertionBase: number | undefined;
+                  if (ownerBand !== undefined) {
+                    for (let start = ownerBand.end - chunks.length; start >= ownerBand.start; start -= 1) {
+                      if (chunks.some((_chunk, chunkIndex) => {
+                        const index = start + chunkIndex;
+                        return runtimeComputedValueOutputs.has(index)
+                          || builder.inputs[index]?.token !== undefined
+                          || !isDisposableAlignmentPad(builder.outputs[index]);
+                      })) continue;
+                      insertionBase = start;
+                      break;
+                    }
+                  } else {
+                    const last = builder.outputs[builder.outputs.length - 1];
+                    const lastLock = last?.to instanceof Uint8Array
+                      ? last.to : last ? addressToLockScript(last.to) : new Uint8Array();
+                    insertionBase = lastLock.length === 1 && lastLock[0] === 0x6a
+                      ? builder.outputs.length - 1 : builder.outputs.length;
+                    builder.outputs.splice(insertionBase, 0, ...chunks.map(() => ({
+                      to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS,
+                    })));
+                  }
+                  if (insertionBase === undefined) continue;
+                  runtimeComputedValueBases.set(resourceIdentity, insertionBase);
+                  chunks.forEach((_chunk, chunkIndex) => runtimeComputedValueOutputs.add(insertionBase! + chunkIndex));
+                  outputBase = insertionBase;
+                }
+              }
+            }
+            const owned = chunks.every((chunk, chunkIndex) => {
+              const outputIndex = outputBase + chunkIndex;
+              const output = builder.outputs[outputIndex];
+              const currentLock = output?.to instanceof Uint8Array
+                ? output.to : output ? addressToLockScript(output.to) : new Uint8Array();
+              const existing = output?.token?.category === write.categoryId
+                && output.token.amount === 0n && output.token.nft?.capability === 'mutable'
+                && valueChunkIndexFromCommitment(output.token.nft.commitment) === chunkIndex
+                && isOwnedStateRepairCoordinate({ inputIndex, outputIndex, delegateOwnedFixedState: false });
+              return existing || canMaterializeRepairedValueChunk({
+                fixedStateSlot: fixedStateSlots.has(outputIndex)
+                  && !(currentLock.length === 1 && currentLock[0] === 0x51),
+                currentHasToken: output?.token !== undefined,
+                currentLockingBytecode: currentLock,
+                proposedLockingBytecode: chunk.lockingBytecode,
+                proposedCommitment: hexToBin(chunk.commitment),
+                categoryId: write.categoryId,
+              });
+            });
+            if (!owned) continue;
+            const resourceIdentity = valueChunkWriteResourceIdentity(write);
+            write.outputBase = outputBase;
+            write.outputCount = chunks.length;
+            const matchingPhysicalCarriers = [
+              ...host.externalCallUtxoGroups.filter((carrier, groupIndex) => (
+                carrier.sharedGroupIndex === undefined
+                && host.getExternalCallMasterInputIndex(groupIndex) === inputIndex
+              )),
+              ...host.lowLevelCallUtxoGroups.filter((_carrier, groupIndex) => (
+                host.getLowLevelCallMasterInputIndex(groupIndex) === inputIndex
+              )),
+            ].filter((carrier) => ownsCapturedValueChunkOutputBase(carrier)
+              && (carrier.valueChunkWrites ?? []).some((candidate) => (
+                valueChunkWriteResourceIdentity(candidate) === resourceIdentity
+              )));
+            for (const carrier of matchingPhysicalCarriers) {
+              carrier.valueChunkWrites = (carrier.valueChunkWrites ?? []).map((candidate) => (
+                valueChunkWriteResourceIdentity(candidate) === resourceIdentity
+                  ? { ...candidate, outputBase, outputCount: chunks.length } : candidate
+              ));
+              const priorBase = computedValueBaseRebases.get(carrier);
+              const nextBase = priorBase === undefined ? outputBase : Math.min(priorBase, outputBase);
+              if (carrier.valueChunkOutputBase !== nextBase
+                || carrier.internalArgs?.__internal__valueChunkOutputBase !== BigInt(nextBase)) {
+                computedValueBaseRebases.set(carrier, nextBase);
+              }
+            }
+            chunks.forEach((chunk, chunkIndex) => {
+              const outputIndex = outputBase + chunkIndex;
+              repairs.set(outputIndex, {
+                outputIndex,
+                lockingBytecode: chunk.lockingBytecode,
+                commitment: hexToBin(chunk.commitment),
+                categoryId: write.categoryId,
+                outputOnlyPad: builder.outputs[outputIndex]?.token === undefined
+                  && builder.outputs[outputIndex]?.to instanceof Uint8Array
+                  && builder.outputs[outputIndex].to[0] === 0x51
+                  && builder.outputs[outputIndex].to.length === 1,
+              });
+            });
+          }
+        }
         const pending = pendingOutputBytecodeIndices.get(state.instructions);
         pendingOutputBytecodeIndices.delete(state.instructions);
         const reconstruction = pending === undefined ? []
@@ -406,6 +638,34 @@ export function repairComputedChunkOutput(
       repairDetails: [],
     };
   }
+  for (const outputIndex of reachedCompilerBoundPhysicalReturns) {
+    if (builder.outputs[outputIndex]?.token !== undefined) continue;
+    const groupIndex = tokenReturnSlots.get(outputIndex);
+    const group = groupIndex === undefined ? undefined : host.externalCallUtxoGroups[groupIndex];
+    if (!group) continue;
+    const writerAbi = group.compilerRoute?.abiFunction
+      ?? (group.externalContract?.inner?.artifact?.abi as AbiFunction[] | undefined)
+        ?.find((fn) => fn.name === (group.functionName ?? group.logicalFunctionName));
+    if (writerAbi?.writesState !== true || writerAbi.outputs?.length !== 1
+      || writerAbi.outputs[0].type !== 'bool') continue;
+    const artifact = group.logicalArtifact ?? group.externalContract.inner.artifact;
+    const evmBool = resolveExternalResultEncoding(
+      writerAbi.resultEncoding,
+      artifact,
+      writerAbi.outputs.map((output) => output.type),
+      `function '${writerAbi.name}' result`,
+    ) === 'evm-abi-v1';
+    const identity = `external-call:${group.fusedReturnGroupIndex ?? groupIndex}`;
+    const pending = host.pendingReturnEventOutputs.find((event) => (
+      event.identity === identity || event.identity === `${identity}:0`
+    ));
+    eventRepairs.set(outputIndex, hexToBin(canonicalWriterReturnCommitment({
+      pendingHex: pending && pending.commitment.length > 0 ? binToHex(pending.commitment) : '',
+      writesState: true,
+      evmBool,
+      returnsBool: true,
+    })));
+  }
   let changed = false;
   const repairedOutputs: number[] = [];
   const repairDetails: Array<{
@@ -414,6 +674,18 @@ export function repairComputedChunkOutput(
     previous: string;
     proposed: string;
   }> = [];
+  if (computedValueBaseRebases.size > 0) {
+    const refreshedCarriers = new Set<ExternalCallUtxoGroup>();
+    for (const [carrier, outputBase] of computedValueBaseRebases) {
+      if (!refreshCapturedValueChunkOutputBase(carrier, outputBase, { shiftPredOut: false })) continue;
+      carrier.argumentsRefreshedDuringConvergence = true;
+      refreshedCarriers.add(carrier);
+    }
+    if (refreshedCarriers.size > 0) {
+      host.syncRefreshedCarrierMasters(builder, refreshedCarriers);
+      changed = true;
+    }
+  }
   for (const [outputIndex, commitment] of eventRepairs) {
     const compilerOwnedEventSlot = tokenEventSlots.has(outputIndex) || delegateEventSlots.has(outputIndex);
     if (!isAuthenticatedEventRepairCommitment(commitment, compilerOwnedEventSlot)) continue;
@@ -423,7 +695,11 @@ export function repairComputedChunkOutput(
     const hex = binToHex(commitment);
     const eventSlot = tokenEventSlots.get(outputIndex);
     const delegateEventSlot = delegateEventSlots.get(outputIndex);
-    const category = eventSlot?.categoryId ?? delegateEventSlot?.categoryId ?? output.token?.category;
+    const returnGroupIndex = tokenReturnSlots.get(outputIndex);
+    const returnGroup = returnGroupIndex === undefined
+      ? undefined : host.externalCallUtxoGroups[returnGroupIndex];
+    const category = eventSlot?.categoryId ?? delegateEventSlot?.categoryId
+      ?? returnGroup?.categoryId ?? output.token?.category;
     if (!category) continue;
     if (output.token?.nft?.capability === 'none' && output.token.nft.commitment === hex) continue;
     repairDetails.push({
@@ -437,6 +713,10 @@ export function repairComputedChunkOutput(
       category,
       nft: { capability: 'none', commitment: hex },
     };
+    if (returnGroupIndex !== undefined) {
+      output.to = Uint8Array.of(0x51);
+      output.amount = BALANCED_SLOT_SATOSHIS;
+    }
     if (eventSlot || delegateEventSlot) {
       const group = eventSlot
         ? host.externalCallUtxoGroups[eventSlot.groupIndex]
@@ -485,7 +765,6 @@ export function repairComputedChunkOutput(
         },
       });
     }
-    const returnGroupIndex = tokenReturnSlots.get(outputIndex);
     if (returnGroupIndex !== undefined
       && groupOwnsInBlockReturnEvent(host.externalCallUtxoGroups, returnGroupIndex)) {
       const returnGroup = host.externalCallUtxoGroups[returnGroupIndex];
@@ -502,7 +781,7 @@ export function repairComputedChunkOutput(
     const output = builder.outputs[found.outputIndex];
     if (output && !output.token?.nft && found.lockingBytecode
       && canMaterializeRepairedValueChunk({
-        fixedStateSlot: fixedStateSlots.has(found.outputIndex),
+        fixedStateSlot: fixedStateSlots.has(found.outputIndex) && found.outputOnlyPad !== true,
         currentHasToken: output.token !== undefined,
         currentLockingBytecode: output.to instanceof Uint8Array
           ? output.to : addressToLockScript(output.to),
@@ -550,6 +829,8 @@ export function repairComputedChunkOutput(
       const currentHex = String(output.token.nft.commitment ?? '');
       const outputLockingBytecode = output.to instanceof Uint8Array
         ? output.to : addressToLockScript(output.to);
+      if (currentHex === proposedHex && (found.lockingBytecode === undefined
+        || binsAreEqual(outputLockingBytecode, found.lockingBytecode))) continue;
       const authenticatedDynamicChunkSlot = host.dynamicChunkVars.some((variable) => (
         binToHex(variable.lockingBytecode) === binToHex(outputLockingBytecode)
       ));

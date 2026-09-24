@@ -1397,6 +1397,13 @@ type MessageBusRuntimeAbiFunction = AbiFunction & {
   graphEcrecoverCalls?: GraphEcrecoverCall[];
   /** Operations selected for each fixed route entry slot in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveEntryOperations?: ReadonlyMap<number, readonly string[]>;
+  /** Direct handler recipes selected for each route entry lane. */
+  messageBusActiveEntryRecipes?: ReadonlyMap<number, readonly {
+    rowIndex: number;
+    access: EntryAccessAbi;
+    args: FunctionArgument[];
+    inputs: AbiFunction['inputs'];
+  }[]>;
   /** Collections written by the handlers selected in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveWriteCollections?: readonly string[];
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
@@ -8409,6 +8416,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ?.messageBusActiveWriteCollections;
     const activeMessageBusEntryOperations = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
       ?.messageBusActiveEntryOperations;
+    const activeMessageBusEntryRecipes = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+      ?.messageBusActiveEntryRecipes;
     const entryAccessForSlot = (slotIndex: number): EntryAccessAbi | undefined =>
       entryAccessAt(entryAbiFunction, slotIndex);
     const entryOperations = (slotIndex: number): readonly string[] =>
@@ -9984,7 +9993,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
             .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
         );
-        const singleTargetRowBatch = predOutputs.length > 0 && batch.slotIndices.length > 1
+        const graphRouteOwnsSingleTarget = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+          ?.messageBusGraphExecution === true;
+        const singleTargetRowBatch = predOutputs.length > 0
+          && (batch.slotIndices.length > 1 || graphRouteOwnsSingleTarget)
           && batchSourceRows.length === 1
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices
@@ -10063,6 +10075,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             && !batchAccess.valueSource.startsWith('call:')
             && !batchAccess.valueSource.startsWith('arrset(')
             ? evalComputedKey(batchAccess.valueSource, entryArgs, entryAbiFunction!.inputs) : undefined;
+          if (resolvedWholeValue === undefined) {
+            const selectedRecipes = activeMessageBusEntryRecipes?.get(slotIndex)
+              ?.filter((recipe) => recipe.access.operations.includes('write')) ?? [];
+            for (const recipe of selectedRecipes) {
+              const source = recipe.access.valueSource;
+              if (source === undefined) continue;
+              let next: Uint8Array | undefined;
+              try {
+                next = evalComputedKey(source, recipe.args, recipe.inputs);
+              } catch {
+                next = undefined;
+              }
+              if (next !== undefined) resolvedWholeValue = next;
+            }
+          }
           if (resolvedWholeValue === undefined && batchAccess.valueSource?.startsWith('loopLast:id:')) {
             const boundName = batchAccess.valueSource.slice('loopLast:id:'.length);
             const bound = entryArgs[entryAbiFunction!.inputs.findIndex((input) => input.name === boundName)];

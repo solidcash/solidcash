@@ -30,9 +30,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
     return transaction.inputs.every((_input, inputIndex) => {
       try {
         const result = vm.evaluate({ inputIndex, sourceOutputs, transaction });
-        return typeof (vm as { testSuccess?: (r: unknown) => boolean }).testSuccess === 'function'
-          ? (vm as { testSuccess: (r: unknown) => boolean }).testSuccess(result)
-          : (result as { error?: unknown }).error === undefined;
+        return vm.stateSuccess(result) === true;
       } catch {
         return false;
       }
@@ -43,7 +41,7 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 /**
- * Gate A′ plan step 2 (compose half): messageBus.compose fills unlocker valueChunk/PredOut through
+ * transaction layout authority plan step 2 (compose half): messageBus.compose fills unlocker valueChunk/PredOut through
  * resolveParticipantAbsoluteWitnesses + applyParticipantAbsoluteWitnesses in compose.ts.
  */
 describe('kernel compose layout witnesses', () => {
@@ -165,7 +163,7 @@ describe('kernel compose layout witnesses', () => {
   }, 300_000);
 
   it('fills Registry unlocker PredOut on INSERT matching one layout resolve (physical absolute)', async () => {
-    // Gate A′ PredOut half: INSERT activates PredOut=P′. Physical offset comes from scanning
+    // transaction layout authority PredOut half: INSERT activates PredOut=P. Physical offset comes from scanning
     // published outputs for the predecessor rewrite — not from unlocker.params (avoids 203↔222 theater).
     const provider = createMessageBusCapstoneTestProvider();
     const registryArtifact = compileString(`pragma solidcash >=0.8.0;
@@ -188,7 +186,7 @@ describe('kernel compose layout witnesses', () => {
       registryBase.withCategory(hexToBin(registrySetup.categoryId)), registrySetup.categoryId,
     );
 
-    // Seed predecessor key; compose INSERTs a higher key so PredOut rewrites P′.next → inserted.
+    // Seed predecessor key; compose INSERTs a higher key so PredOut rewrites P.next → inserted.
     await expect(registry.call.set(2n, 7n).send()).resolves.toBeDefined();
 
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
@@ -289,12 +287,27 @@ describe('kernel compose layout witnesses', () => {
       predOuts: [{
         witnessName: predOutName,
         physicalLocalOffset,
-        // Historical drift: concrete handler slot ≠ physical trailing offset.
-        concreteLocalSlot: 4,
       }],
     });
     expect(unlocker.params[predOutIndex]).toBe(expected.predOuts.get(predOutName));
     expect(unlocker.params[predOutIndex]).toBe(BigInt(predOutPhysicalAbsolute));
+    // R5/layout-sentinel / PredOut: disagreeing concreteLocalSlot is refused (no longer silently ignored above trailing).
+    expect(() => resolveParticipantAbsoluteWitnesses({
+      participant: 0,
+      publishedBase: registryRouteIndex,
+      blockSize: Math.max(
+        blockLayout?.blockSize ?? 0,
+        physicalLocalOffset + 1,
+        (trailingBase as number) + 1,
+      ),
+      trailingBase: trailingBase as number,
+      trailingCapacity: blockLayout?.trailingCapacity,
+      predOuts: [{
+        witnessName: predOutName,
+        physicalLocalOffset,
+        concreteLocalSlot: 4,
+      }],
+    })).toThrow(/pred-out-concrete-vs-physical/);
     // Must use physical, not concrete+publishedBase (203↔222 class).
     expect(unlocker.params[predOutIndex]).not.toBe(BigInt(registryRouteIndex + 4));
 

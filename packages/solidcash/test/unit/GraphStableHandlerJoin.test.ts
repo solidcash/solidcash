@@ -1,5 +1,5 @@
 /**
- * F5″: kernel graph joins use published selector; name is diagnostic only.
+ * selector-first graph handler join: kernel graph joins use published selector; name is diagnostic only.
  */
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
@@ -38,7 +38,7 @@ const legacyArtifact = (handlers: Array<{ name: string; selector: string }>): Ar
   return artifact;
 };
 
-describe('F5″ graph stable handler join', () => {
+describe('selector-first graph handler join graph stable handler join', () => {
   it('kernel joins by selector even when diagnostic name is renamed', () => {
     const artifact = kernelArtifact([
       { name: 'set', selector: 'a9059cbb' },

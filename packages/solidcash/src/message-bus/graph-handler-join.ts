@@ -1,13 +1,19 @@
 /**
- * F5″: kernel graph joins resolve handlers by published selector (stable id).
+ * Selector-first graph handler join: kernel graph joins resolve handlers by published selector (stable id).
  * Name is diagnostic / legacy-only.
+ *
+ * Implementation lives in `handler-selector-authority.ts` so `resolveMessageBusHandler`
+ * and these find* helpers cannot drift.
  */
 
 import type { Artifact } from '@solidcash/utils';
+import {
+  resolvePublishedHandlerByNameOrSelector,
+  resolvePublishedHandlerForInvocation,
+  type MessageBusPublishedHandler,
+} from './handler-selector-authority.js';
 
-export type MessageBusPublishedHandler = NonNullable<
-  NonNullable<Artifact['messageBus']>['handlers']
->[number];
+export type { MessageBusPublishedHandler };
 
 /**
  * Resolve a published message-bus handler for a graph invocation.
@@ -18,21 +24,7 @@ export function findMessageBusHandlerForInvocation(
   artifact: Artifact,
   invocation: { function: string; selectorHex: string },
 ): MessageBusPublishedHandler | undefined {
-  const handlers = artifact.messageBus?.handlers ?? [];
-  const selector = invocation.selectorHex.toLowerCase();
-  const bySelector = handlers.filter((handler) => handler.selector.toLowerCase() === selector);
-  if (artifact.messageBus?.convention === 'kernel-row-loop') {
-    if (bySelector.length === 1) return bySelector[0];
-    if (bySelector.length === 0) return undefined;
-    throw new Error(
-      `messageBus: kernel handler join ambiguous for selector ${selector} `
-      + `(${bySelector.map((handler) => handler.name).join(',')})`,
-    );
-  }
-  return handlers.find((handler) => (
-    handler.name === invocation.function
-    && handler.selector.toLowerCase() === selector
-  )) ?? handlers.find((handler) => handler.name === invocation.function);
+  return resolvePublishedHandlerForInvocation(artifact, invocation);
 }
 
 /**
@@ -43,24 +35,5 @@ export function findMessageBusHandlerByNameOrSelector(
   artifact: Artifact,
   params: { name: string; selector?: string },
 ): MessageBusPublishedHandler | undefined {
-  const handlers = artifact.messageBus?.handlers ?? [];
-  const convention = artifact.messageBus?.convention;
-  if (params.selector !== undefined && params.selector.length > 0) {
-    const selector = params.selector.toLowerCase();
-    const bySelector = handlers.filter((handler) => handler.selector.toLowerCase() === selector);
-    if (convention === 'kernel-row-loop') {
-      if (bySelector.length === 1) return bySelector[0];
-      if (bySelector.length === 0) return undefined;
-      throw new Error(
-        `messageBus: kernel handler join ambiguous for selector ${selector}`,
-      );
-    }
-    return bySelector.find((handler) => handler.name === params.name) ?? bySelector[0];
-  }
-  if (convention === 'kernel-row-loop') {
-    throw new Error(
-      `messageBus: kernel handler join requires selector (name '${params.name}' is diagnostic only)`,
-    );
-  }
-  return handlers.find((handler) => handler.name === params.name);
+  return resolvePublishedHandlerByNameOrSelector(artifact, params);
 }

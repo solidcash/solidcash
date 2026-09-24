@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertUniqueOwnership,
+  normalizeOwnershipCollectionAlias,
   resolveTransactionLayout,
   type ResourceOwnershipClaim,
 } from '../../src/message-bus/layout-resolver.js';
@@ -85,5 +86,25 @@ describe('layout ownership authority (item 2)', () => {
       }],
     });
     expect(layout.valueChunkBands[0]?.absoluteBase).toBe(5);
+  });
+
+  it('ownership alias normalize: normalizes this.collection aliases before ownership identity', () => {
+    expect(normalizeOwnershipCollectionAlias('this.balances')).toBe('balances');
+    expect(normalizeOwnershipCollectionAlias('balances')).toBe('balances');
+    expect(normalizeOwnershipCollectionAlias('  this.events  ')).toBe('events');
+    expect(normalizeOwnershipCollectionAlias('')).toBeUndefined();
+    expect(normalizeOwnershipCollectionAlias(undefined)).toBeUndefined();
+
+    // Same physical collection under this./bare spellings ⇒ one identity (duplicate/conflict).
+    expect(() => assertUniqueOwnership([
+      baseClaim({ collection: 'this.events', roles: { outputSlot: 10 } }),
+      baseClaim({ collection: 'events', roles: { outputSlot: 11 } }),
+    ])).toThrow(/conflicting-roles|duplicate-ownership/);
+
+    // Distinct collections still collide on the same coordinate.
+    expect(() => assertUniqueOwnership([
+      baseClaim({ collection: 'this.left', roles: { outputSlot: 10 } }),
+      baseClaim({ collection: 'right', roles: { outputSlot: 10 } }),
+    ])).toThrow(/coordinate-collision/);
   });
 });

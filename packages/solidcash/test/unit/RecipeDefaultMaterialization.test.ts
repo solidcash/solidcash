@@ -1,5 +1,5 @@
 /**
- * F9′: default materialization mode is recipe (VM validates only).
+ * recipe-default materialization: default materialization mode is recipe (VM validates only).
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-describe('F9′ recipe default materialization', () => {
+describe('recipe-default materialization recipe default materialization', () => {
   afterEach(() => {
     // Restore production default after tests that opt into devOracle.
     setMaterializationMode('recipe');

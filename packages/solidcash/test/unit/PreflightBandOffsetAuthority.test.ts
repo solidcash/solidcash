@@ -1,5 +1,5 @@
 /**
- * F3′: preflight layout assert covers published non-zero valueChunkBandOffset (+ optional PredOut).
+ * preflight band-offset authority: preflight layout assert covers published non-zero valueChunkBandOffset (+ optional PredOut).
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -11,7 +11,7 @@ import {
   publishedValueChunkBandOffsetFromGeometry,
 } from '../../src/message-bus/preflight.js';
 
-describe('F3′ preflight bandOffset / PredOut authority', () => {
+describe('preflight band-offset authority preflight bandOffset / PredOut authority', () => {
   it('publishedValueChunkBandOffsetFromGeometry returns 0 at trailing base', () => {
     expect(publishedValueChunkBandOffsetFromGeometry({
       publishedBase: 10,

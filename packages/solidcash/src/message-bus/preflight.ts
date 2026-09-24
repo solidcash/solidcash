@@ -23,9 +23,16 @@ import {
   assertUnlockerLayoutMatchesResolve,
 } from './layout-resolver.js';
 import {
-  refuseVmExtractedRepairsIfRecipe,
+  gateWouldApplyRepairsIfRecipe,
 } from './materialization-mode.js';
-import { MonotoneCell, freezeGeometry } from './monotone-lattice.js';
+import {
+  MonotoneCell,
+  finalizeMonotonePass,
+  freezeGeometry,
+  recordMonotonePass,
+} from './monotone-lattice.js';
+import { isVmValidationOnly } from './materialization-mode.js';
+import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -229,7 +236,7 @@ const convergeMessageBusMutableResourceOutputs = (
   if (candidateCount === 0) return { repairs: 0, rounds: 0, outputs: [] };
 
   const changedOutputs = new Set<number>();
-  // Item 10: placeholders progress toward a frozen final geometry (resolved only at exit).
+  // Computed-output convergence: placeholders progress toward a frozen final geometry (resolved only at exit).
   const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
@@ -243,14 +250,30 @@ const convergeMessageBusMutableResourceOutputs = (
     const stateKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
       .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
       .join('|');
-    if (seenStates.has(stateKey)) {
-      throw new Error('messageBus: mutable resource output convergence entered a repeated state');
+    recordMonotonePass(
+      commitmentLattice,
+      seenStates,
+      stateKey,
+      'messageBus: mutable resource output convergence entered a repeated state',
+    );
+    // constraint fixpoint: multi-candidate API — single progressing key here; soft-exit when joint cycles.
+    const picked = selectActiveConstraintCandidate(
+      'resource',
+      [stateKey],
+      'messageBus: mutable resource output convergence entered a repeated state',
+    );
+    if (picked === undefined) {
+      finalizeMonotonePass(commitmentLattice, stateKey);
+      return freezeGeometry({
+        repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
+      });
     }
-    seenStates.add(stateKey);
-    commitmentLattice.advance({ tag: 'placeholder', hint: stateKey });
 
     const transaction = builder.buildLibauthTransaction();
-    const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
+    // constraint fixpoint: accumulate all OTC observations per output, then collapse with multi-way ranking.
+    const proposalCandidates = new Map<number, Array<{
+      commitment: Uint8Array; inputIndex: number; ip: number;
+    }>>();
     const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
     let owned = new Set<number>();
     const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
@@ -296,36 +319,83 @@ const convergeMessageBusMutableResourceOutputs = (
         const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
         if (vm.stateSuccess(evaluated) === true) continue;
         for (const [outputIndex, { commitment, ip }] of observed) {
-          const current = proposals.get(outputIndex);
-          if (current !== undefined && binToHex(current.commitment) !== binToHex(commitment)) {
-            const witnessSummary = (index: number): string => {
-              const unlocker = builder.inputs[index]?.unlocker as unknown as {
-                abiFunction?: { inputs?: readonly { name: string }[] };
-                params?: readonly unknown[];
-              };
-              const rows = unlocker?.abiFunction?.inputs?.flatMap((input, paramIndex) => {
-                if (!/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return [];
-                const value = unlocker.params?.[paramIndex];
-                if (input.name.includes('PredOut') && value === -2n) return [];
-                return [`${input.name}=${value instanceof Uint8Array ? binToHex(value) : String(value)}`];
-              }) ?? [];
-              return rows.length === 0 ? 'no active batch witnesses' : rows.join(', ');
-            };
-            throw new Error(
-              `messageBus: participant ${block.participant} covenants disagree on mutable resource output `
-              + `${outputIndex}: input ${current.inputIndex} proposes ${binToHex(current.commitment)}, `
-              + `input ${inputIndex} proposes ${binToHex(commitment)} `
-              + `(instruction offsets ${current.ip} and ${ip}); `
-              + `input ${current.inputIndex}: ${witnessSummary(current.inputIndex)}; `
-              + `input ${inputIndex}: ${witnessSummary(inputIndex)}`,
-            );
+          const list = proposalCandidates.get(outputIndex) ?? [];
+          const hex = binToHex(commitment);
+          if (!list.some((candidate) => binToHex(candidate.commitment) === hex
+            && candidate.inputIndex === inputIndex)) {
+            list.push({ commitment, inputIndex, ip });
+            proposalCandidates.set(outputIndex, list);
           }
-          proposals.set(outputIndex, { commitment, inputIndex, ip });
         }
       }
     }
+    const proposals = new Map<number, { commitment: Uint8Array; inputIndex: number; ip: number }>();
+    for (const [outputIndex, candidates] of proposalCandidates) {
+      if (candidates.length === 1) {
+        proposals.set(outputIndex, candidates[0]!);
+        continue;
+      }
+      const ranked = rankResourceOtcConflictCandidatesMany(candidates);
+      selectActiveConstraintCandidate(
+        'resource-otc-conflict',
+        ranked.map((candidate) => (
+          `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
+        )),
+        'messageBus: OTC conflict fingerprint entered a repeated state',
+      );
+      if (isVmValidationOnly()) {
+        proposals.set(outputIndex, ranked[0]!);
+        continue;
+      }
+      const witnessSummary = (index: number): string => {
+        const unlocker = builder.inputs[index]?.unlocker as unknown as {
+          abiFunction?: { inputs?: readonly { name: string }[] };
+          params?: readonly unknown[];
+        };
+        const rows = unlocker?.abiFunction?.inputs?.flatMap((input, paramIndex) => {
+          if (!/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return [];
+          const value = unlocker.params?.[paramIndex];
+          if (input.name.includes('PredOut') && value === -2n) return [];
+          return [`${input.name}=${value instanceof Uint8Array ? binToHex(value) : String(value)}`];
+        }) ?? [];
+        return rows.length === 0 ? 'no active batch witnesses' : rows.join(', ');
+      };
+      const first = ranked[0]!;
+      const second = ranked[1]!;
+      throw new Error(
+        `messageBus: covenants disagree on mutable resource output ${outputIndex}: `
+        + `${ranked.length} distinct OTC proposals `
+        + `(first input ${first.inputIndex} proposes ${binToHex(first.commitment)}, `
+        + `input ${second.inputIndex} proposes ${binToHex(second.commitment)}); `
+        + `input ${first.inputIndex}: ${witnessSummary(first.inputIndex)}; `
+        + `input ${second.inputIndex}: ${witnessSummary(second.inputIndex)}`,
+      );
+    }
 
-    // F30: refuse only proposals that would apply (matching / canApply-skip are no-ops under recipe).
+    // constraint fixpoint: multi-proposal + cross-output joint OTC ranking fingerprint.
+    if (proposals.size > 0) {
+      const proposalKeys = [...proposals.entries()]
+        .map(([outputIndex, { commitment }]) => `${outputIndex}:${binToHex(commitment)}`)
+        .sort();
+      const jointCrossOutput = [...proposals.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .map(([outputIndex, candidate]) => (
+          `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
+        ))
+        .join('|');
+      selectActiveConstraintCandidate(
+        'resource-proposals',
+        [proposalKeys.join('|'), jointCrossOutput, ...proposalKeys],
+        'messageBus: resource proposal fingerprint entered a repeated state',
+      );
+      selectActiveConstraintCandidate(
+        'resource-otc-cross-output',
+        [jointCrossOutput, ...proposalKeys],
+        'messageBus: cross-output OTC ranking entered a repeated state',
+      );
+    }
+
+    // resource would-apply recipe gate: refuse only proposals that would apply (matching / canApply-skip are no-ops under recipe).
     const maximumCommitmentBytes = builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     gateWouldApplyResourceRepairsIfRecipe(
       builder,
@@ -337,6 +407,7 @@ const convergeMessageBusMutableResourceOutputs = (
     for (const [outputIndex, { commitment: proposed }] of proposals) {
       const output = builder.outputs[outputIndex];
       if (!output?.token?.nft) continue;
+      const inputCommitment = builder.inputs[outputIndex]?.token?.nft?.commitment;
       const action = canApplyRepairedNftCommitment({
         capability: output.token.nft.capability,
         currentCommitmentHex: output.token.nft.commitment,
@@ -344,6 +415,8 @@ const convergeMessageBusMutableResourceOutputs = (
         hasLockingBytecode: false,
         fixedStateSlot: fixedStateOutputs.has(outputIndex),
         maximumCommitmentBytes,
+        inputCommitmentHex: inputCommitment === undefined ? undefined
+          : typeof inputCommitment === 'string' ? inputCommitment : binToHex(inputCommitment),
       });
       if (action === 'skip') continue;
       output.token.nft.commitment = binToHex(proposed);
@@ -355,7 +428,7 @@ const convergeMessageBusMutableResourceOutputs = (
       const finalKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
         .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
         .join('|');
-      commitmentLattice.resolve(finalKey);
+      finalizeMonotonePass(commitmentLattice, finalKey);
       return freezeGeometry({
         repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
       });
@@ -370,6 +443,9 @@ type ResourceRepairBuilder = {
   outputs: ReadonlyArray<{
     token?: { nft?: { commitment: string; capability?: string } };
   }>;
+  inputs?: ReadonlyArray<{
+    token?: { nft?: { commitment?: string | Uint8Array } };
+  }>;
 };
 
 type ResourceCommitmentProposal = {
@@ -377,7 +453,7 @@ type ResourceCommitmentProposal = {
 };
 
 /**
- * F30: count resource OTC proposals that `canApplyRepairedNftCommitment` would apply.
+ * resource would-apply recipe gate: count resource OTC proposals that `canApplyRepairedNftCommitment` would apply.
  * Already-matching / skip observations must not trip the recipe refuse gate.
  */
 export function countWouldApplyResourceRepairs(
@@ -390,6 +466,7 @@ export function countWouldApplyResourceRepairs(
   for (const [outputIndex, { commitment: proposed }] of proposals) {
     const output = builder.outputs[outputIndex];
     if (!output?.token?.nft) continue;
+    const inputCommitment = builder.inputs?.[outputIndex]?.token?.nft?.commitment;
     const action = canApplyRepairedNftCommitment({
       capability: output.token.nft.capability,
       currentCommitmentHex: output.token.nft.commitment,
@@ -397,24 +474,61 @@ export function countWouldApplyResourceRepairs(
       hasLockingBytecode: false,
       fixedStateSlot: fixedStateOutputs.has(outputIndex),
       maximumCommitmentBytes,
+      inputCommitmentHex: inputCommitment === undefined ? undefined
+        : typeof inputCommitment === 'string' ? inputCommitment : binToHex(inputCommitment),
     });
     if (action !== 'skip') wouldApply += 1;
   }
   return wouldApply;
 }
 
-/** F30: refuse VM-mined resource repairs that would change state under recipe. */
+
+/**
+ * constraint fixpoint: rank conflicting OTC proposals.
+ * Primary: higher optional `weight` wins (explicit priority / confidence).
+ * Then earlier inputIndex, earlier ip, then lex commitment.
+ */
+export function rankResourceOtcConflictCandidates<T extends {
+  commitment: Uint8Array; inputIndex: number; ip: number; weight?: number;
+}>(left: T, right: T): [T, T] {
+  const leftWeight = left.weight ?? 0;
+  const rightWeight = right.weight ?? 0;
+  if (leftWeight !== rightWeight) {
+    return leftWeight > rightWeight ? [left, right] : [right, left];
+  }
+  const score = (candidate: T): number => candidate.inputIndex * 1_000_000 + candidate.ip;
+  const leftScore = score(left);
+  const rightScore = score(right);
+  if (leftScore < rightScore) return [left, right];
+  if (rightScore < leftScore) return [right, left];
+  const leftHex = binToHex(left.commitment);
+  const rightHex = binToHex(right.commitment);
+  return leftHex <= rightHex ? [left, right] : [right, left];
+}
+
+/**
+ * constraint fixpoint: multi-way (>2) OTC arbitration — stable sort by the same ranking as the pairwise helper.
+ */
+export function rankResourceOtcConflictCandidatesMany<T extends {
+  commitment: Uint8Array; inputIndex: number; ip: number; weight?: number;
+}>(candidates: readonly T[]): T[] {
+  if (candidates.length <= 1) return [...candidates];
+  return [...candidates].sort((left, right) => {
+    const [first] = rankResourceOtcConflictCandidates(left, right);
+    return first === left ? -1 : 1;
+  });
+}
+
+/** resource would-apply recipe gate: refuse VM-mined resource repairs that would change state under recipe. */
 export function gateWouldApplyResourceRepairsIfRecipe(
   builder: ResourceRepairBuilder,
   proposals: ReadonlyMap<number, ResourceCommitmentProposal>,
   fixedStateOutputs: ReadonlySet<number>,
   maximumCommitmentBytes = 128,
 ): number {
-  const wouldApply = countWouldApplyResourceRepairs(
+  return gateWouldApplyRepairsIfRecipe(countWouldApplyResourceRepairs(
     builder, proposals, fixedStateOutputs, maximumCommitmentBytes,
-  );
-  refuseVmExtractedRepairsIfRecipe(wouldApply);
-  return wouldApply;
+  ));
 }
 
 /** Complete-graph convergence for fixed state and compiler-declared sorted-entry targets. */
@@ -712,6 +826,15 @@ export interface FinalizedByteGateOptions {
    * refusal and can neither create nor suppress one. `inputSubjectsOfBuilder` reads it off a builder.
    */
   inputSubjects?: readonly (FinalizedByteSubject | undefined)[];
+  /**
+   * PredOut preflight claims: compose-discovered PredOut physical claims threaded into the finalized-tx layout assert.
+   * Without these, PredOut checks stay compose-path-only.
+   */
+  predOutClaimsByParticipant?: ReadonlyMap<number, ReadonlyArray<{
+    witnessName: string;
+    physicalLocalOffset: number;
+    concreteLocalSlot?: number;
+  }>>;
 }
 
 /**
@@ -2864,7 +2987,7 @@ function describeMessageBusBatchRows(
     ));
     if (idxParams.length > 0) console.error('preflight-return-idx', { inputIndex, idxParams, rawVmReason });
   }
-  // Gate C attribution: name the owning contract/function and layout coordinate witnesses so
+  // layout invariant attribution attribution: name the owning contract/function and layout coordinate witnesses so
   // "input 225 OP_VERIFY" carries participant/resource/expected-output context without a full operand dump.
   const layoutWitnesses = (unlockerParams?.abiFunction?.inputs && unlockerParams.params)
     ? unlockerParams.abiFunction.inputs.flatMap((entry, i) => {
@@ -3036,7 +3159,7 @@ export const logComposedTransactionLayout = (
  * bytes are ones a peer would forward. `options` reaches only the byte rules.
  */
 /**
- * F3′: published value-chunk bandOffset from block geometry.
+ * Published value-chunk bandOffset from block geometry.
  * - filled at trailing base ⇒ bandOffset 0
  * - filled equals a published `trailing` slot absolute ⇒ bandOffset = slot.offset - trailingBase
  * Never invents an offset from a filled absolute that does not match published slots.
@@ -3071,7 +3194,7 @@ export type AssemblyLayoutResolveOptions = {
 };
 
 /**
- * Item 2 + F3′ sole layout authority: unlocker valueChunk/dyn/(optional PredOut) absolutes must equal
+ * Layout-resolver sole coordinate authority: unlocker valueChunk/dyn/(optional PredOut) absolutes must equal
  * one `resolveParticipantAbsoluteWitnesses`. BandOffset comes from published trailing geometry
  * (including non-zero offsets via `trailing` slots), never from inventing against filled-only values.
  */
@@ -3147,7 +3270,10 @@ export const preflightMessageBusTransaction = (
   assertNoDerivationProbeOutpoints(builder);
   // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
   const assembly = requireMessageBusBlockAssembly(builder);
-  assertAssemblyLayoutWitnessesMatchResolve(builder, assembly);
+  // PredOut preflight claims: thread compose PredOut claims into the layout assert (default path no longer compose-only).
+  assertAssemblyLayoutWitnessesMatchResolve(builder, assembly, {
+    predOutClaimsByParticipant: options?.predOutClaimsByParticipant,
+  });
   const transaction = builder.buildLibauthTransaction();
   logComposedTransactionLayout(builder, transaction, 'finalized');
   assertCanonicalMessageEnvelopePush(transaction, assembly);

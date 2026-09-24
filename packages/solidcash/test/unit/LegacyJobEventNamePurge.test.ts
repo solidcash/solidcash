@@ -1,5 +1,5 @@
 /**
- * F5′: remaining JobEvent / publishJobEvent planning compares are legacy-adapter only.
+ * JobEvent name purge: remaining JobEvent / publishJobEvent planning compares are legacy-adapter only.
  * Kernel convention must not open writer discovery from those application names.
  */
 import { describe, expect, it } from 'vitest';
@@ -12,7 +12,7 @@ import {
   permitsLegacyNamedValueChunkFallback,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-describe('F5′ JobEvent name purge (legacy adapter only)', () => {
+describe('JobEvent name purge JobEvent name purge (legacy adapter only)', () => {
   it('legacyIsPublishJobEventName is exact — alpha-renames do not match', () => {
     expect(legacyIsPublishJobEventName('publishJobEvent')).toBe(true);
     expect(legacyIsPublishJobEventName('publishJobEventV2')).toBe(false);

@@ -5,8 +5,15 @@ import { createVirtualMachineBch2026ForProvider } from '../network/createVirtual
 import { valueChunkIndexFromCommitment } from '../stateful/StatefulTransactionBuilder.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, generateLibauthSourceOutputs } from '../utils.js';
-import { refuseVmExtractedRepairsIfRecipe } from './materialization-mode.js';
+import { gateWouldApplyRepairsIfRecipe } from './materialization-mode.js';
+import {
+  MonotoneCell,
+  finalizeMonotonePass,
+  freezeGeometry,
+  recordMonotonePass,
+} from './monotone-lattice.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
+import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
 
 export interface ComputedValueChunkConvergence {
   repairs: number;
@@ -53,17 +60,15 @@ export function countWouldApplyValueChunkRepairs(
   return wouldApply;
 }
 
-/** F9′: refuse VM-mined value-chunk repairs that would change state under recipe. */
+/** Refuse VM-mined value-chunk repairs that would change state under recipe. */
 export function gateWouldApplyValueChunkRepairsIfRecipe(
   builder: ValueChunkRepairBuilder,
   lockingBytecodeProposals: ReadonlyMap<number, Uint8Array>,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
 ): number {
-  const wouldApply = countWouldApplyValueChunkRepairs(
+  return gateWouldApplyRepairsIfRecipe(countWouldApplyValueChunkRepairs(
     builder, lockingBytecodeProposals, commitmentProposals,
-  );
-  refuseVmExtractedRepairsIfRecipe(wouldApply);
-  return wouldApply;
+  ));
 }
 
 /**
@@ -77,7 +82,9 @@ export function convergeMessageBusComputedValueChunkOutputs(
   builder: TransactionBuilder,
 ): ComputedValueChunkConvergence {
   const assembly = preflightMessageBusBlockAssembly(builder);
-  if (!assembly) return { repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] };
+  if (!assembly) {
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] });
+  }
   const owners = new Map<number, Set<number>>();
   for (const block of assembly.blocks) {
     const trailingBase = block.blockLayout.trailingBase;
@@ -121,12 +128,47 @@ export function convergeMessageBusComputedValueChunkOutputs(
     }
   }
   const ownedOutputs = [...owners.keys()].sort((a, b) => a - b);
-  if (owners.size === 0) return { repairs: 0, rounds: 0, ownedOutputs, outputs: [] };
+  if (owners.size === 0) {
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs, outputs: [] });
+  }
 
   const changedOutputs = new Set<number>();
+  // constraint fixpoint / item-10 follow-on: value-chunk repairs progress on the same monotone lattice as fixed-state resources.
+  const commitmentLattice = new MonotoneCell<string>();
+  const seenStates = new Set<string>();
   const maximumRounds = owners.size * 2 + 1;
   let repairs = 0;
   for (let round = 1; round <= maximumRounds; round += 1) {
+    const stateKey = ownedOutputs
+      .map((outputIndex) => {
+        const output = builder.outputs[outputIndex];
+        const lock = typeof output?.to === 'string' ? output.to
+          : output?.to instanceof Uint8Array ? binToHex(output.to) : '';
+        return `${outputIndex}:${lock}:${output?.token?.nft?.commitment ?? ''}`;
+      })
+      .join('|');
+    recordMonotonePass(
+      commitmentLattice,
+      seenStates,
+      stateKey,
+      'messageBus: computed value-chunk output convergence entered a repeated state',
+    );
+    // constraint fixpoint: multi-candidate API inside the value-chunk converge loop.
+    const picked = selectActiveConstraintCandidate(
+      'value-chunk',
+      [stateKey],
+      'messageBus: computed value-chunk output convergence entered a repeated state',
+    );
+    if (picked === undefined) {
+      finalizeMonotonePass(commitmentLattice, stateKey);
+      return freezeGeometry({
+        repairs,
+        rounds: round,
+        ownedOutputs,
+        outputs: [...changedOutputs].sort((a, b) => a - b),
+      });
+    }
+
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const lockingBytecodeProposals = new Map<number, Uint8Array>();
@@ -192,12 +234,23 @@ export function convergeMessageBusComputedValueChunkOutputs(
       repairs += 1;
       changed = true;
     }
-    if (!changed) return {
-      repairs,
-      rounds: round,
-      ownedOutputs,
-      outputs: [...changedOutputs].sort((a, b) => a - b),
-    };
+    if (!changed) {
+      const finalKey = ownedOutputs
+        .map((outputIndex) => {
+          const output = builder.outputs[outputIndex];
+          const lock = typeof output?.to === 'string' ? output.to
+            : output?.to instanceof Uint8Array ? binToHex(output.to) : '';
+          return `${outputIndex}:${lock}:${output?.token?.nft?.commitment ?? ''}`;
+        })
+        .join('|');
+      finalizeMonotonePass(commitmentLattice, finalKey);
+      return freezeGeometry({
+        repairs,
+        rounds: round,
+        ownedOutputs,
+        outputs: [...changedOutputs].sort((a, b) => a - b),
+      });
+    }
   }
   throw new Error(
     `messageBus: computed value-chunk outputs did not converge after ${maximumRounds} complete-graph passes`,

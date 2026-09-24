@@ -8,6 +8,12 @@ import {
   type SignatureTemplateArgument,
 } from '../Argument.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
+import {
+  findKernelAbiFunctionBySelector,
+  findKernelHandlerBySelector,
+  normalizeMessageBusFunctionSelector,
+  resolvePublishedHandlerByNameOrSelector,
+} from './handler-selector-authority.js';
 import { markCanonicalBatchBlob } from './internal-batch-authority.js';
 import { resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import { decodeEvmInvocationResultPrefix } from '../stateful/evm-abi-result.js';
@@ -25,10 +31,8 @@ export interface MessageBatchCall {
   logicalCaller?: FunctionArgument;
 }
 
-const normalizeFunctionSelector = (selector: string): string | undefined => {
-  const normalized = selector.startsWith('0x') || selector.startsWith('0X') ? selector.slice(2) : selector;
-  return /^[0-9a-fA-F]{8}$/.test(normalized) ? normalized.toLowerCase() : undefined;
-};
+/** @deprecated Prefer `normalizeMessageBusFunctionSelector` from handler-selector-authority. */
+const normalizeFunctionSelector = normalizeMessageBusFunctionSelector;
 
 /**
  * Resolve one ABI entry point.
@@ -40,25 +44,12 @@ export function resolveMessageBusAbiFunction(
 ): Artifact['abi'][number] | undefined {
   const convention = artifact.messageBus?.convention;
   if (selector !== undefined) {
+    if (convention === 'kernel-row-loop') {
+      return findKernelAbiFunctionBySelector(artifact, selector);
+    }
     const normalized = normalizeFunctionSelector(selector);
     if (normalized === undefined) {
       throw new Error(`messageBus: function selector '${selector}' must be exactly four hexadecimal bytes`);
-    }
-    if (convention === 'kernel-row-loop') {
-      const bySelector = artifact.abi.filter(
-        (candidate) => candidate.selector?.toLowerCase() === normalized,
-      );
-      if (bySelector.length === 1) return bySelector[0];
-      if (bySelector.length === 0) {
-        throw new Error(
-          `messageBus: selector ${normalized} does not identify an ABI function `
-          + `in '${artifact.contractName}'`,
-        );
-      }
-      throw new Error(
-        `messageBus: kernel ABI join ambiguous for selector ${normalized} `
-        + `in '${artifact.contractName}'`,
-      );
     }
     const matches = artifact.abi.filter((candidate) => candidate.name === name);
     const selected = matches.find((candidate) => candidate.selector?.toLowerCase() === normalized);
@@ -82,25 +73,19 @@ export function resolveMessageBusAbiFunction(
 /**
  * Resolve the message-bus handler for one entry point.
  * Kernel with a selector: selector is authority; diagnostic `name` is ignored.
+ * handler selector authority: kernel (+ selector-bearing) joins share `handler-selector-authority`.
  */
 export function resolveMessageBusHandler(
   artifact: Artifact, name: string, selector?: string,
 ): NonNullable<Artifact['messageBus']>['handlers'][number] | undefined {
-  const handlers = artifact.messageBus?.handlers ?? [];
   const convention = artifact.messageBus?.convention;
   if (convention === 'kernel-row-loop' && selector !== undefined) {
-    const normalized = normalizeFunctionSelector(selector);
-    if (normalized === undefined) {
-      throw new Error(`messageBus: function selector '${selector}' must be exactly four hexadecimal bytes`);
-    }
-    const bySelector = handlers.filter((candidate) => candidate.selector.toLowerCase() === normalized);
-    if (bySelector.length === 1) return bySelector[0];
-    if (bySelector.length === 0) return undefined;
-    throw new Error(
-      `messageBus: kernel handler join ambiguous for selector ${normalized} `
-      + `in '${artifact.contractName}'`,
-    );
+    return findKernelHandlerBySelector(artifact, selector);
   }
+  if (selector !== undefined && selector.length > 0 && convention !== 'kernel-row-loop') {
+    return resolvePublishedHandlerByNameOrSelector(artifact, { name, selector });
+  }
+  const handlers = artifact.messageBus?.handlers ?? [];
   const abiFunction = resolveMessageBusAbiFunction(artifact, name, selector);
   const matches = handlers.filter((candidate) => candidate.name === name);
   if (abiFunction?.selector !== undefined) {
@@ -117,7 +102,7 @@ export function resolveMessageBusHandler(
 }
 
 /**
- * F26: whether a prepared call matches a planned graph invocation.
+ * prepared-call selector match: whether a prepared call matches a planned graph invocation.
  * Kernel: selector authority (transported selector, or plan selector resolved on the artifact).
  * Legacy: diagnostic function-name equality.
  */
@@ -166,7 +151,7 @@ export type MessageBatchRowCalldataFrame = {
  * Fail-closes when `calldataStart`/`calldataLength` are missing or non-integer, the slice walks past
  * `blob`, or (when `argsHex` is published) the slice disagrees with that hex.
  *
- * This is the shipped consume-path authority for mixed-handler row framing (Item 3 residual).
+ * This is the shipped consume-path authority for mixed-handler row framing (handler-frame ABI residual).
  */
 export function sliceMessageBatchRowCalldata(
   blob: Uint8Array,

@@ -3,7 +3,7 @@ import { foldChunkableResource } from '../../src/message-bus/resource-fold.js';
 import { foldLeadingRouteArrayPushes } from '../../src/stateful/StatefulContract.js';
 
 /**
- * Gate B: multi-row same-key chunkable leading/complete are fold outputs.
+ * fold-plan authority: multi-row same-key chunkable leading/complete are fold outputs.
  * `foldLeadingRouteArrayPushes` / `encodeLeadingRouteArrayPushes` adapt `foldChunkableResource`.
  */
 describe('resource-fold authority for multi-row chunkable pushes', () => {

@@ -1,5 +1,5 @@
 /**
- * F25: resolveMessageBusAbiFunction / resolveMessageBusHandler are selector-first under kernel.
+ * resolveMessageBus selector-first: resolveMessageBusAbiFunction / resolveMessageBusHandler are selector-first under kernel.
  */
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
@@ -42,7 +42,7 @@ const legacyArtifact = (handlers: Array<{ name: string; selector: string }>): Ar
   return artifact;
 };
 
-describe('F25 resolveMessageBus* selector-first', () => {
+describe('resolveMessageBus selector-first resolveMessageBus* selector-first', () => {
   it('kernel ABI join succeeds when diagnostic name is alpha-renamed', () => {
     const artifact = kernelArtifact([
       { name: 'set', selector: 'a9059cbb' },

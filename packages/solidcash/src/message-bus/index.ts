@@ -1,6 +1,7 @@
 // Atomic message bus composition, canonical messageEnvelope/callManifest codec, compiler-derived planning,
 // and finalized-transaction preflight.
 export * from './compose.js';
+export * from './compose-recipes.js';
 export * from './capacity.js';
 export * from './atomic.js';
 export * from './delegate.js';
@@ -16,7 +17,14 @@ export * from './stable-ids.js';
 export * from './planning-phases.js';
 export * from './compose-kernel-authority.js';
 export * from './graph-handler-join.js';
+export * from './handler-selector-authority.js';
 export * from './resource-fold.js';
+export * from './path-effect-schedule.js';
+export * from './execution-context.js';
+export * from './kernel-brands.js';
+export * from './kernel-reference-model.js';
+export * from './hostile-plan-generators.js';
+export * from './look-ahead-properties.js';
 export * from './message-bus.js';
 export * from './preflight.js';
 export * from './worklist.js';

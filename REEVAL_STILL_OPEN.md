@@ -10,11 +10,14 @@ Branch: `grok/kernel-comprehensive-fixtures`
   lifecycle authorization (mode 3) on offloaded routes; detached verifier keeps mode-3 census.
 
 ## Residual
-- DualRuntimeSet-width × keccak density — inherent (probe: max trailing 130; salt cannot clear margin)
+- ~~DualRuntimeSet-width × keccak density~~ **SETTLED** (`KernelDualRuntimeKeccakCompose` former
+  density-wall case now builds+VM+send). Proxy DualRuntimeSet-width density reject remains in
+  `KernelDensityBoundedCompose`.
 - Collection/event/blockhash-bearing selfdestruct — still `KERNEL_LIFECYCLE` (honest; standalone
   `StatefulContract.destroy()` multi-tx batching remains the product path; locked negatives in
-  `KernelSelfdestructStateCompose`)
-- Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest)
+  `KernelLifecycleTopology` Fence #16 + `KernelSelfdestructStateCompose`)
+- Detached `sig` leaves on lifecycle handlers — still `KERNEL_TX_SIGNATURE` (honest; locked negatives in
+  `KernelLifecycleTransactionSignatureBoundary` Fence #13 for split/merge/selfdestruct)
 - ~~Read-bearing **merge** compose~~ **SETTLED** (`KernelAtomicMergeReadLifecycle`) — preserve
   `resourcePrefix`; merge-capable routes treat `__internal__lifecycleOwnerInput` as the participant
   block base so tails that share the unlocker decode/preserve the survivor dataNft, not a neighbour
@@ -30,6 +33,11 @@ Branch: `grok/kernel-comprehensive-fixtures`
 - ~~Fixed-scalar state-bearing selfdestruct~~ **SETTLED** (`KernelSelfdestructStateCompose`)
   — consume dataNft prefix + destroy unlockers + token-free reclaim pads
 - ~~Read-bearing split~~ **SETTLED** (`KernelAtomicSplitReadLifecycle`) — preserve dataNft prefix
+- Fence #7–#14/#16–#18 residual shapes — still fenced (honest; locked negatives:
+  #7 escape-beside-effects; #8 `KernelFence8ConstructedKeyResiduals`; #9 `KernelFence9MixedStreamResiduals`
+  (former untransported helper/loop mixes now admit); #10 aggregates; #11 `KernelFence11RecursiveMappingResiduals`;
+  #12 `KernelFence12DeployResiduals`; #13 lifecycle detached sig; #14 `KernelFence14OpaqueAssemblyResiduals`;
+  #16 lifecycle collection/event/blockhash; #17/#18 in `KernelAdmission`). #15 foreign delegate remains permanent.
 
 ## Next goal queue
 Authoritative prioritized inventory: [`KERNEL_EXTENSION_INVENTORY.md`](./KERNEL_EXTENSION_INVENTORY.md).

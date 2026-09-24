@@ -514,6 +514,7 @@ callerLockingBytecode?: Uint8Array,
       const value = resolvedCallerInternalWitnesses[input.name];
       if (value !== undefined) return value;
       if (input.name === '__internal__activeVerifierIndex') return -1n;
+      if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
       // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
       // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
       // gives every returning entry point this compiler-owned coordinate, so use the same negative sentinel as

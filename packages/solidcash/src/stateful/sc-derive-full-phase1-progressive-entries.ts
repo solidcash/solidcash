@@ -370,12 +370,8 @@ export function deriveFullPhase1ProgressiveEntries(
         && !(linearInBlock && plannedIndex < 0)) {
         const handle = plannedIndex >= 0
           ? group.plannedEntryInsertHandles![plannedIndex]
-          : stb.ensureExternalCallEntryInsert(
-            groupIdx,
-            group.categoryId,
-            input.unlocker.generateLockingBytecode(),
-            commit.slice(0, 64),
-            commit,
+          : stb.addExternalCallEntryInsert(
+            group.categoryId, input.unlocker.generateLockingBytecode(), commit,
           );
         insertHandles.push({
           handle,

@@ -188,6 +188,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
   const internalInitArgs: FunctionArgument[] = [];
   for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
     if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+    else if (input.name === '__internal__msgSenderAnchorIdx') internalInitArgs.push(-1n);
     else {
       const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut|Rank)_(\d+)$/);
       if (match) {

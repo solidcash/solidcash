@@ -17477,6 +17477,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
   }
 
+  /**
+   * Project a graph-emission address argument onto the solidity ABI word lane.
+   * Empty (address(0)) stays empty; 32-byte ABI words pass through; native locks
+   * and 20-byte identities become left-padded 32-byte words.
+   */
+  private emitGraphEmissionAddressLane(locationData: SingleLocationData): void {
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // address(0): keep the empty value.
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // Already an ABI word (e.g. nested returning address).
+    this.emit(Op.OP_ELSE, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(new Uint8Array(12), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.popFromStack();
+    this.pushToStack('(__graph_arg_value)');
+  }
+
   /** Encode a computed Script number as its unique minimal invocation-field push. */
   private emitCanonicalGraphNumberEncode(locationData: SingleLocationData): void {
     this.emit(Op.OP_BIN2NUM, locationData);
@@ -19347,6 +19379,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         )) {
           this.emitCanonicalGraphNumberEncode(locationData);
         } else {
+          // Solidity-compat graph returns publish address values as ABI words. Emission args must use the
+          // same lane encoding so a nested returning address matches the SDK-authenticated row bytes.
+          if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+            && parameter.type instanceof AddressType) {
+            this.emitGraphEmissionAddressLane(locationData);
+          }
           this.emitPushdataEncode(parameter.type!, locationData);
         }
         this.popFromStack();

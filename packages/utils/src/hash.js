@@ -14,4 +14,34 @@ export function hash160(payload) {
 export function hash256(payload) {
     return sha256(sha256(payload));
 }
+/**
+ * Project a native locking bytecode (or short identity) to the 32-byte left-padded
+ * solidity ABI address word used on graph-emission address lanes. Empty stays empty
+ * (address(0)). Already-ABI 32-byte words pass through.
+ */
+export function addressToGraphEmissionBytes(lockOrIdentity) {
+    if (lockOrIdentity.length === 0)
+        return lockOrIdentity;
+    if (lockOrIdentity.length === 32)
+        return lockOrIdentity;
+    let id20;
+    if (lockOrIdentity.length === 20) {
+        id20 = lockOrIdentity;
+    }
+    else if (lockOrIdentity.length === 23 && lockOrIdentity[0] === 0xa9) {
+        id20 = lockOrIdentity.slice(2, 22);
+    }
+    else if (lockOrIdentity.length === 35 && lockOrIdentity[0] === 0xaa) {
+        id20 = hash160(lockOrIdentity);
+    }
+    else if (lockOrIdentity.length >= 23) {
+        id20 = lockOrIdentity.slice(3, 23);
+    }
+    else {
+        id20 = hash160(lockOrIdentity);
+    }
+    const word = new Uint8Array(32);
+    word.set(id20, 12);
+    return word;
+}
 //# sourceMappingURL=hash.js.map

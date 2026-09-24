@@ -1,6 +1,7 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
 import {
-  ArrayType, decodePushdataValue, parseArrayTypeString, parseType, type Artifact, type StateValue, scriptToBytecode,
+  ArrayType, addressToGraphEmissionBytes, decodePushdataValue, parseArrayTypeString, parseType,
+  type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
 import {
@@ -331,6 +332,11 @@ export function encodeMessageBusArguments(
     if (type instanceof ArrayType && type.bound === undefined
       && argument.length === 2 && argument[0] === 0x01 && argument[1] === 0x00) {
       return Uint8Array.of(0x00);
+    }
+    // Graph-emission address lanes match solidity-compat returning addresses: ABI 32-byte words
+    // (native locks project to HASH160 / extract; empty address(0) stays empty).
+    if (!composite && (typeName === 'address' || typeName === 'address payable')) {
+      return scriptToBytecode([addressToGraphEmissionBytes(argument)]);
     }
     return composite ? argument : scriptToBytecode([argument]);
   }));

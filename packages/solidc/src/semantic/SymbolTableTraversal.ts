@@ -1860,8 +1860,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
     // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
     // visited, because both need per-handler metadata assigned during that function's own visit.
-    this.refuseUnframedGraphEffects(node);
+    // token-container co-layout: plan graph effect frames (incl. tcTransfer widths) BEFORE refusing unframed
+    // token-container effects, so dyn+transfer handlers can receive route tcTransfer slots.
     this.planGraphEffectFrames(node);
+    this.refuseUnframedGraphEffects(node);
     this.shareRouteLayoutWithLoopEntryHandlers(node);
 
     if (node.fallbackDef) {
@@ -4493,6 +4495,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.mergeCountParam) {
       node.opRolls.delete(node.mergeCountParam);
     }
+    // token-container co-layout: token-container key params were deleted before the body walk, but identifier final-use
+    // analysis can re-add them to opRolls. Re-delete after the body so category keys survive into
+    // emitTokenContainerIdentityVerification (dynamic-bytes + tokens[category] co-layout).
+    for (const access of node.tokenContainerAccesses ?? []) {
+      node.opRolls.delete(access.keyParam);
+    }
 
     // Post-body validation for restricted modifiers (unsafe(1), unsafe(2), split, merge)
     // These modifiers forbid state writes, entries, events, transfers, containers, external calls, deploy
@@ -5909,7 +5917,32 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (contains(statement, targetNode)) {
           if (statement instanceof BlockNode) processBlock(statement);
           else if (statement instanceof UncheckedNode) processBlock(statement.block);
-          else invalid = true;
+          else if (statement instanceof BranchNode) {
+            // path-effect activation: bool-param empty-else may gate a pooled chunkable push (parity with fixed-chunkable).
+            // Descend into the if-arm when the push lives there and the else arm does not also write it.
+            const fn = this.currentFunction;
+            const visible = fn?.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')) ?? [];
+            const boolParamGate = (condition: ExpressionNode): boolean => {
+              if (condition instanceof IdentifierNode) {
+                const index = visible.findIndex((parameter) => parameter.name === condition.name);
+                return index >= 0 && visible[index]!.type === PrimitiveType.BOOL;
+              }
+              if (condition instanceof UnaryOpNode && condition.operator === UnaryOperator.NOT) {
+                return boolParamGate(condition.expression);
+              }
+              return false;
+            };
+            if (fn !== undefined
+              && boolParamGate(statement.condition)
+              && contains(statement.ifBlock, targetNode)
+              && (statement.elseBlock === undefined || !contains(statement.elseBlock, targetNode))) {
+              processBlock(statement.ifBlock);
+            } else {
+              invalid = true;
+            }
+          } else {
+            invalid = true;
+          }
           return;
         }
         if (statement instanceof BranchNode || statement instanceof WhileNode || statement instanceof DoWhileNode
@@ -15200,11 +15233,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.refreshGraphEffectFrameOffsets(frame, route);
     // Token-container INPUT identity lives on the route's one co-spent slot. Share that layout with the
     // OP_INVOKE handler so a `tokenContainer` OP_UTXO uses the compile-time offset, never a row-relative
-    // `tcTransfer` output index.
+    // `tcTransfer` output index. token-container co-layout: also share for read-only token-container co-layout (no transfers).
     for (const fn of handlers) {
       if (tokenTransferCount(fn) > 0 || ((fn.ecrecoverCallCount ?? 0) > 0)
         || (fn.transferInfos?.length ?? 0) > 0 || (fn.emitInfos?.length ?? 0) > 0
-        || deployWidth(fn) > 0) {
+        || deployWidth(fn) > 0
+        || (fn.tokenContainerAccesses?.length ?? 0) > 0) {
         fn.blockLayout = route.blockLayout;
       }
     }
@@ -15284,8 +15318,110 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
     }
-    if (extras.length > 0) {
-      route.entryAccesses = [...(route.entryAccesses ?? []), ...extras];
+    // token-container co-layout: absorb token-container accesses from OP_INVOKE helpers (esp. `__message_bus_dynamic_*`)
+    // into the route so co-spent `tokenContainer` slots exist before dyn trailing geometry is shared.
+    // Remap helper key params onto the route's forwarded `__message_bus_token_category*` witnesses —
+    // the route stack never holds the source `category` name.
+    const forwardedTokenKeys = route.parameters
+      .map((parameter) => parameter.name)
+      .filter((name) => name === '__message_bus_token_category'
+        || name.startsWith('__message_bus_token_category_'));
+    const routeTokenKeyFor = (accessKeyParam: string, ordinal: number): string => {
+      // Prefer the ordinal-forwarded witness when present: source spellings like `category` may still
+      // appear as route parameters in some templates, but identity verification runs against the
+      // forwarded `__message_bus_token_category*` stack names the invoke actually keeps live.
+      if (forwardedTokenKeys[ordinal] !== undefined) return forwardedTokenKeys[ordinal];
+      const exact = route.parameters.find((parameter) => parameter.name === accessKeyParam);
+      if (exact) return exact.name;
+      return accessKeyParam;
+    };
+    const findRouteTokenContainer = (
+      accessKeyParam: string,
+    ): (typeof routeTokenContainers)[number] | undefined => {
+      for (let ordinal = 0; ordinal < Math.max(routeTokenContainers.length, forwardedTokenKeys.length); ordinal += 1) {
+        const routeKey = routeTokenKeyFor(accessKeyParam, ordinal);
+        const existing = routeTokenContainers.find((candidate) =>
+          candidate.keyParam === routeKey || candidate.keyParam === accessKeyParam);
+        if (existing) return existing;
+      }
+      return undefined;
+    };
+    let tokenContainerMerged = false;
+    let routeTokenContainers = [...(route.tokenContainerAccesses ?? [])].map((access, index) => ({
+      ...access,
+      operations: [...access.operations],
+      keyParam: routeTokenKeyFor(access.keyParam, index),
+    }));
+    if ((route.tokenContainerAccesses ?? []).some((access, index) =>
+      access.keyParam !== routeTokenContainers[index]?.keyParam)) {
+      tokenContainerMerged = true;
+    }
+    for (const fn of contract.functions) {
+      if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
+      for (const access of fn.tokenContainerAccesses ?? []) {
+        const existing = findRouteTokenContainer(access.keyParam);
+        if (existing) {
+          let mutated = false;
+          const ordinal = routeTokenContainers.indexOf(existing);
+          const routeKey = routeTokenKeyFor(access.keyParam, ordinal >= 0 ? ordinal : existing.slotIndex);
+          if (existing.keyParam !== routeKey && route.parameters.some((parameter) => parameter.name === routeKey)) {
+            existing.keyParam = routeKey;
+            mutated = true;
+          }
+          for (const operation of access.operations) {
+            if (!existing.operations.includes(operation)) {
+              existing.operations.push(operation);
+              mutated = true;
+            }
+          }
+          const nextTransfer = Math.max(existing.transferCount, access.transferCount);
+          const nextNft = Math.max(existing.transferNftCount, access.transferNftCount);
+          if (nextTransfer !== existing.transferCount || nextNft !== existing.transferNftCount) {
+            existing.transferCount = nextTransfer;
+            existing.transferNftCount = nextNft;
+            mutated = true;
+          }
+          if (mutated) tokenContainerMerged = true;
+        } else {
+          const routeKey = routeTokenKeyFor(access.keyParam, routeTokenContainers.length);
+          // Never invent a TC slot keyed by a source spelling absent from the route parameter list —
+          // that leaves emitTokenContainerIdentityVerification looking for `category` on a stack that
+          // only holds `__message_bus_token_category*`.
+          if (!route.parameters.some((parameter) => parameter.name === routeKey)) continue;
+          routeTokenContainers.push({
+            ...access,
+            keyParam: routeKey,
+            operations: [...access.operations],
+            slotIndex: routeTokenContainers.length,
+          });
+          tokenContainerMerged = true;
+        }
+      }
+    }
+    // Final normalize: drop / remap any keyParam that is not a live route parameter.
+    const normalizedTokenContainers = routeTokenContainers
+      .map((access, index) => {
+        if (route.parameters.some((parameter) => parameter.name === access.keyParam)) return access;
+        const forwarded = forwardedTokenKeys[index];
+        if (forwarded === undefined) return undefined;
+        tokenContainerMerged = true;
+        return { ...access, keyParam: forwarded, slotIndex: index };
+      })
+      .filter((access): access is NonNullable<typeof access> => access !== undefined)
+      .map((access, index) => ({ ...access, slotIndex: index }));
+    if (normalizedTokenContainers.length !== routeTokenContainers.length
+      || normalizedTokenContainers.some((access, index) =>
+        access.keyParam !== routeTokenContainers[index]?.keyParam)) {
+      tokenContainerMerged = true;
+    }
+    routeTokenContainers = normalizedTokenContainers;
+    if (tokenContainerMerged) {
+      route.tokenContainerAccesses = routeTokenContainers.length > 0 ? routeTokenContainers : undefined;
+    }
+    if (extras.length > 0 || tokenContainerMerged) {
+      if (extras.length > 0) {
+        route.entryAccesses = [...(route.entryAccesses ?? []), ...extras];
+      }
       route.blockLayout = this.computeBlockLayout(route);
       // The appended lanes shift every later slot, so the shared frame's cached offsets must follow the new
       // layout: effect sites read them at codegen while the SDK materializes from the published layout.
@@ -15293,7 +15429,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     for (const fn of contract.functions) {
       if (fn === route || !fn.name.startsWith('__message_bus_')) continue;
-      if (fn.entryAccesses?.length) fn.blockLayout = route.blockLayout;
+      // token-container co-layout: share whenever the helper needs entry lanes OR token-container co-spent inputs
+      // (dynamic-bytes + tokens[category] co-layout compiles `__message_bus_dynamic_*` against this layout).
+      if (fn.entryAccesses?.length || (fn.tokenContainerAccesses?.length ?? 0) > 0) {
+        fn.blockLayout = route.blockLayout;
+        // Keep helper TC keyParams aligned with the route's forwarded witnesses so OP_INVOKE bodies
+        // and route identity verification resolve the same stack names.
+        if ((fn.tokenContainerAccesses?.length ?? 0) > 0 && (route.tokenContainerAccesses?.length ?? 0) > 0) {
+          fn.tokenContainerAccesses = fn.tokenContainerAccesses!.map((access, index) => {
+            const routeAccess = route.tokenContainerAccesses![
+              Math.min(index, route.tokenContainerAccesses!.length - 1)
+            ];
+            if (!routeAccess || access.keyParam === routeAccess.keyParam) return access;
+            return { ...access, keyParam: routeAccess.keyParam, operations: [...access.operations] };
+          });
+        }
+      }
     }
   }
 

@@ -66,7 +66,7 @@ export type PublishedMessageBusHandler = {
 };
 
 /**
- * Item 13 sole gate: every codegen-published eligible handler must appear as admitted in analysis
+ * Admission stamp sole gate: every codegen-published eligible handler must appear as admitted in analysis
  * (matched by handlerName). Second argument is only `artifact.messageBus.handlers` — never span keys.
  */
 /** Test/observability: increments only when the shipped gate runs. */

@@ -9,7 +9,7 @@ const KERNEL = {
 } as const;
 
 /**
- * Gate B (compiler publish + residual): chunkable push handlers publish a resourceFoldPlan;
+ * fold-plan authority (compiler publish + residual): chunkable push handlers publish a resourceFoldPlan;
  * unsupported multi-mutation groups remain KERNEL_LAYOUT.
  */
 describe('kernel multi-row chunkable fold publish', () => {
@@ -43,6 +43,49 @@ describe('kernel multi-row chunkable fold publish', () => {
         }),
       ]),
     );
+  });
+
+  it('path-effect activation: unconditional push omits activationSchedule; bool-gated push publishes schedule', () => {
+    const unconditional = compileString(`contract Journal() {
+      mapping(int => int[]) events;
+      function pushOne(int key, int value) {
+        this.events[key].push(value);
+        require(true);
+      }
+    }`, KERNEL);
+    const plan = unconditional.messageBus?.resourceFoldPlans?.find((p) => p.collection === 'events');
+    expect(plan).toMatchObject({ collection: 'events', stepKind: 'push' });
+    expect(plan?.activationSchedule).toBeUndefined();
+
+    // Bool-param empty-else gates the pooled chunkable array push (same admitted subset as fixed-chunkable).
+    const gated = compileString(`contract Journal() {
+      mapping(int => int[]) events;
+      function pushMaybe(int key, int value, bool writeIt) {
+        if (writeIt) {
+          this.events[key].push(value);
+        }
+        require(true);
+      }
+    }`, KERNEL);
+    expect(gated.messageBus?.handlers?.find((h) => h.name === 'pushMaybe')?.eligible).toBe(true);
+    const pushMaybe = gated.abi.find((fn) => fn.name === 'pushMaybe');
+    expect(pushMaybe?.entryAccesses?.some((a) => a.activation !== undefined)).toBe(true);
+    expect(gated.messageBus?.resourceFoldPlans?.find((p) => p.collection === 'events')).toMatchObject({
+      collection: 'events',
+      stepKind: 'push',
+      activationSchedule: {
+        version: 1,
+        effects: expect.arrayContaining([
+          expect.objectContaining({
+            effectOrdinal: expect.any(Number),
+            activation: expect.objectContaining({
+              kind: 'source',
+              source: expect.objectContaining({ kind: 'forward' }),
+            }),
+          }),
+        ]),
+      },
+    });
   });
 
   it('keeps unsupported same-group multi-mutation as KERNEL_LAYOUT residual', () => {

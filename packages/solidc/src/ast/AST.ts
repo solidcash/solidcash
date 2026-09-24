@@ -833,10 +833,15 @@ export class FunctionDefinitionNode extends Node implements Named {
     effectOrdinal: number;
     activation?: ExternalCallExpression;
   }>;
-  /** This handler owns one unconditional direct push into a chunkable sorted mapping-array entry. Kernel route
-   * lowering threads the typed pending array through every selected OP_INVOKE row and flushes it exactly once,
-   * so repeated same-key rows compose without intermediate continuation outputs. */
+  /** This handler owns one direct push into a chunkable sorted mapping-array entry (unconditional and/or
+   * bool-param activated with empty else). Kernel route lowering threads the typed pending array through every
+   * selected OP_INVOKE row and flushes it exactly once, so repeated same-key rows compose without intermediate
+   * continuation outputs. */
   messageBusPooledChunkableArrayPush?: true;
+  /** Optional bool-param activation for the pooled chunkable array push (path-effect activation fold schedule publish). */
+  messageBusPooledChunkableArrayPushActivation?: ExternalCallExpression;
+  /** Mutation effect ordinal for the pooled chunkable array push when activation is published. */
+  messageBusPooledChunkableArrayPushEffectOrdinal?: number;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.

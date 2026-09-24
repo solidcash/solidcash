@@ -471,7 +471,7 @@ function packWords(types: Type[]): number {
 
 // The whole-slot footprint of a fixed-size array or struct type (>0), else 0 for a value / mapping / dynamic
 // type (those pack by byte width). A fixed array T[k] and a struct occupy whole slots in EVM and never pack with
-// a neighbour, so the following var starts a fresh slot - this is the D2 layout fix (was collapsed to 1 slot).
+// a neighbour, so the following var starts a fresh slot - this is the constraint fixpoint layout fix (was collapsed to 1 slot).
 function compositeSlotWords(t: Type): number {
   if (t instanceof ArrayType && t.bound !== undefined) {
     // Compute the fixed array's whole-slot footprint ARITHMETICALLY (all elements share one type), rather than

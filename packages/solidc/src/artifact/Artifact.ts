@@ -1964,11 +1964,20 @@ function buildFunctionAbiMetadata(
         }),
         ...(ea.arrayMutation !== undefined && { arrayMutation: ea.arrayMutation }),
         ...((() => {
+          const pooledActivation = func.messageBusPooledChunkableArrayPush === true
+            && ea.arrayMutation === 'push'
+            && func.messageBusPooledChunkableArrayPushActivation !== undefined
+            && (func.messageBusPooledChunkableArrayPushEffectOrdinal === undefined
+              || (ea.mutationEffectOrdinals?.includes(func.messageBusPooledChunkableArrayPushEffectOrdinal)
+                ?? false))
+            ? func.messageBusPooledChunkableArrayPushActivation
+            : undefined;
           const stamped = ea.activation
             ?? func.messageBusFixedChunkableResources?.find((resource) =>
               resource.collection === ea.collection
               && (ea.mutationEffectOrdinals?.includes(resource.effectOrdinal) ?? false))
-              ?.activation;
+              ?.activation
+            ?? pooledActivation;
           return stamped !== undefined
             ? { activation: cloneExternalCallExpression(stamped) }
             : {};

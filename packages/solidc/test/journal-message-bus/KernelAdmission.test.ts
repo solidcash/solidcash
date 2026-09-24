@@ -63,7 +63,8 @@ describe('required kernel admission', () => {
     });
   });
 
-  it('refuses a top-level chunkable replacement bypassed by a successful early return', () => {
+  // Fence #18 residual: early-return bypass of a later chunkable write.
+  it('Fence #18: refuses a top-level chunkable replacement bypassed by a successful early return', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes) values;
       function set(uint key, bytes value, bool skip) public {
@@ -74,7 +75,11 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'set'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
   });
 
   it('retains exact occurrence metadata for a whole dynamic-struct replacement', () => {
@@ -165,8 +170,35 @@ describe('required kernel admission', () => {
     ]);
   });
 
+  it('admits a bool-param empty-else gated pooled chunkable array push (path-effect activation fold schedule)', () => {
+    const artifact = compileString(`contract C() {
+      mapping(uint => bytes32[]) values;
+      function mutate(uint key, bytes32 value, bool take) public {
+        if (take) this.values[key].push(value);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mutate'))
+      .toMatchObject({ eligible: true });
+    const access = artifact.abi.find((fn) => fn.name === 'mutate')?.entryAccesses?.[0];
+    expect(access?.activation).toMatchObject({
+      kind: 'source',
+      source: expect.objectContaining({ kind: 'forward' }),
+    });
+    expect(artifact.messageBus?.resourceFoldPlans?.find((plan) => plan.collection === 'values'))
+      .toMatchObject({
+        stepKind: 'push',
+        activationSchedule: {
+          version: 1,
+          effects: expect.arrayContaining([
+            expect.objectContaining({ activation: expect.objectContaining({ kind: 'source' }) }),
+          ]),
+        },
+      });
+  });
+
   it.each([
-    ['a conditional push', 'if (take) this.values[key].push(value);', 'bool take'],
     ['two pushes', 'this.values[key].push(value); this.values[key].push(value);', ''],
     ['push and pop', 'this.values[key].push(value); this.values[key].pop();', ''],
   ])('keeps %s outside the pooled direct-push capability', (_label, mutation, extraParameter) => {
@@ -214,7 +246,10 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('fences a fixed chunkable write mixed with an independently transported loop', () => {
+  // Fence #9 former residuals: fixed/helper chunkable beside transported loops now admit under
+  // journal-authenticated chunkable transport. Multi-op / early-return residuals stay in
+  // KernelFence9MixedStreamResiduals.
+  it('admits a fixed chunkable write mixed with an independently transported loop', () => {
     const source = `contract C() {
       mapping(uint => bytes32[]) values;
       function mixed(uint count, uint fixedKey, bytes32 value) public {
@@ -231,12 +266,12 @@ describe('required kernel admission', () => {
       name: '__internal__kernelJournalAccessStreams', type: 'bytes[]',
     });
     expect(kernel.messageBus?.handlers.find((candidate) => candidate.name === 'mixed'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
 
     expect(() => compileString(source, { ...KERNEL, messageBusKernel: false })).not.toThrow();
   });
 
-  it('fences an invariant-key chunkable write inside an independently transported loop', () => {
+  it('admits an invariant-key chunkable write inside an independently transported loop', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes32[]) values;
       function appendRepeated(uint count, uint fixedKey, bytes32 value) public {
@@ -252,10 +287,10 @@ describe('required kernel admission', () => {
     expect(artifact.abi.find((candidate) => candidate.name === 'appendRepeated')?.inputs)
       .toContainEqual({ name: '__internal__kernelJournalAccessStreams', type: 'bytes[]' });
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'appendRepeated'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
   });
 
-  it('fences an untransported chunkable helper beside a transported loop', () => {
+  it('admits an untransported-style chunkable helper beside a transported loop', () => {
     const artifact = compileString(`contract C() {
       mapping(uint => bytes32[]) values;
       function appendFixed(uint key, bytes32 value) internal {
@@ -270,7 +305,7 @@ describe('required kernel admission', () => {
       }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((candidate) => candidate.name === 'mixedHelper'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({ eligible: true });
   });
 
   it('does not advertise dormant internal read-carrier support from kernel convention alone', () => {
@@ -10568,6 +10603,78 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });
 
+  // Fence #18 residual: non-bool selection across chunkable maps (int discriminator).
+  it('Fence #18: keeps non-bool chunkable arm selection behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) left;
+      mapping(int => bytes) right;
+      function work(int key, bytes first, bytes second, int which) public {
+        if (which == 1) {
+          right[key] = second;
+        } else {
+          left[key] = first;
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+
+  // Fence #17 residual: non-bool / counter-derived selection inside a bounded loop.
+  it('Fence #17: keeps non-bool loop arm selection behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) left;
+      mapping(int => int) right;
+      function work(int n, int which) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (which == 1) {
+            right[i] = i;
+          } else {
+            left[i] = i;
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+
+  // Fence #17 residual: loop chunk writes + conditional emit (relocatable multi-span / event band).
+  it('Fence #17: keeps loop chunk writes beside conditional emit behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => bytes) payloads;
+      event Touched(int indexed i);
+      function work(int n, bytes payload, bool alsoEmit) public {
+        for (int i = 0; i < n; i = i + 1) {
+          payloads[i] = payload;
+          if (alsoEmit) {
+            emit Touched(i);
+          }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+
   // Family 1 wedge A / Phase 0: hetero int+bytes loop with trailing band for ≥61B external chunks.
   it('admits a bounded loop writing int and bytes maps on one key schedule', () => {
     const artifact = compileString(`contract C() {
@@ -10694,7 +10801,8 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('keeps early-return-bypassed selected emit behind KERNEL_LAYOUT', () => {
+  // Fence #18 residual: early-return bypass of mutation + selected emit.
+  it('Fence #18: keeps early-return-bypassed selected emit behind KERNEL_LAYOUT', () => {
     const artifact = compileString(`contract C() {
       mapping(int => int) values;
       event Touched(int indexed key);
@@ -10707,7 +10815,11 @@ describe('required kernel admission', () => {
       function control() public { require(true); }
     }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'set'))
-      .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
   });
 
   // Phase 3: bounded constructed-key (hash160) admit + residual multi-arm constructed join.
@@ -10741,10 +10853,10 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
-  it('locks dynamic-bytes + token-container co-layout as a #9 residual (missing tokenContainer block slot)', () => {
-    // Codegen fails closed while compiling the message-bus route when dynamic bytes shares a handler with
-    // tokens[category] access — the residual until non-overlapping span descriptors publish a tokenContainer slot.
-    expect(() => compileString(`contract ParallelTokenJournal() {
+  it('admits dynamic-bytes + token-container co-layout with token-container co-layout span proof (tokenContainer block slot)', () => {
+    // token-container co-layout: route reserves co-spent tokenContainer slots beside trailing dyn capacity and stamps
+    // messageBus.tokenContainerCoLayout. Read-only tokens[category] beside bytes writes settles.
+    const artifact = compileString(`contract ParallelTokenJournal() {
       bytes payload;
       function append(bytes32 category, bytes suffix) public {
         this.payload = bytes.concat(this.payload, suffix);
@@ -10753,7 +10865,21 @@ describe('required kernel admission', () => {
         require(commitment == commitment);
       }
       function control() public { require(true); }
-    }`, { ...KERNEL, maximumInputBytes: 1_000_000 })).toThrow(/tokenContainer\[0\]/);
+    }`, { ...KERNEL, maximumInputBytes: 1_000_000 });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(artifact.messageBus?.route.blockLayout?.slots).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'tokenContainer', slotIndex: 0 }),
+    ]));
+    expect(artifact.messageBus?.tokenContainerCoLayout).toMatchObject({
+      version: 1,
+      sites: [expect.objectContaining({
+        handlerName: 'append',
+        dynamicWrites: expect.arrayContaining(['payload']),
+        tokenContainerSlotIndices: expect.arrayContaining([0]),
+        spanKind: 'tokenContainer-input-plus-trailing-dyn',
+      })],
+    });
   });
 
   // Phase 5: nested mapping admit + residual unbounded recursive key walk.
@@ -10800,17 +10926,17 @@ describe('required kernel admission', () => {
       .toMatchObject({ eligible: true });
   });
 
+  // Fence #12: runtime-count deploy loop without the deploy-modifier path (modifier+loop
+  // currently drops messageBus publication; residual is still KERNEL_LAYOUT on ordinary rows).
   it('keeps a runtime-count child deployment loop behind KERNEL_LAYOUT', () => {
-    const artifact = compileStringMulti(`
-      contract Child(int x) { int public v; constructor() { v = x; } }
+    const artifact = compileString(`contract Child() { int marker; }
       contract Parent() {
-        function spawnMany(int n) public deploy {
-          for (int i = 0; i < n; i = i + 1) { new Child(i); }
+        function spawnMany(int n) public {
+          for (int i = 0; i < n; i = i + 1) { Child child = new Child(); }
           require(true);
         }
         function control() public { require(true); }
-      }
-    `, KERNEL).Parent;
+      }`, KERNEL);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'spawnMany'))
       .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
   });

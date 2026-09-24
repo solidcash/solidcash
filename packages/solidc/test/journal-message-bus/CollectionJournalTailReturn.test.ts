@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 
 /**
- * D2/R19. The collection-journal wrapper check refused ANY `return` in a wrapper that calls a multi-entry
+ * constraint fixpoint/R19. The collection-journal wrapper check refused ANY `return` in a wrapper that calls a multi-entry
  * journal helper, and the Solidity ERC-20 wrapper is exactly `_transfer(from, to, v); return true;`. That
  * refusal is a thrown Error, so it failed the whole file's multi-contract compile: measured on the F3 corpora
  * it took out UniswapV2ERC20/UniswapV2Pair, UniswapV2Factory and three Unicrow files, five of which carry one

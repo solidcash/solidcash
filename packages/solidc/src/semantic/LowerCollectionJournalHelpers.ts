@@ -50,6 +50,7 @@ import { BinaryOperator } from '../ast/Operator.js';
 import {
   ArrayType, IntType, MappingType, Type,
 } from '@solidcash/utils';
+import { throwKernelCatalogDiagnostic } from '../kernel-admission-catalog.js';
 
 interface Candidate {
   fn: FunctionDefinitionNode;
@@ -242,13 +243,20 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (!fn.body || fn.parameters[0]?.name !== `__dj_${fn.name}`) continue;
       const reach = this.callGraphReach(fn, node, touchesCollection);
       if (reach.via) {
-        throw new Error(
+        // KERNEL_* admission catalog: fence-map item 9 — catalog-coded refuse (was plain Error without KERNEL_*).
+        throwKernelCatalogDiagnostic(
+          'KERNEL_LAYOUT',
           `Handler '${sourceHandlerName(fn.name)}' writes unbounded bytes/string state and also reaches a `
           + 'collection entry. The dynamic-storage journal and the collection journal do not share one exit, '
           + 'so this handler cannot flush both; split the unbounded write and the collection access into '
           + 'separate handlers'
           + (reach.via === fn.name ? '' : ` (the collection entry is reached through '${
             sourceHandlerName(reach.via)}')`),
+          {
+            gate: 'journal-exit-split',
+            handler: sourceHandlerName(fn.name),
+            via: sourceHandlerName(reach.via),
+          },
         );
       }
     }
@@ -423,9 +431,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (candidate instanceof ReturnNode) hasEarlyReturn = true;
       });
       if (hasEarlyReturn && !pooledTerminalResult) {
-        throw new Error(
+        throwKernelCatalogDiagnostic(
+          'KERNEL_LAYOUT',
           `Collection journal helper '${sourceHandlerName(fn.name)}' cannot contain an early return; `
           + 'its journalled entry values are flushed only at the single function exit',
+          {
+            gate: 'journal-early-return',
+            handler: sourceHandlerName(fn.name),
+          },
         );
       }
       if (distinct.size > 1 || fn.forceCollectionJournalPool || pooledTerminalResult) {
@@ -985,7 +998,11 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   private rewriteMultiCall(call: FunctionCallNode, target: MultiCandidate): StatementNode[] {
     if (target.resultTypes.length > 0) {
-      throw new Error(`Result-producing collection journal '${target.fn.name}' requires an assignment target`);
+      throwKernelCatalogDiagnostic(
+        'KERNEL_LAYOUT',
+        `Result-producing collection journal '${target.fn.name}' requires an assignment target`,
+        { gate: 'journal-result-assignment', handler: target.fn.name },
+      );
     }
     return [this.rewriteMultiResultCall(call, target, [])];
   }
@@ -997,14 +1014,30 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   ): StatementNode {
     const cache = this.activeMultiCaches.get(target.fn);
     if (!cache) {
-      throw new Error(`Missing function-scoped collection journal for '${target.fn.name}'`);
+      throwKernelCatalogDiagnostic(
+        'KERNEL_INTERNAL_DEFECT',
+        `Missing function-scoped collection journal for '${target.fn.name}'`,
+        { gate: 'journal-function-scope-missing', handler: target.fn.name },
+      );
     }
     const callLocals = cache.calls.get(call);
-    if (!callLocals) throw new Error(`Missing call-scoped collection journal for '${target.fn.name}'`);
+    if (!callLocals) {
+      throwKernelCatalogDiagnostic(
+        'KERNEL_INTERNAL_DEFECT',
+        `Missing call-scoped collection journal for '${target.fn.name}'`,
+        { gate: 'journal-call-scope-missing', handler: target.fn.name },
+      );
+    }
     const originalArgs = call.parameters.map((argument) => cloneNode(argument) as ExpressionNode);
     const dynamicLocals = target.dynamicEntries.map((entry) => {
       const dynamicCache = this.activeDynamicCaches.get(entry.state);
-      if (!dynamicCache) throw new Error(`Missing dynamic-state journal for '${target.fn.name}:${entry.state}'`);
+      if (!dynamicCache) {
+        throwKernelCatalogDiagnostic(
+          'KERNEL_INTERNAL_DEFECT',
+          `Missing dynamic-state journal for '${target.fn.name}:${entry.state}'`,
+          { gate: 'journal-dynamic-cache-missing', handler: target.fn.name, state: entry.state },
+        );
+      }
       return dynamicCache;
     });
     const invoked = this.at(new FunctionCallNode(
@@ -1160,10 +1193,16 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       const identitiesFor = (keys: ExpressionNode[]): string[] => keys.map((key) => {
         const identity = this.canonicalCacheKey(key, wrapperParameters);
         if (identity === undefined) {
-          throw new Error(
+          throwKernelCatalogDiagnostic(
+            'KERNEL_LAYOUT',
             `Collection journal helper '${target.fn.name}' requires a stable key expression; `
             + `use a wrapper parameter, literal, or transaction global (found ${key.constructor.name}: ${
               key instanceof IdentifierNode ? key.name : key.toString()})`,
+            {
+              gate: 'journal-unstable-key',
+              handler: target.fn.name,
+              keyNode: key.constructor.name,
+            },
           );
         }
         return identity;

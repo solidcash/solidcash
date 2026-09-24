@@ -27,6 +27,34 @@ import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import { containsStatefulOperation } from './semantic/EnsureFinalRequireTraversal.js';
 import { hasEffectiveCallValue } from './semantic/branchOps.js';
+import {
+  allowsPreFinalIntrinsicTypes,
+  type FinalizedTypedEffectIrOptions,
+} from './finalized-typed-effect-ir.js';
+
+/**
+ * finalized typed effect IR: analysis-scoped typed-effect policy. Kernel admission defaults to requiring finalized types
+ * (no pre-final intrinsic invention). Nested recipe walks read this rather than threading options
+ * through every recursive helper.
+ */
+let activeTypedEffectOptions: FinalizedTypedEffectIrOptions = { requireFinalizedTypes: false };
+
+const withTypedEffectOptions = <T>(
+  options: FinalizedTypedEffectIrOptions | undefined,
+  run: () => T,
+): T => {
+  const previous = activeTypedEffectOptions;
+  // Default remains allow-pre-final for analysis bridges; kernel publication asserts finalized IR separately.
+  activeTypedEffectOptions = {
+    requireFinalizedTypes: false,
+    ...options,
+  };
+  try {
+    return run();
+  } finally {
+    activeTypedEffectOptions = previous;
+  }
+};
 
 const binaryOperators = new Set<BinaryOperator>([
   BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
@@ -104,9 +132,9 @@ const exactHelperSignature = (
     const argumentType = aliasedType
       ?? (argument instanceof IdentifierNode ? handlerInputTypes?.get(argument.name) : undefined)
       ?? (typedArgument ? abiTypeString(typedArgument) : undefined)
-      // Early kernel admission precedes the final type pass. Hash intrinsics nevertheless have one fixed result
-      // type, so they can select an overload exactly without guessing from its name/arity or argument contents.
-      ?? (argument instanceof FunctionCallNode && !argument.resolvedFunction
+      // finalized typed effect IR: pre-final hash intrinsic invention only when finalized types are not required.
+      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
+        && argument instanceof FunctionCallNode && !argument.resolvedFunction
         && pureHashFunctions.has(argument.identifier.name) && argument.parameters.length === 1
         ? pureHashResultType(argument.identifier.name) : undefined);
     return argumentType !== undefined && argumentType === abiTypeString(candidate.parameters[index].type);
@@ -270,9 +298,12 @@ export function childDeploymentValueRecipe(
     // on an implicit bytes/string interpretation at the child ABI boundary. The AST's own result type is
     // authoritative: bytes.concat is always dynamic bytes, while string.concat is always string; operand bytesN
     // widths remain attached to their nested recipes.
-    // Early kernel admission runs before TypeCheckTraversal has stamped the node, so use the intrinsic's fixed
-    // surface result in that phase. Later analyses retain the identical type from the typed AST.
-    const resultType = declaredType ?? (expression instanceof BytesConcatNode ? 'bytes' : 'string');
+    // finalized typed effect IR: prefer stamped AST type. Pre-final intrinsic surface defaults only when allowed.
+    const resultType = declaredType
+      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
+        ? (expression instanceof BytesConcatNode ? 'bytes' : 'string')
+        : undefined);
+    if (resultType === undefined) return undefined;
     if (expression.parameters.length === 0) return undefined;
     const operands = expression.parameters.map((parameter) => childDeploymentValueRecipe(
       parameter, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
@@ -303,8 +334,10 @@ export function childDeploymentValueRecipe(
       expression.parameters[0], handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
       undefined, structStack, helperFunctions, helperStack,
     );
+    // finalized typed effect IR: finalized typed IR — do not invent hash result types when requireFinalizedTypes is on.
     const resultType = declaredType ?? (expectedType ? physicalRecipeType(expectedType) : undefined)
-      ?? pureHashResultType(expression.identifier.name);
+      ?? (allowsPreFinalIntrinsicTypes(activeTypedEffectOptions)
+        ? pureHashResultType(expression.identifier.name) : undefined);
     return operand && resultType && hashableRecipeType.test(operand.resultType ?? '') ? {
       kind: 'hash',
       algorithm: expression.identifier.name as Extract<ChildDeploymentValueRecipe, { kind: 'hash' }>['algorithm'],
@@ -1202,7 +1235,9 @@ export function analyzeFixedBchEffectRecipes(
 export function analyzeChildDeploymentRecipes(
   fn: FunctionDefinitionNode,
   helperFunctions: readonly FunctionDefinitionNode[] = [],
+  typedEffectOptions?: FinalizedTypedEffectIrOptions,
 ): WeakMap<InstantiationNode, ChildDeploymentRecipeAnalysis> {
+  return withTypedEffectOptions(typedEffectOptions, () => {
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const handlerInputs = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
   const handlerInputTypes = new Map(visibleInputs.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
@@ -1482,6 +1517,7 @@ export function analyzeChildDeploymentRecipes(
   // preceding a deployment makes that site unsafe; a terminal return after the site does not change its execution.
   processBlock(fn.body);
   return result;
+  });
 }
 
 /** Serialize a complete constructor-only folded state transition. */

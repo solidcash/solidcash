@@ -18,7 +18,7 @@
 | ID | Status |
 |----|--------|
 | G1 | Already settles on fixtures for uint nested returning args (inline and statement form); kept as regression via related peers |
-| **G2** | **Landed this goal** — graph-emission address lanes use solidity ABI words (`addressToGraphEmissionBytes` + GTT `emitGraphEmissionAddressLane`); settle `KernelNestedReturningGraphArgCompose` (nested returning address into later graph call); fence peer: foreign-delegate residuals still `KERNEL_FOREIGN_DELEGATE` |
+| **G2** | **Landed this goal** — solidity-compat graph-emission address **value** lanes use ABI words (`addressToGraphEmissionBytes` + GTT `emitGraphEmissionAddressLane`); address params used as `IFoo(addr)` call targets stay native locking bytecode (ABI `addressSource.forward` indexes). Settle `KernelNestedReturningGraphArgCompose` (nested returning address + poke call-target peer); fence peer: foreign-delegate residuals still `KERNEL_FOREIGN_DELEGATE` |
 | G3–G4 | Listed follow-ons; not gating this goal |
 
 ## Evidence

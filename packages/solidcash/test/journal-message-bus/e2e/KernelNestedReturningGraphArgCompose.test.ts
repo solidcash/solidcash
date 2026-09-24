@@ -99,4 +99,74 @@ describe('kernel nested returning address graph-arg composition', () => {
     expect(builder.inputs.length).toBeGreaterThanOrEqual(3);
     expect(messageBusVmAccepts(builder)).toBe(true);
   }, 180_000);
+
+  it('keeps address-typed call-target args as native locks beside the nested-address settle', async () => {
+    // Peer: poke(address store, …) / IStore(store).write — store is a call target, not an ABI word.
+    const provider = createMessageBusCapstoneTestProvider();
+
+    const storeArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Store {
+        int public value;
+        event Written(int n);
+        function writeEmit(int n) public {
+          value = n;
+          emit Written(n);
+          require(true);
+        }
+      }`, KERNEL);
+    const storeBase = new Contract(storeArtifact, [], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, storeArtifact.stateLayout!, { value: 0n }, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidity ^0.8.0;
+      interface IStore {
+        function writeEmit(int n) external;
+      }
+      contract Caller {
+        function poke(address store, int n) public {
+          IStore(store).writeEmit(n);
+          require(true);
+        }
+      }`, KERNEL);
+    expect(callerArtifact.messageBus?.handlers.find((h) => h.name === 'poke')?.eligible).toBe(true);
+
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    caller._registerResolvedExternal('IStore', store);
+
+    const callsite = callerArtifact.abi.find((entry) => entry.name === 'poke')
+      ?.externalCalls?.find((call) => call.functionName === 'writeEmit');
+    expect(callsite?.callsiteId).toBeTypeOf('number');
+
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        {
+          contract: caller,
+          functionName: 'poke',
+          args: [store.inner.lockingBytecode, 7n],
+        },
+        {
+          contract: store,
+          functionName: 'writeEmit',
+          args: [7n],
+          callsiteId: callsite!.callsiteId!,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+
+    expect(builder.inputs.length).toBeGreaterThanOrEqual(2);
+    expect(messageBusVmAccepts(builder)).toBe(true);
+  }, 180_000);
 });

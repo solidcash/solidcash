@@ -333,13 +333,66 @@ export function encodeMessageBusArguments(
       && argument.length === 2 && argument[0] === 0x01 && argument[1] === 0x00) {
       return Uint8Array.of(0x00);
     }
-    // Graph-emission address lanes match solidity-compat returning addresses: ABI 32-byte words
-    // (native locks project to HASH160 / extract; empty address(0) stays empty).
-    if (!composite && (typeName === 'address' || typeName === 'address payable')) {
-      return scriptToBytecode([addressToGraphEmissionBytes(argument)]);
-    }
     return composite ? argument : scriptToBytecode([argument]);
   }));
+}
+
+/** Unwrap a single script push frame to its payload; raw payloads pass through. */
+const unwrapScriptPushPayload = (bytes: Uint8Array): Uint8Array => {
+  if (bytes.length === 0) return bytes;
+  const first = bytes[0]!;
+  if (first >= 1 && first <= 75 && bytes.length === 1 + first) return bytes.slice(1);
+  if (first === 0x4c && bytes.length >= 2 && bytes.length === 2 + bytes[1]!) {
+    return bytes.slice(2);
+  }
+  if (first === 0x4d && bytes.length >= 3) {
+    const length = bytes[1]! | (bytes[2]! << 8);
+    if (bytes.length === 3 + length) return bytes.slice(3);
+  }
+  return bytes;
+};
+
+/**
+ * Project every top-level address field in an args vector to a solidity ABI word.
+ * Live batching uses a selective policy in `encodeMessageBatch` (call-target address params
+ * stay native); this helper is the full-vector projector for tests and emission-side tooling.
+ */
+export function projectGraphEmissionAddressArgs(
+  args: Uint8Array,
+  inputTypes: readonly string[],
+  structs?: readonly StructDefinitionInfo[],
+): Uint8Array {
+  if (args.length === 0 || inputTypes.length === 0) return args;
+  let offset = 0;
+  const parts: Uint8Array[] = [];
+  for (const typeName of inputTypes) {
+    const type = parseType(typeName);
+    const composite = type instanceof ArrayType
+      || structs?.some((definition) => definition.name === typeName);
+    if (composite) {
+      // Leave self-delimiting composites unchanged (nested address fields are a follow-on).
+      const { bytesConsumed } = decodePushdataValue(args, offset, typeName, structs);
+      parts.push(args.slice(offset, offset + bytesConsumed));
+      offset += bytesConsumed;
+      continue;
+    }
+    const { value, bytesConsumed } = decodePushdataValue(args, offset, typeName, structs);
+    const frame = args.slice(offset, offset + bytesConsumed);
+    offset += bytesConsumed;
+    if ((typeName === 'address' || typeName === 'address payable') && value instanceof Uint8Array) {
+      // encodeMessageBusArguments wraps encodeFunctionArgument pushes once more; unwrap to the lock bytes.
+      const lockOrIdentity = unwrapScriptPushPayload(value);
+      parts.push(scriptToBytecode([addressToGraphEmissionBytes(lockOrIdentity)]));
+    } else {
+      parts.push(frame);
+    }
+  }
+  if (offset !== args.length) {
+    throw new Error(
+      `graph emission address projection consumed ${offset} of ${args.length} argument bytes`,
+    );
+  }
+  return concat(...parts);
 }
 
 const uintLe = (value: bigint, width: number): Uint8Array => {
@@ -826,6 +879,18 @@ export function encodeMessageBatch(
         );
       }
     });
+    // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission
+    // targets EQUALVERIFY against authenticated participant locks. Other address value-args under
+    // solidity-compat use ABI words so nested returning addresses match constructed emission rows.
+    const abiFunction = resolveMessageBusAbiFunction(artifact, invocation.function, invocation.selector);
+    const callTargetAddressIndexes = new Set<number>();
+    for (const call of abiFunction?.externalCalls ?? []) {
+      if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
+        callTargetAddressIndexes.add(call.addressSource.paramIndex);
+      }
+    }
+    const projectAddressValueArgs = artifact.compiler?.options?.solidityImportCompat === true
+      || artifact.compiler?.options?.evmCompat === true;
     const rowEncoded: Uint8Array[] = [];
     encoded.forEach((argument, index) => {
       const inputType = handler.inputs[index].type;
@@ -843,7 +908,13 @@ export function encodeMessageBatch(
       } else if (!(argument instanceof Uint8Array)) {
         throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
       } else {
-        rowEncoded.push(argument);
+        if (projectAddressValueArgs
+          && (inputType === 'address' || inputType === 'address payable')
+          && !callTargetAddressIndexes.has(index)) {
+          rowEncoded.push(addressToGraphEmissionBytes(argument));
+        } else {
+          rowEncoded.push(argument);
+        }
         return;
       }
       leaves.forEach((leaf, leafIndex) => {

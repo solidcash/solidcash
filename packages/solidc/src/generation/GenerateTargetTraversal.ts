@@ -17480,7 +17480,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Project a graph-emission address argument onto the solidity ABI word lane.
    * Empty (address(0)) stays empty; 32-byte ABI words pass through; native locks
-   * and 20-byte identities become left-padded 32-byte words.
+   * and 20-byte identities become left-padded 32-byte words. Batch argsBlob keeps
+   * native locks for call targets; only constructed emission rows use this lane so
+   * nested returning addresses match the SDK emission transcript.
    */
   private emitGraphEmissionAddressLane(locationData: SingleLocationData): void {
     this.emit(Op.OP_DUP, locationData);

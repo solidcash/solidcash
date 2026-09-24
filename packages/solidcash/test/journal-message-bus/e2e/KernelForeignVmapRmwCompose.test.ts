@@ -114,7 +114,7 @@ describe('kernel foreign vmap RMW under composition', () => {
     expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(15n);
   }, 180_000);
 
-  it('INSERT: Caller→Bank credit on an absent key mints 0+v with PredOut at P′', async () => {
+  it('INSERT: Caller→Bank credit on an absent key mints 0+v with PredOut at P', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const bankArtifact = compileString(BANK, KERNEL);
     const bankBase = new Contract(bankArtifact, [], { provider });

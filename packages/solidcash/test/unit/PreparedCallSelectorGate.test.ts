@@ -1,5 +1,5 @@
 /**
- * F26: prepared-call ↔ plan invocation matching uses selector under kernel.
+ * prepared-call selector match: prepared-call ↔ plan invocation matching uses selector under kernel.
  */
 import { describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
@@ -42,7 +42,7 @@ const legacyArtifact = (handlers: Array<{ name: string; selector: string }>): Ar
   return artifact;
 };
 
-describe('F26 prepared-call selector gate', () => {
+describe('prepared-call selector match prepared-call selector gate', () => {
   it('kernel accepts renamed functionName when transported selector matches', () => {
     const artifact = kernelArtifact([{ name: 'set', selector: 'a9059cbb' }]);
     expect(preparedCallMatchesPlanInvocation(
@@ -53,7 +53,7 @@ describe('F26 prepared-call selector gate', () => {
 
   it('kernel accepts renamed functionName when plan selector resolves on the artifact', () => {
     const artifact = kernelArtifact([{ name: 'set', selector: 'a9059cbb' }]);
-    // No transported selector — F25 resolve by plan selector still matches.
+    // No transported selector — resolveMessageBus selector-first resolve by plan selector still matches.
     expect(preparedCallMatchesPlanInvocation(
       { functionName: 'renamedSet', artifact },
       { function: 'set', selectorHex: 'a9059cbb' },
@@ -84,17 +84,27 @@ describe('F26 prepared-call selector gate', () => {
     )).toBe(true);
   });
 
-  it('compose.ts drives preparedCallMatchesPlanInvocation (not raw name inequality)', () => {
+  it('compose prepared-call validation drives preparedCallMatchesPlanInvocation (not raw name inequality)', () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '../../src/message-bus/compose.ts'), 'utf8');
-    expect(src).toContain('preparedCallMatchesPlanInvocation');
-    const codeLines = src.split('\n').filter((line) => {
-      const t = line.trim();
-      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
-    });
-    const rawNameGate = codeLines.filter((line) => (
-      /functionName\s*!==\s*invocation\.function\b/.test(line)
-    ));
-    expect(rawNameGate).toEqual([]);
+    const messageBusDir = join(here, '../../src/message-bus');
+    const composeSrc = readFileSync(join(messageBusDir, 'compose.ts'), 'utf8');
+    const settlementSrc = readFileSync(join(messageBusDir, 'compose-settlement-context.ts'), 'utf8');
+    const validationSrc = readFileSync(
+      join(messageBusDir, 'compose-prepared-call-validation.ts'),
+      'utf8',
+    );
+    expect(composeSrc).toContain('resolveComposeValidatedIndexes');
+    expect(settlementSrc).toContain('validateComposePreparedCallArguments');
+    expect(validationSrc).toContain('preparedCallMatchesPlanInvocation');
+    for (const src of [composeSrc, settlementSrc, validationSrc]) {
+      const codeLines = src.split('\n').filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      });
+      const rawNameGate = codeLines.filter((line) => (
+        /functionName\s*!==\s*invocation\.function\b/.test(line)
+      ));
+      expect(rawNameGate).toEqual([]);
+    }
   });
 });

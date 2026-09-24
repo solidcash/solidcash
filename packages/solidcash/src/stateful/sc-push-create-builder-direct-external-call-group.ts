@@ -1,0 +1,301 @@
+/**
+ * phase-boundary extract: SC _createBuilder extract — push one direct nested external-call UTXO group.
+ */
+
+import { binToHex } from '@bitauth/libauth';
+import type {
+  AbiFunction,
+  Artifact,
+  ExternalCallAbi,
+  StateLayout,
+  StateValue,
+} from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
+import { physicalExternalCallGroupIndexByMasterOutpoint } from './physical-external-call.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
+import { stageValueChunkWrite, type ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+import { describeValueChunkWrites } from './writer-group-selection.js';
+
+export interface PushCreateBuilderDirectExternalCallGroupHost {
+  deriveReturnValue(...args: any[]): Promise<unknown>;
+  readonly callerCategoryId: string;
+  readonly callerContract: unknown;
+  readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
+}
+
+export interface PushCreateBuilderDirectExternalCallGroupInput {
+  externalCallUtxoGroups: ExternalCallUtxoGroup[];
+  compilerRoute: ExternalCallUtxoGroup['compilerRoute'] | undefined;
+  bBlockInputs: UnlockableUtxo[] | undefined;
+  bBlockLayout: NonNullable<AbiFunction['blockLayout']> | undefined;
+  bAbiFunc: AbiFunction | undefined;
+  bCompilerInternalArgs: Record<string, FunctionArgument>;
+  bPlannedEntryInserts: NonNullable<ExternalCallUtxoGroup['plannedEntryInserts']>;
+  bRelativeOutputInternalArgs: Set<string>;
+  bState: { masterUtxo: Utxo };
+  bStatelayout: StateLayout;
+  bDataNfts: UnlockableUtxo[];
+  bRequiredNftIndices: number[];
+  bReturnEventInBlock: boolean;
+  bGraphBlockhashSelections: NonNullable<ExternalCallUtxoGroup['graphBlockhashSelections']> | [];
+  bKeccak: { recreates: NonNullable<ExternalCallUtxoGroup['keccakRecreates']> };
+  bEntryLoopCommitments: string[] | undefined;
+  bEntryLoopStart: number | undefined;
+  bEntryLoopCollection: string | undefined;
+  bValueChunkOutputCount: number;
+  bDirectChunkValue: Uint8Array | undefined;
+  callInfo: {
+    functionName: string;
+    args: FunctionArgument[];
+    externalContract: any;
+  };
+  ec: ExternalCallAbi & { rawFunctionName?: string; rawSelector?: string; callMode?: string };
+  externalCategoryId: string;
+  publicSelfIdentity: { categoryId: string; lockingBytecode: string };
+  publicSelfAddress: Uint8Array | undefined;
+  returnProbeOnly: boolean | undefined;
+}
+
+/**
+ * Validate route entry uniqueness, optionally precompute a probe return, push the
+ * direct ExternalCallUtxoGroup, and promote shared physical blocks / stage chunk writes.
+ */
+export async function pushCreateBuilderDirectExternalCallGroup(
+  host: PushCreateBuilderDirectExternalCallGroupHost,
+  input: PushCreateBuilderDirectExternalCallGroupInput,
+): Promise<void> {
+  const {
+    externalCallUtxoGroups,
+    compilerRoute,
+    bBlockInputs,
+    bBlockLayout,
+    bAbiFunc,
+    bCompilerInternalArgs,
+    bPlannedEntryInserts,
+    bRelativeOutputInternalArgs,
+    bState,
+    bStatelayout,
+    bDataNfts,
+    bRequiredNftIndices,
+    bReturnEventInBlock,
+    bGraphBlockhashSelections,
+    bKeccak,
+    bEntryLoopCommitments,
+    bEntryLoopStart,
+    bEntryLoopCollection,
+    bValueChunkOutputCount,
+    bDirectChunkValue,
+    callInfo,
+    ec,
+    externalCategoryId,
+    publicSelfIdentity,
+    publicSelfAddress,
+    returnProbeOnly,
+  } = input;
+
+  if (compilerRoute && bBlockInputs && bBlockLayout) {
+    const seenEntries = new Map<string, number>();
+    for (const slot of bBlockLayout.slots) {
+      if (slot.kind !== 'entry') continue;
+      const entryInput = bBlockInputs[slot.offset];
+      if (!entryInput?.token?.nft) continue;
+      const outpoint = `${entryInput.txid}:${entryInput.vout}`;
+      const owner = seenEntries.get(outpoint);
+      if (owner !== undefined) {
+        throw new Error(
+          `External message-bus batch resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
+          + 'this physical alias is not supported by the advertised route',
+        );
+      }
+      seenEntries.set(outpoint, slot.slotIndex ?? 0);
+    }
+  }
+
+  if ((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0
+    && !Object.prototype.hasOwnProperty.call(
+      bCompilerInternalArgs, '__internal__vmapBatchTrailingCount',
+    )) {
+    bCompilerInternalArgs.__internal__vmapBatchTrailingCount = BigInt(bPlannedEntryInserts.length);
+  }
+
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+    console.error('external-route-vmap-args', callInfo.functionName, bAbiFunc?.name,
+      bAbiFunc?.sortedBatchInfo, bCompilerInternalArgs);
+  }
+  // Several source callsites can target one stateful participant. Keep a logical group for every
+  // callsite (selectors, arguments and return witnesses remain slot-stable), but let only the first
+  // group own the participant's physical input block. Transitive graph expansion already represents
+  // this distinction with `sharedGroupIndex`; direct calls must do the same or the same master UTXO is
+  // appended once per callsite. Use the exact live master outpoint rather than a source/interface name:
+  // category IDs describe state ownership, while the outpoint is the resource actually consumed.
+  const directSharedGroupIndex = physicalExternalCallGroupIndexByMasterOutpoint(
+    externalCallUtxoGroups, bState.masterUtxo,
+  );
+  // A return probe evaluates ONLY the contract input, so a callee's covenant never executes and its return
+  // event would keep the neutral placeholder the builder seeds (`setReturnEventOutput`), which a caller
+  // decoding a `bool` success reads as failure and answers with its library's catch path. Fabricate the value
+  // the same way the nested-call path does, and only for a probe: a broadcast transaction executes its
+  // callees and must not precompute.
+  let directPrecomputedReturn: Uint8Array | undefined;
+  if (returnProbeOnly === true && bReturnEventInBlock) {
+    const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
+    const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
+    const precomputeName = callInfo.functionName === '__raw__'
+      ? rawCall.rawFunctionName ?? (precomputeArtifact.abi as readonly AbiFunction[])
+        .find((candidate) => rawCall.rawSelector !== undefined
+          && candidate.selector?.toLowerCase() === rawCall.rawSelector.toLowerCase())?.name
+      : callInfo.functionName;
+    // The callee artifact's own entry, not `_resolveCallAbi`: the latter matches by argument shape, which a
+    // raw callsite's decoded argument vector need not satisfy.
+    const precomputeAbi = precomputeName === undefined ? undefined
+      : (precomputeArtifact.abi as readonly AbiFunction[])
+        .find((candidate) => candidate.name === precomputeName);
+    if (precomputeAbi?.outputs?.length === 1 && precomputeName !== undefined) {
+      const encode = (value: StateValue): Uint8Array => encodeExternalReturnValue(
+        value,
+        precomputeAbi.outputs![0].type,
+        precomputeArtifact.structs ?? precomputeArtifact.stateLayout?.structs,
+        resolveExternalResultEncoding(
+          precomputeAbi.resultEncoding,
+          precomputeArtifact,
+          precomputeAbi.outputs!.map((output) => output.type),
+          `function '${precomputeAbi.name}' result`,
+        ) === 'evm-abi-v1',
+        precomputeArtifact.enums,
+      );
+      try {
+        // This frame is the CALLER of `callInfo.externalContract`, so the callee's `msg.sender` is exactly
+        // this frame's authenticated identity. Without it the nested probe keys every `msg.sender`-derived
+        // mapping slot on the transaction origin (measured: a `transferFrom` allowance probe pinned the
+        // signer-keyed slot while the composed transaction reads the caller-keyed one), and the returned
+        // value the composition reuses describes a frame the transaction never builds.
+        const precomputeValue = await host.deriveReturnValue(
+          precomputeName, callInfo.args, undefined, precomputeAbi, undefined,
+          publicSelfAddress, host.callerCategoryId, host.callerContract,
+        );
+        if (precomputeValue !== undefined) directPrecomputedReturn = encode(precomputeValue as StateValue);
+      } catch {
+        directPrecomputedReturn = undefined;
+      }
+      // A state-writing callee has no executed transaction to read a value from. The compiler's convention for
+      // such a call is that the integrity check IS the success condition (an opaque return publishes a literal
+      // `true`), so a probe fabricates the same for a single `bool` result.
+      if (directPrecomputedReturn === undefined && precomputeAbi.outputs[0].type === 'bool') {
+        directPrecomputedReturn = encode(true);
+      }
+    }
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_RETURN === '1') {
+    console.error('direct-call-precompute', {
+      functionName: callInfo.functionName,
+      probeOnly: returnProbeOnly === true,
+      inBlock: bReturnEventInBlock,
+      sharedGroupIndex: directSharedGroupIndex,
+      precomputedHex: directPrecomputedReturn ? binToHex(directPrecomputedReturn) : undefined,
+    });
+  }
+  externalCallUtxoGroups.push({
+    categoryId: externalCategoryId,
+    stateLayout: bStatelayout,
+    masterUtxo: bState.masterUtxo,
+    dataNftUtxos: bDataNfts,
+    requiredDataNftIndices: bRequiredNftIndices,
+    functionName: callInfo.functionName,
+    functionArgs: callInfo.args,
+    externalContract: callInfo.externalContract,
+    callerIdentity: publicSelfIdentity,
+    logicalFunctionName: callInfo.functionName,
+    ...(Object.keys(bCompilerInternalArgs).length > 0 && { internalArgs: bCompilerInternalArgs }),
+    ...(bRelativeOutputInternalArgs.size > 0 && {
+      relativeOutputInternalArgs: [...bRelativeOutputInternalArgs],
+    }),
+    ...(compilerRoute && {
+      compilerRoute: {
+        ...compilerRoute,
+        ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
+          internalArgs: {
+            ...bCompilerInternalArgs,
+            __internal__vmapBatchTrailingCount: BigInt(bPlannedEntryInserts.length),
+          },
+        }),
+      },
+    }),
+    ...(bGraphBlockhashSelections.length > 0 && {
+      graphBlockhashSelections: bGraphBlockhashSelections,
+    }),
+    ...(ec.callMode && { callMode: ec.callMode }),
+    ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
+    ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+    ...(directSharedGroupIndex >= 0 && {
+      sharedGroupIndex: directSharedGroupIndex,
+      // An explicit empty block makes all input-count/layout reducers consume zero physical slots for
+      // this logical alias while retaining the callsite's own ABI/layout metadata.
+      blockInputs: [] as UnlockableUtxo[],
+    }),
+    ...(bReturnEventInBlock && { returnEventInBlock: true }),
+    ...(directPrecomputedReturn !== undefined
+      && { precomputedReturnCommitment: directPrecomputedReturn }),
+    ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
+    ...(bEntryLoopCommitments && {
+      entryLoopCommitments: bEntryLoopCommitments,
+      entryLoopStart: bEntryLoopStart,
+      entryLoopCollection: bEntryLoopCollection,
+    }),
+    ...(bValueChunkOutputCount > 0 && { valueChunkOutputCount: bValueChunkOutputCount }),
+    ...(() => {
+      const values: Record<string, StateValue> = {};
+      for (const name of bAbiFunc?.dynamicWrites ?? []) {
+        const variable = bStatelayout.variables.find((candidate) => candidate.name === name);
+        if (!variable) continue;
+        const candidates = bAbiFunc!.inputs
+          .map((input, index) => ({ input, index }))
+          .filter(({ input }) => !input.name.startsWith('__internal__')
+            && input.type === variable.type);
+        if (candidates.length !== 1) continue;
+        const value = callInfo.args[candidates[0].index];
+        if (typeof value === 'string' || value instanceof Uint8Array) values[name] = value;
+      }
+      return Object.keys(values).length > 0 ? { dynamicStateValues: values } : {};
+    })(),
+  });
+  const directGroup = externalCallUtxoGroups[externalCallUtxoGroups.length - 1];
+  directGroup.valueChunkWrites = describeValueChunkWrites(directGroup);
+  // Several callsites can claim one callee master UTXO (commonly a view first, then the writer). They share
+  // ONE physical block: the caller's covenant verifies the writer's callsite against the writer's own ABI
+  // layout, and the sorted-batch planner addresses that callsite's predecessor/NEW inputs relative to it. A
+  // denser writer block must therefore replace the shape an earlier callsite contributed - otherwise the
+  // physical block keeps the narrower layout, the writer's planned inserts name block offsets that do not
+  // exist, and derivation aborts before any participant state is resolved.
+  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+    const physicalOwner = externalCallUtxoGroups[directSharedGroupIndex];
+    if (physicalOwner !== undefined
+      && bBlockLayout.slots.length > (physicalOwner.blockLayout?.slots.length ?? 0)) {
+      physicalOwner.blockInputs = bBlockInputs;
+      physicalOwner.blockLayout = bBlockLayout;
+      physicalOwner.dataNftUtxos = bDataNfts;
+      physicalOwner.requiredDataNftIndices = bRequiredNftIndices;
+      if (bReturnEventInBlock) physicalOwner.returnEventInBlock = true;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RETURN === '1') {
+        console.error('shared-block-promotion', {
+          physical: physicalOwner.logicalFunctionName ?? physicalOwner.functionName,
+          writer: callInfo.functionName,
+          slots: bBlockLayout.slots.map((slot) => `${slot.kind}@${slot.offset}`),
+          inputs: bBlockInputs.length,
+        });
+      }
+    }
+  }
+  if (directSharedGroupIndex >= 0 && bBlockInputs !== undefined && bBlockLayout !== undefined) {
+    directGroup.blockInputs = [] as UnlockableUtxo[];
+  }
+  if (bDirectChunkValue && directGroup.valueChunkWrites.length === 1) {
+    stageValueChunkWrite(
+      directGroup.valueChunkWrites[0], bDirectChunkValue, host.valueChunkWriteStagingSession,
+    );
+  }
+}

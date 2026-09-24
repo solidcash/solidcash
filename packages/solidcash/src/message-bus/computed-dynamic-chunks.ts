@@ -4,8 +4,15 @@ import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
-import { refuseVmExtractedRepairsIfRecipe } from './materialization-mode.js';
+import { gateWouldApplyRepairsIfRecipe } from './materialization-mode.js';
+import {
+  MonotoneCell,
+  finalizeMonotonePass,
+  freezeGeometry,
+  recordMonotonePass,
+} from './monotone-lattice.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
+import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
 
 export interface ComputedDynamicChunkConvergence {
   repairs: number;
@@ -49,14 +56,14 @@ export function countWouldApplyDynamicChunkRepairs(
   return wouldApply;
 }
 
-/** F9′: refuse VM-mined dynamic-chunk repairs that would change state under recipe. */
+/** Refuse VM-mined dynamic-chunk repairs that would change state under recipe. */
 export function gateWouldApplyDynamicChunkRepairsIfRecipe(
   builder: DynamicChunkRepairBuilder,
   commitmentProposals: ReadonlyMap<number, Uint8Array>,
 ): number {
-  const wouldApply = countWouldApplyDynamicChunkRepairs(builder, commitmentProposals);
-  refuseVmExtractedRepairsIfRecipe(wouldApply);
-  return wouldApply;
+  return gateWouldApplyRepairsIfRecipe(
+    countWouldApplyDynamicChunkRepairs(builder, commitmentProposals),
+  );
 }
 
 /**
@@ -75,7 +82,9 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   builder: TransactionBuilder,
 ): ComputedDynamicChunkConvergence {
   const assembly = preflightMessageBusBlockAssembly(builder);
-  if (!assembly) return { repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] };
+  if (!assembly) {
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] });
+  }
 
   const owners = new Map<number, Set<number>>();
   for (const block of assembly.blocks) {
@@ -135,12 +144,42 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       })),
     }));
   }
-  if (owners.size === 0) return { repairs: 0, rounds: 0, ownedOutputs, outputs: [] };
+  if (owners.size === 0) {
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs, outputs: [] });
+  }
 
   const changedOutputs = new Set<number>();
+  // constraint fixpoint / item-10 follow-on: dynamic-chunk repairs progress on the same monotone lattice as fixed-state resources.
+  const commitmentLattice = new MonotoneCell<string>();
+  const seenStates = new Set<string>();
   const maximumRounds = owners.size * 2 + 1;
   let repairs = 0;
   for (let round = 1; round <= maximumRounds; round += 1) {
+    const stateKey = ownedOutputs
+      .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
+      .join('|');
+    recordMonotonePass(
+      commitmentLattice,
+      seenStates,
+      stateKey,
+      'messageBus: dynamic-chunk output convergence entered a repeated state',
+    );
+    // constraint fixpoint: multi-candidate API inside the dynamic-chunk converge loop.
+    const picked = selectActiveConstraintCandidate(
+      'dynamic-chunk',
+      [stateKey],
+      'messageBus: dynamic-chunk output convergence entered a repeated state',
+    );
+    if (picked === undefined) {
+      finalizeMonotonePass(commitmentLattice, stateKey);
+      return freezeGeometry({
+        repairs,
+        rounds: round,
+        ownedOutputs,
+        outputs: [...changedOutputs].sort((a, b) => a - b),
+      });
+    }
+
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const commitmentProposals = new Map<number, Uint8Array>();
@@ -209,12 +248,16 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       changed = true;
     }
     if (!changed) {
-      return {
+      const finalKey = ownedOutputs
+        .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
+        .join('|');
+      finalizeMonotonePass(commitmentLattice, finalKey);
+      return freezeGeometry({
         repairs,
         rounds: round,
         ownedOutputs,
         outputs: [...changedOutputs].sort((a, b) => a - b),
-      };
+      });
     }
   }
   throw new Error(
@@ -225,7 +268,11 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
 /**
  * Local participant builders report incomplete dynamic chunks from frozen `00` probe placeholders. Complete-graph
  * OTC convergence may already have replaced those commitments on `builder`; only treat the graph as incomplete
- * when a placeholder remains in the owned trailing chunk run (or no owned run was found at all).
+ * when a placeholder remains in the owned trailing chunk run.
+ *
+ * J7: an unselected handler's empty dynamic array can leave resolved=0 `00` stubs with no owned trailing run.
+ * That is zero physical chunks, not incompleteness — only fail closed when some chunk was already resolved
+ * (owned band missing) or an owned trailing output still holds a placeholder.
  */
 export function dynamicChunkPlaceholdersRemain(
   builder: TransactionBuilder,
@@ -233,7 +280,9 @@ export function dynamicChunkPlaceholdersRemain(
   incomplete: readonly { participant: number; variable: string; resolved: number; total: number }[],
 ): boolean {
   if (incomplete.length === 0) return false;
-  if (convergence.ownedOutputs.length === 0) return true;
+  if (convergence.ownedOutputs.length === 0) {
+    return incomplete.some((item) => item.resolved > 0);
+  }
   return convergence.ownedOutputs.some((outputIndex) => {
     const commitment = builder.outputs[outputIndex]?.token?.nft?.commitment ?? '';
     return commitment === '' || commitment === '00';

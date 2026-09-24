@@ -51,6 +51,18 @@ describe('kernel conditional multi continuation resource lanes under composition
       expect(storeArtifact.abi.find((entry) => entry.name === 'set')
         ?.entryAccesses?.find((access) => access.collection === 'right')?.activation)
         .toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 3 } });
+      // path-effect activation: compose consumes published multi-effect pathEffectSchedule for write selection.
+      expect(storeArtifact.messageBus?.handlers.find((handler) => handler.name === 'set')
+        ?.pathEffectSchedule).toMatchObject({
+        version: 1,
+        effects: expect.arrayContaining([
+          expect.objectContaining({ kind: 'stateWrite' }),
+          expect.objectContaining({
+            kind: 'stateWrite',
+            activation: expect.objectContaining({ kind: 'handlerInput' }),
+          }),
+        ]),
+      });
 
       const storeBase = new Contract(storeArtifact, [], { provider });
       const storeSetup = await setupStatefulUtxos(

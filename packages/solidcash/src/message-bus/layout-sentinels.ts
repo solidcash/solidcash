@@ -60,7 +60,7 @@ export function rebaseLayoutCoordinate(
 }
 
 /**
- * D7: true when a provisional unlocker witness is an active layout coordinate.
+ * layout-sentinel / PredOut: true when a provisional unlocker witness is an active layout coordinate.
  * Absent / inactive tagged sentinels must not enter relocatable PredOut/dyn sync.
  */
 export function layoutWitnessIsActiveCoordinate(value: unknown): value is bigint {

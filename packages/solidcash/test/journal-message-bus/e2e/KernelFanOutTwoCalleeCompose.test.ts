@@ -6,12 +6,10 @@ import { describe, expect, it } from 'vitest';
 import {
   Contract, StatefulContract, messageBus, SortedList, getEntryNftAddress,
 } from '../../../src/index.js';
-import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { keyToSlot } from '../../../src/stateful/SortedList.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { messageBusVmAccepts as vmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -21,15 +19,6 @@ const KERNEL = {
   solidityImportCompat: true,
   suppressWarnings: true,
 } as const;
-
-const vmAccepts = (builder: TransactionBuilder): boolean => {
-  const transaction = builder.buildLibauthTransaction();
-  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
-  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
-    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
-  ) === true);
-};
 
 describe('kernel fan-out two heterogeneous callees under composition', () => {
   it('Caller.fire co-spends Emitter.ping and Registry.set in one compose', async () => {

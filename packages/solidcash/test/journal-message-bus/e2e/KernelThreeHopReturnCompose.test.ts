@@ -2,11 +2,9 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
-import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { messageBusVmAccepts as vmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -16,15 +14,6 @@ const KERNEL = {
   solidityImportCompat: true,
   suppressWarnings: true,
 } as const;
-
-const vmAccepts = (builder: TransactionBuilder): boolean => {
-  const transaction = builder.buildLibauthTransaction();
-  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
-  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
-    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
-  ) === true);
-};
 
 const commitmentNonEmpty = (commitment: Uint8Array | string | undefined): boolean => {
   if (commitment === undefined) return false;

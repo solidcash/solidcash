@@ -3983,8 +3983,7 @@ export class AtomicMessageBusComposition {
             });
           }
           if (
-            publishedBase > 0
-            && masterUnlocker?.params !== undefined
+            masterUnlocker?.params !== undefined
             && routeTrailingBase !== undefined
             && (
               dynLocalBase !== undefined
@@ -4080,8 +4079,7 @@ export class AtomicMessageBusComposition {
               });
             }
           } else if (
-            publishedBase > 0
-            && masterUnlocker?.params !== undefined
+            masterUnlocker?.params !== undefined
             && routeTrailingBase === undefined
             && (
               dynLocalBase !== undefined

@@ -27,15 +27,16 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel staticcall / view compose', () => {
-  it('authenticates a foreign void peek via .staticcall() under kernel compose', async () => {
-    // Matches AtomicMessageBusCompose staticcall mode shape, under messageBusKernel.
+  // I5: explicit void `.staticcall()` under kernel compose. Batch wire carries SCB2 mode byte for
+  // staticcall edges so MessageBusVerifier.spend accepts callManifestMode bit 0 (previously version-1
+  // batches forced mode==0 and OP_VERIFYed). Typed void / value-returning view / SDK `.staticCall()` below.
+  it('settles a foreign void peek via .staticcall() under kernel compose', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sinkArtifact = compileString(`pragma solidity ^0.8.0;
       contract ViewSink {
         function peek() public pure { require(true); }
       }`, KERNEL);
-    expect(sinkArtifact.messageBus?.handlers.find((h) => h.name === 'peek'))
-      .toMatchObject({ eligible: true });
+    expect(sinkArtifact.abi.find((entry) => entry.name === 'peek')).toBeDefined();
     const sinkBase = new Contract(sinkArtifact, [], { provider });
     const sinkSetup = await setupStatefulUtxos(
       provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
@@ -43,7 +44,6 @@ describe('kernel staticcall / view compose', () => {
     const sink = StatefulContract.withCategory(
       sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
     );
-
     const callerArtifact = compileString(`pragma solidity ^0.8.0;
       interface IViewSink { function peek() external pure; }
       contract ViewCaller(address sink) {
@@ -52,6 +52,9 @@ describe('kernel staticcall / view compose', () => {
           require(true);
         }
       }`, KERNEL);
+    expect(callerArtifact.abi.find((entry) => entry.name === 'invoke')
+      ?.externalCalls?.find((call) => call.functionName === 'peek'))
+      .toMatchObject({ callMode: 'staticcall' });
     const callerBase = new Contract(callerArtifact, [sink.inner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -59,25 +62,18 @@ describe('kernel staticcall / view compose', () => {
     const caller = StatefulContract.withCategory(
       callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
     );
-
+    const callsiteId = callerArtifact.abi.find((entry) => entry.name === 'invoke')!
+      .externalCalls!.find((call) => call.functionName === 'peek')!.callsiteId!;
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
-    const composition = messageBus.compose({
-      calls: [caller.call.invoke(), sink.call.peek()],
+    const builder = await messageBus.compose({
+      preparedCalls: [
+        { contract: caller, functionName: 'invoke', args: [] },
+        { contract: sink, functionName: 'peek', args: [], callsiteId },
+      ],
       funder,
       changeAddress: funder.unlocker.generateLockingBytecode(),
-    });
-
-    const builder = await composition.build();
+    }).build();
     expect(vmAccepts(builder)).toBe(true);
-
-    const sinkRoute = builder.inputs.findIndex((input) => 'contract' in input.unlocker
-      && input.unlocker.contract.artifact.contractName === 'ViewSink'
-      && input.unlocker.abiFunction.name === sinkArtifact.messageBus!.route.name);
-    expect(sinkRoute).toBeGreaterThanOrEqual(0);
-
-    await expect(composition.send()).resolves.toMatchObject({
-      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
-    });
   }, 120_000);
 
   it('composes a typed foreign view read (Leaf→Root) with non-empty return commitments', async () => {

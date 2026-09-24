@@ -40,6 +40,24 @@ export {
   type SoftStateSnapshot,
 } from './StatefulContract.js';
 export {
+  readKernelExecutionPlans,
+  requireKernelExecutionPlanDigest,
+} from './KernelExecutionPlanReader.js';
+export {
+  legacyLiveValueChunkBandWidth,
+  legacyComputePublishValueChunkBand,
+  legacyFillValueChunkBandHoles,
+  legacyPersistedValueChunkWidth,
+  legacyPersistedValueChunkValue,
+  legacyPersistedValueChunkLock,
+  legacyPersistedValueChunkUnlockRecipe,
+  legacyRememberValueChunkValue,
+  legacyRememberValueChunkLock,
+  legacyRememberValueChunkUnlockRecipe,
+  legacyStageValueChunkValue,
+  legacyIsPersistedValueChunkReady,
+} from './legacy-job-event-helpers.js';
+export {
   RUNTIME_LOOP_EVENT_ITERATION_LIMIT,
   runtimeLoopEventIterationValues,
   runtimeLoopEventRepeatSource,
@@ -60,6 +78,12 @@ export {
   type StatefulTransactionOptions,
   type ValueChunkWriteDescriptor,
 } from './StatefulTransactionBuilder.js';
+export {
+  CompositionSettlementSession,
+  createCompositionSettlementSession,
+  getCompositionSettlementSession,
+  runWithCompositionSettlementSession,
+} from './value-chunk-persist.js';
 export {
   canonicalValueChunkProducerIdentity,
   canonicalValueChunkProducerPathContext,

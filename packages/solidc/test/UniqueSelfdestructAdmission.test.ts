@@ -1,5 +1,5 @@
 /**
- * F16′: unique modifier-only selfdestruct stays admitted; selfdestruct swarms stay KERNEL_LIFECYCLE.
+ * unique selfdestruct admission: unique modifier-only selfdestruct stays admitted; selfdestruct swarms stay KERNEL_LIFECYCLE.
  */
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
@@ -12,7 +12,7 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
-describe('F16′ unique selfdestruct admission', () => {
+describe('unique selfdestruct admission unique selfdestruct admission', () => {
   it('admits a single modifier-only fixed-state selfdestruct', () => {
     const artifact = compileString(`pragma solidcash ^0.13.0;
       contract OneKill {

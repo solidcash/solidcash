@@ -73,6 +73,28 @@ describe('kernel lifecycle transaction-signature boundary', () => {
       .toBe(false);
   });
 
+  it('Fence #13: selfdestruct with detached sig stays KERNEL_TX_SIGNATURE', () => {
+    const artifact = compileString(`contract Victim(pubkey authority) {
+      function close(sig proof) public selfdestruct {
+        require(checkSig(proof, authority));
+      }
+      function opaqueClose(sig payload) public selfdestruct {
+        require(bytes(payload).length >= 0);
+      }
+    }`, KERNEL);
+    const handler = (name: string) => artifact.messageBus?.handlers.find((entry) => entry.name === name);
+
+    expect(handler('close')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+      rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+    });
+    expect(handler('opaqueClose')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_TX_SIGNATURE',
+    });
+  });
+
   it('retains exact SIGHASH_ALL provenance for an ordinary signed sibling beside an admitted lifecycle row', () => {
     const artifact = compileString(`contract Threads(pubkey authority) {
       function divide(int count) public split(count) { require(count > 0); }

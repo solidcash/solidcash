@@ -2,8 +2,8 @@
 
 **Register with:** `/goal --budget 48 $(cat /tmp/goal-kernel-layout-ownership-fold.txt)`
 
-**Implement WT:** `.worktrees/kernel-comprehensive-fixtures` (`grok/kernel-comprehensive-fixtures`)  
-**Gate A verify WT:** `.worktrees/kernel-beta-candidate` — **other agent only** (no edits / no eacc grind from implementer)  
+**Implement WT:** `.worktrees/kernel-comprehensive-fixtures` (`grok/kernel-comprehensive-fixtures`)
+**Gate A verify WT:** `.worktrees/kernel-beta-candidate` — **other agent only** (no edits / no eacc grind from implementer)
 **Maps:** this file; session `plan.md`; `HANDOFF_ACCIDENTAL_BETA_EDITS.md`; `/tmp/goal-kernel-layout-ownership-fold.txt`
 
 ## Why
@@ -27,8 +27,8 @@ No beta edits / no marketplace grind from this agent. Foreign delegate (#15), tr
 - [x] 1 Ownership MVP + attribution
 - [x] 1b Dyn-base injection + absolute-base codegen on fixtures; `KernelDynamicChunkInputBase` 2/2
 - [x] 2 Layout resolver cutover → Gate A′
-- [ ] 3 Alias normalize (as needed for A′/B)
+- [x] 3 Alias normalize (as needed for A′/B) — `normalizeOwnershipCollectionAlias` before ownership identity
 - [x] 4 Multi-row fold → Gate B — fold authority + resourceFoldPlans + KernelMultiRowChunkableFoldCompose e2e
-- [ ] 5 Path-effect IR (thin; fold activations)
-- [ ] 6 Constraint/fixpoint (pay-as-you-go)
-- [ ] 7 Typed ExecutionContext (pay-as-you-go)
+- [x] 5 Path-effect IR (thin; fold activations) — **COVERED (thin)**: fold/path + schedules + EC + multi-kind + opaque-control + full activation recipe family incl. ternary/member + array-index/cast; proofs `ResourceFold` (17) + `kimp-d1-d2-d3-stretch-sdk.log`
+- [x] 6 Constraint/fixpoint (pay-as-you-go) — **COVERED (thin)**: ConstraintFixpointSession + live domains + speculative admit/converge + accumulate-all OTC→rankMany + cross-output joint fingerprint + weighted OTC scoring; proofs `ResourceOtcConflictRank` (3) + `kimp-d1-d2-d3-stretch-*.log`
+- [x] 7 Typed ExecutionContext (pay-as-you-go) — **COVERED (thin)**: lifecycle + multi-kind + batch/fold + emit/transfer env + planEffects + slot cover + slotInventory→admit + prune + kind-specific sidecar + dense sidecar/event/transfer/runtime remap; proofs `ComposeSlotEffectPlans` (7) + `kimp-d1-d2-d3-stretch-sdk.log`

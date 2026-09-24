@@ -1,5 +1,5 @@
 /**
- * D7: compose relocatable PredOut/dyn sync uses tagged layout sentinels.
+ * layout-sentinel / PredOut: compose relocatable PredOut/dyn sync uses tagged layout sentinels.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -17,7 +17,7 @@ import {
   resolveParticipantAbsoluteWitnesses,
 } from '../../src/message-bus/layout-resolver.js';
 
-describe('D7 PredOut/sentinel compose sync', () => {
+describe('layout-sentinel / PredOut PredOut/sentinel compose sync', () => {
   it('layoutWitnessIsActiveCoordinate accepts coordinates and refuses tagged sentinels', () => {
     expect(layoutWitnessIsActiveCoordinate(0n)).toBe(true);
     expect(layoutWitnessIsActiveCoordinate(23n)).toBe(true);
@@ -74,7 +74,11 @@ describe('D7 PredOut/sentinel compose sync', () => {
 
   it('compose.ts gates relocatable PredOut/dyn on layoutWitnessIsActiveCoordinate', () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '../../src/message-bus/compose.ts'), 'utf8');
+    const bus = join(here, '../../src/message-bus');
+    const src = [
+      readFileSync(join(bus, 'compose.ts'), 'utf8'),
+      readFileSync(join(bus, 'compose-assemble.ts'), 'utf8'),
+    ].join('\n');
     expect(src).toContain("from './layout-sentinels.js'");
     expect(src).toContain('layoutWitnessIsActiveCoordinate');
     const codeLines = src.split('\n').filter((line) => {

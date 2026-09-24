@@ -1,6 +1,7 @@
 import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import {
-  decodePushdataValue, scriptToBytecode, type Artifact, type DelegateForwardingAbi,
+  decodePushdataValue, scriptToBytecode,
+  type AbiFunction, type Artifact, type DelegateForwardingAbi,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 
@@ -460,4 +461,110 @@ export function resolveKernelDelegatePromotion(
     throw new Error('delegate forwarding request does not match the proxy payload');
   }
   return resolved;
+}
+
+/** @internal Resolve one compiler-authored terminal forwarding edge for atomic delegate promotion. */
+export function resolvePreparedKernelDelegateExecution(input: {
+  proxyFunction: Pick<AbiFunction, 'name' | 'delegateForwarding'>;
+  callIndex: number;
+  proxyParameters: readonly FunctionArgument[];
+  proxyConstructorArgs: readonly FunctionArgument[];
+  proxyLockingBytecode: string;
+  stateCategory: string;
+  implementationArtifact: Artifact;
+  implementationLockingBytecode: string;
+  requestedFunctionName: string;
+  requestedArgs: readonly FunctionArgument[];
+}): ReturnType<typeof resolveKernelDelegatePromotion> | undefined {
+  if (input.proxyFunction.delegateForwarding?.callIndex !== input.callIndex) return undefined;
+  return resolveKernelDelegatePromotion({
+    forwarding: input.proxyFunction.delegateForwarding,
+    proxyParameters: input.proxyParameters,
+    proxyConstructorArgs: input.proxyConstructorArgs,
+    proxyLockingBytecode: input.proxyLockingBytecode,
+    stateCategory: input.stateCategory,
+    implementation: {
+      artifact: input.implementationArtifact,
+      lockingBytecode: input.implementationLockingBytecode,
+    },
+    requestedFunctionName: input.requestedFunctionName,
+    requestedArgs: input.requestedArgs,
+  });
+}
+
+/**
+ * Bind a promoted delegate execution to its exact logical ABI owner.
+ *
+ * A compiler route and its logical handler can have equally plausible argument counts. Once forwarding promotion
+ * has authenticated the implementation selector, nested calls must resolve against that handler and its decoded
+ * arguments rather than rediscovering a frame by function name or arity.
+ */
+export function resolvePreparedKernelDelegateOwnerFrame(input: {
+  execution: NonNullable<ReturnType<typeof resolveKernelDelegatePromotion>>;
+  implementationAbi: readonly AbiFunction[];
+}): { abiFunction: AbiFunction; args: FunctionArgument[] } {
+  const selector = input.execution.selector.toLowerCase();
+  const matches = input.implementationAbi.filter((candidate) => (
+    candidate.selector?.toLowerCase() === selector
+    && candidate.name === input.execution.functionName
+  ));
+  if (matches.length !== 1) {
+    throw new Error(
+      `Promoted delegate selector ${selector} does not identify exactly one logical implementation handler.`,
+    );
+  }
+  const abiFunction = matches[0]!;
+  const visibleInputs = abiFunction.inputs.filter((candidate) => !candidate.name.startsWith('__internal__'));
+  if (visibleInputs.length !== input.execution.args.length) {
+    throw new Error(
+      `Promoted delegate selector ${selector} decoded ${input.execution.args.length} arguments, `
+      + `but its logical implementation handler declares ${visibleInputs.length}.`,
+    );
+  }
+  return { abiFunction, args: [...input.execution.args] };
+}
+
+type KernelDelegateForwardingGroupIdentity = {
+  callMode?: string;
+  externalContract: { inner: { lockingBytecode: string } };
+  masterUtxo?: unknown;
+};
+
+/**
+ * Select the one physical executor committed by a compiler-authored forwarding edge.
+ *
+ * Candidate order and application names are deliberately irrelevant. The caller scopes candidates to the
+ * forwarding function's physical owner; duplicate bytecode within that scope remains ambiguous until the graph
+ * carries an owner-scoped callsite identity and must fail closed.
+ */
+export function selectKernelDelegateForwardingGroupIndex(input: {
+  forwarding: unknown;
+  encodedProxyConstructorArgs: readonly FunctionArgument[];
+  groups: readonly KernelDelegateForwardingGroupIdentity[];
+  candidateIndexes?: readonly number[];
+}): number {
+  const target = resolveKernelDelegateForwardingTarget(
+    input.forwarding, input.encodedProxyConstructorArgs,
+  );
+  const candidateIndexes = input.candidateIndexes
+    ?? input.groups.map((_, index) => index);
+  const matching = candidateIndexes.filter((index) => {
+    const group = input.groups[index];
+    if (!group || group.callMode !== 'delegatecall') return false;
+    const contractLock = group.externalContract.inner.lockingBytecode.toLowerCase();
+    const generatedLock = (group.masterUtxo as {
+      unlocker?: { generateLockingBytecode(): Uint8Array };
+    } | undefined)?.unlocker?.generateLockingBytecode();
+    if (generatedLock && binToHex(generatedLock) !== contractLock) {
+      throw new Error(`Delegate executor group ${index} has inconsistent physical locking bytecode`);
+    }
+    return contractLock === target.lockingBytecode;
+  });
+  if (matching.length === 0) {
+    throw new Error('Compiler-authenticated delegate forwarding target is not materialized');
+  }
+  if (matching.length !== 1) {
+    throw new Error('Compiler-authenticated delegate forwarding target is ambiguous');
+  }
+  return matching[0]!;
 }

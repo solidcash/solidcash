@@ -3,7 +3,7 @@ export type MonotoneAttributionRetry<T> =
   | { succeeded: false; error: unknown };
 
 /**
- * F8′: compile-recovery helper — not admission authority.
+ * KERNEL_* admission catalog: compile-recovery helper — not admission authority.
  *
  * Retry a *compile* candidate after monotonically refusing source identities attributed by its latest
  * failure. Admission decisions still come from span analysis (`attribution-spans`); this only recovers
@@ -35,7 +35,7 @@ export function retryMonotoneAttribution<Key, Value>(
   }
 }
 
-/** F8′ alias: make the compile-recovery role explicit at call sites. */
+/** KERNEL_* admission catalog alias: make the compile-recovery role explicit at call sites. */
 export const recoverCompileByMonotoneRefusal = retryMonotoneAttribution;
 
 /** True when admission authority is analyzer/span-based (not published-fallback). */
@@ -43,4 +43,36 @@ export function isAnalyzerFirstAdmissionSource(
   source: string | undefined,
 ): source is 'attribution-spans' {
   return source === 'attribution-spans';
+}
+
+/** admissionSource stamp: true when admittedHandlerIds were copied from published eligibility (non-kernel). */
+export function isLegacyEligibilityAdmissionSource(
+  source: string | undefined,
+): source is 'legacy-eligibility' {
+  return source === 'legacy-eligibility';
+}
+
+export type MessageBusAdmissionSourceAuthority =
+  | 'attribution-spans'
+  | 'legacy-eligibility'
+  | 'unstamped';
+
+/**
+ * admissionSource stamp: classify how `admittedHandlerIds` were produced.
+ * Fail-closed when ids are present but `admissionSource` is missing (unstamped-admission ambiguity).
+ */
+export function resolveMessageBusAdmissionSourceAuthority(messageBus: {
+  admissionSource?: string;
+  admittedHandlerIds?: readonly string[];
+} | undefined): MessageBusAdmissionSourceAuthority {
+  if (messageBus === undefined) return 'unstamped';
+  if (isAnalyzerFirstAdmissionSource(messageBus.admissionSource)) return 'attribution-spans';
+  if (isLegacyEligibilityAdmissionSource(messageBus.admissionSource)) return 'legacy-eligibility';
+  if ((messageBus.admittedHandlerIds?.length ?? 0) > 0) {
+    throw new Error(
+      'messageBus: admittedHandlerIds present without admissionSource '
+        + '(unstamped admissionSource ambiguity; expected attribution-spans or legacy-eligibility)',
+    );
+  }
+  return 'unstamped';
 }

@@ -106,7 +106,7 @@ describe('kernel sorted-update PredOut under composition', () => {
     expect(predOutWitnessIndex).toBeGreaterThanOrEqual(0);
     const predOutAbsolute = Number(routeUnlocker.params[predOutWitnessIndex] as bigint);
     // Pure value UPDATE of a present key (next pointer unchanged) leaves PredOut inactive.
-    // INSERT uses PredOut=P′; UPDATE authenticates via exact rewritten entry content-match instead.
+    // INSERT uses PredOut=P; UPDATE authenticates via exact rewritten entry content-match instead.
     expect(predOutAbsolute).toBe(-1);
 
     const transaction = builder.buildLibauthTransaction();

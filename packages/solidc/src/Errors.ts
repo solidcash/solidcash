@@ -59,7 +59,15 @@ export type SolidcDiagnosticCode =
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
-  | 'SPLIT_LAYOUT_CONFLICT';
+  | 'SPLIT_LAYOUT_CONFLICT'
+  // Frozen KERNEL_* catalog codes for fence / journal-helper refuse diagnostics.
+  | 'KERNEL_LAYOUT'
+  | 'KERNEL_UNBOUNDED_KEY'
+  | 'KERNEL_TX_SIGNATURE'
+  | 'KERNEL_OPAQUE_EFFECT'
+  | 'KERNEL_FOREIGN_DELEGATE'
+  | 'KERNEL_LIFECYCLE'
+  | 'KERNEL_INTERNAL_DEFECT';
 
 /** Machine-stable compiler refusal with source-owned context. */
 export class SolidcDiagnosticError extends Error {

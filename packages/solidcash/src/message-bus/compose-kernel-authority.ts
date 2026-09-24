@@ -8,6 +8,7 @@ import {
   assertWithinKernelBudgets,
   createKernelExecutionPlan,
   digestKernelExecutionPlan,
+  encodeKernelExecutionPlanBytecodeCommitment,
   type KernelExecutionPlan,
   type KernelResourceBudget,
 } from './kernel-execution-plan.js';
@@ -23,6 +24,8 @@ import { getMaterializationMode } from './materialization-mode.js';
 export type ComposeKernelAuthorityResult = {
   plan: KernelExecutionPlan;
   digest: string;
+  /** KernelExecutionPlan bytecode commitment: ASM marker `<SCKP||version||digest> OP_DROP` for route bytecode commitment. */
+  bytecodeCommitment: string;
   handlerJoinKey: string;
   phase: PhaseArtifact<{
     participant: number;
@@ -58,6 +61,11 @@ export function authorizeComposeParticipantLayout(params: {
   dynamicWrites?: readonly string[];
   selectedResources?: readonly string[];
   budgets?: KernelResourceBudget;
+  /**
+   * published resource budgets: when true (kernel-row-loop), `budgets` must be compiler-published `resourceBudgets`.
+   * Silent SDK defaults are refuse — missing budgets fail closed.
+   */
+  requirePublishedBudgets?: boolean;
   usage?: Partial<KernelResourceBudget>;
 }): ComposeKernelAuthorityResult {
   const handlerStable = requireStableId(
@@ -65,6 +73,9 @@ export function authorizeComposeParticipantLayout(params: {
     params.handlerSelector,
     params.handlerDiagnosticName,
   );
+  if (params.requirePublishedBudgets === true && params.budgets === undefined) {
+    throw new Error('kernel-plan: resourceBudgets missing (compiler must publish multi-axis budgets)');
+  }
   const plan = createKernelExecutionPlan({
     handlerId: stableJoinKey(handlerStable),
     handlerName: handlerStable.diagnosticName,
@@ -87,6 +98,8 @@ export function authorizeComposeParticipantLayout(params: {
     ...params.usage,
   });
   const digest = digestKernelExecutionPlan(plan);
+  // KernelExecutionPlan bytecode commitment: execution-affecting bytecode fragment — transplanting digest metadata without this marker fails closed.
+  const bytecodeCommitment = encodeKernelExecutionPlanBytecodeCommitment(digest);
   const mode = getMaterializationMode();
   const phase = advancePhase(
     advancePhase(
@@ -111,6 +124,7 @@ export function authorizeComposeParticipantLayout(params: {
   const result: ComposeKernelAuthorityResult = {
     plan,
     digest,
+    bytecodeCommitment,
     handlerJoinKey: stableJoinKey(handlerStable),
     phase,
   };

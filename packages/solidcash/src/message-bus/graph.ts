@@ -1256,46 +1256,101 @@ const isRuntimeResolvedCallsite = (callsite: ExternalCallAbi): boolean =>
   || callsite.functionName === '__raw__'
   || callsite.opaqueReturn === true;
 
-/** Bind each reached child to one compiler-authored occurrence without guessing across incompatible schemas. */
-function bindConsumerCallsites(
+/** One reached child row for sourceCallsite attribution attribution (name + optional published source identity). */
+export type ReachedConsumerCallsite = {
+  functionName: string;
+  /** Pre-collapse compiler source callsite id when published. */
+  sourceCallsiteId?: number;
+  /** Optional selector hex for selector-aware disambiguation. */
+  selectorHex?: string;
+};
+
+/**
+ * Bind each reached child to one compiler-authored occurrence without guessing across incompatible schemas.
+ * sourceCallsite attribution: prefer published `sourceCallsiteId` / unique selector; kernel (`requireUniqueAttribution`) fails closed
+ * on same-name multi-candidate collapse instead of first-match.
+ */
+export function bindConsumerCallsites(
   parent: number,
   callsites: readonly ExternalCallAbi[],
-  reached: readonly string[],
+  reached: readonly (string | ReachedConsumerCallsite)[],
+  options?: { requireUniqueAttribution?: boolean },
 ): (ExternalCallAbi | undefined)[] {
-  if (callsites.length === 0) return reached.map(() => undefined);
+  const rows: ReachedConsumerCallsite[] = reached.map((entry) => (
+    typeof entry === 'string' ? { functionName: entry } : entry
+  ));
+  if (callsites.length === 0) return rows.map(() => undefined);
+  // sourceCallsite attribution: published sourceCallsiteId / selector rows skip the positional shortcut.
+  const hasPublishedIdentity = rows.some((row) => (
+    row.sourceCallsiteId !== undefined || (row.selectorHex !== undefined && row.selectorHex !== '')
+  ));
   const singular = callsites.every((callsite) => (occurrenceBoundOf(callsite).maximum ?? 2) <= 1);
-  const positionallyCompatible = callsites.length === reached.length && reached.every((functionName, position) => {
+  const positionallyCompatible = callsites.length === rows.length && rows.every((row, position) => {
     const callsite = callsites[position];
     return isRuntimeResolvedCallsite(callsite)
-      || (callsite.rawFunctionName ?? callsite.functionName) === functionName;
+      || (callsite.rawFunctionName ?? callsite.functionName) === row.functionName;
   });
   // A fully reached bounded conditional list remains in compiler callsite order. Preserve that stronger identity
   // (including selector-only raw rows) rather than widening every raw callsite into a candidate for every child.
-  if (singular && positionallyCompatible) {
-    return reached.map((functionName, position) => {
-      const callsite = callsites[position];
-      if (!isRuntimeResolvedCallsite(callsite) && callsite.functionName !== functionName) {
+  if (!hasPublishedIdentity && singular && positionallyCompatible) {
+    return rows.map((row, position) => {
+      const callsite = callsites[position]!;
+      if (!isRuntimeResolvedCallsite(callsite) && callsite.functionName !== row.functionName) {
         throw new Error(
-          `messageBus: invocation ${parent} reaches '${functionName}' where its compiler-authored callsite `
+          `messageBus: invocation ${parent} reaches '${row.functionName}' where its compiler-authored callsite `
           + `${position} calls '${callsite.functionName}'`,
         );
       }
       return callsite;
     });
   }
-  return reached.map((functionName) => {
+  return rows.map((row) => {
+    // sourceCallsite attribution: published source identity is authoritative when present.
+    if (row.sourceCallsiteId !== undefined) {
+      const byId = callsites.find((callsite) => (
+        callsite.callsiteId === row.sourceCallsiteId
+        || callsite.batchInvocations?.some((batch) => batch.sourceCallsiteId === row.sourceCallsiteId)
+      ));
+      if (byId === undefined) {
+        throw new Error(
+          `messageBus: invocation ${parent} names absent source callsite ${row.sourceCallsiteId} `
+            + `for '${row.functionName}'`,
+        );
+      }
+      return byId;
+    }
+    if (row.selectorHex !== undefined && row.selectorHex !== '') {
+      const selector = row.selectorHex.toLowerCase();
+      const bySelector = callsites.filter((callsite) => (
+        (callsite.rawSelector ?? '').toLowerCase() === selector
+        || (callsite.possibleTargets ?? []).some((target) => target.selector.toLowerCase() === selector)
+      ));
+      if (bySelector.length === 1) return bySelector[0];
+      if (bySelector.length > 1) {
+        throw new Error(
+          `messageBus: invocation ${parent} selector ${selector} matches ${bySelector.length} callsites`,
+        );
+      }
+    }
     const candidates = callsites.filter((callsite) =>
       (isRuntimeResolvedCallsite(callsite)
-        && (callsite.rawFunctionName === undefined || callsite.rawFunctionName === functionName))
-      || callsite.functionName === functionName);
+        && (callsite.rawFunctionName === undefined || callsite.rawFunctionName === row.functionName))
+      || callsite.functionName === row.functionName);
     if (candidates.length === 0) return undefined;
     const contract = (callsite: ExternalCallAbi): string =>
       `${callsite.hasReturnValues === true}|${(callsite.returnTypes ?? []).join(',')}|`
       + `${callsite.resultEncoding ?? 'legacy'}`;
     if (new Set(candidates.map(contract)).size > 1) {
       throw new Error(
-        `messageBus: invocation ${parent} cannot bind '${functionName}' to one callsite; its conditional or `
+        `messageBus: invocation ${parent} cannot bind '${row.functionName}' to one callsite; its conditional or `
         + 'loop callsites disagree on the consumed result',
+      );
+    }
+    // sourceCallsite attribution: same-name multi-candidate collapse is forbidden under kernel unique attribution.
+    if (candidates.length > 1 && options?.requireUniqueAttribution === true) {
+      throw new Error(
+        `messageBus: invocation ${parent} reaches '${row.functionName}' at ${candidates.length} `
+          + 'same-schema callsites; publish sourceCallsiteId (name-first attribution disabled)',
       );
     }
     return candidates[0];
@@ -2076,9 +2131,12 @@ export function planCompiledGraph(
       // their (possibly conditional) negative delta from the same authenticated recipes used by composition.
       ...(invocation.parent !== null && rowHandler?.usesMsgValue
         && (rowHandler.transfers?.length ?? 0) === 0 && { msgValue: 0n }),
-      // Do not put `callMode` on the batch wire here. The parent covenant accumulates a version-1 SCB1 blob in
-      // `appendExternalBatchRow` (no per-row mode byte). Setting callMode flips encodeMessageBatch to version 2
-      // and breaks EQUALVERIFY against that expected blob for mixed-selector nested batches.
+      // Staticcall must ride the SCB2 mode byte: the detached verifier's `batchModeWidth == 0` path requires
+      // callManifestMode == 0, so a staticcall edge (manifest mode bit 0 set) against a version-1 batch fails
+      // OP_VERIFY at MessageBusVerifier.spend. Keep ordinary call rows mode-free so mixed-selector nested
+      // batches still match the parent covenant's version-1 `appendExternalBatchRow` SCB1 blob; only an
+      // explicit staticcall flips encodeMessageBatch to version 2.
+      ...(invocation.callMode === 'staticcall' ? { callMode: 'staticcall' as const } : {}),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : {
@@ -2461,7 +2519,18 @@ export function planCompiledGraph(
         return callsite;
       })
       : bindConsumerCallsites(
-        parent, publishedCallsites, children.map((child) => invocations[child].function),
+        parent,
+        publishedCallsites,
+        children.map((child) => ({
+          functionName: invocations[child]!.function,
+          sourceCallsiteId: invocations[child]!.sourceCallsiteId
+            ?? invocations[child]!.consumerCallsiteId,
+          selectorHex: invocations[child]!.selector,
+        })),
+        {
+          // sourceCallsite attribution: kernel routes refuse same-name first-match collapse.
+          requireUniqueAttribution: parentArtifact.messageBus?.convention === 'kernel-row-loop',
+        },
       );
     if (hasIdentified) {
       for (const callsite of publishedCallsites) {
@@ -2738,6 +2807,9 @@ export function planCompiledGraph(
     producerPath: producerPaths[index],
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
+  // R5: omitted provenance must not be confused with legacy-logical. Every edge that publishes
+  // a sourceCallsiteId must stamp provenance; kernel parent owners refuse legacy-logical.
+  assertExplicitSourceCallsiteProvenance(planned, invocations, executions);
   const rootLogicalCaller = invocations[0].logicalCaller;
   if (rootLogicalCaller !== undefined && !(rootLogicalCaller instanceof Uint8Array)) {
     throw new Error('messageBus: root logical caller must be locking bytecode bytes');
@@ -2749,6 +2821,45 @@ export function planCompiledGraph(
     ...(rootLogicalCaller === undefined
       ? {} : { rootCallerLockingBytecode: binToHex(rootLogicalCaller) }),
   });
+}
+
+/**
+ * R5: fail closed when source identity is published without provenance, or when a kernel
+ * parent owner still carries legacy-logical provenance (omitted empty ≠ legacy).
+ */
+export function assertExplicitSourceCallsiteProvenance(
+  planned: readonly {
+    sourceCallsiteId?: number;
+    sourceCallsiteProvenance?: 'compiler' | 'legacy-logical';
+  }[],
+  rawInvocations: readonly { parent: number | null; callee: number }[],
+  participants: readonly { artifact?: Artifact }[],
+): void {
+  const kernelParticipants = new Set<number>();
+  participants.forEach((participant, index) => {
+    if (participant.artifact?.messageBus?.convention === 'kernel-row-loop') {
+      kernelParticipants.add(index);
+    }
+  });
+  for (let index = 0; index < planned.length; index += 1) {
+    const invocation = planned[index]!;
+    if (invocation.sourceCallsiteId === undefined) continue;
+    if (invocation.sourceCallsiteProvenance === undefined) {
+      throw new Error(
+        `messageBus: invocation ${index} publishes sourceCallsiteId ${invocation.sourceCallsiteId} `
+        + 'without sourceCallsiteProvenance (omitted empty is not legacy-logical)',
+      );
+    }
+    if (invocation.sourceCallsiteProvenance !== 'legacy-logical') continue;
+    const parent = rawInvocations[index]?.parent;
+    if (parent === null || parent === undefined) continue;
+    const parentCallee = rawInvocations[parent]?.callee;
+    if (parentCallee !== undefined && kernelParticipants.has(parentCallee)) {
+      throw new Error(
+        `messageBus: invocation ${index} carries legacy-logical provenance under kernel-row-loop`,
+      );
+    }
+  }
 }
 import {
   binToHex, hexToBin, sha256, utf8ToBin,

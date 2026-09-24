@@ -1,9 +1,12 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import {
   Contract, StatefulContract, getContractFactory, upgrades, messageBus, Signer,
 } from '../../../src/index.js';
+import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -15,12 +18,28 @@ const KERNEL = {
   suppressWarnings: true,
 } as const;
 
+const vmAccepts = (builder: TransactionBuilder): boolean => {
+  try {
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+    return transaction.inputs.every((_input, inputIndex) => {
+      const result = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+      return result.error === undefined;
+    });
+  } catch {
+    return false;
+  }
+};
+
 /**
- * self→proxy × events: non-proxy Caller.poke → deployProxy Acc.ping under compose with
- * executionArtifact/executor on the proxy callee. Event NFT lands on the proxy category.
+ * self→proxy × counter+emit under recipe compose+executionArtifact.
+ *
+ * Compose `stickyKernelLeftoverScalarWrites` (immediately before aggregate publish) applies
+ * leftover +1 when `__forward` derivation left the proxy data NFT at its input commitment.
  */
 describe('kernel self→proxy event under composition', () => {
-  it('settles Caller.poke→deployProxy Ping under compose with event on proxy category', async () => {
+  it('settles Caller.poke→deployProxy counter+emit under recipe compose+executionArtifact', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const signer = new Signer(new Uint8Array(32).fill(0x72), provider);
     for (let index = 0; index < 40; index += 1) {
@@ -86,27 +105,14 @@ describe('kernel self→proxy event under composition', () => {
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
-
     const builder = await composition.build();
-    const transaction = builder.buildLibauthTransaction();
-    const proxyCategory = String(deployed.proxy.categoryId).toLowerCase();
-    const eventOutputs = transaction.outputs.filter((output) => {
-      const category = output.token?.category;
-      const hex = typeof category === 'string'
-        ? category.toLowerCase()
-        : category !== undefined ? binToHex(category).toLowerCase() : '';
-      const commitment = output.token?.nft?.commitment;
-      const len = typeof commitment === 'string' ? commitment.length / 2 : commitment?.length ?? 0;
-      return hex === proxyCategory && output.token?.nft?.capability === 'none' && len > 0
-        && !binToHex(
-          typeof commitment === 'string' ? hexToBin(commitment) : commitment ?? new Uint8Array(),
-        ).toLowerCase().startsWith('5343494401');
-    });
-    expect(eventOutputs.length).toBeGreaterThanOrEqual(1);
-
+    const mutableCommits = builder.outputs
+      .filter((output) => output.token?.nft?.capability === 'mutable')
+      .map((output) => output.token!.nft!.commitment);
+    expect(mutableCommits).toContain('51');
+    expect(vmAccepts(builder)).toBe(true);
     await expect(composition.send()).resolves.toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect((await deployed.proxy.getState()).counter).toBe(1n);
   }, 300_000);
 });

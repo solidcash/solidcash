@@ -1,5 +1,6 @@
 /**
- * F8′ + F13′: analyzer-first admission; published-fallback retired.
+ * Analyzer-first admission: attribution-spans are the only kernel stamp authority;
+ * published-fallback is retired.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -25,7 +26,7 @@ const KERNEL = {
   maximumInputBytes: 1_000_000,
 } as const;
 
-describe('F8′ analyzer-first admission', () => {
+describe('analyzer-first admission', () => {
   it('isAnalyzerFirstAdmissionSource accepts only attribution-spans', () => {
     expect(isAnalyzerFirstAdmissionSource('attribution-spans')).toBe(true);
     expect(isAnalyzerFirstAdmissionSource('published-fallback')).toBe(false);
@@ -89,14 +90,15 @@ describe('F8′ analyzer-first admission', () => {
   });
 });
 
-describe('F13′ no published-fallback stamp', () => {
+describe('published-fallback retirement', () => {
   it('utils artifact type no longer lists published-fallback', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(
       join(here, '../../utils/src/artifact.ts'),
       'utf8',
     );
-    expect(src).toContain("admissionSource?: 'attribution-spans'");
+    // admissionSource stamp: attribution-spans | legacy-eligibility; published-fallback stays retired.
+    expect(src).toContain("'attribution-spans' | 'legacy-eligibility'");
     expect(src).toContain('published-fallback');
     expect(src).toContain('is retired');
     expect(src).not.toContain("| 'published-fallback'");

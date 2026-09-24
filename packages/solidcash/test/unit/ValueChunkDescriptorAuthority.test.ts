@@ -6,16 +6,16 @@ import {
   StatefulTransactionBuilder,
   ValueChunkWriteStagingSession,
   commitStagedValueChunkWrite,
-  isPersistedJobEventsReady,
+  legacyIsPersistedValueChunkReady,
   isValueChunkWriteReady,
   materializedValueChunkAbsoluteStart,
   persistedValueChunkWriteState,
   permitsHeuristicValueChunkRunRelocation,
-  rememberJobEventsLock,
-  rememberJobEventsValue,
+  legacyRememberValueChunkLock,
+  legacyRememberValueChunkValue,
   selectValueChunkResource,
   selectValueChunkCommitmentObservations,
-  stageJobEventsValue,
+  legacyStageValueChunkValue,
   stagedValueChunkWrite,
   stageValueChunkWrite,
   type ValueChunkWriteDescriptor,
@@ -94,20 +94,20 @@ describe('value-chunk descriptor authority', () => {
     const firstValue = new Uint8Array(100).fill(0x31);
     const secondValue = new Uint8Array(112).fill(0x52);
     const firstLock = getValueChunkLockingBytecode(
-      categoryId, first.collectionSignature, Uint8Array.from({ length: 32 }, () => 1),
+      categoryId, first.collection, Uint8Array.from({ length: 32 }, () => 1),
       sha256Sync(firstValue),
     );
     const secondLock = getValueChunkLockingBytecode(
-      categoryId, second.collectionSignature, Uint8Array.from({ length: 32 }, () => 2),
+      categoryId, second.collection, Uint8Array.from({ length: 32 }, () => 2),
       sha256Sync(secondValue),
     );
 
     // Model two authenticated observations before either resource is requested
     // from the descriptor registry. Observation order must not evict the first.
-    rememberJobEventsValue(categoryId, firstValue);
-    rememberJobEventsLock(categoryId, firstLock);
-    rememberJobEventsValue(categoryId, secondValue);
-    rememberJobEventsLock(categoryId, secondLock);
+    legacyRememberValueChunkValue(categoryId, firstValue);
+    legacyRememberValueChunkLock(categoryId, firstLock);
+    legacyRememberValueChunkValue(categoryId, secondValue);
+    legacyRememberValueChunkLock(categoryId, secondLock);
 
     expect(persistedValueChunkWriteState(first)).toMatchObject({
       value: firstValue,
@@ -128,19 +128,19 @@ describe('value-chunk descriptor authority', () => {
     const thirdValue = new Uint8Array(116).fill(0x64);
     const legacyCategoryValue = new Uint8Array(124).fill(0x73);
     const firstLock = getValueChunkLockingBytecode(
-      categoryId, first.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(firstValue),
+      categoryId, first.collection, new Uint8Array(32).fill(1), sha256Sync(firstValue),
     );
     const secondLock = getValueChunkLockingBytecode(
-      categoryId, second.collectionSignature, new Uint8Array(32).fill(1), sha256Sync(secondValue),
+      categoryId, second.collection, new Uint8Array(32).fill(1), sha256Sync(secondValue),
     );
     const thirdLock = getValueChunkLockingBytecode(
-      categoryId, third.collectionSignature, new Uint8Array(32).fill(2), sha256Sync(thirdValue),
+      categoryId, third.collection, new Uint8Array(32).fill(2), sha256Sync(thirdValue),
     );
 
     expect(stageValueChunkWrite(first, firstValue)).toBe(true);
     expect(stageValueChunkWrite(second, secondValue)).toBe(true);
     expect(stageValueChunkWrite(third, thirdValue)).toBe(true);
-    stageJobEventsValue(categoryId, legacyCategoryValue);
+    legacyStageValueChunkValue(categoryId, legacyCategoryValue);
     expect(stagedValueChunkWrite(first)).toEqual(firstValue);
     expect(stagedValueChunkWrite(second)).toEqual(secondValue);
     expect(stagedValueChunkWrite(third)).toEqual(thirdValue);
@@ -149,7 +149,7 @@ describe('value-chunk descriptor authority', () => {
     expect(isValueChunkWriteReady(first)).toBe(true);
     expect(isValueChunkWriteReady(second)).toBe(false);
     expect(isValueChunkWriteReady(third)).toBe(false);
-    expect(isPersistedJobEventsReady()).toBe(false);
+    expect(legacyIsPersistedValueChunkReady()).toBe(false);
     expect(stagedValueChunkWrite(second)).toEqual(secondValue);
     expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
     expect(persistedValueChunkWriteState(second)).toBeUndefined();

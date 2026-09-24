@@ -296,22 +296,68 @@ export interface DelegateParticipantInput {
   proxy: {
     artifact: Artifact;
     functionName: string;
+    /** Optional compiler selector hex; preferred over name when present (delegate ABI selector-first join). */
+    functionSelector?: string;
     /** The INSTANTIATED redeem script hex, i.e. `Contract.bytecode` - constructor arguments included. */
     bytecode: string;
   };
   implementation: {
     artifact: Artifact;
     functionName: string;
+    /** Optional compiler selector hex; preferred over name when present (delegate ABI selector-first join). */
+    functionSelector?: string;
     /** The implementation's real locking bytecode hex. */
     lockingBytecode: string;
   };
 }
 
-const findFunction = (artifact: Artifact, name: string): AbiFunction => {
-  const entry = artifact.abi.find((candidate) => candidate.name === name);
-  if (!entry) throw new DelegateParticipantClassError(`'${artifact.contractName}' publishes no function '${name}'`);
-  return entry;
-};
+/**
+ * delegate ABI selector-first join: resolve an ABI function selector-first when a selector is published or supplied.
+ * Name-only lookup remains the legacy fallback when no selector is available.
+ * Exported for unit proofs that alpha-renamed names still bind by selector.
+ */
+export function findDelegateAbiFunction(
+  artifact: Artifact,
+  name: string,
+  selectorHex?: string,
+): AbiFunction {
+  const normalizedSelector = selectorHex?.trim().toLowerCase();
+  if (normalizedSelector) {
+    const bySelector = artifact.abi.filter((candidate) => (
+      (candidate.selector ?? '').toLowerCase() === normalizedSelector
+    ));
+    if (bySelector.length === 1) return bySelector[0]!;
+    if (bySelector.length === 0) {
+      throw new DelegateParticipantClassError(
+        `'${artifact.contractName}' publishes no function with selector '${selectorHex}'`,
+      );
+    }
+    throw new DelegateParticipantClassError(
+      `'${artifact.contractName}' has ambiguous ABI entries for selector '${selectorHex}'`,
+    );
+  }
+
+  // Prefer a uniquely published messageBus handler selector for this diagnostic name.
+  const handlers = (artifact.messageBus?.handlers ?? []).filter((handler) => handler.name === name);
+  if (handlers.length === 1 && handlers[0]!.selector) {
+    const handlerSelector = handlers[0]!.selector.toLowerCase();
+    const byHandlerSelector = artifact.abi.filter((candidate) => (
+      (candidate.selector ?? '').toLowerCase() === handlerSelector
+    ));
+    if (byHandlerSelector.length === 1) return byHandlerSelector[0]!;
+  }
+
+  const byName = artifact.abi.filter((candidate) => candidate.name === name);
+  if (byName.length === 1) return byName[0]!;
+  if (byName.length === 0) {
+    throw new DelegateParticipantClassError(
+      `'${artifact.contractName}' publishes no function '${name}'`,
+    );
+  }
+  throw new DelegateParticipantClassError(
+    `'${artifact.contractName}' has ambiguous ABI entries named '${name}' (supply functionSelector)`,
+  );
+}
 
 const isP2pkh = (lockingBytecode: string): boolean => {
   const bytes = lockingBytecode.toLowerCase();
@@ -360,8 +406,14 @@ const proxyHoldsCallAuthority = (
  * error. Nothing here proves a covenant property; see the module header.
  */
 export function classifyDelegateParticipant(input: DelegateParticipantInput): DelegateParticipantClass {
-  const proxyFn = findFunction(input.proxy.artifact, input.proxy.functionName);
-  const implFn = findFunction(input.implementation.artifact, input.implementation.functionName);
+  const proxyFn = findDelegateAbiFunction(
+    input.proxy.artifact, input.proxy.functionName, input.proxy.functionSelector,
+  );
+  const implFn = findDelegateAbiFunction(
+    input.implementation.artifact,
+    input.implementation.functionName,
+    input.implementation.functionSelector,
+  );
 
   // --- the edge itself -------------------------------------------------------------------------------------
   const delegateEdges = (proxyFn.lowLevelCalls ?? []).filter((call) => call.callMode === 'delegatecall');

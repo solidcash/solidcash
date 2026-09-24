@@ -1451,6 +1451,103 @@ export interface InvocationAnalysisArtifact {
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 
 /**
+ * Consensus P2SH redeem-script ceiling (BCH `maximumBytecodeLength`).
+ * deployability certificate deployability certificates compare measured artifact bytecode against this limit.
+ */
+export const P2SH_BYTECODE_LIMIT = 10_000;
+
+/**
+ * published resource budgets: compiler-published multi-axis worst-case budgets on `messageBus.resourceBudgets`.
+ * Compose authority prefers these over SDK hardcodes; kernel fails closed when absent.
+ * published semantic-derivation ceiling: `maximumSemanticDerivationPasses` replaces undocumented effect-class heuristics.
+ */
+export interface MessageBusResourceBudgets {
+  version: 1;
+  maximumRows: number;
+  maximumParticipants: number;
+  maximumBlobBytes: number;
+  maximumDynamicChunks: number;
+  maximumValueContinuationChunks: number;
+  maximumJournalRecords: number;
+  maximumEvents: number;
+  maximumTransfers: number;
+  maximumReturnCarriers: number;
+  maximumExternalEdges: number;
+  /** Upper bound on compose semantic discovery passes (usage = mutableClaimCount + 2). */
+  maximumSemanticDerivationPasses: number;
+}
+
+/**
+ * deployability certificate: deployability / budget certificate published on `messageBus.deployability`.
+ * Presence is always concrete: `asserted` (within P2SH) or `over-budget`.
+ * Absence of the field means legacy / unstamped (the old `"not-asserted"` ambiguity).
+ */
+export type DeployabilityStatus = 'asserted' | 'over-budget';
+
+export interface DeployabilityCertificate {
+  version: 1;
+  status: DeployabilityStatus;
+  p2shBytecodeLimit: typeof P2SH_BYTECODE_LIMIT;
+  measuredBytecodeBytes: number;
+  withinP2shLimit: boolean;
+  /** Message-bus budget axes mirrored from the artifact when known. */
+  budgets?: {
+    maximumRows: number;
+    maximumBlobBytes: number;
+    maximumParticipants?: number;
+  };
+}
+
+/** Build a concrete deployability certificate from measured redeem-script bytes. */
+export function buildDeployabilityCertificate(params: {
+  measuredBytecodeBytes: number;
+  maximumRows?: number;
+  maximumBlobBytes?: number;
+  maximumParticipants?: number;
+}): DeployabilityCertificate {
+  const withinP2shLimit = params.measuredBytecodeBytes <= P2SH_BYTECODE_LIMIT;
+  return {
+    version: 1,
+    status: withinP2shLimit ? 'asserted' : 'over-budget',
+    p2shBytecodeLimit: P2SH_BYTECODE_LIMIT,
+    measuredBytecodeBytes: params.measuredBytecodeBytes,
+    withinP2shLimit,
+    ...(params.maximumRows !== undefined && {
+      budgets: {
+        maximumRows: params.maximumRows,
+        maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
+        ...(params.maximumParticipants !== undefined
+          && { maximumParticipants: params.maximumParticipants }),
+      },
+    }),
+  };
+}
+
+/**
+ * Fail closed unless the certificate is present and `asserted` (within P2SH).
+ * Over-budget and missing certificates both refuse deployability claims.
+ */
+export function assertDeployabilityCertificate(
+  certificate: DeployabilityCertificate | undefined,
+): asserts certificate is DeployabilityCertificate {
+  if (certificate === undefined) {
+    throw new Error('deployability: certificate missing (legacy not-asserted)');
+  }
+  if (certificate.version !== 1) {
+    throw new Error(`deployability: unsupported certificate version ${String(certificate.version)}`);
+  }
+  if (!certificate.withinP2shLimit || certificate.status === 'over-budget') {
+    throw new Error(
+      `deployability: over P2SH budget `
+        + `(${certificate.measuredBytecodeBytes} > ${certificate.p2shBytecodeLimit})`,
+    );
+  }
+  if (certificate.status !== 'asserted') {
+    throw new Error(`deployability: status '${String(certificate.status)}' is not asserted`);
+  }
+}
+
+/**
  * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
  * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
  * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
@@ -1472,6 +1569,33 @@ export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
 // authoritative network admission gates. Keeping a smaller arbitrary ceiling rejects otherwise valid graphs
 // before those exact checks (and makes the limit depend on how many authenticated resource rows a contract uses).
 export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 0xffff;
+
+/** Build concrete published resource budgets resource budgets from route/capability ceilings. */
+export function buildMessageBusResourceBudgets(params: {
+  maximumRows: number;
+  maximumBlobBytes?: number;
+  maximumParticipants?: number;
+  /** Route trailing capacity, when known — raises dyn/value ceilings. */
+  trailingCapacity?: number;
+}): MessageBusResourceBudgets {
+  const dynCeiling = Math.max(256, params.trailingCapacity ?? 0);
+  const rowCeiling = Math.max(1, params.maximumRows);
+  return {
+    version: 1,
+    maximumRows: rowCeiling,
+    maximumParticipants: params.maximumParticipants ?? ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+    maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
+    maximumDynamicChunks: dynCeiling,
+    maximumValueContinuationChunks: dynCeiling,
+    maximumJournalRecords: 256,
+    maximumEvents: Math.max(rowCeiling * 4, 32),
+    maximumTransfers: Math.max(rowCeiling * 4, 32),
+    maximumReturnCarriers: Math.max(rowCeiling, 8),
+    maximumExternalEdges: 64,
+    maximumSemanticDerivationPasses: 256,
+  };
+}
+
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
@@ -1523,21 +1647,59 @@ export interface Artifact {
     /** False when every handler was refused and the published route is a non-executable stub. */
     available?: boolean;
     /**
-     * Item 13: analysis-admitted handler names stamped after speculative admission.
+     * Admission stamp: analysis-admitted handler names stamped after speculative admission.
      * Independent of live `handlers[].eligible` mutation — dropping the compiler stamp drops this field.
      */
     admittedHandlerIds?: readonly string[];
-    /** Item 13: analysis-refused handler names (from attribution spans when present). */
+    /** Admission stamp: analysis-refused handler names (from attribution spans when present). */
     refusedHandlerIds?: readonly string[];
     /**
-     * Item 13 / F13′: how `admittedHandlerIds` was produced.
-     * Only `attribution-spans` remains (non-tautological vs published).
+     * Admission stamp provenance: how `admittedHandlerIds` was produced.
+     * - `attribution-spans` — analyzer/span authority (kernel required; non-tautological vs published)
+     * - `legacy-eligibility` — non-kernel path copied published eligible ids (explicit; never silent unset)
      * `published-fallback` is retired — missing span analysis fails closed on kernel.
      */
-    admissionSource?: 'attribution-spans';
+    admissionSource?: 'attribution-spans' | 'legacy-eligibility';
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
+    /**
+     * Compiler-published multi-axis worst-case resource budgets.
+     * Kernel compose fails closed when this field is absent.
+     */
+    resourceBudgets?: MessageBusResourceBudgets;
+    /**
+     * Concrete deployability / budget certificate.
+     * Compiler stamps from measured bytecode vs `P2SH_BYTECODE_LIMIT`.
+     * `asserted` = within limit; `over-budget` = measured over limit.
+     * Field absence = legacy unstamped (former `"not-asserted"` ambiguity).
+     */
+    deployability?: DeployabilityCertificate;
+    /**
+     * Explicit capability schema with absence semantics for optional kernel fields.
+     * Consumers must resolve via `resolveKernelCapability` / `assertKernelCapabilityStatus`
+     * rather than treating field `undefined` as legacy/unsupported/inactive/incomplete.
+     */
+    capabilitySchema?: import('./kernel-capability-schema.js').KernelCapabilitySchema;
+    /**
+     * Published KernelExecutionPlan digests committed into route bytecode.
+     * Each entry's `digest` must appear as a unique SCKP push/drop marker in `artifact.bytecode`.
+     * Readers must gate on `kernelPlanVersion` via `assertReadableKernelExecutionPlans`.
+     */
+    kernelExecutionPlans?: {
+      version: 1;
+      plans: readonly {
+        handlerId: string;
+        kernelPlanVersion: number;
+        digest: string;
+        handlerName?: string;
+      }[];
+    };
+    /**
+     * Token-container co-layout: non-overlapping span proof for dynamic-bytes + `tokens[category]` co-layout.
+     * Present when route geometry reserves `tokenContainer` slots beside trailing dyn capacity.
+     */
+    tokenContainerCoLayout?: import('./token-container-co-layout.js').TokenContainerCoLayoutProof;
     /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
      * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
      * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
@@ -1600,8 +1762,9 @@ export interface Artifact {
       splitLifecycle?: true;
     };
     /**
-     * Gate B: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via
-     * `foldChunkableResource` using this plan (not hand-rolled SDK reconstruction as authority).
+     * Published resource-fold plans: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via
+     * `foldChunkableResource` using this plan as authority for step kind / initial source / witness names
+     * (runtime still supplies ordered row elements; rediscovery is legacy fallback when this field is absent).
      */
     resourceFoldPlans?: readonly {
       collection: string;
@@ -1609,8 +1772,19 @@ export interface Artifact {
       initialSource: 'empty' | 'prior-commitment' | 'leading-witness';
       leadingWitness?: string;
       completeWitness?: string;
-      /** Push steps expected when ≥2 selected rows mutate the same key. */
-      stepKind: 'push';
+      /** Transition kind for every runtime-selected step against this collection. */
+      stepKind: 'push' | 'assign' | 'update';
+      /**
+       * path-effect activation: compiler-published per-effect fold activations (fixed-chunkable ECE).
+       * SDK instantiate fills missing step activations from this schedule.
+       */
+      activationSchedule?: {
+        version: 1;
+        effects: readonly {
+          effectOrdinal: number;
+          activation?: ExternalCallExpression;
+        }[];
+      };
     }[];
     route: AbiFunction;
     handlers: {
@@ -1639,6 +1813,26 @@ export interface Artifact {
       delegateForwarding?: DelegateForwardingAbi;
       /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
       childDeployments?: readonly ChildDeploymentSiteAbi[];
+      /**
+       * path-effect activation: multi-effect path-effect schedule for this handler (state writes / events / transfers /
+       * child-deploy recipes with structured activations). Beyond child-deploy-only typed effect IR child-deploy-only IR.
+       */
+      pathEffectSchedule?: {
+        version: 1;
+        effects: readonly {
+          ordinal: number;
+          kind: string;
+          resultType: string;
+          activation?: string | {
+            kind: string;
+            name?: string;
+            inputIndex?: number;
+            of?: unknown;
+            left?: unknown;
+            right?: unknown;
+          };
+        }[];
+      };
       /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
        * only a canonical fixed-field suffix in the final existing data NFT. */
       lifecycle?: { kind: 'upgrade'; layout: 'same' | 'in-place-append-v1' };

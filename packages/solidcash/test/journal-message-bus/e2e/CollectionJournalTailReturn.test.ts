@@ -7,7 +7,7 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 /**
- * D2/R19 settling proof for the tail-return relaxation in LowerCollectionJournalHelpers.
+ * constraint fixpoint/R19 settling proof for the tail-return relaxation in LowerCollectionJournalHelpers.
  *
  * The multi-entry journal defers both write-backs to the end of the wrapper, so the question the compile-level
  * test cannot answer is whether the values actually reach state when the wrapper ends in `return true;` - the

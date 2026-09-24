@@ -195,10 +195,10 @@ describe('kernel independently indexed dynamic scalar and mapping journals', () 
   );
 });
 
-// #9 residual: dynamic bytes + token-container co-layout still lacks tokenContainer block-slot geometry
-// (codegen throws `Block slot not found: tokenContainer[0]` while compiling `__message_bus_dynamic_append`).
-// Keep the independently-indexed bytes+mapping suite above as the admitted phase-4 cell.
-describe.skip('kernel dynamic scalar and token-container resources (#9 residual)', () => {
+// token-container co-layout admits compile-time co-layout (tokenContainer slot + messageBus.tokenContainerCoLayout) for
+// bytes write + tokens[category] read. Full e2e settle (token UTXO co-spend + dyn chunks) remains a
+// follow-on; keep this suite skipped until SDK materialization for the co-layout proof is wired.
+describe.skip('kernel dynamic scalar and token-container resources (token-container co-layout e2e settle follow-on)', () => {
   const source = `contract ParallelTokenJournal() {
     bytes payload;
     function append(bytes32 category, bytes suffix) public {

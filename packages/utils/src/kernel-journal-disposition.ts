@@ -1,26 +1,40 @@
-import { binToHex, utf8ToBin } from '@bitauth/libauth';
+import { binToHex } from '@bitauth/libauth';
 import type { KernelJournalDispositionsAbi } from './artifact.js';
-import { sha256 } from './hash.js';
+import {
+  domainSeparatedFingerprint,
+  FINGERPRINT_DOMAIN_JOURNAL_DISPOSITION,
+} from './domain-separated-fingerprint.js';
 
 /** Tagged pushed-data commitment embedded in a compiler-authored kernel route. `SCJD`, version 1. */
 export const KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX = '53434a4401';
 
-/** Hash the canonical, names-free disposition projection which the SDK consumes. */
+/**
+ * Hash the canonical, names-free disposition projection which the SDK consumes.
+ * Domain-separated length-prefixed fields (no JSON identity digest).
+ */
 export function kernelJournalDispositionManifestDigest(manifest: KernelJournalDispositionsAbi): string {
-  const canonical: KernelJournalDispositionsAbi = {
-    version: 1,
-    handlers: manifest.handlers.map((handler) => ({
-      selectorHex: handler.selectorHex,
-      completedDescriptorDigest: handler.completedDescriptorDigest,
-      mode: handler.mode,
-      streams: handler.streams.map((stream) => ({
-        journalAccessStreamIndex: stream.journalAccessStreamIndex,
-        descriptorDigest: stream.descriptorDigest,
-        disposition: stream.disposition,
-      })),
-    })),
-  };
-  return binToHex(sha256(utf8ToBin(JSON.stringify(canonical))));
+  const fields: { name: string; value: string }[] = [
+    { name: 'version', value: String(manifest.version) },
+  ];
+  for (const [handlerIndex, handler] of manifest.handlers.entries()) {
+    const prefix = `handler.${handlerIndex}`;
+    fields.push({ name: `${prefix}.selectorHex`, value: handler.selectorHex });
+    fields.push({
+      name: `${prefix}.completedDescriptorDigest`,
+      value: handler.completedDescriptorDigest,
+    });
+    fields.push({ name: `${prefix}.mode`, value: handler.mode });
+    for (const [streamIndex, stream] of handler.streams.entries()) {
+      const streamPrefix = `${prefix}.stream.${streamIndex}`;
+      fields.push({
+        name: `${streamPrefix}.journalAccessStreamIndex`,
+        value: String(stream.journalAccessStreamIndex),
+      });
+      fields.push({ name: `${streamPrefix}.descriptorDigest`, value: stream.descriptorDigest });
+      fields.push({ name: `${streamPrefix}.disposition`, value: stream.disposition });
+    }
+  }
+  return domainSeparatedFingerprint(FINGERPRINT_DOMAIN_JOURNAL_DISPOSITION, fields);
 }
 
 /** Canonical artifact-ASM marker for `<SCJD || version || manifest digest> OP_DROP`. */

@@ -31,7 +31,7 @@ describe('kernel multi-row chunkable fold compose', () => {
     );
     expect(artifact.messageBus?.handlers?.find((h) => h.name === 'pushOne'))
       .toMatchObject({ eligible: true });
-    // Gate B publishes fold complete + layout witness ABI slots. Unlocker absolutes vs one
+    // fold-plan authority publishes fold complete + layout witness ABI slots. Unlocker absolutes vs one
     // resolveTransactionLayout are asserted on the compose path in KernelComposeLayoutWitnesses
     // (this batch Journal has valueChunk/PredOut slots but no dyn band — do not dyn-gate here).
     expect(artifact.messageBus!.route.inputs.some((i) => i.name === '__internal__valueChunkOutputBase'))
@@ -84,11 +84,7 @@ describe('kernel multi-row chunkable fold compose', () => {
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       const result = vm.evaluate({ inputIndex, sourceOutputs, transaction });
-      const ok = typeof (vm as { testSuccess?: (r: unknown) => boolean }).testSuccess === 'function'
-        ? (vm as { testSuccess: (r: unknown) => boolean }).testSuccess(result)
-        : (result as { success?: boolean }).success === true
-          || (result as { error?: unknown }).error === undefined;
-      expect(ok).toBe(true);
+      expect(vm.stateSuccess(result)).toBe(true);
     }
     await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 180_000);

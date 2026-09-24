@@ -6,7 +6,9 @@
  * - instrumented: may alter emitted program for debugging; prohibited in release/default compile APIs
  * - feature: explicit compiler feature; must be included in artifact/cache identity when enabled
  *
- * Unknown SOLIDC_* names are ignored deterministically (never silently change production semantics).
+ * Default: unknown SOLIDC_* names are ignored deterministically (never silently change production semantics).
+ * SOLIDC env registry: enable strict unknown-reject via `SOLIDC_STRICT_UNKNOWN_ENV=1` or `assertNoUnknownSolidcEnvKeys` /
+ * `enforceSolidcEnvPolicy({ strictUnknown: true })` for CI.
  */
 
 export type SolidcEnvClass = 'observation' | 'instrumented' | 'feature' | 'unknown';
@@ -42,7 +44,7 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
   { name: 'SOLIDC_DEBUG_EMIT_TRAP_WINDOW', class: 'observation' },
   { name: 'SOLIDC_DEBUG_INPUTS', class: 'observation' },
   { name: 'SOLIDC_DEBUG_ADMISSION_REASONS', class: 'observation' },
-  // F28 production observation / dump / oracle (do not alter default bytecode by themselves)
+  // production SOLIDC env hot-set production observation / dump / oracle (do not alter default bytecode by themselves)
   { name: 'SOLIDC_DUMP_ROUTE', class: 'observation' },
   { name: 'SOLIDC_ROUTE_PARSE_ORACLE', class: 'observation' },
   { name: 'SOLIDC_COMPILE_CACHE_DIR', class: 'observation' },
@@ -78,7 +80,7 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
     class: 'feature',
     identityKey: 'handlerBandModel',
   },
-  // F28 production cache / binder identity knobs
+  // production SOLIDC env hot-set production cache / binder identity knobs
   {
     name: 'SOLIDC_COMPILE_CACHE',
     class: 'feature',
@@ -89,6 +91,8 @@ const ENTRIES: readonly SolidcEnvEntry[] = Object.freeze([
     class: 'feature',
     identityKey: 'compileCacheBuildId',
   },
+  // SOLIDC env registry: CI / harness strict unknown-reject switch (observation — does not alter bytecode by itself)
+  { name: 'SOLIDC_STRICT_UNKNOWN_ENV', class: 'observation' },
 ]);
 
 const BY_NAME = new Map(ENTRIES.map((entry) => [entry.name, entry]));
@@ -140,7 +144,7 @@ export function solidcFeatureIdentityBits(flags: SolidcFeatureFlags): Record<str
 
 /**
  * List unknown SOLIDC* keys present in env (for deterministic rejection/logging).
- * Release compilation ignores them; tests may assert they do not alter fingerprints.
+ * Release compilation ignores them by default; SOLIDC env registry strict mode refuses them.
  */
 export function unknownSolidcEnvKeys(env: Record<string, string | undefined>): string[] {
   return Object.keys(env)
@@ -154,7 +158,7 @@ export function listRegisteredSolidcEnv(): readonly SolidcEnvEntry[] {
 }
 
 /**
- * F28: read a registered boolean SOLIDC_* flag (`=== '1'`).
+ * production SOLIDC env hot-set: read a registered boolean SOLIDC_* flag (`=== '1'`).
  * Unknown / unregistered names return false (never invent production semantics).
  */
 export function solidcEnvFlagEnabled(
@@ -167,7 +171,65 @@ export function solidcEnvFlagEnabled(
   return env?.[name] === '1';
 }
 
-/** Production hot-set names that must stay registered (F28 ⊂ F20). */
+/**
+ * SOLIDC env registry: read a registered SOLIDC_* string value.
+ * Unknown / unregistered names return undefined (never invent production semantics).
+ */
+export function solidcEnvValue(
+  name: string,
+  env: Record<string, string | undefined> | undefined = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env,
+): string | undefined {
+  if (classifySolidcEnv(name) === 'unknown') return undefined;
+  const value = env?.[name];
+  return value === undefined || value === '' ? undefined : value;
+}
+
+/** True when SOLIDC env registry strict unknown-reject is requested via env or explicit option. */
+export function isSolidcStrictUnknownEnvEnabled(
+  env: Record<string, string | undefined> | undefined = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env,
+): boolean {
+  return solidcEnvFlagEnabled('SOLIDC_STRICT_UNKNOWN_ENV', env);
+}
+
+/**
+ * SOLIDC env registry: fail closed when unknown SOLIDC_* keys are present.
+ * CI enables this via `SOLIDC_STRICT_UNKNOWN_ENV=1` or by calling this helper directly.
+ */
+export function assertNoUnknownSolidcEnvKeys(
+  env: Record<string, string | undefined> | undefined = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env,
+): void {
+  const unknown = unknownSolidcEnvKeys(env ?? {});
+  if (unknown.length === 0) return;
+  throw new Error(
+    `solidc-env: unknown SOLIDC_* keys refused in strict mode: ${unknown.join(', ')}`,
+  );
+}
+
+/**
+ * SOLIDC env registry: production/CI policy entry. Returns unknown keys; throws when strict mode is on and any exist.
+ */
+export function enforceSolidcEnvPolicy(
+  env: Record<string, string | undefined> | undefined = (
+    globalThis as { process?: { env?: Record<string, string | undefined> } }
+  ).process?.env,
+  options?: { strictUnknown?: boolean },
+): string[] {
+  const source = env ?? {};
+  const unknown = unknownSolidcEnvKeys(source);
+  const strict = options?.strictUnknown === true || isSolidcStrictUnknownEnvEnabled(source);
+  if (strict && unknown.length > 0) {
+    assertNoUnknownSolidcEnvKeys(source);
+  }
+  return unknown;
+}
+
+/** Production hot-set names that must stay registered (subset of the full SOLIDC env registration). */
 export const PRODUCTION_SOLIDC_ENV_HOT_SET: readonly string[] = Object.freeze([
   'SOLIDC_SKIP_MESSAGE_BUS_BINDER',
   'SOLIDC_COMPILE_CACHE',
@@ -177,4 +239,5 @@ export const PRODUCTION_SOLIDC_ENV_HOT_SET: readonly string[] = Object.freeze([
   'SOLIDC_NO_OPTIMISE',
   'SOLIDC_ROUTE_PARSE_ORACLE',
   'SOLIDC_DUMP_ROUTE',
+  'SOLIDC_STRICT_UNKNOWN_ENV',
 ]);

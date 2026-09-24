@@ -4610,8 +4610,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
 
-    // Item 3: validate DEFINE frame against the shipped handler-frame-abi (same path unit tests drive).
+    // handler-frame ABI: validate DEFINE frame against the shipped handler-frame-abi (same path unit tests drive).
     // Count leftover tracked temps that are not named parameters as anonymous live cells.
+    // DEFINE fail-closed validation: returning bodies legitimately leave `returnTypes.length` result cells — subtract that
+    // arity so return values are not false-positive live-anonymous.
     const parameterNames = new Set(func.parameters.map((parameter) => parameter.name));
     const bandNames = new Set(func.messageBusCallerBandNames ?? []);
     const leftover = subTraversal.stack.filter((name) => (
@@ -4619,19 +4621,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !bandNames.has(name)
       && !name.startsWith('__internal__')
     ));
+    const returnArity = func.returnTypes?.length ?? 0;
+    const anonymousLive = Math.max(0, leftover.length - returnArity);
+    // DEFINE helper-effect recording: record per-helper stack effects for each named frame slot that
+    // validateDefineEmission places into the handler-frame schema (args + caller band).
+    const helperEffects = [
+      ...func.parameters
+        .filter((parameter) => !parameter.name.startsWith('__internal__'))
+        .map((parameter) => ({
+          helperId: `${func.name}:arg:${parameter.name}`,
+          reads: [parameter.name],
+        })),
+      ...(func.messageBusCallerBandNames ?? []).map((name) => ({
+        helperId: `${func.name}:band:${name}`,
+        reads: [name],
+      })),
+    ];
     const frameResult = validateDefineEmission({
       handlerId: String(func.functionId ?? func.name),
       handlerName: func.name,
       parameters: func.parameters,
       callerBandNames: func.messageBusCallerBandNames,
-      anonymousLive: leftover.length,
+      anonymousLive,
       altStackDepth: 0,
+      helperEffects,
     });
-    if (!frameResult.ok && this.compilerOptions.messageBusKernel === true
-      && (func.messageBusPhysicalEntrySlots?.length ?? 0) > 0) {
+    // DEFINE fail-closed validation: under kernel, fail-closed for every DEFINE kind. Return-aware leftover counting
+    // (`anonymousLive = max(0, leftover - returnArity)`) is the exact model for user returns and
+    // for `__message_bus_verify_atomic*` / `__message_bus_parse_row` (their `(value)` leftovers
+    // match published return arity).
+    if (!frameResult.ok && this.compilerOptions.messageBusKernel === true) {
+      const failureIds = frameResult.failures.map((failure) => failure.invariantId);
       throw new Error(
         `DEFINE frame validation failed for ${func.name}: `
-        + frameResult.failures.map((failure) => failure.invariantId).join(','),
+        + failureIds.join(','),
       );
     }
   }
@@ -11274,6 +11297,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const actual = parameterIndex < 0 ? undefined : node.parameters[parameterIndex];
           if (actual instanceof IdentifierNode) {
             routeContainerSlot = this.tokenContainerSlots.findIndex((item) => item.keyParam === actual.name);
+          }
+          // Graph-emission clones can already carry the route's canonical synthetic key rather than retaining a
+          // source parameter edge. In that shape, bind the exact published route slot directly.
+          if (routeContainerSlot < 0) {
+            routeContainerSlot = this.tokenContainerSlots.findIndex((item) =>
+              item.keyParam === access.keyParam);
           }
         }
         if (routeContainerSlot < 0) {
@@ -36736,7 +36765,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Get token container category from the key parameter
       const keyParamName = this.tokenContainerSlots[i].keyParam;
-      const keyIdx = this.getStackIndex(keyParamName);
+      // Prefer the live parameter; after a transfer emission the category may only remain as `__tc_cat_*`.
+      // Message-bus routes keep forwarded `__message_bus_token_category*` witnesses instead of source names.
+      const messageBusCatName = i === 0
+        ? '__message_bus_token_category'
+        : `__message_bus_token_category_${i}`;
+      let keyIdx = this.getStackIndex(keyParamName, true);
+      if (keyIdx < 0) {
+        keyIdx = this.getStackIndex(messageBusCatName, true);
+      }
+      if (keyIdx < 0) {
+        const transferCat = this.pendingTokenContainerTransfers
+          .filter((transfer) => transfer.tokenContainerSlotIndex === i)
+          .map((transfer) => transfer.argStackNames[0])
+          .find((name) => name !== undefined && this.getStackIndex(name, true) >= 0);
+        if (transferCat !== undefined) {
+          keyIdx = this.getStackIndex(transferCat);
+        }
+      }
+      if (keyIdx < 0) {
+        // Fall back to the i-th forwarded witness still on the stack when slot ordinals drifted.
+        const forwardedOnStack = this.stack.filter((name) => name === '__message_bus_token_category'
+          || name.startsWith('__message_bus_token_category_'));
+        const byOrdinal = forwardedOnStack[i] ?? forwardedOnStack[0];
+        if (byOrdinal !== undefined) keyIdx = this.getStackIndex(byOrdinal, true);
+      }
+      if (keyIdx < 0) {
+        throw new Error(
+          `token-container key '${keyParamName}' missing on stack while compiling `
+          + `'${this.currentFunction?.name}'; stack=[${this.stack.join(',')}] `
+          + `pendingTc=${JSON.stringify(this.pendingTokenContainerTransfers.map((t) => t.argStackNames))} `
+          + `slots=${JSON.stringify(this.tokenContainerSlots.map((s) => s.keyParam))}`,
+        );
+      }
       this.emit(encodeInt(BigInt(keyIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       // 1 untracked (tcCategoryId)

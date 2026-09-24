@@ -42,3 +42,28 @@ export function freezeGeometry<T extends Record<string, unknown>>(
 ): Readonly<T> {
   return Object.freeze({ ...geometry });
 }
+
+/**
+ * constraint fixpoint / item-10: record one non-final convergence fingerprint.
+ * Repeated states refuse (cycle), matching resource/chunk/semantic-claim converges.
+ */
+export function recordMonotonePass(
+  lattice: MonotoneCell<string>,
+  seen: Set<string>,
+  stateKey: string,
+  cycleMessage: string,
+): void {
+  if (seen.has(stateKey)) {
+    throw new Error(cycleMessage);
+  }
+  seen.add(stateKey);
+  lattice.advance({ tag: 'placeholder', hint: stateKey });
+}
+
+/** Resolve the lattice when a converge loop admits a stable final state. */
+export function finalizeMonotonePass(
+  lattice: MonotoneCell<string>,
+  stateKey: string,
+): void {
+  lattice.resolve(stateKey);
+}

@@ -1,5 +1,6 @@
-import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
+  artifactExecutionIdentityFingerprint,
   scriptToBytecode,
   occurrenceBoundOf, type AbiFunction, type ArgSource, type ExternalCallAbi,
 } from '@solidcash/utils';
@@ -19,16 +20,14 @@ const artifactExecutionIdentities = new WeakMap<object, string>();
  *
  * Stateful proxy handles may expose a fresh immutable artifact object on each access. Object identity therefore
  * cannot identify the artifact installed at one physical owner: separate callsites to that owner would look like
- * conflicting programs. Hash the JSON publication instead. This intentionally includes ABI, state layout and
- * message-bus metadata in addition to bytecode/fingerprint, so equal normalized bytecode alone cannot make two
- * incompatible resource geometries alias one owner.
+ * conflicting programs. Domain-separated binary fingerprint over bytecode, fingerprint, ABI, messageBus,
+ * and stateLayout (not raw `JSON.stringify`). Equal normalized bytecode alone cannot make two incompatible
+ * resource geometries alias one owner.
  */
 const artifactExecutionIdentity = (artifact: WorklistParticipant['artifact']): string => {
   const cached = artifactExecutionIdentities.get(artifact);
   if (cached !== undefined) return cached;
-  const serialized = JSON.stringify(artifact);
-  if (serialized === undefined) throw new Error('messageBus: participant artifact is not serializable');
-  const identity = binToHex(sha256.hash(new TextEncoder().encode(serialized)));
+  const identity = artifactExecutionIdentityFingerprint(artifact);
   artifactExecutionIdentities.set(artifact, identity);
   return identity;
 };

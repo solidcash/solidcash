@@ -212,7 +212,6 @@ import {
   lastCollidingMutableWriterIndex,
   viewTailOccupancyCap,
   valueChunkBandWidth,
-  liveJobEventsBandWidth,
   mintingSwapShift,
   isCompilerDescribedMintingBandWriter,
   tokenWriterReturnIndex,
@@ -225,7 +224,6 @@ import {
   stageValueChunkWrite,
   stagedValueChunkWrite,
   persistedJobEventsValue,
-  persistedJobEventsWidth,
   persistedJobEventsLock,
   isPersistedJobEventsReady,
   isValueChunkWriteReady,
@@ -264,6 +262,10 @@ import {
   sameDerivedChunkOutputObservation,
   ownsCapturedValueChunkOutputBase,
 } from './StatefulTransactionBuilder.js';
+import {
+  legacyLiveValueChunkBandWidth,
+  legacyPersistedValueChunkWidth,
+} from './legacy-job-event-helpers.js';
 import {
   legacyGroupLooksLikePublishJobEvent,
   legacyIsPublishJobEventName,
@@ -16174,8 +16176,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // First insert stamps with tip; appends use nLocktime (= tip-1) so the
                   // candidate matches the covenant (28B stamped, not 24B unstamped).
                   const appending = isPersistedJobEventsReady()
-                    && (persistedJobEventsWidth(this.categoryId) > 0
-                      || persistedJobEventsWidth() > 0);
+                    && (legacyPersistedValueChunkWidth(this.categoryId) > 0
+                      || legacyPersistedValueChunkWidth() > 0);
                   const locktime = appending
                     ? providerUnixLocktime(this.inner.provider as { getBlockTime?: () => number })
                     : undefined;
@@ -26922,8 +26924,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   (this.inner.provider as { getBlockTime?: () => number }).getBlockTime?.() ?? 0,
                 );
                 const appending = isPersistedJobEventsReady()
-                  && (persistedJobEventsWidth(callee.categoryId) > 0
-                    || persistedJobEventsWidth() > 0);
+                  && (legacyPersistedValueChunkWidth(callee.categoryId) > 0
+                    || legacyPersistedValueChunkWidth() > 0);
                 const locktime = appending
                   ? providerUnixLocktime(this.inner.provider as { getBlockTime?: () => number })
                   : undefined;
@@ -30700,10 +30702,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ...externalCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
               ...lowLevelCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
             );
-            // Match getPublishJobEventsBand / liveJobEventsBandWidth: plannedWidth 2 must stay
+            // Match the legacy value-chunk band: plannedWidth 2 must stay
             // nNew 2. valueChunkBandWidth's default minimum 3 made whitelist publish report
             // plannedWidth 2 / nNew 3 while the live band was only 2 wide.
-            const liveWidth = liveJobEventsBandWidth({ plannedWidth });
+            const liveWidth = legacyLiveValueChunkBandWidth({ plannedWidth });
             const nNew = liveWidth > 0
               ? liveWidth
               : valueChunkBandWidth({ minimum: 1, planned: plannedWidth });
@@ -35831,7 +35833,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : (describedPersistedWrites.length === 0 && permitsLegacyNamedValueChunkFallback(
           [...builder.getExternalCallUtxoGroups(), ...builder.getLowLevelCallUtxoGroups()],
           (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-        ) && isPersistedJobEventsReady() ? persistedJobEventsWidth() : 0);
+        ) && isPersistedJobEventsReady() ? legacyPersistedValueChunkWidth() : 0);
       const layoutRevisionBeforeDerive = builder.getDynamicLayoutRevision();
       const firstDeriveStarted = Date.now();
       deriveResult = await this._deriveFullTransactionState(

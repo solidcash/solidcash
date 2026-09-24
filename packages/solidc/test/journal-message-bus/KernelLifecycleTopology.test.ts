@@ -196,4 +196,38 @@ describe('kernel lifecycle topology metadata', () => {
     }`, 'close');
     expect(statementState.handler).toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LIFECYCLE' });
   });
+
+  it('Fence #16: event- and blockhash-bearing selfdestruct stay KERNEL_LIFECYCLE', () => {
+    const withEvent = selected(`contract EventVictim() {
+      event Gone(int v);
+      function close() public selfdestruct { emit Gone(1); require(true); }
+    }`, 'close');
+    expect(withEvent.handler).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
+      rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+    });
+
+    const withBlockhash = selected(`contract BlockhashVictim() {
+      function close() public selfdestruct {
+        bytes32 h = blockhash(0);
+        require(h == h);
+      }
+    }`, 'close');
+    expect(withBlockhash.handler).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
+      rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+    });
+
+    const eventAndState = selected(`contract EventStateVictim() {
+      int public x;
+      event Gone(int v);
+      function close() public selfdestruct { emit Gone(this.x); require(true); }
+    }`, 'close');
+    expect(eventAndState.handler).toMatchObject({
+      eligible: false,
+      rejectionReason: 'KERNEL_LIFECYCLE',
+    });
+  });
 });

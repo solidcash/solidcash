@@ -182,3 +182,70 @@ describe('kernel counter-loop helper escape predicates', () => {
       .toThrow(/No unique declaration|ambiguous.*overload/i);
   });
 });
+
+describe('Fence #7 escape control beside effects', () => {
+  it('keeps runtime continue beside emit in a counter loop behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) scores;
+      event Touched(int indexed i);
+      function work(int n, bool skipOdd) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (skipOdd && (i % 2) == 1) { continue; }
+          scores[i] = i;
+          emit Touched(i);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+
+  it('keeps runtime break beside transfer in a counter loop behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) scores;
+      function work(int n, int stopAt, bytes20 to) public {
+        for (int i = 0; i < n; i = i + 1) {
+          if (i == stopAt) { break; }
+          scores[i] = i;
+          this.transfer(to, 1000);
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+
+  it('keeps phased break beside emit+mutation behind KERNEL_LAYOUT', () => {
+    const artifact = compileString(`contract C() {
+      mapping(int => int) scores;
+      event Touched(int indexed i);
+      function work(int n, int stopAt) public {
+        for (int i = 0; i < n; i = i + 1) {
+          scores[i] = i;
+          emit Touched(i);
+          if (i == stopAt) { break; }
+        }
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'work'))
+      .toMatchObject({
+        eligible: false,
+        rejectionReason: 'KERNEL_LAYOUT',
+        rejectionCode: 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT',
+      });
+  });
+});

@@ -1,5 +1,5 @@
 /**
- * F17: compose handler joins use the same selector-first helper as graph (F5″).
+ * compose selector-first handler join: compose handler joins use the same selector-first helper as graph (selector-first graph handler join).
  * Name is diagnostic only under kernel-row-loop.
  */
 import { describe, expect, it } from 'vitest';
@@ -37,7 +37,7 @@ const kernelArtifact = (handlers: Array<{ name: string; selector: string }>): Ar
   },
 } as unknown as Artifact);
 
-describe('F17 compose stable handler join', () => {
+describe('compose selector-first handler join compose stable handler join', () => {
   it('compose entry helper joins by selector when diagnostic name is renamed', () => {
     const artifact = kernelArtifact([
       { name: 'set', selector: 'a9059cbb' },
@@ -60,20 +60,38 @@ describe('F17 compose stable handler join', () => {
     })).toBeUndefined();
   });
 
-  it('compose.ts routes message-bus handler joins through findMessageBusHandlerForInvocation', () => {
+  it('compose orchestration routes message-bus handler joins through findMessageBusHandlerForInvocation', () => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const src = readFileSync(join(here, '../../src/message-bus/compose.ts'), 'utf8');
-    expect(src).toContain("from './graph-handler-join.js'");
-    expect(src).toContain('findMessageBusHandlerForInvocation');
-    const codeLines = src.split('\n').filter((line) => {
-      const t = line.trim();
-      return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
-    });
-    // No remaining messageBus.handlers.find/some joins — compose uses the shared helper.
-    const residualHandlerJoins = codeLines.filter((line) => (
-      /handlers\.find\(/.test(line) || /handlers\.some\(/.test(line)
-    ));
-    expect(residualHandlerJoins).toEqual([]);
+    const messageBusDir = join(here, '../../src/message-bus');
+    const orchestrationFiles = [
+      'compose.ts',
+      'compose-prepared-call-validation.ts',
+      'compose-upgrade-validation.ts',
+      'compose-slot-inventory.ts',
+      'compose-assemble.ts',
+      'compose-materialize-deployments.ts',
+      'compose-event-helpers.ts',
+    ];
+    const sources = orchestrationFiles.map((name) => ({
+      name,
+      src: readFileSync(join(messageBusDir, name), 'utf8'),
+    }));
+    const joinUsers = sources.filter(({ src }) => src.includes('findMessageBusHandlerForInvocation'));
+    expect(joinUsers.length).toBeGreaterThan(0);
+    for (const { src } of joinUsers) {
+      expect(src).toContain("from './graph-handler-join.js'");
+    }
+    for (const { src } of sources) {
+      const codeLines = src.split('\n').filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      });
+      // No remaining messageBus.handlers.find/some joins — compose uses the shared helper.
+      const residualHandlerJoins = codeLines.filter((line) => (
+        /handlers\.find\(/.test(line) || /handlers\.some\(/.test(line)
+      ));
+      expect(residualHandlerJoins).toEqual([]);
+    }
   });
 
   it('kernel ABI resolution prefers published selector over colliding name', () => {

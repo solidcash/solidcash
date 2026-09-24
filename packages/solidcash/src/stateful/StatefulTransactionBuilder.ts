@@ -1768,6 +1768,53 @@ export function isPersistedJobEventsReady(): boolean {
   return persistedJobEventsSendReady;
 }
 
+// Keep legacy consumers on this monolith's persistence scope while the extracted helpers coexist during the
+// staged split. Re-exporting the extracted wrappers here would create a second cache and break authenticated
+// value/lock pairing for callers that otherwise use this module's persistence API.
+export function legacyLiveValueChunkBandWidth(...args: Parameters<typeof liveJobEventsBandWidth>) {
+  return liveJobEventsBandWidth(...args);
+}
+export function legacyComputePublishValueChunkBand(...args: Parameters<typeof computePublishJobEventsBand>) {
+  return computePublishJobEventsBand(...args);
+}
+export function legacyFillValueChunkBandHoles(...args: Parameters<typeof fillJobEventsBandHoles>) {
+  return fillJobEventsBandHoles(...args);
+}
+export function legacyPersistedValueChunkWidth(...args: Parameters<typeof persistedJobEventsWidth>) {
+  return persistedJobEventsWidth(...args);
+}
+export function legacyPersistedValueChunkValue(...args: Parameters<typeof persistedJobEventsValue>) {
+  return persistedJobEventsValue(...args);
+}
+export function legacyPersistedValueChunkLock(...args: Parameters<typeof persistedJobEventsLock>) {
+  return persistedJobEventsLock(...args);
+}
+export function legacyPersistedValueChunkUnlockRecipe(...args: Parameters<typeof persistedJobEventsUnlockRecipe>) {
+  return persistedJobEventsUnlockRecipe(...args);
+}
+export function legacyRememberValueChunkValue(...args: Parameters<typeof rememberJobEventsValue>) {
+  return rememberJobEventsValue(...args);
+}
+export function legacyRememberValueChunkLock(...args: Parameters<typeof rememberJobEventsLock>) {
+  return rememberJobEventsLock(...args);
+}
+export function legacyRememberValueChunkUnlockRecipe(...args: Parameters<typeof rememberJobEventsUnlockRecipe>) {
+  return rememberJobEventsUnlockRecipe(...args);
+}
+export function legacyStageValueChunkValue(...args: Parameters<typeof stageJobEventsValue>) {
+  return stageJobEventsValue(...args);
+}
+export function legacyIsPersistedValueChunkReady(...args: Parameters<typeof isPersistedJobEventsReady>) {
+  return isPersistedJobEventsReady(...args);
+}
+
+export {
+  CompositionSettlementSession,
+  createCompositionSettlementSession,
+  getCompositionSettlementSession,
+  runWithCompositionSettlementSession,
+} from './value-chunk-persist.js';
+
 /**
  * After a successful publishJobEvent the next update can place continuations
  * from persist instead of burning the 64-probe budget to rediscover them.

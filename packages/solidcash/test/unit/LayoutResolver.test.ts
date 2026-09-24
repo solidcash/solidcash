@@ -64,12 +64,82 @@ describe('layout-resolver', () => {
           participant: 1,
           witnessName: '__internal__vmapBatchPredOut_2',
           physicalLocalOffset: 23,
-          concreteLocalSlot: 4,
         }),
       ],
     });
     expect(layout.predOuts[0]?.absoluteOutput).toBe(participantBase + 23);
-    expect(layout.predOuts[0]?.absoluteOutput).not.toBe(participantBase + 4);
+    expect(layout.participants[1]?.inputBase).toBe(participantBase);
+    expect(layout.participants[1]?.outputBase).toBe(participantBase);
+    expect(layout.participantOutputs[1]).toBe(participantBase);
+  });
+
+  it('R5/layout-sentinel / PredOut: refuses any concreteLocalSlot that disagrees with physicalLocalOffset', () => {
+    // Below trailingBase (historical 203↔222 class).
+    expect(() => resolveTransactionLayout({
+      participants: [{
+        participant: 0,
+        blockLayout: { blockSize: 88, trailingBase: 23, trailingCapacity: 64, slots: [] },
+      }],
+      predOutClaims: [
+        predOutClaimFromPhysicalRoute({
+          participant: 0,
+          witnessName: '__internal__vmapBatchPredOut_2',
+          physicalLocalOffset: 23,
+          concreteLocalSlot: 4,
+        }),
+      ],
+    })).toThrow(/pred-out-concrete-vs-physical/);
+    // At/above trailingBase — still not authority.
+    expect(() => resolveTransactionLayout({
+      participants: [{
+        participant: 0,
+        blockLayout: { blockSize: 88, trailingBase: 23, trailingCapacity: 64, slots: [] },
+      }],
+      predOutClaims: [
+        predOutClaimFromPhysicalRoute({
+          participant: 0,
+          witnessName: '__internal__vmapBatchPredOut_2',
+          physicalLocalOffset: 23,
+          concreteLocalSlot: 40,
+        }),
+      ],
+    })).toThrow(/pred-out-concrete-vs-physical/);
+    // Equal concrete is ignored; resolved surface omits the field.
+    const ok = resolveTransactionLayout({
+      participants: [{
+        participant: 0,
+        blockLayout: { blockSize: 88, trailingBase: 23, trailingCapacity: 64, slots: [] },
+      }],
+      predOutClaims: [
+        predOutClaimFromPhysicalRoute({
+          participant: 0,
+          witnessName: '__internal__vmapBatchPredOut_2',
+          physicalLocalOffset: 23,
+          concreteLocalSlot: 23,
+        }),
+      ],
+    });
+    expect(ok.predOuts[0]?.absoluteOutput).toBe(23);
+    expect(ok.predOuts[0]).not.toHaveProperty('concreteLocalSlot');
+  });
+
+  it('refuses duplicate participant ids and overlapping symbolic bands', () => {
+    expect(() => resolveTransactionLayout({
+      participants: [
+        { participant: 0, blockLayout: { blockSize: 4, slots: [] } },
+        { participant: 0, blockLayout: { blockSize: 4, slots: [] } },
+      ],
+    })).toThrow(/duplicate-participant-id/);
+
+    expect(() => resolveTransactionLayout({
+      participants: [{
+        participant: 0,
+        bands: [
+          { kind: 'master', localBase: 0, capacity: 4 },
+          { kind: 'trailing', localBase: 2, capacity: 4 },
+        ],
+      }],
+    })).toThrow(/overlapping-symbolic-band/);
   });
 
   it('fail-closes when value-chunk capacity is exceeded', () => {
@@ -137,7 +207,6 @@ describe('layout-resolver', () => {
           participant: 1,
           witnessName: '__internal__vmapBatchPredOut_3',
           physicalLocalOffset: trailingBase + 2,
-          concreteLocalSlot: 4,
         }),
       ],
     });
@@ -170,7 +239,6 @@ describe('layout-resolver', () => {
       predOuts: [{
         witnessName: '__internal__vmapBatchPredOut_3',
         physicalLocalOffset: 42,
-        concreteLocalSlot: 4,
       }],
     });
     expect(witnesses.dynamicChunkInputBase).toBe(BigInt(publishedBase + 40));

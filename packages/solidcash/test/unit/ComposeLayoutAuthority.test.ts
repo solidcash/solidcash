@@ -5,7 +5,7 @@ import {
 } from '../../src/message-bus/layout-resolver.js';
 
 /**
- * Gate A′ plan step 2 (unit half): drive the shipped apply helper that compose uses to mutate
+ * transaction layout authority plan step 2 (unit half): drive the shipped apply helper that compose uses to mutate
  * unlocker params — not a resolve-vs-resolve tautology.
  */
 describe('compose layout authority (resolve-once + applyParticipantAbsoluteWitnesses)', () => {
@@ -31,7 +31,6 @@ describe('compose layout authority (resolve-once + applyParticipantAbsoluteWitne
       predOuts: [{
         witnessName: '__internal__vmapBatchPredOut_3',
         physicalLocalOffset: predPhysical,
-        concreteLocalSlot: 4,
       }],
     });
 

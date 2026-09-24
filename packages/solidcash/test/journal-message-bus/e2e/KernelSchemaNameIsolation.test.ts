@@ -1,12 +1,12 @@
-import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import { decodePushdataValue, type EntryAccessAbi, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract } from '../../../src/index.js';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import { setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const OPTIONS = {
@@ -214,4 +214,117 @@ describe('kernel schema-name isolation', () => {
     expect(commitmentLengths(builders[0])).toEqual(commitmentLengths(builders[1]));
     expect(commitments(builders[0])).toEqual(commitments(builders[1]));
   }, 120_000);
+
+  it('composes two alpha-renamed contracts with colliding schema names without journal bleed', async () => {
+    // Fan-out compose (FanOut shape): event Ledger.append + mapping Catalog.append share the Solidity
+    // spelling `append` / `records` vocabulary but keep distinct categories under one Caller.fire graph.
+    const provider = createMessageBusCapstoneTestProvider();
+    const leftArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Ledger {
+        event Cell(uint256 key, uint256 value);
+        function append(uint256 key, uint256 value) public {
+          emit Cell(key, value);
+          require(true);
+        }
+      }
+    `, { ...OPTIONS, messageBusHandlers: ['append'] });
+    const rightArtifact = compileString(`pragma solidity ^0.8.0;
+      contract Catalog {
+        mapping(uint256 => uint256) records;
+        function append(uint256 key, uint256 value) public {
+          records[key] = value;
+          require(true);
+        }
+      }
+    `, { ...OPTIONS, messageBusHandlers: ['append'] });
+    expect(leftArtifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+    expect(rightArtifact.messageBus?.handlers.find((handler) => handler.name === 'append'))
+      .toMatchObject({ eligible: true });
+
+    const leftBase = new Contract(leftArtifact, [], { provider });
+    const rightBase = new Contract(rightArtifact, [], { provider });
+    const leftSetup = await setupStatefulUtxos(
+      provider, leftBase, leftArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const rightSetup = await setupStatefulUtxos(
+      provider, rightBase, rightArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const left = StatefulContract.withCategory(
+      leftBase.withCategory(hexToBin(leftSetup.categoryId)), leftSetup.categoryId,
+    );
+    const right = StatefulContract.withCategory(
+      rightBase.withCategory(hexToBin(rightSetup.categoryId)), rightSetup.categoryId,
+    );
+
+    const callerArtifact = compileString(`pragma solidity ^0.8.0;
+      interface ILedger { function append(uint256 key, uint256 value) external; }
+      interface ICatalog { function append(uint256 key, uint256 value) external; }
+      contract Caller(address ledger, address catalog) {
+        function fire(uint256 leftKey, uint256 leftValue, uint256 rightKey, uint256 rightValue) public {
+          ILedger(ledger).append(leftKey, leftValue);
+          ICatalog(catalog).append(rightKey, rightValue);
+          require(true);
+        }
+      }
+    `, OPTIONS);
+    const callerBase = new Contract(
+      callerArtifact,
+      [left.inner.lockingBytecode, right.inner.lockingBytecode],
+      { provider },
+    );
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+
+    const fireAbi = callerArtifact.abi.find((entry) => entry.name === 'fire')!;
+    const leftCallsite = fireAbi.externalCalls!.find((call) => call.interfaceName === 'ILedger')!.callsiteId!;
+    const rightCallsite = fireAbi.externalCalls!.find((call) => call.interfaceName === 'ICatalog')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [
+        {
+          contract: caller,
+          functionName: 'fire',
+          args: [7n, 11n, 9n, 13n],
+        },
+        {
+          contract: left,
+          functionName: 'append',
+          args: [7n, 11n],
+          callsiteId: leftCallsite,
+        },
+        {
+          contract: right,
+          functionName: 'append',
+          args: [9n, 13n],
+          callsiteId: rightCallsite,
+        },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+
+    const transaction = builder.buildLibauthTransaction();
+    const leftCategory = leftSetup.categoryId.toLowerCase();
+    const rightCategory = rightSetup.categoryId.toLowerCase();
+    expect(leftCategory).not.toEqual(rightCategory);
+
+    const leftEvents = transaction.outputs.filter((output) => output.token?.nft?.capability === 'none'
+      && binToHex(output.token.category).toLowerCase() === leftCategory);
+    const rightEntries = transaction.outputs.filter((output) => output.token?.nft?.capability === 'mutable'
+      && binToHex(output.token.category).toLowerCase() === rightCategory);
+    expect(leftEvents.length).toBeGreaterThan(0);
+    expect(rightEntries.length).toBeGreaterThan(0);
+    // Same Solidity `append` spelling on both contracts; effects stay on their own categories.
+    expect(leftEvents.every((output) =>
+      binToHex(output.token!.category).toLowerCase() !== rightCategory)).toBe(true);
+    expect(rightEntries.every((output) =>
+      binToHex(output.token!.category).toLowerCase() !== leftCategory)).toBe(true);
+  }, 180_000);
 });

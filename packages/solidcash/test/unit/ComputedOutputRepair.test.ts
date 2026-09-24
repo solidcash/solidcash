@@ -318,6 +318,27 @@ describe('canApplyRepairedNftCommitment', () => {
     })).toBe('skip');
   });
 
+  it('ahead-of-time compose coverage: skips preserve-shaped rollback over a non-empty optimistic fixed-state write', () => {
+    // Input prior 00, optimistic output 51, inactive preserve OTC proposes 00 again.
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '51',
+      proposed: hexToBin('00'),
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+      inputCommitmentHex: '00',
+    })).toBe('skip');
+    // A real forward write (00 → 51) still applies when proposed is not preserve-shaped.
+    expect(canApplyRepairedNftCommitment({
+      capability: 'mutable',
+      currentCommitmentHex: '00',
+      proposed: hexToBin('51'),
+      hasLockingBytecode: false,
+      fixedStateSlot: true,
+      inputCommitmentHex: '00',
+    })).toBe('apply-commit');
+  });
+
   it('leaves an explicit fixed-state override for final covenant refusal', () => {
     const proposed = hexToBin('0164');
     expect(canApplyRepairedNftCommitment({

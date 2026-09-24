@@ -1,5 +1,5 @@
 /**
- * F30: resource converge refuses only would-apply OTC proposals under recipe.
+ * resource would-apply recipe gate: resource converge refuses only would-apply OTC proposals under recipe.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
@@ -16,7 +16,7 @@ import {
 } from '../../src/message-bus/materialization-mode.js';
 import { canApplyRepairedNftCommitment } from '../../src/stateful/computed-output-repair.js';
 
-describe('F30 resource would-apply recipe gate', () => {
+describe('resource would-apply recipe gate resource would-apply recipe gate', () => {
   afterEach(() => {
     setMaterializationMode('recipe');
   });

@@ -2,10 +2,8 @@ import { binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { getContractFactory, upgrades, Signer } from '../../../src/index.js';
-import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
-import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { messageBusVmAccepts as vmAccepts } from './vm-accepts.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -14,15 +12,6 @@ const KERNEL = {
   maximumInputBytes: 1_000_000,
   suppressWarnings: true,
 } as const;
-
-const vmAccepts = (builder: TransactionBuilder): boolean => {
-  const transaction = builder.buildLibauthTransaction();
-  const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-  const vm = createVirtualMachineBch2026ForProvider(builder.provider);
-  return transaction.inputs.every((_input, inputIndex) => vm.stateSuccess(
-    vm.evaluate({ inputIndex, sourceOutputs, transaction }),
-  ) === true);
-};
 
 const isOpReturn = (lockingBytecode: Uint8Array | string | undefined): boolean => {
   if (lockingBytecode === undefined) return false;

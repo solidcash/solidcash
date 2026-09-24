@@ -14,6 +14,18 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
+  buildDeployabilityCertificate,
+  buildMessageBusResourceBudgets,
+  buildKernelCapabilitySchema,
+  buildTokenContainerCoLayoutProof,
+  hasTokenContainerCoLayoutGeometry,
+  type TokenContainerCoLayoutSite,
+  createKernelExecutionPlan,
+  digestKernelExecutionPlan,
+  embedKernelPlanDigestInBytecode,
+  encodeKernelPlanDigestBytecode,
+  hasUniqueKernelPlanDigestCommitment,
+  KERNEL_PLAN_VERSION,
   needsOptimiserCrossCheck,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
@@ -30,10 +42,16 @@ import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
 } from './artifact/Artifact.js';
 import {
+  enforceSolidcEnvPolicy,
   resolveSolidcFeatureFlags,
   solidcEnvFlagEnabled,
+  solidcEnvValue,
   solidcFeatureIdentityBits,
 } from './solidc-env-registry.js';
+import {
+  assertPublishedChildDeploymentEffectIr,
+  pathEffectScheduleFromHandlerEffects,
+} from './finalized-typed-effect-ir.js';
 import { clearDefineFrameValidations } from './define-frame-validation.js';
 import {
   admittedHandlerNamesFromAnalysis,
@@ -43,6 +61,7 @@ import {
   type AdmissionDecisionSet,
   type KernelAdmissionReason,
 } from './admission-decision.js';
+import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
 
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
@@ -208,6 +227,7 @@ import {
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentCollectionDefinitions,
+  // finalized typed effect IR: kernel admission analyzes recipes under requireFinalizedTypes (default in analyzeChildDeploymentRecipes).
   childDeploymentGenesisEntries, childDeploymentGenesisState, childDeploymentStructDefinitions,
   childDeploymentValueRecipe, hasExactRecipeHelperIdentity,
 } from './deploymentRecipes.js';
@@ -390,10 +410,9 @@ const compilerBuildFingerprint = (): string => {
   }
   return `${files}:${bytes}:${latest}`;
 };
-const COMPILER_CACHE_BUILD_ID = process.env.SOLIDC_COMPILE_CACHE_BUILD_ID
+const COMPILER_CACHE_BUILD_ID = solidcEnvValue('SOLIDC_COMPILE_CACHE_BUILD_ID')
   ?? compilerBuildFingerprint();
-if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-  ?.SOLIDC_DEBUG_CACHE_ID === '1') {
+if (solidcEnvFlagEnabled('SOLIDC_DEBUG_CACHE_ID')) {
   // The artifact cache key is opaque, and a wrong one silently serves the previous build's artifacts. Print the
   // identity a compile actually used.
   console.error('solidc-cache-build-id', COMPILER_CACHE_BUILD_ID);
@@ -901,7 +920,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
   // Debug switch for the whole run: emitting the code generator's bytecode verbatim makes an instruction pointer
   // name the exact source line that produced it, which is what a VM-failure investigation needs. An explicit
   // option still wins, and the resolved value lands in the artifact cache key.
-  // F28: instrumented no-optimise goes through the registry reader (unknown names cannot flip it).
+  // production SOLIDC env hot-set: instrumented no-optimise goes through the registry reader (unknown names cannot flip it).
   const optimise = options.optimise
     ?? !solidcEnvFlagEnabled('SOLIDC_NO_OPTIMISE');
   // Production-semantics SOLIDC_* features: explicit CompilerOptions win; else env via registry.
@@ -1058,7 +1077,7 @@ function withCompilerWarnings<T>(suppress: boolean | undefined, compile: () => T
 }
 
 function compileCacheLimit(): number {
-  const configured = Number(process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES ?? 128);
+  const configured = Number(solidcEnvValue('SOLIDC_COMPILE_CACHE_MAX_ENTRIES') ?? 128);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : 128;
 }
 
@@ -1093,11 +1112,11 @@ function artifactCacheEnabled(
   // it, `DelegateInference` and `CompileCacheDisk` toggle it, `KernelGraphResultDependency` disables it with
   // `'0'`). Migrate those to `__artifactCache` and a `--no-cache` task flag, then delete the boolean read here.
   // `SOLIDC_COMPILE_CACHE_DIR`/`_MAX_ENTRIES`/`_BUILD_ID` are separate knobs and stay.
-  const want = process.env.SOLIDC_COMPILE_CACHE === '1' || options.__artifactCache === true;
+  const want = solidcEnvFlagEnabled('SOLIDC_COMPILE_CACHE') || options.__artifactCache === true;
   return want
     && !errorListener
     && (options.__artifactCache === true || !options.importResolver)
-    && !process.env.SOLIDCASH_NO_OUTLINE
+    && !solidcEnvFlagEnabled('SOLIDCASH_NO_OUTLINE')
     && (suppressWarnings
       || (console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn));
 }
@@ -1130,7 +1149,12 @@ function cacheableCompilerOptions(options: CompilerOptions): Record<string, unkn
   return keyOptions;
 }
 
-function buildArtifactCacheKey(
+/**
+ * SOLIDC env registry: public cache-identity builder for audit proofs.
+ * Execution-affecting CompilerOptions (+ feature identity bits) must change this key;
+ * observation-only knobs (e.g. SOLIDC_COMPILE_CACHE_DIR) must not.
+ */
+export function buildArtifactCacheKey(
   code: string, options: CompilerOptions, primaryContractName: string | undefined,
 ): string {
   const closure = importClosureFingerprint(code, options.rootFileId, options.importResolver);
@@ -1174,7 +1198,7 @@ function artifactWithoutDelegate(artifact: Artifact): Artifact {
 }
 
 function diskCachePath(cacheKey: string): string | undefined {
-  const dir = process.env.SOLIDC_COMPILE_CACHE_DIR;
+  const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR');
   if (!dir) return undefined;
   const hash = createHash('sha256').update(cacheKey).digest('hex');
   return join(dir, `${hash}.json`);
@@ -1189,7 +1213,7 @@ const MULTI_DISK_ENTRY_MARKER = 'solidc-multi-artifact-map';
 const MULTI_DISK_ENTRY_VERSION = 1;
 
 function diskMultiCachePath(cacheKey: string): string | undefined {
-  const dir = process.env.SOLIDC_COMPILE_CACHE_DIR;
+  const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR');
   if (!dir) return undefined;
   const hash = createHash('sha256').update(`multi\x00${cacheKey}`).digest('hex');
   return join(dir, `${hash}.json`);
@@ -1236,7 +1260,7 @@ function diskMultiCacheSet(cacheKey: string, map: ArtifactMap): void {
   const file = diskMultiCachePath(cacheKey);
   if (!file) return;
   try {
-    const dir = process.env.SOLIDC_COMPILE_CACHE_DIR!;
+    const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!;
     mkdirSync(dir, { recursive: true });
     // Lazy delegate variants are stripped for the same reason as the single-artifact entries: serializing them
     // would force a second codegen pass per declaration. Re-attached on the read path instead.
@@ -1256,7 +1280,7 @@ function diskCacheSet(cacheKey: string, artifact: Artifact): void {
   const file = diskCachePath(cacheKey);
   if (!file) return;
   try {
-    const dir = process.env.SOLIDC_COMPILE_CACHE_DIR!;
+    const dir = solidcEnvValue('SOLIDC_COMPILE_CACHE_DIR')!;
     mkdirSync(dir, { recursive: true });
     // Primary artifact only — re-attaching the lazy delegate on every disk hit would re-run codegen.
     writeFileSync(file, JSON.stringify(artifactWithoutDelegate(artifact)));
@@ -1324,6 +1348,124 @@ function attributionReason(reason: string | undefined): KernelAdmissionReason {
   return 'KERNEL_LAYOUT';
 }
 
+/** capability schema: stamp explicit capability absence semantics from the published messageBus shape. */
+function stampKernelCapabilitySchema(artifact: Artifact): void {
+  if (artifact.messageBus === undefined) return;
+  artifact.messageBus.capabilitySchema = buildKernelCapabilitySchema(artifact.messageBus);
+}
+
+/**
+ * Compile-time KernelExecutionPlan digest embed: embed KernelExecutionPlan digests into route bytecode at compile time.
+ * Eligible handlers get SCKP push/drop markers + messageBus.kernelExecutionPlans publication.
+ */
+function stampKernelExecutionPlanDigestsAtCompile(artifact: Artifact): void {
+  if (artifact.messageBus === undefined) return;
+  if (artifact.messageBus.available !== true) return;
+  const plans: Array<{
+    handlerId: string;
+    kernelPlanVersion: number;
+    digest: string;
+    handlerName?: string;
+  }> = [];
+  for (const handler of artifact.messageBus.handlers ?? []) {
+    if (handler.eligible !== true) continue;
+    const abi = artifact.abi.find((entry) => entry.name === handler.name);
+    const handlerId = handler.selector
+      ? `handler:${handler.selector}`
+      : `handler:${handler.name}`;
+    const plan = createKernelExecutionPlan({
+      handlerId,
+      handlerName: handler.name,
+      dynamicWrites: abi?.dynamicWrites ?? [],
+      dynamicReads: abi?.dynamicReads ?? [],
+    });
+    const digest = digestKernelExecutionPlan(plan);
+    artifact.bytecode = embedKernelPlanDigestInBytecode(artifact.bytecode ?? '', digest);
+    if (!hasUniqueKernelPlanDigestCommitment(artifact.bytecode, digest)) {
+      throw new Error(
+        `kernel-plan: compile stamp failed to uniquely embed digest for ${handler.name}`,
+      );
+    }
+    // Keep encode in sync with KernelExecutionPlan bytecode commitment marker shape (push/drop).
+    void encodeKernelPlanDigestBytecode(digest);
+    plans.push({
+      handlerId,
+      kernelPlanVersion: KERNEL_PLAN_VERSION,
+      digest,
+      handlerName: handler.name,
+    });
+  }
+  if (plans.length === 0) {
+    delete artifact.messageBus.kernelExecutionPlans;
+    return;
+  }
+  artifact.messageBus.kernelExecutionPlans = {
+    version: 1,
+    plans: Object.freeze(plans),
+  };
+}
+
+/**
+ * Token-container co-layout: stamp non-overlapping span proof when dynamic writes share a handler
+ * with reserved `tokenContainer` block slots (read) or `tcTransfer` slots (transfer residual).
+ */
+function stampTokenContainerCoLayoutProof(artifact: Artifact): void {
+  if (artifact.messageBus === undefined) return;
+  const routeSlots = artifact.messageBus.route?.blockLayout?.slots ?? [];
+  const sites: TokenContainerCoLayoutSite[] = (artifact.messageBus.handlers ?? [])
+    .flatMap((handler): TokenContainerCoLayoutSite[] => {
+      const abi = artifact.abi.find((entry) => entry.name === handler.name);
+      const dynamicWrites = abi?.dynamicWrites ?? [];
+      const hasTokenAccess = (abi?.tokenContainerAccesses?.length ?? 0) > 0;
+      const hasTransfer = (abi?.tokenContainerTransferSites?.length ?? 0) > 0;
+      const layoutSlots = abi?.blockLayout?.slots
+        ?? artifact.messageBus?.route?.blockLayout?.slots
+        ?? routeSlots;
+      if (!hasTokenAccess || dynamicWrites.length === 0) return [];
+      const slotIndices = layoutSlots
+        .filter((slot) => slot.kind === 'tokenContainer')
+        .map((slot) => slot.slotIndex)
+        .filter((index): index is number => typeof index === 'number');
+      if (slotIndices.length === 0) return [];
+      const trailingCapacity = artifact.messageBus?.route?.blockLayout?.trailingCapacity;
+      // Token-container transfer beside trailing dyn: prefer the tcTransfer span kind when transfer sites are present.
+      if (hasTransfer && hasTokenContainerCoLayoutGeometry({
+        slots: layoutSlots,
+        dynamicWrites,
+        trailingCapacity,
+        requireTcTransfer: true,
+      })) {
+        return [{
+          handlerName: handler.name,
+          selector: handler.selector,
+          dynamicWrites: [...dynamicWrites],
+          tokenContainerSlotIndices: slotIndices,
+          spanKind: 'tokenContainer-tcTransfer-plus-trailing-dyn',
+        }];
+      }
+      // Admitted read subset: eligible + trailing-dyn geometry (no transfers).
+      if (handler.eligible === true && hasTokenContainerCoLayoutGeometry({
+        slots: layoutSlots,
+        dynamicWrites,
+        trailingCapacity,
+      })) {
+        return [{
+          handlerName: handler.name,
+          selector: handler.selector,
+          dynamicWrites: [...dynamicWrites],
+          tokenContainerSlotIndices: slotIndices,
+          spanKind: 'tokenContainer-input-plus-trailing-dyn',
+        }];
+      }
+      return [];
+    });
+  if (sites.length === 0) {
+    delete artifact.messageBus.tokenContainerCoLayout;
+    return;
+  }
+  artifact.messageBus.tokenContainerCoLayout = buildTokenContainerCoLayoutProof(sites);
+}
+
 function applyAdmissionStamp(
   artifact: Artifact,
   analysis: AdmissionDecisionSet,
@@ -1336,11 +1478,14 @@ function applyAdmissionStamp(
   artifact.messageBus.admittedHandlerIds = admittedHandlerNamesFromAnalysis(analysis);
   artifact.messageBus.refusedHandlerIds = refusedHandlerNamesFromAnalysis(analysis);
   artifact.messageBus.admissionSource = source;
+  stampTokenContainerCoLayoutProof(artifact);
+  stampKernelCapabilitySchema(artifact);
+  stampKernelExecutionPlanDigestsAtCompile(artifact);
   return artifact;
 }
 
 /**
- * Item 13: build analysis from attribution spans (independent of codegen handlers), gate published
+ * Admission stamp: build analysis from attribution spans (independent of codegen handlers), gate published
  * eligible handlers against that analysis, and stamp `messageBus.admittedHandlerIds`.
  */
 function stampMessageBusAdmission(
@@ -1383,7 +1528,7 @@ export function resetPendingSpanAdmissionAnalysis(): void {
 /**
  * Final-publish stamp: always present on messageBus artifacts after compileString.
  * Prefers pending span-based analysis (non-tautological) when the admission ladder recorded spans.
- * F13′: kernel without spans fails closed (published-fallback retired).
+ * Kernel without attribution spans fails closed (published-fallback retired).
  */
 export function ensureMessageBusAdmissionStamp(artifact: Artifact): Artifact {
   if (artifact.messageBus === undefined) return artifact;
@@ -1413,8 +1558,8 @@ export function ensureMessageBusAdmissionStamp(artifact: Artifact): Artifact {
     return applyAdmissionStamp(artifact, analysis, 'attribution-spans');
   }
   const published = artifact.messageBus.handlers ?? [];
-  // F13′: published-fallback is retired. Kernel requires attribution-spans; legacy leaves ids
-  // from eligibility without claiming analyzer authority via admissionSource.
+  // Published-fallback is retired. Kernel requires attribution-spans.
+  // admissionSource stamp: legacy non-kernel path stamps explicit `legacy-eligibility` (never silent unset with ids).
   if (artifact.messageBus.convention === 'kernel-row-loop') {
     throw new Error(
       `messageBus: kernel admission stamp requires attribution-spans analysis `
@@ -1427,7 +1572,8 @@ export function ensureMessageBusAdmissionStamp(artifact: Artifact): Artifact {
   artifact.messageBus.refusedHandlerIds = published
     .filter((handler) => handler.eligible !== true)
     .map((handler) => handler.name);
-  delete artifact.messageBus.admissionSource;
+  artifact.messageBus.admissionSource = 'legacy-eligibility';
+  stampKernelCapabilitySchema(artifact);
   return artifact;
 }
 
@@ -1728,7 +1874,7 @@ function compileWithExternalAdmissionFallback(
         admitBareForwardingHandlers,
       };
     }
-    // Item 13: every successful ladder rung stamps admittedHandlerIds + gates published handlers.
+    // Admission stamp: every successful ladder rung stamps admittedHandlerIds + gates published handlers.
     return stampMessageBusAdmission(artifact, attribution);
   };
   if (!mergedCompilerOptions.messageBus) return compileOnce(true);
@@ -1747,7 +1893,7 @@ function compileWithExternalAdmissionFallback(
       try {
         return compileOnce(true, true, true, true, true);
       } catch (error) {
-        if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+        if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
           console.error('message-bus widest route failed', primaryContractName, error);
         }
         firstError = error;
@@ -1759,14 +1905,14 @@ function compileWithExternalAdmissionFallback(
       // straight to the public-only ladder both discarded valid external graph roots and paid for every narrow
       // rung before eventually emitting a direct-only artifact. Each retry removes at least one new source
       // handler, so this reaches a finite fixed point without an arbitrary refusal cap.
-      // F8′: monotone refusal recovers *codegen*, then stampMessageBusAdmission uses spans.
+      // KERNEL_* admission catalog: monotone refusal recovers *codegen*, then stampMessageBusAdmission uses spans.
       const recovered = recoverCompileByMonotoneRefusal(
         latestError,
         attribution.refused,
         (error) => attributeExternalHandlerRefusal(error, attribution),
         () => compileOnce(true, true, true, true, true),
         (named, error) => {
-          if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+          if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
             console.error('message-bus attributed route failed', primaryContractName, named, error);
           }
         },
@@ -1775,7 +1921,7 @@ function compileWithExternalAdmissionFallback(
         return recovered.value;
       }
       latestError = recovered.error;
-      if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+      if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
         console.error(
           'message-bus route failure reached attribution fixed point', primaryContractName, latestError,
         );
@@ -1897,7 +2043,7 @@ function compileWithExternalAdmissionFallback(
   // The throw, however, is attributable: it either names one of the internal clones synthesis pushed or carries a
   // position inside the handler that was cloned. Refuse THAT handler and try again, one handler per round, so the
   // outcome is a named refusal on the gapped handler with its siblings still routed.
-  // F8′: compile recovery only — admission authority remains attribution-spans stamp.
+  // KERNEL_* admission catalog: compile recovery only — admission authority remains attribution-spans stamp.
   const recovered = recoverCompileByMonotoneRefusal(
     latestError,
     attribution.refused,
@@ -2435,7 +2581,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
   );
-  // Item 13: binder/full-recompile can replace the admission-ladder artifact — restamp on the final publish.
+  // Admission stamp: binder/full-recompile can replace the admission-ladder artifact — restamp on the final publish.
   ensureMessageBusAdmissionStamp(artifact);
   if (cacheable) {
     compileCacheSet(cacheKey, artifact);
@@ -2460,6 +2606,8 @@ function restoreSpeculativeMessageBusRefusals(
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  // SOLIDC env registry: when SOLIDC_STRICT_UNKNOWN_ENV=1 (CI), refuse unknown SOLIDC_* before any compile work.
+  enforceSolidcEnvPolicy();
   clearDefineFrameValidations();
   pendingSpanAdmissionAnalysis = undefined;
   return withCompilerWarnings(compilerOptions.suppressWarnings, () => {
@@ -3024,15 +3172,6 @@ function containsTransactionSignature(type: Type, seen = new Set<object>()): boo
 const isEntireTransactionSignatureType = (type: Type): boolean => type === PrimitiveType.SIG
   || (type instanceof ArrayType && isEntireTransactionSignatureType(type.elementType));
 
-const KERNEL_ADMISSION_REASONS = new Set([
-  'KERNEL_UNBOUNDED_KEY',
-  'KERNEL_LAYOUT',
-  'KERNEL_TX_SIGNATURE',
-  'KERNEL_OPAQUE_EFFECT',
-  'KERNEL_FOREIGN_DELEGATE',
-  'KERNEL_LIFECYCLE',
-]);
-
 /** Name the gate that refused a handler: `KERNEL_LAYOUT` alone cannot say which construct to fix. */
 function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Record<string, unknown>): void {
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -3040,20 +3179,9 @@ function noteKernelLayoutGate(fn: { name: string }, gate: string, detail?: Recor
   console.error('message-bus-layout-gate', JSON.stringify({ handler: fn.name, gate, ...detail }));
 }
 
-/** Map an admission reason onto the frozen kernel catalog. Unknown leftovers become KERNEL_LAYOUT. */
+/** Map admission reasons onto the shared frozen KERNEL_* catalog. */
 function kernelAdmissionReason(reason: string): string {
-  if (KERNEL_ADMISSION_REASONS.has(reason)) return reason;
-  if (reason === 'lifecycle-or-unsafe-handler') return 'KERNEL_LIFECYCLE';
-  if (reason === 'transaction-signature-route-binding-required') return 'KERNEL_TX_SIGNATURE';
-  if (reason === 'verified-mapping-runtime-loop-write-unsupported') return 'KERNEL_UNBOUNDED_KEY';
-  if (reason === 'atomic-delegate-context-unpreservable') return 'KERNEL_FOREIGN_DELEGATE';
-  if (reason === 'opaque-assembly-effects-callManifest-ineligible'
-    || reason === 'unresolved-or-effectful-handler'
-    || reason === 'batched-handler-forward-call-not-enabled'
-    || reason === 'return-consuming-low-level-call-route-not-enabled') {
-    return 'KERNEL_OPAQUE_EFFECT';
-  }
-  return 'KERNEL_LAYOUT';
+  return normalizeKernelAdmissionReason(reason);
 }
 
 /** Classify every published route refusal into one of callManifest-v1 section 9.2's stable classes. */
@@ -3843,6 +3971,166 @@ function fixedChunkableBoolParamActivation(
   return undefined;
 }
 
+/**
+ * path-effect activation: bool-param BranchNode (+ opaque-control) activations for direct emit sites.
+ * Maps emitIndex → ECE stamped onto pathEffectSchedule event entries.
+ * Else arms receive a negated activation. Loops/collection-iteration preserve the
+ * enclosing activation. Bool-discriminant switches refine true/false/default arms;
+ * other switches preserve the enclosing activation without case refinement.
+ */
+function pathEffectBoolParamActivationsForEmits(
+  fn: FunctionDefinitionNode,
+): Map<number, ExternalCallExpression> {
+  const result = new Map<number, ExternalCallExpression>();
+  if (!fn.body) return result;
+  const combine = (
+    outer: ExternalCallExpression | undefined,
+    inner: ExternalCallExpression,
+  ): ExternalCallExpression => (outer === undefined
+    ? inner
+    : { kind: 'binary', operator: '&&', left: outer, right: inner });
+  const scan = (node: Node, activation: ExternalCallExpression | undefined): void => {
+    if (node instanceof BranchNode) {
+      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
+      if (branchActivation === undefined) {
+        scan(node.ifBlock, activation);
+        if (node.elseBlock !== undefined) scan(node.elseBlock, activation);
+        return;
+      }
+      scan(node.ifBlock, combine(activation, branchActivation));
+      if (node.elseBlock !== undefined) {
+        const negated: ExternalCallExpression = {
+          kind: 'unary', operator: '!', expression: branchActivation,
+        };
+        scan(node.elseBlock, combine(activation, negated));
+      }
+      return;
+    }
+    if (node instanceof EmitStatementNode && node.runtimeLoopEvent === undefined) {
+      if (activation !== undefined) {
+        // Switch/if arms may share one emitIndex (capacity union). OR activations so the
+        // slot stays active when any arm that writes it would fire.
+        const prior = result.get(node.emitIndex);
+        result.set(
+          node.emitIndex,
+          prior === undefined
+            ? activation
+            : { kind: 'binary', operator: '||', left: prior, right: activation },
+        );
+      }
+      return;
+    }
+    if (node instanceof WhileNode || node instanceof DoWhileNode) {
+      // Opaque loop predicate: preserve enclosing activation into the body.
+      scan(node.block, activation);
+      return;
+    }
+    if (node instanceof CollectionIterationNode) {
+      scan(node.body, activation);
+      return;
+    }
+    if (node instanceof SwitchNode) {
+      const boolDiscriminant = fixedChunkableBoolParamActivation(node.expression, fn);
+      const intDiscriminant = (() => {
+        const disc = node.expression;
+        if (!(disc instanceof IdentifierNode)) return undefined;
+        const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+        const parameterIndex = visible.findIndex((parameter) => parameter.name === disc.name);
+        if (parameterIndex < 0) return undefined;
+        const parameterType = visible[parameterIndex]!.type;
+        // Bool discriminants use the bool path above; equality literals → handlerInputEq.
+        if (parameterType === PrimitiveType.BOOL) return undefined;
+        return {
+          kind: 'source' as const,
+          source: { kind: 'forward' as const, paramIndex: parameterIndex },
+        };
+      })();
+      if (boolDiscriminant !== undefined) {
+        let sawTrue = false;
+        let sawFalse = false;
+        for (const arm of node.cases) {
+          if (arm.value instanceof BoolLiteralNode && arm.value.value === true) {
+            sawTrue = true;
+            scan(arm.body, combine(activation, boolDiscriminant));
+          } else if (arm.value instanceof BoolLiteralNode && arm.value.value === false) {
+            sawFalse = true;
+            const negated: ExternalCallExpression = {
+              kind: 'unary', operator: '!', expression: boolDiscriminant,
+            };
+            scan(arm.body, combine(activation, negated));
+          } else {
+            scan(arm.body, activation);
+          }
+        }
+        if (node.defaultCase !== undefined) {
+          if (sawTrue && !sawFalse) {
+            const negated: ExternalCallExpression = {
+              kind: 'unary', operator: '!', expression: boolDiscriminant,
+            };
+            scan(node.defaultCase, combine(activation, negated));
+          } else if (sawFalse && !sawTrue) {
+            scan(node.defaultCase, combine(activation, boolDiscriminant));
+          } else {
+            scan(node.defaultCase, activation);
+          }
+        }
+        return;
+      }
+      if (intDiscriminant !== undefined) {
+        const caseEqs: ExternalCallExpression[] = [];
+        for (const arm of node.cases) {
+          if (arm.value instanceof IntLiteralNode) {
+            const eq: ExternalCallExpression = {
+              kind: 'binary',
+              operator: '==',
+              left: intDiscriminant,
+              right: { kind: 'literal', type: 'bigint', value: arm.value.value.toString() },
+            };
+            caseEqs.push(eq);
+            scan(arm.body, combine(activation, eq));
+          } else {
+            scan(arm.body, activation);
+          }
+        }
+        if (node.defaultCase !== undefined) {
+          if (caseEqs.length === 0) {
+            scan(node.defaultCase, activation);
+          } else {
+            // default ⇔ ¬(c0 ∨ c1 ∨ …)
+            const anyCase = caseEqs.slice(1).reduce<ExternalCallExpression>(
+              (left, right) => ({ kind: 'binary', operator: '||', left, right }),
+              caseEqs[0]!,
+            );
+            const negated: ExternalCallExpression = {
+              kind: 'unary', operator: '!', expression: anyCase,
+            };
+            scan(node.defaultCase, combine(activation, negated));
+          }
+        }
+        return;
+      }
+      // Other discriminants: preserve enclosing activation without case refinement.
+      for (const arm of node.cases) scan(arm.body, activation);
+      if (node.defaultCase !== undefined) scan(node.defaultCase, activation);
+      return;
+    }
+    if (node instanceof TryCatchNode) {
+      scan(node.tryBlock, activation);
+      return;
+    }
+    for (const [field, value] of Object.entries(node)) {
+      if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
+        'stateVariable', 'type'].includes(field)) continue;
+      if (value instanceof Node) scan(value, activation);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) scan(item, activation);
+      }
+    }
+  };
+  scan(fn.body, undefined);
+  return result;
+}
+
 const nodeContainsChunkableWrite = (
   root: Node,
   chunkableNames: ReadonlySet<string>,
@@ -4035,13 +4323,18 @@ function fixedChunkableWriteWithSingleOccurrenceBound(
  * row executes its ordinary post-mutation element expression inside one OP_INVOKE; LowerCollectionJournalHelpers
  * threads the pending whole array through those invokes and emits one final sorted-entry write. Consequently no
  * SDK replay value is part of the authority for this capability.
+ *
+ * path-effect activation: a single bool-parameter BranchNode with empty else (same subset as fixed-chunkable writes) may gate the
+ * push; the activation ECE is published for fold `activationSchedule` / entry-access gating.
  */
 function pooledChunkableArrayPushCollection(
   fn: FunctionDefinitionNode,
   collections: ReadonlyMap<string, CollectionNode>,
   functionsByName: Map<string, FunctionDefinitionNode[]>,
   footprintCache: ReturnType<typeof createFootprintAnalysisCache>,
-): string | undefined {
+): { collection: string; effectOrdinal: number; activation?: ExternalCallExpression } | undefined {
+  // Bool-param empty-else gates mark sourceEffectOrder unsupported-flow (same as fixed-chunkable writes);
+  // the scan below is the authority for the admitted push shape, not the coarse flow tag.
   if (!fn.body) return undefined;
   const chunkableArrays = new Set([...collections].flatMap(([name, collection]) => (
     collection.sorted && collection.innermostValueType instanceof ArrayType
@@ -4056,18 +4349,51 @@ function pooledChunkableArrayPushCollection(
   if (footprintNames.size !== 1) return undefined;
   const [collection] = [...footprintNames];
   const parameterNames = new Set(fn.parameters.map((parameter) => parameter.name));
-  const direct: MappingAssignNode[] = [];
+  const locallyBound = new Set(fn.parameters.map((parameter) => parameter.name));
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+  });
+  const direct: Array<{ node: MappingAssignNode; activation?: ExternalCallExpression }> = [];
   let unsupported = false;
-  const scan = (node: Node, conditional: boolean): void => {
+  const scan = (
+    node: Node,
+    activation: ExternalCallExpression | undefined,
+    conditional: boolean,
+  ): void => {
     if (unsupported) return;
-    const nestedConditional = conditional || node instanceof BranchNode || node instanceof WhileNode
-      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode;
     if (node instanceof ReturnNode && direct.length === 0) {
       // A successful early return can bypass a later top-level push. Post-push returns are harmless because the
       // pooled resource mutation has already occurred exactly once.
       unsupported = true;
       return;
     }
+    if (node instanceof BranchNode) {
+      const branchActivation = fixedChunkableBoolParamActivation(node.condition, fn);
+      if (branchActivation === undefined) {
+        // Non-bool-param branches fence any chunkable push in either arm (legacy nestedConditional).
+        if (nodeContainsChunkableWrite(node, chunkableArrays, footprintNames, locallyBound)) {
+          unsupported = true;
+        }
+        return;
+      }
+      if (node.elseBlock !== undefined
+        && nodeContainsChunkableWrite(node.elseBlock, chunkableArrays, footprintNames, locallyBound)) {
+        // Writes in both arms are same-iteration resource selection — still fenced.
+        unsupported = true;
+        return;
+      }
+      const combined: ExternalCallExpression = activation === undefined
+        ? branchActivation
+        : { kind: 'binary', operator: '&&', left: activation, right: branchActivation };
+      // Bool-param empty-else: push in the if-arm is admitted with activation (not "conditional" fence).
+      scan(node.ifBlock, combined, conditional);
+      return;
+    }
+    const nestedConditional = conditional || node instanceof WhileNode
+      || node instanceof DoWhileNode || node instanceof SwitchNode || node instanceof TryCatchNode
+      || node instanceof CollectionIterationNode || node instanceof TernaryOpNode
+      || (node instanceof BinaryOpNode
+        && (node.operator === BinaryOperator.AND || node.operator === BinaryOperator.OR));
     if (node instanceof MappingAssignNode && chunkableArrays.has(node.name)) {
       if (node.name !== collection || !node.arrayPush || node.arrayPop || node.arrayIndex
         || node.messageBusJournalTransport || node.sourceEffectOrdinal === undefined || nestedConditional
@@ -4076,7 +4402,7 @@ function pooledChunkableArrayPushCollection(
         ))) {
         unsupported = true;
       } else {
-        direct.push(node);
+        direct.push({ node, ...(activation && { activation }) });
       }
       return;
     }
@@ -4099,14 +4425,20 @@ function pooledChunkableArrayPushCollection(
     for (const [field, value] of Object.entries(node)) {
       if (['location', 'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable',
         'stateVariable', 'type'].includes(field)) continue;
-      if (value instanceof Node) scan(value, nestedConditional);
+      if (value instanceof Node) scan(value, activation, nestedConditional);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) scan(item, nestedConditional);
+        for (const item of value) if (item instanceof Node) scan(item, activation, nestedConditional);
       }
     }
   };
-  scan(fn.body, false);
-  return !unsupported && direct.length === 1 ? collection : undefined;
+  scan(fn.body, undefined, false);
+  if (unsupported || direct.length !== 1) return undefined;
+  const entry = direct[0]!;
+  return {
+    collection: entry.node.name,
+    effectOrdinal: entry.node.sourceEffectOrdinal!,
+    ...(entry.activation !== undefined && { activation: entry.activation }),
+  };
 }
 
 function collectJournalTransportedWrites(
@@ -5433,6 +5765,8 @@ function synthesizeMessageBusRoute(
     fn.messageBusFixedChunkableWriteMaxRows = fixedChunkableWriteCollection === undefined ? undefined : 1;
     fn.messageBusFixedChunkableWriteEffectOrdinal = fixedChunkableWrite?.effectOrdinal;
     fn.messageBusPooledChunkableArrayPush = pooledChunkableArrayPush === undefined ? undefined : true;
+    fn.messageBusPooledChunkableArrayPushActivation = pooledChunkableArrayPush?.activation;
+    fn.messageBusPooledChunkableArrayPushEffectOrdinal = pooledChunkableArrayPush?.effectOrdinal;
     if (fixedChunkableWriteCollection !== undefined) {
       fixedChunkableWriteCollectionByHandler.set(fn, fixedChunkableWriteCollection);
       fn.messageBusFixedChunkableResources = fixedChunkableWrite?.resources.map((resource) => ({
@@ -5449,6 +5783,14 @@ function synthesizeMessageBusRoute(
           if (!access.mutationEffectOrdinals?.includes(resource.effectOrdinal)) continue;
           access.activation = resource.activation;
         }
+      }
+    }
+    // path-effect activation: stamp pooled push bool-param activation onto live entry accesses (Artifact republishes).
+    if (pooledChunkableArrayPush?.activation !== undefined) {
+      for (const access of fn.entryAccesses ?? []) {
+        if (access.collection !== pooledChunkableArrayPush.collection) continue;
+        if (!access.mutationEffectOrdinals?.includes(pooledChunkableArrayPush.effectOrdinal)) continue;
+        access.activation = pooledChunkableArrayPush.activation;
       }
     }
     if (compilerOptions.messageBusKernel === true) {
@@ -6728,6 +7070,8 @@ function synthesizeMessageBusRoute(
         .map((proof) => [proof.deployment, proof.proof] as const));
       const foldedProofCalls = new Set(foldedInitializationProofs.map((proof) => proof.call));
       const closureNames = collectNamedFunctionClosure(fn, byName);
+      // Recipe analysis may still use pre-final intrinsic bridges; finalized typed effect IR asserts finalized resultTypes on
+      // published childDeployments (see assertPublishedChildDeploymentEffectIr).
       const deploymentRecipeAnalysis = analyzeChildDeploymentRecipes(fn, contract.functions);
       const deploymentInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
       const deploymentInputIndex = new Map(deploymentInputs.map((parameter, index) => [parameter.name, index]));
@@ -7772,7 +8116,7 @@ function synthesizeMessageBusRoute(
       // The catalog mapping below replaces the pass-local reason with its frozen kernel class, so the reason a
       // gate actually assigned is not recoverable from the artifact. Publish it under an explicit switch: a
       // refusal that names only KERNEL_LAYOUT cannot distinguish a layout bound from an unsupported construct.
-      if (process.env.SOLIDC_DEBUG_ADMISSION_REASONS === '1') {
+      if (solidcEnvFlagEnabled('SOLIDC_DEBUG_ADMISSION_REASONS')) {
         console.error('message-bus-admission-source', JSON.stringify({
           handler: fn.name, sourceReason: fn.messageBusRejectionReason,
         }));
@@ -8125,7 +8469,7 @@ function synthesizeMessageBusRoute(
       const occurrence = occurrenceInfoOf(handler, node);
       return occurrence.occurrence === 'loop' && occurrence.maximumOccurrences === undefined;
     };
-    if (process.env.SOLIDC_DEBUG_ROUTE === '1') {
+    if (solidcEnvFlagEnabled('SOLIDC_DEBUG_ROUTE')) {
       const mappings: Array<{ kind: string; name: string; keys: string[] }> = [];
       walkInvocationAst(handler.body, (node) => {
         if (!isMappingNode(node)) return;
@@ -11238,7 +11582,7 @@ function synthesizeMessageBusRoute(
     }`;
   const routeHostSource = routeSource;
   const routeOracleSource = routeHostSource.replace('require(__MB_ROWS__);', parser);
-  if (process.env.SOLIDC_DUMP_ROUTE === '1') {
+  if (solidcEnvFlagEnabled('SOLIDC_DUMP_ROUTE')) {
     console.error(routeOracleSource);
   }
   // X71. Both sources are generated immediately above, so a parse failure here carries a Line/Column in THAT
@@ -11251,7 +11595,7 @@ function synthesizeMessageBusRoute(
   const chunkedArrays = compilerOptions.chunkedArrays ?? true;
   const routeOrigin = `the message-bus route generated for '${contract.name}'`;
   const useRouteParseOracle = compilerOptions.__messageBusRouteParseOracle === true
-    || process.env.SOLIDC_ROUTE_PARSE_ORACLE === '1';
+    || solidcEnvFlagEnabled('SOLIDC_ROUTE_PARSE_ORACLE');
   try {
     helpers = parseMessageBusHelpers(helperSource, chunkedArrays);
     const helperMs = Date.now() - helperParseStarted;
@@ -12129,7 +12473,7 @@ function compileResolvedAst(
   if (messageBusGraphMode
     && (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode === 'required') {
     const requestedHandlers = mergedCompilerOptions.messageBusHandlers;
-    if (process.env.SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK === '1') {
+    if (solidcEnvFlagEnabled('SOLIDC_DEBUG_MESSAGE_BUS_FALLBACK')) {
       console.error('message-bus required validation surface', ast.contract.name, requestedHandlers);
     }
     if (requestedHandlers === undefined) {
@@ -12997,7 +13341,7 @@ function compileResolvedAst(
     const functions = [...ast.contract.functions, ...ast.freeFunctions];
     const byName = new Map<string, FunctionDefinitionNode[]>();
     for (const fn of functions) (byName.get(fn.name) ?? byName.set(fn.name, []).get(fn.name)!).push(fn);
-    if (process.env.SOLIDC_DEBUG_RECOVERY_PRE === '1') {
+    if (solidcEnvFlagEnabled('SOLIDC_DEBUG_RECOVERY_PRE')) {
       for (const fn of ast.contract.functions) {
         const calls = [...directCallNames(fn)];
         if (!calls.some((name) => name.toLowerCase().includes('recover'))) continue;
@@ -13253,7 +13597,7 @@ function compileResolvedAst(
         fn.parameters.push(dynamicBase);
         fn.usesDynamicChunkInputBase = true;
       }
-      // Gate B: inject completePushValue beside leadingPushValue after route synthesis (early inject broke
+      // fold-plan authority: inject completePushValue beside leadingPushValue after route synthesis (early inject broke
       // messageBus availability). Fold fills both leading and complete witnesses. Must also hit the
       // route function itself so `__message_bus1` ABI / unlocker expose completePushValue_*.
       if (routeClone || directlyDispatchedSource || fn.messageBusRoute === true) {
@@ -14006,13 +14350,7 @@ function compileResolvedAst(
         && access.settlementIdentity.accessOrdinalSource === 'access-program-order'
         && access.settlementIdentity.settlementRole === 'mutation-settlement'
         && access.settlementIdentity.settlementOwnership === 'last-mutating-access');
-      const hasMixedChunkableTransportDomains = abi?.sourceEffectOrder !== 'linear'
-        && runtimeJournalAccesses.some((access) => access.op !== 'read'
-          && chunkableWriteCollections.has(access.collection)
-          && abi?.entryAccesses?.some((entry) => entry.collection === access.collection
-            && entry.operations.includes('write')) === true);
-      const hasIncompleteChunkableTransport = hasMixedChunkableTransportDomains
-        || [...chunkableWriteCollections].some((collection) => (
+      const hasIncompleteChunkableTransport = [...chunkableWriteCollections].some((collection) => (
         !(hasCompleteFixedChunkableOccurrenceTransport && fixedChunkableWriteCollections.has(collection))
         && !(hasCompletePooledChunkableArrayPushTransport && collection === pooledChunkableArrayPushCollection)
         && !transportedChunkableWrites.some((transport) => transport.collection === collection)
@@ -14444,7 +14782,7 @@ function compileResolvedAst(
     console.warn(`Error: ${message}`);
   }
   const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
-  // Gate B: ensure completePushValue_* sits beside every leadingPushValue_* on the published route ABI
+  // fold-plan authority: ensure completePushValue_* sits beside every leadingPushValue_* on the published route ABI
   // (late AST inject can miss the already-materialized ABI row that unlockers read).
   const withCompletePushBesideLeading = <T extends { name: string; type: string }>(
     inputs: readonly T[],
@@ -14610,6 +14948,20 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+      // published resource budgets: multi-axis worst-case budgets for compose authority (kernel fails closed if absent).
+      resourceBudgets: buildMessageBusResourceBudgets({
+        maximumRows: messageBusMaximumRows,
+        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+        trailingCapacity: publishedMessageBusRouteAbi?.blockLayout?.trailingCapacity,
+      }),
+      // deployability certificate: concrete deployability certificate (asserted | over-budget) — never silent not-asserted.
+      deployability: buildDeployabilityCertificate({
+        measuredBytecodeBytes: asmToBytecode(artifact.bytecode).length,
+        maximumRows: messageBusMaximumRows,
+        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+      }),
       ...(fixedChunkableWriteSelectors.length > 0 && {
         fixedChunkableWritePolicy: {
           version: 1 as const,
@@ -14632,7 +14984,13 @@ function compileResolvedAst(
       ...(extractedVerifierProgram && { verifierProgram: extractedVerifierProgram }),
       ...(verifiedKernelEntryJournal && { kernelEntryJournal: verifiedKernelEntryJournal }),
       ...(() => {
-        // Gate B: publish fold plans for chunkable array-push collections that inject leadingPushValue.
+        // Published fold activations: publish fold plans for chunkable array-push collections that inject leadingPushValue.
+        // Stamp activationSchedule from ABI entry-access ECE (Artifact already merged fixed-chunkable activations).
+        // Artifact ABI uses utils ExternalCallExpression; clone via JSON to avoid AST/utils ECE drift.
+        const cloneEce = <T,>(expression: T): T => JSON.parse(JSON.stringify(expression)) as T;
+        type AbiEntryActivation = NonNullable<
+          NonNullable<(typeof artifact.abi)[number]['entryAccesses']>[number]['activation']
+        >;
         const plans = new Map<string, {
           collection: string;
           collectionSignature?: string;
@@ -14640,18 +14998,42 @@ function compileResolvedAst(
           leadingWitness: string;
           completeWitness: string;
           stepKind: 'push';
+          activationSchedule?: {
+            version: 1;
+            effects: Array<{ effectOrdinal: number; activation?: AbiEntryActivation }>;
+          };
         }>();
         for (const fn of artifact.abi) {
           for (const access of fn.entryAccesses ?? []) {
             if (access.chunkableArrayValue !== true || access.arrayMutation !== 'push') continue;
             if (!fn.inputs.some((input) => input.name.startsWith('__internal__leadingPushValue_'))) continue;
             if (plans.has(access.collection)) continue;
+            const scheduleEffects: Array<{
+              effectOrdinal: number; activation?: AbiEntryActivation;
+            }> = [];
+            const seenOrdinals = new Set<number>();
+            for (const other of artifact.abi) {
+              for (const candidate of other.entryAccesses ?? []) {
+                if (candidate.collection !== access.collection) continue;
+                if (candidate.activation === undefined) continue;
+                const ordinal = candidate.mutationEffectOrdinals?.[0] ?? 0;
+                if (seenOrdinals.has(ordinal)) continue;
+                seenOrdinals.add(ordinal);
+                scheduleEffects.push({
+                  effectOrdinal: ordinal,
+                  activation: cloneEce(candidate.activation),
+                });
+              }
+            }
             plans.set(access.collection, {
               collection: access.collection,
               initialSource: 'empty',
               leadingWitness: '__internal__leadingPushValue',
               completeWitness: '__internal__completePushValue',
               stepKind: 'push',
+              ...(scheduleEffects.length > 0 && {
+                activationSchedule: { version: 1 as const, effects: scheduleEffects },
+              }),
             });
           }
         }
@@ -14744,7 +15126,82 @@ function compileResolvedAst(
         })(),
         ...(() => {
           const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
-          return deployments.length > 0 ? { childDeployments: deployments } : {};
+          if (deployments.length === 0) return {};
+          // finalized typed effect IR: published kernel child-deployment recipes must carry finalized resultTypes.
+          if (mergedCompilerOptions.messageBusKernel === true) {
+            assertPublishedChildDeploymentEffectIr(deployments);
+          }
+          return { childDeployments: deployments };
+        })(),
+        ...(() => {
+          // Multi-effect path-effect schedule beyond child-deploy IR: publish multi-effect path-effect schedules for kernel handlers.
+          if (mergedCompilerOptions.messageBusKernel !== true) return {};
+          const sourceAbi = artifact.abi.find((candidate) =>
+            candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined));
+          const collections = artifact.stateLayout?.collections ?? [];
+          const stateWrites = (sourceAbi?.entryAccesses ?? [])
+            .filter((access) => access.operations.includes('write'))
+            .flatMap((access) => {
+              const ordinals = access.mutationEffectOrdinals ?? [];
+              if (ordinals.length === 0) return [];
+              const collection = collections.find((candidate) =>
+                candidate.name === access.collection || candidate.signature === access.collection);
+              const resultType = collection?.valueType ?? 'bytes';
+              return ordinals.map((effectOrdinal) => ({
+                effectOrdinal,
+                resultType,
+                collection: access.collection,
+                ...(access.activation !== undefined && { activation: access.activation }),
+              }));
+            });
+          // path-effect activation: stamp bool-param BranchNode activations onto event schedule entries.
+          const emitActivations = pathEffectBoolParamActivationsForEmits(fn);
+          const events = (sourceAbi?.emits ?? []).map((emit, index) => {
+            const emitIndex = emit.emitIndex ?? index;
+            const activation = emitActivations.get(emitIndex);
+            return {
+              effectOrdinal: 1_000_000 + emitIndex,
+              resultType: emit.eventSignature ?? emit.eventName ?? 'bytes',
+              eventName: emit.eventName,
+              ...(activation !== undefined && { activation }),
+            };
+          });
+          // path-effect activation: FixedBchTransferAbi.condition (when reproducible) becomes transfer schedule activation.
+          const transfers = (sourceAbi?.transfers ?? []).map((transfer, index) => {
+            const transferIndex = transfer.transferIndex ?? index;
+            const activation = transfer.condition === null || transfer.condition === undefined
+              ? undefined
+              : transfer.condition;
+            return {
+              effectOrdinal: 2_000_000 + transferIndex,
+              resultType: 'int256',
+              ...(activation !== undefined && { activation }),
+            };
+          });
+          const deployments = childDeploymentsBySignature.get(deploymentTopologyKey(fn)) ?? [];
+          // Publish when there are ≥2 effects or any activated write/event/transfer (path-selected program).
+          const activatedWrites = stateWrites.filter((write) => write.activation !== undefined);
+          const activatedEvents = events.filter((event) => event.activation !== undefined);
+          const activatedTransfers = transfers.filter((transfer) => transfer.activation !== undefined);
+          if (stateWrites.length + events.length + transfers.length + deployments.length < 1) return {};
+          if (stateWrites.length + events.length + transfers.length + deployments.length < 2
+            && activatedWrites.length === 0
+            && activatedEvents.length === 0
+            && activatedTransfers.length === 0) {
+            return {};
+          }
+          try {
+            const schedule = pathEffectScheduleFromHandlerEffects({
+              stateWrites,
+              events,
+              transfers,
+              ...(deployments.length > 0 && { childDeployments: deployments }),
+            });
+            return schedule !== undefined ? { pathEffectSchedule: schedule } : {};
+          } catch {
+            // Fail closed on malformed ordinals / missing resultTypes: omit rather than poison publish.
+            return {};
+          }
         })(),
         ...(() => {
           const sourceAbi = artifact.abi.find((candidate) =>
@@ -14855,6 +15312,12 @@ function compileResolvedAst(
       })),
     };
     artifact.messageBus.available = artifact.messageBus.handlers.some((handler) => handler.eligible);
+    // token-container co-layout: stamp #9 co-layout span proof once route/ABI geometry is published.
+    stampTokenContainerCoLayoutProof(artifact);
+    // capability schema: stamp capability absence semantics once the published shape is complete.
+    stampKernelCapabilitySchema(artifact);
+    // KernelExecutionPlan digest: embed KernelExecutionPlan digests into route bytecode at compile.
+    stampKernelExecutionPlanDigestsAtCompile(artifact);
     // An admitted runtime graph handler is bounded by the compiler-owned atomic verifier: it accepts at most
     // ATOMIC_MESSAGE_BUS_MAX_ROWS total rows, while code generation consumes one authenticated emission row at
     // each reached typed callsite. Admission is only final once the published handler table exists, so finalize
@@ -14930,6 +15393,19 @@ function compileResolvedAst(
         available: false,
         maximumRows: MAX_MESSAGE_BUS_ROWS,
         maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        // published resource budgets: stamp budgets even on the non-executable stub so kernel consumers fail closed consistently.
+        resourceBudgets: buildMessageBusResourceBudgets({
+          maximumRows: MAX_MESSAGE_BUS_ROWS,
+          maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+          maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+        }),
+        // deployability certificate: still stamp a concrete certificate on the non-executable stub path.
+        deployability: buildDeployabilityCertificate({
+          measuredBytecodeBytes: asmToBytecode(artifact.bytecode).length,
+          maximumRows: MAX_MESSAGE_BUS_ROWS,
+          maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+          maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+        }),
         atomicMessageBus: {
           domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
           protocolVersions: mergedCompilerOptions.messageBusKernel === true ? [1, 2] : [1],
@@ -14976,6 +15452,8 @@ function compileResolvedAst(
           };
         }),
       };
+      // capability schema: stub kernel route still publishes explicit capability absence semantics.
+      stampKernelCapabilitySchema(artifact);
     }
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.

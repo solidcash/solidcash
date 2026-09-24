@@ -201,12 +201,19 @@ export function canApplyRepairedNftCommitment(args: {
   explicitOverride?: boolean;
   authenticatedMutableSlot?: boolean;
   maximumCommitmentBytes?: number;
+  /**
+   * When set, a proposal that exactly matches this prior input commitment is preserve-shaped.
+   * Do not use such a proposal to roll a non-empty optimistic / recipe-authored fixed-state write
+   * back to the pre-state (ahead-of-time compose coverage proxy counter+emit under recipe).
+   */
+  inputCommitmentHex?: string;
 }): RepairedNftApply {
   const {
     capability, currentCommitmentHex, proposed, hasLockingBytecode, fixedStateSlot,
     explicitOverride = false,
     authenticatedMutableSlot = false,
     maximumCommitmentBytes = 128,
+    inputCommitmentHex,
   } = args;
   // An imperative SDK override is a caller assertion, not a derivation placeholder. If it disagrees with the
   // covenant, leave the mismatch intact so final preflight refuses it instead of silently substituting the
@@ -229,6 +236,16 @@ export function canApplyRepairedNftCommitment(args: {
     const currentLen = currentCommitmentHex.length === 0 ? 0 : hexToBin(currentCommitmentHex).length;
     if (isEmptyValueEntryCommitment(proposed) && currentLen > 128) return 'skip';
     if (hasLockingBytecode) return 'apply-lock-and-commit';
+    // Preserve-shaped OTC (proposed === input prior) must not clobber a non-empty post-state already on the
+    // output — that is the optimistic / recipe write that recipe-once needs to keep without VM extract.
+    if ((fixedStateSlot || authenticatedMutableSlot)
+      && inputCommitmentHex !== undefined
+      && proposedHex === inputCommitmentHex
+      && currentCommitmentHex !== proposedHex
+      && currentCommitmentHex !== ''
+      && !/^(00)+$/.test(currentCommitmentHex)) {
+      return 'skip';
+    }
     if ((fixedStateSlot || authenticatedMutableSlot || proposed.length >= 32)
       && proposedHex !== currentCommitmentHex) {
       return 'apply-commit';

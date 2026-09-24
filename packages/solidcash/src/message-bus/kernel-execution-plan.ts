@@ -1,152 +1,136 @@
 /**
- * Versioned KernelExecutionPlan (backlog items 5–6, 12).
+ * Versioned KernelExecutionPlan (backlog items 5–6, 12; KernelExecutionPlan bytecode commitment).
  *
- * Separates execution-affecting metadata from mutable AbiFunction runtime maps.
- * Digests detect stale caches / transplanted descriptors.
+ * Core create/digest live in `@solidcash/utils` so solidc can stamp at compile.
+ * This module keeps Artifact bytecode stamp + reader gates.
  */
 
-import { binToHex, sha256 } from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
+import {
+  assertKernelPlanComplete,
+  createKernelExecutionPlan,
+  digestKernelExecutionPlan,
+  embedKernelPlanDigestInBytecode,
+  encodeKernelPlanDigestBytecode,
+  hasUniqueKernelPlanDigestCommitment,
+  KERNEL_PLAN_VERSION,
+  type KernelExecutionPlan,
+  type PublishedKernelExecutionPlan,
+} from '@solidcash/utils';
 
-export const KERNEL_PLAN_VERSION = 1 as const;
+export {
+  KERNEL_PLAN_VERSION,
+  createKernelExecutionPlan,
+  digestKernelExecutionPlan,
+  assertKernelPlanComplete,
+  assertWithinKernelBudgets,
+  type KernelExecutionPlan,
+  type KernelPlanFeatureBits,
+  type KernelResourceBudget,
+  type PublishedKernelExecutionPlan,
+} from '@solidcash/utils';
 
-export type KernelPlanFeatureBits = {
-  ownerAltAnchor?: boolean;
-  handlerBandModel?: boolean;
-  multiContinuation?: boolean;
-  resourceFold?: boolean;
-};
-
-export type KernelResourceBudget = {
-  maximumRows?: number;
-  maximumParticipants?: number;
-  maximumBlobBytes?: number;
-  maximumJournalRecords?: number;
-  maximumDynamicChunks?: number;
-  maximumValueContinuationChunks?: number;
-  maximumEvents?: number;
-  maximumTransfers?: number;
-  maximumReturnCarriers?: number;
-  maximumExternalEdges?: number;
-  maximumExternalDepth?: number;
-  maximumStackDepth?: number;
-  maximumAltStackDepth?: number;
-  maximumOperationCost?: number;
-  maximumTransactionBytes?: number;
-};
-
-export type KernelExecutionPlan = {
-  kernelPlanVersion: typeof KERNEL_PLAN_VERSION;
-  /** Stable handler id (not name). */
-  handlerId: string;
-  /** Diagnostic only. */
-  handlerName?: string;
-  selectedResources?: readonly string[];
-  symbolicBands?: readonly { kind: string; localBase: number; capacity: number }[];
-  ownershipClaimCount?: number;
-  journalDispositionDigest?: string;
-  dynamicReads?: readonly string[];
-  dynamicWrites?: readonly string[];
-  /** Explicit empty vs omitted: always present on kernel plans. */
-  dynamicWritesPublished: true;
-  effectLanes?: readonly string[];
-  resultLanes?: readonly string[];
-  requiredFeatureBits?: KernelPlanFeatureBits;
-  minimumSdkReaderVersion?: number;
-  budgets?: KernelResourceBudget;
-};
-
-export function createKernelExecutionPlan(
-  partial: Omit<KernelExecutionPlan, 'kernelPlanVersion' | 'dynamicWritesPublished'> & {
-    dynamicWrites?: readonly string[];
-  },
-): KernelExecutionPlan {
-  return {
-    kernelPlanVersion: KERNEL_PLAN_VERSION,
-    handlerId: partial.handlerId,
-    handlerName: partial.handlerName,
-    selectedResources: partial.selectedResources,
-    symbolicBands: partial.symbolicBands,
-    ownershipClaimCount: partial.ownershipClaimCount,
-    journalDispositionDigest: partial.journalDispositionDigest,
-    dynamicReads: partial.dynamicReads ?? [],
-    dynamicWrites: partial.dynamicWrites ?? [],
-    dynamicWritesPublished: true,
-    effectLanes: partial.effectLanes,
-    resultLanes: partial.resultLanes,
-    requiredFeatureBits: partial.requiredFeatureBits,
-    minimumSdkReaderVersion: partial.minimumSdkReaderVersion ?? 1,
-    budgets: partial.budgets,
-  };
+/** KernelExecutionPlan bytecode commitment: ASM bytecode fragment committing a plan digest (SCKP push/drop). */
+export function encodeKernelExecutionPlanBytecodeCommitment(digest: string): string {
+  return encodeKernelPlanDigestBytecode(digest);
 }
 
-/** Canonical digest of every execution-affecting descriptor. */
-export function digestKernelExecutionPlan(plan: KernelExecutionPlan): string {
-  const canonical = {
-    kernelPlanVersion: plan.kernelPlanVersion,
-    handlerId: plan.handlerId,
-    selectedResources: plan.selectedResources ?? [],
-    symbolicBands: plan.symbolicBands ?? [],
-    ownershipClaimCount: plan.ownershipClaimCount ?? 0,
-    journalDispositionDigest: plan.journalDispositionDigest ?? '',
-    dynamicReads: [...(plan.dynamicReads ?? [])].sort(),
-    dynamicWrites: [...(plan.dynamicWrites ?? [])].sort(),
-    dynamicWritesPublished: plan.dynamicWritesPublished,
-    effectLanes: plan.effectLanes ?? [],
-    resultLanes: plan.resultLanes ?? [],
-    requiredFeatureBits: plan.requiredFeatureBits ?? {},
-    minimumSdkReaderVersion: plan.minimumSdkReaderVersion ?? 1,
-    budgets: plan.budgets ?? {},
-  };
-  return binToHex(sha256.hash(new TextEncoder().encode(JSON.stringify(canonical))));
+/** KernelExecutionPlan bytecode commitment: whether route ASM uniquely commits this plan digest. */
+export function assertKernelExecutionPlanBytecodeCommitment(
+  bytecode: string,
+  digest: string,
+): void {
+  if (!hasUniqueKernelPlanDigestCommitment(bytecode, digest)) {
+    throw new Error(
+      `kernel-plan: digest ${digest.slice(0, 16)}… is not uniquely committed by route bytecode`,
+    );
+  }
 }
 
 /**
- * Kernel artifacts must publish required metadata; missing fields fail closed.
- * Legacy adapters may still see omitted vectors as undefined outside this plan object.
+ * KernelExecutionPlan bytecode commitment: stamp plan digest into artifact bytecode + messageBus.kernelExecutionPlans.
+ * Transplanting the metadata field without the bytecode marker fails closed under
+ * `assertReadableKernelExecutionPlans`.
  */
-export function assertKernelPlanComplete(plan: KernelExecutionPlan): void {
-  if (plan.kernelPlanVersion !== KERNEL_PLAN_VERSION) {
-    throw new Error(`kernel-plan: unsupported version ${String(plan.kernelPlanVersion)}`);
+export function stampKernelExecutionPlanCommitment(
+  artifact: Artifact,
+  plan: KernelExecutionPlan,
+): { digest: string; bytecodeCommitment: string } {
+  assertKernelPlanComplete(plan);
+  const digest = digestKernelExecutionPlan(plan);
+  const bytecodeCommitment = encodeKernelPlanDigestBytecode(digest);
+  artifact.bytecode = embedKernelPlanDigestInBytecode(artifact.bytecode ?? '', digest);
+  const existing = artifact.messageBus?.kernelExecutionPlans?.plans ?? [];
+  const nextPlans = [
+    ...existing.filter((entry) => entry.handlerId !== plan.handlerId),
+    {
+      handlerId: plan.handlerId,
+      kernelPlanVersion: plan.kernelPlanVersion,
+      digest,
+      ...(plan.handlerName !== undefined && { handlerName: plan.handlerName }),
+    },
+  ];
+  if (artifact.messageBus === undefined) {
+    throw new Error('kernel-plan: cannot stamp commitment without messageBus metadata');
   }
-  if (!plan.handlerId) {
-    throw new Error('kernel-plan: handlerId required');
-  }
-  if (plan.dynamicWritesPublished !== true) {
-    throw new Error('kernel-plan: dynamicWrites must be explicitly published (empty array allowed)');
-  }
-  if (plan.dynamicWrites === undefined) {
-    throw new Error('kernel-plan: dynamicWrites missing (use [] for empty)');
-  }
+  artifact.messageBus.kernelExecutionPlans = {
+    version: 1,
+    plans: Object.freeze(nextPlans) as PublishedKernelExecutionPlan[],
+  };
+  assertKernelExecutionPlanBytecodeCommitment(artifact.bytecode, digest);
+  return { digest, bytecodeCommitment };
 }
 
-/** Reject envelopes that exceed published worst-case budgets before UTXO fetch. */
-export function assertWithinKernelBudgets(
-  plan: KernelExecutionPlan,
-  usage: Partial<KernelResourceBudget>,
-): void {
-  const budgets = plan.budgets ?? {};
-  const checks: Array<[keyof KernelResourceBudget, number | undefined]> = [
-    ['maximumRows', usage.maximumRows],
-    ['maximumParticipants', usage.maximumParticipants],
-    ['maximumBlobBytes', usage.maximumBlobBytes],
-    ['maximumJournalRecords', usage.maximumJournalRecords],
-    ['maximumDynamicChunks', usage.maximumDynamicChunks],
-    ['maximumValueContinuationChunks', usage.maximumValueContinuationChunks],
-    ['maximumEvents', usage.maximumEvents],
-    ['maximumTransfers', usage.maximumTransfers],
-    ['maximumReturnCarriers', usage.maximumReturnCarriers],
-    ['maximumExternalEdges', usage.maximumExternalEdges],
-    ['maximumExternalDepth', usage.maximumExternalDepth],
-    ['maximumStackDepth', usage.maximumStackDepth],
-    ['maximumAltStackDepth', usage.maximumAltStackDepth],
-    ['maximumOperationCost', usage.maximumOperationCost],
-    ['maximumTransactionBytes', usage.maximumTransactionBytes],
-  ];
-  for (const [key, used] of checks) {
-    const limit = budgets[key];
-    if (limit === undefined || used === undefined) continue;
-    if (used > limit) {
-      throw new Error(`kernel-plan: budget ${key} exceeded (used ${used} > ${limit})`);
+/**
+ * KernelExecutionPlan version gate: StatefulContract / SDK plan reader gate.
+ * Refuses missing publication, unsupported kernelPlanVersion, and digests not committed in bytecode.
+ */
+export function assertReadableKernelExecutionPlans(
+  artifact: Artifact,
+): readonly PublishedKernelExecutionPlan[] {
+  const published = artifact.messageBus?.kernelExecutionPlans;
+  if (published === undefined) {
+    throw new Error('kernel-plan: no published kernelExecutionPlans (reader gate)');
+  }
+  if (published.version !== 1) {
+    throw new Error(
+      `kernel-plan: unsupported kernelExecutionPlans envelope version ${String(published.version)}`,
+    );
+  }
+  if (!Array.isArray(published.plans) || published.plans.length === 0) {
+    throw new Error('kernel-plan: kernelExecutionPlans.plans must be a non-empty array');
+  }
+  for (const entry of published.plans) {
+    if (entry.kernelPlanVersion !== KERNEL_PLAN_VERSION) {
+      throw new Error(
+        `kernel-plan: unsupported kernelPlanVersion ${String(entry.kernelPlanVersion)} `
+          + `(expected ${KERNEL_PLAN_VERSION}) for handler ${entry.handlerId}`,
+      );
     }
+    if (!entry.handlerId || !/^[0-9a-f]{64}$/.test(entry.digest)) {
+      throw new Error(`kernel-plan: malformed published plan for '${String(entry.handlerId)}'`);
+    }
+    assertKernelExecutionPlanBytecodeCommitment(artifact.bytecode ?? '', entry.digest);
+  }
+  return published.plans;
+}
+
+/** KernelExecutionPlan digest: stamp every eligible handler plan into bytecode at a known publication site. */
+export function stampEligibleHandlerKernelExecutionPlans(artifact: Artifact): void {
+  if (artifact.messageBus === undefined) return;
+  const handlers = artifact.messageBus.handlers ?? [];
+  for (const handler of handlers) {
+    if (handler.eligible !== true) continue;
+    const abi = artifact.abi.find((entry) => entry.name === handler.name);
+    const handlerId = handler.selector
+      ? `handler:${handler.selector}`
+      : `handler:${handler.name}`;
+    const plan = createKernelExecutionPlan({
+      handlerId,
+      handlerName: handler.name,
+      dynamicWrites: abi?.dynamicWrites ?? [],
+      dynamicReads: abi?.dynamicReads ?? [],
+    });
+    stampKernelExecutionPlanCommitment(artifact, plan);
   }
 }

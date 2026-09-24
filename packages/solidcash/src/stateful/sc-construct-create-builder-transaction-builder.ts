@@ -1,0 +1,499 @@
+/**
+ * phase-boundary extract: SC _createBuilder extract — construct StatefulTransactionBuilder and
+ * register master-unlocker refreshers through builder-created.
+ */
+
+import { binToHex } from '@bitauth/libauth';
+import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { UnlockableUtxo, Utxo } from '../interfaces.js';
+import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
+import type { ResolvedLogicalIdentity } from './logical-identity.js';
+import { compilerRouteUsesPhysicalWrapper } from './message-bus-resource-routing.js';
+import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
+import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
+import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
+import {
+  StatefulTransactionBuilder,
+  type RuntimeLoopTransferOutput,
+} from './StatefulTransactionBuilder.js';
+import type { ValueChunkWriteStagingSession } from './value-chunk-persist.js';
+
+export type ConstructCreateBuilderTransactionBuilderHost = {
+  readonly categoryId: string;
+  readonly inner: any;
+};
+
+export type ConstructCreateBuilderTransactionBuilderResult = {
+  builder: StatefulTransactionBuilder;
+  finalArgs: FunctionArgument[];
+  firstRootDynamicChunk: UnlockableUtxo | undefined;
+  refreshTopLevelReturnWitnesses: (materialized?: TransactionBuilder) => boolean;
+};
+
+/**
+ * After transported productions: debug dumps, msg.sender materialize, construct
+ * the STB options bag, and register assembly-pass unlocker refreshers.
+ */
+export function constructCreateBuilderTransactionBuilder(
+  host: ConstructCreateBuilderTransactionBuilderHost,
+  params: {
+    finalArgs: FunctionArgument[];
+    abiFunction: AbiFunction | undefined;
+    entryAbiFunction: AbiFunction | undefined;
+    physicalAbiFunction: AbiFunction | undefined;
+    functionName: string;
+    effectiveBlockLayout: FunctionBlockLayout | undefined;
+    entryAccesses: any;
+    entryNfts: EntryNftInfo[];
+    batchTargetPlaceholders: Map<number, string>;
+    resolvedMsgSenderCategory: Uint8Array | undefined;
+    externalReadUtxos: UnlockableUtxo[];
+    overrides: any;
+    valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
+    unlockableMaster: UnlockableUtxo;
+    unlockableDataNfts: UnlockableUtxo[];
+    stateLayout: StateLayout;
+    requiredNftIndices: readonly number[];
+    entryNftLockingBytecodes: Map<string, Uint8Array>;
+    dynamicChunkVars: any[];
+    dynamicChunkInputs: UnlockableUtxo[];
+    trailingDisposalInputs: UnlockableUtxo[];
+    loopEntryVars: any[];
+    runtimeLoopEventOutputs: any[];
+    runtimeLoopTransferOutputs: RuntimeLoopTransferOutput[];
+    runtimeLoopTrailingSegments: any[];
+    kernelJournalSettlementOutputPlan: any;
+    kernelJournalEagerOutputPlan: any;
+    tokenContainers: TokenContainerInfo[];
+    tokenContainerLockingBytecodes: Map<string, Uint8Array>;
+    satoshiContainerUtxo: UnlockableUtxo | undefined;
+    satoshiContainerLockingBytecode: Uint8Array | undefined;
+    blockhashCoSpendUtxos: UnlockableUtxo[];
+    blockhashCoSpendSlotOrdinals: number[] | undefined;
+    keccakComputeCoSpendUtxos: UnlockableUtxo[];
+    keccakComputeCommitments: any;
+    delegateComputeResources: boolean;
+    deferredKeccakCompute: any;
+    deferredEcrecoverCompute: any;
+    ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
+    ecrecoverComputeRecreates: any[];
+    keccakLoopSideCars: UnlockableUtxo[];
+    keccakLoopRecreates: any[];
+    externalOutStateUtxoGroups: any[];
+    externalCallUtxoGroups: ExternalCallUtxoGroup[];
+    embeddedFunderUtxos: Map<any, UnlockableUtxo>;
+    logicalIdentity: ResolvedLogicalIdentity | undefined;
+    identityAnchors: UnlockableUtxo[];
+    lowLevelCallUtxoGroups: ExternalCallUtxoGroup[];
+    activeDelegateGroupIndex: number | undefined;
+    lowLevelCallRawInputs: any[];
+    compilerRouteDelegateLayout: FunctionBlockLayout | undefined;
+    hasDelegatedDynamicReadChunks: boolean;
+    delegateReturnEventOffset: number | undefined;
+    delegateEventSlots: Array<{ kind: string; offset: number }>;
+    lowLevelCallInputBase: number;
+    batchPredCommitments: Map<string, any>;
+    sortedLoopCommitments: Map<string, any>;
+    eventDefs: any[];
+    eventNftLockingBytecodes: Map<string, Uint8Array>;
+    iterationEntryInputs: UnlockableUtxo[];
+    insertLoopPredecessors: any[];
+    dynamicReadChunkInputs: UnlockableUtxo[];
+    topLevelDynamicChunkArgumentIndex: number;
+    topLevelReturnWitnessGroups: number[];
+    refreshPhysicalDelegateInputIndex: ((builder: StatefulTransactionBuilder, materialized?: TransactionBuilder) => any) | undefined;
+    buildStateInputUnlocker: () => any;
+    allGroupEcSlots: any[];
+    derivationMasterUtxo: Utxo | undefined;
+    masterUtxo: Utxo;
+    timing?: (label: string) => void;
+    [key: string]: any;
+  },
+): ConstructCreateBuilderTransactionBuilderResult {
+  let {
+    finalArgs, abiFunction, entryAbiFunction, physicalAbiFunction, functionName,
+    effectiveBlockLayout, entryAccesses, entryNfts, batchTargetPlaceholders,
+    resolvedMsgSenderCategory, externalReadUtxos, overrides, valueChunkWriteStagingSession,
+    unlockableMaster, unlockableDataNfts, stateLayout, requiredNftIndices, entryNftLockingBytecodes,
+    dynamicChunkVars, dynamicChunkInputs, trailingDisposalInputs, loopEntryVars,
+    runtimeLoopEventOutputs, runtimeLoopTransferOutputs, runtimeLoopTrailingSegments,
+    kernelJournalSettlementOutputPlan, kernelJournalEagerOutputPlan, tokenContainers,
+    tokenContainerLockingBytecodes, satoshiContainerUtxo, satoshiContainerLockingBytecode,
+    blockhashCoSpendUtxos, blockhashCoSpendSlotOrdinals, keccakComputeCoSpendUtxos,
+    keccakComputeCommitments, delegateComputeResources, deferredKeccakCompute,
+    deferredEcrecoverCompute, ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates,
+    keccakLoopSideCars, keccakLoopRecreates, externalOutStateUtxoGroups, externalCallUtxoGroups,
+    embeddedFunderUtxos, logicalIdentity, identityAnchors, lowLevelCallUtxoGroups,
+    activeDelegateGroupIndex, lowLevelCallRawInputs, compilerRouteDelegateLayout,
+    hasDelegatedDynamicReadChunks, delegateReturnEventOffset, delegateEventSlots,
+    lowLevelCallInputBase, batchPredCommitments, sortedLoopCommitments, eventDefs,
+    eventNftLockingBytecodes, iterationEntryInputs, insertLoopPredecessors,
+    dynamicReadChunkInputs, topLevelDynamicChunkArgumentIndex, topLevelReturnWitnessGroups,
+    refreshPhysicalDelegateInputIndex, buildStateInputUnlocker, allGroupEcSlots,
+    derivationMasterUtxo, masterUtxo, timing,
+  } = params;
+
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ENTRY_PLACEMENT === '1') {
+    const layoutEntries = (effectiveBlockLayout?.slots ?? [])
+      .filter((slot: any) => slot.kind === 'entry')
+      .map((slot: any) => `${slot.offset}:${slot.slotIndex}`);
+    console.error('entry-placement', JSON.stringify({
+      functionName, abiFunction: abiFunction?.name, entryFunction: entryAbiFunction?.name,
+      blockBase: overrides?.blockBase,
+      layoutEntries,
+      accesses: [...(entryAccesses ?? new Map()).entries()].map(([slotIndex, access]: any) =>
+        `${slotIndex}:${access.collection}`),
+      nfts: entryNfts.map((nft) => `${nft.slotIndex}:${nft.collection}:${nft.exists ? 'present' : 'absent'}`),
+      targets: [...batchTargetPlaceholders.entries()].map(([slotIndex, commitment]) =>
+        `${slotIndex}:${commitment.slice(0, 16)}`),
+    }));
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+    // Zip the FINAL args with their ABI names: indexing `finalArgs` by the ABI position is unsafe for
+    // probe/route frames (hidden args are appended and reordered by name), and that mis-index is what made the
+    // earlier reading of this witness wrong. Only a name-keyed dump can be trusted.
+    const names = (abiFunction?.inputs ?? []).map((input) => input.name);
+    console.error('msg-sender-category-final', JSON.stringify({
+      functionName, abiFunction: abiFunction?.name,
+      argCount: finalArgs.length, abiCount: names.length,
+      args: finalArgs.map((argument, index) => [
+        names[index] ?? `#${index}`,
+        argument instanceof Uint8Array
+          ? `b${argument.length}:${binToHex(argument).slice(0, 32)}` : String(argument),
+      ]).filter(([name]) => String(name).startsWith('__internal__')),
+      build: {
+        returnProbeOnly: overrides?.returnProbeOnly === true,
+        compilerRoute: overrides?.compilerRouteSelector !== undefined,
+        calls: overrides?.calls?.length ?? 0,
+      },
+    }));
+  }
+  if (resolvedMsgSenderCategory !== undefined && abiFunction !== undefined
+    && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
+    // Position it by ABI name: appends alone are only correct when every earlier hidden block ran, which a
+    // probe (returnProbeOnly) and other partial builds do not guarantee.
+    finalArgs = materializeInternalFunctionArgument(
+      finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
+    );
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1' && overrides?.returnProbeOnly === true) {
+    // The options the built frame actually receives: a read band of 0 here means the caller carrier never reached
+    // this construction, whatever the merge above did.
+    console.error('builder-construction', JSON.stringify({
+      functionName, externalReadUtxos: externalReadUtxos.length,
+    }));
+  }
+  const builder = new StatefulTransactionBuilder({
+    provider: host.inner.provider,
+    // A relaxed mock may intentionally execute very large scripts/transactions. At the normal 1 sat/byte
+    // relay floor, a valid call can therefore exceed the production-oriented 50k absolute cap. Bound the mock
+    // default by its configured maximum transaction size; the per-byte safety cap remains enforced below.
+    maximumFeeSatoshis: host.inner.provider.policy?.enforceDust === false
+      ? BigInt(host.inner.provider.consensusLimits?.maximumTransactionBytes ?? 10_000_000)
+      : 50000n,
+    checkMinRelayFee: true,
+    valueChunkWriteStagingSession,
+    masterUtxo: unlockableMaster,
+    dataNftUtxos: unlockableDataNfts,
+    stateLayout,
+    categoryId: host.categoryId,
+    requiredNftIndices: [...requiredNftIndices],
+    entryNfts,
+    entryAccesses,
+    entryNftLockingBytecodes,
+    ...(dynamicChunkVars.length > 0 && { dynamicChunkVars }),
+    ...(dynamicChunkInputs.length > 0 && { dynamicChunkInputs }),
+    ...(trailingDisposalInputs.length > 0 && { trailingDisposalInputs }),
+    ...(loopEntryVars.length > 0 && { loopEntryVars }),
+    ...(runtimeLoopEventOutputs.length > 0 && { runtimeLoopEventOutputs }),
+    ...(runtimeLoopTransferOutputs.length > 0 && { runtimeLoopTransferOutputs }),
+    ...(runtimeLoopTrailingSegments.length > 0 && { runtimeLoopTrailingSegments }),
+    ...(kernelJournalSettlementOutputPlan && { kernelJournalSettlementOutputPlan }),
+    ...(kernelJournalEagerOutputPlan && { kernelJournalEagerOutputPlan }),
+    tokenContainers,
+    tokenContainerLockingBytecodes,
+    ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
+    ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
+    ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
+    ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
+    ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
+    ...(delegateComputeResources && { delegateComputeResources: true }),
+    ...(deferredKeccakCompute && { deferredKeccakCompute }),
+    ...(deferredEcrecoverCompute && { deferredEcrecoverCompute }),
+    ...(ecrecoverComputeCoSpendUtxos.length > 0 && { ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates }),
+    ...(keccakLoopSideCars.length > 0 && { keccakLoopSideCars, keccakLoopRecreates }),
+    ...(externalOutStateUtxoGroups.length > 0 && { externalOutStateUtxoGroups }),
+    ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),
+    ...(embeddedFunderUtxos.size > 0 && {
+      embeddedFunderUtxos: [...embeddedFunderUtxos.values()],
+    }),
+    ...(logicalIdentity && {
+      logicalIdentityUtxo: { ...logicalIdentity.anchor, unlocker: logicalIdentity.unlocker },
+    }),
+    ...(identityAnchors.length > 0 && { externalIdentityAnchorUtxos: identityAnchors }),
+    ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
+    ...(activeDelegateGroupIndex !== undefined && { activeDelegateGroupIndex }),
+    ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
+    ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+      && !compilerRouteDelegateLayout
+      && { delegateEntriesAfterLowLevel: true }),
+    ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+      && dynamicChunkVars.some((variable) => variable.delegate === true)
+      && !compilerRouteDelegateLayout
+      && { delegateDynamicChunksAtSuffix: true }),
+    // A compiler-owned delegate route already reserves its dynamic resources in the balanced trailing frame.
+    // Legacy delegates have no such frame, so only they use the transaction-wide reverse suffix.
+    ...(hasDelegatedDynamicReadChunks && !compilerRouteDelegateLayout
+      && { delegateDynamicChunksAtSuffix: true }),
+    // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
+    // forwarder had reserved for the return channel, so the return channel has to follow the events.
+    ...(delegateReturnEventOffset !== undefined && delegateEventSlots.some((s: any) => s.kind === 'event')
+      && { delegateReturnEventAfterEvents: true }),
+    ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+      && { lowLevelCallInputBase }),
+    ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
+    ...(overrides?.omitLocalFeeTail && { preserveBlockLayoutWidth: true }),
+    ...(delegateEventSlots.some((slot: any) => slot.kind === 'entry') && { preserveBlockLayoutWidth: true }),
+    ...((batchPredCommitments.size > 0 || sortedLoopCommitments.size > 0
+      || runtimeLoopEventOutputs.length > 0 || runtimeLoopTransferOutputs.length > 0)
+      && { loopEntriesBeforeDynamicChunks: true }),
+    ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
+    ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
+    ...(iterationEntryInputs.length > 0 && { iterationEntryInputs }),
+    ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
+    ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
+    ...(overrides?.omitLocalFeeTail === true && {
+      composedParticipant: true,
+      ...(overrides?.blockBase !== undefined && { composedBlockBase: overrides.blockBase }),
+    }),
+    ...((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention && {
+      messageBusConvention:
+        (entryAbiFunction as MessageBusRuntimeAbiFunction).messageBusConvention,
+    }),
+  });
+  const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
+  // The composed coordinate of the root dynamic chunk. A materialized frame that cannot address the relocated
+  // index is a participant-local frame (a derivation probe or the participant's own published block); the
+  // relocated value computed from it IS the composed coordinate, and it is the only place the published block's
+  // layout is visible. Remember it so a frame-free refresh (which sees the builder's pre-layout input list) does
+  // not report a coordinate derived from the wrong index space.
+  let composedDynamicChunkBase: bigint | undefined;
+  const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
+    || compilerRouteUsesPhysicalWrapper(
+      overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
+    )
+    ? undefined
+    : (materialized?: TransactionBuilder): void => {
+      const target = firstRootDynamicChunk;
+      const localIndex = target === undefined ? -1 : materialized
+        ? materialized.inputs.findIndex((input) => input.txid.toLowerCase() === target.txid.toLowerCase()
+          && input.vout === target.vout)
+        : builder.findInputIndexByOutpoint(target);
+      if (target !== undefined && localIndex < 0) {
+        throw new Error('Selected root dynamic-storage chunk input is absent from the finalized transaction');
+      }
+      // The block base relocates a participant-local index into the aggregate frame. A probe that evaluates the
+      // participant-LOCAL frame cannot address the relocated index at all (measured: 222 in an 88-input frame),
+      // so keep the frame-local value there; the aggregate build re-applies the relocated one.
+      const relocated = resolveDynamicChunkInputBase(localIndex, overrides?.blockBase ?? 0);
+      const frameLength = materialized?.inputs.length;
+      const unaddressable = localIndex >= 0 && frameLength !== undefined
+        && relocated >= BigInt(frameLength);
+      if (unaddressable) composedDynamicChunkBase = relocated;
+      finalArgs[topLevelDynamicChunkArgumentIndex] =
+        unaddressable ? BigInt(localIndex) : composedDynamicChunkBase ?? relocated;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
+        console.error('dynamic-chunk-root-base', JSON.stringify({
+          functionName,
+          blockBase: overrides?.blockBase ?? 0,
+          localIndex,
+          frameLength,
+          unaddressable,
+          composed: composedDynamicChunkBase === undefined ? undefined : String(composedDynamicChunkBase),
+          target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
+          value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
+          readChunks: dynamicReadChunkInputs.length,
+          writeChunks: dynamicChunkInputs.length,
+          // Who materialized this frame. A participant-local frame can be either the block this build PUBLISHES
+          // or a derivation probe of it; only the caller distinguishes them, and the composed coordinate is
+          // correct for the published block while the local substitute is required for the probe.
+          stack: new Error('dynamic-chunk-root-base').stack?.split('\n').slice(2, 5)
+            .map((line) => line.trim().replace(/.*\/packages\//, 'packages/')),
+        }));
+      }
+    };
+  // The compiled covenant reads a callee's return event at `__internal__externalReturnOutputIdxN`, so that witness
+  // and the assembled transaction must name the same output. The planned coordinate is written before the builder
+  // places its own outputs, and a callee's block (with the event's slot) can still move afterwards - a shared
+  // participant publishes the event in the writer's in-block slot, not its own. Re-read every returning group's
+  // physical coordinate from the builder on each assembly pass instead of freezing the plan.
+  const topLevelReturnWitnessNames = (abiFunction?.inputs ?? [])
+    .map((input) => input.name)
+    .filter((name) => /^__internal__externalReturnOutputIdx\d*$/.test(name))
+    .sort((left, right) => Number(/(\d*)$/.exec(left)?.[1] ?? 0)
+      - Number(/(\d*)$/.exec(right)?.[1] ?? 0));
+  const refreshTopLevelReturnWitnesses = (materialized?: TransactionBuilder): boolean => {
+    if (topLevelReturnWitnessNames.length === 0 || topLevelReturnWitnessGroups.length === 0) return false;
+    // The refresher runs from the builder's own assembly pass, so the recorded coordinates are current.
+    void materialized;
+    let changed = false;
+    for (const [ordinal, groupIdx] of topLevelReturnWitnessGroups.entries()) {
+      const name = topLevelReturnWitnessNames[ordinal];
+      if (name === undefined) break;
+      const position = abiFunction!.inputs.findIndex((input) => input.name === name);
+      if (position < 0 || position >= finalArgs.length) continue;
+      const built = builder.getBuiltExternalCallReturnEventOutputIndex(groupIdx);
+      const authoritative = built >= 0 ? built : builder.getExternalCallReturnEventOutputIndex(groupIdx);
+      if (authoritative < 0) continue;
+      if (finalArgs[position] === BigInt(authoritative)) continue;
+      finalArgs[position] = BigInt(authoritative);
+      changed = true;
+    }
+    return changed;
+  };
+  // The batch covenant reads `output[__internal__vmapBatchPredOut_<slot>].lockingBytecode` and requires it to
+  // equal the locking bytecode of the input its proof coordinate names. The plan computes the output coordinate as
+  // `master + trailingBase` - before the entry outputs moved into their declared block slots - so it can name an
+  // unrelated output. Only a coordinate that PROVABLY fails that covenant equality is rewritten: the planned index
+  // is kept whenever its output already carries the authenticated lock, which leaves every passing lane untouched.
+  const refreshTopLevelPredOutWitnesses = (materialized?: TransactionBuilder): boolean => {
+    if (!abiFunction || materialized === undefined) return false;
+    const masterOutpoint = derivationMasterUtxo ?? masterUtxo;
+    const masterIndex = materialized.inputs.findIndex((input) => (
+      input.txid.toLowerCase() === masterOutpoint.txid.toLowerCase() && input.vout === masterOutpoint.vout
+    ));
+    if (masterIndex < 0) return false;
+    const lockedBytecodeAt = (index: number): Uint8Array | undefined => {
+      const input = materialized.inputs[index] as { unlocker?: { generateLockingBytecode?: () => Uint8Array } };
+      return input?.unlocker?.generateLockingBytecode?.();
+    };
+    const outputLock = (index: number): Uint8Array | undefined => {
+      const output = materialized.outputs[index] as { to?: Uint8Array | string };
+      return output?.to instanceof Uint8Array ? output.to : undefined;
+    };
+    const sameLock = (left: Uint8Array | undefined, right: Uint8Array | undefined): boolean =>
+      left !== undefined && right !== undefined && left.length === right.length
+      && left.every((byte, offset) => byte === right[offset]);
+    let changed = false;
+    for (const input of abiFunction.inputs) {
+      const match = /^__internal__vmapBatchPredOut_(\d+)$/.exec(input.name);
+      if (match === null) continue;
+      const slot = match[1];
+      const position = abiFunction.inputs.findIndex((candidate) => candidate.name === input.name);
+      const proofPosition = abiFunction.inputs.findIndex((candidate) =>
+        candidate.name === `__internal__vmapBatchProof_${slot}`);
+      if (position < 0 || position >= finalArgs.length || proofPosition < 0) continue;
+      const current = finalArgs[position];
+      const proofOffset = finalArgs[proofPosition];
+      // -1 (no predecessor output) and -2 (inactive row) are topology sentinels, not coordinates.
+      if (typeof current !== 'bigint' || current < 0n) continue;
+      if (typeof proofOffset !== 'bigint' || proofOffset < 0n) continue;
+      const required = lockedBytecodeAt(masterIndex + Number(proofOffset));
+      if (required === undefined) continue;
+      // Lock equality alone cannot accept the planned coordinate: an insert's P' and its NEW node are published
+      // at the SAME collection address (measured: both at the `escrows` entry covenant), and the covenant
+      // verifies the P' by CONTENT - `pred.slot || target || pred.value`. Accept the plan only when the output
+      // there carries exactly that commitment.
+      const commitmentOf = (index: number): string | undefined => {
+        const token = (materialized.outputs[index] as {
+          token?: { nft?: { commitment?: Uint8Array | string } };
+        } | undefined)?.token;
+        const commitment = token?.nft?.commitment;
+        return commitment === undefined ? undefined
+          : typeof commitment === 'string' ? commitment : binToHex(commitment);
+      };
+      const slotPosition = abiFunction.inputs.findIndex((candidate) =>
+        candidate.name === `__internal__vmapBatchSlot_${slot}`);
+      const targetSlot = slotPosition < 0 || slotPosition >= finalArgs.length
+        ? undefined : finalArgs[slotPosition];
+      const predecessorCommitment = (() => {
+        const token = (materialized.inputs[masterIndex + Number(proofOffset)] as {
+          token?: { nft?: { commitment?: Uint8Array | string } };
+        } | undefined)?.token;
+        const commitment = token?.nft?.commitment;
+        return commitment === undefined ? undefined
+          : typeof commitment === 'string' ? commitment : binToHex(commitment);
+      })();
+      const expectedPredOut = targetSlot instanceof Uint8Array && targetSlot.length === 32
+        && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
+        ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
+        : undefined;
+      if (sameLock(outputLock(Number(current)), required)
+        && (expectedPredOut === undefined
+          || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;
+      // The P' is materialized elsewhere in this frame: find the output that carries it, requiring both the
+      // authenticated lock and the exact content so a same-address NEW node can never be substituted.
+      if (expectedPredOut !== undefined) {
+        const found = materialized.outputs.findIndex((_output, index) =>
+          sameLock(outputLock(index), required)
+          && commitmentOf(index)?.toLowerCase() === expectedPredOut.toLowerCase());
+        if (found >= 0) {
+          finalArgs[position] = BigInt(found);
+          changed = true;
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_RETURN === '1') {
+            console.error('predout-witness-rebound', {
+              functionName, name: input.name, planned: current.toString(), actual: String(found),
+              content: 'pred-new-commitment',
+            });
+          }
+          continue;
+        }
+      }
+      // Prefer the structural answer - the entry output this slot publishes - and accept it only when its content
+      // proves it is the collection resource the covenant authenticates. Never fall back to an arbitrary output
+      // with a matching lock: the same coordinate is also read for the predecessor's category and commitment.
+      const ordinal = builder.getEntryOutputSlotOrder().indexOf(Number(slot));
+      const entryOutputBase = builder.getEntryOutputBase();
+      const structural = entryOutputBase >= 0 && ordinal >= 0 ? entryOutputBase + ordinal : -1;
+      if (structural < 0 || !sameLock(outputLock(structural), required)) continue;
+      const replacement = structural;
+      finalArgs[position] = BigInt(replacement);
+      changed = true;
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RETURN === '1') {
+        console.error('predout-witness-rebound', {
+          functionName,
+          name: input.name,
+          planned: current.toString(),
+          actual: String(replacement),
+        });
+      }
+    }
+    return changed;
+  };
+  if (refreshPhysicalDelegateInputIndex || refreshTopLevelDynamicChunkInputBase
+    || topLevelReturnWitnessGroups.length > 0 || abiFunction !== undefined) {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_FORWARD_ARGS === '1') {
+      console.error('physical-input-refresher-registered', {
+        functionName,
+        delegate: refreshPhysicalDelegateInputIndex !== undefined,
+        dynamicChunk: refreshTopLevelDynamicChunkInputBase !== undefined,
+        topLevelReturns: topLevelReturnWitnessGroups.length,
+      });
+    }
+    builder._setMasterUnlockerRefresher((materialized) => {
+      if (refreshPhysicalDelegateInputIndex) refreshPhysicalDelegateInputIndex(builder, materialized);
+      refreshTopLevelDynamicChunkInputBase?.(materialized);
+      refreshTopLevelReturnWitnesses(materialized);
+      refreshTopLevelPredOutWitnesses(materialized);
+      return buildStateInputUnlocker();
+    });
+  }
+  builder.seedPrecomputedReturnEvents(allGroupEcSlots);
+  timing?.('builder-created');
+
+  return {
+    builder,
+    finalArgs,
+    firstRootDynamicChunk,
+    refreshTopLevelReturnWitnesses,
+  };
+}

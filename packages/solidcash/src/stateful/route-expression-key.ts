@@ -287,7 +287,7 @@ const canonicalIntegerAbiType = (type: string): string | undefined => {
     ? type : undefined;
 };
 
-/** Resolve the narrowly supported direct mapping-return shortcut from compiler proof, never source names. */
+/** Resolve a direct mapping-return shortcut from compiler proof, never source names. */
 export function directMappingReadPlan(
   artifact: Pick<Artifact, 'abi' | 'stateLayout'>,
   functionName: string,
@@ -308,15 +308,24 @@ export function directMappingReadPlan(
   const collection = artifact.stateLayout?.collections?.find((candidate) => candidate.name === proof.collection);
   if (!collection || collection.kind !== 'mapping') return undefined;
   const keyTypes = collection.keyTypes ?? [collection.keyType];
-  if (keyTypes.length !== proof.keyParams.length || keyTypes.some((type) => type !== 'address')) return undefined;
-  const outputType = canonicalIntegerAbiType(fn.outputs[0].type);
-  const valueType = canonicalIntegerAbiType(collection.valueType);
-  if (!outputType || outputType !== valueType) return undefined;
+  if (keyTypes.length !== proof.keyParams.length) return undefined;
+  const outputIntegerType = canonicalIntegerAbiType(fn.outputs[0].type);
+  const valueIntegerType = canonicalIntegerAbiType(collection.valueType);
+  const exactStructType = fn.outputs[0].type === collection.valueType
+    && artifact.stateLayout?.structs?.some((struct) => struct.name === collection.valueType) === true;
+  if (outputIntegerType === undefined || valueIntegerType === undefined
+    ? !exactStructType : outputIntegerType !== valueIntegerType) return undefined;
   const visibleInputs = visibleHandlerInputs(fn.inputs);
   const keyArgumentIndices = proof.keyParams.map((name) => visibleInputs.findIndex((input) => input.name === name));
   if (keyArgumentIndices.some((index) => index < 0) || new Set(keyArgumentIndices).size !== keyArgumentIndices.length) {
     return undefined;
   }
+  if (keyArgumentIndices.some((argumentIndex, index) => {
+    const inputType = canonicalIntegerAbiType(visibleInputs[argumentIndex]!.type)
+      ?? visibleInputs[argumentIndex]!.type;
+    const keyType = canonicalIntegerAbiType(keyTypes[index]!) ?? keyTypes[index];
+    return inputType !== keyType;
+  })) return undefined;
   return { collection: collection.name, keyArgumentIndices, keyTypes };
 }
 

@@ -22,11 +22,20 @@ const lock = persistValueChunkLock(write.categoryId, value, write)!;
 
 describe('computed mapping-value frame matching', () => {
   it('finds one exact resource value through its VM-computed lock and count', () => {
-    const stack = [value, lock, value, bigIntToVmNumber(2n), new Uint8Array()];
+    const stack = [value, lock, bigIntToVmNumber(2n), new Uint8Array()];
     const matches = matchComputedValueChunkStack(stack, [write]);
     expect(matches).toHaveLength(1);
     expect(matches[0]).toMatchObject({ write, chunkCount: 2 });
     expect(matches[0].value).toEqual(value);
+  });
+
+  it('ignores stale values below the compiler-defined count frame', () => {
+    const stale = new Uint8Array(206).fill(0x41);
+    const stack = [stale, persistValueChunkLock(write.categoryId, stale, write)!,
+      value, lock, bigIntToVmNumber(2n), new Uint8Array()];
+    const matches = matchComputedValueChunkStack(stack, [write]);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.value).toEqual(value);
   });
 
   it('rejects a different storage slot or chunk count', () => {

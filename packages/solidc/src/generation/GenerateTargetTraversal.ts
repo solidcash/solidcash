@@ -526,6 +526,8 @@ const MESSAGE_BUS_OWNER_INPUT = '__internal__messageBusOwnerInput';
 const MESSAGE_BUS_OWNER_BAND_INPUT = '__internal__messageBusOwnerBandInput';
 /** Tracked-local name for the entry-time copy of the participant owner (see messageBusOwnerAltAnchor). */
 const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
+const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
+const GRAPH_EVENT_OWNER_LOCAL = '(graph_event_owner)';
 
 export class ForwardedWitnessError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
@@ -2268,6 +2270,129 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ADD, locationData);
     return true;
   }
+
+  /**
+   * Resolve an emitted event inside the reached graph row's event window.
+   *
+   * A composed participant can receive several event effects for one logical graph row. Their physical order is
+   * assigned by the authenticated call manifest, so a nested/shared handler's source-local emit index is not a
+   * physical slot index. Match the exact compiler-built covenant lock and encoded commitment within this row's
+   * bounded window, and retain the selected absolute output index for all remaining event checks.
+   */
+  private emitGraphEventOutputIndex(
+    emitIndex: number, blobName: string, expectedLockName: string, locationData: SingleLocationData,
+  ): string {
+    const frame = this.currentFunction.graphEffectFrame;
+    if (!frame || !this.currentFunction.graphEmissionHandler || frame.eventWidth < 1) {
+      throw new Error(`Missing graph event frame while resolving emit ${emitIndex}`);
+    }
+    const baseName = `(__graph_event_base_${emitIndex})`;
+    const outputName = `(__graph_event_output_${emitIndex})`;
+    const ownerIndex = this.getStackIndex(GRAPH_EVENT_OWNER_LOCAL, true);
+    if (ownerIndex >= 0) {
+      this.emit(encodeInt(BigInt(ownerIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      const siteName = this.stack.includes(GRAPH_EFFECT_SITE) ? GRAPH_EFFECT_SITE : '__message_bus_row';
+      this.emit(encodeInt(BigInt(this.getStackIndex(siteName) + 1)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (frame.eventWidth > 1) {
+        this.emit(encodeInt(BigInt(frame.eventWidth)), locationData);
+        this.emit(Op.OP_MUL, locationData);
+      }
+      const routeOffset = frame.eventOffset ?? this.getBlockSlotOffset('event', frame.eventBase);
+      if (routeOffset > 0) {
+        this.emit(encodeInt(BigInt(routeOffset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      this.emit(Op.OP_ADD, locationData);
+    } else {
+      this.emitBlockSlotIndex('event', 0, locationData);
+    }
+    this.pushToStack(baseName);
+    this.emit(encodeInt(-1n), locationData);
+    this.pushToStack(outputName);
+
+    for (let offset = 0; offset < frame.eventWidth; offset += 1) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(baseName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      if (offset > 0) {
+        this.emit(encodeInt(BigInt(offset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      this.pushToStack('(graph_event_candidate)');
+
+      this.emit(Op.OP_DUP, locationData);
+      this.pushToStack('(graph_event_candidate_copy)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(blobName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(graph_event_expected_commitment)');
+      this.emit(Op.OP_SWAP, locationData);
+      [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+      this.emit(Op.OP_EQUAL, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(graph_event_commitment_match)');
+
+      this.emit(encodeInt(BigInt(this.getStackIndex(expectedLockName))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(encodeInt(BigInt(this.getStackIndex('(graph_event_candidate)'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+      this.emit(Op.OP_EQUAL, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(graph_event_lock_match)');
+      this.emit(Op.OP_BOOLAND, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(graph_event_match)');
+
+      this.emit(Op.OP_IF, locationData);
+      this.popFromStack();
+      const branchInput = [...this.stack];
+      // Replace the previous selection with this matching candidate.
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.removeFromStack(1);
+      this.stack[0] = outputName;
+      const branchOutput = [...this.stack];
+      this.emit(Op.OP_ELSE, locationData);
+      this.stack = branchInput;
+      this.emit(Op.OP_DROP, locationData);
+      this.popFromStack();
+      this.stack = branchOutput;
+      this.emit(Op.OP_ENDIF, locationData);
+    }
+
+    this.emit(Op.OP_DUP, locationData);
+    this.pushToStack('(value)');
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_VERIFY, locationData);
+    this.popFromStack();
+
+    const baseIndex = this.getStackIndex(baseName);
+    this.emit(encodeInt(BigInt(baseIndex)), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.removeFromStack(baseIndex);
+    return outputName;
+  }
+
+  private emitEventOutputIndex(
+    emitIndex: number, resolvedName: string | undefined, locationData: SingleLocationData,
+  ): void {
+    if (resolvedName === undefined) {
+      this.emitBlockSlotIndex('event', emitIndex, locationData);
+      return;
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(resolvedName))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
+
 
   /**
    * X29. Satoshi-container identity + conservation for a graph emission handler's own transfers.
@@ -5550,6 +5675,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Settle the fixed effect frame while a graph handler's OP_INVOKE context is still live. */
   private emitGraphHandlerEffectSettlement(node: FunctionDefinitionNode): void {
     if (!node.graphEmissionHandler) return;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_GRAPH_SETTLEMENT === '1') {
+      console.error('graph-handler-effect-settlement', {
+        name: node.name,
+        pendingEmits: this.pendingEmits,
+        conditionalEmitIndices: [...this.conditionalEmitIndices],
+        emitInfos: node.emitInfos,
+      });
+    }
     const loc = { location: node.body!.location, positionHint: PositionHint.END } as SingleLocationData;
     this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_MODE))), loc);
     this.emit(Op.OP_PICK, loc);
@@ -5589,10 +5723,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.emitConditionalGraphDeployBinding(node);
-    for (let unused = this.pendingEmits.length;
-      unused < (node.graphEffectFrame.eventWidth ?? 0); unused += 1) {
-      this.emitNotTakenEventSlotBinding(unused, loc);
-    }
+    // A nested emission helper shares its dispatch site's frame with its caller. It settles only the event slots
+    // it owns; the compiler route binds the unused suffix after the TOP-LEVEL handler returns. Binding the suffix
+    // here makes a one-event nested helper reject a legitimate second event emitted by its two-event caller.
   }
 
   /**
@@ -6089,6 +6222,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           isRoute: this.isCompilerMessageBusRoute(node),
           parameters: node.parameters.map((parameter) => parameter.name),
           ownerIndex: node.parameters.findIndex((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT),
+          ownerAltAnchor: this.compilerOptions.ownerAltAnchor,
+          graphEmissionHandler: node.graphEmissionHandler,
+          ownerIsLastArgument: node.messageBusOwnerIsLastArgument,
         }));
       }
       // Feature flag from CompilerOptions (normalized from explicit option or SOLIDC_OWNER_ALT_ANCHOR).
@@ -6109,12 +6245,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
           this.emit(encodeInt(BigInt(ownerDepth)), anchorLocation);
           this.emit(Op.OP_PICK, anchorLocation);
-          this.emit(Op.OP_TOALTSTACK, anchorLocation);
+          this.pushToStack(OWNER_ANCHOR_LOCAL);
           node.messageBusOwnerAltAnchor = true;
         }
       }
     } else {
       node.parameters = this.visitList(node.parameters) as ParameterNode[];
+    }
+
+    // An aggregate route can retain runtime-only values below its compiler-modelled frame. Capture the
+    // authenticated proxy master while the entry ABI is still the complete top-relative frame; later effect
+    // settlement can then follow this ordinary tracked local instead of addressing across that unknown prefix.
+    if (this.compilerOptions.ownerAltAnchor === true && !this.isDefineSubTraversal
+      && this.isCompilerMessageBusRoute(node)
+      && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
+      const proxyDepth = this.getStackIndex('__internal__proxyMasterIndex');
+      const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+      this.emit(encodeInt(BigInt(proxyDepth)), anchorLocation);
+      this.emit(Op.OP_PICK, anchorLocation);
+      this.pushToStack(PROXY_MASTER_ANCHOR_LOCAL);
     }
 
     // A route handler is invoked with the caller's band still live UNDER its argument block, so seed those names
@@ -6454,14 +6603,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // Long sorted-mapping values and dynamic-state chunks share the trailing output region. The SDK emits all
-    // mapping value chunks first, so remember their runtime total whenever this function can produce both kinds.
+    // Long sorted-mapping values occupy the leading trailing-output region. Remember their runtime total so the
+    // entry node which references each chunked value is verified after that value's materialized chunk run.
     // Allocate the accumulator before control flow: a chunkable write may be conditional, but every path must
     // reach the dynamic-write epilogue with the same physical stack shape.
-    const staticStateWriteKeys = new Set<string>();
-    this.collectStateWriteKeys(node.body, staticStateWriteKeys);
-    const hasStaticDynamicWrite = this.stateVariables.some((sv) => sv.isDynamic
-      && staticStateWriteKeys.has(`${sv.nftIndex}:${sv.fieldIndex}`));
     if (runtimeLoopEntryInputCountRequired) {
       if (!this.isDefineSubTraversal) {
         this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
@@ -6508,26 +6653,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopBchTransferActive = this.functionContainsRuntimeLoopBchTransfer(node);
       this.runtimeLoopNftTransferActive = this.functionContainsRuntimeLoopNftTransfer(node);
     }
-    if ((node.dynamicWrites?.length ?? 0) > 0 || hasStaticDynamicWrite) {
-      const seen = new WeakSet<Node>();
-      const hasChunkableMappingWrite = (candidate: Node): boolean => {
-        if (seen.has(candidate)) return false;
-        seen.add(candidate);
-        if (candidate instanceof MappingAssignNode && candidate.collection?.sorted
-          && this.isChunkableValue(candidate.collection.innermostValueType)) return true;
-        for (const value of Object.values(candidate as unknown as Record<string, unknown>)) {
-          if (value instanceof Node && hasChunkableMappingWrite(value)) return true;
-          if (Array.isArray(value)) {
-            for (const item of value) if (item instanceof Node && hasChunkableMappingWrite(item)) return true;
-          }
+    const seenChunkableMappingWrites = new WeakSet<Node>();
+    const hasChunkableMappingWrite = (candidate: Node): boolean => {
+      if (seenChunkableMappingWrites.has(candidate)) return false;
+      seenChunkableMappingWrites.add(candidate);
+      if (candidate instanceof MappingAssignNode && candidate.collection?.sorted
+        && this.isChunkableValue(candidate.collection.innermostValueType)) return true;
+      for (const value of Object.values(candidate as unknown as Record<string, unknown>)) {
+        if (value instanceof Node && hasChunkableMappingWrite(value)) return true;
+        if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node && hasChunkableMappingWrite(item)) return true;
         }
-        return false;
-      };
-      if (hasChunkableMappingWrite(node.body)) {
-        this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
-        this.pushToStack(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
-        this.valueChunkTrailingCountActive = true;
       }
+      return false;
+    };
+    if (hasChunkableMappingWrite(node.body)) {
+      // Mapping value chunks precede the entry node which references their digest even when the function has no
+      // unrelated dynamic-state write. Keep one path-stable running width so the INSERT verifier can cross the
+      // chunks produced by the value it has just authenticated.
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
+      this.valueChunkTrailingCountActive = true;
     }
 
     // Allocate the complete semantic transfer frame before visiting control flow. Branch/loop-local allocation
@@ -6670,6 +6816,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const loc = { location: node.body.location, positionHint: PositionHint.END } as SingleLocationData;
       for (const name of [
         GRAPH_EFFECT_SITE, GRAPH_STATIC_DIRTY, GRAPH_STATIC_MODE, GRAPH_HANDLER_CALLER_DEPTH,
+        OWNER_ANCHOR_LOCAL,
         ...(this.usesMessageBusOwnerBlockBase() ? ['__internal__messageBusOwnerInput'] : []),
         ...this.graphDeploySettlementDependencies(),
       ]) {
@@ -7384,12 +7531,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }));
     }
     node.expression = this.visit(node.expression);
+    const runtimeAssignDebug = env?.SOLIDC_DEBUG_RUNTIME_ASSIGN === node.identifier.name;
+    if (runtimeAssignDebug) {
+      this.emit(hexToBin('636a2d61737369676e2d6265666f7265'), {
+        location: node.location, positionHint: PositionHint.END,
+      });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
+    }
     if (this.scopeDepth > 0) {
       this.emitReplace(this.getStackIndex(node.identifier.name), node);
       this.popFromStack();
     } else {
       this.popFromStack();
       this.pushToStack(node.identifier.name);
+    }
+    if (runtimeAssignDebug) {
+      this.emit(hexToBin('636a2d61737369676e2d6166746572'), {
+        location: node.location, positionHint: PositionHint.END,
+      });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.END });
     }
     return node;
   }
@@ -9635,6 +9795,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** Replace a dynamic value length on top with the number of materialized value-chunk NFTs. */
+  private emitValueChunkCountFromLength(locationData: SingleLocationData): void {
+    // Values through 60 bytes remain inline in the commitment tail. Only the hashed long-value form has a
+    // trailing chunk run, split into VALUE_CHUNK_SIZE-byte commitments.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(60n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(BigInt(VALUE_CHUNK_SIZE - 1)), locationData);
+    this.emit(Op.OP_ADD, locationData);
+    this.emit(encodeInt(BigInt(VALUE_CHUNK_SIZE)), locationData);
+    this.emit(Op.OP_DIV, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /**
    * Add ceil(A$len/120) for each dynamic var whose old chunks the SDK co-spends before write-path
    * trailing inputs/outputs (X151). Assumes one untracked offset partial on top.
@@ -9646,6 +9824,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAddForeignReadOnlyChunkCounts(
     locationData: SingleLocationData, includeWrittenOldChunks = false, callsiteDepth = 0,
   ): void {
+    const dynamicChunkSize = 120;
     const written = new Set(this.currentFunction.dynamicWrites ?? []);
     // Code generation can reach a trailing collection write before a later statement records a dynamic write.
     // Survey the complete body so that later-written values are not mistaken for read-only trailing runs on the
@@ -9693,8 +9872,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
       if (!sv) continue;
       this.emitReadDynamicLen(sv, '(vmap_foreign_len)', locationData, callsiteDepth);
-      this.emit(encodeInt(119n), locationData); this.emit(Op.OP_ADD, locationData);
-      this.emit(encodeInt(120n), locationData); this.emit(Op.OP_DIV, locationData);
+      // Dynamic-state values always use 120-byte ChunkNft records when non-empty. Do not reuse the sorted
+      // mapping-value counter here: that format keeps values through 60 bytes inline and therefore reports zero
+      // for the short preserved arrays which still occupy one dynamic chunk output.
+      this.emit(encodeInt(BigInt(dynamicChunkSize - 1)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.emit(encodeInt(BigInt(dynamicChunkSize)), locationData);
+      this.emit(Op.OP_DIV, locationData);
       this.popFromStack();
       this.emit(Op.OP_ADD, locationData);
     }
@@ -9719,8 +9903,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName) + 1 + callsiteDepth)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_SIZE, locationData); this.emit(Op.OP_NIP, locationData);
-      this.emit(encodeInt(119n), locationData); this.emit(Op.OP_ADD, locationData);
-      this.emit(encodeInt(120n), locationData); this.emit(Op.OP_DIV, locationData);
+      this.emitValueChunkCountFromLength(locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    if (this.valueChunkTrailingCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT,
+        locationData,
+        1 + callsiteDepth,
+      );
+      this.emit(Op.OP_ADD, locationData);
+    }
+    // A message-bus fixed sorted batch emits its rewritten predecessors at the head of the trailing output band.
+    // Scalar INSERT NEWs and runtime-loop entries both use this helper to locate the first entry after dynamic
+    // runs, so both must also cross that compiler-published predecessor prefix.
+    const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
+    if (batchCountIdx >= 0) {
+      this.emitPickCompilerRouteFrameValue(
+        '__internal__vmapBatchTrailingCount', locationData, 1 + callsiteDepth,
+      );
       this.emit(Op.OP_ADD, locationData);
     }
   }
@@ -11068,13 +11269,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // handler then compares its runtime key hash with a valid witness for the wrong collection or key.
     const match = /^__internal__(valueWitness|(?:leading|complete)PushValue|vmapBatch(?:Slot|Proof|Next|PredOut|Rank))_(\d+)$/
       .exec(targetParameter.name);
-    if (!match || !targetFunc.messageBusPhysicalEntrySlots) return argument;
+    const physicalEntrySlots = targetFunc.messageBusPhysicalEntryArgumentSlots
+      ?? targetFunc.messageBusPhysicalEntrySlots;
+    if (!match || !physicalEntrySlots) return argument;
     const localSlot = Number(match[2]);
     const matchedEntryIndex = targetFunc.entryAccesses
       ?.findIndex((entry) => entry.slotIndex === localSlot);
     const localEntryIndex = matchedEntryIndex === undefined || matchedEntryIndex < 0
       ? localSlot : matchedEntryIndex;
-    const physicalSlot = targetFunc.messageBusPhysicalEntrySlots[localEntryIndex];
+    const physicalSlot = physicalEntrySlots[localEntryIndex];
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_BIND_ENTRY === '1') {
+      // eslint-disable-next-line no-console
+      console.error('bind-message-bus-entry-argument', this.currentFunction.name, targetFunc.name,
+        argument.name, physicalEntrySlots, physicalSlot);
+    }
     if (physicalSlot === undefined || physicalSlot === localSlot) return argument;
     const physicalName = `__internal__${match[1]}_${physicalSlot}`;
     if (!this.stack.includes(physicalName)) {
@@ -11486,6 +11695,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           argSources: row.argSources,
           sourceCallNode: row.sourceCallNode ?? slot.sourceCallNode,
           sourceEffectOrdinal: row.sourceEffectOrdinal,
+          callValueEffect: row.callValueEffect,
           batchInvocations: undefined,
         })) ?? [slot]
       ));
@@ -11678,6 +11888,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         caller: this.currentFunction.name,
         target: targetFunc.name,
         id: targetFunc.functionId,
+        graphEffectSite: node.graphEffectSite,
+        graphEffectSiteFromRow: node.graphEffectSiteFromRow,
+        sourceEffectOrdinal: node.sourceEffectOrdinal,
+        emitInfos: targetFunc.emitInfos,
         callArguments: node.parameters.map((parameter) => ({
           kind: parameter.constructor.name,
           name: parameter instanceof IdentifierNode ? parameter.name : undefined,
@@ -11687,6 +11901,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         returns: targetFunc.returnTypes.map((type) => type.toString()),
         pushedArgs,
         hiddenContextCount,
+        targetJournalContextNames,
+        targetReturnedContextNames,
         stackDepth: this.stack.length,
         stack: userCallDebugEnv.SOLIDC_DEBUG_USER_FUNCTION_CALL_STACK === '1'
           ? this.stack : undefined,
@@ -11695,15 +11911,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(encodeInt(BigInt(targetFunc.functionId!)), locationData);
     this.emit(Op.OP_INVOKE, locationData);
-    if (this.ownerAnchorPreconditionHolds((globalThis as {
-      process?: { env?: Record<string, string> };
-    }).process?.env, targetFunc)) {
-      // The callee captured the owner onto the alt stack and nothing drops it on its exits, so the caller drops the
-      // leaked copy here - before any of its own alt-stack rotations (`emitReplaceCompilerRouteFrameValue` shuttles
-      // intervening values through the alt stack immediately after the call, so a leak corrupts its frame).
-      this.emit(Op.OP_FROMALTSTACK, locationData);
-      this.emit(Op.OP_DROP, locationData);
-    }
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
@@ -11779,8 +11986,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // and no value check at all.
     if (this.graphTransferFlagActive && targetFunc.graphEffectSettlesTransfers === true
       && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_TRANSFER_REACHED, locationData);
       this.pushToStack('(graph_transfer_total)');
       const frame = targetFunc.graphEffectFrame!;
       // A heterogeneous frame's suffix is reserved capacity, not a transfer made by this handler.
@@ -11816,8 +12022,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // a dispatch of an emit-free sibling would otherwise claim a window and exempt it from the binding.
     if (this.graphEventSiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
       && (targetFunc.emitInfos?.length ?? 0) > 0 && this.stack.includes(GRAPH_EVENT_SITE)) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_EVENT_SITE))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_EVENT_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
         const rowIndex = this.getStackIndex('__message_bus_row');
         if (rowIndex < 0) {
@@ -11831,15 +12036,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         this.emit(encodeInt(1n << BigInt(node.graphEffectSite!)), locationData);
       }
+      // Set, rather than arithmetically add, the reached-site bit. A graph site can execute more than once
+      // (for example through a nested helper or a repeated row); adding the same bit twice carries into the next
+      // site and makes the epilogue misclassify both windows. Keep the mask unchanged when the bit is present.
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(Op.OP_OVER, locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_ELSE, locationData);
       this.emit(Op.OP_ADD, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
       this.pushToStack('(graph_event_sites_new)');
       this.emitReplaceCompilerRouteFrameValue(GRAPH_EVENT_SITE, node);
       this.popFromStack();
     }
     if (this.graphDeploySiteActive && targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame
       && hasDirectChildDeployment(targetFunc.body) && this.stack.includes(GRAPH_DEPLOY_SITE)) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_DEPLOY_SITE))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData);
       if (node.graphEffectSiteFromRow) {
         const rowIndex = this.getStackIndex('__message_bus_row');
         if (rowIndex < 0) {
@@ -11916,8 +12132,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
     }
     if (graphTokenInvocation) {
-      this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TOKEN_SITE))), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_TOKEN_SITE, locationData);
       this.emit(Op.OP_ADD, locationData);
       // OP_ADD consumed the local delta; reflect that before replacing the one packed route-frame value.
       this.popFromStack();
@@ -12083,6 +12298,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         GRAPH_STATIC_DIRTY,
         GRAPH_STATIC_MODE,
         GRAPH_HANDLER_CALLER_DEPTH,
+        OWNER_ANCHOR_LOCAL,
         ...(this.usesMessageBusOwnerBlockBase() ? ['__internal__messageBusOwnerInput'] : []),
         ...graphDeployDependencies,
         ...this.pendingEmits.flatMap((emit) => [emit.stackName, emit.identityStackName]),
@@ -14564,6 +14780,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(stackIndex);
     } else {
       this.emit(Op.OP_PICK, { location: node.location, positionHint: PositionHint.START });
+    }
+
+    const readDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    if (readDebugEnv?.SOLIDC_DEBUG_RUNTIME_READ === node.name) {
+      this.emit(new TextEncoder().encode(`cj-read-after:${stackIndex}:${this.isOpRoll(node) ? 1 : 0}`), {
+        location: node.location, positionHint: PositionHint.START,
+      });
+      this.emit(Op.OP_DROP, { location: node.location, positionHint: PositionHint.START });
     }
 
     this.pushToStack('(value)');
@@ -18704,6 +18928,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         argSources: batchRow.argSources,
         sourceCallNode: batchRow.sourceCallNode ?? node,
         sourceEffectOrdinal: batchRow.sourceEffectOrdinal,
+        callValueEffect: batchRow.callValueEffect,
         hasReturnValues: (batchRow.returnTypes?.length ?? 0) > 0,
         returnTypes: batchRow.returnTypes,
         batchInvocations: undefined,
@@ -19322,7 +19547,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_target_frame)');
 
     const graphCallMode = (slot.callMode === ExternalCallMode.STATICCALL ? 1 : 0)
-      | (rawCall && hasEffectiveCallValue(slot.sourceCallNode?.callOptions?.value) ? 2 : 0);
+      | (rawCall && (handler.graphRawCallValueEffect === true
+        || slot.callValueEffect === true
+        || hasEffectiveCallValue(slot.sourceCallNode?.callOptions?.value)
+        || (slot.sourceCallNode?.valueTransferIndex ?? -1) >= 0) ? 2 : 0);
+    if (rawCall && (globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
+      console.error('graph-call-mode-source', JSON.stringify({
+        function: handler.name,
+        callValueEffect: slot.callValueEffect,
+        hasCallOption: hasEffectiveCallValue(slot.sourceCallNode?.callOptions?.value),
+        valueTransferIndex: slot.sourceCallNode?.valueTransferIndex,
+        handlerTransferCount: handler.transferInfos?.length,
+        graphTransferWidth: handler.graphEffectFrame?.transferWidth,
+        graphRawCallValueEffect: handler.graphRawCallValueEffect,
+        rawValueTransferOnly: slot.sourceCallNode?.rawValueTransferOnly,
+        rawParameterCount: slot.rawParameters?.length,
+        argSourceCount: slot.argSources?.length,
+        graphCallMode,
+      }));
+    }
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
       throw new Error('Graph emission does not support delegatecall');
     }
@@ -19458,6 +19702,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(this.getStackIndex((parameter as IdentifierNode).name))), locationData);
           this.emit(Op.OP_PICK, locationData);
           this.pushToStack('(__graph_arg_value)');
+        }
+        if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+          && parameter.type instanceof AddressType) {
+          // Solidity evaluates every address as a 20-byte identity, but a low-level payload may preserve either
+          // that identity or the full BCH locking bytecode from which it was derived. The authenticated row owns
+          // that representation choice. Recover this argument from the current row, prove both representations
+          // project to the same Solidity identity, and encode the exact authenticated bytes below.
+          this.emitGraphEmissionStreamRead(locationData);
+          this.emit(encodeInt(2n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_SWAP, locationData);
+          this.emit(Op.OP_BIN2NUM, locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_NIP, locationData);
+          this.emit(encodeInt(5n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_NIP, locationData);
+          this.emit(encodeInt(2n), locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_SWAP, locationData);
+          this.emit(Op.OP_BIN2NUM, locationData);
+          this.emit(Op.OP_SPLIT, locationData);
+          this.emit(Op.OP_DROP, locationData);
+          for (let previous = 0; previous < i; previous += 1) {
+            this.emitGenericPushdataDecode(new BytesType(), locationData);
+            this.emit(Op.OP_NIP, locationData);
+          }
+          this.emitGenericPushdataDecode(new BytesType(), locationData);
+          this.emit(Op.OP_DROP, locationData);
+          this.emit(Op.OP_DUP, locationData);
+          for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+          this.emit(encodeInt(2n), locationData);
+          this.emit(Op.OP_PICK, locationData);
+          for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+          this.emit(Op.OP_EQUALVERIFY, locationData);
+          this.emit(Op.OP_NIP, locationData);
         }
         if (this.typeContainsTransactionSignature(parameter.type!)) {
           this.emitSanitizeTransactionSignatures(parameter.type!, locationData);
@@ -19804,9 +20084,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   /** Read the authenticated emission stream for one consumer. */
   private emitGraphEmissionStreamRead(locationData: SingleLocationData): void {
-    // A DEFINE'd handler executes above the caller's live frame. The route band is therefore not at an absolute
-    // bottom ordinal: participant-specific caller locals can sit beneath it. The tracked top-relative slot is
-    // unaffected by those lower items and remains paired with the writer below.
     this.emit(encodeInt(BigInt(this.graphEmissionStreamSlot())), locationData);
     this.emit(Op.OP_PICK, locationData);
   }
@@ -19819,16 +20096,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * returning rows advance one copy while a later void row rereads the pristine vector. A non-route graph body
    * has no published band coordinate and retains its explicitly threaded frame slot.
    */
-  private bandEmissionOrdinal(): number | undefined {
-    return this.declaredBandOrdinal('__internal__graphEmissions');
-  }
-
-  /**
-   * Store the peeled stream remainder (on top) back into the slot the next consumer reads.
-   *
-   * The model tracks the cursor relative to the top of both route and non-route frames, so the paired read and
-   * replacement remain stable even when a DEFINE caller has participant-specific locals beneath the route band.
-   */
+  /** Store the peeled stream remainder (on top) back into the slot the next consumer reads. */
   private emitReplaceGraphEmissionStream(node: Node): void {
     this.emitReplace(this.graphEmissionStreamSlot(), node);
   }
@@ -20023,13 +20291,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(external_out_dynamic_address)';
 
-    // expected = ceil(length / 120), found = 0, accumulator = empty, scan index = 0.
+    // expected = 0 for inline values, otherwise ceil(length / VALUE_CHUNK_SIZE); then initialize the scan.
     this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emit(encodeInt(119n), loc);
-    this.emit(Op.OP_ADD, loc);
-    this.emit(encodeInt(120n), loc);
-    this.emit(Op.OP_DIV, loc);
+    this.emitValueChunkCountFromLength(loc);
     this.pushToStack('(external_out_dynamic_expected)');
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(external_out_dynamic_found)');
@@ -20674,12 +20939,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.getStackIndex(this.vmapWitnessName(`__internal__vmapBatchProof_${slotIndex}`), true) >= 0;
     if (routeBatch) {
       // A routed ABI is the union of all handlers, so a cache read synthesized for an inactive handler has no
-      // physical entry input. Relative proof offset zero is reserved for the master (an entry can never occupy it)
-      // and the SDK supplies it only for such inactive slots. Active read-only slots retain their real nonzero
-      // proof even though their batch-write sentinel is -2.
+      // physical entry input. The SDK publishes a negative proof sentinel for those lanes. Test that sentinel
+      // before adding the active input index: otherwise -1 aliases the input immediately before the participant
+      // and an inactive read can interpret an unrelated NFT as its sorted-map proof. Offset zero is not an
+      // inactivity marker here; runtime aliases can use it while redirecting to an authenticated prior below.
       this.emitPickVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
       this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
       this.emit(Op.OP_IF, loc);
       this.emitDefaultValue(loc, valueType);
       this.emit(Op.OP_ELSE, loc);
@@ -21050,6 +21316,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const VC = VALUE_CHUNK_SIZE;
     const chunkHash = computeCollectionHash(valueChunkSignature(collectionName));
     const vName = this.stack[0]; // v, tracked on top
+    const pinDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    if (pinDebugEnv?.SOLIDC_DEBUG_VALUE_CHUNK_PIN === '1') {
+      const assignment = node instanceof MappingAssignNode ? node : undefined;
+      console.error('value-chunk-pin', JSON.stringify({
+        function: this.currentFunction.name,
+        collectionName,
+        vName,
+        vIndex: this.getStackIndex(vName),
+        expression: assignment?.expression instanceof IdentifierNode
+          ? assignment.expression.name : assignment?.expression?.constructor.name,
+        oldWitness: assignment?.messageBusRuntimeOldValueWitness?.array instanceof IdentifierNode
+          ? assignment.messageBusRuntimeOldValueWitness.array.name : undefined,
+        arrayPush: assignment?.arrayPush === true,
+        stack: this.stack.slice(0, 80),
+      }));
+      this.emit(new TextEncoder().encode(`vc-pin:${this.currentFunction.name}:${collectionName}`), loc);
+      this.emit(Op.OP_DROP, loc);
+    }
 
     // Guard: only chunk when size(v) > 60 (inline values <= 60 need no chunks; matches emitChunkableValueTail).
     this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
@@ -21084,6 +21368,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(VC - 1)), loc); this.emit(Op.OP_ADD, loc);
     this.emit(encodeInt(BigInt(VC)), loc); this.emit(Op.OP_DIV, loc); // nNew = ceil(size/VC)
     this.pushToStack('(vc_nnew)');
+
+    if (this.valueChunkTrailingCountActive) {
+      // Retain the count before the value becomes its compact len+digest tail, from which the original run width
+      // cannot be recovered. The accumulator is allocated before control flow, so inline values leave it intact.
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc,
+      );
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)') + 1)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+      this.pushToStack('(value_chunk_trailing_count_next)');
+      this.emitReplaceCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, node,
+      );
+      this.popFromStack();
+    }
 
     // A chunk address commits to this contract category, collection, storage slot, and complete value digest.
     // Discover its outputs by that identity rather than by a shared positional cursor. An invoked kernel handler
@@ -21161,6 +21461,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ) ?? false;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+    const routeScalarWitness = this.isCompilerMessageBusRoute() && !inBatch
+      && this.getStackIndex(`__internal__vmapBatchSlot_${slotIndex}`, true) >= 0;
     const loopWrites = (this.currentFunction.entryLoopWrites ??= []);
     if (!loopWrites.includes(collection.name)) loopWrites.push(collection.name);
     this.sortedWrittenCollections.add(collection.name);
@@ -21457,7 +21759,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
       // Keep the legacy delegate skip on ordinary INSERTs (registerUser): ungating it shifted NEW onto a pad.
       // Entry-loop / route-preserved-dyn handlers take the absolute-base branch above instead.
-      if (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix()) {
+      // A selected scalar route lane which is outside the aggregate sorted batch publishes its INSERT node at
+      // the route's first trailing coordinate. Its hidden slot/proof/next/predOut vector authenticates that lane
+      // independently; aggregate predecessor and preserved-dynamic counts describe sibling families and must not
+      // shift this scalar node past the coordinate materialized by the SDK.
+      if (!routeScalarWitness && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }
     };
@@ -21471,8 +21777,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_IF, loc);
       this.emitAddDynamicOutputsBeforeEntries(loc, 5, false);
       this.emit(Op.OP_ELSE, loc);
+      // A value below -2 is an inactive broad-write witness which still preserves the authenticated dynamic-band
+      // coordinate: encoded = -(base + 3). Chunkable mapping entries are a separate active consumer of that band,
+      // so decode the preserved coordinate before stepping over sibling dynamic outputs. Plain -1/-2 sentinels do
+      // not carry a coordinate and retain the reconstruction fallback.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(-2n), loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_NEGATE, loc);
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_SUB, loc);
+      this.emitAddDynamicOutputsBeforeEntries(loc, 5, false);
+      this.emit(Op.OP_ELSE, loc);
       this.emit(Op.OP_DROP, loc);
       emitInsertReconstructedBase();
+      this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_ENDIF, loc);
     } else {
       emitInsertReconstructedBase();
@@ -21489,6 +21809,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc);
     this.emit(Op.OP_DROP, loc); this.popFromStack();
     if (hasRepoint) { this.emit(Op.OP_DROP, loc); this.popFromStack(); } // drop the re-point register temp
+    if (runtimeAliasOwners.length > 0) {
+      // The structural activity guard is opened after H(k) is computed. The active arm consumes that hash in the
+      // upsert proof above; the inactive alias arm must consume it explicitly and close the guard at this same
+      // lexical boundary. Leaving the guard open skips every later covenant and fails with a non-empty VM control
+      // stack whenever this scalar route slot is inactive.
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
     return node;
   }
 
@@ -23959,6 +24288,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     } else {
       emitLoopEntryReconstructedBase();
+    }
+    // Each runtime-loop family owns a collection-local counter, but the SDK packs every family's outputs into
+    // one physical trailing band. A later family therefore starts after the exact widths accumulated by earlier
+    // teardowns, then adds its own local counter below. Other trailing-output emitters already include this
+    // route-wide cursor through emitTrailingWriteOutputBase; this older inline loop path must do so explicitly.
+    if (this.runtimeLoopEntryOutputCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_OUTPUT_COUNT, loc, 1,
+      );
+      this.emit(Op.OP_ADD, loc);
     }
     this.emit(encodeInt(BigInt(this.getStackIndex(this.entryLoopCounterName) + 1)), loc); // +1: partial outIdx untracked
     this.emit(Op.OP_PICK, loc);
@@ -31081,6 +31420,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitEventCovenantVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
+    const graphHandlerEventWidth = this.currentFunction.graphEmissionHandler === true
+      ? (this.currentFunction.graphEffectFrame?.eventWidth ?? 0) : 0;
     // X29. When an effect-carrying graph emission handler owns this function's event frame, the ROUTE's own
     // emit blobs are a shadow of it: the handler settles the reached sites' outputs from inside its OP_INVOKE
     // subroutine, so every route-level blob is empty and the route's per-slot checks are inert. The handler is
@@ -31108,6 +31449,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const pendingEmit of this.pendingEmits) {
       const { emitIndex, stackName, identityStackName } = pendingEmit;
       const isConditionalEmit = this.conditionalEmitIndices.has(emitIndex);
+      const resolveGraphEvent = this.currentFunction.graphEmissionHandler === true
+        && (this.currentFunction.graphEffectFrame?.eventWidth ?? 0) > 1;
+      let resolvedEventOutput: string | undefined;
 
       this.emit(Op.OP_FROMALTSTACK, locationData);
       this.pushToStack(stackName);
@@ -31122,19 +31466,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.popFromStack();
       }
 
-      // 1. Verify output commitment: block layout event offset OP_OUTPUTTOKENCOMMITMENT == encoded blob
-      const blobIdx = this.getStackIndex(stackName);
-      this.emit(encodeInt(BigInt(blobIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
-      this.pushToStack('(value)');
+      if (!resolveGraphEvent) {
+        // 1. Verify output commitment: block layout event offset OP_OUTPUTTOKENCOMMITMENT == encoded blob
+        const blobIdx = this.getStackIndex(stackName);
+        this.emit(encodeInt(BigInt(blobIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.pushToStack('(value)');
 
-      // Compute output index: event block slot + emitIndex
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-      this.pushToStack('(value)');
+        // Compute output index: event block slot + emitIndex
+        this.emitBlockSlotIndex('event', emitIndex, locationData);
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+        this.pushToStack('(value)');
 
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+      }
 
       // 2. Verify output locking bytecode is expected event covenant P2SH32
       // Build the expected covenant redeem script on-stack:
@@ -31202,23 +31548,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(value)');
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
-      this.pushToStack('(value)'); // expected locking bytecode
+      const expectedLockName = `(__graph_event_expected_lock_${emitIndex})`;
+      this.pushToStack(resolveGraphEvent ? expectedLockName : '(value)'); // expected locking bytecode
 
-      // Get actual output locking bytecode
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
-      this.emit(Op.OP_OUTPUTBYTECODE, locationData);
-      this.pushToStack('(value)');
+      if (resolveGraphEvent) {
+        // Capture at the exact frame boundary used by the historical fixed event-index lookup. Building the
+        // expected lock above leaves runtime-only operands live in invoked graph handlers, so caching this before
+        // that work can address a different owner even though the compiler's tracked stack is unchanged.
+        this.emitMasterInputIndex(locationData);
+        this.pushToStack(GRAPH_EVENT_OWNER_LOCAL);
+        resolvedEventOutput = this.emitGraphEventOutputIndex(
+          emitIndex, stackName, expectedLockName, locationData,
+        );
+        const expectedLockIndex = this.getStackIndex(expectedLockName);
+        this.emit(encodeInt(BigInt(expectedLockIndex)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(expectedLockIndex);
+      } else {
+        // Get actual output locking bytecode
+        this.emitBlockSlotIndex('event', emitIndex, locationData);
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.pushToStack('(value)');
 
-      this.emit(Op.OP_EQUALVERIFY, locationData);
-      this.popFromStack(2);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack(2);
+      }
 
       // 3. Verify output token category base matches master's
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
+      this.emitEventOutputIndex(emitIndex, resolvedEventOutput, locationData);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
       this.emitVerifyCatBaseEqMaster(locationData);
 
       // 4. Verify NFT capability is 'none' (no capability byte), not 'mutable' or 'minting'
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
+      this.emitEventOutputIndex(emitIndex, resolvedEventOutput, locationData);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData); // [category_32, empty] for 'none' capability
@@ -31233,7 +31596,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       // 5. Verify FT amount is 0 (prevent FT extraction via event outputs)
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
+      this.emitEventOutputIndex(emitIndex, resolvedEventOutput, locationData);
       this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
       this.pushToStack('(value)');
 
@@ -31244,7 +31607,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       // 6. Verify output satoshi value is bounded (prevent excessive sats locked in event outputs)
-      this.emitBlockSlotIndex('event', emitIndex, locationData);
+      this.emitEventOutputIndex(emitIndex, resolvedEventOutput, locationData);
       this.emit(Op.OP_OUTPUTVALUE, locationData);
       this.pushToStack('(value)');
       this.emit(encodeInt(1200n), locationData); // max 1200 sats (dust for 208-byte max event output = 1068)
@@ -31255,6 +31618,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_VERIFY, locationData);
       this.popFromStack();
 
+      if (resolvedEventOutput !== undefined) {
+        const resolvedIndex = this.getStackIndex(resolvedEventOutput);
+        this.emit(encodeInt(BigInt(resolvedIndex)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(resolvedIndex);
+        const ownerIndex = this.getStackIndex(GRAPH_EVENT_OWNER_LOCAL);
+        this.emit(encodeInt(BigInt(ownerIndex)), locationData);
+        this.emit(Op.OP_ROLL, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.removeFromStack(ownerIndex);
+      }
+
       if (isConditionalEmit && frameShadowed) {
         // SEC-15. Per SLOT, not per route: bind the ordinals this dispatch did not settle. The reached site's
         // window is left to the handler, which really is its authority - inside the subroutine the same
@@ -31264,9 +31640,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitNotTakenEventSlotBinding(emitIndex, locationData);
         this.emit(Op.OP_ENDIF, locationData);
         this.emit(Op.OP_ENDIF, locationData);
-      } else if (isConditionalEmit) {
+      } else if (isConditionalEmit && graphHandlerEventWidth === 0) {
         this.emit(Op.OP_ELSE, locationData);
         this.emitNotTakenEventSlotBinding(emitIndex, locationData);
+        this.emit(Op.OP_ENDIF, locationData);
+      } else if (isConditionalEmit) {
         this.emit(Op.OP_ENDIF, locationData);
       }
     }
@@ -31298,6 +31676,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitNotTakenEventSlotBinding(emitIndex: number, locationData: SingleLocationData): void {
     this.emitBlockSlotIndex('event', emitIndex, locationData);
+    this.emitNotTakenEventAtComputedIndex(locationData);
+  }
+
+  /** Bind an already-computed event output index to an empty commitment when that output exists. */
+  private emitNotTakenEventAtComputedIndex(locationData: SingleLocationData): void {
     // The SDK omits inactive SUFFIX event outputs, so the reserved index may be past the last output. An
     // index that does not exist holds nothing to forge; only check one that does.
     this.emit(Op.OP_DUP, locationData);
@@ -31347,11 +31730,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * model and nothing untracked may sit above it yet.
    */
   private emitGraphFrameSlotUnowned(ordinal: number, locationData: SingleLocationData): void {
-    const siteIdx = this.getStackIndex(GRAPH_EVENT_SITE);
     const width = this.currentFunction.graphEffectFrame?.eventWidth ?? 1;
     const site = Math.floor(ordinal / width);
-    this.emit(encodeInt(BigInt(siteIdx)), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitPickCompilerRouteFrameValue(GRAPH_EVENT_SITE, locationData);
     this.emit(encodeInt(1n << BigInt(site)), locationData);
     this.emit(Op.OP_DIV, locationData);
     this.emit(encodeInt(2n), locationData);
@@ -31394,12 +31775,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (!frame || frame.tokenTransferWidth === 0 || !this.stack.includes(GRAPH_TOKEN_SITE)) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const covered = new Set(this.pendingTokenContainerTransfers.map((transfer) => transfer.transferIndex));
-    const siteIdx = this.getStackIndex(GRAPH_TOKEN_SITE);
     for (let ordinal = 0; ordinal < frame.sites * frame.tokenTransferWidth; ordinal += 1) {
       if (covered.has(ordinal)) continue;
       const site = Math.floor(ordinal / frame.tokenTransferWidth);
-      this.emit(encodeInt(BigInt(siteIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_TOKEN_SITE, locationData);
       this.emit(encodeInt(1n << BigInt(site)), locationData);
       this.emit(Op.OP_DIV, locationData);
       this.emit(encodeInt(2n), locationData);
@@ -31416,12 +31795,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frame = node.graphEffectFrame;
     if (!frame || (frame.deployWidth ?? 0) === 0 || !this.stack.includes(GRAPH_DEPLOY_SITE)) return;
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
-    const maskIndex = this.getStackIndex(GRAPH_DEPLOY_SITE);
     const width = frame.deployWidth!;
     const base = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
     for (let site = 0; site < frame.sites; site += 1) {
-      this.emit(encodeInt(BigInt(maskIndex)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData);
       this.emit(encodeInt(1n << BigInt(site)), locationData);
       this.emit(Op.OP_DIV, locationData);
       this.emit(Op.OP_2, locationData);
@@ -32495,8 +32872,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Declaration-only/stateless compatibility paths can retain source return types without receiving the
     // stateful return-NFT witness pair. Symbol analysis is authoritative: no witness means no return covenant.
     if (returnOutputIdxIdx < 0) return;
-    this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
-    this.emit(Op.OP_PICK, locationData);
+    this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', locationData);
     // Stack: [_returnOutputIdx] (1 untracked)
 
     this.emit(Op.OP_DUP, locationData);
@@ -32507,30 +32883,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Cross-contract call: verify return event UTXO at _returnOutputIdx
     // 1. Verify commitment matches __returnBlob
-    const blobIdx = this.getStackIndex('__internal__returnBlob');
-    this.emit(encodeInt(BigInt(blobIdx + 1)), locationData); // +1 for untracked _returnOutputIdx
-    this.emit(Op.OP_PICK, locationData);
+    this.emitPickCompilerRouteFrameValue('__internal__returnBlob', locationData, 1);
     // Stack: [_returnOutputIdx, __returnBlob_copy] (2 untracked)
 
-    if (this.isCompilerMessageBusRoute(node)) {
-      // A participant can aggregate several independently bounded handler results. Their canonical outer bytes
-      // push may exceed CashTokens' 128-byte NFT commitment ceiling even though every individual result and the
-      // complete route stack item are valid. Commit oversized vectors by hash, but transform only this COPY: the
-      // raw compiler-framed vector remains in the tracked route frame for typed fixed-point discovery.
-      this.emit(Op.OP_DUP, locationData);
-      this.emit(Op.OP_SIZE, locationData);
-      this.emit(Op.OP_NIP, locationData);
-      this.emit(encodeInt(128n), locationData);
-      this.emit(Op.OP_GREATERTHAN, locationData);
-      this.emit(Op.OP_IF, locationData);
-      this.emit(Op.OP_SHA256, locationData);
-      this.emit(Op.OP_ENDIF, locationData);
-    }
-
-    // Read actual output commitment at _returnOutputIdx
-    this.emit(Op.OP_OVER, locationData); // [_returnOutputIdx, blob, _returnOutputIdx]
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData); // [_returnOutputIdx, blob, actual_commitment]
-    this.emit(Op.OP_EQUALVERIFY, locationData); // [_returnOutputIdx]
+    // A canonical ABI result can exceed CashTokens' 128-byte NFT commitment ceiling (for example, five static
+    // ABI words). Keep one raw copy for non-broadcast dependency probes, and transform the comparison copy to its
+    // hash. Production BCH rejects the oversized raw NFT representation at consensus; accepting it here lets an
+    // isolated caller probe decode the value before the final compiler route carries those raw bytes in its
+    // authenticated result frame and materializes only the hash-sized NFT.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(128n), locationData);
+    this.emit(Op.OP_GREATERTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // Stack: [_returnOutputIdx, raw]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SHA256, locationData);
+    // Read actual output commitment at _returnOutputIdx. The oversized branch accepts hash(raw)==actual OR
+    // raw==actual, with the latter useful only in relaxed, non-broadcast dependency probes.
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+    // Stack: [_returnOutputIdx, raw, comparison, actual]
+    this.emit(Op.OP_2DUP, locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_TOALTSTACK, locationData); // alt: [comparison_matches]
+    this.emit(Op.OP_TOALTSTACK, locationData); // alt: [comparison_matches, actual]
+    this.emit(Op.OP_DROP, locationData);       // drop comparison
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);      // [_returnOutputIdx, raw_matches]
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_BOOLOR, locationData);
+    this.emit(Op.OP_VERIFY, locationData);     // [_returnOutputIdx]
+    this.emit(Op.OP_ELSE, locationData);
+    // Ordinary returns retain their historical exact comparison, including its trace shape for SDK derivation.
+    this.emit(Op.OP_OVER, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
 
     // 2. Verify output token category matches master's category
     this.emit(Op.OP_DUP, locationData);
@@ -33076,7 +33467,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     _debugEnv: Record<string, string | undefined> | undefined, node: FunctionDefinitionNode,
   ): boolean {
     return this.compilerOptions.ownerAltAnchor === true
-      && node.messageBusOwnerIsLastArgument === true
+      && (node.messageBusOwnerIsLastArgument === true || node.graphEmissionHandler === true)
       && node.parameters.some((parameter) => parameter.name === MESSAGE_BUS_OWNER_INPUT);
   }
 
@@ -33130,6 +33521,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DEPTH, locationData);
     this.emit(encodeInt(BigInt(bottomOrdinalPlusOne)), locationData);
     this.emit(Op.OP_SUB, locationData);
+    this.emitReplaceAtDynamicDepth(locationData);
+  }
+
+  /** Replace the indexed item with the value below a dynamic top-relative depth currently on top. */
+  private emitReplaceAtDynamicDepth(locationData: SingleLocationData): void {
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_1ADD, locationData);
     this.emit(Op.OP_ROLL, locationData);
@@ -33339,6 +33735,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private debugComputeBase(branch: string, name: string, index: number, extraStackOffset: number): number {
     if (!DEBUG_COMPUTE_BASE) return -1;
+    const debugTarget = (globalThis as { process?: { env?: Record<string, string> } })
+      .process?.env?.SOLIDC_DEBUG_COMPUTE_BASE_TARGET;
+    if (debugTarget && !this.currentFunction.name.includes(debugTarget)) return -1;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process
+      ?.env?.SOLIDC_DEBUG_COMPUTE_BASE_ANCHOR_ONLY === '1'
+      && this.getStackIndex(OWNER_ANCHOR_LOCAL, true) < 0) return -1;
     const site = this.computeBaseSiteOrdinal++;
     const neighbours = new Map<string, number>();
     for (const candidate of [
@@ -33381,6 +33783,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       above: this.stack.slice(Math.max(0, index - 2), index + 3),
       neighbours: [...neighbours.entries()],
       stackTop: this.stack.slice(0, 28),
+      callerBandNames: this.currentFunction.messageBusCallerBandNames,
+      ownerBandOrdinal: this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT),
+      ownerAnchorIndex: this.getStackIndex(OWNER_ANCHOR_LOCAL, true),
     }));
     return site;
   }
@@ -33404,13 +33809,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // addressing form. See DBG-COMPUTE-BASE / SOLIDC_DEBUG_COMPUTE_BASE.
       const ownerName = this.messageBusParticipantOwnerName() ?? MESSAGE_BUS_OWNER_INPUT;
       const trackedOwnerIndex = this.getStackIndex(ownerName, true);
-      if (this.currentFunction.messageBusOwnerAltAnchor === true) {
-        // Re-read the entry-time capture without consuming it. The flag is reset at the start of every emission of
-        // this function, so a stream that never captured the owner keeps its ordinary addressing.
-        this.emit(Op.OP_FROMALTSTACK, locationData);
-        this.emit(Op.OP_DUP, locationData);
-        this.emit(Op.OP_TOALTSTACK, locationData);
-        this.pushToStack('(value)');
+      const trackedOwnerAnchorIndex = this.getStackIndex(OWNER_ANCHOR_LOCAL, true);
+      if (trackedOwnerAnchorIndex >= 0) {
+        // The entry-time copy is an ordinary tracked local. Unlike an alt-stack anchor, nested helpers and
+        // compiler rotations cannot hide or reorder it without the frame model observing the same operation.
+        this.emit(encodeInt(BigInt(trackedOwnerAnchorIndex + extraStackOffset)), locationData);
+        this.emit(Op.OP_PICK, locationData);
       } else if (trackedOwnerIndex >= 0) {
         // A GRAPH row handler is invoked from the generated row loop, whose runtime-only operands (the authenticated
         // caller, cursor/emitter locals and the settlement witnesses the loop keeps live) sit ABOVE the handler's
@@ -33465,7 +33869,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           trackedOwnerIndex, extraStackOffset,
         );
         this.emitComputeBaseSiteMarker(locationData, ownerSite);
-        const bandOwnerOrdinal = graphRowHandler && ownerName === MESSAGE_BUS_OWNER_INPUT
+        const bandOwnerOrdinal = graphRowHandler
+          && ownerName === MESSAGE_BUS_OWNER_INPUT
           ? this.declaredBandOrdinal(MESSAGE_BUS_OWNER_BAND_INPUT) : undefined;
         if (bandOwnerOrdinal !== undefined) {
           // The route ABI band is stable while invoked handler frames and their live operands are not.
@@ -33499,9 +33904,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // The route entry authenticated this owner witness before executing any handler. Its aggregate frame can
           // leave runtime-only operands above the tracked ABI values, so recover the witness by stable bottom
           // ordinal rather than guessing a physical distance from the executor's active input.
-          this.debugComputeBase('route-entry', '__internal__proxyMasterIndex',
-            this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
-          this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
+          const routeAnchorIndex = this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true);
+          if (routeAnchorIndex >= 0) {
+            this.debugComputeBase('route-entry-anchor', PROXY_MASTER_ANCHOR_LOCAL,
+              routeAnchorIndex, extraStackOffset);
+            this.emit(encodeInt(BigInt(routeAnchorIndex + extraStackOffset)), locationData);
+            this.emit(Op.OP_PICK, locationData);
+          } else {
+            this.debugComputeBase('route-entry', '__internal__proxyMasterIndex',
+              this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
+            this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
+          }
         } else {
           // Ordinary delegate executors have the compact physical relation authenticated at entry.
           this.emit(Op.OP_INPUTINDEX, locationData);

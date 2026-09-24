@@ -3749,6 +3749,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 argSources: slot.argSources,
                 occurrence,
                 ...(slot.condition && { condition: slot.condition }),
+                ...(slot.callValueEffect && { callValueEffect: true }),
                 sourceCallNode: slot.sourceCallNode,
               };
             });
@@ -4666,6 +4667,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof StateAssignNode || node instanceof AssignNode || node instanceof ExpressionStatementNode) {
       this.collectTransferStatements(node.expression, transferInfos, seen);
     }
+    if (node instanceof MethodCallStatementNode && node.expression instanceof Node) {
+      this.collectTransferStatements(node.expression, transferInfos, seen);
+    }
     if (node instanceof TupleAssignmentNode) {
       if (node.tupleExpressions) {
         for (const expression of node.tupleExpressions) {
@@ -4816,6 +4820,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node instanceof TryCatchNode) {
       startIndex = this.assignTransferIndices(node.expression, startIndex);
       return this.assignTransferIndices(node.tryBlock, startIndex);
+    }
+    if (node instanceof MethodCallStatementNode && node.expression instanceof Node) {
+      return this.assignTransferIndices(node.expression, startIndex);
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
@@ -6094,7 +6101,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           existing.arrayMutation = 'mixed';
         }
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
-        if (alreadyWrote) existing.valueSource = valueSource;
+        const repeatedEffect = node.sourceEffectOrdinal !== undefined
+          && existing.mutationEffectOrdinals?.includes(node.sourceEffectOrdinal) === true;
+        if (alreadyWrote && !repeatedEffect) existing.valueSource = valueSource;
         else if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
         if (node.sourceEffectOrdinal !== undefined
           && !existing.mutationEffectOrdinals?.includes(node.sourceEffectOrdinal)) {
@@ -8823,6 +8832,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(node.callInfo.interfaceName.startsWith('__FnPtr_') && { fnPtrCall: true }),
         ...(node.runtimeSelector && { runtimeSelector: node.runtimeSelector }),
         ...(node.opaqueReturn && { opaqueReturn: true }),
+        ...(hasEffectiveCallValue(node.callOptions?.value) && { callValueEffect: true }),
         ...(callMode && callMode !== ExternalCallMode.REGULAR && { callMode }),
         ...(node.callInfo.hasReturnValues && {
           hasReturnValues: true,
@@ -9755,7 +9765,14 @@ export default class SymbolTableTraversal extends AstTraversal {
         continue;
       }
       if (expr instanceof InstantiationNode || expr instanceof FunctionCallNode) {
-        source = this.composeStructCtorNet(name, expr, source) ?? this.canonicalizeExpression(expr);
+        const composed = this.composeStructCtorNet(name, expr, source);
+        // A struct constructor can contain a local whose value is reassigned by control flow or an external-call
+        // result. `composeStructCtorNet` deliberately rejects that operand; falling back to the general canonical
+        // form would resolve the local through `localKeyDefs`, which retains only its declaration initializer and
+        // would publish a plausible but stale off-chain recipe. Leave the value VM-derived when precise struct
+        // reconstruction fails. Non-struct calls retain their existing canonical fallback.
+        if (composed === undefined && this.structMap.has(expr.identifier.name)) return undefined;
+        source = composed ?? this.canonicalizeExpression(expr);
         continue;
       }
       const direct = atom(expr);
@@ -9839,6 +9856,26 @@ export default class SymbolTableTraversal extends AstTraversal {
    * The SDK adds C to the current entry tail (`entry` is the on-chain value, not a function argument).
    */
   private mappingRmwLiteralDelta(node: MappingAssignNode): string | undefined {
+    const target = `map:${node.collection?.name ?? node.name}(`
+      + `${node.keys.map((key) => this.canonicalizeExpression(key)).join(',')})`;
+    const canonical = this.canonicalizeExpression(node.expression);
+    const canonicalBinop = canonical.match(/^binop:([+-])\((.*)\)$/);
+    if (canonicalBinop) {
+      const pair = this.splitTopLevelCanonical(canonicalBinop[2]);
+      const operand = (candidate: string): string | undefined => {
+        if (/^lit:-?[0-9]+$/.test(candidate)) return candidate;
+        const parameter = candidate.match(/^id:([A-Za-z_][\w]*)$/)?.[1];
+        return parameter !== undefined
+          && this.currentFunction?.parameters.some((item) => item.name === parameter) === true
+          ? candidate : undefined;
+      };
+      if (pair?.[0] === target && operand(pair[1]) !== undefined) {
+        return `binop:${canonicalBinop[1]}(entry,${operand(pair[1])})`;
+      }
+      if (canonicalBinop[1] === '+' && pair?.[1] === target && operand(pair[0]) !== undefined) {
+        return `binop:+(entry,${operand(pair[0])})`;
+      }
+    }
     const sameKey = (access: ExpressionNode): boolean => {
       if (!(access instanceof MappingAccessNode)) return false;
       if ((access.collection?.name ?? access.name) !== (node.collection?.name ?? node.name)) return false;
@@ -9847,25 +9884,45 @@ export default class SymbolTableTraversal extends AstTraversal {
         this.canonicalizeExpression(key) === this.canonicalizeExpression(node.keys[index])
       ));
     };
-    const literalDelta = (expr: ExpressionNode): { op: '+' | '-'; mag: bigint } | undefined => {
+    const directDelta = (expr: ExpressionNode): { op: '+' | '-'; mag?: bigint; param?: string } | undefined => {
       if (!(expr instanceof BinaryOpNode) || (expr.operator !== '+' && expr.operator !== '-')) return undefined;
-      let literal: IntLiteralNode | undefined;
-      if (sameKey(expr.left) && expr.right instanceof IntLiteralNode) literal = expr.right;
-      else if (expr.operator === '+' && sameKey(expr.right) && expr.left instanceof IntLiteralNode) {
-        literal = expr.left;
+      const parameter = (candidate: ExpressionNode): string | undefined => {
+        if (!(candidate instanceof IdentifierNode)) return undefined;
+        const canonical = this.canonicalizeExpression(candidate).match(/^id:([A-Za-z_][\w]*)$/)?.[1];
+        return canonical !== undefined
+          && this.currentFunction?.parameters.some((item) => item.name === canonical) === true
+          ? canonical : undefined;
+      };
+      if (sameKey(expr.left) && expr.right instanceof IntLiteralNode) {
+        return { op: expr.operator, mag: expr.right.value };
       }
-      return literal === undefined ? undefined : { op: expr.operator, mag: literal.value };
+      if (sameKey(expr.left) && parameter(expr.right) !== undefined) {
+        return { op: expr.operator, param: parameter(expr.right) };
+      }
+      else if (expr.operator === '+' && sameKey(expr.right) && expr.left instanceof IntLiteralNode) {
+        return { op: '+', mag: expr.left.value };
+      }
+      if (expr.operator === '+' && sameKey(expr.right) && parameter(expr.left) !== undefined) {
+        return { op: '+', param: parameter(expr.left) };
+      }
+      return undefined;
     };
-    const direct = literalDelta(node.expression);
-    if (direct) return `binop:${direct.op}(entry,lit:${direct.mag.toString()})`;
+    const direct = directDelta(node.expression);
+    if (direct) {
+      const operand = direct.param === undefined ? `lit:${direct.mag!.toString()}` : `id:${direct.param}`;
+      return `binop:${direct.op}(entry,${operand})`;
+    }
     if (!(node.expression instanceof IdentifierNode) || !this.currentFunction) return undefined;
     const local = node.expression.name;
     const deltas: Array<{ op: '+' | '-'; mag?: bigint; param?: string }> = [];
     let sawForeign = false;
-    const isParamIdent = (expression: ExpressionNode): expression is IdentifierNode => (
-      expression instanceof IdentifierNode
-      && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
-    );
+    const parameterName = (expression: ExpressionNode): string | undefined => {
+      if (!(expression instanceof IdentifierNode)) return undefined;
+      const canonical = this.canonicalizeExpression(expression).match(/^id:([A-Za-z_][\w]*)$/)?.[1];
+      return canonical !== undefined
+        && this.currentFunction?.parameters.some((parameter) => parameter.name === canonical) === true
+        ? canonical : undefined;
+    };
     const identifierDelta = (
       expr: ExpressionNode,
     ): { op: '+' | '-'; mag?: bigint; param?: string } | undefined => {
@@ -9875,14 +9932,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (leftId === local && expr.right instanceof IntLiteralNode) {
         return { op: expr.operator, mag: expr.right.value };
       }
-      if (leftId === local && isParamIdent(expr.right)) {
-        return { op: expr.operator, param: expr.right.name };
+      const rightParam = parameterName(expr.right);
+      if (leftId === local && rightParam !== undefined) {
+        return { op: expr.operator, param: rightParam };
       }
       if (expr.operator === '+' && rightId === local && expr.left instanceof IntLiteralNode) {
         return { op: '+', mag: expr.left.value };
       }
-      if (expr.operator === '+' && rightId === local && isParamIdent(expr.left)) {
-        return { op: '+', param: expr.left.name };
+      const leftParam = parameterName(expr.left);
+      if (expr.operator === '+' && rightId === local && leftParam !== undefined) {
+        return { op: '+', param: leftParam };
       }
       return undefined;
     };
@@ -14646,7 +14705,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const graphRawValueCall = node.methodName === 'call'
           && graphRawCallsRequested
           && node.callOptions?.value !== undefined
-          && node.callOptions.gas === undefined && node.callOptions.salt === undefined;
+          && node.callOptions.salt === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
           && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
@@ -14657,6 +14716,9 @@ export default class SymbolTableTraversal extends AstTraversal {
           callNode.opaqueReturn = true;
           if (graphRawValueCall) {
             callNode.callOptions = node.callOptions;
+            // `gas` is an inert Solidity compatibility hint on BCH; the authenticated value effect binds the
+            // only transaction-visible option (recipient and amount).
+            callNode.callOptions!.gas = undefined;
             callNode.valueTransferIndex = node.valueTransferIndex;
             callNode.callOptions!.value = this.visit(callNode.callOptions!.value!) as ExpressionNode;
             callNode.rawValueTransferOnly = hasEffectiveCallValue(callNode.callOptions?.value)
@@ -14934,15 +14996,18 @@ export default class SymbolTableTraversal extends AstTraversal {
    * call rather than a low-level call from the start. Gated on message-bus graph mode: the direct route keeps
    * its fire-and-forget block-slot form, whose co-spend the SDK supplies via `.withExternalCall()`.
    *
-   * Only the shape `LowLevelCallShapes` admits is lowered - option-free `call`/`staticcall` on an address
-   * receiver. A call option, a `delegatecall` (a delegate participant edge with its own authority argument), or
-   * a non-address receiver is left alone for its own diagnostic.
+   * Only the shapes `LowLevelCallShapes` admits are lowered: option-free `call`/`staticcall`, plus a regular
+   * call carrying an authenticated value transfer and an optional inert gas hint. A different call option, a
+   * `delegatecall` (a delegate participant edge with its own authority argument), or a non-address receiver is
+   * left alone for its own diagnostic.
    */
   private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): MethodCallStatementNode | undefined {
     const messageBusGraphMode = !!this.compilerOptions.messageBus;
     if (!messageBusGraphMode) return undefined;
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
-    if (node.callOptions) return undefined;
+    const valueCall = node.callMode === 'call'
+      && node.callOptions?.value !== undefined && node.callOptions.salt === undefined;
+    if (node.callOptions && !valueCall) return undefined;
     const receiver = node.targetExpression;
     const receiverName = receiver instanceof IdentifierNode ? receiver.name : undefined;
     const isAddressNullary = receiver instanceof NullaryOpNode
@@ -14960,6 +15025,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     callNode.sourceActivationConditions = node.sourceActivationConditions;
     callNode.opaqueReturn = true;
     callNode.discardedOpaqueReturn = true;
+    if (valueCall) {
+      callNode.callOptions = node.callOptions;
+      callNode.callOptions!.gas = undefined;
+      callNode.valueTransferIndex = node.valueTransferIndex;
+      callNode.rawValueTransferOnly = hasEffectiveCallValue(callNode.callOptions?.value)
+        && node.data instanceof StringLiteralNode && node.data.value.length === 0;
+    }
     callNode.callInfo = {
       interfaceName: '__raw__',
       functionName: '__raw__',
@@ -14988,8 +15060,8 @@ export default class SymbolTableTraversal extends AstTraversal {
    * `lowLevelCalls[]` row instead. Besides making equivalent programs depend on their helper boundary, that row
    * carries no decoded selector/argument edge for atomic composition. Keep one representation in graph mode.
    *
-   * The accepted call-option shape mirrors visitMethodCall: a regular call may carry only `{value: ...}`. Gas,
-   * salt, delegatecall, and every other low-level shape retain their existing fail-closed path.
+   * The accepted call-option shape mirrors visitMethodCall: a regular call may carry `{value: ...}` and an
+   * optional inert gas hint. Salt, delegatecall, and every other low-level shape retain their fail-closed path.
    */
   private lowerReturningRawCallToGraphEdge(node: LowLevelCallNode): ExternalFunctionCallNode | undefined {
     const messageBusMode = (this.compilerOptions as CompilerOptions & {
@@ -15000,7 +15072,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
     const valueCall = node.callMode === 'call'
       && node.callOptions?.value !== undefined
-      && node.callOptions.gas === undefined
       && node.callOptions.salt === undefined;
     if (node.callOptions && !valueCall) return undefined;
 
@@ -15020,6 +15091,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
     };
     call.callOptions = node.callOptions;
+    if (call.callOptions) call.callOptions.gas = undefined;
     call.valueTransferIndex = node.valueTransferIndex;
     call.rawValueTransferOnly = valueCall && hasEffectiveCallValue(call.callOptions?.value)
       && node.data instanceof StringLiteralNode && node.data.value.length === 0;
@@ -15164,18 +15236,71 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (inner instanceof FunctionCallNode && resolvedHandler(inner)) loopDispatch = true;
       });
     });
+    if (!loopDispatch) {
+      // Semantic call resolution may replace a generated FunctionCallNode and thereby drop compiler-private
+      // annotations. The unrolled route's source-of-truth survives that rewrite: every logical row is enclosed
+      // by its generated `if (rowCount > N)` guard. Re-derive the row identity at the final planning boundary.
+      walkInvocationAst(route.body, (candidate) => {
+        if (!(candidate instanceof BranchNode)
+          || !(candidate.condition instanceof BinaryOpNode)
+          || candidate.condition.operator !== BinaryOperator.GT
+          || !(candidate.condition.left instanceof IdentifierNode)
+          || candidate.condition.left.name !== 'rowCount'
+          || !(candidate.condition.right instanceof IntLiteralNode)) return;
+        const row = Number(candidate.condition.right.value);
+        if (!Number.isSafeInteger(row) || row < 0) return;
+        walkInvocationAst(candidate.ifBlock, (inner) => {
+          if (inner instanceof FunctionCallNode && resolvedHandler(inner)) {
+            inner.messageBusDispatchRow = row;
+          }
+        });
+      });
+      // Fixed-size standalone resource routes use one top-level block per row rather than a rowCount guard.
+      // Enumerate only blocks which actually contain a framed handler, so route preamble blocks cannot shift it.
+      let fixedRow = 0;
+      for (const statement of route.body.statements ?? []) {
+        if (!(statement instanceof BlockNode)) continue;
+        const calls: FunctionCallNode[] = [];
+        walkInvocationAst(statement, (inner) => {
+          if (inner instanceof FunctionCallNode && resolvedHandler(inner)) calls.push(inner);
+        });
+        if (calls.length === 0) continue;
+        for (const call of calls) call.messageBusDispatchRow ??= fixedRow;
+        fixedRow += 1;
+      }
+    }
+    let explicitSiteCount = 0;
     walkInvocationAst(route.body, (candidate) => {
       if (!(candidate instanceof FunctionCallNode)) return;
       const target = resolvedHandler(candidate);
       if (!target) return;
-      const ordinal = siteCounts.get(target) ?? 0;
+      const ordinal = loopDispatch
+        ? (siteCounts.get(target) ?? 0)
+        : candidate.messageBusDispatchRow ?? (siteCounts.get(target) ?? 0);
       candidate.graphEffectSite = ordinal;
       if (loopDispatch) candidate.graphEffectSiteFromRow = true;
+      if (candidate.messageBusDispatchRow !== undefined) {
+        explicitSiteCount = Math.max(explicitSiteCount, candidate.messageBusDispatchRow + 1);
+      }
       siteCounts.set(target, ordinal + 1);
     });
     const sites = loopDispatch
       ? (route.messageBusMaximumRows ?? Math.max(0, ...siteCounts.values()))
-      : Math.max(0, ...siteCounts.values());
+      : Math.max(explicitSiteCount, ...siteCounts.values());
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_GRAPH_SITES === '1') {
+      let tagged = 0;
+      let untagged = 0;
+      walkInvocationAst(route.body, (candidate) => {
+        if (!(candidate instanceof FunctionCallNode) || !resolvedHandler(candidate)) return;
+        if (candidate.messageBusDispatchRow === undefined) untagged += 1;
+        else tagged += 1;
+      });
+      console.error('graph-effect-sites', {
+        route: route.name, sites, explicitSiteCount, tagged, untagged,
+        counts: [...siteCounts].map(([handler, count]) => [handler.name, count]),
+      });
+    }
     if (sites === 0) return;
     // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
     // under a LOOP parser that does not thread the runtime `row` as the effect-site ordinal: one syntactic

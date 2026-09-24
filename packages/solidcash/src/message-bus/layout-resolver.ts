@@ -1414,7 +1414,10 @@ export function resolveComposeTransactionLayoutAuthority(params: {
         });
       }
     }
-    if (claim.dynChunkCount !== undefined && claim.dynChunkCount > 0) {
+    // Include zero-width dyn bands so `__internal__dynamicChunkInputBase` still resolves to
+    // inputBase+trailingBase (empty trailing marker). Omitting count===0 left unlockers with the
+    // provisional local trailingBase and caused transaction layout authority dyn-base drift (e.g. 53 vs publishedBase+53).
+    if (claim.dynChunkCount !== undefined) {
       dynamicBandClaims.push({
         participant: claim.participant,
         chunkCount: claim.dynChunkCount,
@@ -1593,7 +1596,7 @@ export type ParticipantAbsoluteWitnesses = ReturnType<typeof resolveParticipantA
  * `__internal__vmapBatchPredOut_*` **only** through this helper so unit tests can drive the
  * shipped fill path without inventing a second oracle.
  *
- * validate-all-then-write: Validate-all-then-write — stage every intended mutation first; commit only after every
+ * validate-all-then-write: validate-all-then-write — stage every intended mutation first; commit only after every
  * slot validates. A late failure leaves earlier params untouched.
  */
 export function applyParticipantAbsoluteWitnesses(args: {
@@ -1605,6 +1608,8 @@ export function applyParticipantAbsoluteWitnesses(args: {
     'dynamicChunkInputBase' | 'valueChunkOutputBase' | 'predOuts'
   >;
   participant?: number;
+  /** Restrict an alias update to the witness slots it actually delegates to this resolve. */
+  onlyIndices?: readonly number[];
 }): {
   written: Array<{ name: string; index: number; from: string; to: string }>;
 } {
@@ -1616,8 +1621,10 @@ export function applyParticipantAbsoluteWitnesses(args: {
 
   type StagedWrite = { index: number; name: string; from: string; to: bigint };
   const staged: StagedWrite[] = [];
+  const onlyIndices = args.onlyIndices === undefined ? undefined : new Set(args.onlyIndices);
 
   for (const [index, input] of args.inputs.entries()) {
+    if (onlyIndices !== undefined && !onlyIndices.has(index)) continue;
     if (input.name === '__internal__dynamicChunkInputBase') {
       if (args.witnesses.dynamicChunkInputBase === undefined) {
         // Slot present but this frame did not claim a dyn band (inactive / absent).

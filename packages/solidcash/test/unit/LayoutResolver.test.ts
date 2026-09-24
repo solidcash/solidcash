@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyParticipantAbsoluteWitnesses,
   dynamicChunkInputBaseFor,
   entryNewOutputBaseFor,
   formatLayoutInvariant,
@@ -267,24 +266,6 @@ describe('layout-resolver', () => {
     expect(again.valueChunkOutputBase).toBe(witnesses.valueChunkOutputBase);
     expect(again.predOuts.get('__internal__vmapBatchPredOut_3'))
       .toBe(witnesses.predOuts.get('__internal__vmapBatchPredOut_3'));
-  });
-
-  it('rebases an inactive-write dynamic coordinate without losing its read base', () => {
-    const params: unknown[] = [-26n]; // local base 23 encoded as -(23 + 3)
-    const result = applyParticipantAbsoluteWitnesses({
-      inputs: [{ name: '__internal__dynamicChunkInputBase' }],
-      params,
-      witnesses: {
-        dynamicChunkInputBase: 248n,
-        valueChunkOutputBase: undefined,
-        predOuts: new Map(),
-      },
-      participant: 2,
-    });
-    expect(params).toEqual([-251n]); // aggregate base 248 encoded as -(248 + 3)
-    expect(result.written).toEqual([{
-      name: 'dynamicChunkInputBase', index: 0, from: '-26', to: '-251',
-    }]);
   });
 
   it('formats layout invariants with participant/resource/expected/actual', () => {

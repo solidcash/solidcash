@@ -508,7 +508,12 @@ export function getCachedSortedList(
 
 /** The empty-map genesis entry: HEAD[slot 0 | nextKey 0 (+inf)]. */
 export function headSentinelCommitment(): Uint8Array {
-  return encodeEntryCommitment(ZERO_SLOT, ZERO_SLOT);
+  // Pad the empty value to 64 zero bytes so the commitment is a full 128-byte entry
+  // (slot||next||empty-value-pad). Covenants that OP_SPLIT fixed offsets past slot||next
+  // (e.g. 96) reject a bare 64-byte HEAD; isEmptyValueEntryCommitment recognizes this pad.
+  const out = new Uint8Array(SLOT_BYTES * 2 + 64);
+  out.set(encodeEntryCommitment(ZERO_SLOT, ZERO_SLOT), 0);
+  return out;
 }
 
 export { binToHex };

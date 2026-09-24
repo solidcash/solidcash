@@ -37,6 +37,12 @@ const artifactFor = (parts: {
     stateLayout: {
       dataNftCount: 0,
       variables: [],
+      ...(parts.valueType === 'Record' && {
+        structs: [{
+          name: 'Record',
+          fields: [{ name: 'owner', type: 'bytes' }, { name: 'enabled', type: 'bool' }],
+        }],
+      }),
       collections: [{
         name: collectionName,
         signature: `${collectionName}:mapping(${keyTypes.join(' => ')} => ${parts.valueType ?? 'uint256'})`,
@@ -105,6 +111,32 @@ describe('directMappingReadPlan', () => {
       _deriveReturnValue: (name: string, args: unknown[]) => Promise<unknown>;
     })._deriveReturnValue('quotaOf', [Uint8Array.of(1), Uint8Array.of(2)]);
     expect(result).toBe(41n);
+  });
+
+  it('reads a compiler-proven struct mapping by its numeric key', async () => {
+    const artifact = artifactFor({
+      functionName: 'recordOf', collectionName: 'records', keyParams: ['id'],
+      keyTypes: ['uint256'], valueType: 'Record', outputType: 'Record',
+      inputs: [
+        { name: 'id', type: 'uint256' },
+        { name: '__internal__returnOutputIdx', type: 'bigint' },
+      ],
+    });
+    const value = { owner: Uint8Array.of(1, 2), enabled: true };
+    const contract = Object.create(StatefulContract.prototype) as StatefulContract;
+    Object.assign(contract as unknown as Record<string, unknown>, {
+      _inner: { artifact, provider: {} },
+      getEntries: async (collection: string) => collection === 'records' ? [{
+        key: 7n, value,
+      }] : [],
+    });
+
+    expect(directMappingReadPlan(artifact, 'recordOf')).toEqual({
+      collection: 'records', keyArgumentIndices: [0], keyTypes: ['uint256'],
+    });
+    await expect((contract as unknown as {
+      _deriveReturnValue: (name: string, args: unknown[]) => Promise<unknown>;
+    })._deriveReturnValue('recordOf', [7n])).resolves.toMatchObject(value);
   });
 
   it('fails closed for ambiguous accesses, writes, and incompatible types', () => {

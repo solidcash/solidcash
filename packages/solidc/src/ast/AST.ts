@@ -460,6 +460,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned message-bus handler mapping from its function-local entry
    * slot ordinals to the enclosing route's physical participant slots. */
   messageBusPhysicalEntrySlots?: number[];
+  /** Route-slot projection for compiler-owned entry witness parameters. A lowered clone can intentionally own
+   * no fixed entry slots while still forwarding the source handler's local witness ABI. */
+  messageBusPhysicalEntryArgumentSlots?: number[];
   /** Fixed route-slot choices for each function-local entry. The first slot is messageBusPhysicalEntrySlots[i];
    * later slots are compiler-authenticated tuple alternatives, never maximum-row copies. */
   messageBusPhysicalEntrySlotAlternatives?: number[][];
@@ -907,6 +910,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
+  /** This graph handler owns the admitted raw-call `{ value: ... }` edge. */
+  graphRawCallValueEffect?: boolean;
   /** This function, or a named internal callee, reads chunk-backed dynamic state. Its first physical chunk input
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
@@ -1781,6 +1786,10 @@ export class FunctionCallNode extends ExpressionNode {
   graphEffectSite?: number;
   // Kernel row loop: the dispatch-site ordinal is the runtime `row` iterator, not a compile-time copy count.
   graphEffectSiteFromRow?: boolean;
+  // Compiler-generated legacy-unroll route: every mutually exclusive handler call emitted for one logical row
+  // carries that row's stable ordinal. Graph-effect planning uses it instead of counting each handler's calls
+  // independently (different handler kinds in distinct rows can both be the Nth call of their kind).
+  messageBusDispatchRow?: number;
   /** Stable first recovery-effect ordinal contributed by this source call within its defining function.
    * A call to a helper contributes the helper's complete formal recovery sequence at this position. */
   recoveryEffectOrdinal?: number;
@@ -2845,6 +2854,8 @@ export interface ExternalCallSlot {
   rawParameterTypes?: Type[];
   rawSelector?: Uint8Array;
   rawInterfaceName?: string;
+  /** The source call carries an effective `{ value: ... }` transfer. Retained independently of cloned AST nodes. */
+  callValueEffect?: boolean;
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
   // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).
@@ -2873,6 +2884,8 @@ export interface ExternalCallSlot {
     /** Compiler-serialized predicate guarding this logical row. */
     condition?: ExternalCallExpression;
     opaqueReturn?: boolean;
+    /** The logical source call carries an effective `{ value: ... }` transfer. */
+    callValueEffect?: boolean;
     returnTypes?: Type[];
     /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */
     eager?: boolean;

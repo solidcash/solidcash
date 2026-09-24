@@ -8,6 +8,7 @@ export * from './diagnostics.js';
 export * from './graph.js';
 export * from './layout-resolver.js';
 export * from './layout-sentinels.js';
+export * from './kernel-brands.js';
 export * from './handler-frame-abi.js';
 export * from './kernel-execution-plan.js';
 export * from './monotone-lattice.js';

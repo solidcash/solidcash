@@ -272,14 +272,10 @@ export function assertConvergedFinalTransaction(
       // or mutate planned outputs via `_repairComputedChunkOutput`. Explicit `devOracle` retains
       // the legacy repair-as-planner loop.
       if (!allowsFinalizationVmRepairs()) {
-        // Always throws under recipe (current branch). Preserve original covenant failure in the message.
-        try {
-          refuseFinalizationVmRepairsIfRecipe();
-        } catch (gateError) {
-          const gate = gateError instanceof Error ? gateError.message : String(gateError);
-          const reason = error instanceof Error ? error.message : String(error);
-          throw new Error(`${gate}; covenant failure: ${reason}`);
-        }
+        // Validator-only mode must surface the covenant's actual rejection. The repair gate is an internal
+        // planning constraint, not a replacement for the program error observed by callers.
+        try { refuseFinalizationVmRepairsIfRecipe(); } catch { /* preserve the covenant error below */ }
+        throw error;
       }
       const reason = error instanceof Error ? error.message : String(error);
       const failedInput = reason.match(/input(?: index)? (\d+)/)?.[1];

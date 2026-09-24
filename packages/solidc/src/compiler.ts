@@ -6640,6 +6640,10 @@ function synthesizeMessageBusRoute(
           // physical slots of one invocation. That is not a 2-row resource template and must not set
           // `resourceShapedHandler` or `_rN` copies. Legacy keeps the compact two-row resource batch.
           const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
+            && graphTailHandlers.size === 0 && !compilerOptions.messageBusGraphContext
+            && !graphTailCallEligible
+            && !(fn.returnTypes.length > 0
+              && footprint.effects.some((effect) => effect === 'events' || effect === 'value'))
             && [...directKeys.values()].every((alternatives) =>
               alternatives.every((indices) => indices.every((index) => index >= -2)));
           if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
@@ -6663,8 +6667,20 @@ function synthesizeMessageBusRoute(
                 routeKeyWitnessCoordinates.set(routeInput, {
                   collection: collectionName, keyIndex, alternativeIndex,
                 });
-                if (keyWitnesses.some((binding) =>
-                  binding.routeInput === routeInput && binding.inputIndex === inputIndex)) return;
+                const existingWitness = keyWitnesses.find((binding) =>
+                  binding.routeInput === routeInput && binding.inputIndex === inputIndex);
+                if (existingWitness) {
+                  // A later graph-context pass can widen the same physical key from the compact kernel scalar
+                  // to an authenticated unrolled row witness. Preserve its source identity while upgrading
+                  // cardinality so dispatch checks do not retain an undeclared scalar spelling.
+                  if (perRow) existingWitness.perRow = true;
+                  if (existingWitness.source === undefined) {
+                    if (inputIndex === -2) existingWitness.source = 'msgSender';
+                    else if (inputIndex === -1) existingWitness.source = 'expression';
+                    else if (kernelParamKeyedResource) existingWitness.source = 'argument';
+                  }
+                  return;
+                }
                 keyWitnesses.push({
                   routeInput,
                   inputIndex,
@@ -6930,7 +6946,7 @@ function synthesizeMessageBusRoute(
     // merely share a contract with some unrelated low-level consumer, delegate execution, and calls beneath
     // unresolved control flow. The later graph clone still proves every reached row against the callManifest.
     const authenticatedBoundedLowLevelConsumer = explicitlyEnabledMessageBus
-      && (graphResultStatement || graphTailStatement)
+      && (graphResultStatement || graphTailStatement || graphBoundedRuntimeEligible)
       && statefulExternalCall
       && boundedNamedClosure
       && !graphHasDelegatecall;
@@ -7770,7 +7786,7 @@ function synthesizeMessageBusRoute(
         && hasEffectiveCallValue(node.callOptions?.value)) found = true;
       if (node instanceof MethodCallNode && node.methodName === 'call'
         && hasEffectiveCallValue(node.callOptions?.value)
-        && node.callOptions.gas === undefined && node.callOptions.salt === undefined) found = true;
+        && node.callOptions.salt === undefined) found = true;
     });
     return found;
   };
@@ -13258,7 +13274,9 @@ function compileResolvedAst(
   }
   // `L.f()` calls to a state-touching (delegate) library -> a delegatecall against the caller's state (with a
   // synthesized library-address constructor arg). See docs/library-contracts.md (3b sugar).
-  if (ast.freeFunctions.length > 0) ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
+  if (ast.freeFunctions.length > 0 || ast.declaredLibraryNames.length > 0) {
+    ast = ast.accept(new SynthesizeLibraryDelegateCalls()) as Ast;
+  }
   // Oracle-backed block.* reads -> injected uint32 state-var registers + desugared state reads.
   const blockOracle = new SynthesizeBlockOracle(
     mergedCompilerOptions.solidityImportCompat ?? false,

@@ -149,7 +149,8 @@ async function run(source: string, headLength: number, tailLength: number): Prom
     provider, contract, artifact.stateLayout!, {}, { saltContract: true },
   );
   const sc = StatefulContract.withCategory(contract, categoryId) as any;
-  await (artifact.abi.some((entry: any) => entry.name === 'seed' && entry.inputs.length === 2)
+  await (artifact.abi.some((entry: any) => entry.name === 'seed'
+      && entry.inputs.filter((input: any) => !input.name.startsWith('__internal__')).length === 2)
     ? sc.seed(bytes(headLength, 0xaa), bytes(tailLength, 0xbb))
     : sc.seed(bytes(headLength, 0xaa))).send();
   return sc.probe(bytes(24, 0xcc)).send()

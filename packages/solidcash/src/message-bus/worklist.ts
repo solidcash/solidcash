@@ -1,10 +1,11 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
 import {
   artifactExecutionIdentityFingerprint,
   scriptToBytecode,
   occurrenceBoundOf, type AbiFunction, type ArgSource, type ExternalCallAbi,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 import {
   assertNoUnboundCallOptions, assertPlannedOccurrenceCount, planCompiledGraph, resolveGraphAbiFunction,
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
@@ -353,6 +354,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     call: ExternalCallAbi,
     target: WorklistParticipant,
     occurrence: number,
+    resolvedTargetLockingBytecode?: string,
   ): string | undefined => {
     const targetName = call.addressParam ?? call.loopArrayVar;
     if (!targetName) return undefined;
@@ -366,13 +368,36 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const structs = source.artifact.structs ?? source.artifact.stateLayout?.structs;
     const encoded = encodeFunctionArgument(supplied as FunctionArgument, 'address', structs);
     const encodedHex = encoded instanceof Uint8Array ? binToHex(encoded) : undefined;
-    const authenticatedTargets = [target.lockingBytecode, target.logicalLockingBytecode]
+    const authenticatedTargets = [
+      target.lockingBytecode, target.logicalLockingBytecode, resolvedTargetLockingBytecode,
+    ]
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
-    if (encodedHex === undefined || !authenticatedTargets.includes(encodedHex)) {
+    const sourceUsesSolidityAddresses = source.artifact.compiler.options?.solidityImportCompat === true;
+    const suppliedTargets = encoded instanceof Uint8Array
+      ? [encodedHex!, ...(sourceUsesSolidityAddresses && encoded.length === 20
+        ? [binToHex(encodeLockingBytecodeP2pkh(encoded))] : [])]
+      : [];
+    const provedTarget = authenticatedTargets.find((candidate) => {
+      if (suppliedTargets.includes(candidate)) return true;
+      if (!sourceUsesSolidityAddresses || !(encoded instanceof Uint8Array) || encoded.length !== 20) return false;
+      const narrowed = lockingBytecodeToSolidityAddressPayload(hexToBin(candidate));
+      return narrowed !== undefined && binToHex(narrowed) === encodedHex;
+    });
+    if (provedTarget === undefined) {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+        console.error('atomic-forwarded-target-mismatch', {
+          callsiteId: call.callsiteId,
+          sourceContract: source.artifact.contractName,
+          suppliedTargets,
+          authenticatedTargets,
+          sourceUsesSolidityAddresses,
+        });
+      }
       throw new Error(`messageBus: callsite ${call.callsiteId} target proof disagrees with registered owner`);
     }
-    return encodedHex;
+    return provedTarget;
   };
 
   const active = new Map<string, number>();
@@ -525,13 +550,23 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument,
             );
+            const sourceUsesSolidityAddresses = participant.artifact.compiler.options?.solidityImportCompat === true;
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
             if (expectedEncoded.length !== encoded.length
               || expectedEncoded.some((argument, index) => {
                 const actual = encoded[index];
-                return !(argument instanceof Uint8Array) || !(actual instanceof Uint8Array)
-                  || binToHex(argument) !== binToHex(actual);
+                if (!(argument instanceof Uint8Array) || !(actual instanceof Uint8Array)) return true;
+                if (binToHex(argument) === binToHex(actual)) return false;
+                const type = targetFunction.inputs[index].type;
+                // Solidity-compatible expression recovery represents an address by its 20-byte account payload,
+                // while a low-level call may transport the same value as canonical P2PKH locking bytecode. Accept
+                // exactly that compiler-owned conversion in addition to byte identity. Native SolidCash retains
+                // arbitrary locking bytecode addresses and therefore must not apply this lossy convention.
+                return !sourceUsesSolidityAddresses
+                  || (type !== 'address' && type !== 'address payable')
+                  || argument.length !== 20
+                  || binToHex(encodeLockingBytecodeP2pkh(argument)) !== binToHex(actual);
               })) {
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
@@ -540,6 +575,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                   resolvedFunction: resolved.function,
                   expectedArgs,
                   resolvedArgs: resolved.args,
+                  expectedEncoded: expectedEncoded.map((argument) => argument instanceof Uint8Array
+                    ? binToHex(argument) : '<signature>'),
+                  resolvedEncoded: encoded.map((argument) => binToHex(argument as Uint8Array)),
+                  targetTypes: targetFunction.inputs.map((input) => input.type),
+                  sourceUsesSolidityAddresses,
+                  sourceContract: participant.artifact.contractName,
                   rawArgSources: call.rawArgSources,
                 });
               }
@@ -559,7 +600,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           // A visible forwarded address is checked here. State/expression-derived targets intentionally have no
           // public ABI argument; their compiler-emitted graph projection binds the concrete owner on-chain.
           const provedTarget = assertForwardedTarget(
-            participant, fn, args, call, resolved.participant, reached,
+            participant, fn, args, call, resolved.participant, reached, resolved.targetLockingBytecode,
           );
           expand(
             resolved.participant,
@@ -800,7 +841,9 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         const resolvedTarget = takeTarget(call, participant, fn, functionName, invocation, reached);
         const target = resolvedTarget.participant;
         const targetFunction = functionAbi(target, call.functionName, resolvedTarget.selector);
-        const provedTarget = assertForwardedTarget(participant, fn, args, call, target, reached);
+        const provedTarget = assertForwardedTarget(
+          participant, fn, args, call, target, reached, resolvedTarget.targetLockingBytecode,
+        );
         expand(
           target,
           call.functionName,

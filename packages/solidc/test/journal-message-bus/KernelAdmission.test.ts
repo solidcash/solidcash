@@ -3481,6 +3481,22 @@ describe('required kernel admission', () => {
     },
   );
 
+  it('admits bounded conditional value and typed-call effects in one runtime graph', () => {
+    const artifact = compileString(`interface IToken { function transfer(address to, uint amount) external; }
+      contract C() {
+        function distribute(address recipient, uint amount, address token) public {
+          if (token == address(0)) {
+            recipient.call{value: amount, gas: 5000}("");
+          } else {
+            IToken(token).transfer(recipient, amount);
+          }
+        }
+        function control() public { require(true); }
+      }`, KERNEL);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'distribute'))
+      .toMatchObject({ eligible: true });
+  });
+
   it('refuses a runtime-count stateful deployment loop as KERNEL_LAYOUT', () => {
     expect(denied(`contract Child() { int marker; }
       contract C() {

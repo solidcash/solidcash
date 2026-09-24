@@ -162,9 +162,18 @@ callerContract?: StatefulContract<Artifact>,
   }
   const directMappingRead = directMappingReadPlan(host.inner.artifact, functionName);
   if (directMappingRead) {
-    const keyCandidates = directMappingRead.keyArgumentIndices.reduce<Array<Array<string | Uint8Array>>>(
-      (rows, argumentIndex) => rows.flatMap((row) =>
-        host.addressMappingKeyCandidates(args[argumentIndex]).map((key) => [...row, key])),
+    const keyCandidates = directMappingRead.keyArgumentIndices.reduce<
+      Array<Array<string | bigint | boolean | Uint8Array>>
+    >(
+      (rows, argumentIndex, keyIndex) => rows.flatMap((row) => {
+        const argument = args[argumentIndex];
+        const candidates = directMappingRead.keyTypes[keyIndex] === 'address'
+          ? host.addressMappingKeyCandidates(argument)
+          : (typeof argument === 'string' || typeof argument === 'bigint'
+            || typeof argument === 'boolean' || argument instanceof Uint8Array)
+            ? [argument] : [];
+        return candidates.map((key) => [...row, key]);
+      }),
       [[]],
     );
     if (legacyStatefulSimulationEnabled(host.provider)) {
@@ -176,7 +185,7 @@ callerContract?: StatefulContract<Artifact>,
     const entries = await host.getEntries(directMappingRead.collection);
     for (const candidate of keyCandidates) {
       const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes);
-      if (match) return match.value as StateValue;
+      if (match) return attachDecodedAccessors(match.value) as StateValue;
     }
     return 0n;
   }

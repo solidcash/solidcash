@@ -249,6 +249,8 @@ function installCachedInvokeEvaluator(
 ): void {
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   const decodedFunctions = new WeakMap<Uint8Array, DecodedInstructions>();
+  const decodedFunctionKeys = new WeakMap<DecodedInstructions, string>();
+  const returnProbes = new WeakMap<object, { functionTableKey: string; frameDepth: number }>();
   instructionSet.operations[OpcodesBch2026.OP_INVOKE] = conditionallyEvaluate((state: State) => {
     const functionIdentifier = state.stack.pop();
     if (functionIdentifier === undefined) {
@@ -263,10 +265,27 @@ function installCachedInvokeEvaluator(
         `Function identifier: 0x${functionTableKey}.`,
       );
     }
+    const invokeDebugEnv = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    const callerFunctionTableKey = decodedFunctionKeys.get(state.instructions);
+    if ((invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_ID !== undefined
+      && invokeDebugEnv.SOLIDC_DEBUG_INVOKE_ID === functionTableKey)
+      || (invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_CALLER_ID !== undefined
+        && invokeDebugEnv.SOLIDC_DEBUG_INVOKE_CALLER_ID === callerFunctionTableKey)) {
+      const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+      const hexOf = (bytes: Uint8Array): string => binToHex(bytes.slice(0, 160));
+      console.error('invoke-boundary', JSON.stringify({
+        inputIndex,
+        functionTableKey,
+        callerFunctionTableKey,
+        stackLength: state.stack.length,
+        tail: state.stack.slice(-24).map((item) => `${item.length}:${hexOf(item)}`),
+      }));
+    }
     let instructions = decodedFunctions.get(functionBody);
     if (instructions === undefined) {
       instructions = decodeAuthenticationInstructionViews(functionBody);
       decodedFunctions.set(functionBody, instructions);
+      decodedFunctionKeys.set(instructions, functionTableKey);
     }
     if (authenticationInstructionsAreMalformed(instructions)) {
       return applyError(
@@ -280,10 +299,35 @@ function installCachedInvokeEvaluator(
       );
     }
     state.controlStack.push({ instructions: state.instructions, ip: state.ip + 1 });
+    if (invokeDebugEnv?.SOLIDC_DEBUG_INVOKE_RETURN_ID === functionTableKey) {
+      returnProbes.set(state as object, { functionTableKey, frameDepth: state.controlStack.length });
+    }
     state.ip = -1;
     state.instructions = instructions;
     return state;
   });
+  for (let opcode = 0; opcode < 256; opcode += 1) {
+    const operation = instructionSet.operations[opcode]!;
+    instructionSet.operations[opcode] = ((state: State) => {
+      const probe = returnProbes.get(state as object);
+      if (probe !== undefined && state.controlStack.length < probe.frameDepth) {
+        const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+        const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+        if (env?.SOLIDC_DEBUG_EQUALVERIFY_INPUT === undefined
+          || inputIndex === Number(env.SOLIDC_DEBUG_EQUALVERIFY_INPUT)) {
+          console.error('invoke-return', JSON.stringify({
+            inputIndex,
+            functionTableKey: probe.functionTableKey,
+            opcode,
+            stackLength: state.stack.length,
+            tail: state.stack.slice(-32).map((item) => `${item.length}:${binToHex(item.slice(0, 160))}`),
+          }));
+        }
+        returnProbes.delete(state as object);
+      }
+      return (operation as (inner: State) => State)(state);
+    }) as typeof operation;
+  }
 }
 
 interface InactiveBranchTargets {
@@ -484,6 +528,27 @@ function buildVirtualMachineBch2026ForProvider(
     );
     installCachedInvokeEvaluator(instructionSet);
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RUNTIME_ASSIGN === '1') {
+      type AssignState = Parameters<(typeof instructionSet.operations)[number]>[0];
+      const dropOpcode = OpcodesBch2026.OP_DROP;
+      const originalDrop = instructionSet.operations[dropOpcode]!;
+      instructionSet.operations[dropOpcode] = ((state: AssignState) => {
+        const top = state.stack.at(-1);
+        const marker = top === undefined ? '' : new TextDecoder().decode(top);
+        const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+        if ((marker.startsWith('cj-') || marker.startsWith('vc-pin:')) && inputIndex === 518) {
+          console.error('runtime-assign', JSON.stringify({
+            marker,
+            inputIndex,
+            stackLength: state.stack.length,
+            stack: state.stack.map((item) => `${item.length}:${binToHex(item.slice(0, 120))}`),
+          }));
+        }
+        return (originalDrop as (inner: AssignState) => AssignState)(state);
+      }) as typeof originalDrop;
+    }
+
   // Diagnostic: log the value-chunk domain preimage the covenant hashes (its last 64 hex characters are the stored
   // value's root), so a probe's staged value can be compared against the covenant's own expectation.
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -562,13 +627,17 @@ function buildVirtualMachineBch2026ForProvider(
       const stack = (state as unknown as { stack?: Uint8Array[] }).stack ?? [];
       const top = stack.at(-1);
       const second = stack.at(-2);
-      if (top !== undefined && second !== undefined
+      const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+      const debugInput = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_EQUALVERIFY_INPUT;
+      if ((debugInput === undefined || inputIndex === Number(debugInput))
+        && top !== undefined && second !== undefined
         && (top.length !== second.length
           || top.some((byte, index) => byte !== second[index]))) {
         const instructions = (state as unknown as { instructions?: Array<{ opcode: number }> }).instructions ?? [];
         const controlStack = (state as unknown as { controlStack?: unknown[] }).controlStack ?? [];
         console.error('equalverify-fail', JSON.stringify({
-          inputIndex: (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex,
+          inputIndex,
           ip: (state as unknown as { ip?: number }).ip,
           instrLen: instructions.length,
           head: instructions.slice(0, 6).map((instruction) => instruction.opcode).join(','),
@@ -588,6 +657,37 @@ function buildVirtualMachineBch2026ForProvider(
       }
       return (originalEqualVerify as (inner: EqState) => unknown)(state);
     }) as typeof originalEqualVerify;
+  }
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_STACK_IP !== undefined) {
+    type DebugState = Parameters<(typeof instructionSet.operations)[number]>[0];
+    const equalOpcode = 0x87;
+    const originalEqual = instructionSet.operations[equalOpcode];
+    instructionSet.operations[equalOpcode] = ((state: DebugState) => {
+      const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+      const inputIndex = (state as unknown as { program?: { inputIndex?: number } }).program?.inputIndex;
+      const ip = (state as unknown as { ip?: number }).ip;
+      const stack = (state as unknown as { stack?: Uint8Array[] }).stack ?? [];
+      const scanIndex = stack.at(-3);
+      if (ip === Number(env?.SOLIDC_DEBUG_STACK_IP)
+        && (env?.SOLIDC_DEBUG_EQUALVERIFY_INPUT === undefined
+          || inputIndex === Number(env.SOLIDC_DEBUG_EQUALVERIFY_INPUT))
+        && scanIndex?.[0] === 0x02 && scanIndex?.[1] === 0x02) {
+        const hexOf = (bytes: Uint8Array): string =>
+          Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        const outputs = (state as unknown as { program?: { transaction?: { outputs?: Array<{
+          lockingBytecode: Uint8Array;
+          token?: { category: Uint8Array; nft?: { commitment: Uint8Array } };
+        }> } } }).program?.transaction?.outputs ?? [];
+        console.error('stack-at-ip', JSON.stringify({ inputIndex, ip,
+          stack: stack.slice(-8).map((item) => `${item.length}:${hexOf(item)}`),
+          outputs: outputs.slice(500).map((output, offset) => ({ index: offset + 500,
+            lockingBytecode: hexOf(output.lockingBytecode), category: output.token && hexOf(output.token.category),
+            commitment: output.token?.nft && hexOf(output.token.nft.commitment) })),
+        }));
+      }
+      return (originalEqual as (inner: DebugState) => unknown)(state);
+    }) as typeof originalEqual;
   }
     if (observer !== undefined && observer.recordInactiveBranches !== true) {
       installSparseProbeBranchSkips(instructionSet);

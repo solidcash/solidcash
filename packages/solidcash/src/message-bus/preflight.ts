@@ -209,6 +209,7 @@ export const isTrailingEntryRepairCandidate = (candidate: {
 const convergeMessageBusMutableResourceOutputs = (
   builder: TransactionBuilder,
   includeEntries: boolean,
+  observedProposals?: Map<number, Uint8Array>,
 ): MessageBusComputedResourceConvergence => {
   const assembly = requireMessageBusBlockAssembly(builder);
   const ownedByBlock = new Map<number, Set<number>>();
@@ -319,11 +320,22 @@ const convergeMessageBusMutableResourceOutputs = (
       commitment: Uint8Array; inputIndex: number; ip: number;
     }>>();
     const observed = new Map<number, { commitment: Uint8Array; ip: number }>();
+    const debugResourceValues = new Set<string>();
     let owned = new Set<number>();
     const vm = createVirtualMachineBch2026ForProvider(builder.provider, {
       opcodes: new Set([Op.OP_OUTPUTTOKENCOMMITMENT]),
       beforeOperation: (unknownState) => {
         const state = unknownState as AuthenticationProgramStateCommon;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RESOURCE_VALUES === '1') {
+          for (const item of state.stack) {
+            if (item.length < 190 || item.length > 210) continue;
+            const hex = binToHex(item);
+            if (debugResourceValues.has(hex)) continue;
+            debugResourceValues.add(hex);
+            console.error('message-bus-resource-value', JSON.stringify({ bytes: item.length, value: hex }));
+          }
+        }
         if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
           || state.stack.length < 2) return;
         // Libauth invokes operation hooks for instructions in inactive IF/ELSE branches too. Those opcodes
@@ -441,6 +453,55 @@ const convergeMessageBusMutableResourceOutputs = (
 
     // resource would-apply recipe gate: refuse only proposals that would apply (matching / canApply-skip are no-ops under recipe).
     const maximumCommitmentBytes = builder.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RESOURCE_REPAIRS === '1') {
+      console.error('message-bus-resource-repair-proposals', JSON.stringify([...proposals].map(
+        ([outputIndex, proposal]) => ({
+          outputIndex,
+          block: (() => {
+            const block = assembly.blocks.find((candidate) => outputIndex >= candidate.base
+              && outputIndex < candidate.base + candidate.blockLayout.blockSize);
+            return block === undefined ? undefined
+              : {
+                participant: block.participant,
+                base: block.base,
+                offset: outputIndex - block.base,
+                slot: block.blockLayout.slots.find((candidate) => candidate.offset === outputIndex - block.base),
+                master: (() => {
+                  const unlocker = (builder.inputs[block.base] as unknown as {
+                    unlocker?: {
+                      contract?: { artifact?: { contractName?: string } };
+                      abiFunction?: { name?: string; inputs?: readonly { name: string }[] };
+                      params?: readonly unknown[];
+                    };
+                  }).unlocker;
+                  const describe = (value: unknown): unknown => value instanceof Uint8Array
+                    ? binToHex(value) : typeof value === 'bigint' ? value.toString() : value;
+                  return {
+                    contract: unlocker?.contract?.artifact?.contractName,
+                    function: unlocker?.abiFunction?.name,
+                    witnesses: unlocker?.abiFunction?.inputs?.flatMap((input, index) =>
+                      /(?:message_bus_key.*_r7|vmapBatch.*_7)$/.test(input.name)
+                        ? [{ name: input.name, value: describe(unlocker.params?.[index]) }] : []),
+                  };
+                })(),
+              };
+          })(),
+          current: builder.outputs[outputIndex]?.token?.nft?.commitment,
+          proposed: binToHex(proposal.commitment),
+          inputIndex: proposal.inputIndex,
+          ip: proposal.ip,
+          fixedState: fixedStateOutputs.has(outputIndex),
+        }),
+      )));
+    }
+    if (observedProposals !== undefined) {
+      observedProposals.clear();
+      for (const [outputIndex, proposal] of proposals) {
+        observedProposals.set(outputIndex, proposal.commitment.slice());
+      }
+      return freezeGeometry({ repairs: 0, rounds: round, outputs: [] });
+    }
     gateWouldApplyResourceRepairsIfRecipe(
       builder,
       proposals,
@@ -526,7 +587,6 @@ export function countWouldApplyResourceRepairs(
   return wouldApply;
 }
 
-
 /**
  * constraint fixpoint: rank conflicting OTC proposals.
  * Primary: higher optional `weight` wins (explicit priority / confidence).
@@ -579,6 +639,15 @@ export function gateWouldApplyResourceRepairsIfRecipe(
 export const convergeMessageBusComputedResourceOutputs = (
   builder: TransactionBuilder,
 ): MessageBusComputedResourceConvergence => convergeMessageBusMutableResourceOutputs(builder, true);
+
+/** Observe compiler-authenticated mutable resource commitments without mutating the aggregate transaction. */
+export const discoverMessageBusComputedResourceOutputs = (
+  builder: TransactionBuilder,
+): ReadonlyMap<number, Uint8Array> => {
+  const proposals = new Map<number, Uint8Array>();
+  convergeMessageBusMutableResourceOutputs(builder, true, proposals);
+  return proposals;
+};
 
 /** Backwards-compatible fixed-state-only convergence entry point. */
 export const convergeMessageBusFixedStateOutputs = (
@@ -1344,6 +1413,11 @@ export function assertFinalizedBytesWithCovenant(
  * CONSTRUCTED, not sampled. The mock provider refuses the constructed shape on its own, so this only moves the
  * refusal earlier and never disagrees with the network.
  */
+/** Snapshot mutable VM callback state before its next instruction changes the stack or instruction pointer. */
+export function snapshotPreflightDiagnosticState<T extends { stack: Uint8Array[] }>(state: T): T {
+  return { ...state, stack: state.stack.map((item) => item.slice()) };
+}
+
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
@@ -1363,6 +1437,10 @@ const evaluateEveryInput = (
   // a misread coordinate actually resolved to.
   const failurePreStateDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE === '1';
+  const resourceSlotIndexDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_RESOURCE_SLOT_INDEX === '1';
+  let resourceSlotIndexLogged = false;
+  const returnCommitmentReads: Array<Record<string, unknown>> = [];
   // Keyed by the input the state belongs to: this one VM evaluates every input, so a single "last state" slot is
   // overwritten by whichever input runs last and would report another input's frame as the failure's operands
   // (measured: the dumped operands did not match the VM's own message for the failing split).
@@ -1373,17 +1451,64 @@ const evaluateEveryInput = (
   // measured dumps at ip 22 of a 22-deep frame while the failure was ip 3 of a 6-instruction body.)
   const preStateRingByInput = new Map<number, AuthenticationProgramStateCommon[]>();
   const vm = createVirtualMachineBch2026ForProvider(builder.provider,
-    (outputCompareDebug || failurePreStateDebug) ? {
+    (outputCompareDebug || failurePreStateDebug || resourceSlotIndexDebug) ? {
     opcodes: failurePreStateDebug
       ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
-      : new Set([Op.OP_OUTPUTBYTECODE]),
+      : resourceSlotIndexDebug
+        ? new Set(Array.from({ length: 256 }, (_, opcode) => opcode))
+        : new Set([Op.OP_OUTPUTBYTECODE, Op.OP_UTXOTOKENCOMMITMENT, Op.OP_OUTPUTTOKENCOMMITMENT]),
     beforeOperation: (unknownState) => {
+      const resourceState = unknownState as AuthenticationProgramStateCommon;
+      if (resourceSlotIndexDebug && resourceState.program?.inputIndex === 227
+        && resourceState.instructions.length === 642 && [473, 475].includes(resourceState.ip)) {
+        const depth = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+        console.error('graph-event-park', JSON.stringify({
+          ip: resourceState.ip,
+          depth,
+          selected: resourceState.stack.at(-2 - depth) && binToHex(resourceState.stack.at(-2 - depth)!),
+          stackDepth: resourceState.stack.length,
+          top: resourceState.stack.slice(-12).map((item) => binToHex(item)),
+        }));
+      }
+      if (resourceSlotIndexDebug
+        && resourceState.program?.inputIndex === 227
+        && resourceState.instructions.length === 13
+        && resourceState.instructions[resourceState.ip]?.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
+        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+        const output = resourceState.program.transaction.outputs[outputIndex];
+        returnCommitmentReads.push({
+          ip: resourceState.ip,
+          outputIndex,
+          expected: resourceState.stack.at(-2) && binToHex(resourceState.stack.at(-2)!),
+          outputCommitment: output?.token?.nft && binToHex(output.token.nft.commitment),
+        });
+        if (returnCommitmentReads.length > 50) returnCommitmentReads.shift();
+      }
+      if (resourceSlotIndexDebug && !resourceSlotIndexLogged
+        && resourceState.program?.inputIndex === 227
+        && resourceState.instructions.length === 13 && resourceState.ip === 5) {
+        const outputIndex = Number(vmNumberToBigInt(resourceState.stack.at(-1) ?? new Uint8Array()));
+        const output = resourceState.program.transaction.outputs[outputIndex];
+        if (output?.token === undefined) return;
+        resourceSlotIndexLogged = true;
+        console.error('resource-slot-index', JSON.stringify({
+          inputIndex: resourceState.program.inputIndex,
+          outputIndex,
+          output: output === undefined ? undefined : {
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token && binToHex(output.token.category),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft && binToHex(output.token.nft.commitment),
+          },
+          stack: resourceState.stack.slice(-6).map((item) => binToHex(item)),
+        }));
+      }
       if (failurePreStateDebug) {
         const captured = unknownState as AuthenticationProgramStateCommon;
         const ownedInput = captured.program?.inputIndex;
         if (typeof ownedInput === 'number') {
           const ring = preStateRingByInput.get(ownedInput) ?? [];
-          ring.push(captured);
+          ring.push(snapshotPreflightDiagnosticState(captured));
           // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring
           // held only the loop's own iterations - every entry the same ip, with the coordinate instructions that
           // built the failing operands already evicted.
@@ -1596,6 +1721,9 @@ const evaluateEveryInput = (
     const startedAt = debugTiming ? Date.now() : 0;
     const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
     const objection = vm.stateSuccess(evaluated);
+    if (resourceSlotIndexDebug && inputIndex === 227 && objection !== true) {
+      console.error('return-commitment-reads', JSON.stringify(returnCommitmentReads));
+    }
     if (debugTiming) {
       console.error('preflight-input-timing', {
         inputIndex,
@@ -2519,14 +2647,46 @@ const evaluateEveryInput = (
         // OP_UTXOBYTECODE that reads it, because the comparison itself has already popped both operands.
         let lastInputBytecodeIndex: number | undefined;
         let inputGuardOperands: Array<{ depth: number; bytes: number; hex: string }> | undefined;
+        const diagnosticLargeValues = new Map<string, number>();
         createVirtualMachineBch2026ForProvider(builder.provider, {
           opcodes: new Set([
             Op.OP_VERIFY, Op.OP_EQUAL, Op.OP_EQUALVERIFY, Op.OP_NUMEQUAL, Op.OP_NUMEQUALVERIFY,
             Op.OP_OUTPUTTOKENCATEGORY, Op.OP_PICK, Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY,
-            Op.OP_OUTPUTBYTECODE, Op.OP_UTXOBYTECODE, Op.OP_ACTIVEBYTECODE,
+            Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_UTXOBYTECODE, Op.OP_ACTIVEBYTECODE,
+            Op.OP_INVOKE,
           ]),
           beforeOperation: (unknownState) => {
             const state = unknownState as AuthenticationProgramStateCommon;
+            for (const item of state.stack) {
+              if (item.length < 190 || item.length > 210) continue;
+              diagnosticLargeValues.set(binToHex(item), item.length);
+              if (diagnosticLargeValues.size > 32) {
+                diagnosticLargeValues.delete(diagnosticLargeValues.keys().next().value!);
+              }
+            }
+            if (state.instructions.length === 84 && state.ip >= 30) {
+              console.error('preflight-event-resolver', JSON.stringify({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                stack: state.stack.slice(-12).map((item, offset, items) => ({
+                  d: items.length - 1 - offset,
+                  hex: binToHex(item).slice(0, 96),
+                  number: (() => { try { return vmNumberToBigInt(item).toString(); } catch { return undefined; } })(),
+                })),
+              }));
+            }
+            if (state.instructions.length === 232 && [157, 159, 160, 162].includes(state.ip)) {
+              console.error('preflight-effect-coordinate', JSON.stringify({
+                ip: state.ip,
+                depth: state.stack.length,
+                top: state.stack.slice(-16).map((item, offset, items) => ({
+                  d: items.length - 1 - offset,
+                  bytes: item.length,
+                  hex: binToHex(item).slice(0, 96),
+                  number: (() => { try { return vmNumberToBigInt(item).toString(); } catch { return undefined; } })(),
+                })),
+              }));
+            }
             if (state.instructions.length > 8 && state.instructions.length < 200
               && (state.instructions[state.ip]?.opcode === Op.OP_VERIFY
                 || state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY)) {
@@ -2692,7 +2852,20 @@ const evaluateEveryInput = (
             commit: output.token?.nft ? binToHex(output.token.nft.commitment).slice(0, 24) : '',
           })),
         });
+        const failureStackHex = new Set(evaluated.stack.map((item) => binToHex(item)));
+        console.error('preflight-stack-matching-outputs', transaction.outputs.flatMap((output, index) => {
+          const lock = binToHex(output.lockingBytecode);
+          const commitment = output.token?.nft ? binToHex(output.token.nft.commitment) : '';
+          return ((lock !== '51' && failureStackHex.has(lock))
+            || (commitment.length > 0 && failureStackHex.has(commitment))) ? [{
+            index,
+            lock,
+            commitment,
+            capability: output.token?.nft?.capability,
+          }] : [];
+        }));
         console.error('message-bus-preflight-failure', JSON.stringify({
+          diagnosticLargeValues: [...diagnosticLargeValues].map(([hex, bytes]) => ({ bytes, hex })),
           inputGuardOperands,
           inputIndex,
           ip: evaluated.ip,
@@ -2874,7 +3047,9 @@ function describeMessageBusBatchRows(
   return ` (batch rows ${String(rowCount)}: ${rows.join(', ')})`;
 }
 
-  const location = failure === undefined || !Number.isInteger(failure.ip) ? ''
+  const detailedFailure = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_FAILURE_POINT === '1';
+  const location = !detailedFailure || failure === undefined || !Number.isInteger(failure.ip) ? ''
     : ` (ip ${String(failure.ip)}`
       + `${failure.programLength === undefined ? '' : ` of ${String(failure.programLength)}`}`
       + `${failure.opcode === undefined ? '' : `, opcode ${String(failure.opcode)}`}`
@@ -2902,7 +3077,7 @@ function describeMessageBusBatchRows(
   } | undefined;
   // Name the source predicate when the artifact maps this instruction to one. The compiler records requires per
   // function selector; libauth reports the state after the failure, so `ip - 1` is checked first.
-  const requireSite = ((): string => {
+  const requireSite = detailedFailure ? ((): string => {
     // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
     // widening `probeRequireStatement` performs for probes.
     type ArtifactDebugView = {
@@ -2995,7 +3170,7 @@ function describeMessageBusBatchRows(
       }
     }
     return '';
-  })();
+  })() : '';
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
     const batchRows = describeMessageBusBatchRows(
       transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
@@ -3069,10 +3244,10 @@ function describeMessageBusBatchRows(
     unlockerParams?.contract?.artifact?.contractName,
     unlockerParams?.abiFunction?.name,
   ].filter((part): part is string => typeof part === 'string' && part.length > 0).join('.');
-  const attribution = [
+  const attribution = detailedFailure ? [
     owner.length > 0 ? `participant ${owner}` : undefined,
     layoutWitnesses.length > 0 ? `layout ${layoutWitnesses.join(',')}` : undefined,
-  ].filter((part): part is string => part !== undefined).join('; ');
+  ].filter((part): part is string => part !== undefined).join('; ') : '';
   return new Error(
     `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}`
     + `${attribution.length > 0 ? ` (${attribution})` : ''}: ${rawVmReason}${requireSite}`,

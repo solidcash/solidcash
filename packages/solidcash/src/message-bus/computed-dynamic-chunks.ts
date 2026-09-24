@@ -18,6 +18,8 @@ export interface ComputedDynamicChunkConvergence {
   repairs: number;
   rounds: number;
   ownedOutputs: readonly number[];
+  /** Owned outputs whose equality covenant executed in at least one convergence round. */
+  authenticatedOutputs: readonly number[];
   outputs: readonly number[];
 }
 
@@ -83,7 +85,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
 ): ComputedDynamicChunkConvergence {
   const assembly = preflightMessageBusBlockAssembly(builder);
   if (!assembly) {
-    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] });
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs: [], authenticatedOutputs: [], outputs: [] });
   }
 
   const owners = new Map<number, Set<number>>();
@@ -145,10 +147,11 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
     }));
   }
   if (owners.size === 0) {
-    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs, outputs: [] });
+    return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs, authenticatedOutputs: [], outputs: [] });
   }
 
   const changedOutputs = new Set<number>();
+  const authenticatedOutputs = new Set<number>();
   // constraint fixpoint / item-10 follow-on: dynamic-chunk repairs progress on the same monotone lattice as fixed-state resources.
   const commitmentLattice = new MonotoneCell<string>();
   const seenStates = new Set<string>();
@@ -176,6 +179,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         repairs,
         rounds: round,
         ownedOutputs,
+        authenticatedOutputs: [...authenticatedOutputs].sort((a, b) => a - b),
         outputs: [...changedOutputs].sort((a, b) => a - b),
       });
     }
@@ -222,6 +226,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       });
       vm.evaluate({ inputIndex, sourceOutputs, transaction });
     }
+    for (const outputIndex of commitmentProposals.keys()) authenticatedOutputs.add(outputIndex);
 
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_CONVERGE === '1') {
@@ -256,6 +261,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
         repairs,
         rounds: round,
         ownedOutputs,
+        authenticatedOutputs: [...authenticatedOutputs].sort((a, b) => a - b),
         outputs: [...changedOutputs].sort((a, b) => a - b),
       });
     }
@@ -283,7 +289,7 @@ export function dynamicChunkPlaceholdersRemain(
   if (convergence.ownedOutputs.length === 0) {
     return true;
   }
-  return convergence.ownedOutputs.some((outputIndex) => {
+  return convergence.authenticatedOutputs.some((outputIndex) => {
     const commitment = builder.outputs[outputIndex]?.token?.nft?.commitment ?? '';
     return commitment === '' || commitment === '00';
   });

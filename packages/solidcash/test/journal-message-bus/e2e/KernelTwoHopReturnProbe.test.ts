@@ -258,6 +258,37 @@ describe('kernel two-hop return probe', () => {
     expect(binToHex(commitment)).toContain(binToHex(expected));
   }, 120_000);
 
+  it('hash-commits an oversized direct ABI return NFT', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      contract WideReturn {
+        function values() public pure returns (uint256, uint256, uint256, uint256, uint256) {
+          return (1, 2, 3, 4, 5);
+        }
+      }`, KERNEL);
+    const base = new Contract(artifact, [], { provider });
+    const setup = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const contract = StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+    const values = [1n, 2n, 3n, 4n, 5n];
+
+    const builder = await contract.call.values().emitReturn().build();
+    expect(vmAccepts(builder)).toBe(true);
+    const raw = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256'], values,
+    ).slice(2));
+    expect(raw).toHaveLength(160);
+    const returnOutput = builder.buildLibauthTransaction().outputs.find((output) => (
+      output.token?.nft?.capability === 'none'
+      && output.token.category !== undefined
+      && binToHex(output.token.category) === setup.categoryId
+    ));
+    expect(returnOutput?.token?.nft?.commitment).toEqual(hexToBin(ethers.sha256(raw).slice(2)));
+  }, 120_000);
+
   it('pins the missing-authenticated-return error string for .emitReturn()', () => {
     expect(missingAuthenticatedReturn('read')).toBe(
       "Could not derive the return value of 'read' for .emitReturn(). "

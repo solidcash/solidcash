@@ -10,7 +10,8 @@ import {
   BytesConcatNode, CastNode,
   CollectionIterationNode,
   ContinueNode, DeleteLocalNode, DoWhileNode, ExpressionNode, FunctionDefinitionNode, HexLiteralNode, IdentifierNode,
-  FunctionCallNode, FunctionModifier, InstantiationNode, IntLiteralNode, Node, ReturnNode, RevertNode, SwitchNode,
+  ExternalFunctionCallNode, FunctionCallNode, FunctionModifier, InstantiationNode, IntLiteralNode, Node,
+  ReturnNode, RevertNode, SwitchNode,
   TryCatchNode,
   RequireNode, TernaryOpNode, TupleAssignmentNode, UnaryOpNode, UncheckedNode, VariableDefinitionNode, WhileNode,
   TransferStatementNode,
@@ -627,7 +628,7 @@ const bindRecipe = (
 };
 
 type FixedBchEffectNode = TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode
-| InstantiationNode;
+| ExternalFunctionCallNode | InstantiationNode;
 
 export interface FixedBchEffectRecipeAnalysis {
   recipient?: ChildDeploymentValueRecipe;
@@ -921,6 +922,8 @@ export function analyzeFixedBchEffectRecipes(
     seen.add(value);
     if ((value instanceof TransferStatementNode && value.runtimeLoopTransfer === undefined)
       || value instanceof AddressTransferStatementNode || value instanceof AddressSendExpressionNode
+      || (value instanceof ExternalFunctionCallNode && value.interfaceName === '__raw__'
+        && value.valueTransferIndex >= 0 && hasEffectiveCallValue(value.callOptions?.value))
       || (value instanceof InstantiationNode && value.referencedContract
         && !value.isStatefulDeploy && hasEffectiveCallValue(value.callOptions?.value))) {
       if (value instanceof InstantiationNode) {
@@ -935,7 +938,9 @@ export function analyzeFixedBchEffectRecipes(
       const recipientExpression = value instanceof TransferStatementNode
         ? value.lockingBytecode : value.addressExpression;
       const recipient = !unsafe ? recipe(recipientExpression, environment) : undefined;
-      const amount = !unsafe ? recipe(value.amount, environment) : undefined;
+      const amountExpression = value instanceof ExternalFunctionCallNode
+        ? value.callOptions!.value! : value.amount;
+      const amount = !unsafe ? recipe(amountExpression, environment) : undefined;
       result.set(value, {
         ...(recipient && { recipient }),
         ...(amount && { amount }),

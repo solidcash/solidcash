@@ -893,7 +893,8 @@ const transferEffects = (
   const transfers: {
     transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
     condition?: ExpressionNode; conditionUnsupported?: true;
-    node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode | InstantiationNode;
+    node?: TransferStatementNode | AddressTransferStatementNode | AddressSendExpressionNode
+      | ExternalFunctionCallNode | InstantiationNode;
   }[] = [];
   const visibleInputs = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   const inputIndex = new Map(visibleInputs.map((parameter, index) => [parameter.name, index]));
@@ -1016,6 +1017,9 @@ const transferEffects = (
         recipient: value.addressExpression,
         amount: value.callOptions.value,
         callOption: 'value',
+        condition,
+        node: value,
+        ...(conditionUnsupported && { conditionUnsupported: true }),
       });
     }
     if (value instanceof InstantiationNode && value.referencedContract
@@ -1096,7 +1100,45 @@ const transferEffects = (
           ...(analysis?.salt && { salt: analysis.salt }),
         };
       })() : undefined;
-    const condition = effect?.activation && activationExpression(effect.activation);
+    // Inlined low-level helpers can retain their source branch in this artifact walk after flow analysis has
+    // flattened that branch around the cloned effect node. Recover a condition expressed directly in handler
+    // inputs/literals through the same executable recipe language; aliases still require the flow snapshot.
+    const conditionRecipe = effect?.activation
+      ?? (transfer.condition ? operandRecipe(transfer.condition) : undefined);
+    if (transfer.callOption && !conditionRecipe
+      && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_TRANSFER_EFFECTS === '1') {
+      console.error('fixed-bch-callvalue-activation-missing', {
+        function: fn.name,
+        hasTreeCondition: transfer.condition !== undefined,
+        effect,
+      });
+    }
+    if (transfer.condition && !conditionRecipe
+      && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_TRANSFER_EFFECTS === '1') {
+      const candidate = transfer.condition as ExpressionNode & {
+        operator?: unknown; left?: ExpressionNode; right?: ExpressionNode;
+      };
+      console.error('fixed-bch-condition-recipe-missing', {
+        function: fn.name,
+        node: candidate.constructor.name,
+        operator: candidate.operator,
+        type: candidate.type?.toString(),
+        left: candidate.left && {
+          node: candidate.left.constructor.name,
+          name: (candidate.left as IdentifierNode).name,
+          type: candidate.left.type?.toString(),
+          recipe: operandRecipe(candidate.left),
+        },
+        right: candidate.right && {
+          node: candidate.right.constructor.name,
+          type: candidate.right.type?.toString(),
+          recipe: operandRecipe(candidate.right),
+        },
+      });
+    }
+    const condition = conditionRecipe && activationExpression(conditionRecipe);
     return {
       transferIndex: transfer.transferIndex,
       recipient: expressionSource(transfer.recipient, fn, contract),
@@ -1105,7 +1147,7 @@ const transferEffects = (
       ...(derivedRecipient && { derivedRecipient }),
       ...(amountRecipe && { amountRecipe }),
       ...(transfer.callOption && { callOption: transfer.callOption }),
-      ...(transfer.conditionUnsupported || (effect && !effect.activationSupported)
+      ...(transfer.conditionUnsupported || (effect && !effect.activationSupported && !condition)
         ? { condition: null }
         : condition ? { condition }
           : transfer.condition ? { condition: null } : {}),

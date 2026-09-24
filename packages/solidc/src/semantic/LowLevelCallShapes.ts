@@ -10,8 +10,9 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * X6 - stable diagnostics for unadmitted low-level call shapes.
  *
  * The admitted message-bus low-level class is exactly ONE unconditional `address.call(payload)`,
- * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. The callManifest row
- * binds mode, target, calldata, result and the value-option bit; the transfer effect separately binds the
+ * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. Solidity's
+ * optional `gas` hint is inert on BCH, so it may accompany an otherwise admitted value transfer. The callManifest
+ * row binds mode, target, calldata, result and the value-option bit; the transfer effect separately binds the
  * recipient and amount. No other option and no occurrence count is admitted.
  *
  * Everything outside that class currently reaches the user as an INTERNAL error from a later stage, naming a
@@ -257,8 +258,8 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
   for (const {
     node, callMode, options, context, returnsResult, fixedLoopOccurrences, conditionalWithinLoop,
   } of rows) {
-    const admittedValue = node instanceof MethodCallNode
-      && callMode === 'call' && options.length === 1 && options[0] === 'value';
+    const admittedValue = callMode === 'call' && options.includes('value')
+      && options.every((option) => option === 'value' || option === 'gas');
     if (options.length > 0 && !admittedValue) {
       throw new LowLevelCallShapeError(
         node,

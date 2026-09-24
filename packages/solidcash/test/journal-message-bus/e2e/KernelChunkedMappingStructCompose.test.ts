@@ -2,7 +2,9 @@ import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue } from '@solidcash/utils';
 import { compileString, compileStringMulti } from 'solidc';
 import { describe, expect, it } from 'vitest';
-import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import {
+  Contract, Signer, StatefulContract, getContractFactory, messageBus, upgrades,
+} from '../../../src/index.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -210,6 +212,116 @@ describe('kernel chunked mapping struct composition', () => {
     expect((await probe.getState()).counter).toBe(1n);
   }, 180_000);
 
+  it('settles an existing chunked struct fixed-array update before a wide external result', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const artifacts = compileStringMulti(`pragma solidity ^0.8.0;
+      interface IProbe { function values() external returns (uint256[5] memory); }
+      interface IStore { function release(uint256 key) external; }
+      struct Record {
+        address principal;
+        uint64 delay;
+        address counterparty;
+        uint64 opened;
+        address venue;
+        uint256 rate;
+        uint64 deadline;
+        address asset;
+        uint16 status;
+        int16[2] consensus;
+        uint16[4] split;
+        uint256 quantity;
+        string reference;
+      }
+      contract Probe {
+        function values() public pure returns (uint256[5] memory result) {
+          result[0] = 1; result[1] = 2; result[2] = 3; result[3] = 4; result[4] = 5;
+        }
+      }
+      contract Store(address probe) {
+        mapping(uint256 => Record) records;
+        function seed(uint256 key) public {
+          records[key] = Record(
+            probe, 7, probe, 11, probe, 13, 17, probe, 19,
+            [int16(0), int16(1)], [uint16(1), uint16(2), uint16(3), uint16(4)],
+            23, "${'fixed array entry payload '.repeat(2)}"
+          );
+        }
+        function release(uint256 key) public {
+          Record memory current = records[key];
+          current.consensus[0] = 1;
+          current.consensus[1] = 1;
+          records[key].consensus = current.consensus;
+          uint256[5] memory result = IProbe(probe).values();
+          require(result[4] == 5);
+        }
+        function check(uint256 key) public view {
+          Record memory current = records[key];
+          require(current.consensus[0] == 1 && current.consensus[1] == 1);
+        }
+      }
+      contract Coordinator {
+        uint256 count;
+        function initialize() public { this.count = 0; }
+        function run(address store, uint256 key) public {
+          IStore(store).release(key);
+          this.count = this.count + 1;
+        }
+      }`, { ...KERNEL, solidityImportCompat: true });
+    const probeBase = new Contract(artifacts.Probe, [], { provider });
+    const probeSetup = await setupStatefulUtxos(
+      provider, probeBase, artifacts.Probe.stateLayout!, {}, { saltContract: true },
+    );
+    const probe = StatefulContract.withCategory(
+      probeBase.withCategory(hexToBin(probeSetup.categoryId)), probeSetup.categoryId,
+    );
+    const storeBase = new Contract(artifacts.Store, [probe.inner.lockingBytecode], { provider });
+    const storeSetup = await setupStatefulUtxos(
+      provider, storeBase, artifacts.Store.stateLayout!, {}, { saltContract: true },
+    );
+    const store = StatefulContract.withCategory(
+      storeBase.withCategory(hexToBin(storeSetup.categoryId)), storeSetup.categoryId,
+      { externals: { IProbe: probe } },
+    );
+    await store.call.seed(1n).send();
+    const signer = new Signer(new Uint8Array(32).fill(0x76), provider);
+    for (let index = 0; index < 20; index += 1) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: (index + 1).toString(16).padStart(64, '0'),
+        vout: 0,
+        satoshis: 1_000_000n,
+      });
+    }
+    const coordinator = await upgrades.deployProxy(
+      getContractFactory(artifacts.Coordinator, signer), [],
+    );
+    coordinator.implementation._registerResolvedExternal('IStore', store);
+    const coordinatorDelegate = artifacts.Coordinator.delegateArtifact!;
+    const releaseCallsite = coordinatorDelegate.abi.find((entry) => entry.name === 'run')!
+      .externalCalls!.find((call) => call.functionName === 'release')!.callsiteId!;
+    const valuesCallsite = artifacts.Store.abi.find((entry) => entry.name === 'release')!
+      .externalCalls!.find((call) => call.functionName === 'values')!.callsiteId!;
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = messageBus.compose({
+      preparedCalls: [{
+        contract: coordinator.proxy,
+        functionName: 'run',
+        args: [store.inner.lockingBytecode, 1n],
+        executionArtifact: coordinator.implementation.inner.artifact,
+        executor: coordinator.implementation,
+      }, {
+        contract: store, functionName: 'release', args: [1n], callsiteId: releaseCallsite,
+      }, {
+        contract: probe, functionName: 'values', args: [], callsiteId: valuesCallsite,
+      }],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    await expect(store.call.check(1n).send()).resolves.toBeDefined();
+  }, 180_000);
+
   it('threads two whole-entry chunkable transitions through one pending value', async () => {
     const storeSource = `pragma solidity ^0.8.0;
       struct Record { string note; uint256 revision; bool settled; }
@@ -250,7 +362,9 @@ describe('kernel chunked mapping struct composition', () => {
       });
       expect(artifact.messageBus?.convention)
         .toBe(messageBusKernel ? 'kernel-row-loop' : 'legacy-unroll');
-      expect(artifact.messageBus?.fixedChunkableWritePolicy).toBeUndefined();
+      expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual(messageBusKernel
+        ? expect.objectContaining({ version: 1, maximumRows: 1 })
+        : undefined);
       expect(['replace', 'settle'].map((name) =>
         artifact.messageBus?.handlers.find((handler) => handler.name === name)?.eligible))
         .toEqual([true, true]);

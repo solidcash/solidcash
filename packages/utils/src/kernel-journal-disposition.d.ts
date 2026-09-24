@@ -1,7 +1,10 @@
 import type { KernelJournalDispositionsAbi } from './artifact.js';
 /** Tagged pushed-data commitment embedded in a compiler-authored kernel route. `SCJD`, version 1. */
 export declare const KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX = "53434a4401";
-/** Hash the canonical, names-free disposition projection which the SDK consumes. */
+/**
+ * Hash the canonical, names-free disposition projection which the SDK consumes.
+ * Domain-separated length-prefixed fields (no JSON identity digest).
+ */
 export declare function kernelJournalDispositionManifestDigest(manifest: KernelJournalDispositionsAbi): string;
 /** Canonical artifact-ASM marker for `<SCJD || version || manifest digest> OP_DROP`. */
 export declare function kernelJournalDispositionCommitmentMarker(digest: string): string | undefined;

@@ -14,6 +14,49 @@
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 /**
+ * Consensus P2SH redeem-script ceiling (BCH `maximumBytecodeLength`).
+ * deployability certificate deployability certificates compare measured artifact bytecode against this limit.
+ */
+export const P2SH_BYTECODE_LIMIT = 10_000;
+/** Build a concrete deployability certificate from measured redeem-script bytes. */
+export function buildDeployabilityCertificate(params) {
+    const withinP2shLimit = params.measuredBytecodeBytes <= P2SH_BYTECODE_LIMIT;
+    return {
+        version: 1,
+        status: withinP2shLimit ? 'asserted' : 'over-budget',
+        p2shBytecodeLimit: P2SH_BYTECODE_LIMIT,
+        measuredBytecodeBytes: params.measuredBytecodeBytes,
+        withinP2shLimit,
+        ...(params.maximumRows !== undefined && {
+            budgets: {
+                maximumRows: params.maximumRows,
+                maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
+                ...(params.maximumParticipants !== undefined
+                    && { maximumParticipants: params.maximumParticipants }),
+            },
+        }),
+    };
+}
+/**
+ * Fail closed unless the certificate is present and `asserted` (within P2SH).
+ * Over-budget and missing certificates both refuse deployability claims.
+ */
+export function assertDeployabilityCertificate(certificate) {
+    if (certificate === undefined) {
+        throw new Error('deployability: certificate missing (legacy not-asserted)');
+    }
+    if (certificate.version !== 1) {
+        throw new Error(`deployability: unsupported certificate version ${String(certificate.version)}`);
+    }
+    if (!certificate.withinP2shLimit || certificate.status === 'over-budget') {
+        throw new Error(`deployability: over P2SH budget `
+            + `(${certificate.measuredBytecodeBytes} > ${certificate.p2shBytecodeLimit})`);
+    }
+    if (certificate.status !== 'asserted') {
+        throw new Error(`deployability: status '${String(certificate.status)}' is not asserted`);
+    }
+}
+/**
  * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
  * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
  * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
@@ -32,6 +75,25 @@ export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
 // authoritative network admission gates. Keeping a smaller arbitrary ceiling rejects otherwise valid graphs
 // before those exact checks (and makes the limit depend on how many authenticated resource rows a contract uses).
 export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 0xffff;
+/** Build concrete published resource budgets resource budgets from route/capability ceilings. */
+export function buildMessageBusResourceBudgets(params) {
+    const dynCeiling = Math.max(256, params.trailingCapacity ?? 0);
+    const rowCeiling = Math.max(1, params.maximumRows);
+    return {
+        version: 1,
+        maximumRows: rowCeiling,
+        maximumParticipants: params.maximumParticipants ?? ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+        maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumDynamicChunks: dynCeiling,
+        maximumValueContinuationChunks: dynCeiling,
+        maximumJournalRecords: 256,
+        maximumEvents: Math.max(rowCeiling * 4, 32),
+        maximumTransfers: Math.max(rowCeiling * 4, 32),
+        maximumReturnCarriers: Math.max(rowCeiling, 8),
+        maximumExternalEdges: 64,
+        maximumSemanticDerivationPasses: 256,
+    };
+}
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 /**

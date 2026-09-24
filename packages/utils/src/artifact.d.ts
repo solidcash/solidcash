@@ -79,6 +79,17 @@ export interface CompilerOptions {
     }[];
     chunkedArrays?: boolean;
     chainId?: number;
+    /**
+     * Explicit production-semantics feature: capture message-bus owner onto alt-stack at DEFINE entry.
+     * When omitted, resolved from SOLIDC_OWNER_ALT_ANCHOR only via the solidc env registry; included in
+     * artifact/cache identity when enabled.
+     */
+    ownerAltAnchor?: boolean;
+    /**
+     * Explicit production-semantics feature: seed caller band names into the DEFINE frame model.
+     * When omitted, resolved from SOLIDC_HANDLER_BAND_MODEL; included in artifact/cache identity when enabled.
+     */
+    handlerBandModel?: boolean;
     brandLibrary?: boolean;
     forceStateful?: boolean;
     ecrecover?: 'p2pkh' | 'evm';
@@ -1071,10 +1082,45 @@ export interface ExternalCallStatement {
     elseStatements?: readonly ExternalCallStatement[];
 }
 /**
+ * Compiler-published caller authentication for one callsite edge.
+ * Do not infer the subject from proxy/delegate execution geometry; resolve the published role.
+ */
+export interface CallsiteCallerIdentityAbi {
+    version: 1;
+    /**
+     * Role of the authenticated caller subject for this edge.
+     * - origin: transaction-origin / root (subject empty or rootCaller; authOffset 0xffff)
+     * - owner: physical state-owner master of the calling participant
+     * - create: CREATE / getAddress() logical identity of the calling participant
+     * - proxy: proxy-facing public identity when distinct from owner
+     * - executor: co-spent implementation input (rare; only when the edge literally authenticates the executor)
+     */
+    role: 'origin' | 'owner' | 'create' | 'proxy' | 'executor';
+    /**
+     * How the covenant authenticates the subject bytes.
+     * - input-bytecode: subject == lockingBytecode of caller participant input at authOffset
+     * - category: subject derived from state-token category (legacy scalar msgSenderCategory path)
+     * - literal: subject is compile-time constant lock bytes
+     */
+    auth: 'input-bytecode' | 'category' | 'literal';
+    /** Participant-local input offset that authenticates the caller subject (0xffff when none). */
+    authOffset: number;
+    /** Optional compile-time subject lock hex when auth === 'literal'. */
+    subjectLockingBytecode?: string;
+}
+/**
  * One compiler-authored outgoing call edge.
  *
- * Callsite identity is a four-tuple: physical `callsiteId`, batch row `sourceCallsiteId`,
- * `logicalIndex`, and runtime occurrence. Kernel batch rows must publish `sourceCallsiteId`.
+ * Callsite identity is a four-tuple carried through discovery → composition → result consumption:
+ * - **Physical callsite ID** (`callsiteId`): post-collapse co-spend / consumer lane.
+ * - **Source callsite ID** (`batchInvocations[].sourceCallsiteId`): pre-collapse syntactic edge.
+ * - **Batch logical index** (`batchInvocations[].logicalIndex`): ordered row inside one physical batch.
+ * - **Occurrence** (`occurrence` / runtime `occurrenceIndex`): reach index of that source row.
+ *
+ * Non-batched calls: physical === source; logical index absent; occurrence 0 unless loop/conditional.
+ * Batched calls (kernel): physical ≠ source in general; every row publishes `sourceCallsiteId` +
+ * `logicalIndex`; runtime occurrence is required and monotone per `(sourceCallsiteId, logicalIndex)`.
+ * Do not invent source identity from proxy/delegate/locking bytecode.
  */
 export interface ExternalCallAbi {
     /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
@@ -1107,6 +1153,11 @@ export interface ExternalCallAbi {
      * is published.
      */
     occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+    /**
+     * Authenticated caller subject for this outgoing edge. Kernel artifacts publish this for every callsite;
+     * absence is legacy and may fall back to owner@0 only outside `kernel-row-loop`.
+     */
+    callerIdentity?: CallsiteCallerIdentityAbi;
     interfaceName: string;
     functionName: string;
     addressParam?: string;
@@ -1305,6 +1356,62 @@ export interface InvocationAnalysisArtifact {
  */
 export declare const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 /**
+ * Consensus P2SH redeem-script ceiling (BCH `maximumBytecodeLength`).
+ * deployability certificate deployability certificates compare measured artifact bytecode against this limit.
+ */
+export declare const P2SH_BYTECODE_LIMIT = 10000;
+/**
+ * published resource budgets: compiler-published multi-axis worst-case budgets on `messageBus.resourceBudgets`.
+ * Compose authority prefers these over SDK hardcodes; kernel fails closed when absent.
+ * published semantic-derivation ceiling: `maximumSemanticDerivationPasses` replaces undocumented effect-class heuristics.
+ */
+export interface MessageBusResourceBudgets {
+    version: 1;
+    maximumRows: number;
+    maximumParticipants: number;
+    maximumBlobBytes: number;
+    maximumDynamicChunks: number;
+    maximumValueContinuationChunks: number;
+    maximumJournalRecords: number;
+    maximumEvents: number;
+    maximumTransfers: number;
+    maximumReturnCarriers: number;
+    maximumExternalEdges: number;
+    /** Upper bound on compose semantic discovery passes (usage = mutableClaimCount + 2). */
+    maximumSemanticDerivationPasses: number;
+}
+/**
+ * deployability certificate: deployability / budget certificate published on `messageBus.deployability`.
+ * Presence is always concrete: `asserted` (within P2SH) or `over-budget`.
+ * Absence of the field means legacy / unstamped (the old `"not-asserted"` ambiguity).
+ */
+export type DeployabilityStatus = 'asserted' | 'over-budget';
+export interface DeployabilityCertificate {
+    version: 1;
+    status: DeployabilityStatus;
+    p2shBytecodeLimit: typeof P2SH_BYTECODE_LIMIT;
+    measuredBytecodeBytes: number;
+    withinP2shLimit: boolean;
+    /** Message-bus budget axes mirrored from the artifact when known. */
+    budgets?: {
+        maximumRows: number;
+        maximumBlobBytes: number;
+        maximumParticipants?: number;
+    };
+}
+/** Build a concrete deployability certificate from measured redeem-script bytes. */
+export declare function buildDeployabilityCertificate(params: {
+    measuredBytecodeBytes: number;
+    maximumRows?: number;
+    maximumBlobBytes?: number;
+    maximumParticipants?: number;
+}): DeployabilityCertificate;
+/**
+ * Fail closed unless the certificate is present and `asserted` (within P2SH).
+ * Over-budget and missing certificates both refuse deployability claims.
+ */
+export declare function assertDeployabilityCertificate(certificate: DeployabilityCertificate | undefined): asserts certificate is DeployabilityCertificate;
+/**
  * Shared wire ABI for bounded kernel entry-journal transport. Each opaque `bytes` slot contains a canonical
  * encoded bytes[] vector. A maximum-size record is 150 bytes plus its two-byte element frame, so three records
  * stay below BCH's 520-byte item ceiling while four may not. Segment membership is ordinal-based and therefore
@@ -1320,6 +1427,14 @@ export declare const KERNEL_ENTRY_JOURNAL_MAX_SEGMENTS: number;
 export declare const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = "4c33425553310000";
 export declare const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
 export declare const ATOMIC_MESSAGE_BUS_MAX_ROWS = 65535;
+/** Build concrete published resource budgets resource budgets from route/capability ceilings. */
+export declare function buildMessageBusResourceBudgets(params: {
+    maximumRows: number;
+    maximumBlobBytes?: number;
+    maximumParticipants?: number;
+    /** Route trailing capacity, when known — raises dyn/value ceilings. */
+    trailingCapacity?: number;
+}): MessageBusResourceBudgets;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export declare const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX = "aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087";
 export interface Artifact {
@@ -1365,9 +1480,60 @@ export interface Artifact {
         convention?: 'legacy-unroll' | 'kernel-row-loop';
         /** False when every handler was refused and the published route is a non-executable stub. */
         available?: boolean;
+        /**
+         * Admission stamp: analysis-admitted handler names stamped after speculative admission.
+         * Independent of live `handlers[].eligible` mutation — dropping the compiler stamp drops this field.
+         */
+        admittedHandlerIds?: readonly string[];
+        /** Admission stamp: analysis-refused handler names (from attribution spans when present). */
+        refusedHandlerIds?: readonly string[];
+        /**
+         * Admission stamp provenance: how `admittedHandlerIds` was produced.
+         * - `attribution-spans` — analyzer/span authority (kernel required; non-tautological vs published)
+         * - `legacy-eligibility` — non-kernel path copied published eligible ids (explicit; never silent unset)
+         * `published-fallback` is retired — missing span analysis fails closed on kernel.
+         */
+        admissionSource?: 'attribution-spans' | 'legacy-eligibility';
         minimumRows?: number;
         maximumRows: number;
         maximumBlobBytes: number;
+        /**
+         * Compiler-published multi-axis worst-case resource budgets.
+         * Kernel compose fails closed when this field is absent.
+         */
+        resourceBudgets?: MessageBusResourceBudgets;
+        /**
+         * Concrete deployability / budget certificate.
+         * Compiler stamps from measured bytecode vs `P2SH_BYTECODE_LIMIT`.
+         * `asserted` = within limit; `over-budget` = measured over limit.
+         * Field absence = legacy unstamped (former `"not-asserted"` ambiguity).
+         */
+        deployability?: DeployabilityCertificate;
+        /**
+         * Explicit capability schema with absence semantics for optional kernel fields.
+         * Consumers must resolve via `resolveKernelCapability` / `assertKernelCapabilityStatus`
+         * rather than treating field `undefined` as legacy/unsupported/inactive/incomplete.
+         */
+        capabilitySchema?: import('./kernel-capability-schema.js').KernelCapabilitySchema;
+        /**
+         * Published KernelExecutionPlan digests committed into route bytecode.
+         * Each entry's `digest` must appear as a unique SCKP push/drop marker in `artifact.bytecode`.
+         * Readers must gate on `kernelPlanVersion` via `assertReadableKernelExecutionPlans`.
+         */
+        kernelExecutionPlans?: {
+            version: 1;
+            plans: readonly {
+                handlerId: string;
+                kernelPlanVersion: number;
+                digest: string;
+                handlerName?: string;
+            }[];
+        };
+        /**
+         * Token-container co-layout: non-overlapping span proof for dynamic-bytes + `tokens[category]` co-layout.
+         * Present when route geometry reserves `tokenContainer` slots beside trailing dyn capacity.
+         */
+        tokenContainerCoLayout?: import('./token-container-co-layout.js').TokenContainerCoLayoutProof;
         /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
          * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
          * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
@@ -1436,6 +1602,31 @@ export interface Artifact {
             /** @deprecated Compatibility with pre-merge split artifacts. */
             splitLifecycle?: true;
         };
+        /**
+         * Published resource-fold plans: published multi-row chunkable fold plans. Compose fills leading/complete witnesses via
+         * `foldChunkableResource` using this plan as authority for step kind / initial source / witness names
+         * (runtime still supplies ordered row elements; rediscovery is legacy fallback when this field is absent).
+         */
+        resourceFoldPlans?: readonly {
+            collection: string;
+            collectionSignature?: string;
+            initialSource: 'empty' | 'prior-commitment' | 'leading-witness';
+            leadingWitness?: string;
+            completeWitness?: string;
+            /** Transition kind for every runtime-selected step against this collection. */
+            stepKind: 'push' | 'assign' | 'update';
+            /**
+             * path-effect activation: compiler-published per-effect fold activations (fixed-chunkable ECE).
+             * SDK instantiate fills missing step activations from this schedule.
+             */
+            activationSchedule?: {
+                version: 1;
+                effects: readonly {
+                    effectOrdinal: number;
+                    activation?: ExternalCallExpression;
+                }[];
+            };
+        }[];
         route: AbiFunction;
         handlers: {
             name: string;
@@ -1463,6 +1654,26 @@ export interface Artifact {
             delegateForwarding?: DelegateForwardingAbi;
             /** Typed child-creation sites in source execution order. Presence is topology only, not admission. */
             childDeployments?: readonly ChildDeploymentSiteAbi[];
+            /**
+             * path-effect activation: multi-effect path-effect schedule for this handler (state writes / events / transfers /
+             * child-deploy recipes with structured activations). Beyond child-deploy-only typed effect IR child-deploy-only IR.
+             */
+            pathEffectSchedule?: {
+                version: 1;
+                effects: readonly {
+                    ordinal: number;
+                    kind: string;
+                    resultType: string;
+                    activation?: string | {
+                        kind: string;
+                        name?: string;
+                        inputIndex?: number;
+                        of?: unknown;
+                        left?: unknown;
+                        right?: unknown;
+                    };
+                }[];
+            };
             /** Compiler-authored lifecycle authority. Append-v1 preserves the existing state geometry and permits
              * only a canonical fixed-field suffix in the final existing data NFT. */
             lifecycle?: {

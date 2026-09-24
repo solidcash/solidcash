@@ -1,5 +1,5 @@
 /**
- * F19: StatefulContract residual publishJobEvent compares go through the legacy adapter.
+ * legacy JobEvent name adapter: StatefulContract residual publishJobEvent compares go through the legacy adapter.
  * Kernel convention must not open writer / value-candidate discovery from those names.
  */
 import { describe, expect, it } from 'vitest';
@@ -13,7 +13,7 @@ import {
 import { chunkableWriterGroupIndex } from '../../src/stateful/StatefulContract.js';
 import { permitsLegacyNamedValueChunkFallback } from '../../src/stateful/StatefulTransactionBuilder.js';
 
-describe('F19 StatefulContract JobEvent name purge', () => {
+describe('legacy JobEvent name adapter StatefulContract JobEvent name purge', () => {
   it('chunkableWriterGroupIndex refuses kernel groups even when named publishJobEvent', () => {
     const kernelPublish = {
       functionName: 'publishJobEvent',
@@ -60,7 +60,11 @@ describe('F19 StatefulContract JobEvent name purge', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, '../../src/stateful/StatefulContract.ts'), 'utf8');
     expect(src).toContain('legacyIsPublishJobEventName');
-    expect(src).toContain("from './legacy-planning-heuristics.js'");
+    // legacy JobEvent name adapter: planning-heuristics direct; legacy JobEvent helper facade: JobEvent helper facade re-exports the same helpers.
+    expect(
+      src.includes("from './legacy-planning-heuristics.js'")
+      || src.includes("from './legacy-job-event-helpers.js'"),
+    ).toBe(true);
     const codeLines = src.split('\n').filter((line) => {
       const t = line.trim();
       return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');

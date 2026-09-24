@@ -6,13 +6,13 @@ import { keyToSlot } from '../../src/stateful/SortedList.js';
 import {
   isDisposableAlignmentPad,
   jobEventsEntryOneToOneIndices,
-  persistedJobEventsLock,
-  persistedJobEventsValue,
-  persistedJobEventsUnlockRecipe,
-  rememberJobEventsLock,
-  rememberJobEventsUnlockRecipe,
-  rememberJobEventsValue,
-  stageJobEventsValue,
+  legacyPersistedValueChunkLock,
+  legacyPersistedValueChunkValue,
+  legacyPersistedValueChunkUnlockRecipe,
+  legacyRememberValueChunkLock,
+  legacyRememberValueChunkUnlockRecipe,
+  legacyRememberValueChunkValue,
+  legacyStageValueChunkValue,
   StatefulTransactionBuilder,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
 
@@ -22,10 +22,10 @@ describe('jobEvents persist vs mock reset', () => {
     lock[0] = 0xaa;
     lock[1] = 0x20;
     lock[34] = 0x87;
-    rememberJobEventsLock('ee643a16', lock);
-    expect(persistedJobEventsLock('ee643a16')).toEqual(lock);
+    legacyRememberValueChunkLock('ee643a16', lock);
+    expect(legacyPersistedValueChunkLock('ee643a16')).toEqual(lock);
     new MockNetworkProvider().reset();
-    expect(persistedJobEventsLock('ee643a16')).toBeUndefined();
+    expect(legacyPersistedValueChunkLock('ee643a16')).toBeUndefined();
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 
@@ -37,11 +37,11 @@ describe('jobEvents persist vs mock reset', () => {
     lock[1] = 0x20;
     lock[34] = 0x87;
 
-    rememberJobEventsLock('ab'.repeat(32), lock);
-    expect(persistedJobEventsLock('ab'.repeat(32))).toEqual(lock);
+    legacyRememberValueChunkLock('ab'.repeat(32), lock);
+    expect(legacyPersistedValueChunkLock('ab'.repeat(32))).toEqual(lock);
 
     await snapshot.restore();
-    expect(persistedJobEventsLock('ab'.repeat(32))).toBeUndefined();
+    expect(legacyPersistedValueChunkLock('ab'.repeat(32))).toBeUndefined();
   });
 
   it('treats token-free p2pkh occupants as disposable alignment pads', () => {
@@ -77,18 +77,18 @@ describe('jobEvents persist vs mock reset', () => {
     value[1] = 0xb4;
     const slot = keyToSlot(new Uint8Array());
     const lock = getValueChunkLockingBytecode(categoryId, 'jobEvents', slot, sha256(value));
-    stageJobEventsValue(categoryId, value);
-    expect(persistedJobEventsUnlockRecipe(categoryId)).toBeUndefined();
-    rememberJobEventsValue(categoryId, value);
-    rememberJobEventsLock(categoryId, lock);
-    expect(rememberJobEventsUnlockRecipe(categoryId)).toBe(true);
-    const recipe = persistedJobEventsUnlockRecipe(categoryId);
+    legacyStageValueChunkValue(categoryId, value);
+    expect(legacyPersistedValueChunkUnlockRecipe(categoryId)).toBeUndefined();
+    legacyRememberValueChunkValue(categoryId, value);
+    legacyRememberValueChunkLock(categoryId, lock);
+    expect(legacyRememberValueChunkUnlockRecipe(categoryId)).toBe(true);
+    const recipe = legacyPersistedValueChunkUnlockRecipe(categoryId);
     expect(recipe?.collection).toBe('jobEvents');
     expect(recipe?.categoryId).toBe(categoryId);
     expect(recipe?.slot).toEqual(slot);
     expect(recipe?.root).toEqual(sha256(value));
     StatefulTransactionBuilder.clearPersistedJobEvents();
-    expect(persistedJobEventsUnlockRecipe(categoryId)).toBeUndefined();
+    expect(legacyPersistedValueChunkUnlockRecipe(categoryId)).toBeUndefined();
   });
 
   it('keeps a staged write authoritative over speculative predecessor observations', () => {
@@ -96,13 +96,13 @@ describe('jobEvents persist vs mock reset', () => {
     const longer = new Uint8Array(120).fill(0x11);
     const shorter = new Uint8Array(80).fill(0x22);
 
-    stageJobEventsValue(categoryId, longer);
-    rememberJobEventsValue(categoryId, shorter);
-    expect(persistedJobEventsValue(categoryId)).toEqual(longer);
+    legacyStageValueChunkValue(categoryId, longer);
+    legacyRememberValueChunkValue(categoryId, shorter);
+    expect(legacyPersistedValueChunkValue(categoryId)).toEqual(longer);
 
-    stageJobEventsValue(categoryId, shorter);
-    rememberJobEventsValue(categoryId, longer);
-    expect(persistedJobEventsValue(categoryId)).toEqual(shorter);
+    legacyStageValueChunkValue(categoryId, shorter);
+    legacyRememberValueChunkValue(categoryId, longer);
+    expect(legacyPersistedValueChunkValue(categoryId)).toEqual(shorter);
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 });

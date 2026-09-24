@@ -30,9 +30,9 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 };
 
 describe('kernel proxy sorted-insert PredOut under __forward', () => {
-  it('INSERT via deployProxy seed: P′ rewrite and NEW entry on proxy-owned outputs', async () => {
+  it('INSERT via deployProxy seed: P rewrite and NEW entry on proxy-owned outputs', async () => {
     // compose×proxy×foreign OP_VERIFYs (M1a characterization). Single-handler proxy INSERT settles on
-    // the shipped deployProxy __forward path: executor=impl, state/category=proxy, P′≠NEW geometry.
+    // the shipped deployProxy __forward path: executor=impl, state/category=proxy, P≠NEW geometry.
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract Acc() {
         int count;

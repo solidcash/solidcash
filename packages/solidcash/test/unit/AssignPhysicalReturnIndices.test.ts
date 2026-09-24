@@ -97,12 +97,12 @@ import {
   proxyValueChunkPadCount,
   liveChunkSlotsByOwner,
   liveChunkWidthForGroup,
-  computePublishJobEventsBand,
+  legacyComputePublishValueChunkBand,
   scaledInputPreserveExclusiveEnd,
   scaledEventOutputIndex,
-  liveJobEventsBandWidth,
+  legacyLiveValueChunkBandWidth,
   selectObservedValueChunkRun,
-  persistedJobEventsWidth,
+  legacyPersistedValueChunkWidth,
   selectHashedValueForChunkPin,
   chunksFromJobEventsValue,
   p2sh32LockFromValueRoot,
@@ -112,7 +112,7 @@ import {
   viewTailOccupancyCap,
   clampViewTailPlacement,
   placeValueChunksOnBand,
-  fillJobEventsBandHoles,
+  legacyFillValueChunkBandHoles,
   writerBlockOccupancyEnd,
   relocateChangeAfterOccupancy,
   packJobsAgainstOpReturn,
@@ -132,7 +132,7 @@ import {
   boundedDerivationIterations,
   shouldGrowSpeculativeChunkRegion,
   seedChunksFromPersistedValue,
-  isPersistedJobEventsReady,
+  legacyIsPersistedValueChunkReady,
   isOverwritableValueChunkOccupant,
   isDisposableAlignmentPad,
   placeMintingMasterPreservingTail,
@@ -161,10 +161,10 @@ import {
   shouldRematerializePersistUpdate,
   shouldStampPersistUpdateDigestLock,
   shouldUseLegacyPersistDigestLockForValueChunks,
-  rememberJobEventsLock,
-  rememberJobEventsValue,
+  legacyRememberValueChunkLock,
+  legacyRememberValueChunkValue,
   rememberValueChunkUnlockRecipe,
-  persistedJobEventsLock,
+  legacyPersistedValueChunkLock,
   persistedValueChunkWriteState,
   selectPersistedValueChunkWrite,
   selectValueChunkWriteCategory,
@@ -915,8 +915,8 @@ describe('generic persisted value-chunk write identity', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents();
     const value = new Uint8Array(100).fill(9);
     const [renamed] = describeValueChunkWrites(makeGroup('appendNotice'));
-    rememberJobEventsValue(categoryId, value);
-    rememberJobEventsLock(categoryId, getValueChunkLockingBytecode(
+    legacyRememberValueChunkValue(categoryId, value);
+    legacyRememberValueChunkLock(categoryId, getValueChunkLockingBytecode(
       categoryId, renamed.collection, slot, sha256Sync(value),
     ));
     expect(renamed).toMatchObject({
@@ -977,13 +977,13 @@ describe('generic persisted value-chunk write identity', () => {
       categoryId, second.collection, hexToBin(second.keySlot), sha256Sync(secondValue),
     );
 
-    rememberJobEventsValue(categoryId, firstValue);
-    rememberJobEventsLock(categoryId, firstLock);
+    legacyRememberValueChunkValue(categoryId, firstValue);
+    legacyRememberValueChunkLock(categoryId, firstLock);
     expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
 
     // A later observation for another resource in the same token category must not evict the first identity.
-    rememberJobEventsValue(categoryId, secondValue);
-    rememberJobEventsLock(categoryId, secondLock);
+    legacyRememberValueChunkValue(categoryId, secondValue);
+    legacyRememberValueChunkLock(categoryId, secondLock);
     expect(persistedValueChunkWriteState(second)?.value).toEqual(secondValue);
     expect(persistedValueChunkWriteState(first)?.value).toEqual(firstValue);
 
@@ -1096,16 +1096,16 @@ describe('generic persisted value-chunk write identity', () => {
     StatefulTransactionBuilder.clearPersistedJobEvents();
     const [first] = describeValueChunkWrites(makeGroup('appendNotice'));
     const firstValue = new Uint8Array(100).fill(3);
-    rememberJobEventsValue(first.categoryId, firstValue);
-    rememberJobEventsLock(first.categoryId, getValueChunkLockingBytecode(
+    legacyRememberValueChunkValue(first.categoryId, firstValue);
+    legacyRememberValueChunkLock(first.categoryId, getValueChunkLockingBytecode(
       first.categoryId, first.collection, slot, sha256Sync(firstValue),
     ));
 
     const secondCategory = 'cd'.repeat(32);
     const second = { ...first, categoryId: secondCategory };
     const secondValue = new Uint8Array(100).fill(4);
-    rememberJobEventsValue(secondCategory, secondValue);
-    rememberJobEventsLock(secondCategory, getValueChunkLockingBytecode(
+    legacyRememberValueChunkValue(secondCategory, secondValue);
+    legacyRememberValueChunkLock(secondCategory, getValueChunkLockingBytecode(
       secondCategory, second.collection, slot, sha256Sync(secondValue),
     ));
 
@@ -1673,16 +1673,16 @@ describe('assignPhysicalReturnIndices', () => {
       categoryId === 'marketplace-data' ? 6 : 15
     );
     const plannedWidth = 2;
-    expect(liveJobEventsBandWidth({ plannedWidth })).toBe(2);
+    expect(legacyLiveValueChunkBandWidth({ plannedWidth })).toBe(2);
     expect(valueChunkBandWidth({ planned: plannedWidth })).toBe(3);
     expect(valueChunkBandWidth({ minimum: 1, planned: plannedWidth })).toBe(2);
-    const natural = computePublishJobEventsBand({
-      start: 15, plannedWidth, liveWidth: liveJobEventsBandWidth({ plannedWidth }),
+    const natural = legacyComputePublishValueChunkBand({
+      start: 15, plannedWidth, liveWidth: legacyLiveValueChunkBandWidth({ plannedWidth }),
     });
     expect(natural).toEqual({ start: 15, end: 16, nNew: 2 });
     expect(collidingParticipantGroupIndex(groups, findMinting, natural!)).toBe(1);
-    const slid = computePublishJobEventsBand({
-      start: 15 + 8, plannedWidth, liveWidth: liveJobEventsBandWidth({ plannedWidth }),
+    const slid = legacyComputePublishValueChunkBand({
+      start: 15 + 8, plannedWidth, liveWidth: legacyLiveValueChunkBandWidth({ plannedWidth }),
     });
     expect(slid).toEqual({ start: 23, end: 24, nNew: 2 });
     expect(collidingParticipantGroupIndex(groups, findMinting, slid!)).toBe(-1);
@@ -2807,7 +2807,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(viewTailOccupancyCap([20, 21], { start: 20, end: 25 })).toBe(25);
     expect(viewTailOccupancyCap([17, 20], { start: 20, end: 22 })).toBe(22);
     expect(viewTailOccupancyCap([17, 19])).toBe(-1);
-    expect(computePublishJobEventsBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
+    expect(legacyComputePublishValueChunkBand({ implIndex: -1, plannedWidth: 6 })).toBeUndefined();
     expect(scaledInputPreserveExclusiveEnd(5, 5)).toBe(25);
     expect(scaledEventOutputIndex(5, 5)).toBe(24);
     expect(chunkableWriterEventOutputIndex(15, 4)).toBe(19);
@@ -3055,22 +3055,22 @@ describe('assignPhysicalReturnIndices', () => {
     )).toBe(true);
     expect(scaledEventOutputIndex(-1, 5)).toBe(-1);
     expect(scaledInputPreserveExclusiveEnd(-1, 5)).toBe(-1);
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       start: 20, plannedWidth: 3, preserveEndExclusive: 25,
     })).toEqual({ start: 25, end: 27, nNew: 3 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       start: Math.max(20, 21 + 1), plannedWidth: 2,
     })).toEqual({ start: 22, end: 23, nNew: 2 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       start: 20, plannedWidth: 3,
     })).toEqual({ start: 20, end: 22, nNew: 3 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 15, blockSize: 5, plannedWidth: 3,
     })).toEqual({ start: 20, end: 22, nNew: 3 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 15, blockSize: 5, plannedWidth: 6, derivedIndices: [20, 21, 22, 23, 24],
     })).toEqual({ start: 20, end: 24, nNew: 5 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 15, blockSize: 5, plannedWidth: 6, liveWidth: 5,
     })).toEqual({ start: 20, end: 24, nNew: 5 });
     const created = [
@@ -3108,12 +3108,12 @@ describe('assignPhysicalReturnIndices', () => {
       { commitment: '0400bc', lockingBytecode: lock, categoryId: 'md' },
     ]);
     expect(holeOutputs[25]?.token).toBeUndefined();
-    expect(fillJobEventsBandHoles(holeOutputs, { start: 20, nNew: 6 }, {
+    expect(legacyFillValueChunkBandHoles(holeOutputs, { start: 20, nNew: 6 }, {
       lockingBytecode: lock, categoryId: 'md',
     }, new Set(), 28)).toBe(1);
     expect(holeOutputs[25]?.token?.nft?.capability).toBe('mutable');
     expect(holeOutputs[25]?.to).toBe(lock);
-    expect(fillJobEventsBandHoles(holeOutputs, { start: 20, nNew: 16 }, {
+    expect(legacyFillValueChunkBandHoles(holeOutputs, { start: 20, nNew: 16 }, {
       lockingBytecode: lock, categoryId: 'md',
     }, new Set(), 26)).toBe(0);
     const changeOutputs = Array.from({ length: 29 }, (_, index) => (
@@ -3123,7 +3123,7 @@ describe('assignPhysicalReturnIndices', () => {
           ? { to: Uint8Array.of(0x6a), amount: 0n }
           : { to: Uint8Array.of(0x51), amount: 1000n }
     ));
-    expect(fillJobEventsBandHoles(changeOutputs, { start: 20, nNew: 6 }, {
+    expect(legacyFillValueChunkBandHoles(changeOutputs, { start: 20, nNew: 6 }, {
       lockingBytecode: lock, categoryId: 'md',
     }, new Set(), 28)).toBe(6);
     const writerGroups: PhysicalReturnGroup[] = [
@@ -3222,7 +3222,7 @@ describe('assignPhysicalReturnIndices', () => {
     expect(orphaned[0]?.to).toEqual(Uint8Array.of(0x51));
     expect(orphaned[2]?.token?.nft?.commitment).toBe('00aa');
     expect(orphaned[3]?.token?.nft?.commitment).toBe('01bb');
-    expect(isPersistedJobEventsReady()).toBe(false);
+    expect(legacyIsPersistedValueChunkReady()).toBe(false);
     expect(boundedDerivationIterations({
       defaultIterations: 20, persistWidth: 3, hasLoopOrChunkVars: true,
     })).toBe(8);
@@ -3274,21 +3274,21 @@ describe('assignPhysicalReturnIndices', () => {
     expect(changeOutputs.some((output) => (
       !output.token && (output.amount ?? 0n) >= 499_000n
     ))).toBe(true);
-    expect(liveJobEventsBandWidth({ plannedWidth: 2, persistWidth: 3 })).toBe(3);
-    expect(liveJobEventsBandWidth({
+    expect(legacyLiveValueChunkBandWidth({ plannedWidth: 2, persistWidth: 3 })).toBe(3);
+    expect(legacyLiveValueChunkBandWidth({
       plannedWidth: 2, persistWidth: 5, derivedWidth: 3,
     })).toBe(3);
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 18, blockSize: 5, plannedWidth: 2, insertShift: 1,
     })).toEqual({ start: 24, end: 25, nNew: 2 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 18, blockSize: 5, plannedWidth: 2, liveWidth: 3,
     })).toEqual({ start: 23, end: 25, nNew: 3 });
-    expect(computePublishJobEventsBand({
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 15, blockSize: 5, plannedWidth: 5, liveWidth: 0,
     })).toEqual({ start: 20, end: 24, nNew: 5 });
-    expect(persistedJobEventsWidth('missing')).toBe(0);
-    expect(computePublishJobEventsBand({
+    expect(legacyPersistedValueChunkWidth('missing')).toBe(0);
+    expect(legacyComputePublishValueChunkBand({
       implIndex: 15, blockSize: 5, jobEventsCount: 4,
     })).toEqual({ start: 20, end: 23, nNew: 4 });
     const viewTail = {
@@ -3342,7 +3342,7 @@ describe('assignPhysicalReturnIndices', () => {
     const sessionLock = new Uint8Array(35);
     sessionLock[0] = 0xaa; sessionLock[1] = 0x20; sessionLock[34] = 0x87;
     sessionLock[2] = 0xeb;
-    rememberJobEventsLock('ee643a16', persistLock);
+    legacyRememberValueChunkLock('ee643a16', persistLock);
     expect(binToHex(persistUpdateRedeemLock('ee643a16', sessionLock)!)).toBe(binToHex(sessionLock));
     expect(binToHex(persistUpdateRedeemLock('ee643a16')!)).toBe(binToHex(persistLock));
     const stamped = applyRedeemLockToChunks(
@@ -3350,7 +3350,7 @@ describe('assignPhysicalReturnIndices', () => {
       persistUpdateRedeemLock('ee643a16', sessionLock)!,
     );
     expect(binToHex(stamped[0].lockingBytecode)).toBe(binToHex(sessionLock));
-    expect(binToHex(persistedJobEventsLock('ee643a16')!)).toBe(binToHex(persistLock));
+    expect(binToHex(legacyPersistedValueChunkLock('ee643a16')!)).toBe(binToHex(persistLock));
     StatefulTransactionBuilder.clearPersistedJobEvents();
   });
 

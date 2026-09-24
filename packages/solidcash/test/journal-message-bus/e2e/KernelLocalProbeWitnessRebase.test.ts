@@ -93,7 +93,7 @@ describe('kernel local probe witness rebase', () => {
     // A non-zero local slot rebases by addition onto the published participant span.
     expect(resolveDynamicChunkInputBase(2, publishedAbsoluteDyn)).toBe(BigInt(publishedAbsoluteDyn + 2));
 
-    // Gate A′: filled unlocker dyn base matches one resolveParticipantAbsoluteWitnesses (compose path).
+    // transaction layout authority: filled unlocker dyn base matches one resolveParticipantAbsoluteWitnesses (compose path).
     const trailingBase = storeArtifact.messageBus?.route?.blockLayout?.trailingBase;
     expect(typeof trailingBase).toBe('number');
     const expected = resolveParticipantAbsoluteWitnesses({

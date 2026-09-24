@@ -139,7 +139,7 @@ describe('messageBus.encodeMessageBatch', () => {
     ]);
     expect(hex.startsWith(`53434231010002${add.selector}000000000000`)).toBe(true);
     expect(hex).toContain(`${clear.selector}0100000000000000`);
-    // Item 3: mixed-arity rows publish absolute calldata bounds that reconstruct argsHex and tile the blob.
+    // handler-frame ABI: mixed-arity rows publish absolute calldata bounds that reconstruct argsHex and tile the blob.
     expect(encoded.rows[0]).toMatchObject({
       calldataLength: encoded.rows[0]!.argsHex.length / 2,
     });

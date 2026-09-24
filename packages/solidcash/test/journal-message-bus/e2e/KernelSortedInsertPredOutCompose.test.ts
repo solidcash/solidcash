@@ -37,7 +37,7 @@ const commitmentHex = (commitment: Uint8Array | string | undefined): string => {
 };
 
 describe('kernel sorted-insert PredOut under composition', () => {
-  it('points PredOut at the P′ predecessor rewrite, not the NEW entry', async () => {
+  it('points PredOut at the P predecessor rewrite, not the NEW entry', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const registryArtifact = compileString(`pragma solidity ^0.8.0;
       contract Registry {
@@ -115,7 +115,7 @@ describe('kernel sorted-insert PredOut under composition', () => {
     const decodedPred = decodeEntryCommitment(
       typeof predCommitment === 'string' ? hexToBin(predCommitment) : predCommitment,
     );
-    // PredOut names P′: the predecessor rewrite keeps the seeded slot and now links to the inserted key.
+    // PredOut names P: the predecessor rewrite keeps the seeded slot and now links to the inserted key.
     expect(bytesToSlotValue(decodedPred.slot)).toBe(seededSlot);
     expect(bytesToSlotValue(decodedPred.nextKey)).toBe(insertedSlot);
 

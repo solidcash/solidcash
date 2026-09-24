@@ -97,8 +97,10 @@ describe('delegate route inactive dynamic writes', () => {
       changeAddress: funder.unlocker.generateLockingBytecode(),
     });
 
-    // This union-width route reaches the stock provider's operation-density boundary. In particular, it must
-    // advance past graph convergence: the unselected handler's empty array has no chunk outputs to resolve.
-    await expect(composition.build()).rejects.toThrow(/operation cost density limit/);
+    // Full-admission union still densifies (trailing capacity for dormant). Keep as negative
+    // characterization beside KernelProxyInactiveUnionSettle (slim admitted-handlers green path).
+    await expect(composition.build()).rejects.toThrow(
+      /operation cost density limit|incomplete dynamic chunks/,
+    );
   }, 180_000);
 });

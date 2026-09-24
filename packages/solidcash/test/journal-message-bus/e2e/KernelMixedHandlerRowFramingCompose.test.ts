@@ -163,7 +163,7 @@ describe('kernel mixed-handler row framing under composition', () => {
     const clearRow = framed.rows[1]!;
     expect(clearRow.calldataLength).toBe(0);
 
-    // Item 3 residual: shipped public API fail-closes unframed / hostile consumer walks.
+    // handler-frame ABI residual: shipped public API fail-closes unframed / hostile consumer walks.
     expect(() => messageBus.sliceMessageBatchRowCalldata(framed.blob, {
       row: clearRow.row,
       argsHex: clearRow.argsHex,

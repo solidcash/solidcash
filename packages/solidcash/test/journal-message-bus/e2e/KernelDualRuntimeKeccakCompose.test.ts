@@ -54,8 +54,9 @@ async function fundKeccakSidecars(
  * Dual-runtime / mapping × keccak under compose.
  *
  * Settles: scalar event emit + keccak; single-key mapping RMW + keccak (graph-owned deferred
- * preimage learning); fixed dual-key add+remove in one handler under compose. DualRuntimeSet
- * array-stream width + keccak remains an inherent density fence.
+ * preimage learning); fixed dual-key add+remove in one handler under compose; DualRuntimeSet
+ * array-stream width + keccak under compose (density wall lifted on fixtures tip). Proxy
+ * DualRuntimeSet-width density reject remains in `KernelDensityBoundedCompose`.
  */
 describe('kernel dual-runtime / event / keccak under composition', () => {
   it('settles Ping emit + keccak256 under compose (no mapping RMW)', async () => {
@@ -317,7 +318,7 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
       || vmNumberToBigInt(removed!.value, { requireMinimalEncoding: false }) === 0n).toBe(true);
   }, 180_000);
 
-  it('characterizes DualRuntimeSet-width arrays + keccak under compose: density wall', async () => {
+  it('settles DualRuntimeSet-width arrays + keccak under compose (former density wall)', async () => {
     const provider = createMessageBusCapstoneTestProvider();
     const probeArtifact = compileString(`pragma solidity ^0.8.20;
       contract Probe { function touch() public { require(true); } }`, {
@@ -394,8 +395,10 @@ describe('kernel dual-runtime / event / keccak under composition', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
-    await expect(composition.build()).rejects.toThrow(
-      /operation cost density limit|BCH-2026 preflight failed|failed to build its balanced block/,
-    );
+    const builder = await composition.build();
+    expect(vmAccepts(builder)).toBe(true);
+    await expect(composition.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
   }, 240_000);
 });

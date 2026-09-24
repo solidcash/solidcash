@@ -1,0 +1,181 @@
+/**
+ * phase-boundary extract: SC extract — resolve fixed-slot keccak256 compute side-car co-spends.
+ */
+
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import {
+  KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
+  keccakComputeLockingBytecode,
+  keccakComputeLockingBytecodeLegacy,
+  type AbiFunction,
+} from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
+import { buildKeccakComputeSidecar } from '../keccak/keccakComputeSidecar.js';
+import { addressToLockScript } from '../utils.js';
+import {
+  computeSideCarStandIn,
+  hasOutpoint,
+} from './stateful-abi-resolve.js';
+
+export interface ResolveKeccakComputeCoSpendsHost {
+  readonly categoryId: string;
+  readonly inner: {
+    bytecode: string;
+    provider: NetworkProvider & {
+      getUtxosForLockingBytecode(lockingBytecode: Uint8Array): Promise<Utxo[]>;
+      addUtxo?: (address: string, utxo: Utxo) => Promise<Utxo>;
+    };
+  };
+  extractStatefulKeccakPreimages(
+    abiFunction: AbiFunction,
+    preimages: Array<Uint8Array | null>,
+    salt: Uint8Array,
+    scUtxos: Utxo[],
+    probeCtx?: ResolveKeccakProbeCtx,
+  ): Promise<void>;
+  evalComputedKey(...args: any[]): Uint8Array | undefined;
+}
+
+export type ResolveKeccakProbeCtx = {
+  masterUtxo: Utxo;
+  stateInputUnlocker: Unlocker;
+  dataNftUtxos: Utxo[];
+  dataNftUnlockers: Unlocker[];
+  frontRegionInputs?: UnlockableUtxo[];
+  locktime?: number;
+  deferUnresolved?: boolean;
+  artifactBytecode?: string;
+  ecrecoverPreimages?: Array<Uint8Array | null>;
+};
+
+export type ResolveKeccakComputeCoSpendsResult = {
+  coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>;
+  preimages: Array<Uint8Array | null>;
+  salt: Uint8Array;
+  legacy: boolean;
+};
+
+export async function resolveKeccakComputeCoSpends(
+  host: ResolveKeccakComputeCoSpendsHost,
+  abiFunction: AbiFunction,
+  args: any[],
+  probeCtx?: ResolveKeccakProbeCtx,
+): Promise<ResolveKeccakComputeCoSpendsResult> {
+  const params = abiFunction.keccakPreimageParams ?? [];
+  const recoveryPreimages = probeCtx?.ecrecoverPreimages ?? [];
+  const totalCallCount = params.length + recoveryPreimages.length;
+  if (totalCallCount === 0 || !host.categoryId) {
+    return { coSpends: [], preimages: [], salt: new Uint8Array(32), legacy: false };
+  }
+  // A stateful DYNAMIC keccak loop (keccakLoopReads) reads N runtime trailing side-cars - resolved by the
+  // separate _resolveStatefulKeccakLoop progressive-probe path, not the fixed-slot path here. Reaching this
+  // with keccakLoopReads set is an internal routing bug (the caller should branch on keccakLoopReads first).
+  if (abiFunction.keccakLoopReads) {
+    throw new Error('internal: stateful dynamic keccak256 loop must resolve via _resolveStatefulKeccakLoop.');
+  }
+  // Branded to the contract's category. The covenant brand-checks the master's OP_UTXOTOKENCATEGORY, which
+  // the VM returns in INTERNAL (reversed) byte order, so the baked salt must be the reversed category.
+  const salt = hexToBin(host.categoryId).slice().reverse();
+  const legacy = (probeCtx?.artifactBytecode ?? host.inner.bytecode)
+    .includes(KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY);
+  const lock = legacy
+    ? keccakComputeLockingBytecodeLegacy(salt, true)
+    : keccakComputeLockingBytecode(salt, true);
+  let scUtxos = (await host.inner.provider.getUtxosForLockingBytecode(lock))
+    .filter((u) => u.token?.nft?.capability === 'mutable');
+  const batchCount = legacy ? totalCallCount : Math.ceil(totalCallCount / 3);
+  // Mock providers can mint the branded compute side-cars on demand. Production providers do not expose
+  // addUtxo, so real networks retain the explicit deployment requirement below.
+  if (scUtxos.length < batchCount) {
+    const addUtxo = (host.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> }).addUtxo;
+    if (typeof addUtxo === 'function') {
+      for (let i = scUtxos.length; i < batchCount; i++) {
+        const standIn = computeSideCarStandIn('keccak-sidecar', lock, i);
+        if (hasOutpoint(scUtxos, standIn)) continue;
+        await addUtxo.call(host.inner.provider, binToHex(lock), standIn);
+      }
+      scUtxos = (await host.inner.provider.getUtxosForLockingBytecode(lock))
+        .filter((u) => u.token?.nft?.capability === 'mutable');
+    }
+  }
+  if (scUtxos.length < batchCount) {
+    throw new Error(`keccak256 needs ${batchCount} compute side-car UTXO(s) at the branded address; `
+      + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per keccak256 call.`);
+  }
+  const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
+  // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
+  // are resolved by a VM probe of the master (mirrors the stateless resolveKeccakPreimages, but positioned
+  // at the block-layout keccakSideCar slots).
+  const preimages: (Uint8Array | null)[] = params.map(
+    (p) => (p ? (args[visible.findIndex((x) => x.name === p)] instanceof Uint8Array
+      ? args[visible.findIndex((x) => x.name === p)] : null) : null),
+  );
+  // If the digest is itself a vmap key, its published expression can be evaluated without a circular probe.
+  if (preimages.length === 1 && preimages[0] === null) {
+    const inners = new Set(
+      (abiFunction.entryAccesses ?? [])
+        .flatMap((access) => (access.keyParams ?? []) as readonly string[])
+        .map((label) => /^call:keccak256\((.*)\)$/.exec(label)?.[1])
+        .filter((inner): inner is string => Boolean(inner)),
+    );
+    if (inners.size === 1) {
+      const computed = host.evalComputedKey([...inners][0], args as FunctionArgument[], visible);
+      if (computed) preimages[0] = computed;
+    }
+  }
+  // Uniswap-style createPair hashes the sorted pair of visible address arguments.
+  if (preimages.length === 1 && preimages[0] === null) {
+    const addressIndices = visible
+      .map((input, index) => ({ input, index }))
+      .filter(({ input }) => input.type === 'address' || input.type.startsWith('address '))
+      .map(({ index }) => index);
+    const toLbc = (value: unknown): Uint8Array | undefined => {
+      if (value instanceof Uint8Array) return value;
+      if (typeof value === 'string' && value.includes(':')) return addressToLockScript(value);
+      if (typeof value === 'string' && /^(?:0x)?[0-9a-f]+$/i.test(value)) {
+        return hexToBin(value.replace(/^0x/i, ''));
+      }
+      return undefined;
+    };
+    if (addressIndices.length >= 2) {
+      const a = toLbc(args[addressIndices[0]]);
+      const b = toLbc(args[addressIndices[1]]);
+      if (a && b) {
+        const [first, second] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
+        const packed = new Uint8Array(first.length + second.length);
+        packed.set(first, 0);
+        packed.set(second, first.length);
+        preimages[0] = packed;
+      }
+    }
+  }
+  preimages.push(...recoveryPreimages.map((preimage) =>
+    preimage === null ? null : Uint8Array.from(preimage)));
+  if (preimages.some((p) => p === null) && probeCtx?.deferUnresolved !== true) {
+    await host.extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
+  }
+  const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
+  for (let batch = 0; batch < batchCount; batch++) {
+    const batchPreimages = preimages.slice(batch * 3, batch * 3 + 3);
+    if (legacy) {
+      const preimage = preimages[batch];
+      if (!(preimage instanceof Uint8Array) && probeCtx?.deferUnresolved !== true) {
+        throw new Error(`keccak256 preimage ${batch} could not be resolved.`);
+      }
+      const built = buildKeccakComputeSidecar(preimage ?? new Uint8Array(), salt, scUtxos[batch], true, true);
+      resolved.push({ utxo: scUtxos[batch], ...built });
+      continue;
+    }
+    if (batchPreimages.some((preimage) => !(preimage instanceof Uint8Array))
+      && probeCtx?.deferUnresolved !== true) {
+      throw new Error(`keccak256 preimage batch ${batch} could not be resolved.`);
+    }
+    const { unlocker, recreate, commitment } = buildKeccakComputeSidecar(
+      batchPreimages.map((preimage) => preimage ?? new Uint8Array()), salt, scUtxos[batch], true,
+    );
+    resolved.push({ utxo: scUtxos[batch], unlocker, recreate, commitment });
+  }
+  return { coSpends: resolved, preimages, salt, legacy };
+}

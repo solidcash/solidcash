@@ -1,0 +1,570 @@
+/**
+ * phase-boundary extract: SC class-body extract — ethers-style staticCall return-value derivation.
+ */
+
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import {
+  attachDecodedAccessors,
+  decodePushdataValue,
+  encodePushdataValue,
+  type AbiFunction,
+  type Artifact,
+  type StateValue,
+} from '@solidcash/utils';
+import type { FunctionArgument } from '../Argument.js';
+import type { UnlockableUtxo } from '../interfaces.js';
+import type NetworkProvider from '../network/NetworkProvider.js';
+import { getNetworkPrefix } from '../utils.js';
+import {
+  findDeploymentByAddress,
+  findDeploymentByLockingBytecode,
+  findDeploymentByName,
+} from './deployment-registry.js';
+import {
+  decodeAuthenticatedProducerResultVector,
+} from './external-return-encoding.js';
+import {
+  decodeEvmInvocationResult,
+  decodeEvmInvocationResultPrefix,
+  encodeEvmInvocationResult,
+} from './evm-abi-result.js';
+import {
+  normalizeJobEventAddresses,
+  usesLegacyJobEventCompatibility,
+} from './legacy-job-event-wire.js';
+import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+import {
+  selectReturnAbiPlan,
+  type ReturnAbiCandidate,
+} from './return-abi-plan.js';
+import { directMappingReadPlan } from './route-expression-key.js';
+import { legacyStatefulSimulationEnabled } from './soft-state-overlays.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
+import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
+import type {
+  CallInfo,
+  StatefulContract,
+  StatefulFunctionCall,
+} from './StatefulContract.js';
+import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+
+type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;
+
+type StateValueType = StateValue;
+type LogicalReturnContext = {
+  artifact: Artifact;
+  call: StatefulCall;
+  args: readonly FunctionArgument[];
+};
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+export interface DeriveReturnValueHost {
+  readonly inner: {
+    artifact: Artifact;
+    provider: NetworkProvider;
+    lockingBytecode: Uint8Array;
+    address?: string;
+    tokenAddress?: string;
+    addressType?: string;
+  };
+  readonly provider: NetworkProvider;
+  readonly target: string;
+  readonly externalRegistry: ReadonlyMap<string, StatefulContract<Artifact>>;
+  lastReturnProbeFailure?: string;
+  _deriveSeq?: number;
+  addressMappingKeyCandidates(addressValue: unknown): Array<string | Uint8Array>;
+  getSoftMapping(collection: string, keys: ReadonlyArray<unknown>): StateValue | undefined;
+  resolveCallAbi(functionName: string, args: readonly FunctionArgument[]): AbiFunction | undefined;
+  getEntries(collectionNameOrSignature: string): Promise<Array<{
+    slot?: Uint8Array;
+    key?: bigint | boolean | Uint8Array;
+    keys?: Array<bigint | boolean | Uint8Array>;
+    value: StateValue;
+  }>>;
+  createBuilder(functionName: string, args: any[], overrides?: Record<string, unknown>): Promise<StatefulTransactionBuilder>;
+  deriveReturnBlob(
+    builder: StatefulTransactionBuilder,
+    returnOutputIndex: number,
+    inputIndex?: number,
+  ): Uint8Array | undefined;
+  getState(): Promise<Record<string, StateValueType>>;
+  getCallerMasterUtxo(caller: StatefulContract<Artifact>): Promise<UnlockableUtxo | undefined>;
+}
+
+
+/**
+ * ethers-style `fn.staticCall(...)` read: run the function's covenant in a read-only VM probe against the
+ * current on-chain state + args, extract the encoded return value, and decode it against the ABI output type(s)
+ * WITHOUT sending a transaction. A single output returns the decoded value; multiple outputs return an
+ * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
+ */
+export async function deriveReturnValue(
+host: DeriveReturnValueHost,
+functionName: string,
+args: FunctionArgument[],
+calls?: CallInfo[],
+exactAbiFunction?: AbiFunction,
+calleeCalls?: ExternalCallInfo[],
+/**
+ * Locking bytecode of the contract that calls this callee. The probe materializes the callee frame the final
+ * composition reuses - including which entry UTXO each `msg.sender`-keyed mapping slot co-spends - so the
+ * caller identity has to reach it here; the signer is only the caller of a top-level EOA call.
+ */
+callerLockingBytecode?: Uint8Array,
+/**
+ * Category of the contract that calls this callee. The compiler resolves the frame's `msg.sender` address by
+ * matching this category against the co-spent inputs, so a probe that leaves it unset makes every
+ * `msg.sender`-derived comparison read a sentinel instead of the caller.
+ */
+callerCategoryId?: string,
+/**
+ * The contract that calls this callee. Its master UTXO is co-spent into the probe so the compiled frame can
+ * resolve `msg.sender` exactly as it will in the composed transaction.
+ */
+callerContract?: StatefulContract<Artifact>,
+): Promise<StateValue> {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+    // Which caller threaded the identity into this probe: an unthreaded site leaves the probe's caller category
+    // at zero and its `msg.sender` comparisons read a sentinel.
+    (host as unknown as { _deriveSeq?: number })._deriveSeq =
+      ((host as unknown as { _deriveSeq?: number })._deriveSeq ?? 0) + 1;
+    console.error('derive-return-value-entry', JSON.stringify({
+      seq: (host as unknown as { _deriveSeq?: number })._deriveSeq,
+      owner: host.inner.artifact.contractName,
+      functionName,
+      hasCallerLock: callerLockingBytecode !== undefined,
+      callerCategoryId,
+      // Whether the caller CONTRACT arrived decides if this probe can co-spend its master; the probe that fails
+      // ip 51 has no caller input, so this names the invocation that still needs the extra argument.
+      hasCallerContract: callerContract !== undefined,
+      // Every frame of the call chain, innermost first, including the frame that logged this line: several
+      // closures are named `derive`/`visit`, so a stack that hides its own innermost frame cannot be paired with
+      // the enclosing derivation (measured: two nested `transferFrom`/`balanceOf` frames were indistinguishable).
+      stack: new Error('drv').stack?.split('\n')
+        .filter((line) => line.trim().startsWith('at ')).slice(0, 18)
+        .map((line) => line.trim().replace(/\s*\(.*/, '')),
+      // Argument digest: pairs a nested derivation with the runtime call its outer probe build triggered.
+      args: args.map((argument) => argument instanceof Uint8Array
+        ? `b${argument.length}:${binToHex(argument).slice(0, 16)}`
+        : typeof argument === 'bigint' ? argument.toString() : String(argument).slice(0, 24)),
+    }));
+  }
+  const directMappingRead = directMappingReadPlan(host.inner.artifact, functionName);
+  if (directMappingRead) {
+    const keyCandidates = directMappingRead.keyArgumentIndices.reduce<Array<Array<string | Uint8Array>>>(
+      (rows, argumentIndex) => rows.flatMap((row) =>
+        host.addressMappingKeyCandidates(args[argumentIndex]).map((key) => [...row, key])),
+      [[]],
+    );
+    if (legacyStatefulSimulationEnabled(host.provider)) {
+      for (const candidate of keyCandidates) {
+        const overlay = host.getSoftMapping(directMappingRead.collection, candidate);
+        if (overlay !== undefined) return overlay as StateValue;
+      }
+    }
+    const entries = await host.getEntries(directMappingRead.collection);
+    for (const candidate of keyCandidates) {
+      const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes);
+      if (match) return match.value as StateValue;
+    }
+    return 0n;
+  }
+  const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
+  type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;
+  type LogicalReturnContext = {
+    artifact: Artifact;
+    call: StatefulCall;
+    args: readonly FunctionArgument[];
+  };
+  // A compiler route is the physical carrier, not the logical result schema: its aggregate `bytes` output and
+  // hidden route name cannot decode a selected handler's uint/struct result. Preserve every selected row's
+  // stable handler identity and fail closed if one static read would expose multiple logical return values.
+  const delegatedReturnCandidates: ReturnAbiCandidate<LogicalReturnContext>[] = (calls ?? [])
+    .filter((call): call is StatefulCall => call.type === 'stateful')
+    .flatMap((call): ReturnAbiCandidate<LogicalReturnContext>[] => {
+      const artifact = call.contract.inner.artifact;
+      if (call.compilerRoute) {
+        return (call.compilerRoute.rowArguments ?? [])
+          .map((row) => ({
+            logicalFunction: row.handler,
+            physicalFunction: call.compilerRoute!.abiFunction,
+            context: { artifact, call, args: row.args },
+          }));
+      }
+      const fn = call.contract._resolveCallAbi(call.functionName, call.args);
+      return fn ? [{
+        logicalFunction: fn,
+        physicalFunction: fn,
+        context: { artifact, call, args: call.args },
+      }] : [];
+    });
+  const returnPlan = selectReturnAbiPlan(functionName, abiFunction, delegatedReturnCandidates);
+  const directResult = (abiFunction?.outputs?.length ?? 0) > 0;
+  const delegatedReturn = returnPlan?.context;
+  const resultFunction = returnPlan?.logicalFunction;
+  const outputs = resultFunction?.outputs ?? [];
+  if (outputs.length === 0) {
+    throw new Error(`staticCall: '${functionName}' has no return value to read.`);
+  }
+  const physicalReturnFunction = returnPlan?.physicalFunction;
+  const physicalReturnSlot = physicalReturnFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+  if (!physicalReturnSlot) {
+    throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
+  }
+  // A facade view that consists solely of one returning external call has the callee's exact return value.
+  // Read the authenticated callee directly rather than synthesizing a parent+delegate+callee transaction:
+  // inserting the parent's own return channel into that synthetic balanced frame would shift the callee's
+  // output coordinates away from its input coordinates. The callee still executes its covenant VM probe.
+  const delegatedCall = delegatedReturn?.call;
+  const passthrough = resultFunction?.externalCalls?.length === 1
+    ? resultFunction.externalCalls[0] : undefined;
+  const passthroughOnly = passthrough?.hasReturnValues === true
+    && (passthrough.returnTypes ?? []).length === outputs.length
+    && (passthrough.returnTypes ?? []).every((type, index) => type === outputs[index]?.type)
+    && (resultFunction?.emits?.length ?? 0) === 0
+    && (resultFunction?.transfers?.length ?? 0) === 0
+    && (resultFunction?.dynamicWrites?.length ?? 0) === 0
+    && !(resultFunction?.entryAccesses ?? []).some((access) => access.operations.some((op) => op !== 'read'));
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_RETURN === '1') {
+    console.error('static-return-passthrough', {
+      functionName, resultFunction: resultFunction?.name, delegated: delegatedCall?.functionName,
+      passthrough: passthrough?.functionName, passthroughOnly,
+      delegateRegistry: delegatedCall && [...(delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.keys()],
+      rootRegistry: [...host.externalRegistry.keys()],
+    });
+  }
+  if (delegatedCall && passthrough && passthroughOnly) {
+    const byName = findDeploymentByName(host.inner.provider, passthrough.interfaceName)?.contract
+      ?? (/^I[A-Z]/.test(passthrough.interfaceName)
+        ? findDeploymentByName(host.inner.provider, passthrough.interfaceName.slice(1))?.contract
+        : undefined);
+    // A facade view which forwards to a stored-address target can have empty connect-time
+    // externals. Resolve the callee from the deployment registry by interface name, then by
+    // the compiler-described address state variable when present.
+    let byAddress: unknown;
+    const addressStateVar = passthrough.addressStateVar;
+    if (addressStateVar) {
+      try {
+        const facadeHost = delegatedCall.contract as StatefulContract & {
+          implementation?: StatefulContract;
+        };
+        const facadeState = await (facadeHost.implementation ?? facadeHost).getState();
+        const stored = facadeState[addressStateVar];
+        if (typeof stored === 'string' || stored instanceof Uint8Array) {
+          const asHex = typeof stored === 'string' ? stored.replace(/^0x/i, '') : binToHex(stored);
+          byAddress = findDeploymentByLockingBytecode(host.inner.provider, asHex)?.contract
+            ?? (typeof stored === 'string'
+              ? findDeploymentByAddress(host.inner.provider, stored)?.contract
+              : undefined);
+        }
+      } catch {
+        // Keep registry/name resolution only.
+      }
+    }
+    // Prefer the address-linked deployment over a same-named registry entry: upgrade
+    // registers the proxy handle under the impl name, and a stale/empty-state twin can
+    // win findDeploymentByName while the facade's stored marketplace address is authoritative.
+    const registered = ((delegatedCall.contract as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.get(passthrough.interfaceName)
+      ?? host.externalRegistry.get(passthrough.interfaceName)
+      ?? byAddress
+      ?? byName) as unknown;
+    const facadeDeployment = findDeploymentByAddress(host.inner.provider, host.target);
+    const facadeSelfAddress = hexToBin(
+      String(facadeDeployment?.lockingBytecode ?? host.inner.lockingBytecode),
+    );
+    const resolvedArgs = delegatedCall.contract._resolveExternalArgs(
+      passthrough.argSources, [...delegatedReturn.args], delegatedCall.contract.inner.artifact,
+      undefined, resultFunction!.inputs, undefined, 0, false, facadeSelfAddress,
+    );
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RETURN === '1') {
+      console.error('static-return-passthrough-resolve', {
+        interfaceName: passthrough.interfaceName,
+        functionName: passthrough.functionName,
+        addressStateVar: passthrough.addressStateVar,
+        hasByName: !!byName,
+        hasByAddress: !!byAddress,
+        hasRegistered: !!registered,
+        hasResolvedArgs: !!resolvedArgs,
+        resolvedArgs: resolvedArgs?.map((value) => (
+          value instanceof Uint8Array ? `bytes:${value.length}` : String(value)
+        )),
+      });
+    }
+    if (registered && resolvedArgs) {
+      const callee = registered as StatefulContract & {
+        forward?: (name: string, callArgs: FunctionArgument[]) => StatefulFunctionCall;
+        call?: Record<string, ((...callArgs: FunctionArgument[]) => StatefulFunctionCall) | undefined>;
+        implementation?: StatefulContract & {
+          call?: Record<string, ((...callArgs: FunctionArgument[]) => StatefulFunctionCall) | undefined>;
+        };
+      };
+      const callable = callee.call?.[passthrough.functionName]
+        ?? callee.implementation?.call?.[passthrough.functionName];
+      // Proxy handles expose view/state-getter behavior on their public dispatch surface. That surface can use
+      // authenticated proxy state directly (for example, a zero-argument dynamic-array length accessor) while
+      // preserving the forwarding boundary for ordinary view functions.
+      if ('proxy' in callee) {
+        const publicMethod = (callee as unknown as Record<string, unknown>)[passthrough.functionName];
+        if (typeof publicMethod === 'function') {
+          return await (publicMethod as (...values: FunctionArgument[]) => Promise<StateValue>)(...resolvedArgs);
+        }
+      }
+      // A registered proxy handle must execute reads through the same forwarding boundary as writes. Calling
+      // its implementation directly reads the implementation's storage category and can produce no authenticated
+      // return even though the state-holding proxy has the requested value.
+      if (typeof callee.forward === 'function') {
+        return callee.forward(passthrough.functionName, resolvedArgs).staticCall();
+      }
+      if (callable) return callable(...resolvedArgs).staticCall();
+    }
+  }
+  // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
+  // `calls` is the caller's resolved graph (a return-ABI hint); `calleeCalls` are the probed function's OWN
+  // published calls, resolved against the frame it is being invoked with. The probe materializes those
+  // participants exactly like an ordinary build so its co-spent coordinates name the addresses the callee's
+  // identity checks expect instead of the sentinel that points back at the executing input.
+  let callerIdentityUtxos: UnlockableUtxo[] | undefined;
+  if (callerContract !== undefined) {
+    const callerMaster = (await host.getCallerMasterUtxo(callerContract));
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {
+      // A missing master is why the probe would still have no caller input even though the contract arrived.
+      console.error('caller-identity-cospend', JSON.stringify({
+        callee: functionName,
+        caller: callerContract.inner.artifact.contractName,
+        callerCategory: callerContract.categoryId.slice(0, 12),
+        masterFound: callerMaster !== undefined,
+        outpoint: callerMaster === undefined ? undefined
+          : `${String(callerMaster.txid).slice(0, 8)}:${callerMaster.vout}`,
+      }));
+    }
+    if (callerMaster !== undefined) {
+      const callerLock = hexToBin(callerContract.inner.lockingBytecode);
+      callerIdentityUtxos = [{
+        ...callerMaster,
+        // Probes execute only input 0, so the lock is all this co-spend has to contribute; a real send of the
+        // same frame materializes the caller's own unlocker elsewhere.
+        unlocker: {
+          generateLockingBytecode: () => callerLock,
+          generateUnlockingBytecode: () => new Uint8Array(),
+        },
+      }];
+    }
+  }
+  const builder = await host.createBuilder(
+    functionName, args, {
+      emitReturn: true, returnProbeOnly: true, calls, abiFunction, externalCalls: calleeCalls,
+      ...(callerIdentityUtxos !== undefined && { callerIdentityUtxos }),
+      ...(callerLockingBytecode !== undefined && { callerLockingBytecode }),
+      // Wire order, as the compiler's OP_UTXOTOKENCATEGORY exposes it (see the same encoding at the handler
+      // build site).
+      ...(callerCategoryId !== undefined && callerCategoryId.length > 0
+        && { msgSenderCategory: hexToBin(callerCategoryId).reverse() }),
+    },
+  );
+  let blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined;
+  // A compiler route's physical result coordinate and delegate input belong to the route carrier. Falling back
+  // to the logical handler's slot can decode an unrelated output as an authenticated result. Direct and legacy
+  // calls retain the established same-function slot fallback.
+  if (!blob && !delegatedReturn?.call.compilerRoute) {
+    blob = host.deriveReturnBlob(builder, physicalReturnSlot.offset);
+  }
+  if (!blob) {
+    throw new Error(
+      `staticCall: could not derive the return value of '${functionName}'. `
+      + 'Functions that write state and return a value are not yet supported as reads.'
+      // Name the failing probe predicate when one is known: a bare `require` leaves no custom message, so
+      // without this the caller sees only "could not derive" and cannot tell which check refused.
+      + `${host.lastReturnProbeFailure !== undefined
+        ? ` Probe detail: ${host.lastReturnProbeFailure}.` : ''}`,
+    );
+  }
+  const resultArtifact = directResult
+    ? host.inner.artifact : delegatedReturn?.artifact ?? host.inner.artifact;
+  const resultStructs = resultArtifact.structs ?? resultArtifact.stateLayout?.structs;
+  const directArrayReplacements: Array<{ start: number; end: number; encoded: Uint8Array }> = [];
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_RETURN === '1') {
+    console.error('static-loop-return-groups', builder.getExternalCallUtxoGroups().map((group) => ({
+      functionName: group.functionName,
+      resultArrayOutput: group.loopResultArrayOutput,
+      existing: group.loopReturnCommitments?.length,
+      resolver: !!group.resolveLoopReturnCommitment,
+    })));
+  }
+  // The parent array's wire format follows the parent result encoding, never the native one: a Solidity-encoded
+  // read wraps the array in ABI offset/length words, so the pushdata decoder cannot split the rolled call's
+  // array out of the parent blob and the resumed array must be encoded the same way it was decoded.
+  const parentResultEncoding = resolveExternalResultEncoding(
+    resultFunction?.resultEncoding, resultArtifact, outputs.map((output) => output.type),
+    `function '${resultFunction?.name ?? functionName}' result`,
+  );
+  for (const group of builder.getExternalCallUtxoGroups()) {
+    const outputIndex = group.loopResultArrayOutput;
+    if (outputIndex === undefined || !group.resolveLoopReturnCommitment) continue;
+    let offset = 0;
+    let targetStart = 0;
+    let targetEnd = 0;
+    let returnedArray: StateValue | undefined;
+    try {
+      // A single-output parent is exactly the rolled array, so its decoded prefix is also its blob range.
+      const evmPrefix = parentResultEncoding === 'evm-abi-v1' && outputs.length === 1
+        ? decodeEvmInvocationResultPrefix(blob, [outputs[0].type], resultStructs, resultArtifact.enums)
+        : undefined;
+      if (evmPrefix !== undefined) {
+        returnedArray = evmPrefix.values[0];
+        targetEnd = evmPrefix.bytesConsumed;
+      } else {
+        for (let index = 0; index <= outputIndex; index++) {
+          const output = outputs[index];
+          if (!output) break;
+          const start = offset;
+          const decoded = decodePushdataValue(blob, offset, output.type, resultStructs);
+          offset += decoded.bytesConsumed;
+          if (index === outputIndex) {
+            returnedArray = decoded.value;
+            targetStart = start;
+            targetEnd = offset;
+          }
+        }
+      }
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(returnedArray)) continue;
+    const reached = returnedArray.length;
+    if (group.loopMaximumOccurrences !== undefined && reached > group.loopMaximumOccurrences) {
+      throw new Error(
+        `External loop reached ${reached} rows, exceeding the compiler-proven ceiling of `
+        + `${group.loopMaximumOccurrences}.`,
+      );
+    }
+    const commitments = group.loopReturnCommitments
+      ?? (group.precomputedReturnCommitment ? [group.precomputedReturnCommitment] : []);
+    for (let occurrence = commitments.length; occurrence < reached; occurrence++) {
+      commitments.push(await group.resolveLoopReturnCommitment(occurrence));
+    }
+    if (commitments.length > 0) group.loopReturnCommitments = commitments;
+    if (commitments.length === reached) {
+      const producerArtifact = group.logicalArtifact ?? group.externalContract?.inner?.artifact;
+      const producerFunction = group.compilerRoute?.abiFunction
+        ?? producerArtifact?.abi.find((candidate: AbiFunction) => (
+          candidate.name === (group.logicalFunctionName ?? group.functionName)
+        ));
+      const producerOutputs = producerFunction?.outputs ?? [];
+      if (!producerArtifact || producerOutputs.length !== 1) continue;
+      const producerStructs = producerArtifact.structs ?? producerArtifact.stateLayout?.structs;
+      const values = commitments.map((commitment) => {
+        const decoded = decodeAuthenticatedProducerResultVector(
+          commitment,
+          [producerOutputs[0].type],
+          producerStructs,
+          resolveExternalResultEncoding(
+            producerFunction.resultEncoding,
+            producerArtifact,
+            [producerOutputs[0].type],
+            `function '${producerFunction.name}' result`,
+          ) === 'evm-abi-v1',
+          producerArtifact.enums,
+        );
+        if (!decoded || decoded.length !== 1) {
+          throw new Error(
+            `Authenticated loop result for '${producerFunction?.name ?? 'external call'}' `
+            + 'does not match its declared result schema.',
+          );
+        }
+        return decoded[0] as StateValue;
+      });
+      directArrayReplacements.push({
+        start: targetStart,
+        end: targetEnd,
+        encoded: parentResultEncoding === 'evm-abi-v1'
+          ? encodeEvmInvocationResult([values], [outputs[outputIndex].type], resultStructs, resultArtifact.enums)
+          : encodePushdataValue(values, outputs[outputIndex].type, resultStructs),
+      });
+    }
+  }
+  if (directArrayReplacements.length > 0) {
+    // The compiler marker proves these arrays have no competing writes: each element is exactly the typed return
+    // of its corresponding loop occurrence. Compose those individually authenticated values while retaining the
+    // provisional parent's authenticated array width and every untouched output byte.
+    for (const replacement of directArrayReplacements.sort((left, right) => right.start - left.start)) {
+      blob = concatBytes(
+        blob.slice(0, replacement.start), replacement.encoded, blob.slice(replacement.end),
+      );
+    }
+  }
+  const structs = resultArtifact.stateLayout?.structs ?? resultArtifact.structs;
+  if (outputs.length === 1) {
+    const returnArtifact = resultArtifact;
+    const resultEncoding = resolveExternalResultEncoding(
+      resultFunction?.resultEncoding,
+      returnArtifact,
+      outputs.map((output) => output.type),
+      `function '${resultFunction?.name ?? functionName}' result`,
+    );
+    // A Solidity-encoded result is one complete ABI value of the declared type, which may be an aggregate
+    // (dynamic array, fixed array, or struct). Decode it with the full ABI decoder: the scalar-only helper
+    // rejects every aggregate, and the native pushdata decoder that would otherwise be used reads the ABI head
+    // as a length and silently returns an empty container for a non-empty array.
+    const evmDecoded = resultEncoding === 'evm-abi-v1'
+      ? decodeEvmInvocationResult(blob, outputs.map((output) => output.type), structs, returnArtifact.enums)?.[0]
+      : undefined;
+    let decoded: StateValue;
+    try {
+      const rawDecoded = evmDecoded ?? decodePushdataValue(blob, 0, outputs[0].type, structs).value;
+      decoded = (usesLegacyJobEventCompatibility(returnArtifact, outputs[0].type, structs)
+        ? normalizeJobEventAddresses(rawDecoded, outputs[0].type, structs)
+        : rawDecoded) as StateValue;
+    } catch (decodeError) {
+      // A failed require can leave an inert/partial return placeholder in the probe. Return decoding is
+      // downstream of execution, so it must not replace the contract failure with a codec error. Re-evaluate
+      // the already-built transaction through the normal debugger to recover the source-mapped require.
+      if ((builder as unknown as { __vmErrored?: boolean }).__vmErrored) {
+        const derivationError = (builder as unknown as { __derivationError?: Error }).__derivationError;
+        if (derivationError) throw derivationError;
+      }
+      throw decodeError;
+    }
+    const addressBytecode = decoded instanceof Uint8Array
+      ? decoded
+      : typeof decoded === 'string' && decoded.startsWith('0x') ? hexToBin(decoded.slice(2)) : undefined;
+    if (outputs[0].type === 'address' && addressBytecode) {
+      const cashaddr = lockingBytecodeToCashAddress({
+        bytecode: addressBytecode,
+        prefix: getNetworkPrefix(host.inner.provider.network),
+        tokenSupport: false,
+      });
+      if (typeof cashaddr !== 'string') return cashaddr.address;
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_RETURN === '1') {
+      console.error('static-return-decoded', {
+        contract: host.inner.artifact.contractName,
+        functionName,
+        outputType: outputs[0].type,
+        decoded,
+      });
+    }
+    return attachDecodedAccessors(decoded);
+  }
+  // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
+  // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather
+  // than mis-decode - single-value reads (the common getter shape) are fully supported.
+  throw new Error(
+    `staticCall: '${functionName}' returns ${outputs.length} values; multi-value (tuple) reads are not yet `
+    + 'supported. Read the underlying state via getState(), or split into single-value view functions.',
+  );
+}

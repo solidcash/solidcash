@@ -17804,6 +17804,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_arg_value)');
   }
 
+  /** Normalize either a Solidity ABI address word or a native BCH address to its 20-byte identity. */
+  private emitGraphAddressIdentity(locationData: SingleLocationData): void {
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(encodeInt(12n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /** Encode a computed Script number as its unique minimal invocation-field push. */
   private emitCanonicalGraphNumberEncode(locationData: SingleLocationData): void {
     this.emit(Op.OP_BIN2NUM, locationData);
@@ -19316,6 +19332,56 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return `__internal__graphResult${slot.returnSlotIndex ?? 0}_${field}`;
   }
 
+  /** Count nested call rows which precede their enclosing call but have not executed yet. */
+  private pendingNestedGraphRows(
+    expressions: readonly ExpressionNode[], enclosingSlot: ExternalCallSlot,
+  ): number {
+    let count = 0;
+    const seen = new Set<Node>();
+    const visit = (candidate: Node): void => {
+      if (seen.has(candidate)) return;
+      seen.add(candidate);
+      if (candidate instanceof ExternalFunctionCallNode) {
+        const precedes = candidate.sourceEffectOrdinal !== undefined
+          && enclosingSlot.sourceEffectOrdinal !== undefined
+          ? candidate.sourceEffectOrdinal < enclosingSlot.sourceEffectOrdinal
+          : true;
+        if (precedes) count += 1;
+        return;
+      }
+      for (const [key, child] of Object.entries(candidate)) {
+        if (key === 'location' || key === 'type' || key === 'resolvedFunction'
+          || key === 'functionReference' || key === 'definition' || key === 'symbolTable'
+          || key === 'referencedContract' || key === 'stateVariable' || key === 'collection'
+          || key === 'sourceCallNode') continue;
+        if (child instanceof Node) visit(child);
+        else if (Array.isArray(child)) {
+          for (const item of child) if (item instanceof Node) visit(item);
+        }
+      }
+    };
+    for (const expression of expressions) visit(expression);
+    return count;
+  }
+
+  /** Advance a temporary graph-emission stream copy by one complete framed row. */
+  private emitSkipGraphEmissionRow(locationData: SingleLocationData): void {
+    const skipLengthPrefixed = (): void => {
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_BIN2NUM, locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_NIP, locationData);
+    };
+    skipLengthPrefixed();
+    this.emit(encodeInt(5n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    skipLengthPrefixed();
+    skipLengthPrefixed();
+  }
+
 
   /**
    * Selector for one collapsed batch row's graph-emission transcript.
@@ -19560,6 +19626,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_NUMEQUAL, locationData);
     this.emit(Op.OP_IF, locationData);
     this.emitGraphEmissionStreamRead(locationData);
+    const pendingTargetRows = parametersAreCallArguments
+      ? this.pendingNestedGraphRows(parameters, slot) : 0;
+    for (let row = 0; row < pendingTargetRows; row += 1) {
+      this.emitSkipGraphEmissionRow(locationData);
+    }
     this.pushToStack('(__graph_target_stream)');
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
@@ -19751,6 +19822,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // that representation choice. Recover this argument from the current row, prove both representations
           // project to the same Solidity identity, and encode the exact authenticated bytes below.
           this.emitGraphEmissionStreamRead(locationData);
+          const pendingArgumentRows = parametersAreCallArguments
+            ? this.pendingNestedGraphRows(parameters.slice(i + 1), slot) : 0;
+          for (let row = 0; row < pendingArgumentRows; row += 1) {
+            this.emitSkipGraphEmissionRow(locationData);
+          }
           this.emit(encodeInt(2n), locationData);
           this.emit(Op.OP_SPLIT, locationData);
           this.emit(Op.OP_SWAP, locationData);
@@ -19773,10 +19849,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitGenericPushdataDecode(new BytesType(), locationData);
           this.emit(Op.OP_DROP, locationData);
           this.emit(Op.OP_DUP, locationData);
-          for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+          this.emitGraphAddressIdentity(locationData);
           this.emit(encodeInt(2n), locationData);
           this.emit(Op.OP_PICK, locationData);
-          for (const operation of compileAddressToEvmIdentity()) this.emit(operation, locationData);
+          this.emitGraphAddressIdentity(locationData);
           this.emit(Op.OP_EQUALVERIFY, locationData);
           this.emit(Op.OP_NIP, locationData);
         }

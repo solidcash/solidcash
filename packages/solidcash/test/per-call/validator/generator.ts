@@ -225,7 +225,7 @@ function randomPlan(rng: Rng, seed: number, index: number): CompositionPlan {
   }
   if (stateSlots.length === 0) {
     stateSlots.push({
-      id: 'S0-0',
+      id: 'member-0',
       contract: 'C0',
       commitment: seedBytes(`gen-commit-${seed}-${index}-fallback`, 4),
       value: 1_500n,

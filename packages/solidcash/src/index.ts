@@ -50,3 +50,8 @@ export { randomUtxo, randomToken, randomNFT } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';
 export * from './walletconnect-utils.js';
 export type { ExtractEventNames, EventMatcherArgs, EmittingContract } from './types/event-inference.js';
+
+// The composition composer: derivation, pool selection, block layout and witness assembly.
+export * as perCallComposer from './per-call/composer/index.js';
+// The independent reference model the validator derivation is compared against.
+export * as perCallReference from './per-call/validator/reference/index.js';

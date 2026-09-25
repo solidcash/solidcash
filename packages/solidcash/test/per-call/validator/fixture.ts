@@ -283,7 +283,7 @@ export function planComposition(plan: CompositionPlan): Composition {
     });
   }
 
-  // 2. Coverage (R6) and the contracts the validator settles (V8).
+  // 2. Coverage (spec R6) and the contracts the validator settles (spec V8).
   const mastersOfContract = new Map<string, MasterPlan[]>();
   for (const master of plan.masters) {
     const list = mastersOfContract.get(master.contract) ?? [];

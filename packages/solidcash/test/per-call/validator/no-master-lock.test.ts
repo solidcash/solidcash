@@ -2,7 +2,7 @@
  * A structural property of the derivation: masters are identified by category and minting capability only, never by
  * their locking bytecode.
  *
- * Plan B15 keeps the loader form of spec section 12 open after the validator program is frozen, so the derivation
+ * The validator program identifies a master by category and capability rather than by its locking bytecode, which
  * must reach the same decision whether a master sits at `P2SH32(code_X)`, at a loader lock, or at a different lock
  * per master. The test drives the derivation twice — and once more with a distinct lock per master — over the same
  * composition and requires byte-identical decisions, with a non-rejecting baseline so the equality is not one of two

@@ -60,7 +60,7 @@ export function carriesToken(token: ReferenceToken): boolean {
   return token.category.length === CATEGORY_LENGTH;
 }
 
-/** A master is a category with minting capability, and nothing else (R8, plan B15). */
+/** A master is a category with minting capability, and nothing else (spec R8). */
 export function masterToken(token: ReferenceToken): boolean {
   return carriesToken(token) && token.capability === TokenCapability.MINTING;
 }

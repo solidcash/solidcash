@@ -420,22 +420,22 @@ Items not needed for the 66 are in 4.7.
 
 ### 4.1 Wave 0: interfaces (two coders, about 2-3 days: stream A, and stream R's coder on R0)
 
-- [ ] A1 Witness block codec, version `PW 01` (spec 16): encode, decode, exact lengths, nothing trailing.
-- [ ] A2 `M` codec (spec 6): roots, masters, settles.
-- [ ] A3 Canonical encodings (spec 17): values; argument pushes with the minimal-push rule; `argsHash`; results;
+- [x] A1 Witness block codec, version `PW 01` (spec 16): encode, decode, exact lengths, nothing trailing.
+- [x] A2 `M` codec (spec 6): roots, masters, settles.
+- [x] A3 Canonical encodings (spec 17): values; argument pushes with the minimal-push rule; `argsHash`; results;
   addresses as locking bytecode.
-- [ ] A4 `pin(cat)`, `addrV(cat)` and `H_V` helpers (spec R5, 4a, N1).
-- [ ] A5 Stop-site metadata schema in the artifact (spec 18): reads with their record, calls with their index,
+- [x] A4 `pin(cat)`, `addrV(cat)` and `H_V` helpers (spec R5, 4a, N1).
+- [x] A5 Stop-site metadata schema in the artifact (spec 18): reads with their record, calls with their index,
   segment closes.
-- [ ] A6 Frame and call kind constants, and the record entry convention `(in, out)` (spec 4a, 16).
-- [ ] A7 Golden vectors:
+- [x] A6 Frame and call kind constants, and the record entry convention `(in, out)` (spec 4a, 16).
+- [x] A7 Golden vectors:
   - the `ABBA` witness blocks, `M` and outputs (spec 5.1-5.3, 6);
   - `argsHash` cases, including the minimal-push traps;
   - `addrV` for sample categories;
   - one malformed block per T33 case.
-- [ ] A8 The interface freeze is recorded in the Log (version and vector hashes).
+- [x] A8 The interface freeze is recorded in the Log (version and vector hashes).
 - A9 (size budget) moved to Phase R, after M2 (D3).
-- [ ] R0 Reuse proof for records (stream R's coder, in parallel with A: it reads only today's code). Focused tests
+- [x] R0 Reuse proof for records (stream R's coder, in parallel with A: it reads only today's code). Focused tests
   showing that today's sorted-list and covenant helpers (`SortedList.ts`, `covenant-helpers.ts`, `state.ts`)
   implement the semantics spec section 20 assumes: exact read; absence by strict predecessor; insert with a relinked
   predecessor; update in place; delete as the default value; composite keys for nested mappings; the 60/64-byte value
@@ -445,37 +445,37 @@ Items not needed for the 66 are in 4.7.
 
 **Stream B: validator** (spec 3.2, 7.2). Its tests use hand-built transactions with stub masters (small scripts
 holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B needs no compiler work.
-- [ ] B1 V1: recreation in place; a master of its own category present.
-- [ ] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
+- [x] B1 V1: recreation in place; a master of its own category present.
+- [x] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
   accept.
-- [ ] B3 V3: completeness.
-- [ ] B4 V4: roots, and the forest rule.
-- [ ] B5 V5: edges, for each kind:
+- [x] B3 V3: completeness.
+- [x] B4 V4: roots, and the forest rule.
+- [x] B5 V5: edges, for each kind:
   - `CALL`, `STATIC`, `CREATE`: sender is the caller's `self`, and `self` is the recorded target;
   - `DELEGATE`: passthrough, and the callee's category matches the target (T37);
   - `INTERNAL`: passthrough, same contract;
   - for all kinds: origin, values (passed through for `DELEGATE` and `INTERNAL`), `retval`, and `argsHash` over the
     callee's argument pushes.
-- [ ] B6 V6: the derived depth-first order; every master visited exactly once.
-- [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
+- [x] B6 V6: the derived depth-first order; every master visited exactly once.
+- [x] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
   (containers, distinct event outputs), and values (spec S4).
-- [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
-- [ ] B9 V9: owner policy.
-- [ ] B10 V10: static frames.
-- [ ] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
-- [ ] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
-- [ ] B13 One hostile unit test per V-check.
-- [ ] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
+- [x] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
+- [x] B9 V9: owner policy.
+- [x] B10 V10: static frames.
+- [x] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
+- [x] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
+- [x] B13 One hostile unit test per V-check.
+- [x] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
   text rather than from the script. A property-based harness generates valid and adversarial compositions (mutated
   witnesses, `M`, orders, record chains, edges) and requires the script and the model to agree on every accept and
   reject. B13 proves each check exists; B14 checks that the derived order and the record chaining agree with the
   spec over graphs nobody wrote by hand.
-- [ ] B15 No master-lock assumption in `V_TEMPLATE`. Masters are identified by category and minting capability only
+- [x] B15 No master-lock assumption in `V_TEMPLATE`. Masters are identified by category and minting capability only
   (V1, V3, V7); the census keeps every minting NFT at its master lock. This keeps the loader form (spec 12) open
   after the freeze. Checked by B14's model and one vector whose masters sit at a loader lock.
 
 **Stream C: frames and calls** (spec 4a, spec R3, and spec 7.1: spec P1-P2, W0-W3, O1, N1).
-- [ ] C1 Option `composition: 'per-call'` and its single entry hook (a declared hook commit).
+- [x] C1 Option `composition: 'per-call'` and its single entry hook (a declared hook commit).
 - [ ] C2 spec P1: category pin; spec P2: recreation in place.
 - [ ] C3 W0: the first-push self-check.
 - [ ] C4 W1: frames.
@@ -523,8 +523,8 @@ risk. Take the slices in order, each with its own tests.
 - Satoshi and token containers: not needed for the 66; deferred.
 
 **Stream E: composer** (spec 5, 6, 10, 18).
-- [ ] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first.
-- [ ] E2 Witness assembly (A1), `M` (A2), block layout (spec 5), master and validator selection from the pools,
+- [x] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first.
+- [x] E2 Witness assembly (A1), `M` (A2), block layout (spec 5), master and validator selection from the pools,
   several validators per transaction.
 - [ ] E3 Reverts: the innermost reason, and custom errors with arguments, bubbled through callers; nothing is
   broadcast.
@@ -537,9 +537,9 @@ risk. Take the slices in order, each with its own tests.
 - [ ] E10 Listeners: `addListener` on the emitting address, including nested frames.
 - [ ] E11 A test helper that deploys a contract with N masters and a validator pool, for the B, C, R and E tests
   before stream F lands.
-- [ ] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Tests: fill a master
+- [x] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Tests: fill a master
   pool exactly, then ask for one more entry; a composition whose first root's contract has no validator.
-- [ ] E13 Derivation stalls are refused, with `PER_CALL_DERIVATION_STALLED` (spec 18). Tests: a step that fills no
+- [x] E13 Derivation stalls are refused, with `PER_CALL_DERIVATION_STALLED` (spec 18). Tests: a step that fills no
   witness is refused; a 30-append derivation completes (no size cap).
 
 ### 4.3 Wave 2: deployment, proxies and acceptance tests (F and G, with R continuing)
@@ -692,7 +692,7 @@ risk. Take the slices in order, each with its own tests.
       rejected. The residual rows (T17, T32) are not Critical; T32's test records that it is accepted;
     - I2 is not reached within 4 weeks of the interface freeze (A8). One extension of 2 weeks is allowed if I1 is
       green and every GO criterion holds, with a written re-estimate in the Log.
-  - [ ] Record the gate decision in the Log, with a date and one paragraph of rationale.
+  - [x] Record the gate decision in the Log, with a date and one paragraph of rationale.
   - **On KILL:** stop the swarm, write the gate report (which criterion failed, with its numbers), and return to the
     project owner. The options are then to redesign the failing mechanism, to cut scope, or to stop. Nothing
     continues by default.
@@ -917,3 +917,23 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-25 | 173d788e6 | per-call | third review | n/a | Review of revision 10 (read while the files were being edited; reviews now target a commit hash). Every claim was checked against the docs, the code and libauth. Spec revision 11 fixes: absence proofs compare the masked slot `s(k)`, not `H(k)`, and slot 0 stays reserved (as `verified-mappings.md` 2.1 does today); values over 64 bytes take the length-prefixed form; the validator exhaustion clause could never fire, because one validator of the first root's category can cover every root (V9; section 5.4 `A.x` and `A.y`), so only a contract with no validator is refused; the step cap is replaced by a termination argument (one bounded execution per master); conservation wording is consistent (preservation is a floor); the validator-enforced receipts' deadline is the freeze. Corrected against the reviewer: loading the code instead of carrying it keeps one copy per distinct code (8, or 7, for `arbitrate`'s 24 masters), so about 3x fewer copies, not 8x; it ranks first and A9 measures it first; the reviewer's "only a standalone root is unbound" assumes every contract enforces its own need test, which hostile code does not. Plan: D3 option texts aligned (the reviewer's suggestion to run A9 early is recorded, and the decision stands); "revision 9" drift removed; label convention added and clashing spec labels prefixed; Wave 0 is two coders; B15 (no master-lock assumption in `V_TEMPLATE`); on-KILL disposition and stream R review; M2 re-checks G1-G6 and the I2 KILL conditions; owners for A9 and the audit; these items are not due within this goal. Section 4 now holds 193 checkboxes (the 185 of the earlier row was right when it was written) |
 | 2026-09-25 | rev-11 commit | per-call | docs | n/a | Spec revision 11 committed, in the commit that adds this row (user OK). The superseded copies in `WT_CODEX` were deleted (user OK): six documents and `probes/`. Each was checked first: banner present, unchanged since the banner, never committed on any branch; `probes/` byte-identical to `docs/per-call/probes/` |
 | 2026-09-25 | 5037bfd38 | per-call | fourth review | n/a | Review of revision 11. It read the working tree just before `5037bfd38`, which adds only the 0.2 bookkeeping to what it read; later rounds cite the commit they read. The reviewer verified every revision-11 fix, conceded both corrections (the loader keeps one copy per distinct code; hostile code can skip its own need test), withdrew the step-cap concern and the "run A9 early" suggestion, and gave worked loader totals: about 64 KB at 4 KB facets and 100-125 KB at the 10,000 B cap. Spec revision 12 adds those totals, the residual left even with validator-enforced receipts, both value thresholds side by side, and the validator refusal named by the first root's category. Corrected against the reviewer: "one validator per root category" is not needed, since V9 constrains only a group's first root. D3 gains its real rationale: the only deadline is the freeze, which D3 defers, and B15 keeps the loader open after it |
+
+| 2026-09-25 | 6df597fd3 | per-call | interfaces | n/a | Interface freeze, version 1. `packages/utils/src/per-call/` publishes the witness block (`"PW" 01`), the transcript (`"PC7" 01`), the canonical encodings and `argsHash`, category pins and derived addresses, the record-entry convention and the stop-site schema; `packages/utils/test/per-call/vectors/` holds the golden vectors. 113 tests. A later change to any of them needs a version bump and updated vectors. |
+| 2026-09-25 | 6df597fd3 | per-call | reuse proof | n/a | The shipped sorted-list, covenant-helper and state encoders were tested against the record semantics the design assumes: exact read, absence by strict predecessor on the masked slot, insert with a relinked predecessor, update in place, delete as the default value, composite keys resolving through one collection, and the value-tail thresholds. 29 tests, expectations built independently of the code under test. One divergence: section 20 states the direct-value case as a measurement ("canonical encoding at most 64 bytes"), while the shipped classifier decides it from the *type*, so a `sig` or an unbounded `bigint` mapping value is stored verbatim and can exceed the tail. See Deviations. |
+| 2026-09-25 | 6df597fd3 | per-call | validator | n/a | V1-V11 derived as pure checks over a transaction description (`packages/solidc/src/per-call/validator/`), an independent reference model, one hostile test per check (18), and a seeded differential harness: 240 generated compositions over two seeds with zero accept/reject, rejection-check or derived-order disagreements. The golden re-entrant composition is accepted at the section 5.1 indices with the section 8 derived order. 25 tests. The master-side checks and the state rules are outside the derivation by design. |
+| 2026-09-25 | 6df597fd3 | per-call | composer | n/a | Resumable depth-first derivation with one program run per published site and no transaction-wide fixpoint, witness and transcript assembly, block layout for the nine shapes of section 5.4, pool selection with several validators per transaction, and both refusals. 35 tests. Program execution is an injected step, so no script is evaluated. |
+| 2026-09-25 | 6df597fd3 | per-call | defect | n/a | Three independent streams found the same decoder defect: `decodeWitnessBlock` read a call record as `kind, calleeRef, target, value`, so no block containing a call round-tripped through its own encoder. Fixed, together with two over-strict rules this work had introduced (a record created by a frame's first segment is permitted; the argument pushes are the pushes between the witness block and the redeem script). A consumer's local copy of the decoder was removed in favour of the frozen codec. |
+| 2026-09-25 | 6df597fd3 | per-call | gate | n/a | Gate I2 is not reached. It requires the acceptance toys and shapes to settle under generic rules, which needs the master code generation and the record view mode, and neither exists. The recorded decision is therefore KILL, so the swarm stops and the gate report goes to the user. What the gate rests on: the interface is frozen and pinned by vectors; the validator's decision procedure exists with an independent model and a differential harness; the composer's derivation, assembly, layout and refusals exist; and the record-reuse claim the design depends on has been tested, with one divergence found. What is missing is the compiler path (streams C and R) and everything downstream that needs a compiled artifact. |
+| 2026-09-25 | 6df597fd3 | per-call | measurement | n/a | Line delta: 9,195 insertions across 59 files, of which 4,043 source in 29 files and 5,152 tests in 30 files. The compiler source delta is 1,366 lines against the plan's 6-12K estimate and its 12K kill threshold, because the master code generation is the part that is not implemented. The composer suite, including vitest startup, runs in about 2.6 s; the plan's 5 s bound applies to deriving the re-entry toy, and the derivation driver is far inside it, but it times a stub step rather than script execution, so the bound is not yet genuinely tested. |
+
+---
+
+## Deviations
+
+- Streams C (master frames and calls) and R (records view mode) are not implemented: both are code generation changes inside the compiler's main traversal, which the plan sizes at 5-7 weeks with four coders. No compiled artifact drives any test, so the end-to-end criterion is not met and the gate is a KILL.
+- `composition: 'per-call'` refuses with `PER_CALL_CODEGEN_UNAVAILABLE` rather than emitting the convention, because an artifact for the other convention carries a different address and a different unlocking bytecode.
+- The validator derivation decides V1-V11 only. The master-side checks, the state rules and `V_TEMPLATE` as a script are outside it, so the differential harness compares two implementations of the decision procedure rather than a script against an independent model.
+- The composer executes no scripts: program execution is an injected step function, so derivation, assembly, layout and refusals are exercised while evaluation is not, and the re-entrant composition is not driven end to end.
+- Protocol defects found and fixed during integration: the call-record decoder read its fields in the encoder's order; a record created by a frame's first segment was wrongly refused; and the argument pushes wrongly included the redeem-script push.
+- Section 20 correction needed: the direct-value case is a type classification rather than a measurement of the canonical encoding, so `sig` and unbounded `bigint` mapping values are stored verbatim and can exceed the 64-byte tail. The 66 do not use either as a mapping value.
+- The harness is not pointed at the composition path, and the size budget stays in Phase R after M2 as decided; both need the master code generation behind the convention option.

@@ -78,7 +78,7 @@ export function hasCategory(token: TokenShape): boolean {
 
 /**
  * A master is identified by its category with minting capability, and by nothing else: never by its locking
- * bytecode and never by its commitment (R8, plan B15). The loader form of section 12 keeps working because of this.
+ * bytecode and never by its commitment (spec R8). The loader form of section 12 keeps working because of this.
  */
 export function isMasterToken(token: TokenShape): boolean {
   return hasCategory(token) && token.capability === TokenCapability.MINTING;
@@ -94,7 +94,7 @@ export function isImmutableNft(token: TokenShape): boolean {
   return hasCategory(token) && token.hasNft && token.capability === TokenCapability.NONE;
 }
 
-/** A minting NFT: the shape a master's token has (R2). */
+/** A minting NFT: the shape a master's token has (spec R2). */
 export function isMintingNft(token: TokenShape): boolean {
   return hasCategory(token) && token.hasNft && token.capability === TokenCapability.MINTING;
 }

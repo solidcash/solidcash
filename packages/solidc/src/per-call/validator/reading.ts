@@ -12,21 +12,13 @@
  */
 
 import {
-  ARGS_HASH_LENGTH,
-  INDEX_NONE,
   PerCallEncodingError,
-  WITNESS_BLOCK_MAGIC,
-  WITNESS_BLOCK_VERSION,
-  ByteReader,
-  assertFrameKind,
-  assertRecordEntry,
   bytesEqual,
   decodeTranscript,
   decodeWitnessBlock,
   splitFirstPush,
   validatorAddress,
   validatorRedeemScript,
-  type RecordEntry,
   type Transcript,
   type WitnessBlock,
 } from '@solidcash/utils';

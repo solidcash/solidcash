@@ -86,3 +86,7 @@ export * from './ast/Location.js';
 export * from './ast/error-listeners.js';
 
 export const version = '0.13.1';
+
+// Composition conventions and the validator decision procedure a composition is checked against.
+export * as composition from './per-call/master/composition.js';
+export * as perCallValidator from './per-call/validator/index.js';

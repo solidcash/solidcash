@@ -37,15 +37,15 @@ function witnessFor(site: StopSite): 'recordCommitment' | 'callResult' | 'segmen
 
 describe('master pool exhaustion', () => {
   it('fills a pool exactly, then refuses the next entry naming the contract, the entries needed and the size', () => {
-    const pools = new CompositionPools({ masters: { Unicrow: ['U m1', 'U m2'] }, validators: {} });
+    const pools = new CompositionPools({ masters: { Ledger: ['U m1', 'U m2'] }, validators: {} });
 
-    expect(pools.takeMaster('Unicrow')).toBe('U m1');
-    expect(pools.takeMaster('Unicrow')).toBe('U m2');
+    expect(pools.takeMaster('Ledger')).toBe('U m1');
+    expect(pools.takeMaster('Ledger')).toBe('U m2');
 
-    const refusal = captureRefusal(() => pools.takeMaster('Unicrow'));
+    const refusal = captureRefusal(() => pools.takeMaster('Ledger'));
 
     expect(refusal.code).toBe('PER_CALL_POOL_EXHAUSTED');
-    expect(refusal.message).toContain('Unicrow');
+    expect(refusal.message).toContain('Ledger');
     expect(refusal.message).toContain('3');
     expect(refusal.message).toContain('2');
   });

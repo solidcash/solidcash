@@ -14,7 +14,7 @@ Run one directory:
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 35 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | — not written |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
@@ -46,10 +46,15 @@ Total: 207 tests, all passing at the commit this file was added in.
 - **`solidcash/test/per-call/composer/`** — the resumable derivation (one program run per published site, no
   fixpoint), a re-entrant chain derived callee-first, witness and transcript assembly, block layout for the shapes
   the design lists, and both refusals.
+- **`solidcash/test/per-call/frames/`** — the master prologue evaluated in the BCH-2026 virtual machine against real
+  transactions: the category-ownership check and the recreation-in-place check each isolated, a faithful recreation
+  accepted, and the refusals attributed to the block under test, plus a stack-neutrality case proving the prologue
+  leaves the stack as it found it.
 
 ## What is not covered
 
 The compiler path that would emit a master program per entry point, and the record view mode it reads records
 through, are not implemented: no directory above drives a compiled artifact, and the composer executes no scripts.
 Program execution is an injected step function, so the derivation, assembly, layout and refusals are exercised for
-real while script evaluation is not. See the plan's Log and Deviations.
+real while script evaluation is not. The prologue's checks are real and VM-proven, but nothing yet emits them into a
+contract. See the plan's Log and Deviations.

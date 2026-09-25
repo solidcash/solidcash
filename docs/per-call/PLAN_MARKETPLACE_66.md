@@ -476,7 +476,7 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
 
 **Stream C: frames and calls** (spec 4a, spec R3, and spec 7.1: spec P1-P2, W0-W3, O1, N1).
 - [x] C1 Option `composition: 'per-call'` and its single entry hook (a declared hook commit).
-- [ ] C2 spec P1: category pin; spec P2: recreation in place.
+- [x] C2 spec P1: category pin; spec P2: recreation in place.
 - [ ] C3 W0: the first-push self-check.
 - [ ] C4 W1: frames.
   - `callerRef != self`.
@@ -925,6 +925,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-25 | 6df597fd3 | per-call | defect | n/a | Three independent streams found the same decoder defect: `decodeWitnessBlock` read a call record as `kind, calleeRef, target, value`, so no block containing a call round-tripped through its own encoder. Fixed, together with two over-strict rules this work had introduced (a record created by a frame's first segment is permitted; the argument pushes are the pushes between the witness block and the redeem script). A consumer's local copy of the decoder was removed in favour of the frozen codec. |
 | 2026-09-25 | 6df597fd3 | per-call | gate | n/a | Gate I2 is not reached. It requires the acceptance toys and shapes to settle under generic rules, which needs the master code generation and the record view mode, and neither exists. The recorded decision is therefore KILL, so the swarm stops and the gate report goes to the user. What the gate rests on: the interface is frozen and pinned by vectors; the validator's decision procedure exists with an independent model and a differential harness; the composer's derivation, assembly, layout and refusals exist; and the record-reuse claim the design depends on has been tested, with one divergence found. What is missing is the compiler path (streams C and R) and everything downstream that needs a compiled artifact. |
 | 2026-09-25 | 6df597fd3 | per-call | measurement | n/a | Line delta: 9,195 insertions across 59 files, of which 4,043 source in 29 files and 5,152 tests in 30 files. The compiler source delta is 1,366 lines against the plan's 6-12K estimate and its 12K kill threshold, because the master code generation is the part that is not implemented. The composer suite, including vitest startup, runs in about 2.6 s; the plan's 5 s bound applies to deriving the re-entry toy, and the derivation driver is far inside it, but it times a stub step rather than script execution, so the bound is not yet genuinely tested. |
+| 2026-09-25 | PENDING | per-call | prologue | n/a | The master prologue is implemented and evaluated in the VM: the category-ownership check and the recreation-in-place check, each isolated and exercised against real transactions, plus a stack-neutrality case proving the prefix leaves the stack as it found it. A faithful master recreation is accepted; an input with no token, a foreign category, a spent token without minting capability, an output that does not recreate the master at its index, a non-empty commitment, a different lock and an output worth less than the input are all rejected. 12 tests in `packages/solidcash/test/per-call/frames/`. The code generation that embeds this prologue into an artifact does not exist, so no compiled contract carries it yet. |
 
 ---
 
@@ -937,3 +938,4 @@ Titles marked NEVER have not passed on any real compile to date.
 - Protocol defects found and fixed during integration: the call-record decoder read its fields in the encoder's order; a record created by a frame's first segment was wrongly refused; and the argument pushes wrongly included the redeem-script push.
 - Section 20 correction needed: the direct-value case is a type classification rather than a measurement of the canonical encoding, so `sig` and unbounded `bigint` mapping values are stored verbatim and can exceed the 64-byte tail. The 66 do not use either as a mapping value.
 - The harness is not pointed at the composition path, and the size budget stays in Phase R after M2 as decided; both need the master code generation behind the convention option.
+- The prologue checks exist and are VM-proven as a standalone script builder, but the code generation that emits a master per entry point is not written, so nothing compiles with them yet.

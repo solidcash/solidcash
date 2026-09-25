@@ -1,6 +1,7 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
 import {
-  ArrayType, addressToGraphEmissionBytes, decodePushdataValue, parseArrayTypeString, parseType,
+  ArrayType, addressToGraphEmissionBytes, decodePushdataValue, encodePushdataValue,
+  parseArrayTypeString, parseType,
   type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
@@ -352,8 +353,54 @@ const unwrapScriptPushPayload = (bytes: Uint8Array): Uint8Array => {
   return bytes;
 };
 
+/** Coerce hex-string locking bytecodes to bytes before address-lane projection. */
+const coerceAddressBytes = (value: StateValue): Uint8Array | undefined => {
+  if (value instanceof Uint8Array) return unwrapScriptPushPayload(value);
+  if (typeof value === 'string' && /^(?:0x)?(?:[0-9a-fA-F]{2})+$/.test(value)) {
+    const hex = value.startsWith('0x') || value.startsWith('0X') ? value.slice(2) : value;
+    return hexToBin(hex);
+  }
+  return undefined;
+};
+
+/** Project address / address-payable leaves inside a decoded state value to ABI words. */
+export function projectAddressFieldsInStateValue(
+  value: StateValue,
+  typeName: string,
+  structs?: readonly StructDefinitionInfo[],
+): StateValue {
+  if (typeName === 'address' || typeName === 'address payable') {
+    const bytes = coerceAddressBytes(value);
+    if (bytes === undefined) return value;
+    return addressToGraphEmissionBytes(bytes);
+  }
+  const structDef = structs?.find((definition) => definition.name === typeName);
+  if (structDef) {
+    if (Array.isArray(value)) {
+      return structDef.fields.map((field, index) => projectAddressFieldsInStateValue(
+        value[index] as StateValue, field.type, structs,
+      ));
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, StateValue>;
+      const out: Record<string, StateValue> = { ...record };
+      for (const field of structDef.fields) {
+        if (record[field.name] !== undefined) {
+          out[field.name] = projectAddressFieldsInStateValue(record[field.name]!, field.type, structs);
+        }
+      }
+      return out;
+    }
+  }
+  const array = parseArrayTypeString(typeName);
+  if (array && Array.isArray(value)) {
+    return value.map((element) => projectAddressFieldsInStateValue(element, array.elementType, structs));
+  }
+  return value;
+}
+
 /**
- * Project every top-level address field in an args vector to a solidity ABI word.
+ * Project address fields in an args vector to solidity ABI words (top-level and nested in structs).
  * Live batching uses a selective policy in `encodeMessageBatch` (call-target address params
  * stay native); this helper is the full-vector projector for tests and emission-side tooling.
  */
@@ -367,13 +414,18 @@ export function projectGraphEmissionAddressArgs(
   const parts: Uint8Array[] = [];
   for (const typeName of inputTypes) {
     const type = parseType(typeName);
-    const composite = type instanceof ArrayType
-      || structs?.some((definition) => definition.name === typeName);
+    const isStruct = structs?.some((definition) => definition.name === typeName) === true;
+    const composite = type instanceof ArrayType || isStruct;
     if (composite) {
-      // Leave self-delimiting composites unchanged (nested address fields are a follow-on).
-      const { bytesConsumed } = decodePushdataValue(args, offset, typeName, structs);
-      parts.push(args.slice(offset, offset + bytesConsumed));
+      const { value, bytesConsumed } = decodePushdataValue(args, offset, typeName, structs);
       offset += bytesConsumed;
+      if (isStruct) {
+        const projected = projectAddressFieldsInStateValue(value, typeName, structs);
+        parts.push(encodePushdataValue(projected, typeName, structs));
+      } else {
+        // Dynamic arrays: leave unchanged this wedge (struct elements only).
+        parts.push(args.slice(offset - bytesConsumed, offset));
+      }
       continue;
     }
     const { value, bytesConsumed } = decodePushdataValue(args, offset, typeName, structs);
@@ -864,21 +916,6 @@ export function encodeMessageBatch(
     const handlerIndex = capability.handlers.filter((candidate) => candidate.eligible).indexOf(handler);
     const signatureLeavesByInput = handler.inputs.map((input) =>
       transactionSignatureLeaves(input.type, structs));
-    const encoded = args.map((arg, index) => {
-      const inputType = handler.inputs[index].type;
-      const leaves = signatureLeavesByInput[index];
-      if (leaves.length === 0 || isEntireTransactionSignatureType(inputType)) {
-        return encodeFunctionArgument(arg, inputType, structs);
-      }
-      try {
-        return encodeFunctionArgument(stripTransactionSignatures(arg, inputType, structs), inputType, structs);
-      } catch (error) {
-        throw new Error(
-          `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate: `
-          + `${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    });
     // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission
     // targets EQUALVERIFY against authenticated participant locks. Other address value-args under
     // solidity-compat use ABI words so nested returning addresses match constructed emission rows.
@@ -891,6 +928,34 @@ export function encodeMessageBatch(
     }
     const projectAddressValueArgs = artifact.compiler?.options?.solidityImportCompat === true
       || artifact.compiler?.options?.evmCompat === true;
+    const encoded = args.map((arg, index) => {
+      const inputType = handler.inputs[index].type;
+      const leaves = signatureLeavesByInput[index];
+      // Coerce hex-string address leaves inside structs before pushdata encode (avoids UTF-8 of hex text).
+      let value: FunctionArgument = arg;
+      if (projectAddressValueArgs
+        && !callTargetAddressIndexes.has(index)
+        && structs?.some((definition) => definition.name === inputType)
+        && value && typeof value === 'object' && !(value instanceof Uint8Array)) {
+        value = projectAddressFieldsInStateValue(value as StateValue, inputType, structs) as FunctionArgument;
+      } else if (projectAddressValueArgs
+        && !callTargetAddressIndexes.has(index)
+        && (inputType === 'address' || inputType === 'address payable')) {
+        const bytes = coerceAddressBytes(value as StateValue);
+        if (bytes !== undefined) value = addressToGraphEmissionBytes(bytes);
+      }
+      if (leaves.length === 0 || isEntireTransactionSignatureType(inputType)) {
+        return encodeFunctionArgument(value, inputType, structs);
+      }
+      try {
+        return encodeFunctionArgument(stripTransactionSignatures(value, inputType, structs), inputType, structs);
+      } catch (error) {
+        throw new Error(
+          `Handler '${handler.name}' transaction signature argument ${index} requires SignatureTemplate: `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    });
     const rowEncoded: Uint8Array[] = [];
     encoded.forEach((argument, index) => {
       const inputType = handler.inputs[index].type;
@@ -908,13 +973,8 @@ export function encodeMessageBatch(
       } else if (!(argument instanceof Uint8Array)) {
         throw new Error(`Handler '${handler.name}' contains an unsupported signature-like argument`);
       } else {
-        if (projectAddressValueArgs
-          && (inputType === 'address' || inputType === 'address payable')
-          && !callTargetAddressIndexes.has(index)) {
-          rowEncoded.push(addressToGraphEmissionBytes(argument));
-        } else {
-          rowEncoded.push(argument);
-        }
+        // Address / struct address leaves were already ABI-projected above before encodeFunctionArgument.
+        rowEncoded.push(argument);
         return;
       }
       leaves.forEach((leaf, leafIndex) => {

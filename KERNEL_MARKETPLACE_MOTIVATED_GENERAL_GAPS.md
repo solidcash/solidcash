@@ -17,20 +17,21 @@
 
 | ID | Status |
 |----|--------|
-| **G1** | **Landed (this goal, iter 2)** — dedicated Owner→Helper.quote(uint)→Callee.act settle: `KernelNestedReturningUintGraphArgCompose` |
-| **G2** | **Landed (prior tip; re-proved iter 1)** — selective ABI address value-lanes + native call-target params; `KernelNestedReturningGraphArgCompose` (+ poke peer) |
-| **G3** | **Deferred post-beta (iter 3)** — callee target vs authenticated participant identity needs planner/worklist proof objects beyond current emission EQUALVERIFY; see `{SCRATCH}/mb-mkt-iter-3.log` |
-| **G4** | **Deferred post-beta (iter 4)** — route-frame layout witness apply on full `__message_bus1` unlocker vs `__forward` shell needs layout/unlocker publish depth; see `{SCRATCH}/mb-mkt-iter-4.log` |
-| **G2b** | **Deferred follow-on (iter 5)** — nested address fields inside self-delimiting struct/array composites remain unprojected in `projectGraphEmissionAddressArgs` / batch composites; top-level address value-args only |
+| G1 | Prior peer / dedicated uint fixture exists (`KernelNestedReturningUintGraphArgCompose`); not counted as this goal’s new settle |
+| **G2** | **Landed prior tip; re-proved iter 1** — selective ABI address value-lanes + native call-target params; `KernelNestedReturningGraphArgCompose` (+ poke peer) |
+| **G2b** | **Landed this goal (iter 2)** — address fields inside structs on message-bus / graph-emission args project to ABI words (`encodeMessageBatch` + GTT `emitPushdataEncode` under `graphEmissionHandler`); settle `KernelNestedReturningStructAddressCompose` |
+| **G3** | **Deferred post-beta (iter 3)** — `planCompiledGraph` refuses foreign `targetLockingBytecode` (`G3ForeignTargetRefusal`); live compose wrong-lock wedge still open; see `{SCRATCH}/mb-mkt-iter-3.log` |
+| **G4** | **Deferred post-beta (iter 4)** — route publishes dyn/PredOut witnesses that `__forward` omits; see `{SCRATCH}/mb-mkt-iter-4.log` |
+| **G2c** | **Deferred follow-on (iter 5)** — nested returning address into a struct field via expression/argSource rebuild remains open after G2b prepared-arg settle |
 
 ## Five-iteration log
 | Iter | Candidate | Outcome |
 |------|-----------|---------|
-| 1 | G2 re-prove | settle |
-| 2 | G1 uint nested returning graph-arg | settle (new dedicated fixture) |
-| 3 | G3 target=participant | deferred |
-| 4 | G4 route-frame witnesses | deferred |
-| 5 | G2b nested address-in-composite | deferred |
+| 1 | G2 re-prove | settle (already-landed) |
+| 2 | G2b struct address fields | **settle (new src + fixture)** |
+| 3 | G3 target=participant | deferred (candidate refusal captured) |
+| 4 | G4 route-frame witnesses | deferred (structural gap captured) |
+| 5 | G2c return-into-struct-field | deferred |
 
 ## Evidence
 - `{SCRATCH}/mb-mkt-iter-{1..5}.log`

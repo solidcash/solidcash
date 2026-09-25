@@ -106,5 +106,5 @@ Proof dir: `/tmp/grok-goal-6d38cca74b23/implementer/ext-plans/`
 ## Marketplace-motivated general gaps (fixtures)
 
 See [`KERNEL_MARKETPLACE_MOTIVATED_GENERAL_GAPS.md`](./KERNEL_MARKETPLACE_MOTIVATED_GENERAL_GAPS.md).
-**G1 landed:** nested returning uint → later graph-emission arg settles (`KernelNestedReturningUintGraphArgCompose`).
-**G2 landed:** nested returning address → later graph-emission address arg settles under solidity-compat ABI address **value** lanes (`KernelNestedReturningGraphArgCompose`); address params used as call targets stay native (`poke` peer). G3/G4/G2b deferred post-beta. Does not widen inventory #15 foreign delegate.
+**G2 landed:** nested returning address → later graph-emission address arg settles under solidity-compat ABI address **value** lanes (`KernelNestedReturningGraphArgCompose`); call-target address params stay native.
+**G2b landed:** address fields inside structs on graph-emission / message-bus args project to ABI words; settle `KernelNestedReturningStructAddressCompose`. G3/G4/G2c deferred. Does not widen inventory #15 foreign delegate.

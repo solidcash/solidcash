@@ -17346,7 +17346,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
     } else {
-      // Generic pushdata encode for int, bytes, string, sig, datasig, bytes1, unbounded bytes
+      // Solidity-compat graph handlers publish address leaves as ABI words (including struct fields)
+      // so nested returning addresses match SDK-authenticated emission rows.
+      if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+        && type instanceof AddressType
+        && this.currentFunction?.graphEmissionHandler === true) {
+        this.emitGraphEmissionAddressLane(locationData);
+      }
+      // Generic pushdata encode for int, bytes, string, sig, datasig, bytes1, unbounded bytes, address
       this.emitGenericPushdataEncode(type, locationData);
     }
   }

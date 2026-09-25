@@ -1,0 +1,884 @@
+# Marketplace 66/66 execution plan
+
+Plan of record for making all 66 unchanged titles of the EffectiveAcceleration `marketplace.test.ts` green on
+mock BCH-2026, without Marketplace/Unicrow source changes and without application-specific logic.
+
+- Rationale and evidence: [`EVAL_REMOVE_BATCH_ENTRYPOINT.md`](./EVAL_REMOVE_BATCH_ENTRYPOINT.md). Section
+  references below (e.g. "EVAL 2.5") point there.
+- How to use:
+  - Tick `[x]` when a step is done and its evidence is recorded in the Log (section 7).
+  - Untick a scoreboard title if it regresses.
+  - Add a dated note instead of silently rewording a step.
+- This file is the only copy. Do not copy it into branches; edit it here. If this worktree is ever removed, move
+  the file first.
+
+---
+
+## 1. Decisions (tick one option per line before Wave 1 starts)
+
+- **D1. Goal text.** Today it requires `artifact.messageBus.convention === 'kernel-row-loop'` and the `OP_INVOKE`
+  graph boundary.
+  - [x] Re-scope: the kernel is left untouched while the per-call path is built beside it, behind an option, in a
+    separate worktree; Phase 3 removes the kernel after M2 (recommended)
+  - [ ] Lift the kernel requirement entirely
+  - [ ] Keep the requirement (no redesign; section 4 does not apply)
+  - 2026-09-25, user decision: the kernel work is ignored. The per-call path is built in a separate worktree and
+    branch (Phase 0), and the goal there is 66/66 on that path.
+  - 2026-09-25 (review): "stays as-is" means untouched while the per-call path is built: no edits, fixes or
+    measurements. Phase 3 then removes it on `feat/per-call`, after M2. The ticked option's text was aligned with
+    this in the follow-up, so the decisions block alone gives the right instruction.
+- **D2. Canonical harness.**
+  - [x] Root `vitest.marketplace.config.ts` + byte-identical upstream test (recommended)
+  - [ ] `examples/effectiveacceleration` copy (drops upstream `test:1477`)
+  - 2026-09-25, user decision: the root harness.
+- **D3. Real-chain deployability.**
+  - [x] Out of scope for this goal; route-size gates leave the critical path (recommended)
+  - [ ] In scope (adds Phase R)
+  - 2026-09-25, user decision: "out of scope until we make all 66 green on mock. then return to this to work out the
+    real chain deployments". So real-chain work is Phase R, after M2, and starts with A9 (moved there from Wave 0).
+  - 2026-09-25 (review): decide on numbers. The relay limit is 100,000 B per transaction (policy) and the consensus
+    limit 1,000,000 B (libauth). Every entry carries its own copy of the code, so code splitting bounds each master
+    but not the transaction: `arbitrate`, about 24 masters, comes to roughly 120-240 KB (spec section 12). The
+    largest titles would therefore be non-standard, though consensus-valid. A9 measures this (Phase R). Either way,
+    66/66 on the mock is a semantics result, not a deployability claim.
+  - 2026-09-25 (follow-up): two layers. Per input, 10,000 B is consensus (libauth rejects longer unlocking bytecode
+    before evaluation), so code splitting is required on a real chain. Per transaction, 100,000 B is only relay
+    policy. So D3 asks "will these transactions relay, and what does submission cost", not "is this buildable". A9
+    states both layers and the mitigations with their costs.
+- **D4. Spike form.**
+  - [x] Per-call units + one settlement per owner (recommended; EVAL 4.4)
+  - [ ] Generic journal inside the existing route
+  - [ ] Both, same time box
+  - 2026-09-25: follows from the user's decisions. The kernel is ignored (D1), and the per-call spec (revision 9) is
+    implemented in parallel workstreams (section 4).
+- **D5. Uncommitted Codex WIP (43 files).**
+  - [ ] Keep as a reference patch only; port reviewed hunks individually (recommended)
+  - [ ] Apply wholesale on the clean branch
+  - [ ] Discard
+  - [x] Not applicable: ignored together with the kernel work (D1)
+  - 2026-09-25: no longer applies. The kernel worktree and its WIP are ignored (D1).
+- **D6. Master and validator pool sizes** (spec section 12).
+  - A transaction can enter a contract at most once per master it owns.
+  - A composition consumes one validator of its root contract.
+  - Options:
+    - [x] A config default for composing contracts (e.g. 12 masters, 4 validators), overridable per contract and
+      applied at deployment (recommended)
+    - [ ] Deploy with 1 master and `split` in the harness before the suite
+    - [ ] Other: ____
+  - 2026-09-25, user decision: as many masters as needed. The measured worst case is Unicrow, entered 9 times in
+    one `arbitrate` (spec section 21).
+- **D7. `msg.sender` inside `this.g()`** (spec R3, T23, open point 9).
+  - Either way, internal calls and top-level calls keep the calling user.
+  - The marketplace is not affected: its sources and Unicrow contain no `this.f()` call.
+  - Options:
+    - [x] `address(this)`, as in Solidity; the spec is written this way (recommended)
+    - [ ] The caller, as today's compiler does. Changes which account `this.transfer` / `this.approve` touch, and
+      needs a sender-passthrough witness plus a validator check whenever the self-call cannot run inline
+  - 2026-09-25, user decision: "msg.sender behavior should be identical to solidity". This covers every call
+    context, not only `this.g()`. See `AUDIT_MSG_SENDER.md`.
+- **D8. Call receipts** (spec R10, T32; audit S2).
+  - Without receipts, one user signature authorizes any number of calls in the user's name. The calls sit in
+    unlocking bytecode, which no signature covers.
+  - Options:
+    - [ ] A receipt output per user-rooted call, so the signature covers the exact list of calls (cost: one output
+      per user-rooted call)
+    - [x] No receipts for now. The risk is a documented residual (spec R10, T32). Receipts and the cheaper "one root
+      per signed input" limit are written up as options in spec section 14.1
+  - 2026-09-25, user decision: "no receipts for now, but document this option".
+  - 2026-09-25 (review): T32 is an accepted residual.
+    - Owner: the project owner.
+    - Revisit before any real-chain deployment (D3), when transactions are assembled by third parties (relayers,
+      batchers), or when wallets cannot decode the witnesses (spec open point 15).
+    - Cost if adopted: the 66 make one user call per transaction, so one receipt output per transaction.
+    - Adding receipts later does not need a new `V_TEMPLATE` if each receipt is an event the root master checks
+      (spec 14.1).
+    - The review recommends receipts on for user-rooted calls. That would reopen this decision; it is not adopted.
+  - 2026-09-25 (follow-up): the revisit trigger splits by threat (spec 14.1).
+    - Untrusted assembler (relayers, batchers): receipt events the root master checks are enough, and can be added
+      later, per contract.
+    - Hostile code in the call graph, with every call in the user's name attributable: only the validator-enforced
+      form works. It is inside `V_TEMPLATE`, so it must be decided before the freeze binds (D9).
+    - The 66 have neither (the SDK assembles every transaction), so the residual is inert here.
+- **D9. Address model** (spec open point 13, T36; audit S12, F9).
+  - An address must be bound on-chain to exactly one contract. Today's anchors are forgeable.
+  - Options:
+    - [x] Category-derived: the address of the contract's transcript (validator) contract,
+      `addrV(cat) = P2SH32(pin(cat) || V_TEMPLATE)`, seeded with the same category pin as every other contract. The
+      SDK reserves genesis outpoints when a CREATE address is predicted
+    - [ ] Deployer-and-nonce addresses with deployer-signed anchors checked on-chain. Residual: a deployer can bind a
+      second contract to their own address
+  - 2026-09-25, user decision: "seed the transcript with category pin like other contracts do". Recorded as: an
+    address is `addrV(cat)` (spec R5, R8, V11; open point 13).
+  - 2026-09-25, user decision: version 1 does not allow validator program changes. The proxy-upgrade pattern covers
+    upgradeable logic, and non-proxy contracts are immutable in Solidity. `V_TEMPLATE` v1 is frozen.
+  - 2026-09-25 (review), recorded without changing the decision:
+    - Proxies cover defects in contract logic, not in `V_TEMPLATE`. A proxy's own address and settlement use
+      `V_TEMPLATE`, so a v1 defect stays with every v1 contract, proxied or not (spec section 9).
+    - The freeze binds from the first real-chain deployment (D3), after an external audit (4.7). Until then a change
+      to `V_TEMPLATE` only changes test addresses.
+    - Open for the user before the freeze binds: keep this address form, or derive addresses from a tiny frozen
+      dispatcher that carries the pin and routes to a versioned program (the review's recommendation). A dispatcher
+      needs someone to authorize a new version; for a proxy that could be its admin.
+  - 2026-09-25 (follow-up):
+    - Precondition: no real-chain deployment before the address form is decided and the external audit covers that
+      form (4.7). With a dispatcher, the audit covers two programs.
+    - The validator-enforced receipts (D8) belong to the same pre-freeze decision, since they live in `V_TEMPLATE`.
+    - Open for the user: when to decide. The follow-up review says before A8, because A4 and A7 freeze the address
+      derivation there. Now it is a spec edit; after A8 it is a version bump every stream rebases onto; after a
+      real-chain deployment it cannot change.
+  - 2026-09-25, user decision: confirm `addrV(cat)` now, final for v1. No dispatcher. `V_TEMPLATE`'s content can still
+    change until the freeze binds at the first real-chain deployment; each change only moves test addresses. The
+    validator-enforced receipts (D8) therefore stay possible until then.
+
+---
+
+## 2. Conventions
+
+### Worktrees
+
+| Name | Path | Role |
+| --- | --- | --- |
+| `WT_NEW` | `/Code/cashscript/.worktrees/per-call` | All work from Phase 0 on, branch `feat/per-call` from `ea7a48e27`. Holds the plan documents in `docs/per-call/`. |
+| `WT_CODEX` | `/Code/cashscript/.worktrees/kernel-beta-candidate` | Kernel work, ignored. Not frozen, fixed or measured. Its copies of these documents carry a "superseded" banner and are deleted once 0.2 is committed. |
+| `WT_CLEAN` | `/Code/cashscript/.worktrees/kernel-baseline-ea7a48e27` | Detached at `ea7a48e27`, built. Measurement reference for this plan; otherwise unused. |
+
+### Commands (run from the worktree root)
+
+They use the D2 harness, the root `vitest.marketplace.config.ts`.
+
+```bash
+# build (or keep `yarn build:watch` running)
+yarn build
+
+# fresh marketplace compile - REQUIRED after any compiler change: the project cache key excludes compiler code
+rm -rf .marketplace/cache .marketplace/artifacts
+node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4
+
+# fixture smoke test: title #15 runs only the fixture plus view calls
+timeout 900 yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism \
+  -t 'mece tags read mece tag$'
+
+# single title: '<describe> <it>$' (7 titles are named "sanity checks", so always include the describe)
+timeout 900 yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism \
+  -t 'take job sanity checks$'
+
+# full run (about 10 minutes when everything fails fast)
+timeout 3000 yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism --reporter=verbose \
+  > /tmp/marketplace-runs/$(git rev-parse --short HEAD)-$(date +%m%d-%H%M).log 2>&1   # mkdir -p /tmp/marketplace-runs first
+```
+
+A new worktree gets its own `node_modules`, never a symlink to another tree:
+`yarn install --frozen-lockfile --offline --non-interactive` (about 2 minutes, including the postinstall `yarn build`).
+Then verify that every `node_modules` is a real directory and every link inside resolves into the new tree:
+
+```bash
+W=$(pwd); find node_modules packages/*/node_modules examples/*/node_modules -type l |
+  while read l; do case "$(readlink -f "$l")" in "$W"/*) ;; *) echo "OUTSIDE $l";; esac; done
+```
+
+Fallback if the offline cache misses a package: `cp -a` from `WT_CLEAN`, then the same check.
+
+### Guardrails (apply to every step)
+
+- One writer per worktree. Other agents work read-only or in their own worktree.
+- Before recording any number, run the stability check: `git status --porcelain | sort | md5sum`, wait 45 s,
+  repeat, and require both hashes to match.
+- Record numbers only from committed states. Put the commit hash in the Log.
+- Never `git add -A`: stage reviewed files only. Never `git stash`: the stash stack is shared across worktrees.
+- Never edit Marketplace/Unicrow sources or the test file.
+- No application-name logic. Gate on every diff:
+
+  ```bash
+  git diff -U0 -- packages/solidc/src packages/solidcash/src |
+    rg '^\+.*(Marketplace|jobs\b|publishJobPost|publishJobEvent|JobEvent|Unicrow|FakeToken)'
+  ```
+
+- Every substantive fix gets a neutral regression test (no application names).
+- The kernel worktrees and branches are ignored: no edits, fixes or freezes. The new path lives in `WT_NEW`.
+- No `OP_RETURN` outputs and no new bare `OP_1` outputs. Where a placeholder is unavoidable, it is a 1,000-sat P2PKH to
+  the transaction funder, and it is found by layout position, never by script (Track P rules, section 3a).
+
+---
+
+## 3. Phase 0: a separate worktree and branch (time box: 1 working day)
+
+Goal: a clean branch for the per-call path, with the plan documents in it. The current kernel work is ignored:
+Phase 0 does not freeze, repair, measure or stabilize it (user decision 2026-09-25, D1).
+
+### 0.1 Worktree and branch
+
+- [x] `git worktree add /Code/cashscript/.worktrees/per-call -b feat/per-call ea7a48e27`.
+  - `ea7a48e27` is the commit measured in this plan.
+  - The fixture regression at that commit is on the kernel path the new branch replaces, so it is not fixed.
+- [x] Install `node_modules` from the lockfile (section 2), verify that every link resolves into the new tree, and
+  build. Done 2026-09-25: a real install, not a copy (see Log).
+
+### 0.2 Documents
+
+- [x] Copy these into the new branch under `docs/per-call/` (byte-identical, verified 2026-09-25):
+  - `SPEC_PER_CALL_TRANSACTION.md`, `PLAN_MARKETPLACE_66.md`;
+  - `AUDIT_MSG_SENDER.md`, `EVAL_REMOVE_BATCH_ENTRYPOINT.md`, `EVAL_PER_CALL_VS_KERNEL.md`;
+  - `PLACEHOLDER_OUTPUTS_INVENTORY.md`, and `probes/`.
+- [x] Commit them, staging only `docs/per-call/` (2026-09-25, user OK; see Log).
+- [ ] From then on the branch copy is the only copy. Delete the copies in `WT_CODEX` (until then they carry a
+  "superseded" banner).
+
+### 0.3 Harness
+
+- [x] Decide D2: the root harness (2026-09-25).
+- [ ] Point the harness at the per-call path (`composition: 'per-call'`) for the new branch only. This needs C1, so
+  it lands with Wave 1.
+- [ ] Keep the upstream test byte-identical. Title #32's un-awaited send is handled by SDK serialization (spec
+  section 18), not in the test.
+
+### Phase 0 exit
+
+- [x] `WT_NEW` builds.
+- [x] The documents are committed there.
+- [x] D2 and D3 are decided. D1, D4, D5, D6 and D7-D9 are settled.
+
+---
+
+## 3a. Track P: placeholder outputs (`OP_RETURN` exclusion, `OP_1` revisit)
+
+Every site is listed in [`PLACEHOLDER_OUTPUTS_INVENTORY.md`](./PLACEHOLDER_OUTPUTS_INVENTORY.md) (groups A-F, clean
+HEAD `ea7a48e27`).
+
+**Sequencing** (revised 2026-09-25):
+- The new branch applies P0 (rules) and P4 (conformance).
+- P1-P3 change the kernel path's existing code, which this goal now ignores. They are not scheduled. Their site
+  lists stay in the inventory for reference, and Phase 3 removes most of those sites with the kernel.
+
+### P0. Rules (effective now, for all code, including the new path)
+
+- [ ] Adopted: no `OP_RETURN` output in any transaction SolidCash builds. Not as a pad, not as a trailer or separator,
+  and not as a data carrier: the transcript is never carried in `OP_RETURN` (spec R9 and section 14).
+- [ ] Adopted: no new bare `OP_1` outputs.
+- [ ] Adopted: where a placeholder output is unavoidable, it is a 1,000-sat P2PKH to the transaction funder (the fee
+  payer, which is the change destination). No script counts a placeholder's value as contract value.
+- [ ] Adopted: no code finds a placeholder by its script; it uses layout positions.
+
+### P1-P3. Kernel-path sites (not scheduled)
+
+- The `OP_RETURN` pads, `OP_1` pads, carriers and pins, dummy funders and on-demand UTXOs of today's path are listed
+  in [`PLACEHOLDER_OUTPUTS_INVENTORY.md`](./PLACEHOLDER_OUTPUTS_INVENTORY.md), groups A-E.
+- They are not fixed on the kernel path.
+- Carry over one security item, and check it on the new path only: no proof may accept a relocated own-category NFT
+  whose commitment a caller can influence (audit F9, spec T36).
+
+### P4. New per-call path conformance
+
+- [ ] The new path builds no `OP_RETURN` outputs, no bare `OP_1` outputs, no dummy funders and no UTXOs created on
+  demand (spec R9, inventory summary). Checked as an acceptance item (section 4.6).
+- [ ] Phase 3 deletes the remaining group C/D machinery together with the kernel path.
+
+### Track P exit
+
+- [ ] P0 rules adopted on the new branch.
+- [ ] P4 conformance checked as an acceptance item (section 4.6).
+
+---
+
+## 3b. Track S: identity and authorization on today's path (`AUDIT_MSG_SENDER.md`)
+
+The new path is designed to close these (spec revision 9).
+- With the kernel work ignored (D1), S1-S3 are not scheduled on today's path. They stay listed as known issues of
+  today's path.
+- S0, the conformance suite, is built on the new branch. It is the acceptance test for D7.
+
+**S0. Conformance suite: the acceptance test for D7** (audit section 6).
+- [ ] Turn the reference contexts (`probes/this-call-msg-sender/ref.sol`) into a differential suite:
+  - compile each with solc and with solidc;
+  - run in `@ethereumjs/evm` and on mocknet;
+  - compare identities by role.
+- [ ] Record today's pass/fail per row in the Log.
+
+**S1. Critical fixes**, each with its probe turned into a regression test that must be rejected:
+- [ ] F2: `msg.sender` / `tx.origin` accept a P2PKH input only if its signature hash type is `0x41` or `0x61`
+  (`probe5`).
+- [ ] F1 and F10: bind the callee's `msg.sender` to a call the caller made, not to presence (`probe4`), and not to a
+  builder-chosen input of the caller's block.
+- [ ] F9: write the hostile VM test first, then replace the forgeable anchors with the transcript address (D9).
+
+**S2. High**
+- [ ] F11: make proxy initialization atomic with proxy creation.
+- [ ] F3: take `msg.sender` / `tx.origin` from an explicit reference, not the first P2PKH input.
+- [ ] F4 and F14: one address per contract, `addrV(cat)` (D9). This is on the 66 path: the Unicrow and
+  `onlyMarketplace` guards compare against these addresses.
+- [ ] D9 in the SDK:
+  - `getAddress()` returns `addrV(cat)`, and deployment bakes it into the master's code next to the category pin;
+  - look-ahead: keep at least as many genesis-eligible UTXOs reserved per deployer as addresses can be predicted
+    ahead (for example, top up when `getNonce()` is called). The `getCreateAddress` shim maps nonce `n + i` to the
+    `i`-th reserved UTXO, and that deployment spends exactly it. The Unicrow fixture predicts four before deploying
+    (`marketplace.test.ts:52-81`);
+  - document that outside the look-ahead, preparing genesis-eligible UTXOs is the user's responsibility. Put it in
+    `packages/solidc/docs/contract-creation.md`, next to "The fundamental constraint", and make the "too few
+    reserved UTXOs" error point there.
+
+**S3. Medium and low:** F5-F8, F12, F13, F15, F16, and the stale docs listed in the audit.
+
+---
+
+## 4. Implementation: parallel workstreams
+
+The spec (revision 9) fixes every interface the parts share: the witness block, the encodings, `M`, the record
+formats, the frames and the V-checks. That makes an optimistic, parallel implementation possible, replacing the
+earlier spike-then-rebuild sequence:
+- after a short interface freeze (Wave 0), independent coders build separate code paths;
+- each coder owns a focused test set under its own path;
+- the full suite runs only at integration milestones.
+
+The gate is kept, moved to milestone I2.
+
+**Every implementation item below is one checkbox with its spec reference.** Tick it when the code lands and its
+focused tests pass. This checklist is the only place implementation status is tracked.
+
+A traceability check on 2026-09-25 found every item has a checkbox here:
+- every spec check: P1-P2, W0-W3, O1, N1, S1-S4, V1-V11, and the state rules D1-D2;
+- every threat, T1-T41;
+- every edge case (section 23, 26 rows);
+- every Part II mechanism.
+
+Items not needed for the 66 are in 4.7.
+
+### 4.0 How the swarm runs
+
+- **Streams and ownership.** Each stream owns its code directories and its test directory, and writes nowhere else.
+  Shared files (`GenerateTargetTraversal.ts`, `compiler.ts`, SDK entry points) change only through small hook
+  commits declared in advance.
+- **Parallelism.**
+  - At most 4 coders run at once (box capacity), in waves.
+  - Each coder has one worktree and branch, off `feat/per-call`. The coordinator merges them into `feat/per-call`.
+  - A coder's worktree is deleted right after its merge is verified.
+- **Interfaces.** Frozen at the end of Wave 0, with golden vectors. A later change needs a version bump, updated
+  vectors and the coordinator's approval; every stream then rebases.
+- **Focused tests.**
+  - A coder runs only their stream's directory, plus the shared vector tests (`yarn vitest run <dir>`).
+  - `packages/solidcash/test/per-call/MANIFEST.md` lists every stream's directories and current pass counts. The
+    coordinator updates it at each merge.
+- **Full runs.**
+  - `yarn test` runs only at milestones I2 and M2, and before the final merge.
+  - The marketplace suite runs only from I3 on, at most once a day.
+  - Flaky or shared-state tests are first confirmed with targeted runs.
+- **Guardrails** (section 2) apply to every stream.
+- **Names.** The toys are Y1-Y7 and the records stream is R, so they do not clash with threats T1-T41 or decisions
+  D1-D9.
+
+| Stream | Owns (code) | Focused tests |
+| --- | --- | --- |
+| A Interfaces | `packages/utils/src/per-call/` | `packages/utils/test/per-call/` (with `vectors/`) |
+| B Validator | `packages/solidc/src/per-call/validator/`, `packages/solidcash/src/per-call/validator/` | `packages/solidcash/test/per-call/validator/` |
+| C Frames and calls | `packages/solidc/src/per-call/master/`, plus declared hooks | `packages/solidc/test/per-call/master/`, `packages/solidcash/test/per-call/frames/` |
+| R Records (view mode) | `packages/solidc/src/per-call/records/`, plus declared hooks | `packages/solidc/test/per-call/records/` (codegen), `packages/solidcash/test/per-call/records/` |
+| E Composer | `packages/solidcash/src/per-call/composer/` | `packages/solidcash/test/per-call/composer/` |
+| F Deployment and proxies | `packages/solidcash/src/per-call/deploy/`, `packages/solidcash/src/per-call/proxy/` | `packages/solidcash/test/per-call/deploy/` |
+| G Acceptance tests | Tests only | `packages/solidcash/test/per-call/{conformance,edges,hostile,toys,shapes}/` |
+
+**Feasibility and dependencies** (assessed 2026-09-25):
+- **Sequential first.** Stream A (interfaces), because every other stream codes against it.
+- **Safe to run in parallel:**
+  - B: stub masters, no compiler.
+  - E: it starts on stub scripts that follow the A5 stop-site schema, then switches to real artifacts.
+  - F: mostly SDK.
+  - G: tests written test-first against the spec.
+- **Parallel with care.** C and R both touch compiler codegen. Each lives in its own new module behind a declared
+  hook. R is the critical path and the main risk: one coder, slices R1 to R7 in order.
+- **Where optimism is tested:**
+  - I1 (`ABBA`) needs A, B, C, R1-R2 and E;
+  - I2 (the gate) also needs R3-R5 and F5-F6, for the proxy toy Y4;
+  - I3 needs F7.
+- **Where it fails, and the fallback.** If R's view mode needs changes all over `GenerateTargetTraversal.ts`, or the
+  interfaces keep changing after A8 (every change forces rebases), cut back to fewer, sequential streams. The I2
+  kill criteria catch the first case. Re-estimate for the fallback: about 8-12 weeks in total, as for spike then
+  rebuild; record it in the Log when the fallback is taken.
+- **Estimated timeline:**
+  - Wave 0: 2-3 days.
+  - Wave 1: about 2 weeks with 4 coders.
+  - Wave 2 and I1-I3: 1-2 weeks.
+  - Ladder: 1-2 weeks.
+  - About 5-7 weeks in total, against 8-12 for spike then rebuild.
+
+**Prerequisites (done):**
+- [x] Every open point on the 66 critical path specified in spec Part II (revision 9).
+- [x] D6: as many masters as needed. Measured need: Unicrow 9 per transaction, and MarketplaceData 5 through its
+  proxy and implementation.
+
+### 4.1 Wave 0: interfaces (stream A, one coder, about 2-3 days; R0 in parallel)
+
+- [ ] A1 Witness block codec, version `PW 01` (spec 16): encode, decode, exact lengths, nothing trailing.
+- [ ] A2 `M` codec (spec 6): roots, masters, settles.
+- [ ] A3 Canonical encodings (spec 17): values; argument pushes with the minimal-push rule; `argsHash`; results;
+  addresses as locking bytecode.
+- [ ] A4 `pin(cat)`, `addrV(cat)` and `H_V` helpers (spec R5, 4a, N1).
+- [ ] A5 Stop-site metadata schema in the artifact (spec 18): reads with their record, calls with their index,
+  segment closes.
+- [ ] A6 Frame and call kind constants, and the record entry convention `(in, out)` (spec 4a, 16).
+- [ ] A7 Golden vectors:
+  - the `ABBA` witness blocks, `M` and outputs (spec 5.1-5.3, 6);
+  - `argsHash` cases, including the minimal-push traps;
+  - `addrV` for sample categories;
+  - one malformed block per T33 case.
+- [ ] A8 The interface freeze is recorded in the Log (version and vector hashes).
+- A9 (size budget) moved to Phase R, after M2 (D3).
+- [ ] R0 Reuse proof for records (stream R's coder, in parallel with A: it reads only today's code). Focused tests
+  showing that today's sorted-list and covenant helpers (`SortedList.ts`, `covenant-helpers.ts`, `state.ts`)
+  implement the semantics spec section 20 assumes: exact read; absence by strict predecessor; insert with a relinked
+  predecessor; update in place; delete as the default value; composite keys for nested mappings; the 60/64-byte value
+  thresholds. Any gap found is written into spec section 20 before Wave 1.
+
+### 4.2 Wave 1: core streams (B, C, R, E in parallel)
+
+**Stream B: validator** (spec 3.2, 7.2). Its tests use hand-built transactions with stub masters (small scripts
+holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B needs no compiler work.
+- [ ] B1 V1: recreation in place; a master of its own category present.
+- [ ] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
+  accept.
+- [ ] B3 V3: completeness.
+- [ ] B4 V4: roots, and the forest rule.
+- [ ] B5 V5: edges, for each kind:
+  - `CALL`, `STATIC`, `CREATE`: sender is the caller's `self`, and `self` is the recorded target;
+  - `DELEGATE`: passthrough, and the callee's category matches the target (T37);
+  - `INTERNAL`: passthrough, same contract;
+  - for all kinds: origin, values (passed through for `DELEGATE` and `INTERNAL`), `retval`, and `argsHash` over the
+    callee's argument pushes.
+- [ ] B6 V6: the derived depth-first order; every master visited exactly once.
+- [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
+  (containers, distinct event outputs), and values (S4).
+- [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
+- [ ] B9 V9: owner policy.
+- [ ] B10 V10: static frames.
+- [ ] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
+- [ ] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
+- [ ] B13 One hostile unit test per V-check.
+- [ ] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
+  text rather than from the script. A property-based harness generates valid and adversarial compositions (mutated
+  witnesses, `M`, orders, record chains, edges) and requires the script and the model to agree on every accept and
+  reject. B13 proves each check exists; B14 checks that the derived order and the record chaining agree with the
+  spec over graphs nobody wrote by hand.
+
+**Stream C: frames and calls** (spec 4a; 7.1 P1-P2, W0-W3, O1, N1; R3).
+- [ ] C1 Option `composition: 'per-call'` and its single entry hook (a declared hook commit).
+- [ ] C2 P1 category pin; P2 recreation in place.
+- [ ] C3 W0: the first-push self-check.
+- [ ] C4 W1: frames.
+  - `callerRef != self`.
+  - `ROOT`: a P2PKH caller, hash type `0x41` or `0x61`, and `sender`.
+  - `self` from the baked `addrX` (`ROOT`, `CALL`, `STATIC`, `CREATE`) or from the witness (`DELEGATE`,
+    `INTERNAL`).
+  - `msg.value = value`.
+- [ ] C5 O1: `tx.origin` from `originRef`, with the hash-type check; never the first-P2PKH scan.
+- [ ] C6 N1: the need test, and validator recognition through `H_V`.
+- [ ] C7 W2: calls. Kind and target recorded, `calleeRef != self`, in-script `argsHash` with minimal pushes (A3),
+  result from the witness, segment closed at every call.
+- [ ] C8 R3 call forms:
+  - internal calls and `delegatecall` to own code, inline;
+  - `this.g()` inline with `msg.sender = self`, replacing the `AstBuilder.ts:7323` behaviour under per-call;
+  - a runtime target equal to self as a `CALL`;
+  - `STATIC` for `view` and `pure`;
+  - `try` must succeed (T22).
+- [ ] C9 W3: events at their listed outputs; `sends[]` for P2PKH value sends; a value send to a contract as a `CALL`.
+- [ ] C10 Stop-site metadata emitted (A5).
+- [ ] C11 A code constant slot for `addrX`; stream F fills it at deployment.
+- [ ] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule;
+  `address(this).balance` constant-folded for value 0 (spec 17; section 23 rows 9-11).
+- [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22).
+- [ ] C14 Fix: a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally
+  (spec open point 9).
+
+**Stream R: records and settlement, view mode** (spec 20; 7.1 S; 7.3). This is the main risk. Take the slices in
+order, each with its own tests.
+- [ ] R1 Data NFTs: reads from `viewIn`, and writes compared with `viewOut` at segment close, reusing today's record
+  encoders.
+- [ ] R2 Self-settlement S1-S4: chains, census, the input rule (S3), values. The D1 and D2 rules in `STATE_CODE`,
+  reusing today's data-NFT covenant with an added value pin.
+- [ ] R3 Mapping nodes:
+  - exact read, and absence proof by predecessor;
+  - update in place;
+  - insert: a created record plus a relinked predecessor;
+  - delete as the default value;
+  - nodes created and relinked across frames.
+- [ ] R4 Long mapping values: the value arrives as a witness bound by the root, and each writing frame mints its
+  version's chunks.
+- [ ] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one.
+- [ ] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
+- [ ] R7 Value pin (the D2 rule) for mapping nodes and chunks, which carry none today (T39).
+- Satoshi and token containers: not needed for the 66; deferred.
+
+**Stream E: composer** (spec 5, 6, 10, 18).
+- [ ] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first.
+- [ ] E2 Witness assembly (A1), `M` (A2), block layout (spec 5), master and validator selection from the pools,
+  several validators per transaction.
+- [ ] E3 Reverts: the innermost reason, and custom errors with arguments, bubbled through callers; nothing is
+  broadcast.
+- [ ] E4 Reads: view calls as `STATIC` `ROOT` frames off-chain, nested views, and reverts from reads.
+- [ ] E5 Events to ethers logs and receipts: category to `addrV`, including nested frames.
+- [ ] E6 A serialization queue for sends that could touch the same masters, validators or records.
+- [ ] E7 Time: locktime fixed before derivation; strictly later block times in the mock.
+- [ ] E8 Simulation before funding: a send from an unfunded wallet reports its revert.
+- [ ] E9 Snapshots: `loadFixture` restores SDK state (nonce, look-ahead reservations, pools, caches).
+- [ ] E10 Listeners: `addListener` on the emitting address, including nested frames.
+- [ ] E11 A test helper that deploys a contract with N masters and a validator pool, for the B, C, R and E tests
+  before stream F lands.
+- [ ] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Test: fill a pool
+  exactly, then ask for one more entry; the same for validators.
+- [ ] E13 Derivation stalls are refused, with `PER_CALL_DERIVATION_STALLED` (spec 18). Tests: a step that fills no
+  witness, and a master that passes the step cap.
+
+### 4.3 Wave 2: deployment, proxies and acceptance tests (F and G, with R continuing)
+
+**Stream F: deployment, pools, proxies, addresses** (spec 12, 19, 21, open point 13).
+- [ ] F1 Genesis with the master pool, and the validator pool at `addrV(cat)`; sizes as needed (D6).
+- [ ] F2 Bake `addrX` into `code_X`; `getAddress()` returns `addrV(cat)`.
+- [ ] F3 CREATE look-ahead:
+  - reserve genesis-eligible UTXOs;
+  - the `getCreateAddress` shim maps nonce `n + i` to the `i`-th reserved UTXO;
+  - an error pointing at the documentation when too few are reserved.
+- [ ] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
+- [ ] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
+  result unchanged.
+- [ ] F6 `deployProxy` in three transactions; `initialize` through the proxy; the `Initializable` flag in the proxy's
+  records (title #8).
+- [ ] F7 The fixture's 14 transactions on the per-call path, with the predicted Unicrow addresses equal to the
+  deployed ones.
+- `split` and `merge` admin functions: not needed for the 66; deferred.
+
+**Stream G: acceptance tests.** They are written test-first against the spec, and fail until their streams land.
+- [ ] G1 Conformance suite (Track S0): the 21 reference contexts, EVM against per-call.
+- [ ] G2 One dedicated test per spec section 23 row, kept as a regression guard:
+  - [ ] Row 1: Reentrancy guard kept in storage and crossed by re-entry (`U._status`, `UC._status`).
+  - [ ] Row 2: A static call reads state its caller's caller wrote moments ago.
+  - [ ] Row 3: Which callee runs, and how many times, depends on that state.
+  - [ ] Row 4: Calls inside data-dependent loops, including a revert mid-loop.
+  - [ ] Row 5: Revert after state-changing calls (7 checks).
+  - [ ] Row 6: Custom errors raised in a callee and re-raised by SafeERC20 assembly.
+  - [ ] Row 7: `tx.origin` authorizes a nested call.
+  - [ ] Row 8: `msg.sender` guards on proxy and CREATE-predicted addresses.
+  - [ ] Row 9: `code.length` of a target.
+  - [ ] Row 10: `address(this).balance` compared with 0 in `functionCallWithValue`.
+  - [ ] Row 11: Low-level call, `bool` return decoding, revert re-raise.
+  - [ ] Row 12: Struct and array arguments and returns with dynamic members; `uint16[5]`, `uint256[5]`.
+  - [ ] Row 13: Events above 128 bytes, emitted by nested frames and asserted.
+  - [ ] Row 14: Two JobEvents in one transaction (five transactions).
+  - [ ] Row 15: Writes after an external call.
+  - [ ] Row 16: 24-hour windows, the challenge period, strictly later block times, `Rated` timestamp equal to the review's.
+  - [ ] Row 17: Snapshots and six mid-test reloads.
+  - [ ] Row 18: Reverts from unfunded senders (7).
+  - [ ] Row 19: Reverts from view calls (6).
+  - [ ] Row 20: Un-awaited sends and matchers.
+  - [ ] Row 21: Live event listener raced against 1 s.
+  - [ ] Row 22: `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value.
+  - [ ] Row 23: Records growing within one transaction and across 30 transactions.
+  - [ ] Row 24: `string => string` mapping set and delete.
+  - [ ] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters.
+  - [ ] Row 26: A multi-megabyte master script in the mock (MarketplaceV1).
+- [ ] G3 Hostile tests, one per threat (spec section 9); each must be rejected:
+  - [ ] T1: execute on a non-master UTXO (loose BCH at `lockA`, or a foreign minting NFT placed there).
+  - [ ] T2: forged `msg.sender` in standalone mode (`callerRef` pointing at a contract input, no validator).
+  - [ ] T3: forged caller or call edge when a validator is present.
+  - [ ] T4: a validator left out where one is needed.
+  - [ ] T5: a fake validator (wrong derived lock, or no same-category mutable NFT).
+  - [ ] T6: a master pointing to a validator that does not list it.
+  - [ ] T7: split view across two validators (an edge or a contract's masters spanning them).
+  - [ ] T8: forged arguments, selector or result.
+  - [ ] T9: reordered segments; stale read (`A.k` placed before `A.f`'s write).
+  - [ ] T10: self-settlement claimed while a second master of the contract exists.
+  - [ ] T11: partial settlement of a multi-master contract.
+  - [ ] T12: a state UTXO spent outside settlement.
+  - [ ] T13: a forged or missing event.
+  - [ ] T14: a master or validator drained, duplicated, or not recreated.
+  - [ ] T15: an identity check keyed on a commitment instead of category, capability and lock.
+  - [ ] T18: a second A master claims `callerRef` = the first A master, which made no such call, and calls an
+    `onlySelf` function. Also a master that names itself as caller or callee.
+  - [ ] T19: `callerRef` pointing at `DA` (a state UTXO at `stateA`) or at the validator.
+  - [ ] T20: the root user's input signed with `ALL|ANYONECANPAY`, `NONE` and `SINGLE`, one variant each.
+  - [ ] T21: `originRef` pointing at a second signed user in the transaction, at the root and on a callee.
+  - [ ] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
+    must succeed.
+  - [ ] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
+    the EVM expectations recorded in the Log (2026-09-25 probe).
+  - [ ] T24: a funder P2PKH placed before the root user's input is never taken as `msg.sender` or `tx.origin`.
+  - [ ] T25: `this.g()` inline and `IA(t).g()` with `t == address(this)` on a second master give the same
+    `msg.sender`.
+  - [ ] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
+    target), and a master presenting its code lock instead of its address.
+  - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
+    creator that ran no `new`.
+  - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
+    one master's segments out of order.
+  - [ ] T31: two masters naming each other as caller, with no user root.
+  - [ ] T32 is a residual (D8). Add a test recording that an extra call naming an already-used signed input is
+    accepted, so that adopting receipts later flips it.
+  - [ ] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
+  - [ ] T34: a `STATIC` callee that writes a record or emits.
+  - [ ] T35: a value send to a contract made as a plain output.
+  - [ ] T36: a master whose `self` is not `addrV` of its category (V11), and a fake contract presenting another
+    contract's address.
+  - [ ] T37: a `DELEGATE` callee that is a master of other code than the named target, and an `INTERNAL` callee of
+    another contract.
+  - [ ] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
+  - [ ] T39: a record, master or validator recreated with less value.
+  - [ ] T40: a callee claiming a `msg.value` its caller did not send.
+  - [ ] T41: two frames listing the same event output.
+  - [ ] T16 (non-critical): changing a master's witness after the user signed either fails or yields identical
+    outputs.
+  - T17 (pool contention) is liveness only: no test; pools are sized per section 21.
+- [ ] G4 Toys (neutral names), each settling with exact post-state, events and balances:
+  - [ ] **Y1 same-entry appends.** A `Hub` calls `Log.append(id, item)` k = 3 times; `append` pushes onto `items[id]`
+    and emits. (The `publishJobEvent` shape.)
+  - [ ] **Y2 re-entry.**
+    - `Vault.release(id)` writes `recs[id].state = 1`, calls `Claimer.claim(id)`, and emits the returned amounts.
+    - `claim` reads `vault.get(id)` and requires `state == 1`.
+    - `claim` calls `vault.markClaimed(id)`, then `vault.pay(to, amt)` twice.
+    - Each `pay` calls `Token.transfer`.
+    - (The `release` / `claim` shape.)
+  - [ ] **Y3 result into a later call.** `A.f(id)` computes `fee = B.fee(id)`, then calls `C.pay(id, fee)`.
+  - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5).
+  - [ ] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
+  - [ ] **Y6 fan-in.** `A.go()` calls `Token.approve(U, amt)`, then `U.pull(amt)`; `pull` calls
+    `Token.transferFrom(A, U, amt)`. (The `takeJob` shape.)
+  - [ ] **Y7 identity.** In one contract `Tok`:
+    - `sweep(t)` calls `this.transfer(t, bal[address(this)])`, which must debit the contract, not the user;
+    - `this.onlySelf()` passes, while `onlySelf()` called directly by a user fails;
+    - `this.ownerOnly()` called by the owner fails, as in the EVM;
+    - an `Escrow.refund()` gated on `tx.origin`, reached through `Market.refund()`, sees the root user;
+    - each expectation matches the EVM result of the same Solidity source (the Log's 2026-09-25 probe method).
+- [ ] G5 The shapes of spec 5.4, with the same scripts and builder and no special case:
+  - [ ] `A`
+  - [ ] `AA`
+  - [ ] `AB`
+  - [ ] `ABBA`
+  - [ ] `ABCBA`
+  - [ ] `A.x` and `C.y`, independent: 0 validators
+  - [ ] `AB` and `CD`, independent: 2 validators
+  - [ ] `A.x` and `A.y`: 1 validator
+- [ ] G6 Every edge of spec section 22 is exercised by at least one named test. The map is kept in `MANIFEST.md`.
+
+### 4.4 Integration milestones and the gate
+
+- [ ] **I1 `ABBA` end to end:** compiled masters (C, R1-R2), the composer (E) and the real validator (B). The outputs
+  are exactly those of spec 5.2.
+- [ ] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate:
+  - [ ] **GO** requires:
+    - 0 per-shape rules added;
+    - derivation per entry;
+    - no transcript parsing in masters.
+  - [ ] **KILL** if any of these happens:
+    - a toy needs a static per-shape recipe;
+    - the settlement cannot do sorted-entry insert and delete generically;
+    - re-entry needs a fixpoint across entries;
+    - a shape in spec 5.4 needs a special case in contract code;
+    - the compiler delta at I2 exceeds about 12K lines, the top of the estimate for all of master mode, or view mode
+      needs a special case outside spec section 20's record kinds (`EVAL_PER_CALL_VS_KERNEL.md` sections 3 and 6);
+    - deriving the re-entry toy Y2 takes more than 5 s;
+    - a V-check has no hostile test, or a threat row marked Critical (spec section 9) has no test showing it is
+      rejected. The residual rows (T17, T32) are not Critical; T32's test records that it is accepted;
+    - I2 is not reached within 4 weeks of the interface freeze (A8). One extension of 2 weeks is allowed if I1 is
+      green and every GO criterion holds, with a written re-estimate in the Log.
+  - [ ] Record the gate decision in the Log, with a date and one paragraph of rationale.
+- [ ] **I3: the fixture is green** on the D2 harness (F7).
+- [ ] The solidhat/testing layer uses the composer when `composition: 'per-call'` is set, for the D2 harness only.
+- [ ] **Ladder** (tick titles in the scoreboard as they turn green):
+  - [ ] L1: fixture
+  - [ ] L2: the 24 no-composition titles, class (a)
+  - [ ] L3: #18 `post job 1`
+  - [ ] L4: the other class-(d) titles (22)
+  - [ ] **M1: at least 45/66 on one commit**, at or above every recorded run. The best full runs were 43/66 (legacy
+    bus 08-20, kernel 09-16); the legacy bus's bail run passed 45 in a row (08-29)
+  - [ ] L5: fan-in (11): #42, 45, 46, 48, 49, 53, 54, 55, 57, 58, 65
+  - [ ] L6: `approveResult` / `refund` re-entry: #50, 51, 52
+  - [ ] L7: `arbitrate` + integration: #59, 60, 61, 62, 66
+  - [ ] **M2: 66/66 on two consecutive full runs of the same commit**, and on that commit:
+    - G2 (edge cases) and G3 (hostile) green, and B14 agreeing;
+    - Track P4 conformance green (4.6);
+    - the I2 GO criteria still holding.
+
+    66/66 is a semantics result on the mock. It is not a security claim (the EVM hazards are reproduced on purpose)
+    and not a deployability claim (D3); see spec section 15.
+
+### 4.5 Measurements (record in the Log)
+
+- [ ] New lines of code: compiler / SDK / tests.
+- [ ] Per-shape admission rules or static footprint recipes added: must be 0.
+- [ ] VM evaluations per composed transaction during derivation, for Y2 and Y6.
+- [ ] Size of the validator program and of the witnesses per master (spec section 12).
+- [ ] Wall time to derive and build Y2 and Y6.
+- [ ] Wall time and size of the largest marketplace transaction: `arbitrate` 80-20, about 24 masters.
+- [ ] Chunk outputs per `jobEvents` append, and over 30 updates of one job.
+- [ ] VM runs per master during derivation (should be 1 with resumption, E1).
+
+### 4.6 Rules
+
+- [ ] Per-title time budget of 1 day. When it is exceeded, write a reduced neutral reproducer and move on.
+- [ ] One full run per day at most. Single-title runs otherwise.
+- [ ] Acceptance (Track P4): the new path builds no `OP_RETURN` outputs, no bare `OP_1` outputs, no dummy funders
+  and no UTXOs created on demand.
+- [ ] Track P rules (P0) hold for all new code.
+
+### 4.7 Deferred: specified or listed, not needed for the 66
+
+These are tracked here so nothing drops silently. Each needs its own decision before it is scheduled.
+- [ ] Satoshi and token containers, and payable `ROOT` calls; value accounting beyond preservation (spec open point
+  10).
+- [ ] `split` / `merge` admin functions for pools.
+- [ ] `CREATE` frames inside a composed transaction (spec R3, open point 14).
+- [ ] Code-split contracts: facets and `INTERNAL` frames across facets (spec section 11, open point 11).
+- [ ] Call receipts (D8, spec 14.1), which would close T32.
+- [ ] Users other than P2PKH as callers (spec open point 8).
+- [ ] Real-chain limits: validator size and density (open point 7), 10,000-byte masters (11), events above 128 bytes
+  (16), and the 100,000 B relay limit with one code copy per entry (spec 12, A9).
+- [ ] External audit of `V_TEMPLATE`, with B14's reference model, before the v1 freeze binds at the first real-chain
+  deployment (D3, D9).
+- [x] The address form, decided before the freeze binds: `addrV(cat)`, final for v1, no dispatcher (user decision
+  2026-09-25, D9). The validator-enforced receipts (D8) can still be added to `V_TEMPLATE` until the freeze binds.
+- **Precondition for any real-chain deployment:** the two items above are done, and the audit covers the decided
+  address form.
+- [ ] A layout-compatibility rule for proxy upgrades: the implementation's records by name and type, with `__gap`
+  carrying no record (spec 20).
+- [ ] Atomic proxy initialization (audit F11, spec open point 5).
+- [ ] Today's-path security fixes, Track S S1-S3 (section 3b).
+
+---
+
+## 5. Phase 3: delete and consolidate (after M2)
+
+- [ ] Remove route synthesis (`__message_bus1`, `SCB1`), the row loop, and the `__internal__graph*` bands.
+- [ ] Remove static footprint recipes: permutations, cursors, access programs, constructed-key replay,
+  loop-domain proofs.
+- [ ] Remove the per-shape logic in the layout resolver and the worklist.
+- [ ] Reduce the admission catalog to `KERNEL_OPAQUE_EFFECT` and `KERNEL_FOREIGN_DELEGATE`.
+- [ ] Retire or re-scope `messageBus`, `messageBusKernel` and `messageBusGraphContext`.
+- [ ] Replace `scripts/kernel-beta-manifest.json` with a proof set for the new composition path.
+- [ ] Track P4: delete the remaining group C/D machinery, i.e. the `P2SH32(OP_TRUE)` dummy funders and the
+  `provider.addUtxo` minting (inventory).
+- [ ] Full `yarn test` and `yarn build` green. Docs updated: `message-bus-kernel.md`, `call-model.md`,
+  `auto-derivation.md`.
+
+### Phase R: real-chain deployment (after M2, per D3)
+
+- [ ] A9 Size budget (about 1 day), the first step. Bytes per transaction for `arbitrate` and `approveResult`:
+  masters x (code + witness + arguments + views), plus the validator with density padding, state inputs and
+  outputs, from the per-call artifacts' per-function code sizes. The recorded result (Log) must state:
+  - both layers, with numbers: per input, 10,000 B consensus (code splitting required); per transaction,
+    100,000 B relay policy and 1,000,000 B consensus;
+  - the mitigations with their costs (spec 12): fewer entries per transaction (gives up atomicity, the design's
+    premise); smaller facets (linear at best); direct submission to miners (an operational dependency); one code
+    copy per transaction loaded through introspection (bounded by per-input density; unmeasured until then).
+- [ ] The precondition in 4.7 holds before any real-chain deployment.
+- [ ] A separate harness at real limits: 10,000 B per input, 800 op-cost per byte, 128 B commitments, 100 KB relay.
+- [ ] Facet-split the large handlers: the 75 KB entry closure, and the 90-200 KB contracts.
+
+---
+
+## 6. Scoreboard (canonical harness per D2; tick when green on the target branch)
+
+Class legend (EVAL 2.2):
+- (a) no cross-contract call;
+- (d) repeated calls to one callee;
+- (e) fan-in or re-entry.
+
+Titles marked NEVER have not passed on any real compile to date.
+
+### (a) No composition: Floor A (24)
+
+- [ ] #1 admin > transfer owner
+- [ ] #2 admin > non owner cannot transfer owner
+- [ ] #3 admin > pause/unpause
+- [ ] #4 admin > non pauser cannot pause
+- [ ] #5 admin > non pauser cannot unpause
+- [ ] #6 admin > set version
+- [ ] #7 admin > non owner cannot set version
+- [ ] #8 admin > can not call initializer
+- [ ] #9 register user > register user
+- [ ] #10 register user > update user
+- [ ] #11 register arbitrator > register arbitrator
+- [ ] #12 register arbitrator > update arbitrator
+- [ ] #13 unicrow params > set unicrow markeplace address
+- [ ] #14 unicrow params > set unicrow contract addresses
+- [ ] #15 mece tags > read mece tag (fixture smoke test)
+- [ ] #16 mece tags > update mece tag
+- [ ] #17 mece tags > remove mece tag (`removeMeceTag` is `KERNEL_LAYOUT`-refused in current artifacts)
+- [ ] #21 job posting > post job with arbitrator same as creator (reverts after calls)
+- [ ] #22 job posting > post job with invalid token (reverts after calls)
+- [ ] #23 job posting > post job with invalid amount (reverts inside the 3rd FakeToken call)
+- [ ] #24 job posting > post job with invalid deadline (client-side rejection)
+- [ ] #25 job posting > post job with invalid title
+- [ ] #26 job posting > post job with invalid delivery method (reverts after calls)
+- [ ] #27 job posting > post job from unregistered user (reverts after calls)
+
+### (d) Repeated callee (23)
+
+- [ ] #18 job posting > post job 1
+- [ ] #19 job posting > post two jobs
+- [ ] #20 job posting > post job with whitelist
+- [ ] #28 job posting > post job with invalid mece tags
+- [ ] #29 job posting > post job with unregistered arbitrator
+- [ ] #30 job worker whitelisting > should whitelist worker
+- [ ] #31 job updates > update job
+- [ ] #32 job updates > update job arbitrator (un-awaited `registerPublicKey`, see 0.3)
+- [ ] #33 job updates > update job tags
+- [ ] #34 job updates > update job amounts
+- [ ] #35 job updates > update job many times, get history
+- [ ] #36 close job > close job before timeout
+- [ ] #37 close job > close job after timeout
+- [ ] #38 reopen job > reopen job before timeout
+- [ ] #39 reopen job > reopen job after timeout
+- [ ] #40 withdraw collateral > withdraw collateral
+- [ ] #41 take job > sanity checks
+- [ ] #43 take job > take job multiple
+- [ ] #44 pay start job > sanity checks
+- [ ] #47 post thread message > post thread message
+- [ ] #56 dispute > sanity checks closed job
+- [ ] #63 refuse arbitration > job closed
+- [ ] #64 refuse arbitration > job not taken (NEVER)
+
+### (e) Fan-in (11)
+
+- [ ] #42 take job > take job
+- [ ] #45 pay start job > pay start job
+- [ ] #46 post thread message > sanity checks
+- [ ] #48 deliver result > sanity checks
+- [ ] #49 deliver result > deliver result
+- [ ] #53 refund > refund
+- [ ] #54 dispute > sanity checks no arbitrator
+- [ ] #55 dispute > sanity checks with arbitrator
+- [ ] #57 dispute > dispute creator
+- [ ] #58 dispute > dispute worker
+- [ ] #65 refuse arbitration > job taken (NEVER)
+
+### (e) Re-entry through `approveResult` (3)
+
+- [ ] #50 approve result and review > sanity checks
+- [ ] #51 approve result and review > approve result
+- [ ] #52 refund > sanity checks
+
+### (e) Re-entry through `arbitrate` (5)
+
+- [ ] #59 arbitrate > sanity checks (NEVER)
+- [ ] #60 arbitrate > arbitrate 80-20 (NEVER)
+- [ ] #61 arbitrate > arbitrate 0-100 (NEVER)
+- [ ] #62 arbitrate > arbitrate 100-0 (NEVER)
+- [ ] #66 integration test > integration test (NEVER)
+
+---
+
+## 7. Log (append-only; newest last)
+
+| Date | Commit | Worktree | Harness | Result | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 2026-08-20 | (legacy bus) | effectiveacceleration-marketplace | upstream | 43/66 | Historical best, legacy bus (EVAL 2.5) |
+| 2026-08-29 | (legacy bus) | effectiveacceleration-marketplace | upstream, bail | 45 in a row | Stopped at #46 |
+| 2026-09-16 | 14a866091 | kernel-beta-candidate | root | 43/66 | Historical best, kernel (`HANDOFF_KERNEL_BETA_ROUND_NEXT.md:5453`) |
+| 2026-09-25 | ea7a48e27 + 43-file WIP | kernel-beta-candidate | root | 0/66 | Fixture: covenant check at input 3 (`OP_EQUALVERIFY`, output token commitment) |
+| 2026-09-25 | ea7a48e27 | kernel-baseline-ea7a48e27 | root | 0/66, 578 s | Fixture: SDK throw, unfilled `__internal__msgSenderAnchorIdx` on `initialize` (`sc-fix-create-builder-delegate-unlockers.ts:622`) |
+| 2026-09-25 | ea7a48e27 | kernel-baseline-ea7a48e27 | probe | n/a | `msg.sender` in `this.g()`. EVM (solc 0.8.36, `@ethereumjs/evm`): internal `g()` = user, `this.g()` = `address(this)`, `tx.origin` = user, and `this.transfer` debits the contract. Today's compiler keeps the caller (`this.who() == msg.sender` passes). A public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally. Probes: `probes/this-call-msg-sender/` |
+| 2026-09-25 | ea7a48e27 | kernel-baseline-ea7a48e27 | probe | n/a | `msg.sender` security assessment (`AUDIT_MSG_SENDER.md`). VM-demonstrated on today's path: a contract caller identified by presence (X accepted `msg.sender == A` while A ran `ping()`, `probe4`), and a `SINGLE\|ANYONECANPAY` signature reused to take ownership (`probe5`). Code-confirmed: forgeable logical-address anchors (F9), builder-chosen caller identity on the bus graph path (F10), front-runnable proxy `initialize` (F11). Spec revision 7 fixes S1-S11; D8 and D9 are open. Probes: `probes/msg-sender-today/` |
+| 2026-09-25 | n/a | kernel-beta-candidate | decision | n/a | D8: no call receipts for now, documented as an option (spec R10, 14.1; T32 residual). D9: an address is the transcript's category-pinned address, `addrV(cat) = P2SH32(pin(cat) \|\| V_TEMPLATE)` (spec R5, R8, V11) |
+| 2026-09-25 | n/a | kernel-beta-candidate | spec recheck | n/a | Spec revision 8 after a completeness, sanity and security recheck. Fixed: proxies as proxy master + `DELEGATE` (the implementation-master model broke D1 and minting); `DELEGATE`/`INTERNAL` callee binding (T37, critical); V7 input side (T38); value preservation (T39); state UTXOs at `stateX`; witness block first; N1 under D9. Coverage (section 15): the model covers fan-in and re-entry, but not yet enough for 66/66; open point 4 (records) and open points 1-3, 5 and D6 are on the critical path |
+| 2026-09-25 | n/a | kernel-beta-candidate | spec Part II | n/a | Spec revision 9. D9: `V_TEMPLATE` v1 frozen. Part II (sections 16-23) settles open points 1-6 from code surveys of the call graph, the 66 test flows and today's record formats. Largest transaction: `arbitrate` (20 calls, Unicrow x9, about 24 masters). Verdict: every mechanism the 66 use is specified; what remains is implementation risk |
+| 2026-09-25 | n/a | kernel-beta-candidate | plan | n/a | Kernel work ignored (D1): Phase 0 is now a separate worktree `.worktrees/per-call` and branch `feat/per-call` from `ea7a48e27`, with no kernel freeze, repair, floor or reference run. Track P P1-P3 and Track S S1-S3 (today's path) not scheduled. D6: as many masters as needed; one dedicated test per edge case, kept as regression guards |
+| 2026-09-25 | ea7a48e27 | kernel-baseline-ea7a48e27 | evaluation | n/a | `EVAL_PER_CALL_VS_KERNEL.md`. Measured: MarketplaceV1 kernel compile 8.6-9.0 s (admission 4.9 s + binder 2.6 s = two full compiles); FakeToken 1,228 vs 797 ms without the bus; MarketplaceV1, UnicrowClaim and UnicrowArbitrator refuse to compile without the bus (`MESSAGE_BUS_REQUIRED`). Estimates: per-call compile about 2x faster; derivation 2-4x less CPU if resumable; new code 20-35K lines against about 93K kernel-related SDK lines. Main risk: compiler view mode; kill criteria added to the gate |
+| 2026-09-25 | n/a | kernel-beta-candidate | plan | n/a | Implementation restructured as parallel workstreams (section 4): Wave 0 interfaces (A), Wave 1 validator (B), frames and calls (C), records view mode (R), composer (E); Wave 2 deployment and proxies (F), acceptance tests (G); milestones I1-I3, gate at I2. Each stream owns its code and its focused test directory; full runs only at milestones. Traceability: every spec check, threat T1-T41, edge row and Part II mechanism has one checkbox (185 in section 4); deferred items listed in 4.7 |
+| 2026-09-25 | ea7a48e27 | per-call | setup | n/a | Phase 0.1 done. Worktree `.worktrees/per-call`, branch `feat/per-call` at `ea7a48e27`. `node_modules` from a real `yarn install --frozen-lockfile --offline` (1m47s, including the postinstall `yarn build`), not copied or symlinked: every `node_modules` is a real directory, and all 222 links (workspace packages, `.bin`) resolve inside the worktree, none broken. `dist` built for 6 packages; `solidcash` resolves `solidc` and `@solidcash/utils` from this tree. Documents copied to `docs/per-call/` (0.2), uncommitted; the `WT_CODEX` copies carry a "superseded" banner. Session switched to this worktree |
+| 2026-09-25 | ea7a48e27 | per-call | review | n/a | Independent review of spec revision 9, plan and eval; findings checked against the docs and code at `ea7a48e27` before folding in (spec revision 10). Confirmed and fixed: refusal codes are 7 `KERNEL_*` + 11 `MESSAGE_BUS_*` (the eval's 40 + 36 counted identifiers); D1/D5/M1 contradictions; section 15 counts (181 = 121 expecting a revert + 60 expecting none; 59 = 57 + 2); the I2 kill threshold (6K lay below the 6-12K estimate, now 12K); no rule for pool exhaustion or derivation stalls (now named refusals, E12, E13); nested-mapping slots, value thresholds and fixed-size arrays stated in spec 20 (`__gap` is dropped under `solidityImportCompat`, `compiler.ts:12452`); M2 now also requires G2, G3, B14 and P4; stream R gets a compiler test directory. Pinned with libauth: 100,000 B is the relay policy and 1,000,000 B the consensus transaction limit, so `arbitrate` on a real chain would be non-standard but consensus-valid (A9 measures it). Added: B14 reference model with differential tests, R0 reuse proof, external audit before the `V_TEMPLATE` freeze binds (4.7). Recorded, decisions unchanged: D8 residual with owner and revisit trigger (receipts can later be events the root master checks, so v1 stays); D9 note that proxies do not cover `V_TEMPLATE` defects, with the dispatcher address form open for the user |
+| 2026-09-25 | ea7a48e27 | per-call | review follow-up | n/a | The reviewer verified the revision-10 fixes and accepted the three corrections (relay versus consensus size, `__gap`, counts). Folded in: the size question has two layers, checked in libauth (`bch-2023-instruction-set.js:48` rejects unlocking bytecode over 10,000 B before evaluation, so per input is consensus and code splitting is required; per transaction, 100,000 B is relay policy), which corrects this plan's own revision-10 table; A9 must state both layers and the four mitigations with costs; D8's trigger splits by threat (untrusted assembler: master-checked receipt events, addable later; hostile code: only validator-enforced receipts, which must precede the freeze); D9 precondition, no real-chain deployment before the address form is decided and audited; D1's ticked text aligned; eval retitled to revision 10; `__gap` cites the project compile configs. Open for the user: D2, D3, and when to decide D9's address form (the reviewer says before A8) |
+| 2026-09-25 | docs commit | per-call | decisions | n/a | User decisions: D2 = the root harness; D3 = out of scope until 66/66 is green on the mock, then back to real-chain deployment (Phase R after M2, starting with A9, which moved there from Wave 0); D9 = `addrV(cat)` final for v1, no dispatcher. Phase 0 done except pointing the harness at the per-call path, which needs C1. The documents are committed on `feat/per-call` in the commit that adds this row, staging only `docs/per-call/` |

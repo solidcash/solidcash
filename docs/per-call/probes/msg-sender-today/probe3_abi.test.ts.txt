@@ -1,0 +1,17 @@
+import { describe, it, expect } from 'vitest';
+import { compileString as prodCompile } from 'solidc';
+
+// Sub-question: does a production message-bus compile still expose a direct entry point carrying the
+// __internal__msgSenderCategory witness (attacker-settable), or is msg.sender only reachable via the kernel route?
+describe('probe3-abi: msgSenderCategory exposure under message bus', () => {
+  it('reports the ABI inputs of a msg.sender function under default (bus) compile', () => {
+    const art: any = prodCompile(`pragma solidity ^0.8.0;
+      contract C { int t; function privileged(address s) public { require(msg.sender == s); this.t = this.t + 1; } }`,
+      { forceStateful: true, solidityImportCompat: true, suppressWarnings: true } as any);
+    const fn = art.abi.find((f: any) => f.name === 'privileged');
+    console.log('PROBE3 convention:', art.messageBus?.convention ?? 'none');
+    console.log('PROBE3 privileged.inputs:', JSON.stringify(fn?.inputs?.map((i: any) => i.name)));
+    console.log('PROBE3 usesMsgSender:', fn?.usesMsgSender);
+    expect(true).toBe(true);
+  });
+});

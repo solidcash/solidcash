@@ -1,0 +1,92 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from './direct-compile.js';
+import { Contract, StatefulContract } from '../src/index.js';
+import { hexToBin, binToHex, encodeTransaction } from '@bitauth/libauth';
+import { createTxVerifier } from '@mem-cash/validation';
+import { createTestProvider, setupStatefulUtxos } from './test-util.js';
+
+const txVerifier = createTxVerifier({ vmVersion: 'BCH_2026_05', standard: true, skipFeePolicy: true });
+const CHAIN = { height: 133700, medianTimePast: 1700000000 };
+
+const IX = `
+interface IX {
+    public int touched;
+    function privileged(address expectedSender);
+}
+`;
+const X_SRC = `
+pragma solidcash >=0.8.0;
+${IX}
+contract X() {
+    int touched;
+    function privileged(address expectedSender) {
+        require(msg.sender == expectedSender);
+        this.touched = this.touched + 1;
+    }
+}
+`;
+const A_SRC = `
+pragma solidcash >=0.8.0;
+${IX}
+contract A(address x) {
+    int calls;
+    function callX(address expectedSender) {
+        IX(x).privileged(expectedSender);
+        this.calls = this.calls + 1;
+    }
+    function ping() { this.calls = this.calls + 1; }
+}
+`;
+
+const verify = (tx: any, src: any): string => {
+  const r = txVerifier.verify(binToHex(encodeTransaction(tx)), src, CHAIN);
+  return r.success ? 'ACCEPTED' : `REJECTED ${r.error}: ${String(r.debugMessage ?? '').slice(0, 160)}`;
+};
+
+describe('tmp: presence-based msg.sender splice', () => {
+  it('X accepts msg.sender == A while A executes ping()', async () => {
+    const provider = createTestProvider();
+    const artX = compileString(X_SRC);
+    const artA = compileString(A_SRC);
+    const x = new Contract(artX, [], { provider });
+    const { categoryId: catX } = await setupStatefulUtxos(provider, x, artX.stateLayout!, { touched: 0n },
+      { saltContract: true });
+    const scX = StatefulContract.withCategory(x, catX);
+    const xLock = hexToBin((x.withCategory(hexToBin(catX)) as any).lockingBytecode);
+    const a = new Contract(artA, [xLock], { provider });
+    const { categoryId: catA } = await setupStatefulUtxos(provider, a, artA.stateLayout!, { calls: 0n },
+      { saltContract: true });
+    const scA = StatefulContract.withCategory(a, catA);
+    const aLock = hexToBin((a.withCategory(hexToBin(catA)) as any).lockingBytecode);
+
+    const control = await (scA as any).callX(aLock).withExternalCall(scX, 'privileged', [aLock]).build();
+    const c = control.buildLibauthProgram();
+    console.log('RESULT control inputs', c.transaction.inputs.length, 'outputs', c.transaction.outputs.length);
+    c.sourceOutputs.forEach((o: any, i: number) => console.log(`RESULT  in${i} cat=${o.token ? binToHex(o.token.category).slice(0, 8) + ':' + (o.token.nft?.capability ?? '-') : '-'} lock=${binToHex(o.lockingBytecode).slice(0, 16)} unlockLen=${c.transaction.inputs[i].unlockingBytecode.length}`));
+    console.log('RESULT control verify:', verify(c.transaction, c.sourceOutputs));
+
+    const pingB = await (scA as any).ping().build();
+    const p = pingB.buildLibauthProgram();
+    console.log('RESULT ping inputs', p.transaction.inputs.length, 'outputs', p.transaction.outputs.length);
+    p.sourceOutputs.forEach((o: any, i: number) => console.log(`RESULT  pin${i} lock=${binToHex(o.lockingBytecode).slice(0, 16)} unlockLen=${p.transaction.inputs[i].unlockingBytecode.length}`));
+    console.log('RESULT ping verify:', verify(p.transaction, p.sourceOutputs));
+
+    // Same A master + data outpoints in both? Splice A's unlocking bytecode (ping) into the control tx.
+    const sameOutpoint = (i: number): boolean =>
+      binToHex(c.transaction.inputs[i].outpointTransactionHash) === binToHex(p.transaction.inputs[i].outpointTransactionHash)
+      && c.transaction.inputs[i].outpointIndex === p.transaction.inputs[i].outpointIndex;
+    console.log('RESULT same A outpoints at 0,1:', sameOutpoint(0), sameOutpoint(1));
+    const outsEqual = [0, 1].map((i) => binToHex(c.transaction.outputs[i].lockingBytecode) === binToHex(p.transaction.outputs[i].lockingBytecode)
+      && JSON.stringify(c.transaction.outputs[i].token, (_k, v) => typeof v === 'bigint' ? v.toString() : (v instanceof Uint8Array ? binToHex(v) : v))
+        === JSON.stringify(p.transaction.outputs[i].token, (_k, v) => typeof v === 'bigint' ? v.toString() : (v instanceof Uint8Array ? binToHex(v) : v)));
+    console.log('RESULT A outputs 0,1 identical in both txs:', outsEqual);
+
+    const spliced = { ...c.transaction, inputs: c.transaction.inputs.map((inp: any, i: number) =>
+      (i === 0 ? { ...inp, unlockingBytecode: p.transaction.inputs[0].unlockingBytecode } : inp)) };
+    console.log('RESULT spliced (A master runs ping, input 1 unchanged):', verify(spliced, c.sourceOutputs));
+    const spliced2 = { ...c.transaction, inputs: c.transaction.inputs.map((inp: any, i: number) =>
+      (i <= 1 ? { ...inp, unlockingBytecode: p.transaction.inputs[i].unlockingBytecode } : inp)) };
+    console.log('RESULT spliced (A inputs 0 and 1 from ping):', verify(spliced2, c.sourceOutputs));
+    expect(true).toBe(true);
+  });
+});

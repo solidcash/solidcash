@@ -1,0 +1,88 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from './direct-compile.js';
+import { Contract, StatefulContract, Signer } from '../src/index.js';
+import { addressToLockScript } from '../src/utils.js';
+import { createTestProvider, setupStatefulUtxos, plainNumerics } from './test-util.js';
+import { alicePriv } from './fixture/vars.js';
+
+const SRC = `pragma solidcash >=0.8.0;
+contract T(address holder) {
+  public int holderBal;
+  public int selfBal;
+  public int treasuryBal;
+  constructor() { this.holderBal = 1000; this.selfBal = 100; this.treasuryBal = 0; }
+  function transferToTreasury(int v) public {
+    if (msg.sender == address(this)) {
+      require(this.selfBal >= v);
+      this.selfBal = this.selfBal - v;
+    } else {
+      require(msg.sender == holder);
+      require(this.holderBal >= v);
+      this.holderBal = this.holderBal - v;
+    }
+    this.treasuryBal = this.treasuryBal + v;
+  }
+  function sweepFees() { this.transferToTreasury(this.selfBal); }
+  function sweepConst() { this.transferToTreasury(10); }
+  function payFromHolder(int v) public {
+    require(msg.sender == holder);
+    require(this.holderBal >= v);
+    this.holderBal = this.holderBal - v;
+    this.treasuryBal = this.treasuryBal + v;
+  }
+  function sweepHolder() { this.payFromHolder(10); }
+  function sweepHolderBare() { payFromHolder(10); }
+  function bumpT(int v) public { this.treasuryBal = this.treasuryBal + v; }
+  function callBumpBare() { bumpT(1); }
+  function callBumpThis() { this.bumpT(1); }
+  function bumpI(int v) internal { this.treasuryBal = this.treasuryBal + v; }
+  function callBumpInternal() { bumpI(1); }
+  function bumpSender(int v) public { address a = msg.sender; require(a.length == 25); this.treasuryBal = this.treasuryBal + v; }
+  function callBumpSender() { this.bumpSender(1); }
+  function bumpHolder(int v) public { require(holder.length == 25); this.treasuryBal = this.treasuryBal + v; }
+  function callBumpHolder() { this.bumpHolder(1); }
+  function isSelf() public view returns (bool) { return msg.sender == address(this); }
+  function selfCheck() { require(!this.isSelf()); this.treasuryBal = this.treasuryBal + 1; }
+}`;
+
+describe('tmp: this.transfer account', () => {
+  it('sweepFees', async () => {
+    const provider = createTestProvider();
+    const signer = new Signer(alicePriv, provider);
+    const holder = addressToLockScript(signer.getAddress());
+    const art = compileString(SRC);
+    const contract = new Contract(art, [holder], { provider });
+    const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!,
+      { holderBal: 1000n, selfBal: 100n, treasuryBal: 0n }, { saltContract: true });
+    const sc = StatefulContract.withCategory(contract, categoryId);
+    for (const txid of ['e1', 'e2', 'e3', 'e4']) {
+      await (provider as any).addUtxo(signer.getAddress(), { txid: txid.repeat(32), vout: 0, satoshis: 500000n });
+    }
+    const st = async (): Promise<string> => {
+      const s = sc.state as any;
+      return `holderBal=${plainNumerics(await s.holderBal())} selfBal=${plainNumerics(await s.selfBal())} `
+        + `treasuryBal=${plainNumerics(await s.treasuryBal())}`;
+    };
+    console.log(`RESULT before: ${await st()}`);
+    for (const [label, run] of [
+      ['direct transferToTreasury(50)', () => (sc.connect(signer).call as any).transferToTreasury(50n).send()],
+      ['sweepFees()', () => (sc.connect(signer).call as any).sweepFees().send()],
+      ['sweepConst()', () => (sc.connect(signer).call as any).sweepConst().send()],
+      ['sweepHolder()', () => (sc.connect(signer).call as any).sweepHolder().send()],
+      ['sweepHolderBare()', () => (sc.connect(signer).call as any).sweepHolderBare().send()],
+      ['callBumpBare()', () => (sc.connect(signer).call as any).callBumpBare().send()],
+      ['callBumpThis()', () => (sc.connect(signer).call as any).callBumpThis().send()],
+      ['callBumpInternal()', () => (sc.connect(signer).call as any).callBumpInternal().send()],
+      ['callBumpSender()', () => (sc.connect(signer).call as any).callBumpSender().send()],
+      ['callBumpHolder()', () => (sc.connect(signer).call as any).callBumpHolder().send()],
+      ['selfCheck()', () => (sc.connect(signer).call as any).selfCheck().send()],
+    ] as const) {
+      try { await run(); console.log(`RESULT ${label}: PASS`); } catch (e: any) {
+        console.log(`RESULT ${label}: FAIL ${String(e?.message ?? e).slice(0, 1500).replace(/\n/g, ' | ')}`);
+      }
+      console.log(`RESULT state: ${await st()}`);
+    }
+    console.log(`RESULT after: ${await st()}`);
+    expect(true).toBe(true);
+  });
+});

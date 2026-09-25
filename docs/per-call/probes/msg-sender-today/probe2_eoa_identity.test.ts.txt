@@ -1,0 +1,70 @@
+import { describe, it, expect } from 'vitest';
+import { compileString } from './direct-compile.js';
+import { Contract, StatefulContract, Signer } from '../src/index.js';
+import { addressToLockScript } from '../src/utils.js';
+import { createTestProvider, setupStatefulUtxos, getSigner } from './test-util.js';
+import { alicePriv, bobPriv } from './fixture/vars.js';
+
+// PROBE 2: which P2PKH input becomes msg.sender for a direct (EOA) call, when several
+// signed P2PKH inputs are present, and what happens if the intended caller's input carries tokens.
+const SRC = `contract C() {
+  int marker;
+  function onlyOwner(address owner) { require(msg.sender == owner); this.marker = this.marker + 1; }
+}`;
+
+async function setup(): Promise<{ sc: any; provider: any; art: any }> {
+  const provider = createTestProvider();
+  const art = compileString(SRC);
+  const contract = new Contract(art, [], { provider });
+  const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!, { marker: 0n },
+    { saltContract: true });
+  const sc = StatefulContract.withCategory(contract, categoryId);
+  return { sc, provider, art };
+}
+
+describe('probe2: EOA msg.sender identity by input position', () => {
+  it('reports which signer msg.sender resolves to when two signed P2PKH inputs are present', async () => {
+    const { sc, provider } = await setup();
+    const alice = new Signer(alicePriv, provider);
+    const bob = new Signer(bobPriv, provider);
+    const aliceLock = addressToLockScript(alice.getAddress());
+    const bobLock = addressToLockScript(bob.getAddress());
+    // Fund BOTH. Bob first (lower txid), alice second, to probe first-input selection.
+    for (const t of ['b1', 'b2', 'b3']) {
+      await (provider as any).addUtxo(bob.getAddress(), { txid: t.repeat(32), vout: 0, satoshis: 500000n });
+    }
+    for (const t of ['a1', 'a2', 'a3']) {
+      await (provider as any).addUtxo(alice.getAddress(), { txid: t.repeat(32), vout: 0, satoshis: 500000n });
+    }
+    // The signer object that .connect() uses funds+signs. Try connecting BOB but asserting owner=ALICE:
+    // if msg.sender is really the connected signer, this must fail. If it silently resolves to some other
+    // P2PKH input, note it.
+    const tryCase = async (label: string, connectSigner: Signer, ownerLock: Uint8Array): Promise<void> => {
+      try {
+        await sc.connect(connectSigner).call.onlyOwner(ownerLock).send();
+        console.log(`PROBE2 ${label}: ACCEPTED`);
+      } catch (e: any) {
+        console.log(`PROBE2 ${label}: REJECTED ${String(e?.message ?? e).slice(0, 120).replace(/\n/g, ' ')}`);
+      }
+    };
+    await tryCase('connect=bob owner=bob (control)', bob, bobLock);
+    await tryCase('connect=bob owner=alice (should reject)', bob, aliceLock);
+    await tryCase('connect=alice owner=bob (should reject)', alice, bobLock);
+    expect(true).toBe(true);
+  });
+
+  it('reports whether a token-bearing caller input can be msg.sender', async () => {
+    // getSigner funds an HD signer; then also present a token UTXO. The compiler skips token inputs when
+    // scanning for tx.origin/msg.sender, so a caller whose only input holds tokens has no valid P2PKH source.
+    const { sc, provider } = await setup();
+    const signer = await getSigner(0, { provider });
+    const ownerLock = addressToLockScript(signer.getAddress());
+    try {
+      await sc.connect(signer).call.onlyOwner(ownerLock).send();
+      console.log('PROBE2 token-note: plain HD signer ACCEPTED (baseline)');
+    } catch (e: any) {
+      console.log(`PROBE2 token-note: plain HD signer REJECTED ${String(e?.message ?? e).slice(0, 120)}`);
+    }
+    expect(true).toBe(true);
+  });
+});

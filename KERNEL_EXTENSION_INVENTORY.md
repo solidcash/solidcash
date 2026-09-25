@@ -102,3 +102,9 @@ Post-beta planning follows the missing-proof-object order (resource-indexed mult
 **Family 1 status:** A (hetero int+bytes loops), B (bool-param same-iter selection), C (unconditional emit beside ≥2 streams) admitted under resource-indexed stream metadata. Mixed scalar+rawbytes groups stay on the per-row mint path (scalar journal dirtying disabled when a rawbytes sibling shares the execution group). Compose settles inline (≤60B) **and external (≥61B)** loop-nested chunkable tails once the route publishes `__internal__valueChunkOutputBase` + a balanced trailing band and composed loop mints occupy in-band `valueChunkOutputs` (same path as fixed-key COND). Batch long chunks remain a direct-settlement regression. Still fenced under #17: relocatable multi-span blocks beyond that admitted trailing-band subset.
 
 Proof dir: `/tmp/grok-goal-6d38cca74b23/implementer/ext-plans/`
+
+## Marketplace-motivated general gaps (fixtures)
+
+See [`KERNEL_MARKETPLACE_MOTIVATED_GENERAL_GAPS.md`](./KERNEL_MARKETPLACE_MOTIVATED_GENERAL_GAPS.md).
+**G2 landed:** nested returning address → later graph-emission address arg settles under solidity-compat ABI address **value** lanes (`KernelNestedReturningGraphArgCompose`); call-target address params stay native.
+**G2b landed:** address fields inside structs on graph-emission / message-bus args project to ABI words; settle `KernelNestedReturningStructAddressCompose`. G3/G4/G2c deferred. Does not widen inventory #15 foreign delegate.

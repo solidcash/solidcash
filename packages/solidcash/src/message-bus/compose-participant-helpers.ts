@@ -467,6 +467,7 @@ export const graphRouteContext = (
       }
       // The transcript binds the exact address evaluated by this call edge. Settlement remains keyed by the
       // physical participant in `row.consumer`, while a public/SCID address is authenticated at targetOffset.
+      // Address value-args are already ABI-projected in encodeMessageBatch; call-target address params stay native.
       const targetLbc = hexToBin(plannedInvocation.targetLockingBytecode);
       const args = hexToBin(row.argsHex);
       const result = hexToBin(row.resultHex);

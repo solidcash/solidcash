@@ -7,8 +7,8 @@ Date: 2026-09-25.
 
 **Scope**
 - Today's compiler and SDK at `ea7a48e27`: what runs now, and what Phase 0 of the plan builds on.
-- The per-call design, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md) revision 6 (now 10): what
-  plan section 4 builds.
+- The per-call design, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md) revision 6, which plan
+  section 4 builds. Later revisions are listed in the spec's section 0.
 
 **Method**
 - Reference behaviour is measured, not recalled: solc 0.8.36 in `@ethereumjs/evm`

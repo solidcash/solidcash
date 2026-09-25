@@ -2,11 +2,25 @@
 
 Design spec for the per-call path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
 
-Revision 10, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
+Revision 11, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
 ---
 
 ## 0. Changes
+
+### Since revision 10 (third review, 2026-09-25)
+
+- **Absence proofs** compare the masked slot `s(k)`, never the raw hash; slot 0 stays reserved for HEAD (section 20).
+- **Values over 64 bytes**, fixed-width or not, take the length-prefixed form (section 20).
+- **Validators cannot run out inside a transaction.** One validator of the first root's category can cover every
+  root, so the old second exhaustion clause could never fire; it is replaced (sections 12, 21).
+- **No step cap.** Derivation terminates because each step fills a witness of one bounded execution (section 18).
+- **Conservation** is worded consistently: preservation is a floor, and full conservation stays open point 10
+  (sections 11, 13).
+- **Receipts.** The validator-enforced form's deadline is the freeze, whether or not hostile code appears. The roots
+  it leaves unbound touch no honest contract (section 14.1).
+- **Size.** Loading the code instead of carrying it ranks first, with its budget arithmetic. It removes the copy per
+  entry but keeps one per distinct code: about 3x fewer for `arbitrate`, not 8x (section 12).
 
 ### Since revision 9 (independent review and its follow-up, 2026-09-25)
 
@@ -925,8 +939,9 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
   - Settlement binds records to real inputs and outputs. The executing code handles keys and predecessor logic.
 - **Value chunks and dynamic `bytes`/`string`/arrays:** chunk records, handled the same way.
 - **Transfers.**
-  - A BCH transfer to a user is an effect, like an event: the executing master lists it and checks the output, and
-    the settler checks value conservation. v1 pays it from the contract's state UTXO value.
+  - A BCH transfer to a user is an effect, like an event: the executing master lists it and checks the output. The
+    settler checks that listed sends are paid exactly and that the paying record keeps the rest (S4); conservation
+    beyond that is open point 10. v1 pays it from the contract's state UTXO value.
   - A transfer to a contract is a `CALL` into its `receive()` or `fallback()` (section 4a).
   - Unicrow sends value with `call{value: ...}` (`Unicrow.sol:262`, `:370`).
   - The marketplace's FakeToken is a mapping-based ERC-20, so its transfers are record writes.
@@ -947,7 +962,7 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
 | Pool | Created | Resized | Bound | Contention |
 | --- | --- | --- | --- | --- |
 | Masters | At deployment, with a config default (e.g. 12) | `split` / `merge` | A transaction can enter X at most N_X times; more is refused before building (section 21) | Transactions contend for them |
-| Validators | For contracts that start compositions | `split` / `merge` | A composition rooted at X consumes one of X's validators and recreates it | Transactions contend for them |
+| Validators | For contracts that start compositions | `split` / `merge` | One validator of the first root's category can cover every root in the transaction (V4, V9); it is recreated in place, so only a contract with none runs out (section 21) | Transactions contend for them |
 
 The harness creates both pools at deployment. The marketplace test cannot change, so the pool sizes come from
 defaults.
@@ -973,17 +988,30 @@ defaults.
     cap it is 240 KB. The validator (with density padding, open point 7), state inputs and outputs come on top.
   - So the largest titles would be non-standard (not relayed by default) but consensus-valid: a relay and
     submission question, not a validity wall.
-- **Mitigations for the transaction layer, and their costs:**
-  - fewer entries per transaction: splitting a composition across transactions gives up atomicity, which is the
-    premise of this design;
-  - smaller facets: each copy shrinks, but the sum still grows with the number of entries, so the gain is linear at
-    best;
-  - direct submission to miners: valid up to 1,000,000 B, at the cost of an operational dependency;
-  - one code copy per transaction, loaded by each entry through introspection (`OP_INPUTBYTECODE`, a hash check,
-    `OP_DEFINE`): removes the duplication, but each entry's op-cost budget scales with its own unlocking length, so a
-    small loader may not afford a large function (density). Unmeasured.
+- **Mitigations for the transaction layer, ranked** (revision 11):
+  1. **Load the code instead of carrying it.** The master lock becomes a small loader, `P2SH32(loader_X)`. The loader
+     reads the code from one input of the transaction (`OP_INPUTBYTECODE`), checks its hash against a constant, and
+     runs it (`OP_DEFINE`, `OP_INVOKE`). This is the only mitigation that removes the duplication.
+     - **Budget.** libauth charges 100 per instruction, 192 per hash digest iteration, 26,000 per signature check,
+       and 1 per pushed byte, against `(41 + L) x 800` for unlocking length `L`. So each unlocking byte funds at most
+       8 instructions. A master carrying 0.1-2 KB of witnesses affords about 1,100-16,000 instructions before any
+       padding, and the 10,000 B input cap about 80,000. Hashing-heavy or signature-heavy frames need padding.
+     - **Loading** a 10 KB copy (push, split, hash) costs about 50,000, which is about 60 bytes of budget.
+     - **What remains** is one copy per distinct code, not per entry. `arbitrate` runs 24 masters over 8 distinct
+       codes, or 7 if the two proxies share one (which needs `addrX` in the loader rather than baked into the code,
+       plan C11). The code term shrinks about 3x, not 8x. With facets of a few KB, that lands near the 100,000 B
+       line, which only A9 can settle.
+     - **Limits.** `OP_DEFINE` allows 1,000 memory slots and 7-byte function identifiers. A copy is one push, so a
+       facet is at most 10,000 B.
+     - **Compatible with the frozen `V_TEMPLATE`.** The validator identifies masters by category and minting
+       capability, never by lock (V1, V3, V7), and the census keeps every minting NFT at its master lock. Plan B15
+       keeps it that way, so this stays open after the freeze.
+  2. **Smaller facets.** Each copy shrinks, but the sum still grows with the copies, so the gain is linear at best.
+  3. **Direct submission to miners.** Valid up to 1,000,000 B, at the cost of an operational dependency.
+  4. **Fewer entries per transaction.** Splitting a composition across transactions gives up atomicity, which is
+     the premise of this design.
 - The mock allows 10 MB per input, which makes the 66 a mock result (plan D3). Plan item A9 replaces these
-  assumptions with measured sizes.
+  assumptions with measured sizes, starting with the loader.
 
 ---
 
@@ -1024,7 +1052,10 @@ defaults.
     - **The principle to prove** when they are: value leaves a contract's UTXOs only as a listed send or as
       `msg.value` passed to a callee, and enters only as `msg.value` it receives or as the funding of outputs it
       creates.
-    - Preservation proves this for kept UTXOs. That is all the 66 need: they move no BCH between parties.
+    - Preservation (P2, V1, S4, D2) proves less: it is a floor. No kept UTXO loses value except through a listed
+      send, but nothing bounds the value of created outputs or `msg.value`.
+    - That floor is all the 66 need: they move no BCH between parties. Every satoshi that moves is the funder's
+      (fees, and the dust of created outputs).
 11. **Script size:** every executing master carries the full contract code (90-200 KB for the marketplace), so it is
     mock only. The real-chain path is code splitting.
 12. **Hash-type parsing (W1).** P2PKH unlocking bytecode is `<sig> <pubkey>`, and the hash type is the last byte of
@@ -1126,11 +1157,15 @@ defaults.
   - **Hostile code in the call graph**, when every call in the user's name must be attributable: only the
     validator-enforced form works, because the event form is checked by the root contract's own code, which hostile
     code skips.
-    - It binds every root of a validated composition. A call that reaches an honest contract always brings a
-      validator, because the honest callee's own need test demands one (N1). Roots that touch only hostile code bind
-      nothing, but affect only that code, and the signed outputs fix every effect.
-    - It lives inside `V_TEMPLATE`, so it must land before the freeze binds (open point 13), or come with a versioned
-      address form.
+    - It binds every root of a validated group (V4). A root escapes only if its whole call tree runs without a
+      validator: a standalone master with no external call, or code that skips its own need test and calls only
+      code that does too.
+    - Any call that reaches an honest contract brings a validator, because the honest callee's own need test
+      demands one (N1), and V4 and V5 then cover its callers up to the signed root. So an unbound root touches no
+      honest contract's records, and the signed outputs fix its effects.
+    - It lives inside `V_TEMPLATE`, so its deadline is the freeze, whether or not hostile code ever appears: if
+      attribution will ever be required, it must land before the first real-chain deployment (open point 13).
+      Within this goal (mock only, plan D3) that deadline does not come due.
   - **For the 66** the SDK is the assembler and all code is known, so the residual is inert.
 
 **Implementation code on the proxy's masters.** Cheaper than section 11's proxy model.
@@ -1310,10 +1345,17 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - **Resume, do not restart.** Continue each master from a snapshot of its VM state at the stop site. Restarting
     costs one full run per stop site, about 10 per master, which would be slower than today's kernel
     (`EVAL_PER_CALL_VS_KERNEL.md` section 5).
-  - **Stalls are refused** (review, 2026-09-25). Every step must fill at least one missing witness: a read, a call
-    result or a segment close. A step that fills none, or a master that passes a configured step cap (a guard
-    against a derivation defect inside a loop), stops derivation with `PER_CALL_DERIVATION_STALLED`, naming the
-    master, the function and the stop site. Nothing is built or broadcast.
+  - **Stalls are refused** (review, 2026-09-25; the step cap was removed in revision 11). Every step must fill at
+    least one missing witness: a read, a call result or a segment close. A step that fills none stops derivation
+    with `PER_CALL_DERIVATION_STALLED`, naming the master, the function and the stop site. Nothing is built or
+    broadcast.
+  - **Termination needs no extra constant.** Each step fills a witness at a stop site that the one resumed execution
+    reaches, so the steps are bounded by that execution's length. The VM bounds the execution with the provider's
+    op-cost budget, `(41 + L) x operationCostBudgetPerByte` for unlocking length `L`, at 100 per instruction. On a
+    real chain that is `(41 + L) x 8` instructions, about 80,000 at 10,000 B. A large legitimate derivation (30
+    `jobEvents` appends, the `sendEscrowShare` fan-outs) is therefore never refused for its size. An execution over
+    budget fails in the VM like any script. The mock's relaxed budget loosens this bound for validation as much as
+    for derivation.
 - **Reverts.**
   - A failure that is not at a stop site is a real revert. Its source location, from debug metadata, gives the
     `require` message or custom error.
@@ -1409,8 +1451,10 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 **Encodings, stated here rather than delegated** (review, 2026-09-25; `packages/solidc/docs/verified-mappings.md`):
 - **Value tails.**
   - A fixed-width value whose canonical encoding is at most 64 bytes is stored directly.
-  - A variable-width value (`string`, `bytes`, a chunkable struct or array) carries a 4-byte length. It is stored
-    as `len4 || v` up to 60 bytes, and as the 64-byte long-value head beyond that. `len4` tells the two apart.
+  - Every other value carries a 4-byte length: variable-width values (`string`, `bytes`, a chunkable struct or
+    array), and any value whose encoding is over 64 bytes, fixed-width or not (a 65-byte signature, a large struct).
+    It is stored as `len4 || v` up to 60 bytes, and as the 64-byte long-value head beyond that. `len4` tells the two
+    apart, and the collection's value type tells a direct value from a length-prefixed one.
 - **Nested mappings.** `mapping(K0 => mapping(K1 => V))` is one collection, not one per outer key.
   - The slot for keys `k0, k1, ...` is `mask(sha256(sha256(k0) || sha256(k1) || ...))`. A single key gives
     `mask(sha256(k0))`.
@@ -1426,8 +1470,10 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 
 **In this model:**
 - **Reads.**
-  - A frame reads a node, or its strict predecessor as an absence proof (`slot < H(k) < next`), as a touched record
-    with `viewIn == viewOut`. Its own code checks the proof, as today.
+  - A frame reads a node, or its strict predecessor as an absence proof (`slot < s(k) < next`, or `next = 0`), as a
+    touched record with `viewIn == viewOut`. Its own code checks the proof, as today.
+  - `s(k)` is the key's masked slot from the encodings above, never the raw hash: the mask changes the last byte
+    for about half of all keys. Slots compare as little-endian 255-bit numbers, which the mask keeps non-negative.
   - A long value arrives as a witness, which the frame checks against the root in the head.
 - **Inserts across frames.**
   - A node created in the transaction can be relinked or updated by later frames.
@@ -1451,8 +1497,9 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 1. A record covenant's master path trusts any master of `C` blindly, so whatever settles the record must pin every
    `C` output. That is the census in S2 and V7.
 2. Every record lock pins its own category and capability. So a spent UTXO at a record lock is a genuine record.
-3. A mapping key's absence is proven by its sorted predecessor (`slot < H(k) < next`). Slots are unique and links
-   strictly increase.
+3. A mapping key's absence is proven by its sorted predecessor (`slot < s(k) < next`, with `s(k)` the masked slot).
+   Slots are unique and links strictly increase. Slot 0 is reserved for HEAD: a key whose masked slot is 0
+   (probability about `q / 2^255` for `q` keys) is refused as reserved, as today (`verified-mappings.md` 2.1).
 4. `A$len`, in a data NFT that is always spent, is the authority for a dynamic value's length and chunk count.
 5. A long value's root binds it, and its chunk lock binds (collection, slot, root).
 6. Events carry their emitter's category and can be swept after 144 blocks. Contracts never read them.
@@ -1476,9 +1523,15 @@ since each needs a master.
   - the default is 12 masters per contract, which covers Unicrow's 9, and a contract may get more;
   - 2 validators for each contract that roots compositions. In the 66, that is only the MarketplaceV1 proxy. Direct
     calls to MarketplaceData and FakeToken are standalone.
-- **Exhaustion is refused** (review, 2026-09-25).
-  - When derivation needs one more entry into X than X has masters, or one more composition rooted at X than X has
-    validators, the SDK stops before building.
+- **Exhaustion is refused** (review, 2026-09-25; validator clause corrected in revision 11).
+  - **Masters.** When derivation needs one more entry into X than X has masters, the SDK stops before building.
+  - **Validators.** One validator covers every root of its group (V4), provided the group's first root has the
+    validator's category (V9); section 5.4 shows one validator serving `A.x` and `A.y`.
+    - Independent compositions may each use their own validator (5.4: `AB` and `CD`), but any of them can instead
+      join the group of the transaction's first root.
+    - So a transaction needs only one validator, of its first root's category. It is spent and recreated in place
+      (V1), so a pool cannot run out inside a transaction.
+    - The only refusal is a first root whose contract has no validator at all.
   - The diagnostic `PER_CALL_POOL_EXHAUSTED` names X, the entries needed so far and the pool size. The remedy is a
     larger pool at deployment (plan D6), or `split` (deferred).
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.

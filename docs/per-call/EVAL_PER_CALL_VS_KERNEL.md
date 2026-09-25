@@ -1,4 +1,4 @@
-# Per-call (spec revision 10) versus the message-bus kernel: complexity and speed
+# Per-call composition versus the message-bus kernel: complexity and speed
 
 Date: 2026-09-25.
 
@@ -9,8 +9,8 @@ Date: 2026-09-25.
 **Method:**
 - Measurements on `ea7a48e27` (`.worktrees/kernel-baseline-ea7a48e27`).
 - The kernel's own performance records (`PERF_FINDINGS.md`, `PERF_HANDOFF_KERNEL_BETA.md`).
-- The spec, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md). The estimates were made on revision 9;
-  revision 10's review fixes leave them unchanged, except that B14 adds test code.
+- The spec, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md). The estimates were made on revision 9
+  and rechecked on revisions 10 and 11: the review fixes leave them unchanged, except that B14 and B15 add test code.
 
 Per-call sizes are estimates, and are marked as such.
 
@@ -22,6 +22,9 @@ Per-call sizes are estimates, and are marked as such.
   required. Per transaction, 100,000 B is relay policy, and one code copy per entry makes the largest titles
   non-standard, though consensus-valid.
 - The review reproduced the other measurements. Its SDK counts are higher because it measured a later commit.
+- Third review: loading the code instead of carrying it ranks first among the size mitigations (spec 12). It keeps
+  one copy per distinct code, not per entry: about 3x fewer copies for `arbitrate`, not the 8x the budget ratio
+  suggests (section 4, item 4).
 
 ---
 
@@ -30,7 +33,8 @@ Per-call sizes are estimates, and are marked as such.
 - **A win on complexity, with one concentrated risk.**
   - The kernel's cost grows with the shapes it has to plan for. It has static footprint planning, per-shape
     admission, 18 refusal codes fed by dozens of free-form admission reasons, and two full compiles per contract.
-    It still stands at 0/66 at HEAD, with a best of 43/66; `arbitrate` and the integration test never passed.
+    It still stands at 0/66 at HEAD, with a best full run of 43/66; `arbitrate` and the integration test never
+    passed.
   - The per-call spec has a fixed set of mechanisms (masters, frames, one generic validator, views over today's
     record formats), and none of them depends on the transaction's shape.
   - Its risk sits in one place: compiler "view mode", which reads and writes records through witness views. Scoped
@@ -59,7 +63,7 @@ Per-call sizes are estimates, and are marked as such.
 | Refusal codes | 7 `KERNEL_*` catalog codes (`kernel-admission-catalog.ts`) and 11 `MESSAGE_BUS_*` diagnostics, plus free-form admission reasons that normalize into the 7 (the review counted about 96) |
 | Bus tests | 245 files, 66,690 lines |
 | Working documents in the kernel worktree | 43 handoffs, goals and inventories |
-| Marketplace | 0/66 at HEAD; best 43/66; `arbitrate` and integration never green |
+| Marketplace | 0/66 at HEAD; best full run 43/66; `arbitrate` and integration never green |
 
 **Structure:**
 - routes with a row loop;
@@ -107,6 +111,9 @@ Per-call sizes are estimates, and are marked as such.
      (policy) and 1,000,000 B the consensus limit. The largest titles would be non-standard but consensus-valid.
    - The kernel has the mirror problem: its routes exceeded the 10,000 B per-input consensus limit. Neither path is
      real-chain ready, so 66/66 is a mock result either way. Plan item A9 measures the per-call numbers.
+   - **The lever** (third review): load the code instead of carrying it (spec 12, mitigation 1). Each unlocking byte
+     funds 8 instructions, so most masters need little padding, but one copy per distinct code remains: about 3x
+     fewer copies for `arbitrate`, which puts it near the 100,000 B line. A9 measures this first.
 5. **Record growth.** `jobEvents` intermediate versions leave chunk outputs behind. This is measured in plan section 4.5.
 6. **Harness features** (snapshots including SDK state, listeners, simulation before funding). This is SDK work;
    part of it exists today.

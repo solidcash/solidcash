@@ -32,8 +32,9 @@ mock BCH-2026, without Marketplace/Unicrow source changes and without applicatio
   - [ ] `examples/effectiveacceleration` copy (drops upstream `test:1477`)
   - 2026-09-25, user decision: the root harness.
 - **D3. Real-chain deployability.**
-  - [x] Out of scope for this goal; route-size gates leave the critical path (recommended)
-  - [ ] In scope (adds Phase R)
+  - [x] Out of scope until M2: 66/66 on the mock first, and route-size gates leave its critical path; real-chain work
+    follows as Phase R after M2 (recommended)
+  - [ ] In scope now: Phase R runs alongside the 66
   - 2026-09-25, user decision: "out of scope until we make all 66 green on mock. then return to this to work out the
     real chain deployments". So real-chain work is Phase R, after M2, and starts with A9 (moved there from Wave 0).
   - 2026-09-25 (review): decide on numbers. The relay limit is 100,000 B per transaction (policy) and the consensus
@@ -45,12 +46,15 @@ mock BCH-2026, without Marketplace/Unicrow source changes and without applicatio
     before evaluation), so code splitting is required on a real chain. Per transaction, 100,000 B is only relay
     policy. So D3 asks "will these transactions relay, and what does submission cost", not "is this buildable". A9
     states both layers and the mitigations with their costs.
+  - 2026-09-25 (third review): the option texts were aligned with the user's decision; the ticked one now names
+    Phase R after M2. The reviewer suggests running A9 early, since loading the code instead of carrying it (spec 12)
+    could bring real-chain deployment back sooner. The decision stands: after M2.
 - **D4. Spike form.**
   - [x] Per-call units + one settlement per owner (recommended; EVAL 4.4)
   - [ ] Generic journal inside the existing route
   - [ ] Both, same time box
-  - 2026-09-25: follows from the user's decisions. The kernel is ignored (D1), and the per-call spec (revision 9) is
-    implemented in parallel workstreams (section 4).
+  - 2026-09-25: follows from the user's decisions. The kernel is ignored (D1), and the per-call spec is implemented
+    in parallel workstreams (section 4).
 - **D5. Uncommitted Codex WIP (43 files).**
   - [ ] Keep as a reference patch only; port reviewed hunks individually (recommended)
   - [ ] Apply wholesale on the clean branch
@@ -97,7 +101,8 @@ mock BCH-2026, without Marketplace/Unicrow source changes and without applicatio
     - Untrusted assembler (relayers, batchers): receipt events the root master checks are enough, and can be added
       later, per contract.
     - Hostile code in the call graph, with every call in the user's name attributable: only the validator-enforced
-      form works. It is inside `V_TEMPLATE`, so it must be decided before the freeze binds (D9).
+      form works. It is inside `V_TEMPLATE`, so its deadline is the freeze (D9), whether or not hostile code ever
+      appears. It binds every root whose calls reach an honest contract (spec 14.1).
     - The 66 have neither (the SDK assembles every transaction), so the residual is inert here.
 - **D9. Address model** (spec open point 13, T36; audit S12, F9).
   - An address must be bound on-chain to exactly one contract. Today's anchors are forgeable.
@@ -139,7 +144,7 @@ mock BCH-2026, without Marketplace/Unicrow source changes and without applicatio
 | Name | Path | Role |
 | --- | --- | --- |
 | `WT_NEW` | `/Code/cashscript/.worktrees/per-call` | All work from Phase 0 on, branch `feat/per-call` from `ea7a48e27`. Holds the plan documents in `docs/per-call/`. |
-| `WT_CODEX` | `/Code/cashscript/.worktrees/kernel-beta-candidate` | Kernel work, ignored. Not frozen, fixed or measured. Its copies of these documents carry a "superseded" banner and are deleted once 0.2 is committed. |
+| `WT_CODEX` | `/Code/cashscript/.worktrees/kernel-beta-candidate` | Kernel work, ignored. Not frozen, fixed or measured. Its copies of these documents were deleted on 2026-09-25, after 0.2's commit. |
 | `WT_CLEAN` | `/Code/cashscript/.worktrees/kernel-baseline-ea7a48e27` | Detached at `ea7a48e27`, built. Measurement reference for this plan; otherwise unused. |
 
 ### Commands (run from the worktree root)
@@ -184,6 +189,7 @@ Fallback if the offline cache misses a package: `cp -a` from `WT_CLEAN`, then th
 - Before recording any number, run the stability check: `git status --porcelain | sort | md5sum`, wait 45 s,
   repeat, and require both hashes to match.
 - Record numbers only from committed states. Put the commit hash in the Log.
+- Reviews of these documents target a commit hash, since the files change while they are being edited.
 - Never `git add -A`: stage reviewed files only. Never `git stash`: the stash stack is shared across worktrees.
 - Never edit Marketplace/Unicrow sources or the test file.
 - No application-name logic. Gate on every diff:
@@ -220,8 +226,8 @@ Phase 0 does not freeze, repair, measure or stabilize it (user decision 2026-09-
   - `AUDIT_MSG_SENDER.md`, `EVAL_REMOVE_BATCH_ENTRYPOINT.md`, `EVAL_PER_CALL_VS_KERNEL.md`;
   - `PLACEHOLDER_OUTPUTS_INVENTORY.md`, and `probes/`.
 - [x] Commit them, staging only `docs/per-call/` (2026-09-25, user OK; see Log).
-- [ ] From then on the branch copy is the only copy. Delete the copies in `WT_CODEX` (until then they carry a
-  "superseded" banner).
+- [x] From then on the branch copy is the only copy. The copies in `WT_CODEX` were deleted on 2026-09-25 (user OK),
+  after checking that each held only the copied content plus its "superseded" banner.
 
 ### 0.3 Harness
 
@@ -281,7 +287,7 @@ HEAD `ea7a48e27`).
 
 ## 3b. Track S: identity and authorization on today's path (`AUDIT_MSG_SENDER.md`)
 
-The new path is designed to close these (spec revision 9).
+The new path is designed to close these (the spec).
 - With the kernel work ignored (D1), S1-S3 are not scheduled on today's path. They stay listed as known issues of
   today's path.
 - S0, the conformance suite, is built on the new branch. It is the acceptance test for D7.
@@ -321,7 +327,7 @@ The new path is designed to close these (spec revision 9).
 
 ## 4. Implementation: parallel workstreams
 
-The spec (revision 9) fixes every interface the parts share: the witness block, the encodings, `M`, the record
+The spec fixes every interface the parts share: the witness block, the encodings, `M`, the record
 formats, the frames and the V-checks. That makes an optimistic, parallel implementation possible, replacing the
 earlier spike-then-rebuild sequence:
 - after a short interface freeze (Wave 0), independent coders build separate code paths;
@@ -334,7 +340,7 @@ The gate is kept, moved to milestone I2.
 focused tests pass. This checklist is the only place implementation status is tracked.
 
 A traceability check on 2026-09-25 found every item has a checkbox here:
-- every spec check: P1-P2, W0-W3, O1, N1, S1-S4, V1-V11, and the state rules D1-D2;
+- every spec check: spec P1-P2, W0-W3, O1, N1, spec S1-S4, V1-V11, and the spec's state rules D1-D2;
 - every threat, T1-T41;
 - every edge case (section 23, 26 rows);
 - every Part II mechanism.
@@ -361,8 +367,14 @@ Items not needed for the 66 are in 4.7.
   - The marketplace suite runs only from I3 on, at most once a day.
   - Flaky or shared-state tests are first confirmed with targeted runs.
 - **Guardrails** (section 2) apply to every stream.
-- **Names.** The toys are Y1-Y7 and the records stream is R, so they do not clash with threats T1-T41 or decisions
-  D1-D9.
+- **Names.** A bare label in this plan is a plan label.
+  - Plan labels: decisions D1-D9; Track P items P0-P4; Track S items S0-S3; stream items A1-A8, B1-B15, C1-C14,
+    R0-R7, E1-E13, F1-F7, G1-G6; milestones I1-I3, L1-L7, M1-M2; toys Y1-Y7 (renamed from T1-T7, so they do not
+    clash with threats T1-T41).
+  - Spec labels that could clash always carry "spec": spec P1-P2, spec S1-S4, spec R1-R10, and the spec's state
+    rules D1-D2. Labels that exist only in the spec (W0-W3, O1, N1, V1-V11, T1-T41) need no prefix.
+  - Shapes are in backticks (`A`, `ABBA`); streams are "stream A" and so on.
+  - In the spec, bare D1-D2 are its state rules, and plan decisions are written "plan Dn".
 
 | Stream | Owns (code) | Focused tests |
 | --- | --- | --- |
@@ -399,11 +411,11 @@ Items not needed for the 66 are in 4.7.
   - About 5-7 weeks in total, against 8-12 for spike then rebuild.
 
 **Prerequisites (done):**
-- [x] Every open point on the 66 critical path specified in spec Part II (revision 9).
+- [x] Every open point on the 66 critical path specified in spec Part II (since revision 9).
 - [x] D6: as many masters as needed. Measured need: Unicrow 9 per transaction, and MarketplaceData 5 through its
   proxy and implementation.
 
-### 4.1 Wave 0: interfaces (stream A, one coder, about 2-3 days; R0 in parallel)
+### 4.1 Wave 0: interfaces (two coders, about 2-3 days: stream A, and stream R's coder on R0)
 
 - [ ] A1 Witness block codec, version `PW 01` (spec 16): encode, decode, exact lengths, nothing trailing.
 - [ ] A2 `M` codec (spec 6): roots, masters, settles.
@@ -443,7 +455,7 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
     callee's argument pushes.
 - [ ] B6 V6: the derived depth-first order; every master visited exactly once.
 - [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
-  (containers, distinct event outputs), and values (S4).
+  (containers, distinct event outputs), and values (spec S4).
 - [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
 - [ ] B9 V9: owner policy.
 - [ ] B10 V10: static frames.
@@ -455,10 +467,13 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   witnesses, `M`, orders, record chains, edges) and requires the script and the model to agree on every accept and
   reject. B13 proves each check exists; B14 checks that the derived order and the record chaining agree with the
   spec over graphs nobody wrote by hand.
+- [ ] B15 No master-lock assumption in `V_TEMPLATE`. Masters are identified by category and minting capability only
+  (V1, V3, V7); the census keeps every minting NFT at its master lock. This keeps the loader form (spec 12) open
+  after the freeze. Checked by B14's model and one vector whose masters sit at a loader lock.
 
-**Stream C: frames and calls** (spec 4a; 7.1 P1-P2, W0-W3, O1, N1; R3).
+**Stream C: frames and calls** (spec 4a, spec R3, and spec 7.1: spec P1-P2, W0-W3, O1, N1).
 - [ ] C1 Option `composition: 'per-call'` and its single entry hook (a declared hook commit).
-- [ ] C2 P1 category pin; P2 recreation in place.
+- [ ] C2 spec P1: category pin; spec P2: recreation in place.
 - [ ] C3 W0: the first-push self-check.
 - [ ] C4 W1: frames.
   - `callerRef != self`.
@@ -470,7 +485,7 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
 - [ ] C6 N1: the need test, and validator recognition through `H_V`.
 - [ ] C7 W2: calls. Kind and target recorded, `calleeRef != self`, in-script `argsHash` with minimal pushes (A3),
   result from the witness, segment closed at every call.
-- [ ] C8 R3 call forms:
+- [ ] C8 spec R3 call forms:
   - internal calls and `delegatecall` to own code, inline;
   - `this.g()` inline with `msg.sender = self`, replacing the `AstBuilder.ts:7323` behaviour under per-call;
   - a runtime target equal to self as a `CALL`;
@@ -485,12 +500,12 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
 - [ ] C14 Fix: a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally
   (spec open point 9).
 
-**Stream R: records and settlement, view mode** (spec 20; 7.1 S; 7.3). This is the main risk. Take the slices in
-order, each with its own tests.
+**Stream R: records and settlement, view mode** (spec 20, spec 7.1 checks spec S1-S4, spec 7.3). This is the main
+risk. Take the slices in order, each with its own tests.
 - [ ] R1 Data NFTs: reads from `viewIn`, and writes compared with `viewOut` at segment close, reusing today's record
   encoders.
-- [ ] R2 Self-settlement S1-S4: chains, census, the input rule (S3), values. The D1 and D2 rules in `STATE_CODE`,
-  reusing today's data-NFT covenant with an added value pin.
+- [ ] R2 Self-settlement, spec S1-S4: chains, census, the input rule (spec S3), values. The spec's state rules D1
+  and D2 in `STATE_CODE`, reusing today's data-NFT covenant with an added value pin.
 - [ ] R3 Mapping nodes:
   - exact read, and absence proof by predecessor;
   - update in place;
@@ -501,7 +516,7 @@ order, each with its own tests.
   version's chunks.
 - [ ] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one.
 - [ ] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
-- [ ] R7 Value pin (the D2 rule) for mapping nodes and chunks, which carry none today (T39).
+- [ ] R7 Value pin (the spec's D2 rule) for mapping nodes and chunks, which carry none today (T39).
 - Satoshi and token containers: not needed for the 66; deferred.
 
 **Stream E: composer** (spec 5, 6, 10, 18).
@@ -519,10 +534,10 @@ order, each with its own tests.
 - [ ] E10 Listeners: `addListener` on the emitting address, including nested frames.
 - [ ] E11 A test helper that deploys a contract with N masters and a validator pool, for the B, C, R and E tests
   before stream F lands.
-- [ ] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Test: fill a pool
-  exactly, then ask for one more entry; the same for validators.
+- [ ] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Tests: fill a master
+  pool exactly, then ask for one more entry; a composition whose first root's contract has no validator.
 - [ ] E13 Derivation stalls are refused, with `PER_CALL_DERIVATION_STALLED` (spec 18). Tests: a step that fills no
-  witness, and a master that passes the step cap.
+  witness is refused; a 30-append derivation completes (no size cap).
 
 ### 4.3 Wave 2: deployment, proxies and acceptance tests (F and G, with R continuing)
 
@@ -675,6 +690,11 @@ order, each with its own tests.
     - I2 is not reached within 4 weeks of the interface freeze (A8). One extension of 2 weeks is allowed if I1 is
       green and every GO criterion holds, with a written re-estimate in the Log.
   - [ ] Record the gate decision in the Log, with a date and one paragraph of rationale.
+  - **On KILL:** stop the swarm, write the gate report (which criterion failed, with its numbers), and return to the
+    project owner. The options are then to redesign the failing mechanism, to cut scope, or to stop. Nothing
+    continues by default.
+  - **Stream R's bus factor.** R is the main risk and has one coder. Every R slice gets a second coder's review
+    before it merges, and `MANIFEST.md` records R's state per slice, so another coder can take it over.
 - [ ] **I3: the fixture is green** on the D2 harness (F7).
 - [ ] The solidhat/testing layer uses the composer when `composition: 'per-call'` is set, for the D2 harness only.
 - [ ] **Ladder** (tick titles in the scoreboard as they turn green):
@@ -688,9 +708,13 @@ order, each with its own tests.
   - [ ] L6: `approveResult` / `refund` re-entry: #50, 51, 52
   - [ ] L7: `arbitrate` + integration: #59, 60, 61, 62, 66
   - [ ] **M2: 66/66 on two consecutive full runs of the same commit**, and on that commit:
-    - G2 (edge cases) and G3 (hostile) green, and B14 agreeing;
+    - G1 (the conformance suite, S0: the acceptance test for D7), G2 (edge cases), G3 (hostile), G4 (toys), G5
+      (shapes) and G6 (edge coverage) green, and B14 agreeing;
     - Track P4 conformance green (4.6);
-    - the I2 GO criteria still holding.
+    - the I2 GO criteria still holding, and the I2 KILL conditions still clear: no per-shape recipe, no fixpoint, no
+      shape special case, generic sorted-entry insert and delete, Y2 derived within 5 s;
+    - the compiler delta recorded against the estimate (4.5). By M2 it also carries C12-C14, so the 12K bound is
+      reported, not enforced.
 
     66/66 is a semantics result on the mock. It is not a security claim (the EVM hazards are reproduced on purpose)
     and not a deployability claim (D3); see spec section 15.
@@ -727,11 +751,13 @@ These are tracked here so nothing drops silently. Each needs its own decision be
 - [ ] Real-chain limits: validator size and density (open point 7), 10,000-byte masters (11), events above 128 bytes
   (16), and the 100,000 B relay limit with one code copy per entry (spec 12, A9).
 - [ ] External audit of `V_TEMPLATE`, with B14's reference model, before the v1 freeze binds at the first real-chain
-  deployment (D3, D9).
+  deployment (D3, D9). Owner: the project owner, who engages the auditor; scheduled in Phase R.
 - [x] The address form, decided before the freeze binds: `addrV(cat)`, final for v1, no dispatcher (user decision
   2026-09-25, D9). The validator-enforced receipts (D8) can still be added to `V_TEMPLATE` until the freeze binds.
 - **Precondition for any real-chain deployment:** the two items above are done, and the audit covers the decided
   address form.
+- **Not due within this goal.** D3 keeps real-chain deployment after M2, so the freeze, the audit and D8's receipt
+  deadline do not come due before M2. They come due in Phase R, before the first real-chain deployment.
 - [ ] A layout-compatibility rule for proxy upgrades: the implementation's records by name and type, with `__gap`
   carrying no record (spec 20).
 - [ ] Atomic proxy initialization (audit F11, spec open point 5).
@@ -755,14 +781,17 @@ These are tracked here so nothing drops silently. Each needs its own decision be
 
 ### Phase R: real-chain deployment (after M2, per D3)
 
-- [ ] A9 Size budget (about 1 day), the first step. Bytes per transaction for `arbitrate` and `approveResult`:
-  masters x (code + witness + arguments + views), plus the validator with density padding, state inputs and
-  outputs, from the per-call artifacts' per-function code sizes. The recorded result (Log) must state:
+- [ ] A9 Size budget, the first step. Owner: the coordinator; about 1 day; its result gives Phase R's estimate.
+  Bytes per transaction for `arbitrate` and `approveResult`: masters x (code + witness + arguments + views), plus
+  the validator with density padding, state inputs and outputs, from the per-call artifacts' per-function code
+  sizes. The recorded result (Log) must state:
   - both layers, with numbers: per input, 10,000 B consensus (code splitting required); per transaction,
     100,000 B relay policy and 1,000,000 B consensus;
-  - the mitigations with their costs (spec 12): fewer entries per transaction (gives up atomicity, the design's
-    premise); smaller facets (linear at best); direct submission to miners (an operational dependency); one code
-    copy per transaction loaded through introspection (bounded by per-input density; unmeasured until then).
+  - first, the loader (spec 12, mitigation 1): one copy per distinct code instead of per entry; each master's
+    executed-instruction count against its budget of 8 instructions per unlocking byte; the padding needed; and the
+    total against 100,000 B;
+  - then the other mitigations with their costs: smaller facets (linear at best); direct submission to miners (an
+    operational dependency); fewer entries per transaction (gives up atomicity, the design's premise).
 - [ ] The precondition in 4.7 holds before any real-chain deployment.
 - [ ] A separate harness at real limits: 10,000 B per input, 800 op-cost per byte, 128 B commitments, 100 KB relay.
 - [ ] Facet-split the large handlers: the 75 KB entry closure, and the 90-200 KB contracts.
@@ -882,3 +911,5 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-25 | ea7a48e27 | per-call | review | n/a | Independent review of spec revision 9, plan and eval; findings checked against the docs and code at `ea7a48e27` before folding in (spec revision 10). Confirmed and fixed: refusal codes are 7 `KERNEL_*` + 11 `MESSAGE_BUS_*` (the eval's 40 + 36 counted identifiers); D1/D5/M1 contradictions; section 15 counts (181 = 121 expecting a revert + 60 expecting none; 59 = 57 + 2); the I2 kill threshold (6K lay below the 6-12K estimate, now 12K); no rule for pool exhaustion or derivation stalls (now named refusals, E12, E13); nested-mapping slots, value thresholds and fixed-size arrays stated in spec 20 (`__gap` is dropped under `solidityImportCompat`, `compiler.ts:12452`); M2 now also requires G2, G3, B14 and P4; stream R gets a compiler test directory. Pinned with libauth: 100,000 B is the relay policy and 1,000,000 B the consensus transaction limit, so `arbitrate` on a real chain would be non-standard but consensus-valid (A9 measures it). Added: B14 reference model with differential tests, R0 reuse proof, external audit before the `V_TEMPLATE` freeze binds (4.7). Recorded, decisions unchanged: D8 residual with owner and revisit trigger (receipts can later be events the root master checks, so v1 stays); D9 note that proxies do not cover `V_TEMPLATE` defects, with the dispatcher address form open for the user |
 | 2026-09-25 | ea7a48e27 | per-call | review follow-up | n/a | The reviewer verified the revision-10 fixes and accepted the three corrections (relay versus consensus size, `__gap`, counts). Folded in: the size question has two layers, checked in libauth (`bch-2023-instruction-set.js:48` rejects unlocking bytecode over 10,000 B before evaluation, so per input is consensus and code splitting is required; per transaction, 100,000 B is relay policy), which corrects this plan's own revision-10 table; A9 must state both layers and the four mitigations with costs; D8's trigger splits by threat (untrusted assembler: master-checked receipt events, addable later; hostile code: only validator-enforced receipts, which must precede the freeze); D9 precondition, no real-chain deployment before the address form is decided and audited; D1's ticked text aligned; eval retitled to revision 10; `__gap` cites the project compile configs. Open for the user: D2, D3, and when to decide D9's address form (the reviewer says before A8) |
 | 2026-09-25 | docs commit | per-call | decisions | n/a | User decisions: D2 = the root harness; D3 = out of scope until 66/66 is green on the mock, then back to real-chain deployment (Phase R after M2, starting with A9, which moved there from Wave 0); D9 = `addrV(cat)` final for v1, no dispatcher. Phase 0 done except pointing the harness at the per-call path, which needs C1. The documents are committed on `feat/per-call` in the commit that adds this row, staging only `docs/per-call/` |
+| 2026-09-25 | 173d788e6 | per-call | third review | n/a | Review of revision 10 (read while the files were being edited; reviews now target a commit hash). Every claim was checked against the docs, the code and libauth. Spec revision 11 fixes: absence proofs compare the masked slot `s(k)`, not `H(k)`, and slot 0 stays reserved (as `verified-mappings.md` 2.1 does today); values over 64 bytes take the length-prefixed form; the validator exhaustion clause could never fire, because one validator of the first root's category can cover every root (V9; section 5.4 `A.x` and `A.y`), so only a contract with no validator is refused; the step cap is replaced by a termination argument (one bounded execution per master); conservation wording is consistent (preservation is a floor); the validator-enforced receipts' deadline is the freeze. Corrected against the reviewer: loading the code instead of carrying it keeps one copy per distinct code (8, or 7, for `arbitrate`'s 24 masters), so about 3x fewer copies, not 8x; it ranks first and A9 measures it first; the reviewer's "only a standalone root is unbound" assumes every contract enforces its own need test, which hostile code does not. Plan: D3 option texts aligned (the reviewer's suggestion to run A9 early is recorded, and the decision stands); "revision 9" drift removed; label convention added and clashing spec labels prefixed; Wave 0 is two coders; B15 (no master-lock assumption in `V_TEMPLATE`); on-KILL disposition and stream R review; M2 re-checks G1-G6 and the I2 KILL conditions; owners for A9 and the audit; these items are not due within this goal. Section 4 now holds 193 checkboxes (the 185 of the earlier row was right when it was written) |
+| 2026-09-25 | rev-11 commit | per-call | docs | n/a | Spec revision 11 committed, in the commit that adds this row (user OK). The superseded copies in `WT_CODEX` were deleted (user OK): six documents and `probes/`. Each was checked first: banner present, unchanged since the banner, never committed on any branch; `probes/` byte-identical to `docs/per-call/probes/` |

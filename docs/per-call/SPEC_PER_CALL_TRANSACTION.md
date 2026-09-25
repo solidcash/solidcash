@@ -2,11 +2,20 @@
 
 Design spec for the per-call path of [`PLAN_MARKETPLACE_66.md`](./PLAN_MARKETPLACE_66.md) (its section 4).
 
-Revision 11, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
+Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_SENDER.md`](./AUDIT_MSG_SENDER.md).
 
 ---
 
 ## 0. Changes
+
+### Since revision 11 (fourth review, 2026-09-25)
+
+- **Size.** Worked totals for the loader: the total improves about 2x, to about 64 KB at 4 KB facets and 100-125 KB
+  at the 10,000 B cap, so either side of the relay line (section 12).
+- **Receipts.** The residual that stays even with validator-enforced receipts is stated (section 14.1).
+- **Value tails.** Both thresholds are stated side by side, as consequences of the 64-byte tail (section 20).
+- **Validators.** The refusal names the first root's category. One validator per root category is not needed,
+  because V9 constrains only a group's first root (section 21).
 
 ### Since revision 10 (third review, 2026-09-25)
 
@@ -962,7 +971,7 @@ A failing `require` that is not at a designated site is a real revert; the SDK r
 | Pool | Created | Resized | Bound | Contention |
 | --- | --- | --- | --- | --- |
 | Masters | At deployment, with a config default (e.g. 12) | `split` / `merge` | A transaction can enter X at most N_X times; more is refused before building (section 21) | Transactions contend for them |
-| Validators | For contracts that start compositions | `split` / `merge` | One validator of the first root's category can cover every root in the transaction (V4, V9); it is recreated in place, so only a contract with none runs out (section 21) | Transactions contend for them |
+| Validators | For contracts that start compositions | `split` / `merge` | One validator of the first root's category can cover every root in the transaction (V4, V9); it is recreated in place, so the only refusal is a first root whose category has none (section 21) | Transactions contend for them |
 
 The harness creates both pools at deployment. The marketplace test cannot change, so the pool sizes come from
 defaults.
@@ -999,8 +1008,12 @@ defaults.
      - **Loading** a 10 KB copy (push, split, hash) costs about 50,000, which is about 60 bytes of budget.
      - **What remains** is one copy per distinct code, not per entry. `arbitrate` runs 24 masters over 8 distinct
        codes, or 7 if the two proxies share one (which needs `addrX` in the loader rather than baked into the code,
-       plan C11). The code term shrinks about 3x, not 8x. With facets of a few KB, that lands near the 100,000 B
-       line, which only A9 can settle.
+       plan C11). The code term shrinks about 3x, not 8x; witnesses and padding do not shrink, so the total improves
+       about 2x.
+     - **Worked totals** (fourth review). At 4 KB of code and 1 KB of witnesses per master, 24 x 5 KB = 120 KB
+       becomes about 8 x 5 KB + 16 x 1.5 KB = 64 KB. At the 10,000 B cap, 240 KB becomes about 100-125 KB, depending
+       on the padding the larger code needs. So the result lands on either side of the 100,000 B line, and only A9
+       can settle it.
      - **Limits.** `OP_DEFINE` allows 1,000 memory slots and 7-byte function identifiers. A copy is one push, so a
        facet is at most 10,000 B.
      - **Compatible with the frozen `V_TEMPLATE`.** The validator identifies masters by category and minting
@@ -1163,6 +1176,8 @@ defaults.
     - Any call that reaches an honest contract brings a validator, because the honest callee's own need test
       demands one (N1), and V4 and V5 then cover its callers up to the signed root. So an unbound root touches no
       honest contract's records, and the signed outputs fix its effects.
+    - What stays open even then: a hostile-only graph can claim the user's identity on its own records, and the user
+      signs those outputs without seeing the calls behind them. Wallets must decode the witnesses (T32).
     - It lives inside `V_TEMPLATE`, so its deadline is the freeze, whether or not hostile code ever appears: if
       attribution will ever be required, it must land before the first real-chain deployment (open point 13).
       Within this goal (mock only, plan D3) that deadline does not come due.
@@ -1443,18 +1458,19 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 | Data NFT (scalars, structs, packed arrays, `A$len` headers) | One per contract: `buildDataNftCovenantScript(C)` | Optional index tag, then the fields in order, each as a minimal push | Only at genesis | In place | Only by `selfdestruct` |
 | Mapping node (verified sorted list) | One per collection: entry covenant salted with `sha256(name:type)[:20]` | `slot(32) \|\| next(32) \|\| value tail (0-64, see below)`; `slot = mask(sha256(key))`, nested keys below; `next = 0` means the end | Insert: a new node as a trailing output, and the predecessor relinked in place | In place; slot and next kept | Never unlinked: `delete` writes the default value |
 | HEAD sentinel | Same as its collection | Slot 0 | At genesis | Relinked by inserts | Never |
-| Long mapping value (length-prefixed, over 60 bytes) | Head in the node's tail: `len4 \|\| sha256(v) \|\| v[0:28]`; chunks at a lock salted with (collection, slot, root) | Chunk: `uint16LE(i) \|\| 126-byte slice` | Every version that is written | Never; a new version gets a new lock | Old versions may be cleaned up later; this is not required |
+| Long mapping value (length-prefixed, value over 60 bytes) | Head in the node's tail: `len4 \|\| sha256(v) \|\| v[0:28]`; chunks at a lock salted with (collection, slot, root) | Chunk: `uint16LE(i) \|\| 126-byte slice` | Every version that is written | Never; a new version gets a new lock | Old versions may be cleaned up later; this is not required |
 | Dynamic `string`, `bytes`, `T[]` state | Entry covenant salted per variable; length `A$len` in a data NFT | `pushdata(i) \|\| pushdata(120-byte slice)` | A write creates every new chunk | Never | A write consumes every old chunk |
 | Satoshi and token containers | `buildSatoshiContainerCovenantScript(C)`, `buildTokenContainerCovenantScript(C, X)` | None; they hold value | Genesis, or by a payment `CALL` | Merged | Drained by listed sends |
 | Event | `buildEventNftCovenantScript(C, sha256(signature)[:20])` | The arguments' pushes | Minted at `emit` (W3) | Never | Anyone may sweep it after 144 blocks |
 
 **Encodings, stated here rather than delegated** (review, 2026-09-25; `packages/solidc/docs/verified-mappings.md`):
-- **Value tails.**
-  - A fixed-width value whose canonical encoding is at most 64 bytes is stored directly.
-  - Every other value carries a 4-byte length: variable-width values (`string`, `bytes`, a chunkable struct or
-    array), and any value whose encoding is over 64 bytes, fixed-width or not (a 65-byte signature, a large struct).
-    It is stored as `len4 || v` up to 60 bytes, and as the 64-byte long-value head beyond that. `len4` tells the two
-    apart, and the collection's value type tells a direct value from a length-prefixed one.
+- **Value tails.** A node's tail holds 64 bytes, and both thresholds come from it:
+  - a fixed-width value whose canonical encoding is at most 64 bytes fills the tail directly;
+  - every other value carries a 4-byte length: variable-width values (`string`, `bytes`, a chunkable struct or
+    array), and any value whose encoding is over 64 bytes, fixed-width or not (a 65-byte signature, a large struct);
+  - a length-prefixed value of at most 60 bytes fits inline, since `len4 || v` is then at most 64 bytes. A longer one
+    is a long value, stored as the 64-byte head. The table's "over 60 bytes" counts the value, not the tail;
+  - `len4` tells inline from long, and the collection's value type tells a direct value from a length-prefixed one.
 - **Nested mappings.** `mapping(K0 => mapping(K1 => V))` is one collection, not one per outer key.
   - The slot for keys `k0, k1, ...` is `mask(sha256(sha256(k0) || sha256(k1) || ...))`. A single key gives
     `mask(sha256(k0))`.
@@ -1531,7 +1547,9 @@ since each needs a master.
       join the group of the transaction's first root.
     - So a transaction needs only one validator, of its first root's category. It is spent and recreated in place
       (V1), so a pool cannot run out inside a transaction.
-    - The only refusal is a first root whose contract has no validator at all.
+    - The only refusal: the transaction's first root belongs to a category with no validator. Other roots need no
+      validator of their own category, because V9 constrains only a group's first root. Splitting into several
+      groups is a choice, and each group then needs one validator of its own first root's category.
   - The diagnostic `PER_CALL_POOL_EXHAUSTED` names X, the entries needed so far and the pool size. The remedy is a
     larger pool at deployment (plan D6), or `split` (deferred).
   - On chain there is nothing to check: a transaction cannot spend masters that do not exist.

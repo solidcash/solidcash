@@ -10,7 +10,7 @@ Date: 2026-09-25.
 - Measurements on `ea7a48e27` (`.worktrees/kernel-baseline-ea7a48e27`).
 - The kernel's own performance records (`PERF_FINDINGS.md`, `PERF_HANDOFF_KERNEL_BETA.md`).
 - The spec, [`SPEC_PER_CALL_TRANSACTION.md`](./SPEC_PER_CALL_TRANSACTION.md). The estimates were made on revision 9
-  and rechecked on revisions 10 and 11: the review fixes leave them unchanged, except that B14 and B15 add test code.
+  and rechecked on revisions 10 to 12: the review fixes leave them unchanged, except that B14 and B15 add test code.
 
 Per-call sizes are estimates, and are marked as such.
 
@@ -113,7 +113,8 @@ Per-call sizes are estimates, and are marked as such.
      real-chain ready, so 66/66 is a mock result either way. Plan item A9 measures the per-call numbers.
    - **The lever** (third review): load the code instead of carrying it (spec 12, mitigation 1). Each unlocking byte
      funds 8 instructions, so most masters need little padding, but one copy per distinct code remains: about 3x
-     fewer copies for `arbitrate`, which puts it near the 100,000 B line. A9 measures this first.
+     fewer copies for `arbitrate`. Witnesses and padding stay, so the total improves about 2x: about 64 KB at 4 KB
+     facets, 100-125 KB at the 10,000 B cap, either side of the 100,000 B line. A9 measures this first.
 5. **Record growth.** `jobEvents` intermediate versions leave chunk outputs behind. This is measured in plan section 4.5.
 6. **Harness features** (snapshots including SDK state, listeners, simulation before funding). This is SDK work;
    part of it exists today.

@@ -143,6 +143,13 @@ export interface CompilerOptions {
    * the resolved convention is published on `artifact.messageBus`.
    */
   messageBusKernel?: boolean;
+  /**
+   * Composition convention to compile for. `direct` (default) gives every entry point its own top-level function and
+   * block layout. `per-call` compiles each entry point as a master program that recreates itself unchanged, so one
+   * contract's state settles once per transaction however many times the transaction enters it. The resolved
+   * convention is published on `artifact.composition`.
+   */
+  composition?: 'direct' | 'per-call';
   // Limit eager/lazy proxy implementation variants in large multi-contract projects. Omitted preserves the
   // default behavior; when supplied, only matching contract names receive `delegateArtifact`.
   delegateArtifactContracts?: readonly string[];

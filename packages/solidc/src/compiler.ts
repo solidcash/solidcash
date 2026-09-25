@@ -54,6 +54,10 @@ import {
 } from './finalized-typed-effect-ir.js';
 import { clearDefineFrameValidations } from './define-frame-validation.js';
 import {
+  assertCompositionConventionSupported,
+  resolveCompositionConvention,
+} from './per-call/master/composition.js';
+import {
   admittedHandlerNamesFromAnalysis,
   assertPublishedHandlersMatchAdmission,
   buildAdmissionDecisionSet,
@@ -255,6 +259,7 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   // The row-loop kernel is the production message-bus convention. An explicit false remains as a temporary
   // compatibility escape hatch for artifacts which must reproduce the historical clone/unroll ABI.
   messageBusKernel: true,
+  composition: 'direct',
 };
 
 /** Release gate for compiler-authenticated physical read-carrier publication and settlement. */
@@ -913,6 +918,10 @@ function markConstructorCapturedHelperGraphEffects(ast: Ast): void {
 
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
+  // Composition convention is resolved and checked before any lowering: the two conventions produce different
+  // addresses and unlocking bytecode, so a request whose code generation is absent must refuse rather than emit
+  // an artifact for the other convention.
+  assertCompositionConventionSupported(resolveCompositionConvention(options.composition));
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
     : options.messageBus === false ? 'disabled'

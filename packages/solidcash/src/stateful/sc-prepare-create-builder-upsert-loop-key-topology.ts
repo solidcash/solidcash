@@ -274,7 +274,7 @@ export async function prepareCreateBuilderUpsertLoopKeyTopology(
       ? encKey(key, keyType)
       : fixedBins[fixedIndex++]);
   };
-  const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key));
+  const slotForKey = (key: unknown): Uint8Array => keyToSlotMulti(keyBinsFor(key), collection);
   if (Array.isArray(keysArr) && info.varyingArrayParam.startsWith(VMAP_COUNTER_PERM_PREFIX)) {
     keysArr = [...keysArr].sort((left: any, right: any) => {
       const leftSlot = bytesToSlotValue(slotForKey(left));

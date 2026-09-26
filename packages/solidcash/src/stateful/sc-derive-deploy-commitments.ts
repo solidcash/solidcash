@@ -131,6 +131,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
     stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
   )).map((access) => access.collection))];
   for (const [collectionIndex, collectionName] of sortedCollections.entries()) {
+    const collection = stateLayout.collections!.find((item) => item.name === collectionName)!;
     const accesses = entryAccesses.map((access, index) => ({ access, index })).filter(
       ({ access }) => access.collection === collectionName,
     );
@@ -153,7 +154,7 @@ export async function deriveDeployCommitments<T extends Artifact>(
           `Cannot derive constructor vmap key '${missing ?? '<unknown>'}' for ${collectionName}.`,
         );
       }
-      const slot = keyToSlotMulti(keys as Uint8Array[]);
+      const slot = keyToSlotMulti(keys as Uint8Array[], collection);
       constructorTargetSlots.set(index, slot);
       return { slot, value: new Uint8Array() };
     });

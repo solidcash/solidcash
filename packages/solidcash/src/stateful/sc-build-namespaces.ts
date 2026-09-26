@@ -80,7 +80,7 @@ export function buildNamespaces<TArtifact extends Artifact>(
     // @ts-ignore - dynamic property assignment (mapping getter takes key args, unlike the scalar getters)
     host.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
       const entries = await host.getEntries(coll.name);
-      const match = selectMappingEntryByKeys(entries, keys, coll.keyTypes ?? [coll.keyType]);
+      const match = selectMappingEntryByKeys(entries, keys, coll.keyTypes ?? [coll.keyType], coll);
       if (match) return match.value;
       // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
       // rather than an SDK-level missing value. Strings/bytes must be empty sequences so

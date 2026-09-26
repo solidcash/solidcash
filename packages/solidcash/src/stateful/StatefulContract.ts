@@ -2137,6 +2137,7 @@ function p2pkhLockingBytecode(pkh: Uint8Array): Uint8Array {
 export function mappingKeySlotCandidates(
   keys: Array<bigint | boolean | Uint8Array | string>,
   keyTypes?: readonly string[],
+  collection?: Parameters<typeof keyToSlotMulti>[1],
 ): Uint8Array[] {
   const options = keys.map((arg, index): Uint8Array[] => {
     const keyType = keyTypes?.[index];
@@ -2163,7 +2164,7 @@ export function mappingKeySlotCandidates(
   );
   const seen = new Set<string>();
   return encodings.flatMap((encoding) => {
-    const slot = keyToSlotMulti(encoding);
+    const slot = keyToSlotMulti(encoding, collection);
     const hex = binToHex(slot);
     if (seen.has(hex)) return [];
     seen.add(hex);
@@ -2198,8 +2199,9 @@ export function selectMappingEntryByKeys<T extends MappingEntryLookup>(
   entries: readonly T[],
   keys: Array<bigint | boolean | Uint8Array | string>,
   keyTypes?: readonly string[],
+  collection?: Parameters<typeof keyToSlotMulti>[1],
 ): T | undefined {
-  const [exactSlot, ...aliasSlots] = mappingKeySlotCandidates(keys, keyTypes);
+  const [exactSlot, ...aliasSlots] = mappingKeySlotCandidates(keys, keyTypes, collection);
   const exactMatches = entries.filter((entry) => entry.slot
     ? exactSlot !== undefined && binsAreEqual(entry.slot, exactSlot)
     : mappingEntryMatchesLegacyKeys(entry, keys));
@@ -8716,7 +8718,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               );
             }
           };
-          const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
+          const slot = keyToSlotMulti(
+            keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)), collection,
+          );
           batchTargetSlots.set(slotIndex, slot);
           const firstKeyParam = keyNames[0].startsWith('__message_bus_ek_')
             ? keyNames[0].slice('__message_bus_ek_'.length) : keyNames[0];
@@ -11088,7 +11092,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         let senderKey: Uint8Array | null = null;
         try { senderKey = addressToLockScript(this._signer.getAddress()); } catch { senderKey = null; }
         if (debitE && senderKey) {
-          const senderSlotHex = binToHex(keyToSlotMulti([...fixedBins, senderKey]));
+          const senderSlotHex = binToHex(keyToSlotMulti([...fixedBins, senderKey], collection));
           const kArr = keysArr as unknown[];
           const keepIdx: number[] = [];
           kArr.forEach((k, i) => {

@@ -110,12 +110,17 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
 // a JavaScript VM even when a private mock network intentionally relaxes BCH's script limits. For that test-only
 // case, derive the initializer's direct assignments from its ABI names and seed well-known OZ bookkeeping slots.
 // Contracts with non-trivial initialization continue through the normal delegate path.
-function deriveLargeMockInitializerState(
+export function deriveLargeMockInitializerState(
   initialState: ProxyInitialState | undefined,
   initializer: string | undefined,
   impl: Artifact,
   runner: ContractRunner,
 ): Record<string, unknown> | undefined {
+  // Kernel state comes from executing the initializer over the authenticated proxy pre-state. Crossing a
+  // bytecode-size threshold must not replace that execution with name-based state and event guesses.
+  if (impl.compiler?.options?.messageBusKernel === true || impl.messageBus?.convention === 'kernel-row-loop') {
+    return undefined;
+  }
   if (!initializer || !Array.isArray(initialState)) return undefined;
   const provider = runner instanceof Signer ? runner.provider : runner;
   if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) return undefined;

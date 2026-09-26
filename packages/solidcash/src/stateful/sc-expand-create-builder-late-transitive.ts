@@ -410,7 +410,7 @@ export async function expandCreateBuilderLateTransitive(
                   && utxo.token?.nft?.capability === 'mutable'
                   && !!utxo.token.nft.commitment
               )));
-              const targetSlot = keyToSlotMulti(encodedKeys);
+              const targetSlot = keyToSlotMulti(encodedKeys, collection);
               lateBatchTargets.set(routeSlot, targetSlot);
               lateBatchLists.set(access.collection, list);
               const exact = list.find(targetSlot);

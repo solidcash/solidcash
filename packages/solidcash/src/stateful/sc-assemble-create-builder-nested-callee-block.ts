@@ -286,7 +286,7 @@ export async function assembleCreateBuilderNestedCalleeBlockInputs(
                   if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
                   throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
                 });
-                const bSlot = keyToSlotMulti(encodedKeys);
+                const bSlot = keyToSlotMulti(encodedKeys, bCollection);
                 if (entryDiagnostic) {
                   entryDiagnostic.sorted = true;
                   entryDiagnostic.collection = bEntryAccess.collection;

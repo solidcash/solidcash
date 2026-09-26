@@ -562,7 +562,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
     const { keyValue, encodedKeys } = resolveAccessKeys(access, collection);
     resolvedAccesses.push({
       access, collection, keyValue, encodedKeys,
-      slot: keyToSlotMulti(encodedKeys),
+      slot: keyToSlotMulti(encodedKeys, collection),
       valueTail: valueTailFor(collection),
     });
   }

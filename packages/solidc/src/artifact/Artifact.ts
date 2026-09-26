@@ -2,7 +2,7 @@ import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
-  ValueProvenance, ValueProvenanceKind,
+  ValueProvenance, ValueProvenanceKind, ValueType,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS,
 } from '@solidcash/utils';
@@ -37,6 +37,7 @@ import {
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
  * name is still surfaced in the ABI (function params); only the state-encoding key type is normalized. */
 function keyEncodingTypeString(type: Type): string {
+  if (type instanceof ValueType) return keyEncodingTypeString(type.underlyingType);
   return type instanceof EnumType ? 'bigint' : type.toString();
 }
 
@@ -2966,6 +2967,9 @@ export function generateArtifact(
           kind: (coll.type instanceof ArrayType ? 'array' : 'mapping') as 'mapping' | 'array',
           keyType: keyEncodingTypeString(coll.keyType),
           valueType: coll.innermostValueType.toString(),
+          ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+            && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
+            && { addressKeyEncoding: 'identity20' as const }),
           ...(coll.depth > 1 && {
             keyTypes: coll.allKeyTypes.map(keyEncodingTypeString),
           }),
@@ -2989,6 +2993,9 @@ export function generateArtifact(
             kind: 'mapping' as const,
             keyType: keyEncodingTypeString(coll.keyType),
             valueType: coll.innermostValueType.toString(),
+            ...(coll.sorted && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+              && coll.allKeyTypes.some((type) => /^address(?: payable)?$/.test(keyEncodingTypeString(type)))
+              && { addressKeyEncoding: 'identity20' as const }),
             ...(coll.depth > 1 && {
               keyTypes: coll.allKeyTypes.map(keyEncodingTypeString),
             }),

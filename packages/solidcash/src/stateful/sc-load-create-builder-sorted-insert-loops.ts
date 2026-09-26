@@ -93,7 +93,7 @@ export async function loadCreateBuilderSortedInsertLoops(
     // RANGE-SPLICE: all N keys must fall in ONE gap (share the bracketing predecessor P). Co-spend P once and mint
     // the sorted chain P' -> k1 -> k2 -> .. -> kN -> P.oldNext (P' = P re-pointed to the smallest new key). N+1
     // trailing entry outputs, ONE predecessor input. The covenant verifies the chain is sorted + bracketed by P.
-    let slots = (arr as unknown[]).map((elem: any) => keyToSlotMulti([...fixedBins, encKey(elem, varyType)]));
+    let slots = (arr as unknown[]).map((elem: any) => keyToSlotMulti([...fixedBins, encKey(elem, varyType)], collection));
     if (slots.length === 0) continue;
     // The covenant walks the linked outputs in ascending slot order and now also proves each node's slot equals
     // H(the runtime key). Reorder the invariant-value key array itself so source-loop evaluation follows that same

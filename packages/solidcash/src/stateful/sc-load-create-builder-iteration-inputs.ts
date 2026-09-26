@@ -20,7 +20,7 @@ import {
 import {
   SortedList,
   bytesToSlotValue,
-  keyToSlot,
+  keyToSlotMulti,
 } from './SortedList.js';
 
 export type LoadCreateBuilderIterationInputsHost = {
@@ -122,7 +122,7 @@ export async function loadCreateBuilderIterationInputs(
               + `call setIterationKeys('${coll.name}', [...]) before the iteration (the raw key is not on-chain).`);
           }
           const keyBySlot = new Map<string, Uint8Array>();
-          for (const k of callerKeys) keyBySlot.set(binToHex(keyToSlot(k)), k);
+          for (const k of callerKeys) keyBySlot.set(binToHex(keyToSlotMulti([k], coll)), k);
           // Length-prefixed blob: each entry's key as (1-byte length ++ key bytes), in ascending-chain order.
           // Supports variable-width keys (int, address) as well as bytesN; the covenant reads the prefix.
           const parts: Uint8Array[] = [];

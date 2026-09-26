@@ -86,6 +86,7 @@ export async function hydrateExternalPredicateState(
         entries as Array<{ slot?: Uint8Array; key?: bigint | boolean | Uint8Array; keys?: Array<bigint | boolean | Uint8Array>; value?: unknown }>,
         typedKeys,
         collection.keyTypes ?? [collection.keyType],
+        collection,
       );
       const value = entry?.value ?? getDefaultStateValue(
         collection.valueType,

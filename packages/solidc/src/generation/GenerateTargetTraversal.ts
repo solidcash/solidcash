@@ -9661,6 +9661,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack('(__ent_key)'); // deeper = key
       this.pushToStack('(__iter_keys)'); // top = rest (re-tracked for the next entry)
       this.emit(encodeInt(BigInt(this.getStackIndex('(__ent_key)'))), locationData); this.emit(Op.OP_PICK, locationData);
+      this.emitMappingKeyIdentity(collection.keyType, locationData);
       this.emit(Op.OP_SHA256, locationData);
       this.emit(encodeInt(31n), locationData); this.emit(Op.OP_SPLIT, locationData);
       this.emit(new Uint8Array([0x7f]), locationData); this.emit(Op.OP_AND, locationData); this.emit(Op.OP_CAT, locationData);
@@ -18711,6 +18712,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // H(k0) or H(H(k0)||H(k1)..), masked to the positive 255-bit vmap slot domain.
     for (let index = 0; index < node.keys.length; index++) {
       node.keys[index] = this.visit(node.keys[index]);
+      this.emitMappingKeyIdentity(info.keyTypes[index], loc);
       this.emit(Op.OP_SHA256, loc);
       if (index > 0) {
         this.emit(Op.OP_CAT, loc);
@@ -20961,12 +20963,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  /** Normalize a typed Solidity mapping key without changing its stack depth. */
+  private emitMappingKeyIdentity(type: Type | undefined, loc: SingleLocationData): void {
+    while (type instanceof ValueType) type = type.underlyingType;
+    if (!(type instanceof AddressType)
+      || !(this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat)) return;
+    // A stored/native address and a decoded Solidity ABI word are the same mapping key. Keep the
+    // normalization typed: bytes20/bytes32 and native SolidCash addresses retain exact-byte hashing.
+    this.emit(Op.OP_SIZE, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(encodeInt(12n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(new Uint8Array(12), loc);
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.emit(Op.OP_ELSE, loc);
+    for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
+    this.emit(Op.OP_ENDIF, loc);
+  }
+
   /**
    * Push the sorted-mapping slot Hk32 for the access `node` onto the stack (top). Single key: slot = sha256(key)
    * high-bit-masked. Composite (nested `m[a][b]...`): slot = sha256(sha256(k0)++sha256(k1)++...) masked - each key
    * is hashed independently to 32 bytes so the concatenation is unambiguous for ANY key type (int/address/bytesN),
-   * mirroring the SDK's keyToSlotMulti. Matches SortedList.keyToSlot for the 1-key case. Multi-key requires plain
-   * param keys (an expression key would need the untracked accumulator offset the visit can't see) - else fail closed.
+   * mirroring the SDK's keyToSlotMulti. Solidity address keys use their canonical 20-byte identity.
    */
   private emitSortedKeyHash(
     node: MappingAccessNode | MappingAssignNode | MappingDeleteNode, slotIndex: number, loc: SingleLocationData,
@@ -21014,6 +21036,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
         node.keys[i] = this.visit(node.keys[i]); // pushes + tracks the key value on top
       }
+      this.emitMappingKeyIdentity(node.collection?.allKeyTypes[i] ?? keyNode.type, loc);
       this.emit(Op.OP_SHA256, loc);            // H(key_i) - the top tracked item is now H(key_i)
       if (i > 0) {
         this.emit(Op.OP_CAT, loc);             // acc(below) ++ H(key_i)(top) -> the new accumulator on top

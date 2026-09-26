@@ -802,6 +802,8 @@ export interface CollectionInfo {
   valueType: string;
   /** Present for nested mappings - all key types from outer to inner. */
   keyTypes?: string[];
+  /** Solidity-compatible sorted mappings hash address keys by their 20-byte identity, not their wire spelling. */
+  addressKeyEncoding?: 'identity20';
   /** Optional name annotation for the mapping key (documentation only). */
   keyName?: string;
   /** Optional name annotation for the mapping value (documentation only). */

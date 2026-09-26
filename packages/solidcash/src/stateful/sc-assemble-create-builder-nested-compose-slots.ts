@@ -439,7 +439,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 // 20-byte and a 25-byte (P2PKH) encoding, and two SDK paths disagreeing about which one
                 // is authoritative is indistinguishable from a wrong key when only the slot is printed.
                 keys: keys.map((key) => binToHex(key)),
-                keySlot: binToHex(keyToSlotMulti(keys)),
+                keySlot: binToHex(keyToSlotMulti(keys, collection)),
                 slots: addressUtxos.map((utxo) => ({
                   bytes: (utxo.token?.nft?.commitment?.length ?? 0) / 2,
                   commitment: utxo.token?.nft?.commitment,
@@ -452,7 +452,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             if (timingEnabled && nested.callsiteId === 6) console.error('nested-entry-list-complete', {
               collection: access.collection,
             });
-            const keySlot = keyToSlotMulti(keys);
+            const keySlot = keyToSlotMulti(keys, collection);
             childBatchTargets.set(slot.slotIndex ?? 0, keySlot);
             childBatchLists.set(access.collection, list);
             // P5b: authenticate the value of the exact proof entry selected for this access. An

@@ -1,4 +1,5 @@
 import { sha256, hexToBin, binToHex } from '@bitauth/libauth';
+import { addressToGraphEmissionBytes, type CollectionInfo } from '@solidcash/utils';
 import { Utxo } from '../interfaces.js';
 
 // Off-chain manager for a verified mapping (vmap; see docs/verified-mappings.md). Entries are entry NFTs whose
@@ -48,11 +49,24 @@ export function keyToSlot(key: Uint8Array): Uint8Array {
 /**
  * Composite slot for a nested mapping `m[k0][k1]...`: sha256(sha256(k0) ++ sha256(k1) ++ ...) high-bit-masked. Each
  * key is hashed independently to 32 bytes (so the concatenation is unambiguous for any key type), matching the
- * covenant's emitSortedKeyHash. A single key reduces to keyToSlot(k0).
+ * covenant's emitSortedKeyHash. Compiler-described Solidity address keys first normalize to their 20-byte
+ * identity; legacy and native collections retain exact-byte hashing. A single key reduces to keyToSlot(k0).
  */
-export function keyToSlotMulti(keys: Uint8Array[]): Uint8Array {
-  if (keys.length === 1) return keyToSlot(keys[0]);
-  const perKey = keys.map((k) => sha256.hash(k));
+export function keyToSlotMulti(
+  keys: Uint8Array[],
+  collection?: Pick<CollectionInfo, 'keyType' | 'keyTypes' | 'addressKeyEncoding'>,
+): Uint8Array {
+  const types = collection?.keyTypes ?? [collection?.keyType];
+  const normalized = collection?.addressKeyEncoding === 'identity20'
+    ? keys.map((key, index) => {
+      if (types[index] !== 'address' && types[index] !== 'address payable') return key;
+      if (key.length === 32 && key.subarray(0, 12).some((byte) => byte !== 0)) {
+        throw new Error('Mapping address ABI word has non-zero high bytes');
+      }
+      return key.length === 0 ? new Uint8Array(20) : addressToGraphEmissionBytes(key).slice(12);
+    }) : keys;
+  if (normalized.length === 1) return keyToSlot(normalized[0]);
+  const perKey = normalized.map((k) => sha256.hash(k));
   const total = perKey.reduce((n, h) => n + h.length, 0);
   const concat = new Uint8Array(total);
   let off = 0;

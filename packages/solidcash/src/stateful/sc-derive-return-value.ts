@@ -184,7 +184,10 @@ callerContract?: StatefulContract<Artifact>,
     }
     const entries = await host.getEntries(directMappingRead.collection);
     for (const candidate of keyCandidates) {
-      const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes);
+      const collection = host.inner.artifact.stateLayout?.collections?.find((entry) => (
+        entry.name === directMappingRead.collection || entry.signature === directMappingRead.collection
+      ));
+      const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes, collection);
       if (match) return attachDecodedAccessors(match.value) as StateValue;
     }
     return 0n;

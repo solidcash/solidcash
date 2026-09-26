@@ -4,8 +4,8 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  argsHash, asmToScript, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock, scriptToBytecode, sha256,
-  validatorAddress,
+  argsHash, asmToScript, encodeArgumentList, encodeCallDataArguments, encodeIntegerValue, encodeWitnessBlock,
+  scriptToBytecode, sha256, validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
@@ -57,6 +57,30 @@ const BYTES_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Callee { function take(bytes origin) { require(origin.length > 0); } }'
   + ' contract Caller {'
   + `   function callIt() { ICallee(0x${toHex(ADDRESS_CALLEE)}).take(tx.origin); require(true); }`
+  + ' }';
+
+/**
+ * The caller passes both a number and bytes, so the two parameters cannot be told apart by a symmetric check:
+ * the callee's own body names each parameter's value and length, and only one assignment of the two pushes
+ * satisfies it.
+ */
+const PAIR_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(int x, bytes y); }'
+  + ` contract Callee { function ping(int x, bytes y) { require(x == ${INPUT_COUNT}); `
+  + `require(y.length == ${USER_LOCK.length}); } }`
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping(tx.inputs.length, tx.origin); require(true); }`
+  + ' }';
+
+/**
+ * The same two-parameter call with both arguments named in the source, so the digest is folded at compile time
+ * rather than computed where the call runs. The two paths have to agree on the order the call data carries.
+ */
+const PAIR_CONSTANT_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(int x, bytes y); }'
+  + ' contract Callee { function ping(int x, bytes y) { require(x == 7); require(y.length == 2); } }'
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping(7, hex"aabb"); require(true); }`
   + ' }';
 
 /** Master input indices: the caller, its callee, the validator that covers both, then the user. */
@@ -268,5 +292,68 @@ describe('a call whose argument exists only when the code runs', () => {
       calleeArgumentPushes: encodeArgumentList([encodeIntegerValue(0n)]),
     }, CALLEE_INDEX)).toBe(false);
     expect(accepted(NUMERIC_SOURCE, COUNT_PUSHES, {}, CALLEE_INDEX)).toBe(true);
+  });
+});
+
+/** The two pushes the caller computes, in the order a callee's call data carries them. */
+const PAIR_PUSHES = encodeCallDataArguments([encodeIntegerValue(BigInt(INPUT_COUNT)), USER_LOCK]);
+/** The same two pushes in parameter order, which is not the order the call data carries. */
+const PAIR_PUSHES_BY_PARAMETER = encodeArgumentList([encodeIntegerValue(BigInt(INPUT_COUNT)), USER_LOCK]);
+
+describe('a call that passes more than one argument', () => {
+  it('is accepted at every input when both pushes are the ones the caller computed', () => {
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLER_INDEX)).toBe(true);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLEE_INDEX)).toBe(true);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, VALIDATOR_INDEX)).toBe(true);
+  });
+
+  it('refuses a call whose data carries the parameters in the order the source names them', () => {
+    // Both pushes are present and both values are the ones the caller computed; only their order differs, and the
+    // callee's own body is what says the order is wrong: it reads the first parameter from the top of the stack.
+    const options = { calleeArgumentPushes: PAIR_PUSHES_BY_PARAMETER };
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLEE_INDEX)).toBe(false);
+    // The caller hashes the callee's call data itself, so it refuses the same call data without the callee's help.
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLER_INDEX)).toBe(false);
+    // The validator hashes the callee's pushes against the record too, so it is the third refusal.
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_INDEX)).toBe(false);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLER_INDEX)).toBe(true);
+  });
+
+  it('refuses a record whose digest is over the parameters in the order the source names them', () => {
+    const options = {
+      recordedArgsHash: argsHash(fixture(PAIR_SOURCE, PAIR_PUSHES).selector, PAIR_PUSHES_BY_PARAMETER),
+    };
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, CALLER_INDEX)).toBe(false);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, options, VALIDATOR_INDEX)).toBe(false);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLER_INDEX)).toBe(true);
+  });
+
+  it('reaches each callee parameter with its own value', () => {
+    // The callee's `x` must be the count and its `y` the lock; a transposed call data fails the callee's own body
+    // rather than only a digest, so the wires are read at the depths the compiled body reads them at.
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {
+      calleeArgumentPushes: encodeCallDataArguments([encodeIntegerValue(0n), USER_LOCK]),
+    }, CALLEE_INDEX)).toBe(false);
+    // A lock of another length is the mismatch the second parameter's own `require` names, so the order is not the
+    // only thing the callee's body is holding the call data to.
+    const otherLengthLock = encodeLockingBytecodeP2sh32(new Uint8Array(32).fill(0x44));
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {
+      calleeArgumentPushes: encodeCallDataArguments([encodeIntegerValue(BigInt(INPUT_COUNT)), otherLengthLock]),
+    }, CALLEE_INDEX)).toBe(false);
+    expect(accepted(PAIR_SOURCE, PAIR_PUSHES, {}, CALLEE_INDEX)).toBe(true);
+  });
+
+  it('orders a call whose arguments the source names the same way', () => {
+    // The other path to the same digest: the compiler folds the pushes of two compile-time values. It has to fold
+    // them in the order the call data carries, or a call the body would accept is refused by its own caller.
+    const named = encodeCallDataArguments([encodeIntegerValue(7n), new Uint8Array([0xaa, 0xbb])]);
+    expect(accepted(PAIR_CONSTANT_SOURCE, named, {}, CALLER_INDEX)).toBe(true);
+    expect(accepted(PAIR_CONSTANT_SOURCE, named, {}, CALLEE_INDEX)).toBe(true);
+    expect(accepted(PAIR_CONSTANT_SOURCE, named, {}, VALIDATOR_INDEX)).toBe(true);
+    const namedByParameter = encodeArgumentList([encodeIntegerValue(7n), new Uint8Array([0xaa, 0xbb])]);
+    expect(accepted(PAIR_CONSTANT_SOURCE, named, {
+      calleeArgumentPushes: namedByParameter,
+    }, CALLER_INDEX)).toBe(false);
+    expect(accepted(PAIR_CONSTANT_SOURCE, named, {}, CALLER_INDEX)).toBe(true);
   });
 });

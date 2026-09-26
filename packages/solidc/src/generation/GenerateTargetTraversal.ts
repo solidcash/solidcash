@@ -3000,10 +3000,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Leaves the digest a call's record must carry, computed from the values the code holds where it calls.
    *
-   * `SHA256(selector || argument pushes)`: the selector, then each argument in parameter order, each turned into
-   * the push the wire carries. A compile-time argument contributes its push as a constant; a run-time one is
-   * canonicalized from the value the body has on the stack, so the digest is a fact about the values the caller
-   * acted on rather than a constant a builder could pair with any call data.
+   * `SHA256(selector || argument pushes)`: the selector, then each argument's push in the order the call data
+   * carries it, which is the last parameter's first and the first parameter's last. A compile-time argument
+   * contributes its push as a constant; a run-time one is canonicalized from the value the body has on the stack,
+   * so the digest is a fact about the values the caller acted on rather than a constant a builder could pair with
+   * any call data.
    */
   private emitPerCallArgumentDigest(
     node: ExternalFunctionCallNode,
@@ -3012,7 +3013,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     this.emit([...encodeDataPush(site.selector)], loc);
     this.pushToStack('(value)');
-    (site.arguments ?? []).forEach((argument, index) => {
+    // The arguments are folded in from the deepest one, so they are visited in wire order and each value's push
+    // is appended to what is already there. Evaluating a shorter-lived value first leaves the same frame behind.
+    const siteArguments = site.arguments ?? [];
+    for (let index = siteArguments.length - 1; index >= 0; index -= 1) {
+      const argument = siteArguments[index]!;
       if (argument.kind === 'constant') {
         this.emit([...encodeArgumentPayload(argument.bytes)], loc);
         this.pushToStack('(value)');
@@ -3033,7 +3038,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);
       this.pushToStack('(value)');
-    });
+    }
     this.emit(Op.OP_SHA256, loc);
     this.popFromStack();
     this.pushToStack('(value)');

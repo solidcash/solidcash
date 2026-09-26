@@ -44,6 +44,11 @@ export interface PlannedCall {
   /** The address the call targets. */
   readonly target: Uint8Array;
   readonly value: bigint;
+  /**
+   * The callee's call data, as pushes in the order its unlocking bytecode carries them: the selector first, then
+   * the argument pushes with the first parameter's last. `encodeCallDataArguments` builds these from values named
+   * in parameter order.
+   */
   readonly argumentPushes: readonly Uint8Array[];
   readonly result: Uint8Array;
 }

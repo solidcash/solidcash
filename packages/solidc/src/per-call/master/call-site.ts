@@ -27,7 +27,7 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { argsHash, encodeArgumentList } from '@solidcash/utils';
+import { argsHash, encodeCallDataArguments } from '@solidcash/utils';
 import type { MasterCallSite } from './frame-tail.js';
 import {
   dropFirstPushScript,
@@ -152,11 +152,11 @@ export function callerArgumentDigest(site: MasterCallSite): Uint8Array {
   return argsHash(site.selector, pushes);
 }
 
-/** The concatenated argument pushes of a call whose arguments are all compile-time values. */
+/** The concatenated argument pushes of a call whose arguments are all compile-time values, as the wire carries them. */
 export function constantArgumentPushes(site: MasterCallSite): Uint8Array | undefined {
   const siteArguments = site.arguments ?? [];
   if (siteArguments.some((argument) => argument.kind !== 'constant')) return undefined;
-  return encodeArgumentList(siteArguments.map((argument) => (argument as { bytes: Uint8Array }).bytes));
+  return encodeCallDataArguments(siteArguments.map((argument) => (argument as { bytes: Uint8Array }).bytes));
 }
 
 /** Appends opcode bytes and pushed payloads, so a builder can mix numbers and `encodeDataPush` results. */

@@ -1352,8 +1352,10 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - structs, fixed arrays (for example `uint16[5]`) and dynamic arrays use the compiler's flattened argument
     encoding, the one the SDK already uses for calls.
 - **Arguments.**
-  - `args` is the concatenation of each argument's minimal push, in parameter order. These are exactly the bytes
-    between the witness block and the redeem script in the callee's unlocking bytecode.
+  - `args` is the concatenation of each argument's minimal push, with the last parameter's push first and the first
+    parameter's push last. These are exactly the bytes between the witness block and the redeem script in the
+    callee's unlocking bytecode. The callee's compiled body reads its parameters off the stack, so the push the
+    first parameter names is the one the bytecode must leave on top: the item pushed last.
   - `argsHash = SHA256(selector || args)`, with the 4-byte dispatcher selector.
   - The caller builds `args` in its script with `encodeDataPush`'s minimal-push rule:
     - a 1-byte value from `0x01` to `0x10` becomes `OP_1`-`OP_16`;

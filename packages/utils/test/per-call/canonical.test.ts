@@ -10,6 +10,7 @@ import {
   encodeArgumentList,
   encodeArgumentPayload,
   encodeBooleanValue,
+  encodeCallDataArguments,
   encodeIntegerValue,
   encodeRawValue,
   encodeResultList,
@@ -36,12 +37,21 @@ describe('canonical argument encoding', () => {
     });
   }
 
-  it('encodes an argument list as the concatenated pushes in parameter order', () => {
+  it('encodes an argument list as the concatenated pushes in the order given', () => {
     const values = [Uint8Array.of(0x03), hexToBytes('aabb'), new Uint8Array(0)];
     expect(toHex(encodeArgumentList(values))).toBe('5302aabb00');
     expect(toHex(encodeArgumentList(values))).toBe(
       toHex(concatBytes(values.map((value) => encodeArgumentPayload(value)))),
     );
+  });
+
+  it('encodes call data arguments with the first parameter\'s push last', () => {
+    // The callee's body reads its first parameter from the top of the stack, so the call data has to leave that
+    // parameter's push for last, whichever order the values are named in.
+    const values = [Uint8Array.of(0x03), hexToBytes('aabb'), new Uint8Array(0)];
+    expect(toHex(encodeCallDataArguments(values))).toBe('0002aabb53');
+    expect(toHex(encodeCallDataArguments(values))).toBe(toHex(encodeArgumentList([...values].reverse())));
+    expect(toHex(encodeCallDataArguments(values))).not.toBe(toHex(encodeArgumentList(values)));
   });
 });
 

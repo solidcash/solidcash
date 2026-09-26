@@ -9,8 +9,11 @@
  *   - structs and arrays use the flattened argument encoding the compiler already emits for calls;
  *   - a user's address is its 25-byte P2PKH locking bytecode, a contract's its 35-byte P2SH32 `addrV` lock.
  *
- * `args` is the concatenation of each argument's minimal push, in parameter order. These are exactly the bytes
- * between the witness block and the redeem script in the callee's unlocking bytecode.
+ * A call's call data is the concatenation of each argument's minimal push, with the last parameter's push first
+ * and the first parameter's push last. These are exactly the bytes between the witness block and the redeem
+ * script in the callee's unlocking bytecode, and `encodeCallDataArguments` produces them from values named in
+ * parameter order. A callee's compiled body reads its parameters off the stack, where the argument pushed last
+ * sits on top, so the first parameter's push has to come last.
  */
 
 import { bigIntToVmNumber, encodeDataPush, vmNumberToBigInt } from '@bitauth/libauth';
@@ -35,9 +38,19 @@ export function encodeArgumentPayload(value: Uint8Array): Uint8Array {
   return encodeDataPush(value);
 }
 
-/** An argument list: each parameter's minimal push, concatenated in parameter order. */
+/** An argument list: each value's minimal push, concatenated in the order given. */
 export function encodeArgumentList(values: readonly Uint8Array[]): Uint8Array {
   return concatBytes(values.map((value) => encodeArgumentPayload(value)));
+}
+
+/**
+ * The argument pushes a callee's call data carries, given the values in parameter order.
+ *
+ * The first parameter's push lands last so it is the top of the callee's stack when its body runs, which is where
+ * the body reads it.
+ */
+export function encodeCallDataArguments(values: readonly Uint8Array[]): Uint8Array {
+  return encodeArgumentList([...values].reverse());
 }
 
 /**

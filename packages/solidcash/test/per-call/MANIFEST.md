@@ -23,7 +23,7 @@ Run one directory:
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 464 tests, all passing at the latest commit.
+Total: 467 tests, all passing at the latest commit.
 
 ## What each directory covers
 

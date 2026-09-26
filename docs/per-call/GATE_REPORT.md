@@ -5,8 +5,12 @@ rows in `ab2abd832`, the master prologue in `d90acd49b`). Recorded in `docs/per-
 
 ## Decision
 
-**KILL.** The gate is not reached, so by the plan's own rule the work stops here and this report goes to the user
-rather than a pass being claimed.
+**Not yet due: continue to the deadline.** The gate is not reached, and a KILL was recorded here earlier on that
+basis. That was premature. The plan kills only if the gate is not reached **within four weeks of the interface
+freeze**, which is `2026-10-23`, with one two-week extension allowed when the first integration milestone is green and
+every GO criterion holds. The deadline has not passed, so work continues to it, and no extension is claimed.
+
+This section was corrected after review. The Log row that recorded the earlier KILL is left in place as history.
 
 ## Why
 
@@ -31,7 +35,8 @@ because `V_TEMPLATE` itself is not implemented.
 | Item | State | Evidence |
 | --- | --- | --- |
 | Interface frozen, version 1, pinned by vectors | done | `packages/utils/src/per-call/`, `packages/utils/test/per-call/vectors/`, 113 tests |
-| Validator decision procedure V1–V11 | done | `packages/solidc/src/per-call/validator/`, 25 tests including one hostile test per check |
+| Validator decision procedure V1–V11 **as TypeScript** | done | `packages/solidc/src/per-call/validator/`, 25 tests including one hostile test per check |
+| `V_TEMPLATE`, the program that enforces those checks on chain | **absent** | no validator rule is enforced on chain anywhere; every VM test uses a stand-in program whose hash the master recognises but whose rules it never runs |
 | Independent reference model, differential agreement | done | 240 generated compositions over two seeds; zero accept/reject, check or order disagreements |
 | Golden re-entrant composition | done | accepted at the section 5.1 indices with the section 8 derived order |
 | Composer derivation, assembly, layout, refusals | done | `packages/solidcash/src/per-call/composer/`, 35 tests |

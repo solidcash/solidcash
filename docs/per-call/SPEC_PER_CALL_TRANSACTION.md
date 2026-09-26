@@ -1465,7 +1465,7 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 
 **Encodings, stated here rather than delegated** (review, 2026-09-25; `packages/solidc/docs/verified-mappings.md`):
 - **Value tails.** A node's tail holds 64 bytes, and both thresholds come from it:
-  - a fixed-width value whose canonical encoding is at most 64 bytes fills the tail directly;
+  - a value whose type has a fixed width fills the tail directly. The shipped classifier decides this from the **type**, not from a measurement of the encoding, so two types are stored verbatim however long they are and can exceed the tail: `sig`, and an unbounded `bigint`. A collection whose value type is either needs a chunked form the tail does not provide;
   - every other value carries a 4-byte length: variable-width values (`string`, `bytes`, a chunkable struct or
     array), and any value whose encoding is over 64 bytes, fixed-width or not (a 65-byte signature, a large struct);
   - a length-prefixed value of at most 60 bytes fits inline, since `len4 || v` is then at most 64 bytes. A longer one

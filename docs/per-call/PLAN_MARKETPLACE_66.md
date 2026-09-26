@@ -445,32 +445,32 @@ Items not needed for the 66 are in 4.7.
 
 **Stream B: validator** (spec 3.2, 7.2). Its tests use hand-built transactions with stub masters (small scripts
 holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B needs no compiler work.
-- [x] B1 V1: recreation in place; a master of its own category present.
-- [x] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
+- [ ] B1 V1: recreation in place; a master of its own category present.
+- [ ] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
   accept.
-- [x] B3 V3: completeness.
-- [x] B4 V4: roots, and the forest rule.
-- [x] B5 V5: edges, for each kind:
+- [ ] B3 V3: completeness.
+- [ ] B4 V4: roots, and the forest rule.
+- [ ] B5 V5: edges, for each kind:
   - `CALL`, `STATIC`, `CREATE`: sender is the caller's `self`, and `self` is the recorded target;
   - `DELEGATE`: passthrough, and the callee's category matches the target (T37);
   - `INTERNAL`: passthrough, same contract;
   - for all kinds: origin, values (passed through for `DELEGATE` and `INTERNAL`), `retval`, and `argsHash` over the
     callee's argument pushes.
-- [x] B6 V6: the derived depth-first order; every master visited exactly once.
-- [x] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
+- [ ] B6 V6: the derived depth-first order; every master visited exactly once.
+- [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
   (containers, distinct event outputs), and values (spec S4).
-- [x] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
-- [x] B9 V9: owner policy.
-- [x] B10 V10: static frames.
-- [x] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
-- [x] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
-- [x] B13 One hostile unit test per V-check.
-- [x] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
+- [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
+- [ ] B9 V9: owner policy.
+- [ ] B10 V10: static frames.
+- [ ] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
+- [ ] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
+- [ ] B13 One hostile unit test per V-check.
+- [ ] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
   text rather than from the script. A property-based harness generates valid and adversarial compositions (mutated
   witnesses, `M`, orders, record chains, edges) and requires the script and the model to agree on every accept and
   reject. B13 proves each check exists; B14 checks that the derived order and the record chaining agree with the
   spec over graphs nobody wrote by hand.
-- [x] B15 No master-lock assumption in `V_TEMPLATE`. Masters are identified by category and minting capability only
+- [ ] B15 No master-lock assumption in `V_TEMPLATE`. Masters are identified by category and minting capability only
   (V1, V3, V7); the census keeps every minting NFT at its master lock. This keeps the loader form (spec 12) open
   after the freeze. Checked by B14's model and one vector whose masters sit at a loader lock.
 
@@ -523,7 +523,7 @@ risk. Take the slices in order, each with its own tests.
 - Satoshi and token containers: not needed for the 66; deferred.
 
 **Stream E: composer** (spec 5, 6, 10, 18).
-- [x] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first.
+- [ ] E1 Resumable depth-first derivation from stop sites (A5): no fixpoint; a callee is derived first.
 - [x] E2 Witness assembly (A1), `M` (A2), block layout (spec 5), master and validator selection from the pools,
   several validators per transaction.
 - [ ] E3 Reverts: the innermost reason, and custom errors with arguments, bubbled through callers; nothing is
@@ -948,35 +948,27 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-25 | e74bf88bc | per-call | immutable pin | n/a | The category pin now handles a token with no capability: introspection reports the bare category there, so a pin built as category-then-capability could never match an immutable token. A VM test holds both forms — the immutable case passes, the pair against an immutable token fails, and each capability is proved separately. Every existing caller pins a mutable or minting capability, so nothing emitted changes. 119 tests in `utils/test/per-call`, six in `solidcash/test/per-call/frames`. |
 | 2026-09-25 | bd63ce654 | per-call | events | n/a | A compiled entry can now spend its own event. The head leaves each listed output index as a tracked stack slot and the body takes the index from there, instead of reading the direct path's block layout, which a master does not have. The split is explicit: the head establishes that each listed output carries an immutable token of the contract's category, that the list strictly increases and that its length is the count the entry fixes; the body computes the payload and requires the output at its slot to commit to it. The per-call arm of the immutable-output pin also refuses an own-category immutable token at an output the witness does not list. Verified in the BCH-2026 machine: the spend is accepted with the event at the listed output, and refused for another category, a mutable capability, no token, a payload the body did not compute, a lock that is not the covenant, an empty event list, and an unlisted token beside the event. 138 tests in `solidc/test/per-call`. A compiled event contract is 1165 bytes of program and the head grows two bytes per listed event. |
 | 2026-09-25 | 8f55f828f | per-call | trailing outputs | n/a | The assembly allocates the trailing region — one output per event, one per send, one per created record, then change — reports it, and requires the plan's declared indices to be the ones allocated, so a caller is never its own source of output coordinates. An event or a send at a participant's own output is refused. 113 tests in `solidcash/test/per-call/composer`. |
+| 2026-09-25 | this round | per-call | correction | n/a | Two records were wrong and are corrected here. **The gate.** A KILL was recorded when the gate had merely not been reached; the plan kills only if I2 is not reached within four weeks of the interface freeze, which is 2026-10-23, and one two-week extension is allowed when I1 is green and every GO criterion holds. The gate is therefore **not yet due**, and work continues to that deadline with no extension claimed. The Log row that recorded KILL is left in place as history. **The validator.** Items B1-B15 and E1 were ticked on the strength of TypeScript derivations: V1-V11 exist as pure checks with one hostile test per check, an independent reference model and a differential harness over generated compositions, and E1 as a resumable derivation driven by an injected step. `V_TEMPLATE` — the program that would enforce those checks on chain — does not exist, and every VM test uses a stand-in validator program whose hash the master recognises but whose rules it never runs. Those items are unticked until the script exists, and the derivations are recorded as the reference to test it against. |
 
 ---
 
 ## Deviations
 
-- Streams C (master frames and calls) and R (records view mode) are not implemented: both are code generation changes inside the compiler's main traversal, which the plan sizes at 5-7 weeks with four coders. No compiled artifact drives any test, so the end-to-end criterion is not met and the gate is a KILL.
-- `composition: 'per-call'` refuses with `PER_CALL_CODEGEN_UNAVAILABLE` rather than emitting the convention, because an artifact for the other convention carries a different address and a different unlocking bytecode.
-- The validator derivation decides V1-V11 only. The master-side checks, the state rules and `V_TEMPLATE` as a script are outside it, so the differential harness compares two implementations of the decision procedure rather than a script against an independent model.
-- The composer executes no scripts: program execution is an injected step function, so derivation, assembly, layout and refusals are exercised while evaluation is not, and the re-entrant composition is not driven end to end.
-- Protocol defects found and fixed during integration: the call-record decoder read its fields in the encoder's order; a record created by a frame's first segment was wrongly refused; and the argument pushes wrongly included the redeem-script push.
-- Section 20 correction needed: the direct-value case is a type classification rather than a measurement of the canonical encoding, so `sig` and unbounded `bigint` mapping values are stored verbatim and can exceed the 64-byte tail. The 66 do not use either as a mapping value.
-- The harness is not pointed at the composition path, and the size budget stays in Phase R after M2 as decided; both need the master code generation behind the convention option.
-- The prologue checks exist and are VM-proven as a standalone script builder, but the code generation that emits a master per entry point is not written, so nothing compiles with them yet.
-- The composition hook cannot be completed additively: four frame-field emit sites, a synthetic stack parameter, the return check, a per-entry artifact slot and a deployment-time category pin all have to change together, so `per-call` keeps refusing rather than emitting a master that violates its own frame rules.
-- The master emission covers one inlined entry point with no external calls and no returns; the selector dispatch, the return check and the frame hash-type check are absent, and state is still read through today's direct covenant because the record view mode is not implemented.
+- The validator program `V_TEMPLATE` does not exist. V1-V11 exist as pure checks with hostile tests, a reference model and a differential harness, and the master-side recognition of a validator is emitted and VM-proven, but no validator rule is enforced on chain anywhere: every VM test uses a stand-in program whose hash the master recognises.
+- The composer executes no scripts: program execution is an injected step function, so derivation, assembly, layout and refusals are exercised while evaluation is not.
+- **Call arguments are bound by the witness rather than by the caller's code.** The caller recomputes the callee's argument hash from the callee's own bytes and compares it against the hash in its own witness block, and both are chosen by whoever builds the transaction, so a self-consistent forged pair passes and the call runs with the caller's authority carrying an argument its source never passed (T8). A failing test records it. The cause is that external calls are checked once at the start of a master instead of being compiled at each call site, which is also why every entry must make the same calls and why return values, conditionals and loops are refused.
 - The checklist has no item for the selector dispatch, which every multi-entry contract needs; it was implemented as a prerequisite rather than as a listed unit of work.
-- The caller signature's hash type is not checked, so an `ANYONECANPAY`, `NONE` or `SINGLE` signature would be accepted where spec W1 and threat T20 require `0x41` or `0x61`. Adding the check makes a caller's unlocking bytecode load-bearing, so every VM fixture that gives a caller an empty unlocking bytecode has to carry a signature-shaped one first.
-- The composed head path is proven but not reachable from `compileString`: a contract that makes an external call is still refused, because the master must carry `H_V` and the compiler has no deployment-time value for it. A third reserved slot for `H_V`, beside the category and address slots, is what would make it reachable.
-- Nothing after the call records is interpreted: segment and record chaining, the event list and the send list are dropped, so `viewIn`/`viewOut` settlement and the rule that nothing follows the last field are unchecked.
-- Only zero-argument call sites that return nothing are emittable; a call site with argument pushes or a value needs a general push-count walk.
-- The compiler emits root frames only, so a composed transaction needs its callee built from the head builder: admitting the call frame kinds is C4/C5 and would change every standalone contract's script.
-- A call is checked, not lowered: admitted calls take no arguments, return nothing, and target an address the source bakes in. A runtime target, arguments, a return value, a value send, delegatecall, or a conditional or repeated call is refused.
+- A call is checked, not lowered: an admitted call returns nothing and targets an address the source bakes in, and a result-bearing call, a runtime target, a value send, a delegatecall, or a conditional or repeated call is refused.
 - Every entry of a calling master must make the same calls, because one head checks one call set.
 - A standalone stateful master keeps a prepended pooled-constants prefix ahead of the head; it is stack-neutral, but the head is not literally the script's first bytes for that shape.
-- A read-only call site is refused rather than recorded: the emitted kind branch has no static arm, so recording one produced a callee that refused the call at run time.
-- A single-entry callee does not check the selector it was entered with: its head drops the call data it was given, and the selector is the caller's to check against the callee's own data. A caller that records a different selector than it sent is therefore refused by the caller, not by the callee.
+- A read-only call site is refused rather than recorded: the emitted kind branch has no static arm.
+- A single-entry callee does not check the selector it was entered with; the selector is the caller's to check against the callee's own data.
 - Dropping the last push to find a callee's redeem script scans forward by declared length, so its cost grows with the number of pushes before that script. Bounded by the unlocking-bytecode limit, and not measured at scale.
-- The record count of each segment is walked rather than required to a compile-time expectation, because which records a segment touches is settlement's business; a caller that knows the counts can require and unroll them.
-- No compiled contract produces a send yet: a transfer is refused by name because the recipient lock is a runtime value, so the send checks are proven at head level only.
-- Event outputs must be **strictly increasing**, which is stronger than the spec's pairwise-distinct requirement; a transaction listing events out of increasing output order is refused.
-- Conditional emits are admitted by the tail shape, which fixes the count, but have no VM case; the binding that reads an untaken emit's slot is untested.
+- The record count of each segment is walked rather than required to a compile-time expectation, because which records a segment touches is settlement's business.
+- Nothing chains the segment views on chain: the section's structure is checked and the record entries' shapes are checked, but the records a segment computed are not compared with the views it declared.
+- No compiled contract produces a send yet: a transfer is refused by name because the recipient lock is a runtime value.
+- Event outputs must be strictly increasing, which is stronger than the spec's pairwise-distinct requirement.
+- Conditional emits are admitted by the tail shape, which fixes the count, but have no VM case.
 - The immutable-output pin's per-call arm is VM-proven for single-entry and dispatched masters, not for a stateful per-call contract, because the records stream is unfinished.
+- Records view mode (stream R) is not started: state still goes through today's single-contract path, and a compiled master reads its records from the direct covenant rather than from its segment views.
+- The harness is not pointed at the composition path, and the size budget stays in Phase R after M2 as decided.

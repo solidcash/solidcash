@@ -9,3 +9,4 @@ export * from './composition.js';
 export * from './pools.js';
 export * from './layout.js';
 export * from './witness.js';
+export * from './need-test.js';

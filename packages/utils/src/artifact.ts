@@ -1621,6 +1621,15 @@ export interface CompositionPlaceholders {
   categoryOffset: number;
   /** Byte offset of the 35-byte contract address slot within the script. */
   addressOffset: number;
+  /**
+   * Byte offset of the 32-byte slot holding the hash of the validator program, present only when the master
+   * recognises a validator.
+   *
+   * A master that stands alone never reads it, so a contract whose entries make no external call has no such slot and
+   * the field is absent. A master that can be reached through a call has to check that the validator it points at runs
+   * the expected program, and the expected program's hash is only known once the validator is deployed.
+   */
+  templateHashOffset?: number;
 }
 
 export interface Artifact {

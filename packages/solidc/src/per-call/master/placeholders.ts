@@ -18,6 +18,9 @@ export const CATEGORY_SLOT_LENGTH = 32;
 /** Length of the contract address, a P2SH32 locking bytecode. */
 export const ADDRESS_SLOT_LENGTH = 35;
 
+/** Length of the hash of the validator program, which a master carries when it recognises a validator. */
+export const TEMPLATE_HASH_SLOT_LENGTH = 32;
+
 /** The push opcode for a payload above 75 bytes: one length byte. */
 const PUSHDATA1_OPCODE = 0x4c;
 
@@ -58,8 +61,32 @@ export function placeholderPushLength(length: number): number {
 }
 
 /** Builds the descriptor for a script that reserves both slots. */
-export function placeholdersAt(categoryOffset: number, addressOffset: number): CompositionPlaceholders {
-  return { version: 1, categoryOffset, addressOffset };
+export function placeholdersAt(
+  categoryOffset: number,
+  addressOffset: number,
+  templateHashOffset?: number,
+): CompositionPlaceholders {
+  return templateHashOffset === undefined
+    ? { version: 1, categoryOffset, addressOffset }
+    : { version: 1, categoryOffset, addressOffset, templateHashOffset };
+}
+
+/** The slots a descriptor declares, in the order they sit in the script, with the length each reserves. */
+export function declaredSlots(
+  placeholders: CompositionPlaceholders,
+): readonly { readonly offset: number; readonly length: number; readonly what: string }[] {
+  const slots = [
+    { offset: placeholders.categoryOffset, length: CATEGORY_SLOT_LENGTH, what: 'category' },
+    { offset: placeholders.addressOffset, length: ADDRESS_SLOT_LENGTH, what: 'address' },
+  ];
+  if (placeholders.templateHashOffset !== undefined) {
+    slots.push({
+      offset: placeholders.templateHashOffset,
+      length: TEMPLATE_HASH_SLOT_LENGTH,
+      what: 'validator program hash',
+    });
+  }
+  return slots;
 }
 
 /**
@@ -70,18 +97,20 @@ export function assertPlaceholders(script: Uint8Array, placeholders: Composition
   if (placeholders.version !== 1) {
     throw new PerCallEncodingError(`unsupported placeholder version: ${String(placeholders.version)}`);
   }
-  const check = (offset: number, length: number, what: string): void => {
-    if (offset < 0 || offset + placeholderPushLength(length) > script.length) {
-      throw new PerCallEncodingError(`${what} slot at ${offset} is outside a ${script.length}-byte script`);
+  for (const slot of declaredSlots(placeholders)) {
+    if (slot.offset < 0 || slot.offset + placeholderPushLength(slot.length) > script.length) {
+      throw new PerCallEncodingError(
+        `${slot.what} slot at ${slot.offset} is outside a ${script.length}-byte script`,
+      );
     }
-    const expected = placeholderPush(length);
-    const actual = script.subarray(offset, offset + expected.length);
+    const expected = placeholderPush(slot.length);
+    const actual = script.subarray(slot.offset, slot.offset + expected.length);
     if (!bytesEqual(actual, expected)) {
-      throw new PerCallEncodingError(`${what} slot at ${offset} is not a reserved ${length}-byte zero push`);
+      throw new PerCallEncodingError(
+        `${slot.what} slot at ${slot.offset} is not a reserved ${slot.length}-byte zero push`,
+      );
     }
-  };
-  check(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH, 'category');
-  check(placeholders.addressOffset, ADDRESS_SLOT_LENGTH, 'address');
+  }
 }
 
 /** True when both slots still hold their pre-deployment value. */
@@ -101,7 +130,7 @@ export function placeholdersAreEmpty(script: Uint8Array, placeholders: Compositi
 export function fillPlaceholders(
   script: Uint8Array,
   placeholders: CompositionPlaceholders,
-  values: { category: Uint8Array; contractAddress: Uint8Array },
+  values: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array },
 ): Uint8Array {
   if (values.category.length !== CATEGORY_SLOT_LENGTH) {
     throw new PerCallEncodingError(
@@ -113,15 +142,31 @@ export function fillPlaceholders(
       `a contract address is ${ADDRESS_SLOT_LENGTH} bytes: got ${values.contractAddress.length}`,
     );
   }
+  const declaresTemplateHash = placeholders.templateHashOffset !== undefined;
+  if (declaresTemplateHash) {
+    if (values.templateHash === undefined) {
+      throw new PerCallEncodingError('the descriptor declares a validator program hash slot, so a value is required');
+    }
+    if (values.templateHash.length !== TEMPLATE_HASH_SLOT_LENGTH) {
+      throw new PerCallEncodingError(
+        `a validator program hash is ${TEMPLATE_HASH_SLOT_LENGTH} bytes: got ${values.templateHash.length}`,
+      );
+    }
+  } else if (values.templateHash !== undefined) {
+    throw new PerCallEncodingError('the descriptor declares no validator program hash slot, so none can be filled');
+  }
   assertPlaceholders(script, placeholders);
 
   const filled = Uint8Array.from(script);
   // The payload starts after the push's opcode and length field.
-  filled.set(values.category, placeholders.categoryOffset + placeholderPrefixLength(CATEGORY_SLOT_LENGTH));
-  filled.set(
-    values.contractAddress,
-    placeholders.addressOffset + placeholderPrefixLength(ADDRESS_SLOT_LENGTH),
-  );
+  for (const slot of declaredSlots(placeholders)) {
+    const value = slot.what === 'category'
+      ? values.category
+      : slot.what === 'address'
+        ? values.contractAddress
+        : values.templateHash!;
+    filled.set(value, slot.offset + placeholderPrefixLength(slot.length));
+  }
   return filled;
 }
 
@@ -129,7 +174,7 @@ export function fillPlaceholders(
 export function readPlaceholders(
   script: Uint8Array,
   placeholders: CompositionPlaceholders,
-): { category: Uint8Array; contractAddress: Uint8Array } {
+): { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array } {
   const bounds = (offset: number, length: number): void => {
     if (offset < 0 || offset + placeholderPushLength(length) > script.length) {
       throw new PerCallEncodingError(`slot at ${offset} is outside a ${script.length}-byte script`);
@@ -137,10 +182,16 @@ export function readPlaceholders(
   };
   bounds(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH);
   bounds(placeholders.addressOffset, ADDRESS_SLOT_LENGTH);
-  const categoryStart = placeholders.categoryOffset + placeholderPrefixLength(CATEGORY_SLOT_LENGTH);
-  const addressStart = placeholders.addressOffset + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
-  return {
-    category: script.subarray(categoryStart, categoryStart + CATEGORY_SLOT_LENGTH),
-    contractAddress: script.subarray(addressStart, addressStart + ADDRESS_SLOT_LENGTH),
+  const at = (offset: number, length: number): Uint8Array => {
+    const start = offset + placeholderPrefixLength(length);
+    return script.subarray(start, start + length);
   };
+  const read: { category: Uint8Array; contractAddress: Uint8Array; templateHash?: Uint8Array } = {
+    category: at(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH),
+    contractAddress: at(placeholders.addressOffset, ADDRESS_SLOT_LENGTH),
+  };
+  if (placeholders.templateHashOffset !== undefined) {
+    read.templateHash = at(placeholders.templateHashOffset, TEMPLATE_HASH_SLOT_LENGTH);
+  }
+  return read;
 }

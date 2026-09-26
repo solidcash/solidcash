@@ -530,6 +530,19 @@ const OWNER_ANCHOR_LOCAL = '(message_bus_owner)';
 const PROXY_MASTER_ANCHOR_LOCAL = '(message_bus_proxy_master)';
 const GRAPH_EVENT_OWNER_LOCAL = '(graph_event_owner)';
 
+/**
+ * The four frame values a per-call master head leaves, in top-to-bottom stack order, as the tracked names of a
+ * dispatched entry body. A dispatched body reaches the frame through OP_INVOKE, which pops the selector and leaves
+ * the head's values above the constructor parameters; seeding them here makes the body read `msg.sender`,
+ * `address(this)`, `msg.value` and `tx.origin` from the head's slots instead of the direct path's sender category.
+ */
+const PER_CALL_FRAME_SLOT_NAMES = [
+  '__internal__frameOrigin',
+  '__internal__frameSender',
+  '__internal__frameValue',
+  '__internal__frameSelf',
+] as const;
+
 export class ForwardedWitnessError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
     super(node, `${reason}: ${detail}`);
@@ -2877,8 +2890,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (routedFunction?.sortedBatchInfo ?? []).map((batch) => batch.collection),
     );
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
-    // A per-call master's whole program is the head followed by the single inlined entry body, so the head is
-    // emitted before anything else and the body reads its frame from the slots registered here.
+    // A per-call master's program is the head first. A single entry point continues with its inlined body, which
+    // reads the frame from the slots registered here; several continue with the selector dispatcher, whose bodies
+    // are seeded with the same names in emitEntryPointFunctionDefine.
     if (this.perCallMaster) this.emitPerCallMasterHead(node);
 
     // Register contract-level constants for inline substitution
@@ -5101,6 +5115,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.drop32Slot = this.drop32Slot;
       subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
+      // A per-call master's dispatched entry runs through OP_INVOKE, which pops the selector and leaves the head's
+      // four frame values on top of the constructor params. Seed them above the constructor names so this body
+      // reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the head's slots, as the inlined
+      // single-entry body does.
+      if (this.perCallMaster) {
+        subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
+      }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
       // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
       if (this.contractUsesMsgData) {

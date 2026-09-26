@@ -1,9 +1,10 @@
 /**
  * Which contract shapes a per-call master program can be emitted for.
  *
- * A master's head is one prefix that runs before the single entry body, so the shapes this compiler can emit are
- * the ones where the whole contract is that one inlined body: one externally callable function, no selector
- * dispatch, and no call, event or transfer machinery whose rule lives in the witness block fields the head drops.
+ * A master's head is one prefix that runs before the entry bodies. When the contract has a single entry point the
+ * whole program is the head followed by that inlined body; with several, the head is followed by a selector
+ * dispatcher that OP_DEFINEs each entry body with its four-byte selector and OP_INVOKEs the one the unlocking
+ * bytecode's leading selector names.
  *
  * Everything else is refused with a named reason rather than compiled into a program that claims the per-call
  * convention while violating its frame rules.
@@ -65,18 +66,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     return refuse('fallback and receive make the contract dispatch by selector, which the master head cannot precede');
   }
   const entryPoints = contract.functions.filter((fn) => fn.isEntryPoint);
-  if (entryPoints.length !== 1) {
-    return refuse(`a master is one entry point, but the contract has ${entryPoints.length}: `
-      + entryPoints.map((fn) => fn.name).join(', '));
+  if (entryPoints.length === 0) {
+    return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
-  const entry = entryPoints[0];
-  if (entry.returnTypes.length > 0) {
-    return refuse('a returning entry point is settled against the witness `retval` field, which is not emitted yet');
-  }
-  if (input.needsExternalCallLowering || (entry.externalCalls?.length ?? 0) > 0) {
+  if (input.needsExternalCallLowering || entryPoints.some((entry) => (entry.externalCalls?.length ?? 0) > 0)) {
     return refuse('an external call needs the witness `calls[]` checks, which are not emitted yet');
   }
-  if ((entry.lowLevelCalls?.length ?? 0) > 0) {
+  if (entryPoints.some((entry) => (entry.lowLevelCalls?.length ?? 0) > 0)) {
     return refuse('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
   }
   if (input.hasContractInstantiation) {
@@ -91,18 +87,25 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (input.emitsEvent) {
     return refuse('an emitted event needs the witness `events[]` checks, which are not emitted yet');
   }
-  // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
-  // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.
-  const hidden = entry.parameters.filter((parameter) =>
-    parameter.name.startsWith('__internal__') && !FRAME_PARAMETERS.has(parameter.name));
-  if (hidden.length > 0) {
-    return refuse(`the entry point carries the hidden parameter '${hidden[0].name}', which the master head does not supply`);
-  }
-  if (entry.usesBlockhash || contract.usesBlockhash) {
-    return refuse('a blockhash read needs a co-spent oracle input the master head does not locate');
-  }
-  if (entry.keccakCompute || entry.ecrecoverCompute) {
-    return refuse('a compute side-car needs co-spent inputs the master head does not locate');
+  for (const entry of entryPoints) {
+    if (entry.returnTypes.length > 0) {
+      return refuse(`the entry point '${entry.name}' returns a value, which is settled against the witness `
+        + '`retval` field, which is not emitted yet');
+    }
+    // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
+    // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.
+    const hidden = entry.parameters.filter((parameter) =>
+      parameter.name.startsWith('__internal__') && !FRAME_PARAMETERS.has(parameter.name));
+    if (hidden.length > 0) {
+      return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
+        + 'which the master head does not supply');
+    }
+    if (entry.usesBlockhash || contract.usesBlockhash) {
+      return refuse('a blockhash read needs a co-spent oracle input the master head does not locate');
+    }
+    if (entry.keccakCompute || entry.ecrecoverCompute) {
+      return refuse('a compute side-car needs co-spent inputs the master head does not locate');
+    }
   }
   return { supported: true };
 }

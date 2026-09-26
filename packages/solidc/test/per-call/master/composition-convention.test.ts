@@ -10,12 +10,18 @@ const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** Two entry points: a selector-dispatched contract is not a shape a single master head can precede. */
+/** Two entry points: one master head, and the dispatcher picks the entry the unlocking selector names. */
 const TWO_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract TwoEntry {'
   + '   int public counter;'
   + '   function inc() { this.counter = this.counter + 1; }'
   + '   function dec() { this.counter = this.counter - 1; }'
+  + ' }';
+
+/** A returning entry point: the computed value is not yet settled against the witness `retval`. */
+const RETURNING_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Answer {'
+  + '   function answer() returns (int) { return 42; }'
   + ' }';
 
 const codeOf = (run: () => unknown): string | undefined => {
@@ -54,18 +60,24 @@ describe('composition convention selection', () => {
     expect(perCall.bytecode).not.toBe(direct.bytecode);
   });
 
+  it('compiles a contract with several entry points to one master, dispatched by selector', () => {
+    const artifact = compileString(TWO_ENTRY_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['dec', 'inc']);
+  });
+
   it('refuses a shape a master cannot be emitted for, by name', () => {
-    const code = codeOf(() => compileString(TWO_ENTRY_CONTRACT, { composition: 'per-call' }));
+    const code = codeOf(() => compileString(RETURNING_CONTRACT, { composition: 'per-call' }));
     expect(code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
   });
 
   it('names the shape that was refused', () => {
-    expect(messageOf(() => compileString(TWO_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toContain('one entry point');
+    expect(messageOf(() => compileString(RETURNING_CONTRACT, { composition: 'per-call' })))
+      .toContain('retval');
   });
 
   it('still compiles a refused shape under the direct convention', () => {
-    expect(() => compileString(TWO_ENTRY_CONTRACT)).not.toThrow();
+    expect(() => compileString(RETURNING_CONTRACT)).not.toThrow();
   });
 
   it('refuses an unknown convention by name instead of falling back', () => {

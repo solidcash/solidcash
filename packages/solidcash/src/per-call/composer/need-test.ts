@@ -181,6 +181,7 @@ export function recogniseValidator(utxo: ValidatorUtxo, expected: ValidatorExpec
     throw error;
   }
 
+  // A validator holds its token with the mutable capability, so its pin carries that byte.
   const pin = categoryPin(expected.category, TokenCapability.MUTABLE);
   if (redeemScript.length < pin.length) {
     return { recognised: false, reason: 'the validator\'s redeem script is shorter than the category pin' };

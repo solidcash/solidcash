@@ -21,10 +21,16 @@ import { PerCallEncodingError, concatBytes } from './primitives.js';
 /** A token capability: none, mutable, or minting. */
 export const TokenCapability = { NONE: 0x00, MUTABLE: 0x01, MINTING: 0x02 } as const;
 
-/** Length of a category pin: the category plus its capability byte. */
+/** Length of a category pin that carries a capability byte. */
 export const CATEGORY_PIN_LENGTH = CATEGORY_LENGTH + 1;
 
-/** The pinned category bytes an introspection comparison sees: the category followed by the capability. */
+/**
+ * The pinned category bytes an introspection comparison sees: the category followed by the capability.
+ *
+ * A UTXO whose token has no capability reports the category alone, so there is no capability byte to compare against
+ * and the pin is the bare category. Comparing a trailing zero byte against a token that reports none never matches,
+ * which is why the two forms are told apart here rather than at every call site.
+ */
 export function categoryPin(category: Uint8Array, capability: number): Uint8Array {
   if (category.length !== CATEGORY_LENGTH) {
     throw new PerCallEncodingError(`a category is ${CATEGORY_LENGTH} bytes: got ${category.length}`);
@@ -33,7 +39,13 @@ export function categoryPin(category: Uint8Array, capability: number): Uint8Arra
     && capability !== TokenCapability.MINTING) {
     throw new PerCallEncodingError(`unknown token capability: ${capability}`);
   }
+  if (capability === TokenCapability.NONE) return Uint8Array.from(category);
   return concatBytes([category, new Uint8Array([capability])]);
+}
+
+/** The length of a pin for a capability: the category alone, or the category and its capability byte. */
+export function categoryPinLength(capability: number): number {
+  return capability === TokenCapability.NONE ? CATEGORY_LENGTH : CATEGORY_PIN_LENGTH;
 }
 
 /**

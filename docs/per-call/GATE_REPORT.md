@@ -73,21 +73,12 @@ The reuse proof found one spec divergence: section 20 states the direct-value ca
 encoding, while the shipped classifier decides it from the type, so `sig` and unbounded `bigint` mapping values are
 stored verbatim and can exceed the 64-byte tail.
 
-## Next step
+## A blocker that was recorded here and is now resolved
 
-## The precise blocker (recorded so it is not re-derived)
-
-A master must take `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from its witness block. Today each is
-emitted inline from the transaction, and the sites are spread across the traversal and its symbol pass:
-
-| What | Where |
-| --- | --- |
-| `msg.sender`, with `tx.origin` and minting-verification fallbacks | `GenerateTargetTraversal.ts:36133`, `:36247` |
-| `msg.value` (stateless branch reads `OP_INPUTINDEX OP_UTXOVALUE`) | `:36178`, `:36198` |
-| `address(this)` as `OP_INPUTINDEX OP_UTXOBYTECODE`, and `emitMasterInputIndex` as the base of every state and category read | `:12956`, `:33917` |
-| `tx.origin` as a first-non-token-P2PKH scan | `:35884` |
-| The synthetic frame parameter and its signature list | `SymbolTableTraversal.ts:3132`, `compiler.ts:10048` |
-| Per-entry artifact slot (the artifact carries one `bytecode`) | `artifact.ts:1613`, `compiler.ts:14045` |
+A master's frame values — `msg.sender`, `address(this)`, `msg.value` and `tx.origin` — are taken from its witness
+block rather than read inline from the transaction. The sites this report used to list are no longer the obstacle:
+the master head reads the block, checks it against the first push of its own unlocking bytecode, and the frame
+values are VM-proven (`C4`, `C5`; `packages/solidcash/test/per-call/frames/`).
 
 ## What the shape does not have
 

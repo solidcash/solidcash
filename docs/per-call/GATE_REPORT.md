@@ -88,17 +88,28 @@ emitted inline from the transaction, and the sites are spread across the travers
 | The synthetic frame parameter and its signature list | `SymbolTableTraversal.ts:3132`, `compiler.ts:10048` |
 | Per-entry artifact slot (the artifact carries one `bytecode`) | `artifact.ts:1613`, `compiler.ts:14045` |
 
-The return check has no mechanism at all — entry points encode returns as return-events rather than leaving them on
-the stack to compare with `retval` — and the category pin and `addrX` are deployment-time while the prologue needs a
-compile-time category, so the pin needs a placeholder the SDK fills.
+## What the shape does not have
 
-Wrapping the traversal output with a prefix cannot work: the body would still compute the frame fields from the
-transaction, so the emitted master would claim the per-call convention while violating W1, O1 and N1. That is why
-the option refuses, and why the current state is the honest one.
+- **The validator program.** V1-V11 exist as TypeScript checks with hostile tests, a reference model and a differential
+  harness, and a master recognises a validator by its program hash. Nothing enforces those checks on chain: every VM
+  test uses a stand-in program whose hash the master recognises and whose rules it never runs.
+- **Records view mode.** A compiled master reads its records from the direct covenant rather than from its segment
+  views, so no record chain is settled on chain, and state is still a single-contract matter.
+- **Call-site compilation.** Calls are checked once in the head, from a descriptor derived at compile time, rather than
+  compiled where they happen. That is why an admitted call takes only compile-time argument values, returns nothing,
+  and is neither conditional nor repeated — and why every entry of a multi-entry master must make the same calls.
+- **The return check.** Entry points encode returns as return-events rather than leaving a value on the stack to
+  compare with the witness `retval`.
 
 ## Next step
 
-The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: lower calls with arguments and return values rather than only checking them; emit the return check; interpret segment and record settlement after the call records; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the acceptance shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
-done and VM-proven; what remains is to emit it as the head of a compiled master, add W0 (the first-push
-self-check) and the selector dispatch, and then give the records stream its view mode. That is the smallest
-increment that turns the composer's injected step into a real program run.
+The gate's deadline is `2026-10-23`, four weeks after the interface freeze. In the order that unblocks the acceptance
+shapes:
+
+1. **Records view mode** (stream R). It is the plan's stated main risk, and most of the acceptance tests need several
+   masters of one contract to settle against a shared state. If the first two items are not green inside about a week,
+   or they need rules outside the spec's record section, the kill criterion is trending and the plan says so.
+2. **The validator program** (`V_TEMPLATE`), tested against the TypeScript checks that already exist, replacing the
+   stand-in as each check lands.
+3. **Call-site compilation**: emitting each call's checks where it happens, so entries can differ and return values,
+   conditionals and loops can come through.

@@ -57,6 +57,12 @@ import {
   assertCompositionConventionSupported,
   resolveCompositionConvention,
 } from './per-call/master/composition.js';
+import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
+import {
+  findPlaceholderOffsets,
+  isPerCallMaster,
+  setPerCallMaster,
+} from './per-call/master/master-program.js';
 import {
   admittedHandlerNamesFromAnalysis,
   assertPublishedHandlersMatchAdmission,
@@ -497,6 +503,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __internalAttemptFailureState?: InternalAttemptFailureState;
   /** Compiler-private completed-ABI authority crossing only the pristine verifier-binding boundary. */
   __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
+  /** Set once the parsed contract is admitted as a shape this compiler can emit a per-call master for. */
+  __perCallMaster?: boolean;
 };
 
 const freezeKernelReadCarrierScopes = (
@@ -2666,6 +2674,9 @@ function attachDelegateVariant(
   errorListener?: SolidCashErrorListener, primaryName?: string, reportVariantFailure = true,
 ): void {
   if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
+  // A master program runs at the contract's own address and is never selected as a proxy implementation, so a
+  // second delegate-mode compile of the same source would only produce an unusable artifact.
+  if (artifact.composition?.convention === 'per-call') return;
   // Solidity initializer inference marks the primary artifact itself as a proxy implementation. Do not attach a
   // second delegate pass to that already-delegate artifact: synthetic ABI helpers such as __updateBlockOracle
   // have no visibility modifier and previously looked like another candidate, producing a much larger hybrid
@@ -13984,6 +13995,30 @@ function compileResolvedAst(
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
   // Code generation
+  if (mergedCompilerOptions.composition === 'per-call') {
+    // A per-call compile emits one master program per contract. The shapes that program can carry are checked here,
+    // after semantic analysis, so a contract whose frame the head cannot supply refuses by name instead of
+    // compiling into a master that would violate its own frame rules.
+    const assessment = assessPerCallMasterShape({
+      contract: ast.contract,
+      freeFunctionCount: ast.freeFunctions.length,
+      importCount: ast.imports.length,
+      needsExternalCallLowering,
+      hasContractInstantiation,
+      hasFunctionPointers,
+      needsInlineAssembly,
+      emitsEvent,
+    });
+    if (!assessment.supported) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call composition convention does not support this contract: ${assessment.reason}`,
+        { requested: 'per-call', reason: assessment.reason, contract: ast.contract.name },
+      );
+    }
+    stripFrameParameters(ast.contract);
+    setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
+  }
   // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
   // per-entry peephole freezes each optimized body into a separate OP_DEFINE push before the cross-body
   // outliner sees it; on a large neutral corpus that retained 263KB of clone bodies, while the bounded
@@ -14060,6 +14095,15 @@ function compileResolvedAst(
   const artifact = generateArtifact(
     ast, optimisationResult.script, code, debug, mergedCompilerOptions, functionBodies, fingerprint,
   );
+  if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
+    // The slots are located in the finished script, after the optimiser: emission records them, but only the
+    // emitted bytes say where they survived.
+    const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script));
+    artifact.composition = {
+      convention: 'per-call',
+      placeholders: { version: 1, ...offsets },
+    };
+  }
   let verifiedKernelEntryJournal:
   NonNullable<NonNullable<Artifact['messageBus']>['kernelEntryJournal']> | undefined;
   const signatureFrameHex = (fn: FunctionDefinitionNode): string | undefined => {

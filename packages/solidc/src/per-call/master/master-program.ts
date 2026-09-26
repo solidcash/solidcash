@@ -1,0 +1,69 @@
+/**
+ * Publishing a compiled master program.
+ *
+ * A master script reserves a zero-filled push for its state category and one for the address it presents as
+ * `address(this)`. Both are only known once the contract is deployed, so the compiler reserves them, records where
+ * they landed in the finished script, and publishes that in `artifact.composition` for deployment to fill.
+ *
+ * The offsets are located in the emitted bytes rather than tracked through code generation, because the
+ * optimiser rewrites the script between emission and publication; a slot is found by its exact reserved push.
+ */
+
+import { bytesEqual } from '@solidcash/utils';
+import { SolidcDiagnosticError } from '../../Errors.js';
+import {
+  ADDRESS_SLOT_LENGTH,
+  CATEGORY_SLOT_LENGTH,
+  placeholderPush,
+} from './placeholders.js';
+
+/** The internal option that marks this compile as a per-call master. */
+export interface PerCallMasterOptionCarrier {
+  __perCallMaster?: boolean;
+}
+
+/** True when this compile emits a per-call master program. */
+export function isPerCallMaster(options: PerCallMasterOptionCarrier): boolean {
+  return options.__perCallMaster === true;
+}
+
+/** Marks this compile as emitting a per-call master program. */
+export function setPerCallMaster(options: PerCallMasterOptionCarrier): void {
+  options.__perCallMaster = true;
+}
+
+/**
+ * Locates the reserved category and address slots in a finished master script.
+ *
+ * Each slot is a zero-filled push of a fixed length, so its byte pattern is unique in a real script; a script with
+ * zero or several matches is refused rather than publishing an offset a fill would write to the wrong place.
+ */
+export function findPlaceholderOffsets(script: Uint8Array): { categoryOffset: number; addressOffset: number } {
+  return {
+    categoryOffset: uniqueOffset(script, placeholderPush(CATEGORY_SLOT_LENGTH), 'category'),
+    addressOffset: uniqueOffset(script, placeholderPush(ADDRESS_SLOT_LENGTH), 'address'),
+  };
+}
+
+function uniqueOffset(script: Uint8Array, pattern: Uint8Array, what: string): number {
+  let found = -1;
+  for (let index = 0; index + pattern.length <= script.length; index += 1) {
+    if (!bytesEqual(script.subarray(index, index + pattern.length), pattern)) continue;
+    if (found !== -1) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the compiled master reserves its ${what} slot more than once, so no single offset identifies it`,
+        { slot: what, matches: [found, index] },
+      );
+    }
+    found = index;
+  }
+  if (found === -1) {
+    throw new SolidcDiagnosticError(
+      'PER_CALL_CODEGEN_UNAVAILABLE',
+      `the compiled master does not contain its reserved ${what} slot`,
+      { slot: what },
+    );
+  }
+  return found;
+}

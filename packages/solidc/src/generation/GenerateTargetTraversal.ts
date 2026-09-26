@@ -260,7 +260,7 @@ import {
   SortedMappingCodegenPendingError,
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
-  BlockLayoutUnavailableError, StackVariableUnavailableError,
+  BlockLayoutUnavailableError, StackVariableUnavailableError, SolidcDiagnosticError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
@@ -270,6 +270,7 @@ import {
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
+import { buildMasterHeadScript } from '../per-call/master/master-head.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -945,6 +946,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   consoleLogs: LogEntry[] = [];
   requires: RequireStatement[] = [];
   finalStackUsage: Record<string, StackItem> = {};
+  /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
+  private perCallMaster = false;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -1773,6 +1776,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   constructor(private compilerOptions: CompilerOptions) {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
+    this.perCallMaster = (compilerOptions as { __perCallMaster?: boolean }).__perCallMaster === true;
   }
 
   // Outlining splices bodies element-for-element, so their location data must be exactly as long as the script.
@@ -2816,6 +2820,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     ];
   }
 
+  /**
+   * Emits the head a per-call master opens with and registers the four frame values it leaves.
+   *
+   * The head proves ownership and recreation, reads the frame from the input's own unlocking bytecode, checks it
+   * as a root frame, and leaves `[origin, sender, value, self]` on the stack. Registering those names lets the
+   * body reach each logical `msg.sender`, `msg.value`, `address(this)` and `tx.origin` by picking its slot.
+   */
+  private emitPerCallMasterHead(node: ContractNode): void {
+    if (this.output.length !== 0) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'a per-call master head must be the first thing emitted, but the program already has bytes',
+        { contract: node.name, emittedBytes: this.output.length },
+      );
+    }
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const entries = node.functions.filter((fn) => fn.isEntryPoint);
+    const entry = entries.length === 1 ? entries[0] : undefined;
+    // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
+    // an argument; otherwise it sits below them as the unlocking bytecode's first push.
+    const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
+    // The head is a script, not a single data item: emit its bytes as opcodes.
+    this.emit([...buildMasterHeadScript({ blockOnTop }).script], loc);
+    this.pushToStack('__internal__frameSelf');
+    this.pushToStack('__internal__frameValue');
+    this.pushToStack('__internal__frameSender');
+    this.pushToStack('__internal__frameOrigin');
+  }
+
   visitContract(node: ContractNode): Node {
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
@@ -2844,6 +2877,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (routedFunction?.sortedBatchInfo ?? []).map((batch) => batch.collection),
     );
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
+    // A per-call master's whole program is the head followed by the single inlined entry body, so the head is
+    // emitted before anything else and the body reads its frame from the slots registered here.
+    if (this.perCallMaster) this.emitPerCallMasterHead(node);
 
     // Register contract-level constants for inline substitution
     for (const cd of node.constantDefinitions) {
@@ -12953,6 +12989,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // MEASURED (marketplace `take job`): a delegated take-job serialised the executor's covenant into the escrow
     // call record while the route witness, the participant's state entries and the callee's own record check all
     // carry the owner's, so the callee rejected the whole transaction at a 287-byte OP_EQUALVERIFY.
+    if (node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX
+      && this.stack.includes('__internal__frameSelf')) {
+      // A per-call root frame's `address(this)` is its witness `self`, which the head checked against the reserved
+      // `addrX` constant. The input's own locking bytecode is the master lock, not the contract address.
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameSelf'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+    if (this.perCallMaster
+      && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `address(this) is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+
     if (node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX
@@ -35882,6 +35940,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., lockingBytecode]  (the P2PKH address of the origin)
    */
   private emitTxOrigin(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__frameOrigin')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameOrigin'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
+    if (this.perCallMaster) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `tx.origin is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
     const p2pkhPrefix = P2PKH_LBC_PREFIX;  // 3 bytes
     const p2pkhSuffix = P2PKH_LBC_SUFFIX;  // 2 bytes
 
@@ -36131,6 +36201,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   private emitMsgSender(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__frameSender')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameSender'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     if (this.stack.includes('__internal__handlerMsgSender')) {
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), locationData);
       this.emit(Op.OP_PICK, locationData);
@@ -36140,6 +36215,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
+    }
+    if (this.perCallMaster) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `msg.sender is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
     }
     // Pick _msgSenderCategory from the stack
     if (!this.stack.includes('__internal__msgSenderCategory')) {
@@ -36176,6 +36258,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
+    if (this.stack.includes('__internal__frameValue')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameValue'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      return;
+    }
     // Inlined message-bus batch handlers execute in the wrapper traversal, where the parsed
     // row value is an ordinary local rather than an OP_DEFINE frame argument.
     if (this.stack.includes('__message_bus_graph_msg_value')) {
@@ -36192,6 +36279,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgValue'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
+    }
+    if (this.perCallMaster) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `msg.value is read outside the frame's slots while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
     }
     // Stateless contract (no block layout / satoshi container): msg.value is just the satoshi value of the
     // contract input being spent - there is no persistent balance to diff against.

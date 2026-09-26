@@ -43,17 +43,16 @@ export function resolveCompositionConvention(requested: string | undefined): Com
 /**
  * Fails closed when a requested convention has no code generation in this compiler.
  *
- * The `per-call` convention needs each entry point emitted as a self-recreating master with witness-block-driven
- * frame fields, and the state reads answered from a segment view rather than from a spent commitment. Until that
- * emission exists, asking for the convention must refuse: an artifact compiled for the wrong convention has a
- * different address and a different unlocking bytecode, so publishing one would be worse than not compiling.
+ * `per-call` is emitted for the contract shapes `assessPerCallMasterShape` admits; the shape itself is only known
+ * once the AST exists, so the per-shape refusal happens there rather than here. An unknown convention is refused
+ * by `resolveCompositionConvention`, and an artifact compiled for the wrong convention has a different address and
+ * unlocking bytecode, so publishing one would be worse than not compiling.
  */
 export function assertCompositionConventionSupported(convention: CompositionConvention): void {
-  if (convention === 'direct') return;
+  if (COMPOSITION_CONVENTIONS.includes(convention)) return;
   throw new SolidcDiagnosticError(
     'PER_CALL_CODEGEN_UNAVAILABLE',
-    `the '${convention}' composition convention is not available in this compiler build; `
-    + "compile with composition: 'direct'",
-    { requested: convention, available: 'direct' },
+    `unknown composition convention '${String(convention)}'; expected one of ${COMPOSITION_CONVENTIONS.join(', ')}`,
+    { requested: convention, supported: COMPOSITION_CONVENTIONS },
   );
 }

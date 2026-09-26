@@ -4,22 +4,25 @@ import {
   hash256, Opcodes,
 } from '@bitauth/libauth';
 import {
-  TokenCapability, categoryPin, encodeWitnessBlock, sha256, validatorAddress,
+  TokenCapability, asmToScript, categoryPin, computeFunctionSelector, computeFunctionSignature,
+  encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
+import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 
 /**
- * A composed transaction: one master calls another and a validator input covers both.
+ * A composed transaction: one compiled master calls a stand-in master and a validator input covers both.
  *
- * The caller records the call in its witness block and proves the shape of that record against the callee's own
- * unlocking bytecode: the callee is a different input, its call data carries the selector the caller names,
- * `SHA256(selector)` is the recorded argument hash, and the recorded target and kind are the ones the caller's
- * code fixes. The callee runs as a message-call frame, where the validator binds the values the master cannot see
- * — its `msg.sender`, its `value` and its origin — while the master still checks the address it presents.
+ * The caller is compiled from source, so its call is bound where the call is made: the caller's own code reads the
+ * witness block it carries, walks to the record its site names, and requires the record's kind, target, `argsHash`
+ * and `calleeRef` to be the ones the source fixes. The `argsHash` is the digest of the source's own argument
+ * values, so a record and a callee that agree with each other but not with the source are refused. The callee is a
+ * head-built stand-in, and runs as a message-call frame where the validator binds the values a master cannot see —
+ * its `msg.sender`, its `value` and its origin — while the master still checks the address it presents.
  *
  * Both masters point at the same validator input. That validator is recognised from its own redemption path: it
  * holds a mutable token of the category its redeem script pins, and the program after that pin hashes to the
@@ -45,10 +48,10 @@ const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opco
 const OTHER_VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_2]);
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 
-/** The selector the caller records. */
-const CALLEE_SELECTOR = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+/** The selector the caller records, which the interface's `ping()` resolves the site to. */
+const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
 /** A second selector, for a mutated call record. */
-const OTHER_SELECTOR = new Uint8Array([0x87, 0x65, 0x43, 0x21]);
+const OTHER_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', ['bytes32']));
 
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
@@ -59,6 +62,29 @@ const A_INDEX = 0;
 const B_INDEX = 1;
 const VALIDATOR_INDEX = 2;
 const USER_INDEX = 3;
+
+/**
+ * The caller's source: one entry that calls the callee at its code-baked address.
+ *
+ * The callee is named by a `hex` address literal so the call site's target is a compile-time value the compiled
+ * body can require a record to carry. The interface declares `ping` with no parameters, which is the selector the
+ * call site records.
+ */
+const CALLER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${Buffer.from(ADDRESS_B).toString('hex')}).ping.call(); require(true); }`
+  + ' }';
+
+/** The compiled caller program, with its deployment slots filled the way a deployment fills them. */
+const COMPILED_CALLER_PROGRAM = ((): Uint8Array => {
+  const artifact = compileString(CALLER_SOURCE, { composition: 'per-call' });
+  return fillPlaceholders(
+    scriptToBytecode(asmToScript(artifact.bytecode)),
+    artifact.composition!.placeholders,
+    { category: CATEGORY_A, contractAddress: ADDRESS_A, templateHash: TEMPLATE_HASH },
+  );
+})();
 
 interface MasterShape {
   readonly category: Uint8Array;
@@ -163,18 +189,11 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     sends: [],
   };
 
-  const caller = masterProgram({
-    category: CATEGORY_A,
-    address: ADDRESS_A,
-    options: {
-      blockOnTop: true,
-      frameKinds: [0, 1],
-      reservesValidatorHashSlot: true,
-      calls: [{ kind: 1, selector: CALLEE_SELECTOR, target: ADDRESS_B }],
-    },
-    // The head leaves the four frame values; a P2SH32 redeem script must end with exactly one item.
-    body: new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]),
-  });
+  const callerProgram = COMPILED_CALLER_PROGRAM;
+  const caller = {
+    program: callerProgram,
+    lock: encodeLockingBytecodeP2sh32(hash256(callerProgram)),
+  };
   // The callee carries its own selector push, which is the call data the caller hashes.
   const callee = masterProgram({
     category: CATEGORY_B,

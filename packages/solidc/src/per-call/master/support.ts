@@ -264,10 +264,6 @@ function deriveEntryCallSites(
 ): { calls: MasterCallSite[]; reason?: string } {
   const calls: MasterCallSite[] = [];
   for (const slot of entry.externalCalls ?? []) {
-    if (slot.hasReturnValues === true) {
-      return { calls: [], reason: `the call to '${slot.functionName}' returns a value, which the master head `
-        + 'reads from the witness but does not settle against a computed value yet' };
-    }
     if (slot.callMode !== undefined && slot.callMode !== ExternalCallMode.REGULAR) {
       // A read-only call would make the callee run a static frame, and the emitted kind branch has no arm for one,
       // so the callee would refuse it at run time. Refusing here says which shape is missing.

@@ -15,14 +15,15 @@
  *
  * The reader leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]`. The tail `rest` is
  * walked rather than dropped: a standalone master has to know it made no call and is its category's only master,
- * and a composed one checks each call record against the site that made it. The checks consume everything but
+ * and a composed one walks past the call records, whose own checks the sites that made them emit into the body.
+ * The walk consumes everything but
  * `[origin, sender, value, self]`, which the caller registers as tracked slots. `origin` is the locking bytecode
  * of `originRef`, i.e. `tx.origin`. Each listed event's output index is left as its own tracked slot above those
  * frame values, so the body checks the payload it computed against the output the witness listed.
  *
  * A master admits the standalone shape by default. A master that reserves the validator hash slot admits the
- * composed shape: it recognises the validator its `validatorRef` names, checks the call records its `calls` name,
- * and can admit the frame kinds a callee runs.
+ * composed shape: it recognises the validator its `validatorRef` names, admits the frame kinds a callee runs, and
+ * fixes how many call records its tail holds.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -104,10 +105,9 @@ export interface MasterHeadOptions {
    */
   readonly callDataSelectorUnconsumed?: boolean;
   /**
-   * The external calls the entry makes, in execution order. Each one's record in the witness block is checked
-   * against the site: the callee is not this input, the record's `argsHash` is the digest the caller's own code
-   * computes from its argument values (`SHA256(selector || argument pushes)`), the callee's call data carries the
-   * site's selector and hashes to that same digest, the target and kind match, and the result is empty.
+   * The external calls the entry makes, in execution order. The head fixes how many records the tail holds and
+   * walks past each of them; the site that made the call binds its record in the caller's own body, and the head
+   * keeps the checks on the sections after the calls.
    */
   readonly calls?: readonly MasterCallSite[];
   /**
@@ -299,7 +299,7 @@ class HeadEmitter {
    *
    * A root frame's `msg.sender`, `tx.origin` and `msg.value` are the master's to check. In any other admitted
    * frame the validator binds them (V5), so the master only checks what its own code fixes: `address(this)` is its
-   * constant, and the call records are the ones its sites name.
+   * constant, and its tail holds as many call records as its sites number.
    */
   private composedFrameChecks(): void {
     this.emitBytes(verifyTailScript(this.callSites, this.tailShape));

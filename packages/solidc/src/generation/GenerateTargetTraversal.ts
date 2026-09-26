@@ -272,6 +272,7 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import { buildMasterHeadScript, eventOutputSlotName } from '../per-call/master/master-head.js';
+import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { derivePerCallTailShape } from '../per-call/master/support.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
@@ -964,6 +965,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   finalStackUsage: Record<string, StackItem> = {};
   /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
   private perCallMaster = false;
+  /** The external calls the compiled master's entries make, in execution order, one per record the body binds. */
+  private perCallCallSites: readonly MasterCallSite[] = [];
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
   private perCallReservesValidatorHash = false;
 
@@ -1795,6 +1798,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
     this.perCallMaster = (compilerOptions as { __perCallMaster?: boolean }).__perCallMaster === true;
+    this.perCallCallSites = (compilerOptions as { __perCallCallSites?: readonly MasterCallSite[] })
+      .__perCallCallSites ?? [];
     this.perCallReservesValidatorHash = (compilerOptions as {
       __perCallReservesValidatorHash?: boolean;
     }).__perCallReservesValidatorHash === true;
@@ -2896,8 +2901,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
     // an argument; otherwise it sits below them as the unlocking bytecode's first push.
     const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
-    const perCallOptions = this.compilerOptions as { __perCallCallSites?: readonly MasterCallSite[] };
-    const calls = perCallOptions.__perCallCallSites ?? [];
+    const calls = this.perCallCallSites;
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
     // A master is entered by a user or by another master as a callee; the two frame kinds are what the head
     // branches on. A callee's unlocking bytecode carries the call data's selector, which only a dispatcher over
@@ -2935,6 +2939,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let index = tail.tail.eventCount - 1; index >= 0; index -= 1) {
       this.pushToStack(eventOutputSlotName(index));
     }
+  }
+
+  /**
+   * Emits the checks one external call makes against its own witness record, where the source makes the call.
+   *
+   * The site is the record's position, which the source's slot index fixes for the straight-line calls the master
+   * admits. A site whose record cannot be addressed refuses by name rather than binding some other record. When the
+   * caller uses the call's value, the record's `result` is left on the stack and decoded the way the direct path
+   * decodes a return event, so a typed result reaches the body as the value it was recorded with.
+   */
+  private emitPerCallCallSite(node: ExternalFunctionCallNode, locationData: SingleLocationData): void {
+    const index = node.callInfo?.externalCallSlotIndex;
+    if (index === undefined || this.perCallCallSites[index] === undefined) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call call site '${node.interfaceName}.${node.functionName}' has no record to bind `
+        + `(slot ${index === undefined ? 'unset' : String(index)}, ${this.perCallCallSites.length} site(s))`,
+        { interface: node.interfaceName, function: node.functionName, slot: index },
+      );
+    }
+    const site = this.perCallCallSites[index]!;
+    const returnTypes = node.callInfo?.returnTypes ?? [];
+    const usesResult = returnTypes.length > 0;
+    this.emit([...callSiteCheckScript(site, index, usesResult)], locationData);
+    if (!usesResult) return;
+    // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
+    // the direct path decodes a return event's commitment.
+    for (let field = 0; field < returnTypes.length; field += 1) {
+      const isLast = field === returnTypes.length - 1;
+      if (isLast) this.emitPushdataDecodeLastField(returnTypes[field]!, locationData);
+      else this.emitPushdataDecode(returnTypes[field]!, locationData);
+    }
+    for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
   }
 
   visitContract(node: ContractNode): Node {
@@ -7235,8 +7272,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
         this.emitReturnEventCovenantVerification(node);
       }
-      // A-side: verify return event UTXO from external function calls with return values
-      if (!this.functionHasDelegatecall && node.externalCalls && node.externalCalls.some((ec) => ec.hasReturnValues)) {
+      // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
+      // the result from its own witness record, not from a return-event output, so it has no return event to pin.
+      if (!this.functionHasDelegatecall && !this.perCallMaster
+        && node.externalCalls && node.externalCalls.some((ec) => ec.hasReturnValues)) {
         this.emitExternalReturnEventVerification(node);
       }
       // Master self-preservation + uniqueness (upgrade-aware)
@@ -19094,11 +19133,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
-    // A per-call master checks each call against the witness block's call records in its head, so the body emits
-    // nothing for the call itself. The head requires the record's digest to be the one the caller's own argument
-    // values produce and the callee's call data to hash to it; the shape is admitted only when the call has no
-    // result to settle against the witness.
-    if (this.perCallMaster) return node;
+    // A per-call master binds each call to its own witness record where the call is made: the body reads its
+    // block, walks to the site's record and checks kind, target, calleeRef and argsHash against what the source
+    // says, then takes the call's result from the record. The head no longer checks the record; it only walks
+    // past the call section to reach the segments, events and sends.
+    if (this.perCallMaster) {
+      this.emitPerCallCallSite(node, { location: node.location, positionHint: PositionHint.START });
+      return node;
+    }
     // Do NOT visit categoryExpression or parameters here - they were resolved during
     // semantic analysis. Visiting them would cause stack operations (OP_ROLL/OP_PICK)
     // that consume constructor parameters needed later by emitExternalCallVerification.

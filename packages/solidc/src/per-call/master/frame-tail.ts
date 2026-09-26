@@ -3,31 +3,17 @@
  * transaction around it.
  *
  * The tail of section 16's block follows the frame fields: `retval`, then a call per external call, then the
- * segment, event and send sections. A frame that makes no call only has to know that it made none; a frame that
- * makes a call has to bind each record to the callee it names. The reader in `witness-reader.ts` takes fields off
- * the front of the tail; these builders walk it.
+ * segment, event and send sections. A frame that makes no call only has to know that it made none. The reader in
+ * `witness-reader.ts` takes fields off the front of the tail; these builders walk it.
  *
- * The call-shape checks are the whole of a call's proof on the caller's side:
- *
- *   - the callee is not this input (a master never calls itself);
- *   - the recorded `argsHash` is the digest the caller's own code computes from the argument values it passes:
- *     `SHA256(selector || argument pushes)`, the pushes being the source values in the canonical encoding;
- *   - the callee's unlocking bytecode carries the selector the site names, with its argument pushes after it, and
- *     `SHA256(selector || args)` over those bytes is the same recorded digest;
- *   - the callee address the record names is the one the code calls, and the frame kind is the one it records.
- *
- * The result is read from the record and must be empty here: a site whose callee returns a value needs the value
- * on the stack, which the entry-return machinery does not emit yet.
- *
- * The recorded digest is the caller's own computation, so a builder cannot forge an argument by changing the
- * callee's bytes and the recorded hash together: the code's operands are the source's values. The callee's bytes
- * are still tied to the same digest, so a call whose callee carries other arguments than the source passed is
- * refused as well. A site whose arguments are not compile-time values has no digest the code can compute and is
- * refused by name rather than checked against the callee's bytes.
+ * A master with call sites walks past each call record without reading it: the record is bound to its site where
+ * the call is made, in the caller's own body (`call-site.ts`). The head keeps the count check and the sections
+ * after the calls, so the call section is still consumed and its length still fixed; only the per-record checks
+ * move to the site, where a repeated or conditional call would verify per execution.
  *
  * The arguments of a call are the pushes between its selector push and the redeem-script push that closes the
  * callee's unlocking bytecode. Both pushes are stripped, so the arguments are however many pushes the callee
- * carries — none for a call with no arguments, in which case the hash is over the selector bytes alone.
+ * carries — none for a call with no arguments.
  *
  * The sections after the calls are checked, not dropped. The segment count is the call count plus one; every
  * segment's records are walked and each entry's shape is checked, so a record is kept in place, created or
@@ -40,11 +26,10 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { TokenCapability, argsHash } from '@solidcash/utils';
+import { TokenCapability } from '@solidcash/utils';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
-  dropLastPushScript,
   dropPrefix,
   readOwnWitnessBlockScript,
   splitFirstPushScript,
@@ -62,9 +47,10 @@ export interface MasterCallSite {
   /** The address called, which `calls[k].target` must name. */
   readonly target: Uint8Array;
   /**
-   * The argument pushes the caller's code passes, in parameter order and the canonical encoding: exactly the
-   * bytes the callee carries between its selector and its redeem script. `SHA256(selector || argumentPushes)` is
-   * the digest the caller's own code computes, and the record must carry it. Absent for a call with no argument.
+   * The argument pushes the source passes, in parameter order and the canonical encoding: exactly the bytes the
+   * callee carries between its selector and its redeem script. `SHA256(selector || argumentPushes)` is the digest
+   * the caller's own code computes at the call site, and the record must carry it. Absent for a call with no
+   * argument.
    */
   readonly argumentPushes?: Uint8Array;
 }
@@ -121,10 +107,10 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * the entry's code fixes.
  *
  * Entry `[..., tail]`, exit `[...]`. `retval` must be empty (a supported entry returns nothing), the call count
- * must equal the number of sites (a loop that varies it is not emitted), and each record is checked against its
- * site. The segment count must be the call count plus one, and every segment's records are walked. The event and
- * send counts must equal the shape's, and each listed output is checked. The remaining tail must be empty, so
- * nothing follows the last field.
+ * must equal the number of sites (a loop that varies it is not emitted), and each record is walked past — the
+ * site that made the call binds it in the caller's own body. The segment count must be the call count plus one,
+ * and every segment's records are walked. The event and send counts must equal the shape's, and each listed
+ * output is checked. The remaining tail must be empty, so nothing follows the last field.
  */
 export function verifyTailScript(
   callSites: readonly MasterCallSite[],
@@ -133,7 +119,7 @@ export function verifyTailScript(
   const bytes: number[] = [];
   bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   bytes.push(...requireU16Equals(callSites.length));
-  for (const site of callSites) bytes.push(...callRecordChecks(site));
+  for (let site = 0; site < callSites.length; site += 1) bytes.push(...callRecordSkip());
   bytes.push(...requireU16Equals(callSites.length + 1));
   for (let segment = 0; segment < callSites.length + 1; segment += 1) {
     bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment]));
@@ -282,42 +268,22 @@ function sendOutputSection(count: number): number[] {
   return bytes;
 }
 
-/** The digest a site's own code computes: `SHA256(selector || argument pushes)` over the caller's passed values. */
-function callerArgumentDigest(site: MasterCallSite): Uint8Array {
-  return argsHash(site.selector, site.argumentPushes ?? new Uint8Array(0));
-}
-
-/** The checks one `calls[k]` record must satisfy, consuming it from the front of the tail. */
-function callRecordChecks(site: MasterCallSite): number[] {
-  const bytes: number[] = [];
-  // kind
-  bytes.push(...takeFixedWidthField(1), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
-    ...encodeDataPush(scriptNumber(site.kind)), Opcodes.OP_NUMEQUALVERIFY);
-  // target
-  bytes.push(...takeLengthPrefixedField(), Opcodes.OP_SWAP,
-    ...encodeDataPush(site.target), Opcodes.OP_EQUALVERIFY);
-  // value: the validator binds the callee's value to this one; the caller does not check it.
-  bytes.push(...takeFixedWidthField(8), Opcodes.OP_NIP);
-  // calleeRef, kept on the alt stack while the hash is read.
-  bytes.push(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,
-    Opcodes.OP_INPUTINDEX, Opcodes.OP_NUMNOTEQUAL, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK);
-  // argsHash: the recorded digest must be the one the caller's own code computes from the argument values it
-  // passes. The record is not the authority; the code's operands are the source's values, so a builder cannot
-  // forge an argument by changing the callee's bytes and the recorded hash together. The record is kept while the
-  // callee's bytes are checked below, which ties them to the same digest.
-  bytes.push(...takeFixedWidthField(32), Opcodes.OP_SWAP);
-  bytes.push(Opcodes.OP_DUP, ...encodeDataPush(callerArgumentDigest(site)), Opcodes.OP_EQUALVERIFY);
-  // The callee's unlocking bytecode is its witness block, then its call data, then its redeem script. The call
-  // data is what the first and last pushes leave between them: the selector's own push, then the argument pushes.
-  // Hashing the selector's payload concatenated with the argument pushes is `SHA256(selector || args)`; a call
-  // with no arguments leaves that region empty and hashes the selector bytes alone, so one path serves both.
-  bytes.push(Opcodes.OP_FROMALTSTACK, Opcodes.OP_INPUTBYTECODE,
-    ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
-    Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
-    Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
-  // result: a supported call returns nothing.
-  bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
-  return bytes;
+/**
+ * Consumes one `calls[k]` record without reading it, so the tail walk reaches the sections after the calls.
+ *
+ * The record's own checks belong to the site that made the call (`call-site.ts`), which reads the same block
+ * itself. `kind`, `target`, `value`, `calleeRef`, `argsHash` and `result` have fixed widths except the last two;
+ * a `u16`-length `target` and a `u32`-length `result` are read the way the codec writes them.
+ */
+function callRecordSkip(): number[] {
+  return [
+    ...takeFixedWidthField(1), Opcodes.OP_NIP, // kind
+    ...takeLengthPrefixedField(), Opcodes.OP_NIP, // target
+    ...takeFixedWidthField(8), Opcodes.OP_NIP, // value
+    ...takeFixedWidthField(2), Opcodes.OP_NIP, // calleeRef
+    ...takeFixedWidthField(32), Opcodes.OP_NIP, // argsHash
+    ...takeLengthPrefixedField32(), Opcodes.OP_NIP, // result
+  ];
 }
 
 /**

@@ -59,6 +59,30 @@ stored verbatim and can exceed the 64-byte tail.
 
 ## Next step
 
+## The precise blocker (recorded so it is not re-derived)
+
+A master must take `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from its witness block. Today each is
+emitted inline from the transaction, and the sites are spread across the traversal and its symbol pass:
+
+| What | Where |
+| --- | --- |
+| `msg.sender`, with `tx.origin` and minting-verification fallbacks | `GenerateTargetTraversal.ts:36133`, `:36247` |
+| `msg.value` (stateless branch reads `OP_INPUTINDEX OP_UTXOVALUE`) | `:36178`, `:36198` |
+| `address(this)` as `OP_INPUTINDEX OP_UTXOBYTECODE`, and `emitMasterInputIndex` as the base of every state and category read | `:12956`, `:33917` |
+| `tx.origin` as a first-non-token-P2PKH scan | `:35884` |
+| The synthetic frame parameter and its signature list | `SymbolTableTraversal.ts:3132`, `compiler.ts:10048` |
+| Per-entry artifact slot (the artifact carries one `bytecode`) | `artifact.ts:1613`, `compiler.ts:14045` |
+
+The return check has no mechanism at all — entry points encode returns as return-events rather than leaving them on
+the stack to compare with `retval` — and the category pin and `addrX` are deployment-time while the prologue needs a
+compile-time category, so the pin needs a placeholder the SDK fills.
+
+Wrapping the traversal output with a prefix cannot work: the body would still compute the frame fields from the
+transaction, so the emitted master would claim the per-call convention while violating W1, O1 and N1. That is why
+the option refuses, and why the current state is the honest one.
+
+## Next step
+
 The plan's Phase 1 (stream C, then R) is unchanged and is the whole remaining critical path. The pin-and-recreate half of C2 is
 done and VM-proven; what remains is to emit it as the head of a compiled master, add W0 (the first-push
 self-check) and the selector dispatch, and then give the records stream its view mode. That is the smallest

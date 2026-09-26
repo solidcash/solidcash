@@ -45,7 +45,7 @@ because `V_TEMPLATE` itself is not implemented.
 | N1 and the call shape in the master | **done and reachable** | a calling contract compiles and publishes three placeholder offsets; VM-proven with three inputs co-spent |
 | The tail after the call records | **done, structure only** | the segment section is walked and its entry shapes checked; the event and send sections are interpreted; T33 closed |
 | Record settlement (comparing computed records with the declared views) | **absent** | the segment views are structure-checked, not chained on chain |
-| A compiled entry that emits an event | **head done, body absent** | the body builds the direct path's event covenant, so a compiled event contract is refused when spent |
+| A compiled entry that emits an event | **done** | the spend is accepted with the event at the listed output; seven refusals, each with a control |
 | The caller signature's hash type | **done** | T20 closed: both accepted values pass, `NONE`, `SINGLE` and `ANYONECANPAY` refused on the compiled master |
 | Record view mode (state settlement) | **absent** | state still read through today's direct covenant |
 | Records read through a segment view | **absent** | — |

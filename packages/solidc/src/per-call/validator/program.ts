@@ -79,13 +79,20 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
   'V5_MASTER_CALLED_TWICE',
+  'V6_MASTER_VISITED_TWICE',
+  'V6_MASTER_UNREACHABLE',
   'V9_NO_ROOT',
   'V9_ROOT_CATEGORY_MISMATCH',
+  'V10_STATIC_RECORD_CHANGED',
+  'V10_STATIC_EVENT',
+  'V10_STATIC_SEND',
+  'V10_STATIC_VALUE_CALL',
+  'V10_STATIC_NON_STATIC_CALL',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
 
 /** The checks the program enforces completely. A check lands here only once every one of its rules is emitted. */
-export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V9', 'V11'];
+export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V9', 'V10', 'V11'];
 
 /**
  * Builds the validator program's bytecode.
@@ -102,7 +109,10 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
  * 7. edges on `[M]`: every call names a covered master that records this caller, this kind, this origin, the value,
  *    the sender, the address and the result the call recorded, and the argument hash of the callee's own pushes.
- *    Every covered master that is not a root is named by exactly one call.
+ *    Every covered master that is not a root is named by exactly one call;
+ * 8. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
+ * 9. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
+ *    calls only read-only frames.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -140,6 +150,8 @@ export function buildValidatorProgram(): Uint8Array {
   emitCompleteness(e);
   emitRootRules(e);
   emitEdgeRules(e);
+  emitExecutionOrder(e);
+  emitReadOnlyFrames(e);
   emitFrameAddresses(e);
 
   // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
@@ -781,6 +793,227 @@ function emitCallsFrom(e: Emitter): void {
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
   e.op(O.OP_NIP, O.OP_DROP, O.OP_NIP);
+}
+
+/**
+ * Walking from the roots reaches every covered master, and a master already entered is not entered again.
+ *
+ * Entry `[M]`, exit `[M]`. The walk follows each master's calls. A second entry is a cycle, and a covered master
+ * the walk never enters is not part of any root's execution.
+ */
+function emitExecutionOrder(e: Emitter): void {
+  const O = Opcodes;
+  emitReachedBytes(e);
+  e.op(O.OP_OVER);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  // `[M, reached, rest, index]`.
+  e.op(O.OP_ROT, O.OP_SWAP);
+  markReached(e);
+  e.op(O.OP_ROT, O.OP_SWAP);
+  appendCallees(e);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+  requireReachedMasters(e);
+}
+
+/** Entry `[M]`, exit `[M, reached]`. One zero byte per transaction input. */
+function emitReachedBytes(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_TXINPUTCOUNT, O.OP_0, O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.push(Uint8Array.from([0x00])).op(O.OP_CAT);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  // The count is exhausted and sits under the byte string. Keep the string.
+  e.op(O.OP_NIP);
+}
+
+/**
+ * Sets the byte at `index` and refuses a byte that was already set.
+ *
+ * Entry `[reached, index]`, exit `[reached', index]`. `index` is a script number.
+ */
+function markReached(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_ROT, O.OP_SWAP, O.OP_SPLIT);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.push(Uint8Array.from([0x00])).op(O.OP_EQUALVERIFY);
+  e.push(Uint8Array.from([0x01])).op(O.OP_SWAP, O.OP_CAT, O.OP_CAT, O.OP_SWAP);
+}
+
+/**
+ * Appends each callee of `index` to the work list.
+ *
+ * Entry `[work, index]`, exit `[work']`. A callee index is one byte; a wider index is not a master this transcript
+ * can name.
+ */
+function appendCallees(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_SWAP, O.OP_TOALTSTACK, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  dropFront(e, 1);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  e.script(takeFixedWidthField(2));
+  e.op(O.OP_SWAP);
+  e.count(1).op(O.OP_SPLIT);
+  e.push(Uint8Array.from([0x00])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/** Entry `[M, reached]`, exit `[M]`. Every covered master was entered by the walk. */
+function requireReachedMasters(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_OVER);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.op(O.OP_2DUP);
+  emitCountByte(e);
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.count(2).op(O.OP_PICK, O.OP_OVER, O.OP_SPLIT);
+  e.count(1).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
+  e.push(Uint8Array.from([0x01])).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * A read-only frame leaves its records unchanged, emits nothing, sends nothing and calls only read-only frames.
+ *
+ * Entry `[M]`, exit `[M]`. A frame a read-only caller names is itself read-only, so checking every read-only frame
+ * covers the frames beneath it.
+ */
+function emitReadOnlyFrames(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.op(O.OP_2DUP);
+  emitCountByte(e);
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  emitStaticMaster(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/** Entry `[index]`, exit `[index]`. A frame that is not read-only is left alone. */
+function emitStaticMaster(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.script(takeFixedWidthField(1));
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  dropFront(e, 6);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  requireStaticCalls(e);
+  requireStaticSegments(e);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_OVER);
+  e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_NIP);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_OVER);
+  e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_NIP);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_DROP);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+}
+
+/** Entry `[rest]`, exit `[rest]` after the calls. Each call is read-only and carries no value. */
+function requireStaticCalls(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.script(takeFixedWidthField(1));
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.count(FrameKind.STATIC).op(O.OP_NUMEQUALVERIFY);
+  dropLengthPrefixed(e, 2);
+  e.script(takeFixedWidthField(8));
+  e.op(O.OP_SWAP);
+  e.push(ZERO_U64).op(O.OP_EQUALVERIFY);
+  dropFront(e, 2);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
+}
+
+/** Entry `[rest]`, exit `[rest]` after the segments. Each record's two views are the same bytes. */
+function requireStaticSegments(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  dropFront(e, 2);
+  dropFront(e, 2);
+  e.script(takeLengthPrefixedField32());
+  e.script(takeLengthPrefixedField32());
+  e.op(O.OP_SWAP, O.OP_ROT, O.OP_EQUALVERIFY);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
 }
 
 /**

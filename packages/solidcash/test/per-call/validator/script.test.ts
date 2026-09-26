@@ -45,7 +45,7 @@ import {
   type CompositionPlan,
 } from './fixture.js';
 import { generateCases } from './generator.js';
-import { abbaPlan, userPlan } from './plans.js';
+import { abbaPlan, singleContractPlan, userPlan } from './plans.js';
 
 /** The program under test: the same bytes every master carries the hash of and every address is derived from. */
 const PROGRAM = buildValidatorProgram();
@@ -670,6 +670,36 @@ describe('the validator program refuses each rule it enforces', () => {
     composition.blocks.get('A.f')!.calls[0]!.argsHash = new Uint8Array(32).fill(0x44);
     const modelled = materialise(composition);
     expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_ARGS_HASH_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a covered master no root reaches', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.blocks.get('A.f')!;
+    const middle = composition.blocks.get('B.g')!;
+    const leaf = composition.blocks.get('A.k')!;
+    const middleIndex = composition.masterIndex.get('B.g')!;
+    const leafIndex = composition.masterIndex.get('A.k')!;
+    const call = root.calls.find((item) => item.calleeRef === middleIndex)!;
+    leaf.calls = [{ ...call, calleeRef: middleIndex }];
+    leaf.segments = [[], []];
+    middle.callerRef = leafIndex;
+    middle.sender = leaf.self;
+    middle.originRef = leaf.originRef;
+    root.calls = [];
+    root.segments = [[]];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V6_MASTER_UNREACHABLE');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a read-only frame that pays an output', () => {
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('A.more')!.sends = [composition.outputs.length - 1];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V10_STATIC_SEND');
     expect(accepted(modelled, index)).toBe(false);
   });
 

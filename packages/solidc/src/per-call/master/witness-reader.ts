@@ -105,10 +105,34 @@ function takeLengthField(width: number): Uint8Array {
 }
 
 /**
+ * Leaves the frame's fixed header fields on the stack, having first required that the block begins with the expected
+ * magic and version.
+ *
+ * Leaves `[kind, callerRef, originRef, validatorRef, tail]`, so the variable-length fields that follow can be walked
+ * on top. The magic check is what stops a byte string that merely starts with a length from being read as a block.
+ */
+export function readFrameHeaderScript(): Uint8Array {
+  const prefix = expectedBlockPrefix();
+  return new Uint8Array([
+    // Compare the leading magic and version with the constant, keeping the rest.
+    ...encodeDataPush(minimalNumber(prefix.length)),
+    ...op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP),
+    ...encodeDataPush(prefix),
+    Opcodes.OP_EQUALVERIFY,
+    // kind, then the three frame references.
+    ...takeFixedWidthField(1),
+    ...takeFixedWidthField(2),
+    ...takeFixedWidthField(2),
+    ...takeFixedWidthField(2),
+  ]);
+}
+
+/**
  * Leaves the frame's `sender`, its `self` claim and its `value` on the stack, followed by the block's remaining
  * fields.
  *
- * Reads one item (the block) and leaves four, in this order with the remainder on top:
+ * Reads one item (a block whose header has already been taken) and leaves four, in this order with the remainder on
+ * top:
  *
  *     [sender, self, value, rest]
  *
@@ -117,8 +141,6 @@ function takeLengthField(width: number): Uint8Array {
  */
 export function readFrameFieldsScript(): Uint8Array {
   return new Uint8Array([
-    // Skip the fixed-width header.
-    ...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH),
     // sender, then self: each is a length-prefixed address.
     ...takeLengthPrefixedField(),
     ...takeLengthPrefixedField(),
@@ -128,9 +150,20 @@ export function readFrameFieldsScript(): Uint8Array {
   ]);
 }
 
+/**
+ * The whole frame reader, header then fields, for a frame whose block is the only thing on the stack besides the
+ * inherited copy.
+ *
+ * Leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]`. The inherited copy of the block
+ * push has to be dropped first for a frame that takes no arguments; see `dropInheritedBlockPushScript`.
+ */
+export function readWholeFrameScript(): Uint8Array {
+  return new Uint8Array([...readOwnWitnessBlockScript(), ...readFrameHeaderScript(), ...readFrameFieldsScript()]);
+}
+
 /** The whole frame reader: the block from its canonical location, then its frame fields. */
 export function buildFrameReaderScript(): Uint8Array {
-  return new Uint8Array([...readOwnWitnessBlockScript(), ...readFrameFieldsScript()]);
+  return readWholeFrameScript();
 }
 
 /**

@@ -61,18 +61,46 @@ const largeBlock = (): WitnessBlock => baseBlock({
 });
 
 /**
- * The body under test: the reader has left `[sender, self, value, rest]` with the remainder on top, so a body that
- * drops what it does not read and then compares each field against a value from outside the block proves which bytes
- * were read. The comparisons run from the top of the stack downwards: value, then self, then sender.
+ * The body under test: the reader leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]` with
+ * the remainder on top, so a body that consumes all of it — comparing every field against a value from outside the
+ * block — proves which bytes were read at which offset. The comparisons run from the top downwards.
+ *
+ * The frame references are compared as raw bytes rather than as numbers: their absent-index sentinel is `0xffff`,
+ * which a script number reads as negative, so a numeric comparison would reject a block that legitimately carries it.
  */
-const bodyChecking = (expectedSender: Uint8Array, expectedSelf: Uint8Array, expectedValue: bigint): Uint8Array =>
+const bodyChecking = (
+  header: { kind: number; callerRef: number; originRef: number; validatorRef: number },
+  expectedSender: Uint8Array,
+  expectedSelf: Uint8Array,
+  expectedValue: bigint,
+): Uint8Array =>
   new Uint8Array([
+    // rest, then value, self and sender.
     Opcodes.OP_DROP,
     ...encodeDataPush(vmNumber(expectedValue)), Opcodes.OP_NUMEQUALVERIFY,
     ...encodeDataPush(expectedSelf), Opcodes.OP_EQUALVERIFY,
     ...encodeDataPush(expectedSender), Opcodes.OP_EQUALVERIFY,
+    // Then the fixed header, field by field as bytes, from the top of the stack downwards: the reader leaves the
+    // validator reference highest of the four.
+    ...encodeDataPush(rawUint16(header.validatorRef)), Opcodes.OP_EQUALVERIFY,
+    ...encodeDataPush(rawUint16(header.originRef)), Opcodes.OP_EQUALVERIFY,
+    ...encodeDataPush(rawUint16(header.callerRef)), Opcodes.OP_EQUALVERIFY,
+    ...encodeDataPush(rawByte(header.kind)), Opcodes.OP_EQUALVERIFY,
     Opcodes.OP_1,
   ]);
+
+const rawByte = (value: number): Uint8Array => new Uint8Array([value & 0xff]);
+
+const rawUint16 = (value: number): Uint8Array => new Uint8Array([value & 0xff, (value >>> 8) & 0xff]);
+
+const headerOf = (block: WitnessBlock): {
+  kind: number; callerRef: number; originRef: number; validatorRef: number;
+} => ({
+  kind: block.kind,
+  callerRef: block.callerRef,
+  originRef: block.originRef,
+  validatorRef: block.validatorRef,
+});
 
 function vmNumber(value: bigint): Uint8Array {
   if (value === 0n) return empty;
@@ -96,7 +124,9 @@ interface ReaderOptions {
 
 /** Builds a real transaction whose master reads its own block, and evaluates the input in the BCH-2026 VM. */
 function evaluateReader(options: ReaderOptions): boolean {
-  const body = options.body ?? bodyChecking(SENDER, SELF, VALUE);
+  // Every expectation comes from the base block, not from the block under test: a body that compared the block's
+  // fields against values taken from that same block could not tell a correct read from a wrong one.
+  const body = options.body ?? bodyChecking(headerOf(baseBlock()), SENDER, SELF, VALUE);
   const redeemScript = new Uint8Array([
     ...masterPrologue.buildMasterPrologue(CATEGORY),
     // This frame takes no arguments, so the inherited copy of the block is on top and goes before the reader.
@@ -158,6 +188,24 @@ describe('witness block reader in script', () => {
   it('reports the self claim the block carries', () => {
     const otherSelf = new Uint8Array([0xaa, 0x20, ...new Uint8Array(32).fill(0x55), 0x87]);
     expect(evaluateReader({ block: baseBlock({ self: otherSelf }) })).toBe(false);
+  });
+
+  it('reports the validator reference the block carries', () => {
+    // The body expects the absent reference the base block carries, so a real index must fail its check.
+    expect(evaluateReader({ block: baseBlock({ validatorRef: 5 }) })).toBe(false);
+  });
+
+  it('reports the frame kind the block carries', () => {
+    expect(evaluateReader({ block: baseBlock({ kind: 1 }) })).toBe(false);
+  });
+
+  it('rejects a block whose magic is not the expected one', () => {
+    // A well-formed block with its magic and version replaced: the header check is what must refuse it.
+    const block = baseBlock();
+    const payload = encodeWitnessBlock(block);
+    const tampered = Uint8Array.from(payload);
+    tampered[0] = 0x58;
+    expect(evaluateReader({ block, unlockingPrefix: encodeDataPush(tampered) })).toBe(false);
   });
 
   it('fails closed when the first push is not a witness block', () => {

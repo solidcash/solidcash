@@ -39,6 +39,7 @@ import {
 } from './witness-reader.js';
 import {
   assertP2pkhShapeScript,
+  countMastersScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
   selfSettlementScript,
@@ -415,6 +416,7 @@ class HeadEmitter {
         this.emitBytes(recogniseValidatorScriptAgainstReservedHash());
         this.pop(1);
         this.forget('validatorHashSlot');
+        this.assertSelfSettlementWhenAlone();
       },
     );
   }
@@ -429,11 +431,46 @@ class HeadEmitter {
     this.emitSingleMasterCheck();
   }
 
-  /** Settles the segment's records when the master stands alone and the compiler asks for it. */
+  /** Settles the segments' records when the master stands alone and the compiler asks for it. */
   private assertSelfSettlement(): void {
     if (!this.settlesOwnRecords) return;
     const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
-    this.emitBytes(selfSettlementScript(this.tailShape.sendCount, addressPayload));
+    this.emitBytes(selfSettlementScript({
+      callCount: this.callSites.length,
+      segmentCount: this.callSites.length + 1,
+      sendCount: this.tailShape.sendCount,
+      addressPayloadOffset: addressPayload,
+    }));
+  }
+
+  /**
+   * Settles the master's own records when it is its category's only master, even though a validator covers it.
+   *
+   * A master whose frame a validator binds still settles its own records when it is its contract's only master in
+   * the transaction, because a contract with one master is not one its validator settles. The count of the masters
+   * is a fact about the transaction rather than about the contract, so the walk runs behind it: with more than one
+   * master the validator settles the records instead.
+   *
+   * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which is another
+   * contract's settlement, so a master that made one never settles its own.
+   */
+  private assertSelfSettlementWhenAlone(): void {
+    if (!this.settlesOwnRecords) return;
+    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL)) return;
+    this.emitBranch(
+      () => {
+        this.emitInputIndex();
+        this.emitOp(Opcodes.OP_UTXOTOKENCATEGORY);
+        this.replaceTop('pin');
+        this.emitBytes(countMastersScript());
+        this.forget('pin');
+        this.push('masterCount');
+        this.pushNumber(1);
+        this.numequal();
+      },
+      () => this.assertSelfSettlement(),
+      () => {},
+    );
   }
 
   /** The prologue proved the active input carries the contract's category with minting; require exactly one such. */

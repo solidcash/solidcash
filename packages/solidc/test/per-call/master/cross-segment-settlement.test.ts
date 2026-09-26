@@ -1,0 +1,260 @@
+import { describe, expect, it } from 'vitest';
+import {
+  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  hash256,
+} from '@bitauth/libauth';
+import {
+  asmToScript, buildPushdataCommitment, computeFunctionSelector, computeFunctionSignature,
+  encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type RecordEntry, type WitnessBlock,
+} from '@solidcash/utils';
+import { compileStringMulti } from '../../../src/compiler.js';
+import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { callerUnlockingBytecode } from './caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
+
+/**
+ * A compiled master whose execution is split at a call settles its record across both its segments.
+ *
+ * The caller's body reads and writes its state, calls a callee, and then reads and writes again. The compiler splits
+ * that one execution at the call, so the master declares its record twice: once for the segment before the call and
+ * once for the segment after it. The two declarations have to chain into one transition — the first begins at the
+ * commitment the transaction spends, the second carries on from the first, and the last is the commitment the
+ * transaction writes. The caller is its category's only master, so the settlement is the master's own rather than
+ * its validator's, even though a validator covers the frame.
+ *
+ * The cases drive the shipped output: the sources are compiled through `compileStringMulti`, the reserved slots are
+ * filled the way a deployment fills them, and the machine's verdict on the caller's own input is the assertion.
+ * Each refusal mutates the accept it is paired with, so the refusal is the chain's check rather than a malformed
+ * transaction.
+ *
+ * The record sits immediately after its master, which is where a compiled body reads it from: state is read as
+ * `OP_INPUTINDEX + offset`, and reading it out of the segment views instead is not emitted yet.
+ */
+
+const CATEGORY_CALLER = seededCategory('cross segment caller');
+const CATEGORY_CALLEE = seededCategory('cross segment callee');
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
+const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
+const ADDRESS_CALLER = validatorAddress(CATEGORY_CALLER, VALIDATOR_PROGRAM);
+const ADDRESS_CALLEE = validatorAddress(CATEGORY_CALLEE, VALIDATOR_PROGRAM);
+const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
+
+const CALLEE_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
+const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
+
+const SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Callee { function ping() { require(true); } }'
+  + ' contract Caller {'
+  + '   int public counter;'
+  + '   function callIt() {'
+  + '     this.counter = this.counter + 1;'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '     this.counter = this.counter + 2;'
+  + '     require(this.counter > 0);'
+  + '   }'
+  + ' }';
+
+const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+const callerArtifact = artifacts.Caller!;
+
+const token = (
+  category: Uint8Array,
+  capability: 'minting' | 'mutable' | 'none',
+  commitment: Uint8Array = new Uint8Array(0),
+): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable' | 'none'; commitment: Uint8Array } } =>
+  ({ category, amount: 0n, nft: { capability, commitment } });
+
+type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
+type VmTransaction = NonNullable<VmProgram['transaction']>;
+type VmInput = VmTransaction['inputs'][number];
+
+/** The caller's own input, its record right after it, its validator, the user, and the callee. */
+const CALLER_INDEX = 0;
+const STATE_INDEX = 1;
+const VALIDATOR_INDEX = 2;
+const USER_INDEX = 3;
+const CALLEE_INDEX = 4;
+const VALUE = 20_000n;
+
+/** A data-NFT commitment holding one integer, in the shipped encoder's form. */
+const commitment = (counter: bigint): Uint8Array =>
+  new Uint8Array(Buffer.from(buildPushdataCommitment(callerArtifact.stateLayout!, { counter }, 0), 'hex'));
+
+const BEFORE = commitment(5n);
+/** What the first segment's write leaves, which the second segment reads. */
+const MIDDLE = commitment(6n);
+const AFTER = commitment(8n);
+
+interface Options {
+  /** The first segment's declaration, defaulting to a declaration that chains from the spent commitment. */
+  readonly first?: RecordEntry;
+  /** The second segment's declaration, defaulting to one that carries on to the written commitment. */
+  readonly second?: RecordEntry;
+  /** The commitment the state output actually carries. */
+  readonly outputCommitment?: Uint8Array;
+  /** Spend a state UTXO the segments do not declare. */
+  readonly undeclaredState?: boolean;
+  /** The value the state output carries, against the floor the settlement checks. */
+  readonly outputValue?: bigint;
+}
+
+/** The record at its own index, kept in place. */
+const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
+  ({ in: STATE_INDEX, out: STATE_INDEX, viewIn, viewOut });
+
+function build(options: Options = {}): VmProgram {
+  const fill = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
+    const artifact = artifacts[name]!;
+    return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
+      category: categorySlotValue(category), contractAddress: address, templateHash: TEMPLATE_HASH,
+    });
+  };
+  const callerProgram = fill('Caller', CATEGORY_CALLER, ADDRESS_CALLER);
+  const calleeProgram = fill('Callee', CATEGORY_CALLEE, ADDRESS_CALLEE);
+  const validator = validatorSpend(CATEGORY_CALLER, {
+    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+  });
+  const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
+  const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
+
+  const callerBlock: WitnessBlock = {
+    kind: 0,
+    callerRef: USER_INDEX,
+    originRef: USER_INDEX,
+    validatorRef: VALIDATOR_INDEX,
+    sender: USER_LOCK,
+    self: ADDRESS_CALLER,
+    value: 0n,
+    retval: new Uint8Array(0),
+    calls: [{
+      kind: 1,
+      target: ADDRESS_CALLEE,
+      value: 0n,
+      calleeRef: CALLEE_INDEX,
+      argsHash: sha256(CALLEE_SELECTOR),
+      result: new Uint8Array(0),
+    }],
+    segments: [[options.first ?? kept(BEFORE, MIDDLE)], [options.second ?? kept(MIDDLE, AFTER)]],
+    events: [],
+    sends: [],
+  };
+  const calleeBlock: WitnessBlock = {
+    kind: 1,
+    callerRef: CALLER_INDEX,
+    originRef: USER_INDEX,
+    validatorRef: VALIDATOR_INDEX,
+    sender: ADDRESS_CALLER,
+    self: ADDRESS_CALLEE,
+    value: 0n,
+    retval: new Uint8Array(0),
+    calls: [],
+    segments: [[]],
+    events: [],
+    sends: [],
+  };
+
+  const plainInput = (fillByte: number): VmInput => ({
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(fillByte),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  });
+  const inputs: VmInput[] = [
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
+      unlockingBytecode: new Uint8Array([
+        ...encodeDataPush(encodeWitnessBlock(callerBlock)), ...encodeDataPush(callerProgram),
+      ]),
+    },
+    plainInput(2),
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
+      unlockingBytecode: validator.unlockingBytecode,
+    },
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
+      unlockingBytecode: callerUnlockingBytecode(),
+    },
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(5), sequenceNumber: 0xffffffff,
+      unlockingBytecode: new Uint8Array([
+        ...encodeDataPush(encodeWitnessBlock(calleeBlock)), ...encodeDataPush(CALLEE_SELECTOR),
+        ...encodeDataPush(calleeProgram),
+      ]),
+    },
+  ];
+  const stateInput = {
+    lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', BEFORE),
+  };
+  const recordOutput = {
+    lockingBytecode: USER_LOCK,
+    valueSatoshis: options.outputValue ?? VALUE,
+    token: token(CATEGORY_CALLER, 'mutable', options.outputCommitment ?? AFTER),
+  };
+  const outputs = [
+    { lockingBytecode: callerLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'minting') },
+    recordOutput,
+    { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable') },
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+    { lockingBytecode: calleeLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLEE, 'minting') },
+  ];
+  const sourceOutputs = [
+    { lockingBytecode: callerLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'minting') },
+    options.undeclaredState === true
+      ? { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', MIDDLE) }
+      : stateInput,
+    { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable') },
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+    { lockingBytecode: calleeLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLEE, 'minting') },
+  ];
+
+  return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };
+}
+
+/** The caller input's verdict in the BCH-2026 machine, with the refusal reason for a diagnosis. */
+function verdict(options: Options = {}): { accepted: boolean; objection?: string } {
+  const program = build(options);
+  const vm = createVirtualMachineBch2026(false);
+  const state = vm.evaluate({
+    inputIndex: CALLER_INDEX, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
+}
+
+describe('a compiled master whose execution is split at a call', () => {
+  it('publishes a caller and a callee, each with a validator program hash slot', () => {
+    expect(callerArtifact.composition?.convention).toBe('per-call');
+    expect(artifacts.Callee!.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
+  });
+
+  it('is accepted when the two declarations chain into the commitment the transaction writes', () => {
+    expect(verdict()).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the second declaration does not carry on from the first', () => {
+    // The chain is broken: the second segment claims the record started where nothing left it.
+    expect(verdict({ second: kept(BEFORE, AFTER) }).accepted).toBe(false);
+    expect(verdict().accepted).toBe(true);
+  });
+
+  it('is refused when the first declaration is not the commitment the transaction spends', () => {
+    expect(verdict({ first: kept(MIDDLE, AFTER), second: kept(AFTER, AFTER) }).accepted).toBe(false);
+    expect(verdict().accepted).toBe(true);
+  });
+
+  it('is refused when the last declaration is not the commitment the transaction writes', () => {
+    expect(verdict({ second: kept(MIDDLE, MIDDLE) }).accepted).toBe(false);
+    expect(verdict().accepted).toBe(true);
+  });
+
+  it('is refused when the record ends with less value than it began with', () => {
+    expect(verdict({ outputValue: VALUE - 1n }).accepted).toBe(false);
+    expect(verdict({ outputValue: VALUE }).accepted).toBe(true);
+  });
+
+  it('is refused when a state UTXO is spent that no segment declares', () => {
+    expect(verdict({ undeclaredState: true }).accepted).toBe(false);
+    expect(verdict({ undeclaredState: false }).accepted).toBe(true);
+  });
+});

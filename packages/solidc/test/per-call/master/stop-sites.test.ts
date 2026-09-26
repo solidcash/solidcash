@@ -35,6 +35,14 @@ const callingSource = (): string => 'pragma solidcash ^0.13.0;'
 const silentSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' contract Solo { function ping() { require(true); } }';
 
+/** An entry that calls twice, which the convention does not admit yet. */
+const twoCallSource = (): string => 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Callee { function ping() { require(true); } }'
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${toHex(TARGET)}).ping.call(); ICallee(0x${toHex(TARGET)}).ping.call(); `
+  + 'require(true); } }';
+
 /** The composition publication, which carries the stop-site table beside the placeholder descriptor. */
 const publicationOf = (artifact: { composition?: unknown }): PublishedPerCallStopSites => {
   const composition = artifact.composition as { stopSites?: PublishedPerCallStopSites } | undefined;
@@ -96,6 +104,14 @@ describe('the stop-site table published from a real compile', () => {
     const artifacts = compileStringMulti(callingSource(), { composition: 'per-call' });
     const sites = publicationOf(artifacts.Caller!).entries.flatMap((entry) => entry.sites.sites) as StopSite[];
     expect(sites.some((site) => site.kind === 'read')).toBe(false);
+  });
+
+  it('refuses to compile an entry whose execution makes two calls', () => {
+    // The table above describes two calls, so the shape is expressible; no real compile reaches it yet, because
+    // the call's selector arrives in the entry's own parameter list and the head supplies one. Pinning the refusal
+    // keeps the table's shape and the compiler's limit from being read as each other.
+    expect(() => compileStringMulti(twoCallSource(), { composition: 'per-call' }))
+      .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
   });
 
   it('derives the sites from the calls alone, refusing a table the schema would reject', () => {

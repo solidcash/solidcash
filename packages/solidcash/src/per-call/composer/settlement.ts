@@ -175,6 +175,69 @@ export function assertCompositionSettlement(
   throw new RecordChainError(owner === undefined ? issue : { ...issue, owner });
 }
 
+/** What a plan puts at each output, so one kind of output can be told from another. */
+export interface OutputOccupancy {
+  /** The outputs records live at, by index: one per record the transaction recreates. */
+  readonly records: readonly number[];
+  /** The outputs events are listed at, in the order they were emitted. */
+  readonly events: readonly number[];
+  /** The outputs sends are paid at, in the order they were made. */
+  readonly sends: readonly number[];
+}
+
+/** One way the output regions collide. */
+export interface OutputIssue {
+  readonly out: number;
+  readonly reason: string;
+}
+
+/**
+ * Every way the output regions collide.
+ *
+ * Each kind of output carries a different thing: a record is a mutable token the contract owns and recreates at its
+ * own index, an event is an immutable token carrying a payload, and a send is a plain payment to a user. One output
+ * holds one of them, so a plan that puts two things at the same index describes a transaction that cannot exist —
+ * and two events at one output would make the event log ambiguous, which is what the census refuses on chain.
+ */
+export function outputIssues(occupancy: OutputOccupancy): readonly OutputIssue[] {
+  const issues: OutputIssue[] = [];
+  const alone = (indices: readonly number[], what: string): void => {
+    const seen = new Set<number>();
+    for (const out of indices) {
+      if (seen.has(out)) issues.push({ out, reason: `two ${what} name the same output` });
+      seen.add(out);
+    }
+  };
+  alone(occupancy.records, 'records');
+  alone(occupancy.events, 'events');
+  alone(occupancy.sends, 'sends');
+
+  const recordSet = new Set(occupancy.records);
+  const eventSet = new Set(occupancy.events);
+  for (const out of occupancy.events) {
+    if (recordSet.has(out)) issues.push({ out, reason: 'an event and a record share an output' });
+  }
+  for (const out of occupancy.sends) {
+    if (recordSet.has(out)) issues.push({ out, reason: 'a send and a record share an output' });
+    if (eventSet.has(out)) issues.push({ out, reason: 'a send and an event share an output' });
+  }
+  return issues;
+}
+
+/** Raised when a plan's outputs collide. */
+export class OutputOccupancyError extends Error {
+  constructor(readonly issue: OutputIssue) {
+    super(`output ${issue.out}: ${issue.reason}`);
+    this.name = 'OutputOccupancyError';
+  }
+}
+
+/** Refuses a plan whose outputs collide, naming the first collision. */
+export function assertOutputOccupancy(occupancy: OutputOccupancy): void {
+  const [first] = outputIssues(occupancy);
+  if (first !== undefined) throw new OutputOccupancyError(first);
+}
+
 /** The commitment a record holds, for a caller assembling the facts a settlement is checked against. */
 export function emptyCommitment(): Uint8Array {
   return new Uint8Array(0);

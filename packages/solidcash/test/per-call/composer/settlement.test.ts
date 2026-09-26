@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { INDEX_NONE, type RecordEntry } from '@solidcash/utils';
 import {
-  assertCompositionSettlement, assertRecordChains, recordChainIssues, RecordChainError,
+  assertCompositionSettlement, assertOutputOccupancy, assertRecordChains, outputIssues, OutputOccupancyError,
+  recordChainIssues, RecordChainError,
   type SettlementFacts,
 } from '../../../src/per-call/composer/settlement.js';
 
@@ -168,5 +169,58 @@ describe('a composition whose record spans executions', () => {
     const issues = recordChainIssues(order[0]!.segments, withThird);
     expect(issues.filter((issue) => /written at output/.test(issue.reason)).map((issue) => issue.record))
       .toStrictEqual([0, 3]);
+  });
+});
+
+describe('the output regions', () => {
+  const occupancy = (overrides: Partial<Parameters<typeof outputIssues>[0]> = {}) => ({
+    records: [0],
+    events: [1, 2],
+    sends: [3, 4],
+    ...overrides,
+  });
+
+  it('accepts regions that occupy different outputs', () => {
+    expect(outputIssues(occupancy())).toStrictEqual([]);
+    expect(() => assertOutputOccupancy(occupancy())).not.toThrow();
+  });
+
+  it('accepts empty event and send regions', () => {
+    expect(outputIssues(occupancy({ events: [], sends: [] }))).toStrictEqual([]);
+  });
+
+  it('refuses two events at one output, which is what makes an event log ambiguous', () => {
+    const issues = outputIssues(occupancy({ events: [1, 1] }));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.out).toBe(1);
+    expect(issues[0]!.reason).toMatch(/two events name the same output/);
+  });
+
+  it('refuses an event and a record at one output', () => {
+    const issues = outputIssues(occupancy({ events: [0] }));
+    expect(issues.some((issue) => /an event and a record share an output/.test(issue.reason))).toBe(true);
+  });
+
+  it('refuses a send at a record or an event output', () => {
+    const atRecord = outputIssues(occupancy({ sends: [0] }));
+    expect(atRecord.some((issue) => /a send and a record share an output/.test(issue.reason))).toBe(true);
+    const atEvent = outputIssues(occupancy({ sends: [2] }));
+    expect(atEvent.some((issue) => /a send and an event share an output/.test(issue.reason))).toBe(true);
+  });
+
+  it('refuses two records at one output', () => {
+    expect(outputIssues(occupancy({ records: [0, 0] })).some((issue) => /two records/.test(issue.reason))).toBe(true);
+  });
+
+  it('names the output at fault when it refuses', () => {
+    let raised: OutputOccupancyError | undefined;
+    try {
+      assertOutputOccupancy(occupancy({ sends: [2] }));
+    } catch (error) {
+      raised = error as OutputOccupancyError;
+    }
+    expect(raised).toBeInstanceOf(OutputOccupancyError);
+    expect(raised!.issue.out).toBe(2);
+    expect(raised!.message).toMatch(/output 2: a send and an event share an output/);
   });
 });

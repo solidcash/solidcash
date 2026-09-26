@@ -10,10 +10,10 @@ Run one directory:
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 50 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 56 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 68 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 83 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 30 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 39 |
@@ -23,7 +23,7 @@ Run one directory:
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 354 tests, all passing at the latest commit.
+Total: 375 tests, all passing at the latest commit.
 
 ## What each directory covers
 
@@ -55,7 +55,8 @@ Total: 354 tests, all passing at the latest commit.
 
 ## The shape the path currently carries
 
-A compiled master exists and is spent in a test, for one entry point, for several, and for a contract whose entry makes an external call — the last
+Both sides of a composition compile and are spent in a test: a caller and the callee it reaches, co-spent with a validator. A compiled master also
+exists and is spent for one entry point and for several, and for a contract whose entry makes an external call — the last
 publishing three deployment-time slots and recognising its validator against the reserved program hash. Admitted calls are narrow (see the plan's
 Deviations): a call is checked by the head rather than lowered. A compiled master exists and is spent in a test, for one entry point and for several: a contract with more than one entry point compiles to a single master whose entry is selected by the dispatcher selector. No external calls, no returns and no state settlement yet. The end-to-end test compiles a contract for the convention, deploys it through the shipped deployment, and has the virtual machine accept a real spend, with three controls refused.
 

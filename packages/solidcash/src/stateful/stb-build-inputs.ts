@@ -197,6 +197,7 @@ lowLevelCallInputs: UnlockableUtxo[],
         }
         case 'satoshiContainer':
           if (satoshiContainerInputs.length > 0) positioned[slot.offset] = satoshiContainerInputs[0];
+          else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
         case 'tokenContainer':
           if (tcIdx < tokenContainerInputs.length) positioned[slot.offset] = tokenContainerInputs[tcIdx++];

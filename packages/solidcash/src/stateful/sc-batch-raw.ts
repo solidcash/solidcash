@@ -17,6 +17,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import { selectedSatoshiContainerRequired } from '../message-bus/selected-satoshi-container.js';
 import { evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
 import {
   allowsWriteUnderExecutionContext,
@@ -94,6 +95,8 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveSortedBatchSlots?: ReadonlySet<number>;
   /** Collections written by the handlers selected in this concrete envelope. Runtime-only route narrowing. */
   messageBusActiveWriteCollections?: readonly string[];
+  /** Whether the selected handlers need the route's shared satoshi-container slot. */
+  messageBusActiveSatoshiContainer?: boolean;
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
   messageBusRowArguments?: readonly RouteExpressionKeyRow[];
   /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
@@ -592,6 +595,12 @@ executionContextBinding?: BatchExecutionContextBinding,
   }
   const selectedHandlerAbis = reachedHandlers.map((handler) => executionArtifact.abi.find((candidate) =>
     candidate.selector === handler.selector));
+  // The fixed route reserves the union of all handler resources. A sibling's BCH transfer must not make a
+  // selected non-transfer row require a funded container. Narrow only with a complete, selector-exact direct
+  // layout for every row; incomplete/older metadata retains the conservative route-wide requirement.
+  const activeSatoshiContainer = reachedHandlers.length === rowCount
+    ? selectedSatoshiContainerRequired(executionArtifact, reachedHandlers.map((handler) => handler.selector))
+    : undefined;
   if (readCarrierCapability && selectedHandlerAbis.some((handler) => handler === undefined)) {
     throw new Error('Compiler internal-read-carrier capability selected a handler without exact ABI metadata.');
   }
@@ -874,6 +883,9 @@ executionContextBinding?: BatchExecutionContextBinding,
   const effectiveRoute: AbiFunction = {
     ...capability.route,
     ...({ messageBusConvention: capability.convention } as Partial<MessageBusRuntimeAbiFunction>),
+    ...(activeSatoshiContainer !== undefined && {
+      messageBusActiveSatoshiContainer: activeSatoshiContainer,
+    } as Partial<MessageBusRuntimeAbiFunction>),
     // Runtime-only metadata: unreachable bounded rows keep their physical entry positions, but consume a
     // balanced funder placeholder rather than resolving an arbitrary absent key to the same collection proof.
     // The bytecode already gates these slots by row/selector; this only tells the SDK which fixed slots are
@@ -890,9 +902,10 @@ executionContextBinding?: BatchExecutionContextBinding,
       // declares nor trusts.
       usesMsgSender: false,
     }),
-    ...(capability.route.transferCount !== undefined && {
-      transferCount: Math.min(capability.route.transferCount, rowCount),
-    }),
+    ...(activeSatoshiContainer === false ? { transferCount: 0 }
+      : capability.route.transferCount !== undefined && {
+        transferCount: Math.min(capability.route.transferCount, rowCount),
+      }),
     // The published route carries the union of every handler's effects. Runtime metadata must carry the
     // selected rows only; retaining the union when no selected row emits makes the builder materialize every
     // inactive event after the balanced block.

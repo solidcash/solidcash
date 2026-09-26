@@ -6,6 +6,7 @@ import type { ExecutionContextEffectPlan } from './execution-context.js';
 import type { AtomicSidecarSlotEffect } from './graph.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { selectedSatoshiContainerRequired } from './selected-satoshi-container.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 
@@ -54,6 +55,11 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
       .filter((slot) => [
         'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing', 'lowLevelCall',
       ].includes(slot.kind))
+      // A slot reserved for an unselected BCH-transfer handler is a balanced placeholder, not a claim that
+      // the real container is co-spent. Keep its fixed offset, but do not authenticate it as a container.
+      .filter((slot) => slot.kind !== 'satoshiContainer'
+        || selectedSatoshiContainerRequired(participant.artifact, participant.invocations.map((index) =>
+          plan.invocations[index].selectorHex)) !== false)
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset, kind: slot.kind,
       })));

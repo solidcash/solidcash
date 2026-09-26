@@ -124,7 +124,11 @@ export async function allocateCreateBuilderFunders(
     // Composed proxy+callee transactions build inputs as prefix+funders+predecessors, not slot-positioned
     // blocks. The satoshi container UTXO is appended at the tail, so the implementation's satoshi slot still
     // needs a funder pad or the whitelist predecessor lands at INPUTINDEX+blockSize-1.
-    if (trailingGeometryNeedsReturnSlot
+    // An inactive route container still occupies its published offset. Balance it with a neutral funder,
+    // just like an unused token-container slot; never compact the surrounding transfer/entry coordinates.
+    const inactiveSatoshiContainer = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
+      ?.messageBusActiveSatoshiContainer === false;
+    if ((trailingGeometryNeedsReturnSlot || inactiveSatoshiContainer)
       && effectiveBlockLayout.slots.some((slot) => slot.kind === 'satoshiContainer')) {
       neededFunders += 1;
     }

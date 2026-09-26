@@ -673,6 +673,21 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses a contract the transcript settles twice', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const transcript = composition.inputs[index]!.validator!.transcript;
+    const first = transcript.settles[0]!;
+    composition.inputs[index]!.validator!.transcript = {
+      ...transcript,
+      settles: [...transcript.settles, first],
+    };
+    const modelled = materialise(composition);
+    const decision = derivationOf(modelled, index);
+    expect(decision.rejection?.reason).toBe('V7_SETTLE_CATEGORY_DUPLICATE');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses an unsettled contract that runs on two of its masters', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;

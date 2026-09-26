@@ -88,6 +88,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V10_STATIC_SEND',
   'V10_STATIC_VALUE_CALL',
   'V10_STATIC_NON_STATIC_CALL',
+  'V7_SETTLE_CATEGORY_DUPLICATE',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -153,6 +154,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitEdgeRules(e);
   emitExecutionOrder(e);
   emitReadOnlyFrames(e);
+  emitSettleCategoriesAreDistinct(e);
   emitSettlementMembership(e);
   emitFrameAddresses(e);
 
@@ -1063,6 +1065,27 @@ function emitRequireDeclaredCategory(e: Emitter): void {
   e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
   emitFound32(e);
   e.op(O.OP_VERIFY);
+}
+
+/**
+ * No category is settled twice.
+ *
+ * Entry `[M]`, exit `[M]`. Each settled category is compared against every category that follows it, so a repeat is
+ * refused wherever it appears in the list.
+ */
+function emitSettleCategoriesAreDistinct(e: Emitter): void {
+  const O = Opcodes;
+  emitDeclaredCategories(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_OVER, O.OP_SWAP);
+  emitFound32(e);
+  e.op(O.OP_NOT, O.OP_VERIFY);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
 }
 
 /** Entry `[M]`, exit `[M, declared]`. The settled categories, each reversed to the machine's order. */

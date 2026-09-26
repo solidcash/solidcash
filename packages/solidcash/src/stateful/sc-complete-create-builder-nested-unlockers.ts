@@ -341,7 +341,7 @@ export async function completeCreateBuilderNestedUnlockers(
         if (/^__internal__vmapBatchSlot_\d+$/.test(input.name)) return new Uint8Array(32);
         if (/^__internal__vmapBatchNext_\d+$/.test(input.name)) return new Uint8Array(32);
         if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) return -1n;
-        if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) return -1n;
+        if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) return -2n;
         if (input.name === '__internal__vmapBatchTrailingCount') return 0n;
       }
       const anchorWitness = input.name.match(/^__internal__extcallAnchorIdx(\d+)$/);

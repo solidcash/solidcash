@@ -347,7 +347,8 @@ export function defaultInternalFunctionArg(input: { name: string; type?: string 
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
   if (name.includes('valueWitness') || type === 'bytes'
     || (type.startsWith('bytes') && type !== 'bytes4' && type !== 'bytes32')) return new Uint8Array();
-  if (name.includes('Return') || name.includes('Proof') || name.includes('PredOut')
+  if (name.includes('PredOut')) return -2n;
+  if (name.includes('Return') || name.includes('Proof')
     || name.includes('OutputIdx')) return -1n;
   if (type === 'bool') return false;
   return 0n;

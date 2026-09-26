@@ -23312,11 +23312,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
           }
         }
-        // Proof offset zero is the canonical inactive-row sentinel. Such a row has no physical entry and may
+        // Non-positive proof offsets mark inactive rows. Such a row has no physical entry and may
         // publish predOut=-2 without naming an alias owner. For an active row, only an earlier active WRITE with
         // the same authenticated target can justify the alias sentinel.
         copy(`__internal__vmapBatchProof_${slot}`);
-        this.emit(Op.OP_0, loc); this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHANOREQUAL, loc);
         this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
         copy(`__internal__vmapBatchPredOut_${slot}`);
         this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
@@ -24362,11 +24362,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (routeBatch) {
         // A compiler route publishes the union of every handler's logical entry slots. Its fixed block slot can
         // belong to another participant when this handler is inactive, so existence must come from the
-        // authenticated batch proof witness. Offset zero is reserved for the participant master and emitted only
-        // for inactive logical slots; active reads and writes always carry a nonzero proof offset.
+        // authenticated batch proof witness. Non-positive offsets are inactive sentinels: zero names the master,
+        // while -1 must not alias the preceding participant. Active entry proofs have positive offsets.
         this.emitPickVMapWitness(`__internal__vmapBatchProof_${i}`, locationData);
         this.emit(Op.OP_0, locationData);
-        this.emit(Op.OP_NUMNOTEQUAL, locationData);
+        this.emit(Op.OP_GREATERTHAN, locationData);
       } else {
         // Ordinary entry points use physical fixed-slot presence.
         this.emitSlotExistsCheck('entry', i, locationData);

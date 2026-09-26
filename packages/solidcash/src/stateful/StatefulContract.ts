@@ -1035,7 +1035,8 @@ function defaultInternalFunctionArg(input: { name: string; type?: string }): Fun
     || name.includes('BatchNext') || type === 'bytes32') return new Uint8Array(32);
   if (name.includes('valueWitness') || type === 'bytes'
     || (type.startsWith('bytes') && type !== 'bytes4' && type !== 'bytes32')) return new Uint8Array();
-  if (name.includes('Return') || name.includes('Proof') || name.includes('PredOut')
+  if (name.includes('PredOut')) return -2n;
+  if (name.includes('Return') || name.includes('Proof')
     || name.includes('OutputIdx')) return -1n;
   if (type === 'bool') return false;
   return 0n;
@@ -4549,7 +4550,8 @@ export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint
   if (/^__internal__vmapBatchSlot_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchNext_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchProof_\d+$/.test(paramName)) return -1n;
-  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -1n;
+  // -1 means an active UPDATE with no separate predecessor output; -2 means no transition.
+  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -2n;
   if (paramName === '__internal__vmapBatchTrailingCount') return 0n;
   return undefined;
 }

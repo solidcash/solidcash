@@ -76,7 +76,8 @@ export function vmapBatchWitnessFallback(paramName: string): Uint8Array | bigint
   if (/^__internal__vmapBatchSlot_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchNext_\d+$/.test(paramName)) return new Uint8Array(32);
   if (/^__internal__vmapBatchProof_\d+$/.test(paramName)) return -1n;
-  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -1n;
+  // -1 means an active UPDATE with no separate predecessor output; -2 means no transition.
+  if (/^__internal__vmapBatchPredOut_\d+$/.test(paramName)) return -2n;
   if (paramName === '__internal__vmapBatchTrailingCount') return 0n;
   return undefined;
 }

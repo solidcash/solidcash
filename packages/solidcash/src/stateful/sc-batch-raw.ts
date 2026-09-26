@@ -549,7 +549,8 @@ executionContextBinding?: BatchExecutionContextBinding,
         || input.name.startsWith('__internal__completePushValue_')
         || input.name.startsWith('__internal__vmapBatchRows_')) return new Uint8Array();
       if (/^__internal__vmapBatch(?:Slot|Next)_\d+$/.test(input.name)) return new Uint8Array(32);
-      if (/^__internal__vmapBatch(?:Proof|PredOut)_\d+$/.test(input.name)) return -1n;
+      if (/^__internal__vmapBatchProof_\d+$/.test(input.name)) return -1n;
+      if (/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) return -2n;
       if (/^__internal__vmapBatchRank_\d+$/.test(input.name)
         || input.name === '__internal__vmapBatchTrailingCount') return 0n;
       throw new Error(

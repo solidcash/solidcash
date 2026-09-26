@@ -2292,7 +2292,7 @@ describe('assignPhysicalReturnIndices', () => {
   it('falls back to nested-callee sentinels for a vmap-batch slot with no planned batch', () => {
     expect(vmapBatchWitnessFallback('__internal__vmapBatchTrailingCount')).toBe(0n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchProof_0')).toBe(-1n);
-    expect(vmapBatchWitnessFallback('__internal__vmapBatchPredOut_0')).toBe(-1n);
+    expect(vmapBatchWitnessFallback('__internal__vmapBatchPredOut_0')).toBe(-2n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchRank_0')).toBe(0n);
     expect(vmapBatchWitnessFallback('__internal__vmapBatchSlot_0')).toEqual(new Uint8Array(32));
     expect(vmapBatchWitnessFallback('__internal__vmapBatchNext_0')).toEqual(new Uint8Array(32));

@@ -445,7 +445,7 @@ Items not needed for the 66 are in 4.7.
 
 **Stream B: validator** (spec 3.2, 7.2). Its tests use hand-built transactions with stub masters (small scripts
 holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B needs no compiler work.
-- [ ] B1 V1: recreation in place; a master of its own category present.
+- [x] B1 V1: recreation in place; a master of its own category present.
 - [ ] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
   accept.
 - [ ] B3 V3: completeness.
@@ -460,7 +460,7 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
 - [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
   (containers, distinct event outputs), and values (spec S4).
 - [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
-- [ ] B9 V9: owner policy.
+- [x] B9 V9: owner policy.
 - [ ] B10 V10: static frames.
 - [ ] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
 - [ ] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
@@ -954,13 +954,27 @@ Titles marked NEVER have not passed on any real compile to date.
 
 ---
 
+| 2026-09-26 | 13aaad66c | per-call | validator program | n/a | The validator program is emitted and enforced by the machine for its first rules: the validator recreates itself and a master of its category is spent (V1), the transcript's wire name, version and root count parse and every root index is in range (V2, partial), and the first root's category is the validator's (V9). A differential suite runs every generated composition through both the program and the derivation, requiring the program to refuse what the derivation refuses for a rule it claims and never to refuse what the derivation accepts; it passes over 400 generated cases plus one targeted test per rule. Two defects the machine exposed were fixed in the emission (`OP_NIP` keeps the tail of a split, and `OP_SIZE` does not consume its item, so a duplicate taken to measure one leaked a stack item per loop iteration). The address derivation now pushes the pin for the same reason a contract's does. Finding: the reference composition is already at the published operation-cost density before any program runs, so the program cannot fit inside it without a smaller program or unlocking padding. |
+
+| 2026-09-26 | 9f21fb5e5 | per-call | call sites | n/a | A call's checks are emitted where the source makes the call. The site's own code reads its witness block, walks to the record its index names, and requires the record's kind, target and `calleeRef` to be the site's, its `argsHash` to be the digest the code computes from the source's own argument values, and the co-spent callee's call data to hash to the same digest. The value the body uses for the call is the record's result, so a call whose result the caller uses compiles; a site that returns nothing requires an empty result. A test changes the callee's argument and the recorded hash together and expects the caller to be refused, with the callee's own input still accepted. What stays positional is which record a site addresses, so calls remain unconditional and unrepeated. |
+
 ## Deviations
 
-- The validator program `V_TEMPLATE` does not exist. V1-V11 exist as pure checks with hostile tests, a reference model and a differential harness, and the master-side recognition of a validator is emitted and VM-proven, but no validator rule is enforced on chain anywhere: every VM test uses a stand-in program whose hash the master recognises.
+- The validator program exists and enforces V1, V9 and the transcript's header and root indices (magic, version, a
+  nonzero root count, every root index in range). V2's master-witness and settle-input parsing, V3-V8, V10 and V11 are
+  still pure checks with hostile tests, a reference model and a differential harness, and no VM test outside the
+  validator suite runs the program yet: the master-side tests still use a small stand-in whose hash the master
+  recognises.
+- The address derivation pushes the category pin in front of the program: a bare pin is 32 arbitrary bytes and the
+  machine executes them as opcodes, so `addrV(cat)` hashes `push(pin(cat)) || V_TEMPLATE`. Every derived address
+  moved with the fix, and the identity vectors were regenerated from libauth's own encoders.
+- The published operation-cost density (800 per byte) is exhausted by the reference composition before any program
+  runs, so the program cannot fit inside it: the validator suite evaluates under the relaxed cost profile, and either
+  a smaller program or unlocking padding is required on a real chain (spec section 12).
 - The composer executes no scripts: program execution is an injected step function, so derivation, assembly, layout and refusals are exercised while evaluation is not.
 - The checklist has no item for the selector dispatch, which every multi-entry contract needs; it was implemented as a prerequisite rather than as a listed unit of work.
-- A call is checked, not lowered: the digest check lives in the master head, emitted once for all of an entry's calls, rather than at each call site where the caller's argument values are in hand. Compiling the check at the call site is what would let entries make different calls and let return values, conditionals and loops through.
-- An admitted call takes only compile-time argument values (a literal number, boolean, string or byte string): the caller folds them to a digest at compile time, so a runtime-valued argument is refused by name rather than bound. An admitted call also returns nothing, targets an address the source bakes in, and is neither conditional nor repeated.
+- A call's checks are emitted at the call site: the site's own code walks its witness block to the record it names and binds that record's kind, target, calleeRef and argument digest to the source's values, so the digest the code compares against is computed from the code's own operands rather than from the callee's bytes. What is still positional is which record a site addresses: a site's index is fixed by the source, so conditionals and loops over calls remain refused.
+- An admitted call takes only compile-time argument values (a literal number, boolean, string or byte string): the caller folds them to a digest at compile time, so a runtime-valued argument is refused by name rather than bound. An admitted call targets an address the source bakes in and is neither conditional nor repeated: the site's code now walks to its own record by position, and a site's position is fixed by the source, so an entry still makes the calls it always makes. A call whose result the caller uses now compiles, and the body uses the record's result.
 - Every entry of a calling master must make the same calls, because one head checks one call set.
 - A standalone stateful master keeps a prepended pooled-constants prefix ahead of the head; it is stack-neutral, but the head is not literally the script's first bytes for that shape.
 - A read-only call site is refused rather than recorded: the emitted kind branch has no static arm.

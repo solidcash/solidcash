@@ -340,7 +340,12 @@ A runs on two masters, so its validator settles it. B runs on one master, so B s
 ### 3.2 `V_TEMPLATE`: the validator
 
 - One fixed program, the same for every contract. Only the category pin in front of it differs.
-- Unlocking bytecode: `<M> <pin(cat) || V_TEMPLATE>`.
+- Unlocking bytecode: `<M> <push(pin(cat)) || V_TEMPLATE>`.
+- The pin is pushed, not bare: a bare category is 32 arbitrary bytes and the machine would execute them as opcodes,
+  so the redeem script is a data push followed by the program, and `addrV(cat)` hashes those bytes.
+- The program reads its own bytes with `OP_ACTIVEBYTECODE` and skips the pin push to find itself, which is what lets
+  one program derive every category's address. It is emitted by the compiler (`validatorProgram`), and the runtime
+  budget its cost fits into is an open point (section 12).
 - It checks V1-V11 (section 7.2).
 - Its correctness is the security core of all composition (section 9).
 
@@ -984,6 +989,12 @@ defaults.
 | 10,000 B stack item | Views are at most 128 B | Reads each covered master's unlocking bytecode. On a real chain that is at most 10,000 B, so a master must fit its code into 10,000 B through code splitting (open point 11). The mock lifts both limits |
 | Op-cost budget, (41 + unlocking length) x 800 | Its own execution | Reads and hashes every covered master's witnesses. Large compositions may need unlocking padding for density (open point 7) |
 | 100,000 B transaction, relay policy (consensus: 1,000,000 B) | Every executing master carries its code, once per entry. Code splitting bounds each master, not their sum (below) | Negligible |
+
+**Measured (2026-09-26).** The reference `ABBA` composition sits just under its density budget before any program
+runs: the machine refuses it with the first ~150-instruction `V_TEMPLATE` and a trivial program in its place
+completes. The program's own cost is therefore what tips a composition over, and the two mitigations are the ones the
+table names: a smaller program, or unlocking padding to buy budget. The focused validator suite runs the relaxed
+cost profile for this reason, and the program's fit inside the published 800-per-byte budget is open.
 
 **Size on a real chain** (review and follow-up, 2026-09-25). Two layers, both pinned in libauth:
 - **Per input: consensus.** The VM rejects unlocking bytecode over `maximumBytecodeLength` = 10,000 B before

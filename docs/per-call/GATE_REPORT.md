@@ -1,7 +1,8 @@
 # Gate report
 
-Commit `9425481c5` on `feat/per-call` (the composition layer landed in `6df597fd3`, the API export and Log
-rows in `ab2abd832`, the master prologue in `d90acd49b`). Recorded in `docs/per-call/PLAN_MARKETPLACE_66.md` section 7.
+Commit `13aaad66c` on `feat/per-call` (the composition layer landed in `6df597fd3`, the API export and Log
+rows in `ab2abd832`, the master prologue in `d90acd49b`, the validator program in `13aaad66c`). Recorded in
+`docs/per-call/PLAN_MARKETPLACE_66.md` section 7.
 
 ## Decision
 
@@ -36,7 +37,7 @@ because `V_TEMPLATE` itself is not implemented.
 | --- | --- | --- |
 | Interface frozen, version 1, pinned by vectors | done | `packages/utils/src/per-call/`, `packages/utils/test/per-call/vectors/`, 113 tests |
 | Validator decision procedure V1–V11 **as TypeScript** | done | `packages/solidc/src/per-call/validator/`, 25 tests including one hostile test per check |
-| `V_TEMPLATE`, the program that enforces those checks on chain | **absent** | no validator rule is enforced on chain anywhere; every VM test uses a stand-in program whose hash the master recognises but whose rules it never runs |
+| `V_TEMPLATE`, the program that enforces those checks on chain | **started, running** | the first rules run in the machine: the validator recreates itself and a master of its category is spent (V1), the transcript's wire name, version and root count parse and every root index is in range (V2, partial), and the first root's category is the validator's (V9). `packages/solidcash/test/per-call/validator/script.test.ts` runs the real program against the real derivation over 400 generated compositions and one targeted case per enforced rule. V3–V8, V10, V11 and the rest of V2 remain TypeScript only |
 | Independent reference model, differential agreement | done | 240 generated compositions over two seeds; zero accept/reject, check or order disagreements |
 | Golden re-entrant composition | done | accepted at the section 5.1 indices with the section 8 derived order |
 | Composer derivation, assembly, layout, refusals | done | `packages/solidcash/src/per-call/composer/`, 35 tests |
@@ -55,7 +56,7 @@ because `V_TEMPLATE` itself is not implemented.
 | Record view mode (state settlement) | **absent** | state still read through today's direct covenant |
 | Records read through a segment view | **absent** | — |
 | Registry of the plan's own go/kill bounds (12K lines, 5 s Y2) | partly measurable | 1,366 compiler source lines added; composer suite ~2.6 s on a stub step |
-| Tests, all green | done | 219 tests across six focused directories; the full build and the existing utils suite pass |
+| Tests, all green | done | the focused per-call directories pass together (42 files at this commit); the full build and the existing utils suite pass |
 
 ## Defects found and fixed
 
@@ -90,9 +91,14 @@ emitted inline from the transaction, and the sites are spread across the travers
 
 ## What the shape does not have
 
-- **The validator program.** V1-V11 exist as TypeScript checks with hostile tests, a reference model and a differential
-  harness, and a master recognises a validator by its program hash. Nothing enforces those checks on chain: every VM
-  test uses a stand-in program whose hash the master recognises and whose rules it never runs.
+- **The validator program, in part.** V1, V9 and the transcript's header and root indices run in the machine and are
+  held to the derivation by a differential suite. V2's master-witness and settle-input parsing, V3–V8, V10 and V11 are
+  still TypeScript checks with hostile tests and a reference model: the machine accepts their invalid transactions.
+  The master-side tests outside the validator suite still spend a stand-in program whose hash the master recognises
+  and whose rules it never runs.
+- **The validator program's runtime budget.** The reference composition already sits at the published operation-cost
+  density (800 per byte) before any program runs, so the program's own cost cannot fit inside it. A smaller program or
+  unlocking padding is required on a real chain; the validator suite evaluates under the relaxed cost profile.
 - **Records view mode.** A compiled master reads its records from the direct covenant rather than from its segment
   views, so no record chain is settled on chain, and state is still a single-contract matter.
 - **Call-site compilation.** Calls are checked once in the head, from a descriptor derived at compile time, rather than
@@ -107,10 +113,12 @@ The gate's deadline is `2026-10-23`, four weeks after the interface freeze. In t
 shapes:
 
 1. **The validator program** (`V_TEMPLATE`), tested against the TypeScript checks that already exist, replacing the
-   stand-in as each check lands. Started records view mode has moved this from third to first: a standalone master now
-   settles a single record against its own segment views, and **the part that remains cannot be driven without the
-   validator** — the cross-segment chain belongs to the validator's rules, and a master that stands alone has exactly
-   one segment. The validator is what unblocks the rest of the records stream.
+   stand-in as each check lands. Started records view mode moved this from third to first, and it is now part-landed:
+   the program exists and enforces V1, V9 and the transcript header and root indices, with a differential suite that
+   grows a rule at a time. Next inside it: V3 (which masters point at this validator, which needs the witness block's
+   `validatorRef`) and V4/V6 (the roots and the derived order), because the records chain needs the order. The
+   per-input cost budget is the constraint to watch: a rule costs operations that the reference composition does not
+   have spare.
 2. **The rest of the records stream**: mapping nodes, their long values, dynamic values, and the value pin, on top of
    the settlement a standalone master already does and the chain the validator will do. The plan's kill criterion sits
    here: if the first two records items need rules outside the spec's record section, the effort is trending to a kill.

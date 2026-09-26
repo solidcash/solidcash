@@ -51,7 +51,9 @@ describe('category pin', () => {
     // The script is the 0x21 push of the 33-byte pin, then three opcodes: 1 + 33 + 3 bytes.
     expect(script.length).toBe(37);
     expect(script[0]).toBe(33);
-    expect(toHex(script.subarray(1, 34))).toBe(`${CATEGORY_A}01`);
+    // The pin is the category in the chain's order: the reverse of the display-order id, then the capability.
+    const chainOrder = CATEGORY_A.match(/../g)!.reverse().join('');
+    expect(toHex(script.subarray(1, 34))).toBe(`${chainOrder}01`);
     expect(script[34]).toBe(Opcodes.OP_INPUTINDEX);
     expect(script[35]).toBe(Opcodes.OP_UTXOTOKENCATEGORY);
     expect(script[36]).toBe(Opcodes.OP_EQUALVERIFY);

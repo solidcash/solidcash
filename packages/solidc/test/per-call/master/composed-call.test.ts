@@ -4,7 +4,7 @@ import {
   hash256, Opcodes,
 } from '@bitauth/libauth';
 import {
-  TokenCapability, asmToScript, categoryPin, computeFunctionSelector, computeFunctionSignature,
+  asmToScript, computeFunctionSelector, computeFunctionSignature,
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
@@ -13,6 +13,9 @@ import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
+import {
+  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A composed transaction: one compiled master calls a stand-in master and a validator input covers both.
@@ -33,19 +36,12 @@ import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
  * shows the composition is otherwise well formed and the refusal comes from the check under test.
  */
 
-const CATEGORY_A = new Uint8Array(32).fill(0x61); // `OP_NOP`, so the pin in front of the validator program is inert
-const CATEGORY_B = new Uint8Array(32).fill(0x5c);
-const OTHER_CATEGORY = new Uint8Array(32).fill(0x77);
+const CATEGORY_A = seededCategory('composed call caller');
+const CATEGORY_B = seededCategory('composed call callee');
+const OTHER_CATEGORY = seededCategory('composed call other');
 
-/**
- * The validator program. Free and small; the masters only ever hash it.
- *
- * The frozen redeem script is `pin(c) || program`, and the pin's capability byte is itself a push opcode, so the
- * first program byte is consumed as data by the pin. The program drops the transcript the unlocking bytecode
- * pushed and the byte the capability consumed, then leaves one item, as a P2SH32 redeem script must.
- */
-const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]);
-const OTHER_VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_2]);
+/** The shipped validator program. The masters hash it, and the validator input runs it. */
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 
 /** The selector the caller records, which the interface's `ping()` resolves the site to. */
@@ -82,7 +78,7 @@ const COMPILED_CALLER_PROGRAM = ((): Uint8Array => {
   return fillPlaceholders(
     scriptToBytecode(asmToScript(artifact.bytecode)),
     artifact.composition!.placeholders,
-    { category: CATEGORY_A, contractAddress: ADDRESS_A, templateHash: TEMPLATE_HASH },
+    { category: categorySlotValue(CATEGORY_A), contractAddress: ADDRESS_A, templateHash: TEMPLATE_HASH },
   );
 })();
 
@@ -134,7 +130,7 @@ function masterProgram(shape: MasterShape): { program: Uint8Array; lock: Uint8Ar
     head.script,
     { version: 1, ...findPlaceholderOffsets(head.script, head.validatorHashSlotOffset !== undefined) },
     {
-      category: shape.category,
+      category: categorySlotValue(shape.category),
       contractAddress: shape.address,
       ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
     },
@@ -146,12 +142,11 @@ function masterProgram(shape: MasterShape): { program: Uint8Array; lock: Uint8Ar
 /** Builds the whole transaction: two masters, a validator, a user, and one output per input. */
 function buildComposition(options: CompositionOptions = {}): Composition {
   const validatorProgram = options.validatorProgram ?? VALIDATOR_PROGRAM;
-  // The validator's lock follows the program it runs; the masters hash `TEMPLATE_HASH`, the constant they carry.
-  const validatorRedeem = new Uint8Array([
-    ...categoryPin(CATEGORY_A, TokenCapability.MUTABLE),
-    ...validatorProgram,
-  ]);
-  const validatorLock = encodeLockingBytecodeP2sh32(hash256(validatorRedeem));
+  // The masters hash `TEMPLATE_HASH`. A replaced program changes the redeem the input runs, not that constant.
+  const validator = validatorSpend(CATEGORY_A, {
+    roots: [A_INDEX], masters: [A_INDEX, B_INDEX], settles: [],
+  }, validatorProgram);
+  const validatorLock = validator.lock;
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -236,11 +231,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(3),
       sequenceNumber: 0xffffffff,
-      // The transcript is the first push and is never read; the redeem script is the last.
-      unlockingBytecode: new Uint8Array([
-        ...encodeDataPush(new Uint8Array([0x01, 0x02])),
-        ...encodeDataPush(validatorRedeem),
-      ]),
+      unlockingBytecode: validator.unlockingBytecode,
     },
     {
       outpointIndex: 0,
@@ -423,10 +414,10 @@ describe('a master that calls another master, covered by one validator', () => {
   });
 
   it('has a validator that fails when its program does not hash to the constant', () => {
-    const results = verdicts({ validatorProgram: OTHER_VALIDATOR_PROGRAM });
+    const results = verdicts({ validatorProgram: ALTERNATE_ACCEPTING_PROGRAM });
     expect(results[A_INDEX].accepted).toBe(false);
     expect(results[B_INDEX].accepted).toBe(false);
-    // The validator's own script still succeeds, so the refusal is the masters' program-hash check.
+    // The replacement still leaves one truthy item, so the refusal is the masters' program-hash check.
     expect(results[VALIDATOR_INDEX].accepted).toBe(true);
   });
 
@@ -434,6 +425,7 @@ describe('a master that calls another master, covered by one validator', () => {
     const results = verdicts({ validatorCategory: OTHER_CATEGORY });
     expect(results[A_INDEX].accepted).toBe(false);
     expect(results[B_INDEX].accepted).toBe(false);
-    expect(results[VALIDATOR_INDEX].accepted).toBe(true);
+    // The program compares its pin with the token the spent UTXO carries, so the input itself is refused.
+    expect(results[VALIDATOR_INDEX].accepted).toBe(false);
   });
 });

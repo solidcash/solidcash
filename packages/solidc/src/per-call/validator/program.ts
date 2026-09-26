@@ -67,6 +67,9 @@ export function buildValidatorProgram(): Uint8Array {
   e.op(O.OP_SIZE).count(33).op(O.OP_NUMEQUALVERIFY);
   e.op(O.OP_DUP).count(32).op(O.OP_SPLIT, O.OP_NIP);
   e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_EQUALVERIFY);
+  // The address binds the script to the category. This binds the UTXO that runs it to the same category, in the
+  // order the machine reports, so a spend of addrV(cat) without cat's mutable token is refused.
+  e.op(O.OP_DUP, O.OP_INPUTINDEX, O.OP_UTXOTOKENCATEGORY, O.OP_EQUALVERIFY);
   e.op(O.OP_DROP);
 
   // The program's own bytes: everything after the pin push. Read once, kept on the alternate stack.

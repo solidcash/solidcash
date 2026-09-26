@@ -4,13 +4,16 @@ import {
   hash256, Opcodes,
 } from '@bitauth/libauth';
 import {
-  TokenCapability, asmToScript, categoryPin, computeFunctionSelector, computeFunctionSignature,
+  asmToScript, computeFunctionSelector, computeFunctionSignature,
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
 import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
+import {
+  ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
+} from './validator-input.js';
 
 /**
  * A compiled caller and the composition it is entered through.
@@ -27,11 +30,10 @@ import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
  * input's script is evaluated, because only the machine settles whether the reserved hash is load-bearing.
  */
 
-const CATEGORY_CALLER = new Uint8Array(32).fill(0x61);
-const CATEGORY_CALLEE = new Uint8Array(32).fill(0x5c);
-/** The validator program; free and small, since the masters only hash it. */
-const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]);
-const OTHER_VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_2]);
+const CATEGORY_CALLER = seededCategory('compiled caller');
+const CATEGORY_CALLEE = seededCategory('compiled caller callee');
+/** The shipped validator program. The masters hash it, and the validator input runs it. */
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS_CALLER = validatorAddress(CATEGORY_CALLER, VALIDATOR_PROGRAM);
 const ADDRESS_CALLEE = validatorAddress(CATEGORY_CALLEE, VALIDATOR_PROGRAM);
@@ -96,7 +98,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
   const callerProgram = fillPlaceholders(
     scriptBytes(artifact),
     artifact.composition!.placeholders,
-    { category: CATEGORY_CALLER, contractAddress: ADDRESS_CALLER, templateHash },
+    { category: categorySlotValue(CATEGORY_CALLER), contractAddress: ADDRESS_CALLER, templateHash },
   );
 
   // The callee runs a message-call frame; the head builder admits it and a body that leaves the input truthy
@@ -112,7 +114,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       addressOffset: calleeHead.addressSlotOffset,
       templateHashOffset: calleeHead.validatorHashSlotOffset,
     },
-    { category: CATEGORY_CALLEE, contractAddress: ADDRESS_CALLEE, templateHash },
+    { category: categorySlotValue(CATEGORY_CALLEE), contractAddress: ADDRESS_CALLEE, templateHash },
   );
   // The head drops the block copy, then leaves four frame values above the callee's selector push.
   const calleeProgram = new Uint8Array([
@@ -120,11 +122,10 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,
   ]);
 
-  const validatorRedeem = new Uint8Array([
-    ...categoryPin(CATEGORY_CALLER, TokenCapability.MUTABLE),
-    ...VALIDATOR_PROGRAM,
-  ]);
-  const validatorLock = encodeLockingBytecodeP2sh32(hash256(validatorRedeem));
+  const validator = validatorSpend(CATEGORY_CALLER, {
+    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+  });
+  const validatorLock = validator.lock;
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -191,7 +192,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointTransactionHash: new Uint8Array(32).fill(3),
       sequenceNumber: 0xffffffff,
       unlockingBytecode: new Uint8Array([
-        ...encodeDataPush(new Uint8Array([0x01, 0x02])), ...encodeDataPush(validatorRedeem),
+        ...validator.unlockingBytecode,
       ]),
     },
     {
@@ -256,7 +257,7 @@ describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual
   });
 
   it('has a caller that fails when its reserved hash is not the validator program\'s', () => {
-    const results = verdicts({ templateHash: sha256(OTHER_VALIDATOR_PROGRAM) });
+    const results = verdicts({ templateHash: sha256(ALTERNATE_ACCEPTING_PROGRAM) });
     expect(results[CALLER_INDEX]).toBe(false);
     expect(results[CALLEE_INDEX]).toBe(false);
     // The validator's own script still succeeds, so the refusal is the masters' program-hash check.

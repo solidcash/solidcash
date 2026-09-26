@@ -14,7 +14,7 @@
  */
 
 import { Opcodes } from '@bitauth/libauth';
-import { categoryPin, TokenCapability } from '@solidcash/utils';
+import { categoryPin, chainCategory, TokenCapability } from '@solidcash/utils';
 
 /** The capability a master's own token carries. */
 export const MASTER_CAPABILITY = TokenCapability.MINTING;
@@ -40,7 +40,8 @@ export function categoryRecreationCheck(category: Uint8Array, capability: number
 }
 
 function concatPinned(category: Uint8Array, capability: number, side: number): Uint8Array {
-  const pinned = categoryPin(category, capability);
+  // The category arrives in display order. The introspection opcodes answer in the chain's order.
+  const pinned = categoryPin(chainCategory(category), capability);
   return new Uint8Array([
     pinned.length,
     ...pinned,

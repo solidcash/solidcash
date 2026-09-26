@@ -49,11 +49,25 @@ export function categoryPinLength(capability: number): number {
 }
 
 /**
+ * The same category in the order the chain carries it.
+ *
+ * A category id crosses the compiler, the SDK and a deployment in the display order. What the machine's
+ * `OP_UTXOTOKENCATEGORY` answers with is its reverse — libauth stores a token's category in display order and
+ * pushes `token.category.slice().reverse()` (`bch-2023-tokens.js`) — and the state path applies the same reversal
+ * before it builds a covenant (`packages/utils/src/state.ts`). Every pin compared with that answer is built from
+ * this: a validator's redeem, a category-pin script, a master's prologue and the category slot deployment fills.
+ */
+export function chainCategory(category: Uint8Array): Uint8Array {
+  return Uint8Array.from(category).reverse();
+}
+
+/**
  * The script prefix that proves the spent input carried this category with this capability: the pinned bytes, then
  * `OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`.
  */
 export function categoryPinScript(category: Uint8Array, capability: number): Uint8Array {
-  const pinned = categoryPin(category, capability);
+  // The machine answers in chain order, so the bytes pushed here are the reverse of the display-order category.
+  const pinned = categoryPin(chainCategory(category), capability);
   return concatBytes([
     new Uint8Array([pinned.length]),
     pinned,
@@ -63,7 +77,7 @@ export function categoryPinScript(category: Uint8Array, capability: number): Uin
 
 /** A category pin for an output, used where a rule compares the output side instead of the input side. */
 export function categoryPinScriptOutput(category: Uint8Array, capability: number): Uint8Array {
-  const pinned = categoryPin(category, capability);
+  const pinned = categoryPin(chainCategory(category), capability);
   return concatBytes([
     new Uint8Array([pinned.length]),
     pinned,
@@ -86,9 +100,15 @@ export function validatorTemplateHash(validatorTemplate: Uint8Array): Uint8Array
  */
 export const VALIDATOR_PIN_PUSH_LENGTH = 1 + CATEGORY_PIN_LENGTH;
 
-/** The redeem script of a validator: the pinned category, pushed, followed by the program. */
+/**
+ * The redeem script of a validator: the pinned category, pushed, followed by the program.
+ *
+ * The pin is built in the chain's order, because the program compares it with the token the spent UTXO carries.
+ */
 export function validatorRedeemScript(category: Uint8Array, validatorTemplate: Uint8Array): Uint8Array {
-  return concatBytes([encodeDataPush(categoryPin(category, TokenCapability.MUTABLE)), validatorTemplate]);
+  return concatBytes([
+    encodeDataPush(categoryPin(chainCategory(category), TokenCapability.MUTABLE)), validatorTemplate,
+  ]);
 }
 
 /**

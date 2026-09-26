@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
-  hash256, Opcodes,
+  hash256,
 } from '@bitauth/libauth';
 import {
-  TokenCapability, asmToScript, categoryPin, computeFunctionSelector, computeFunctionSignature,
+  asmToScript, computeFunctionSelector, computeFunctionSignature,
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
 /**
  * Two contracts that call each other, both compiled as masters and co-spent with a validator.
@@ -25,10 +26,10 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * frame cannot borrow the root frame's facts, which the root arm checks as a P2PKH caller and a zero value.
  */
 
-const CATEGORY_CALLER = new Uint8Array(32).fill(0x61);
-const CATEGORY_CALLEE = new Uint8Array(32).fill(0x5c);
-/** The validator program. Free and small; the masters only ever hash it. */
-const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]);
+const CATEGORY_CALLER = seededCategory('composed compiled caller');
+const CATEGORY_CALLEE = seededCategory('composed compiled callee');
+/** The shipped validator program. The masters hash it, and the validator input runs it. */
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS_CALLER = validatorAddress(CATEGORY_CALLER, VALIDATOR_PROGRAM);
 const ADDRESS_CALLEE = validatorAddress(CATEGORY_CALLEE, VALIDATOR_PROGRAM);
@@ -99,14 +100,13 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       category, contractAddress: address, templateHash: TEMPLATE_HASH,
     });
   };
-  const callerProgram = fill('Caller', CATEGORY_CALLER, ADDRESS_CALLER);
-  const calleeProgram = fill('Callee', CATEGORY_CALLEE, ADDRESS_CALLEE);
+  const callerProgram = fill('Caller', categorySlotValue(CATEGORY_CALLER), ADDRESS_CALLER);
+  const calleeProgram = fill('Callee', categorySlotValue(CATEGORY_CALLEE), ADDRESS_CALLEE);
 
-  const validatorRedeem = new Uint8Array([
-    ...categoryPin(CATEGORY_CALLER, TokenCapability.MUTABLE),
-    ...VALIDATOR_PROGRAM,
-  ]);
-  const validatorLock = encodeLockingBytecodeP2sh32(hash256(validatorRedeem));
+  const validator = validatorSpend(CATEGORY_CALLER, {
+    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+  });
+  const validatorLock = validator.lock;
 
   const callerBlock: WitnessBlock = {
     kind: 0,
@@ -173,7 +173,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointTransactionHash: new Uint8Array(32).fill(3),
       sequenceNumber: 0xffffffff,
       unlockingBytecode: new Uint8Array([
-        ...encodeDataPush(new Uint8Array([0x01, 0x02])), ...encodeDataPush(validatorRedeem),
+        ...validator.unlockingBytecode,
       ]),
     },
     {

@@ -15,6 +15,7 @@ import {
   scriptToBytecode,
   type Artifact,
   type CompositionPlaceholders,
+  chainCategory,
   validatorAddress,
   validatorTemplateHash,
 } from '@solidcash/utils';
@@ -114,7 +115,8 @@ export function deployMaster(
     ? undefined
     : validatorTemplateHash(validatorProgram);
   const script = fillPlaceholders(original, placeholders, {
-    category,
+    // The slot is compared with OP_UTXOTOKENCATEGORY, which answers in the chain's order.
+    category: chainCategory(category),
     contractAddress: address,
     ...(templateHash === undefined ? {} : { templateHash }),
   });
@@ -147,7 +149,7 @@ export function verifyMasterDeployment(
   }
 
   const readBack = readPlaceholders(deployed.script, placeholders);
-  if (readBack.category.length !== CATEGORY_SLOT_LENGTH || !bytesEqual(readBack.category, category)) {
+  if (readBack.category.length !== CATEGORY_SLOT_LENGTH || !bytesEqual(readBack.category, chainCategory(category))) {
     throw new PerCallDeploymentError('the category slot does not read back as the filled category');
   }
   if (placeholders.templateHashOffset !== undefined) {

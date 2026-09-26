@@ -1,9 +1,9 @@
 /**
  * Golden vectors for category pins, derived addresses and the loader lock.
  *
- * The addresses are `P2SH32(HASH256(pin(category, MUTABLE) || validator program))`, computed once outside the
- * module under test from the categories and programs below. Every value here is a hex string so the vectors are
- * plain data.
+ * The addresses are `P2SH32(HASH256(push(pin(chain(category), MUTABLE)) || validator program))`, computed once
+ * outside the module under test from the categories and programs below. Every value here is a hex string so the
+ * vectors are plain data.
  */
 
 /** A user's 20-byte public key hash. */
@@ -32,9 +32,9 @@ export const SELECTOR_G = '05060708';
 export const SELECTOR_K = '0d0e0f10';
 
 /** `addrV(catA)` and `addrV(catB)` with `V_TEMPLATE`, and `addrV(catA)` with the alternate program. */
-export const ADDRESS_A = 'aa20102137fa7b101963c2cbd10b21d19843b94863e1c50ba752daac9447d8a2b45c87';
-export const ADDRESS_B = 'aa20ca5c16303cda47a3541329181a04ca6e53085af26a29d2ef555c3e3df9883b1f87';
-export const ADDRESS_A_ALT_PROGRAM = 'aa2019becc2cf412fa7a5b7b4e46a12f89583a413bb87a624e8097d3b509e572a2e687';
+export const ADDRESS_A = 'aa206e2108a8f5c71b143db4c7ab4ea90811a8be07554be9c4251358a853146251f687';
+export const ADDRESS_B = 'aa20f0da95af8a018b638eebcad93c163e3123a97a259cf0609319e3684e8c36fb2187';
+export const ADDRESS_A_ALT_PROGRAM = 'aa20f080d52d4945d3ce976cbc0c215d5ae199ae60564751ee42e85b70def01cfa9d87';
 
 /**
  * `push(pin(catA, MUTABLE)) || V_TEMPLATE`, the validator's redeem script.
@@ -43,7 +43,7 @@ export const ADDRESS_A_ALT_PROGRAM = 'aa2019becc2cf412fa7a5b7b4e46a12f89583a413b
  * opcodes if they sat in front of the program unquoted.
  */
 export const VALIDATOR_REDEEM_SCRIPT_A
-  = '210102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200176a988ac';
+  = '21201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010176a988ac';
 
 /** `SHA256(V_TEMPLATE)`, the constant a master carries and recognises through. */
 export const VALIDATOR_TEMPLATE_HASH = '5aa55ada21ec40dd1152fe335cc72aa84163a4e00d611ea2d5272bda88fdaa1e';
@@ -52,4 +52,4 @@ export const VALIDATOR_TEMPLATE_HASH = '5aa55ada21ec40dd1152fe335cc72aa84163a4e0
  * `categoryPinScript(catA, MUTABLE)`: the 0x21 push of the 33-byte pin, then
  * `OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY` (0xc0 0xce 0x88).
  */
-export const CATEGORY_PIN_SCRIPT_A = '210102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2001c0ce88';
+export const CATEGORY_PIN_SCRIPT_A = '21201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020101c0ce88';

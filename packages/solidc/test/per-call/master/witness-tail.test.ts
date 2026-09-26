@@ -12,6 +12,7 @@ import { findPlaceholderOffsets } from '../../../src/per-call/master/master-prog
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import type { MasterTailShape } from '../../../src/per-call/master/frame-tail.js';
 import { callerUnlockingBytecode } from './caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * The variable-length tail of a witness block, walked by a master.
@@ -27,10 +28,10 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * handed, which is exactly what the compiler derives for a compiled contract and passes through.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
-const OTHER_CATEGORY = new Uint8Array(32).fill(0x77);
-/** The validator program; a standalone master only hashes nothing here, it is the address that needs it. */
-const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]);
+const CATEGORY = seededCategory('witness tail');
+const OTHER_CATEGORY = seededCategory('witness tail other');
+/** The shipped program. This master never runs it; the address is derived from it. */
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
@@ -63,7 +64,7 @@ function masterProgram(options: MasterHeadOptions): { program: Uint8Array; lock:
     head.script,
     { version: 1, ...findPlaceholderOffsets(head.script, head.validatorHashSlotOffset !== undefined) },
     {
-      category: CATEGORY,
+      category: categorySlotValue(CATEGORY),
       contractAddress: ADDRESS,
       ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
     },

@@ -26,7 +26,7 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { TokenCapability } from '@solidcash/utils';
+import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
@@ -324,7 +324,7 @@ export function requireSingleMasterScript(): Uint8Array {
  * comparison computes, which is what fixes the pick's depth.
  *
  * The input must hold a mutable NFT of some category `c`, and its redeem script — the last push of its unlocking
- * bytecode, after the transcript — must be `pin(c)` followed by a program hashing to the expected hash. The pin's
+ * bytecode, after the transcript — must be the category pin pushed, then a program hashing to the expected hash. The pin's
  * category is read from the redeem script and compared with the category the UTXO itself carries, so a validator
  * whose token is not the one its script pins is refused. P2SH32 consensus gives its lock as `addrV(c)`, and the
  * master skips the transcript and never interprets it.
@@ -341,11 +341,12 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_INPUTBYTECODE,
     ...dropFirstPushScript(), ...splitFirstPushScript(),
     Opcodes.OP_0, Opcodes.OP_EQUALVERIFY,
-    // `pin(c) || program`: the pin is 33 bytes, and the program must hash to the reserved slot, four items below
-    // the computed hash.
-    ...encodeDataPush(scriptNumber(33)), Opcodes.OP_SPLIT,
+    // `push(pin(c)) || program`. The push is 34 bytes; the program after it must hash to the reserved slot, four
+    // items below the computed hash.
+    ...encodeDataPush(scriptNumber(VALIDATOR_PIN_PUSH_LENGTH)), Opcodes.OP_SPLIT,
     Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(4)), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
-    // The pin's category must be the category the UTXO carries.
+    // Drop the push opcode and require the pin to be the category the UTXO carries.
+    Opcodes.OP_1, Opcodes.OP_SPLIT, Opcodes.OP_NIP,
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
     Opcodes.OP_NIP, Opcodes.OP_DROP,
     // The reserved hash, consumed with the index.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
-  hash256, hexToBin, Opcodes,
+  hash256, hexToBin,
 } from '@bitauth/libauth';
 import {
   asmToScript, buildPushdataCommitment, encodeWitnessBlock, scriptToBytecode, sha256,
@@ -10,6 +10,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * A standalone master settles the record its entry reads and writes.
@@ -30,9 +31,9 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * own business, and the emitted settlement covers one segment, so a multi-segment master is not settled here yet.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x61);
-/** The validator program; a standalone master never runs it and only needs its address. */
-const VALIDATOR_PROGRAM = new Uint8Array([Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1]);
+const CATEGORY = seededCategory('record settlement');
+/** The shipped program. A standalone master never runs it and only needs the address derived from it. */
+const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
@@ -56,7 +57,7 @@ const artifact = compileString(SOURCE, { composition: 'per-call' });
 const program = fillPlaceholders(
   scriptToBytecode(asmToScript(artifact.bytecode)),
   artifact.composition!.placeholders,
-  { category: CATEGORY, contractAddress: ADDRESS, templateHash: TEMPLATE_HASH },
+  { category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH },
 );
 const masterLock = encodeLockingBytecodeP2sh32(hash256(program));
 const MASTER_VALUE = 20_000n;

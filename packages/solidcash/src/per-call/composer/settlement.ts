@@ -169,7 +169,9 @@ export function assertCompositionSettlement(
   }
   const issue = recordChainIssues(concatenated, facts)[0];
   if (issue === undefined) return;
-  const owner = issue.segment === undefined ? undefined : ownerOfSegment[issue.segment];
+  const owner = issue.segment === undefined
+    ? undefined
+    : ownerOfSegment[issue.segment];
   throw new RecordChainError(owner === undefined ? issue : { ...issue, owner });
 }
 

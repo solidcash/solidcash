@@ -159,7 +159,10 @@ describe('a composition whose record spans executions', () => {
     const order = [
       { master: 'Ledger#0', segments: [[kept(C0, C1), kept(C0, C1, 3)]] },
     ];
-    const withThird = facts({ inputCommitments: new Map([[0, C0], [3, C0]]), outputCommitments: new Map([[0, C2], [3, C2]]) });
+    const withThird = facts({
+      inputCommitments: new Map([[0, C0], [3, C0]]),
+      outputCommitments: new Map([[0, C2], [3, C2]]),
+    });
     // Record 0 stops at C1 while the transaction writes C2; record 3 has the same shape.
     const issues = recordChainIssues(order[0]!.segments, withThird);
     expect(issues.filter((issue) => /written at output/.test(issue.reason)).map((issue) => issue.record))

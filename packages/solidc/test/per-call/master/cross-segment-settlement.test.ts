@@ -70,12 +70,9 @@ type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmInput = VmTransaction['inputs'][number];
 type VmOutput = VmTransaction['outputs'][number];
 
-/** The caller's own input, its record right after it, its validator, the user, and the callee. */
+/** The record's index in the default layout (right after the caller's own input) and the caller's own index. */
 const CALLER_INDEX = 0;
 const STATE_INDEX = 1;
-const VALIDATOR_INDEX = 2;
-const USER_INDEX = 3;
-const CALLEE_INDEX = 4;
 const VALUE = 20_000n;
 
 /** A data-NFT commitment holding one integer, in the shipped encoder's form. */

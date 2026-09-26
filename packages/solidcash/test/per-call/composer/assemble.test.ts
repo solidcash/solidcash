@@ -279,3 +279,64 @@ describe('the call data a callee carries', () => {
     ]))).toThrow(/does not begin with a 4-byte selector/);
   });
 });
+
+describe('the trailing outputs a plan declares', () => {
+  /** The composition's participants occupy 0, 1 and 2, so the trailing region starts at 3. */
+  const withEventAt = (index: number): CompositionPlan => ({
+    ...planWithValidator(),
+    masters: [callerMaster([callToVault()]), calleeMaster([SELECTOR, ARG], { events: [index] })],
+  });
+
+  it('allocates one output per event and reports where they are', () => {
+    const assembly = assembleComposition(withEventAt(3));
+    expect(assembly.outputs.trailingBase).toBe(3);
+    expect(assembly.outputs.eventIndices).toStrictEqual([3]);
+    expect(assembly.outputs.sendIndices).toStrictEqual([]);
+    expect(assembly.outputs.changeIndex).toBe(4);
+  });
+
+  it('refuses an event the trailing region does not put there', () => {
+    // The region allocates 3 for the event a plan lists, so a plan listing 5 describes a different transaction.
+    expect(() => assembleComposition(withEventAt(5))).toThrow(/lists events at \[5\].*puts them at \[3\]/s);
+  });
+
+  it('refuses two events at the same output, which would make the event log ambiguous', () => {
+    expect(() => assembleComposition({
+      ...planWithValidator(),
+      masters: [
+        callerMaster([callToVault()]),
+        calleeMaster([SELECTOR, ARG], { events: [3, 3] }),
+      ],
+    })).toThrow();
+  });
+
+  it('refuses an event at a participant\'s own output', () => {
+    // Every participant recreates at its index, so an event cannot sit there.
+    expect(() => assembleComposition(withEventAt(0))).toThrow();
+  });
+
+  it('allocates a output per created record after the events and sends', () => {
+    // The event takes output 3, so the created record takes the next one.
+    const created = { in: INDEX_NONE, out: 4, viewIn: new Uint8Array(0), viewOut: new Uint8Array([0x01]) };
+    const assembly = assembleComposition({
+      ...planWithValidator(),
+      masters: [
+        callerMaster([callToVault()]),
+        // One segment, because a master with no calls has one: the created record lives in it.
+        calleeMaster([SELECTOR, ARG], { events: [3], segments: [[created]] }),
+      ],
+    });
+    // The event takes 3, so the created record takes 4 and change follows it.
+    expect(assembly.outputs.eventIndices).toStrictEqual([3]);
+    expect(assembly.outputs.createdIndices).toStrictEqual([4]);
+    expect(assembly.outputs.changeIndex).toBe(5);
+  });
+
+  it('reports empty regions for a plan that emits and sends nothing', () => {
+    const assembly = assembleComposition(planWithValidator());
+    expect(assembly.outputs.eventIndices).toStrictEqual([]);
+    expect(assembly.outputs.sendIndices).toStrictEqual([]);
+    expect(assembly.outputs.createdIndices).toStrictEqual([]);
+    expect(assembly.outputs.changeIndex).toBe(3);
+  });
+});

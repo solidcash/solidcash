@@ -22,7 +22,14 @@ import {
   type Transcript,
 } from '@solidcash/utils';
 import { assertValidatorCoverage, type EntryFacts } from './need-test.js';
-import { layoutTransaction, type ContractBlock, type TransactionLayout } from './layout.js';
+import {
+  allocateOutputRegions,
+  layoutTransaction,
+  type ContractBlock,
+  type OutputRegions,
+  type TransactionLayout,
+} from './layout.js';
+import { assertOutputOccupancy } from './settlement.js';
 import {
   assembleMasterWitness,
   assembleValidatorWitness,
@@ -118,8 +125,76 @@ export interface ResolvedCall {
 export interface CompositionAssembly {
   readonly layout: TransactionLayout;
   readonly inputs: readonly AssembledInput[];
+  /** Where the trailing outputs are: one per event, one per send, one per created record, then change. */
+  readonly outputs: OutputRegions;
   readonly calls: readonly ResolvedCall[];
   readonly transcript?: Transcript;
+}
+
+/** The outputs a plan creates records at, in first-appearance order. */
+function createdRecordOutputs(masters: readonly PlannedMaster[]): readonly number[] {
+  const created: number[] = [];
+  for (const master of masters) {
+    for (const segment of master.segments) {
+      for (const entry of segment) {
+        if (entry.in !== INDEX_NONE) continue;
+        if (!created.includes(entry.out)) created.push(entry.out);
+      }
+    }
+  }
+  return created;
+}
+
+/** True when two index lists are the same numbers in the same order. */
+function sameIndices(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Allocates the trailing outputs and requires the plan's declared indices to be the ones allocated.
+ *
+ * The plan names where its events, sends and created records sit; the assembly is the authority on where they
+ * actually sit. Comparing the two is what keeps a caller from being its own source of coordinates, which is the
+ * class of defect this module exists to remove.
+ */
+function resolveOutputRegions(
+  plan: CompositionPlan,
+  layout: TransactionLayout,
+): OutputRegions {
+  const declaredEvents = plan.masters.flatMap((master) => master.events);
+  const declaredSends = plan.masters.flatMap((master) => master.sends);
+  const created = createdRecordOutputs(plan.masters);
+
+  const regions = allocateOutputRegions(layout, {
+    events: declaredEvents.length,
+    sends: declaredSends.length,
+    created: created.length,
+  });
+  if (!sameIndices(declaredEvents, regions.eventIndices)) {
+    throw new PerCallEncodingError(
+      `the plan lists events at [${declaredEvents.join(', ')}], and the trailing region puts them at `
+      + `[${regions.eventIndices.join(', ')}]`,
+    );
+  }
+  if (!sameIndices(declaredSends, regions.sendIndices)) {
+    throw new PerCallEncodingError(
+      `the plan lists sends at [${declaredSends.join(', ')}], and the trailing region puts them at `
+      + `[${regions.sendIndices.join(', ')}]`,
+    );
+  }
+  if (!sameIndices(created, regions.createdIndices)) {
+    throw new PerCallEncodingError(
+      `the plan creates records at [${created.join(', ')}], and the trailing region puts them at `
+      + `[${regions.createdIndices.join(', ')}]`,
+    );
+  }
+  // Every participant recreates at its own index, so nothing else may sit there.
+  assertOutputOccupancy({
+    records: layout.participants.map((participant) => participant.index),
+    events: declaredEvents,
+    sends: declaredSends,
+  });
+  return regions;
 }
 
 /** Raised when a plan names an identity that has no place in the layout. */
@@ -197,6 +272,7 @@ function samePushes(left: readonly Uint8Array[], right: readonly Uint8Array[]): 
 export function assembleComposition(plan: CompositionPlan): CompositionAssembly {
   assertCallDataAgrees(plan);
   const layout = layoutTransaction(plan.blocks);
+  const outputs = resolveOutputRegions(plan, layout);
   const indexOf = new Map<string, number>();
   for (const participant of layout.participants) indexOf.set(participant.id, participant.index);
   for (const user of plan.userInputs) {
@@ -270,7 +346,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
   assertValidatorCoverage(entries);
 
   if (!plan.validator) {
-    return { layout, inputs: ordered(layout, assembled), calls: resolvedCalls };
+    return { layout, inputs: ordered(layout, assembled), outputs, calls: resolvedCalls };
   }
 
   const transcript: Transcript = {
@@ -297,7 +373,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     unlockingBytecode: validatorWitness.unlockingBytecode,
   });
 
-  return { layout, inputs: ordered(layout, assembled), calls: resolvedCalls, transcript };
+  return { layout, inputs: ordered(layout, assembled), outputs, calls: resolvedCalls, transcript };
 }
 
 /** The argument hash of a planned call: the selector and the argument pushes, in their canonical encoding. */

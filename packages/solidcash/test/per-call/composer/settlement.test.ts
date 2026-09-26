@@ -3,6 +3,7 @@ import { INDEX_NONE, type RecordEntry } from '@solidcash/utils';
 import {
   assertCompositionSettlement, assertOutputOccupancy, assertRecordChains, outputIssues, OutputOccupancyError,
   recordChainIssues, RecordChainError,
+  type OutputOccupancy,
   type SettlementFacts,
 } from '../../../src/per-call/composer/settlement.js';
 
@@ -173,7 +174,7 @@ describe('a composition whose record spans executions', () => {
 });
 
 describe('the output regions', () => {
-  const occupancy = (overrides: Partial<Parameters<typeof outputIssues>[0]> = {}) => ({
+  const occupancy = (overrides: Partial<OutputOccupancy> = {}): OutputOccupancy => ({
     records: [0],
     events: [1, 2],
     sends: [3, 4],

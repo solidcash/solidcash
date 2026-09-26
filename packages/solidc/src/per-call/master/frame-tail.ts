@@ -19,8 +19,13 @@
  *
  * The arguments of a call are the pushes between its selector push and the redeem-script push that closes the
  * callee's unlocking bytecode. Both pushes are stripped, so the arguments are however many pushes the callee
- * carries — none for a call with no arguments, in which case the hash is over the selector bytes alone. Segment
- * settlement — the records a segment computed equalling its `viewOut` — is a separate stream and is not emitted.
+ * carries — none for a call with no arguments, in which case the hash is over the selector bytes alone.
+ *
+ * The sections after the calls are checked, not dropped. The segment count is the call count plus one; every
+ * segment's records are walked and each entry's shape is checked, so a record is kept in place, created or
+ * deleted and never moved. The event and send counts are the ones the entry fixes, and each listed output is
+ * checked: an event output carries the contract's category with no capability, and a send output is a user's
+ * P2PKH lock. The last check is that nothing follows the final field, which is what makes the walk exact.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -45,20 +50,210 @@ export interface MasterCallSite {
 }
 
 /**
- * Consumes the tail of a witness block, requiring it to describe exactly `callSites` external calls.
+ * The tail sections after the calls that a master's own code fixes.
+ *
+ * `segmentRecordCounts`, when present, is the record count every segment must declare, in segment order. It is
+ * absent when the records a segment touches are decided by settlement rather than by the entry, and the walk then
+ * consumes each segment's declared count. `eventCount` and `sendCount` are the event and send lists an entry
+ * fixes; a master with no call, event or send carries none of both.
+ */
+export interface MasterTailShape {
+  readonly segmentRecordCounts?: readonly number[];
+  readonly eventCount: number;
+  readonly sendCount: number;
+}
+
+/** A tail carrying no events and no sends, with every segment declaring no record. */
+export function zeroTailShape(callCount: number): MasterTailShape {
+  return { segmentRecordCounts: new Array<number>(callCount + 1).fill(0), eventCount: 0, sendCount: 0 };
+}
+
+/** The `u16` sentinel a record entry uses for an input or output index it does not have. */
+const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
+
+/** A 25-byte P2PKH locking bytecode: `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`. */
+const P2PKH_PREFIX = new Uint8Array([0x76, 0xa9, 0x14]);
+const P2PKH_SUFFIX = new Uint8Array([0x88, 0xac]);
+const P2PKH_LENGTH = 25;
+
+/**
+ * Requires the item on top to be a 25-byte `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` lock, leaving it.
+ *
+ * A root frame's caller and a listed value send are both user addresses, so the frame checks and the tail walk
+ * test the same shape from the same bytes.
+ */
+export function assertP2pkhShapeScript(): Uint8Array {
+  return new Uint8Array([
+    // Length.
+    Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP,
+    ...encodeDataPush(scriptNumber(P2PKH_LENGTH)), Opcodes.OP_NUMEQUALVERIFY,
+    // Prefix.
+    Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(P2PKH_PREFIX.length)),
+    Opcodes.OP_SPLIT, Opcodes.OP_DROP, ...encodeDataPush(P2PKH_PREFIX), Opcodes.OP_EQUALVERIFY,
+    // Suffix.
+    Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(P2PKH_LENGTH - P2PKH_SUFFIX.length)),
+    Opcodes.OP_SPLIT, Opcodes.OP_NIP, ...encodeDataPush(P2PKH_SUFFIX), Opcodes.OP_EQUALVERIFY,
+  ]);
+}
+
+/**
+ * Consumes the tail of a witness block, requiring it to describe exactly the calls, segments, events and sends
+ * the entry's code fixes.
  *
  * Entry `[..., tail]`, exit `[...]`. `retval` must be empty (a supported entry returns nothing), the call count
  * must equal the number of sites (a loop that varies it is not emitted), and each record is checked against its
- * site. The segment, event and send sections after the calls belong to settlement and are dropped.
+ * site. The segment count must be the call count plus one, and every segment's records are walked. The event and
+ * send counts must equal the shape's, and each listed output is checked. The remaining tail must be empty, so
+ * nothing follows the last field.
  */
-export function verifyTailScript(callSites: readonly MasterCallSite[]): Uint8Array {
+export function verifyTailScript(
+  callSites: readonly MasterCallSite[],
+  tail: MasterTailShape = zeroTailShape(callSites.length),
+): Uint8Array {
   const bytes: number[] = [];
   bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
-  bytes.push(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
-    ...encodeDataPush(scriptNumber(callSites.length)), Opcodes.OP_NUMEQUALVERIFY);
+  bytes.push(...requireU16Equals(callSites.length));
   for (const site of callSites) bytes.push(...callRecordChecks(site));
-  bytes.push(Opcodes.OP_DROP);
+  bytes.push(...requireU16Equals(callSites.length + 1));
+  for (let segment = 0; segment < callSites.length + 1; segment += 1) {
+    bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment]));
+  }
+  bytes.push(...requireU16Equals(tail.eventCount));
+  if (tail.eventCount > 0) bytes.push(...eventOutputSection(tail.eventCount));
+  bytes.push(...requireU16Equals(tail.sendCount));
+  if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
+  bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   return new Uint8Array(bytes);
+}
+
+/** Consumes a `u16` count and requires it to equal `expected`, leaving the tail on top. */
+function requireU16Equals(expected: number): number[] {
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+    ...encodeDataPush(scriptNumber(expected)), Opcodes.OP_NUMEQUALVERIFY,
+  ];
+}
+
+/**
+ * Consumes one segment's record list and checks each entry's shape.
+ *
+ * When the entry fixes the count the list is required to hold exactly that many records and is unrolled; without
+ * one the declared count is walked, because the records a segment touches are decided by settlement.
+ */
+function segmentRecordSection(expected: number | undefined): number[] {
+  if (expected === undefined) return recordWalkScript();
+  const bytes: number[] = [...requireU16Equals(expected)];
+  for (let entry = 0; entry < expected; entry += 1) bytes.push(...recordEntryCheck());
+  return bytes;
+}
+
+/**
+ * Consumes a segment's record list whose length the entry does not fix, checking each entry's shape.
+ *
+ * The count is not known, so it is read and its entries walked. The walk is guarded so a segment with no record
+ * consumes none: the loop runs at least once, so a zero count would otherwise read a record that is not there.
+ * The count and the cursor sit below the tail on the main stack, so the tail stays on top for the field reader.
+ */
+function recordWalkScript(): number[] {
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP,
+    Opcodes.OP_0, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(2)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_BEGIN,
+    ...recordEntryCheck(),
+    // cursor += 1, then continue while cursor < count.
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK,
+    Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+  ];
+}
+
+/** Consumes one record entry and requires its shape: kept in place, created, or deleted. */
+function recordEntryCheck(): number[] {
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
+    ...skipLengthPrefixed32(),
+    ...skipLengthPrefixed32(),
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
+    ...requireRecordShape(),
+  ];
+}
+
+/** Consumes an `lp32` field from the front of the tail and drops its payload. */
+function skipLengthPrefixed32(): number[] {
+  return [...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_DROP];
+}
+
+/**
+ * Requires the two record indices on top to describe a kept, created or deleted record, leaving the tail.
+ *
+ * Entry `[..., tail, out, in]`, exit `[..., tail]`. A kept record recreates at its own index, a created one has
+ * no input index and a deleted one no output index. An entry that both creates and deletes, or that moves an
+ * index, is refused.
+ */
+function requireRecordShape(): number[] {
+  // a = in has no index, b = out has no index, c = the indices are equal.
+  return [
+    Opcodes.OP_DUP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_EQUAL, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
+    // valid = (a or b or c) and not (a and b).
+    Opcodes.OP_2DUP, Opcodes.OP_BOOLAND, Opcodes.OP_NOT, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_BOOLAND, Opcodes.OP_VERIFY,
+  ];
+}
+
+/**
+ * Consumes the event list, requiring each output to carry the contract's category with no capability.
+ *
+ * The category comes from the active input's own token, which the prologue already proved is the contract's
+ * category with minting capability; dropping that capability byte leaves the pin an immutable token carries. The
+ * listed outputs must strictly increase, so no two events share one and their order is fixed.
+ */
+function eventOutputSection(count: number): number[] {
+  const bytes: number[] = [Opcodes.OP_1NEGATE, Opcodes.OP_TOALTSTACK];
+  for (let event = 0; event < count; event += 1) {
+    bytes.push(
+      ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+      Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
+      ...immutableCategoryScript(), Opcodes.OP_EQUALVERIFY,
+      Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK,
+    );
+  }
+  bytes.push(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP);
+  return bytes;
+}
+
+/** Leaves the active input's category without a capability byte: the token category an immutable token carries. */
+function immutableCategoryScript(): number[] {
+  return [
+    Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY,
+    ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+  ];
+}
+
+/** Consumes the send list, requiring each output to be a user's P2PKH lock. */
+function sendOutputSection(count: number): number[] {
+  const bytes: number[] = [];
+  for (let send = 0; send < count; send += 1) {
+    bytes.push(
+      ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+      Opcodes.OP_OUTPUTBYTECODE,
+      ...assertP2pkhShapeScript(),
+      Opcodes.OP_DROP,
+    );
+  }
+  return bytes;
 }
 
 /** The checks one `calls[k]` record must satisfy, consuming it from the front of the tail. */
@@ -130,8 +325,8 @@ export function requireSingleMasterScript(): Uint8Array {
  * The input must hold a mutable NFT of some category `c`, and its redeem script — the last push of its unlocking
  * bytecode, after the transcript — must be `pin(c)` followed by a program hashing to the expected hash. The pin's
  * category is read from the redeem script and compared with the category the UTXO itself carries, so a validator
- * whose token is not the one its script pins is refused. P2SH32 consensus gives its lock as `addrV(c)`; the master
- * skips the transcript and never interprets it.
+ * whose token is not the one its script pins is refused. P2SH32 consensus gives its lock as `addrV(c)`, and the
+ * master skips the transcript and never interprets it.
  */
 export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
   return new Uint8Array([

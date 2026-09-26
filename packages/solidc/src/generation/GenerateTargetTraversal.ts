@@ -272,6 +272,7 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import { buildMasterHeadScript } from '../per-call/master/master-head.js';
+import { derivePerCallTailShape } from '../per-call/master/support.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -2872,10 +2873,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // several entries consumes, so a single-entry master has the call arm drop it.
     const frameKinds = [FrameKind.ROOT, FrameKind.CALL];
     const callDataSelectorUnconsumed = entries.length === 1;
+    // The head checks the whole tail, so the entry has to fix the event and send counts it holds. The shape is
+    // derived from the entries themselves; a shape whose counts the entries do not fix refuses by name here.
+    const tail = derivePerCallTailShape(entries, node.emitsEvent);
+    if (tail.tail === undefined) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master head cannot check this contract's tail: ${tail.reason}`,
+        { contract: node.name, reason: tail.reason },
+      );
+    }
     // The head is a script, not a single data item: emit its bytes as opcodes.
     this.emit([...buildMasterHeadScript({
       blockOnTop,
       frameKinds,
+      tail: tail.tail,
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
@@ -6308,8 +6320,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ownerIsLastArgument: node.messageBusOwnerIsLastArgument,
         }));
       }
-      // Feature flag from CompilerOptions (normalized from explicit option or SOLIDC_OWNER_ALT_ANCHOR).
-      const ownerAnchorEnabled = this.compilerOptions.ownerAltAnchor === true;
       // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
       // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that
@@ -20004,7 +20014,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(__graph_emission_row)');
-    const expected = '__internal__graphEmissions';
     this.debugRowAssembly('row-without-result');
     this.emitRowHeadCheck(locationData);
     // The prefix (row without its result frame) is what the returning path compares against the stream; asserting

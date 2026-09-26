@@ -34,16 +34,14 @@ import {
   splitFirstPushScript,
 } from './witness-reader.js';
 import {
+  assertP2pkhShapeScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
   verifyTailScript,
+  zeroTailShape,
   type MasterCallSite,
+  type MasterTailShape,
 } from './frame-tail.js';
-
-/** A 25-byte P2PKH locking bytecode: `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`. */
-const P2PKH_PREFIX = new Uint8Array([0x76, 0xa9, 0x14]);
-const P2PKH_SUFFIX = new Uint8Array([0x88, 0xac]);
-const P2PKH_LENGTH = 25;
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -99,6 +97,11 @@ export interface MasterHeadOptions {
    * kind match, and the result is empty.
    */
   readonly calls?: readonly MasterCallSite[];
+  /**
+   * The event and send counts, and any per-segment record counts, the entry fixes. Without one the walk requires
+   * no event, no send and no record in any segment.
+   */
+  readonly tail?: MasterTailShape;
 }
 
 /** The frame kind of a user's call. */
@@ -143,6 +146,7 @@ class HeadEmitter {
   private addressSlot = -1;
   private validatorHashSlot = -1;
   private readonly callSites: readonly MasterCallSite[];
+  private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
   private readonly composed: boolean;
@@ -150,6 +154,7 @@ class HeadEmitter {
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
+    this.tailShape = options.tail ?? zeroTailShape(this.callSites.length);
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
@@ -234,7 +239,7 @@ class HeadEmitter {
    * half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites));
+    this.emitBytes(verifyTailScript(this.callSites, this.tailShape));
     this.forget('rest');
     this.assertFrameKindRoot();
     this.assertNoValidator();
@@ -259,7 +264,7 @@ class HeadEmitter {
    * constant, and the call records are the ones its sites name.
    */
   private composedFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites));
+    this.emitBytes(verifyTailScript(this.callSites, this.tailShape));
     this.forget('rest');
     this.assertCallerIsNotSelf();
     this.assertSelfEqualsReservedAddress();
@@ -491,27 +496,7 @@ class HeadEmitter {
 
   /** Verifies the item on top is a 25-byte `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` lock. */
   private assertP2pkhShape(): void {
-    // Length.
-    this.dup();
-    this.emitOp(Opcodes.OP_SIZE);
-    this.push('size');
-    this.nip();
-    this.pushNumber(P2PKH_LENGTH);
-    this.numequalVerify();
-    // Prefix.
-    this.dup();
-    this.pushNumber(P2PKH_PREFIX.length);
-    this.split();
-    this.dropTop();
-    this.pushData(P2PKH_PREFIX);
-    this.equalVerify();
-    // Suffix.
-    this.dup();
-    this.pushNumber(P2PKH_LENGTH - P2PKH_SUFFIX.length);
-    this.split();
-    this.nip();
-    this.pushData(P2PKH_SUFFIX);
-    this.equalVerify();
+    this.emitBytes(assertP2pkhShapeScript());
   }
 
   private assertSelfEqualsReservedAddress(): void {

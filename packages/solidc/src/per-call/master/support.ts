@@ -12,8 +12,17 @@
 
 import { FrameKind, computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
-import { ContractNode, ExternalCallMode, FunctionDefinitionNode, InterfaceNode } from '../../ast/AST.js';
-import type { MasterCallSite } from './frame-tail.js';
+import {
+  ContractNode,
+  DoWhileNode,
+  EmitStatementNode,
+  ExternalCallMode,
+  FunctionDefinitionNode,
+  InterfaceNode,
+  WhileNode,
+} from '../../ast/AST.js';
+import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
+import type { MasterCallSite, MasterTailShape } from './frame-tail.js';
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -73,6 +82,8 @@ export interface PerCallMasterShapeAssessment {
   readonly reason?: string;
   /** The calls every entry makes, in execution order, which the master head checks. */
   readonly calls?: readonly MasterCallSite[];
+  /** The event and send counts every entry fixes, which the master head checks. */
+  readonly tail?: MasterTailShape;
 }
 
 /** Assesses whether the contract can be emitted as a per-call master program. */
@@ -107,9 +118,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (input.needsInlineAssembly) {
     return refuse('inline assembly is not composed per-call');
   }
-  if (input.emitsEvent) {
-    return refuse('an emitted event needs the witness `events[]` checks, which are not emitted yet');
-  }
   for (const entry of entryPoints) {
     if (entry.returnTypes.length > 0) {
       return refuse(`the entry point '${entry.name}' returns a value, which is settled against the witness `
@@ -134,7 +142,73 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   }
   const calls = derivePerCallMasterCallSites(input.interfaces, entryPoints);
   if (!calls.supported) return refuse(calls.reason);
-  return { supported: true, calls: calls.calls };
+  const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
+  if (tail.reason !== undefined) return refuse(tail.reason);
+  return { supported: true, calls: calls.calls, tail: tail.tail };
+}
+
+/** The event and send counts a master's tail carries, or why a compiled entry cannot fix them. */
+export interface PerCallTailDerivation {
+  readonly tail?: MasterTailShape;
+  readonly reason?: string;
+}
+
+/**
+ * Derives the event and send counts a master's tail has to declare, from the entries the master runs.
+ *
+ * A master has one head that checks one tail, so every entry must emit the same number of events; an entry that
+ * emits from a loop leaves the count to the loop, which the head cannot fix. A value send is a listed send only
+ * when its recipient is a user address and a call when it is a contract, and the recipient's lock type is a
+ * run-time value, so the send list is not fixed by the source and a transfer is refused rather than guessed.
+ * Segments are not fixed here: the records a segment touches are decided by settlement, so the head walks each
+ * segment's declared count.
+ */
+export function derivePerCallTailShape(
+  entryPoints: readonly FunctionDefinitionNode[],
+  emitsEvent: boolean,
+): PerCallTailDerivation {
+  let eventCount = 0;
+  for (const [index, entry] of entryPoints.entries()) {
+    if ((entry.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(entry)) {
+      return { reason: 'an event emitted from a loop makes the event count depend on the loop, so the master '
+        + 'cannot fix how many events the tail holds' };
+    }
+    const entryEventCount = entry.emitInfos?.length ?? 0;
+    if (index === 0) eventCount = entryEventCount;
+    else if (entryEventCount !== eventCount) {
+      return { reason: 'the entries emit different numbers of events, but a master has one head that checks one '
+        + 'event list' };
+    }
+  }
+  if (emitsEvent && eventCount === 0) {
+    return { reason: 'the contract emits an event that is not attributed to an entry, so the master cannot fix '
+      + 'how many events the tail holds' };
+  }
+  for (const entry of entryPoints) {
+    if ((entry.transferInfos?.length ?? 0) > 0 || (entry.runtimeLoopTransfers?.length ?? 0) > 0) {
+      return { reason: 'a value send is a listed send only when its recipient is a user address and a call when '
+        + 'it is a contract, and the recipient lock is a run-time value, so the master cannot fix how many sends '
+        + 'the tail holds' };
+    }
+  }
+  return { tail: { eventCount, sendCount: 0 } };
+}
+
+/**
+ * True when the entry reaches an emit statement inside a loop, so the number of events it emits depends on the
+ * loop's trip count. A source loop is a `while` or `do`/`while` node after parsing, and a lowering that turns one
+ * into a counted trailing stream records it in `runtimeLoopEvents` instead.
+ */
+function emitsFromLoop(entry: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(entry.body, (node) => {
+    const isLoop = node instanceof WhileNode || node instanceof DoWhileNode;
+    if (found || !isLoop) return;
+    walkInvocationAst(node, (inner) => {
+      if (inner instanceof EmitStatementNode && inner.runtimeLoopEvent === undefined) found = true;
+    });
+  });
+  return found;
 }
 
 /** The call sites every entry makes, or why the head cannot check them. */

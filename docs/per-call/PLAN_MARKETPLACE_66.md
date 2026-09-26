@@ -1032,3 +1032,17 @@ Titles marked NEVER have not passed on any real compile to date.
 - The standalone settlement census refuses every mutable token of the contract other than the record it declares, so a self-settling master of X in a transaction that also spends a validator of X's own category — which the spec's S2 allows — is refused. The validator's recreated token has to be admitted; latent while a self-settling master can still make no external call.
 - A listed send carries no paying record on the wire, so the value floor is emitted only for an entry that lists no send. The spec was reverted to the wire form rather than the codec version-bumped: v1 pays a send from the contract's state record, and the 66 make no BCH send.
 - The harness is not pointed at the composition path, and the size budget stays in Phase R after M2 as decided.
+- The cross-segment chain is emitted: a master walks every segment of its execution in order, so the first declaration
+  begins at the commitment the transaction spends, each later one carries on from the one before it, and the last ends
+  at the commitment the transaction writes, and the census runs once over the whole chain. The chain's registers park
+  on the alternate stack between segments. Because the settlement is emitted in the validator arm too, behind a count
+  of the contract's masters, a master that makes ordinary calls now settles its own records whenever it is its
+  category's only master in the transaction, which the spec's S clause allows and which a single-master callee needs.
+  One chain per master: a segment declaring several records, a later segment declaring a record the chain does not
+  name, and a segment whose declaration does not chain are refused fail-closed rather than settled partly.
+- A compiled body still reads its state as `OP_INPUTINDEX + offset`, so in a composed transaction the record has to sit
+  immediately after its master; reading it out of the segment views instead is the remaining gap between a master's
+  declaration and the state its body computed. A body whose record sits elsewhere is refused, not silently misread.
+- The settlement's own tests are 13 cases that drive the emitted walk on its own over real witness blocks and
+  transactions (chained, unchained, empty segments, created and deleted records, an undeclared state UTXO, a value
+  loss, a block with a call record) and 7 that drive a compiled stateful master whose execution is split at a call.

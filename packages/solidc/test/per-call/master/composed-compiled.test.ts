@@ -237,8 +237,8 @@ describe('two compiled masters that call each other', () => {
   it('refuses a call frame that names no validator', () => {
     // A message-call frame's facts are the validator's to bind, so the frame cannot stand alone.
     expect(accepted({ dropValidatorOnCallee: true }, CALLEE_INDEX)).toBe(false);
-    // The validator itself is untouched, so the refusal is the callee's own.
-    expect(accepted({ dropValidatorOnCallee: true }, VALIDATOR_INDEX)).toBe(true);
+    // The call names a master that no longer points here, so the validator refuses the same frame.
+    expect(accepted({ dropValidatorOnCallee: true }, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('refuses a call frame that claims the root frame\'s P2PKH caller', () => {
@@ -246,7 +246,8 @@ describe('two compiled masters that call each other', () => {
     // on a caller that is itself a master.
     const rootClaim = { calleeKind: 0, calleeCallerRef: CALLER_INDEX, calleeOriginRef: CALLER_INDEX };
     expect(accepted(rootClaim, CALLEE_INDEX)).toBe(false);
-    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(true);
+    // The call recorded a message frame, so a callee that presents a root frame fails the validator as well.
+    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('refuses a call frame that claims the root frame\'s zero value', () => {
@@ -256,6 +257,7 @@ describe('two compiled masters that call each other', () => {
       calleeSender: USER_LOCK, calleeValue: 1n,
     };
     expect(accepted(rootClaim, CALLEE_INDEX)).toBe(false);
-    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(true);
+    // The call recorded a message frame of value zero, so this root claim fails the validator as well.
+    expect(accepted(rootClaim, VALIDATOR_INDEX)).toBe(false);
   });
 });

@@ -385,8 +385,8 @@ describe('a master that calls another master, covered by one validator', () => {
     mutated[0] ^= 0xff;
     const results = verdicts({ argsHash: mutated });
     expect(results[A_INDEX].accepted).toBe(false);
-    // The validator is untouched, so the refusal is the caller's own check.
-    expect(results[VALIDATOR_INDEX].accepted).toBe(true);
+    // The validator recomputes the digest from the callee's pushes, so a different record fails there too.
+    expect(results[VALIDATOR_INDEX].accepted).toBe(false);
   });
 
   it('has a caller that fails when the recorded argument hash is another selector of the callee', () => {

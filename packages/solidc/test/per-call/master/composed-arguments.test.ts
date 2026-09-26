@@ -252,9 +252,9 @@ describe('a caller that passes an argument to its callee', () => {
     const mutated = new Uint8Array(argsHash(calleeSelectorOf(compile(WITH_ARGUMENT)), ARGUMENT_PUSHES));
     mutated[0] ^= 0xff;
     expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, CALLER_INDEX)).toBe(false);
-    // The callee and the validator are untouched, so the refusal is the caller's own check.
+    // The callee does not recompute the caller's digest. The validator does, from the callee's own pushes.
     expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, CALLEE_INDEX)).toBe(true);
-    expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(true);
+    expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('is refused when the argument and the recorded hash are changed together', () => {
@@ -276,8 +276,8 @@ describe('a caller that passes an argument to its callee', () => {
     // The callee still accepts `8 > 0`, so only the caller's digest can refuse the composition.
     expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, CALLEE_INDEX)).toBe(true);
     expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, CALLER_INDEX)).toBe(false);
-    // The recorded hash still names the original argument, so the callee's new push no longer hashes to it.
-    expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, VALIDATOR_INDEX)).toBe(true);
+    // The recorded hash still names the original argument, so the callee's new push fails the validator too.
+    expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('runs the callee body with the argument it was entered with', () => {
@@ -305,7 +305,7 @@ describe('a caller that passes no argument still works the same way', () => {
     const mutated = new Uint8Array(sha256(calleeSelectorOf(compile(WITHOUT_ARGUMENT))));
     mutated[0] ^= 0xff;
     expect(accepted(WITHOUT_ARGUMENT, { recordedArgsHash: mutated }, CALLER_INDEX)).toBe(false);
-    expect(accepted(WITHOUT_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(true);
+    expect(accepted(WITHOUT_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('is refused when the callee carries an argument push the caller did not record', () => {

@@ -269,7 +269,8 @@ describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual
     mutated[0] ^= 0xff;
     const results = verdicts({ argsHash: mutated });
     expect(results[CALLER_INDEX]).toBe(false);
-    expect(results[VALIDATOR_INDEX]).toBe(true);
+    // The validator recomputes the digest from the callee's pushes, so a different record fails there too.
+    expect(results[VALIDATOR_INDEX]).toBe(false);
   });
 
   it('has a caller refused for a hash type other than SIGHASH_ALL, while the callee is unaffected', () => {

@@ -10,7 +10,10 @@
  * convention while violating its frame rules.
  */
 
-import { ContractNode } from '../../ast/AST.js';
+import { FrameKind, computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import { ContractNode, ExternalCallMode, FunctionDefinitionNode, InterfaceNode } from '../../ast/AST.js';
+import type { MasterCallSite } from './frame-tail.js';
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -20,6 +23,17 @@ import { ContractNode } from '../../ast/AST.js';
  */
 const FRAME_PARAMETERS = new Set(['__internal__msgSenderCategory', '__internal__msgSenderAnchorIdx']);
 
+/**
+ * Synthetic parameters the direct path reads a call's co-spent input through.
+ *
+ * A master checks a call against the witness block's call records instead of a co-spent input, so these operands
+ * are not part of its frame and are not read by its body.
+ */
+const EXTERNAL_CALL_PARAMETERS = new Set([
+  '__internal__externalCallInputBase',
+  '__internal__externalReturnOutputIdx',
+]);
+
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
 export function stripFrameParameters(contract: ContractNode): void {
   const functions = [
@@ -27,16 +41,26 @@ export function stripFrameParameters(contract: ContractNode): void {
   ];
   for (const fn of functions) {
     if (!fn) continue;
-    fn.parameters = fn.parameters.filter((parameter) => !FRAME_PARAMETERS.has(parameter.name));
+    fn.parameters = fn.parameters.filter((parameter) =>
+      !FRAME_PARAMETERS.has(parameter.name) && !isExternalCallParameter(parameter.name));
   }
+}
+
+/** True for a call-index operand the master does not take: the base, a fixed anchor, or a per-slot master index. */
+function isExternalCallParameter(name: string): boolean {
+  return EXTERNAL_CALL_PARAMETERS.has(name)
+    || /^__internal__extcallAnchorIdx\d+$/.test(name)
+    || /^__internal__extcallMasterIdx\d+$/.test(name)
+    || /^__internal__loopTargets\d+$/.test(name);
 }
 
 export interface PerCallMasterShapeInput {
   readonly contract: ContractNode;
+  /** Interface definitions in the compiled unit, for resolving the selector a call site names. */
+  readonly interfaces: readonly InterfaceNode[];
   /** File-level (free/library) functions in the compiled unit; a head must be the first thing emitted. */
   readonly freeFunctionCount: number;
   readonly importCount: number;
-  readonly needsExternalCallLowering: boolean;
   readonly hasContractInstantiation: boolean;
   readonly hasFunctionPointers: boolean;
   readonly needsInlineAssembly: boolean;
@@ -47,6 +71,8 @@ export interface PerCallMasterShapeAssessment {
   readonly supported: boolean;
   /** Why the shape is refused, phrased as a fact about the contract. */
   readonly reason?: string;
+  /** The calls every entry makes, in execution order, which the master head checks. */
+  readonly calls?: readonly MasterCallSite[];
 }
 
 /** Assesses whether the contract can be emitted as a per-call master program. */
@@ -68,10 +94,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const entryPoints = contract.functions.filter((fn) => fn.isEntryPoint);
   if (entryPoints.length === 0) {
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
-  }
-  if (input.needsExternalCallLowering || entryPoints.some((entry) => (entry.externalCalls?.length ?? 0) > 0)) {
-    return refuse('an external call needs the entry body lowered to a witness read, which is not emitted yet; '
-      + 'the call-shape checks themselves exist but nothing reaches them');
   }
   if (entryPoints.some((entry) => (entry.lowLevelCalls?.length ?? 0) > 0)) {
     return refuse('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
@@ -96,7 +118,9 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.
     const hidden = entry.parameters.filter((parameter) =>
-      parameter.name.startsWith('__internal__') && !FRAME_PARAMETERS.has(parameter.name));
+      parameter.name.startsWith('__internal__')
+      && !FRAME_PARAMETERS.has(parameter.name)
+      && !isExternalCallParameter(parameter.name));
     if (hidden.length > 0) {
       return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
         + 'which the master head does not supply');
@@ -108,5 +132,118 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       return refuse('a compute side-car needs co-spent inputs the master head does not locate');
     }
   }
-  return { supported: true };
+  const calls = derivePerCallMasterCallSites(input.interfaces, entryPoints);
+  if (!calls.supported) return refuse(calls.reason);
+  return { supported: true, calls: calls.calls };
+}
+
+/** The call sites every entry makes, or why the head cannot check them. */
+type CallSitesDerivation =
+  | { readonly supported: true; readonly calls: readonly MasterCallSite[] }
+  | { readonly supported: false; readonly calls: readonly MasterCallSite[]; readonly reason: string };
+
+/**
+ * Derives the call sites every entry of the contract makes, which the master head has to check.
+ *
+ * The head is one prefix, so it checks the same calls[] records whichever entry runs: every entry must make the
+ * same calls, and only calls whose shape the head's checks describe are admitted — a zero-argument call to a
+ * compile-time address whose result is unused. Anything else is refused by name, because the head would have to
+ * check a shape it cannot describe.
+ */
+function derivePerCallMasterCallSites(
+  interfaces: readonly InterfaceNode[],
+  entryPoints: readonly FunctionDefinitionNode[],
+): CallSitesDerivation {
+  const perEntry: MasterCallSite[][] = [];
+  for (const entry of entryPoints) {
+    const derived = deriveEntryCallSites(interfaces, entry);
+    if (derived.reason !== undefined) return { supported: false, calls: [], reason: derived.reason };
+    perEntry.push(derived.calls);
+  }
+  const first = perEntry[0] ?? [];
+  if (perEntry.some((calls) => !sameCallSites(calls, first))) {
+    return {
+      supported: false,
+      calls: [],
+      reason: 'the entries make different external calls, but a master has one head that checks one calls[] set',
+    };
+  }
+  return { supported: true, calls: first };
+}
+
+/** The call sites one entry makes, or why the head cannot check them. */
+function deriveEntryCallSites(
+  interfaces: readonly InterfaceNode[],
+  entry: FunctionDefinitionNode,
+): { calls: MasterCallSite[]; reason?: string } {
+  const calls: MasterCallSite[] = [];
+  for (const slot of entry.externalCalls ?? []) {
+    if (slot.hasReturnValues === true) {
+      return { calls: [], reason: `the call to '${slot.functionName}' returns a value, which the master head `
+        + 'reads from the witness but does not settle against a computed value yet' };
+    }
+    if ((slot.argSources?.length ?? 0) > 0 || (slot.rawArgSources?.length ?? 0) > 0) {
+      return { calls: [], reason: `the call to '${slot.functionName}' passes arguments, whose pushes the master `
+        + 'head does not read yet' };
+    }
+    if (slot.callMode !== undefined
+      && slot.callMode !== ExternalCallMode.REGULAR
+      && slot.callMode !== ExternalCallMode.STATICCALL) {
+      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
+        + 'master head cannot check' };
+    }
+    if (slot.addressLiteral === undefined) {
+      return { calls: [], reason: `the call to '${slot.functionName}' targets an address only known at run time, `
+        + 'which the master head cannot check against the witness record yet' };
+    }
+    if (slot.condition !== undefined || slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
+      || slot.inlineLoopDispatch === true || slot.runtimeSelector !== undefined || slot.fnPtrCall === true
+      || slot.opaqueReturn === true || slot.callValueEffect === true
+      || (slot.requiredDataNftIndices?.length ?? 0) > 0 || (slot.batchInvocations?.length ?? 0) > 1) {
+      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally, repeatedly or through a `
+        + 'runtime target, so its call records are not a fixed set the head can check' };
+    }
+    const selector = slot.compileTimeSelector
+      ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName);
+    if (selector === undefined) {
+      return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `
+        + 'selector the master head can check' };
+    }
+    calls.push({
+      kind: slot.callMode === ExternalCallMode.STATICCALL ? FrameKind.STATIC : FrameKind.CALL,
+      selector,
+      target: hexToBin(slot.addressLiteral),
+    });
+  }
+  return { calls };
+}
+
+/** The selector an interface method dispatches to, from its name and declared parameter types. */
+function resolveInterfaceSelector(
+  interfaces: readonly InterfaceNode[],
+  interfaceName: string,
+  functionName: string,
+): Uint8Array | undefined {
+  const iface = interfaces.find((candidate) => candidate.name === interfaceName);
+  const fn = iface?.functions.find((candidate) => candidate.name === functionName);
+  if (!fn) return undefined;
+  return computeFunctionSelector(
+    computeFunctionSignature(functionName, fn.parameters.map((parameter) => parameter.type.toString())),
+  );
+}
+
+/** True when two call-site lists describe the same calls, which is what lets one head check them all. */
+function sameCallSites(left: readonly MasterCallSite[], right: readonly MasterCallSite[]): boolean {
+  return left.length === right.length && left.every((site, index) => {
+    const other = right[index];
+    return other !== undefined
+      && site.kind === other.kind
+      && bytesEqual(site.selector, other.selector)
+      && bytesEqual(site.target, other.target);
+  });
+}
+
+/** Byte-wise equality, small enough not to pull in a dependency for it. */
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }

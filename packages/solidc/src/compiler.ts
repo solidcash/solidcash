@@ -58,6 +58,7 @@ import {
   resolveCompositionConvention,
 } from './per-call/master/composition.js';
 import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
+import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
   findPlaceholderOffsets,
   isPerCallMaster,
@@ -505,6 +506,10 @@ type InternalCompilerOptions = CompilerOptions & {
   __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
   /** Set once the parsed contract is admitted as a shape this compiler can emit a per-call master for. */
   __perCallMaster?: boolean;
+  /** The calls every entry makes, in execution order, as the master head checks them. */
+  __perCallCallSites?: readonly MasterCallSite[];
+  /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
+  __perCallReservesValidatorHash?: boolean;
 };
 
 const freezeKernelReadCarrierScopes = (
@@ -14001,9 +14006,9 @@ function compileResolvedAst(
     // compiling into a master that would violate its own frame rules.
     const assessment = assessPerCallMasterShape({
       contract: ast.contract,
+      interfaces: ast.interfaceDefinitions,
       freeFunctionCount: ast.freeFunctions.length,
       importCount: ast.imports.length,
-      needsExternalCallLowering,
       hasContractInstantiation,
       hasFunctionPointers,
       needsInlineAssembly,
@@ -14017,6 +14022,11 @@ function compileResolvedAst(
       );
     }
     stripFrameParameters(ast.contract);
+    // A master that makes a call is reached through one, so it checks that the validator it points at runs the
+    // expected program: the program's hash is reserved as a slot the deployment fills.
+    const callSites = assessment.calls ?? [];
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallCallSites = callSites;
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = callSites.length > 0;
     setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
   // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
@@ -14097,8 +14107,11 @@ function compileResolvedAst(
   );
   if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     // The slots are located in the finished script, after the optimiser: emission records them, but only the
-    // emitted bytes say where they survived.
-    const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script));
+    // emitted bytes say where they survived. A master that can be reached through a call reserves the third slot
+    // for the validator program's hash; one that stands alone reserves two.
+    const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
+      .__perCallReservesValidatorHash === true;
+    const offsets = findPlaceholderOffsets(scriptToBytecode(optimisationResult.script), reservesValidatorHash);
     artifact.composition = {
       convention: 'per-call',
       placeholders: { version: 1, ...offsets },

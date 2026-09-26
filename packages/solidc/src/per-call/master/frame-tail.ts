@@ -124,15 +124,20 @@ export function requireSingleMasterScript(): Uint8Array {
 }
 
 /**
- * Consumes a validator input index on top and requires it to name a validator for `templateHash`.
+ * Consumes a validator input index on top and requires it to name a validator for the hash in the reserved slot.
  *
- * Entry `[..., validatorIndex]`, exit `[...]`. The input must hold a mutable NFT of some category `c`, and its
- * redeem script — the last push of its unlocking bytecode, after the transcript — must be `pin(c)` followed by a
- * program hashing to `templateHash`. The pin's category is read from the redeem script and compared with the
- * category the UTXO itself carries, so a validator whose token is not the one its script pins is refused.
- * P2SH32 consensus gives its lock as `addrV(c)`; the master skips the transcript and never interprets it.
+ * Entry `[..., reservedHash, validatorIndex]`, exit `[...]`. The expected hash is the master's reserved slot, which
+ * the head pushes immediately beneath the index: its value exists only once the validator is deployed, so it is a
+ * slot rather than a constant the compile could bake in. `reservedHash` sits four items below the hash this
+ * comparison computes, which is what fixes the pick's depth.
+ *
+ * The input must hold a mutable NFT of some category `c`, and its redeem script — the last push of its unlocking
+ * bytecode, after the transcript — must be `pin(c)` followed by a program hashing to the expected hash. The pin's
+ * category is read from the redeem script and compared with the category the UTXO itself carries, so a validator
+ * whose token is not the one its script pins is refused. P2SH32 consensus gives its lock as `addrV(c)`; the master
+ * skips the transcript and never interprets it.
  */
-export function recogniseValidatorScript(templateHash: Uint8Array): Uint8Array {
+export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
   return new Uint8Array([
     Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY,
     // The category plus its capability byte: 33 bytes, and a mutable NFT is capability 0x01.
@@ -144,12 +149,15 @@ export function recogniseValidatorScript(templateHash: Uint8Array): Uint8Array {
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_INPUTBYTECODE,
     ...dropFirstPushScript(), ...splitFirstPushScript(),
     Opcodes.OP_0, Opcodes.OP_EQUALVERIFY,
-    // `pin(c) || program`: the pin is 33 bytes, and the program must hash to the constant.
+    // `pin(c) || program`: the pin is 33 bytes, and the program must hash to the reserved slot, four items below
+    // the computed hash.
     ...encodeDataPush(scriptNumber(33)), Opcodes.OP_SPLIT,
-    Opcodes.OP_SHA256, ...encodeDataPush(templateHash), Opcodes.OP_EQUALVERIFY,
+    Opcodes.OP_SHA256, ...encodeDataPush(scriptNumber(4)), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
     // The pin's category must be the category the UTXO carries.
     Opcodes.OP_1, Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY,
     Opcodes.OP_NIP, Opcodes.OP_DROP,
+    // The reserved hash, consumed with the index.
+    Opcodes.OP_DROP,
   ]);
 }
 

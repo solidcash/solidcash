@@ -271,6 +271,7 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import { buildMasterHeadScript } from '../per-call/master/master-head.js';
+import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -961,6 +962,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   finalStackUsage: Record<string, StackItem> = {};
   /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
   private perCallMaster = false;
+  /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
+  private perCallReservesValidatorHash = false;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -1790,6 +1793,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
     this.perCallMaster = (compilerOptions as { __perCallMaster?: boolean }).__perCallMaster === true;
+    this.perCallReservesValidatorHash = (compilerOptions as {
+      __perCallReservesValidatorHash?: boolean;
+    }).__perCallReservesValidatorHash === true;
   }
 
   // Outlining splices bodies element-for-element, so their location data must be exactly as long as the script.
@@ -2767,7 +2773,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.requires = optimised.requires;
     }
 
-    this.poolTopLevelConstants(node);
+    // A master that reserves the validator program hash slot must keep its head first: the pooling pass prepends
+    // the definitions it shares, which would move a reserved slot into a body and leave the fill writing inside a
+    // push. A master that stands alone reserves no such slot, so it keeps the program it had.
+    if (!this.perCallReservesValidatorHash) this.poolTopLevelConstants(node);
 
     return node;
   }
@@ -2854,8 +2863,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
     // an argument; otherwise it sits below them as the unlocking bytecode's first push.
     const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
+    const perCallOptions = this.compilerOptions as { __perCallCallSites?: readonly MasterCallSite[] };
+    const calls = perCallOptions.__perCallCallSites ?? [];
+    const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
     // The head is a script, not a single data item: emit its bytes as opcodes.
-    this.emit([...buildMasterHeadScript({ blockOnTop }).script], loc);
+    this.emit([...buildMasterHeadScript({
+      blockOnTop,
+      ...(calls.length > 0 ? { calls } : {}),
+      ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
+    }).script], loc);
     this.pushToStack('__internal__frameSelf');
     this.pushToStack('__internal__frameValue');
     this.pushToStack('__internal__frameSender');
@@ -7133,7 +7149,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasExternalReads) {
         this.emitExternalReadVerification(node);
       }
-      if (!this.functionHasDelegatecall && hasExternalCalls && !node.graphEmissionHandler) {
+      if (!this.functionHasDelegatecall && hasExternalCalls && !node.graphEmissionHandler && !this.perCallMaster) {
         this.emitExternalCallVerification(node);
       }
       if (!this.functionHasDelegatecall && hasExternalOutStateReads) {
@@ -19018,6 +19034,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitExternalFunctionCall(node: ExternalFunctionCallNode): Node {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
+    // A per-call master checks each call against the witness block's call records in its head, so the body emits
+    // nothing for the call itself. The shape is admitted only when the call has no arguments and no result.
+    if (this.perCallMaster) return node;
     // Do NOT visit categoryExpression or parameters here - they were resolved during
     // semantic analysis. Visiting them would cause stack operations (OP_ROLL/OP_PICK)
     // that consume constructor parameters needed later by emitExternalCallVerification.

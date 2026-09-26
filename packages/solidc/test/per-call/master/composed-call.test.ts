@@ -105,8 +105,12 @@ function masterProgram(shape: MasterShape): { program: Uint8Array; lock: Uint8Ar
   const head = buildMasterHeadScript(shape.options);
   const filled = fillPlaceholders(
     head.script,
-    { version: 1, ...findPlaceholderOffsets(head.script) },
-    { category: shape.category, contractAddress: shape.address },
+    { version: 1, ...findPlaceholderOffsets(head.script, head.validatorHashSlotOffset !== undefined) },
+    {
+      category: shape.category,
+      contractAddress: shape.address,
+      ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
+    },
   );
   const program = new Uint8Array([...filled, ...(shape.body ?? new Uint8Array([Opcodes.OP_1]))]);
   return { program, lock: encodeLockingBytecodeP2sh32(hash256(program)) };
@@ -164,7 +168,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     options: {
       blockOnTop: true,
       frameKinds: [0, 1],
-      validatorTemplateHash: TEMPLATE_HASH,
+      reservesValidatorHashSlot: true,
       calls: [{ kind: 1, selector: CALLEE_SELECTOR, target: ADDRESS_B }],
     },
     // The head leaves the four frame values; a P2SH32 redeem script must end with exactly one item.
@@ -174,7 +178,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
   const callee = masterProgram({
     category: CATEGORY_B,
     address: ADDRESS_B,
-    options: { blockOnTop: false, frameKinds: [0, 1], validatorTemplateHash: TEMPLATE_HASH, calls: [] },
+    options: { blockOnTop: false, frameKinds: [0, 1], reservesValidatorHashSlot: true, calls: [] },
     // The head leaves the four frame values above the callee's own selector push.
     body: new Uint8Array([
       Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,

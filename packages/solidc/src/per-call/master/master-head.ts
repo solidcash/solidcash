@@ -8,7 +8,9 @@
  *
  * The category is only known once the contract is deployed, so the head reserves a zero-filled slot for it and
  * builds the pin at run time by appending the capability byte. Deployment fills that slot in place. The address
- * `addrX` the frame presents as `address(this)` is reserved the same way.
+ * `addrX` the frame presents as `address(this)` and the hash of the validator program a covering master recognises
+ * are reserved the same way. The validator program's hash is reserved only by a master that can be reached through
+ * a call: a master that stands alone never reads it, so a standalone contract reserves no slot for it.
  *
  * The reader leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]`. The tail `rest` is
  * walked rather than dropped: a standalone master has to know it made no call and is its category's only master,
@@ -16,21 +18,21 @@
  * `[origin, sender, value, self]`, which the caller registers as tracked slots. `origin` is the locking bytecode
  * of `originRef`, i.e. `tx.origin`.
  *
- * A master admits the standalone shape by default. Given the validator program's hash, one that makes calls and
- * the frame kinds a callee runs are also emittable, which is what a compiled master of a composing contract will
- * use once the entry body's call cases are lowered; until then the compiler emits the standalone shape only.
+ * A master admits the standalone shape by default. A master that reserves the validator hash slot admits the
+ * composed shape: it recognises the validator its `validatorRef` names, checks the call records its `calls` name,
+ * and can admit the frame kinds a callee runs.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
 import { TokenCapability } from '@solidcash/utils';
-import { CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, placeholderPush } from './placeholders.js';
+import { CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, placeholderPush } from './placeholders.js';
 import {
   readFrameFieldsScript,
   readFrameHeaderScript,
   readOwnWitnessBlockScript,
 } from './witness-reader.js';
 import {
-  recogniseValidatorScript,
+  recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
   verifyTailScript,
   type MasterCallSite,
@@ -43,7 +45,7 @@ const P2PKH_LENGTH = 25;
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
-/** The head a compiled master opens with, and where its two deployment-time constants sit. */
+/** The head a compiled master opens with, and where its deployment-time constants sit. */
 export interface MasterHead {
   /** The head bytes, emitted as the first thing in the master program. */
   script: Uint8Array;
@@ -51,6 +53,11 @@ export interface MasterHead {
   categorySlotOffset: number;
   /** Offset of the 35-byte contract address slot push within `script`. */
   addressSlotOffset: number;
+  /**
+   * Offset of the 32-byte validator-program-hash slot push within `script`, present only when the head recognises
+   * a validator. A master that stands alone never reads it and reserves no slot.
+   */
+  validatorHashSlotOffset?: number;
 }
 
 export interface MasterHeadOptions {
@@ -66,11 +73,12 @@ export interface MasterHeadOptions {
    */
   readonly frameKinds?: readonly number[];
   /**
-   * `H_V`, the hash of the validator program, which every covering master carries as a constant. A master given
-   * it recognises the validator its `validatorRef` names and admits the composed frame kinds; without it a
-   * validator reference is refused, because there is no constant to recognise the validator through.
+   * True when the master can be reached through a call, so it has to check that the validator its `validatorRef`
+   * names runs the expected program. The program's hash exists only once the validator is deployed, so the head
+   * reserves a slot for it and deployment fills it. Without the reservation a validator reference is refused,
+   * because there is nothing to recognise the validator through.
    */
-  readonly validatorTemplateHash?: Uint8Array;
+  readonly reservesValidatorHashSlot?: boolean;
   /**
    * The external calls the entry makes, in execution order. Each one's record in the witness block is checked
    * against the site: the callee is not this input, its call data carries the site's selector with no
@@ -100,6 +108,7 @@ export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
     script: head.finish(),
     categorySlotOffset: head.categorySlotOffset,
     addressSlotOffset: head.addressSlotOffset,
+    ...(head.validatorHashSlotOffset >= 0 ? { validatorHashSlotOffset: head.validatorHashSlotOffset } : {}),
   };
 }
 
@@ -115,18 +124,19 @@ class HeadEmitter {
   private readonly stack: string[] = [];
   private categorySlot = -1;
   private addressSlot = -1;
+  private validatorHashSlot = -1;
   private readonly callSites: readonly MasterCallSite[];
-  private readonly templateHash: Uint8Array | undefined;
+  private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
   private readonly composed: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
-    this.templateHash = options.validatorTemplateHash;
+    this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
-    this.composed = this.templateHash !== undefined
+    this.composed = this.reservesValidatorHashSlot
       || this.callSites.length > 0
       || this.admittedKinds.some((kind) => kind !== FRAME_KIND_ROOT);
   }
@@ -137,6 +147,10 @@ class HeadEmitter {
 
   get addressSlotOffset(): number {
     return this.addressSlot;
+  }
+
+  get validatorHashSlotOffset(): number {
+    return this.validatorHashSlot;
   }
 
   emitBytes(script: Uint8Array): void {
@@ -321,13 +335,16 @@ class HeadEmitter {
       },
       () => this.assertStandalone(),
       () => {
-        if (this.templateHash === undefined) {
-          throw new Error('master head: a validator reference needs the validator program hash to recognise it');
+        if (!this.reservesValidatorHashSlot) {
+          throw new Error('master head: a validator reference needs a reserved validator program hash slot');
         }
+        // The reserved hash sits beneath the index, which is what makes the recognition's pick depth fixed.
+        this.pushValidatorHashSlot();
         this.pick('validatorRef');
         this.bin2num();
-        this.emitBytes(recogniseValidatorScript(this.templateHash));
+        this.emitBytes(recogniseValidatorScriptAgainstReservedHash());
         this.pop(1);
+        this.forget('validatorHashSlot');
       },
     );
   }
@@ -460,6 +477,12 @@ class HeadEmitter {
     this.addressSlot = this.bytes.length;
     this.emitBytes(placeholderPush(ADDRESS_SLOT_LENGTH));
     this.push('addrX');
+  }
+
+  private pushValidatorHashSlot(): void {
+    this.validatorHashSlot = this.bytes.length;
+    this.emitBytes(placeholderPush(TEMPLATE_HASH_SLOT_LENGTH));
+    this.push('validatorHashSlot');
   }
 
   private pushData(data: Uint8Array): void {

@@ -16,7 +16,7 @@ import {
   getDefaultStateValue,
 } from '@solidcash/utils';
 import type {
-  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
+  AbiFunction, Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
   StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
@@ -84,6 +84,7 @@ import {
 } from './graph-handler-join.js';
 import { layoutInvariantError } from './diagnostics.js';
 import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
+import { isPendingBatchPredecessor } from './pending-batch-predecessor.js';
 import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
 import {
   finalizeMonotonePass,
@@ -1301,7 +1302,7 @@ export async function assembleAtomicComposition(
         // unlocker verbatim - so the published bytecode addresses an unrelated input.
         const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
         const masterUnlocker = local.inputs[0]?.unlocker as {
-          abiFunction?: { name?: string; inputs?: readonly { name: string }[] };
+          abiFunction?: AbiFunction;
           params?: unknown[];
           syncEncodedArgsFromParams?: (onlyIndices?: readonly number[]) => void;
         } | undefined;
@@ -1376,9 +1377,10 @@ export async function assembleAtomicComposition(
           const predecessor = typeof proof === 'bigint' && proof >= 0n && proof < BigInt(local.inputs.length)
             ? local.inputs[Number(proof)] : undefined;
           const predecessorCommitment = commitmentHex(predecessor?.token?.nft?.commitment);
-          const pendingInsert = value === -1n && targetSlot !== undefined
-            && predecessorCommitment.length >= 64
-            && predecessorCommitment.slice(0, 64).toLowerCase() !== targetSlot.toLowerCase();
+          const pendingInsert = masterUnlocker.abiFunction !== undefined && slot !== undefined
+            && isPendingBatchPredecessor(
+              masterUnlocker.abiFunction, masterUnlocker.params, Number(slot), predecessorCommitment,
+            );
           // A route INSERT can retain -1 until its P' output exists in this physical frame. Other negative
           // sentinels remain inactive; non-negative witnesses must still address the participant-local frame.
           if ((!layoutWitnessIsActiveCoordinate(value) && !pendingInsert)

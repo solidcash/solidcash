@@ -8,6 +8,7 @@ import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/u
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import { isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { compilerRouteUsesPhysicalWrapper } from './message-bus-resource-routing.js';
@@ -425,9 +426,12 @@ export function constructCreateBuilderTransactionBuilder(
         && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
         ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
         : undefined;
-      const updatesExistingTarget = targetSlot instanceof Uint8Array && targetSlot.length === 32
-        && predecessorCommitment?.slice(0, 64).toLowerCase() === binToHex(targetSlot).toLowerCase();
-      if (current < 0n && updatesExistingTarget) continue;
+      // A proof shared with another active target is recreated by that target's fixed output, not a separate P'.
+      // Preserve its sentinel even if the current target is absent; otherwise the structural fallback below
+      // invents an extra predecessor and the compiler's exact collection cardinality must reject the transaction.
+      if (current < 0n && !isPendingBatchPredecessor(
+        abiFunction, finalArgs, Number(slot), predecessorCommitment ?? '',
+      )) continue;
       if (current >= 0n && sameLock(outputLock(Number(current)), required)
         && (expectedPredOut === undefined
           || commitmentOf(Number(current))?.toLowerCase() === expectedPredOut.toLowerCase())) continue;

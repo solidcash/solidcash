@@ -201,20 +201,29 @@ export async function loadCreateBuilderDynamicChunks(
   const delegateStateCategoryId = delegateProxyGroupIndex === undefined
     ? host.categoryId : externalCallUtxoGroups[delegateProxyGroupIndex].categoryId;
   const delegateRouteAbi = delegateRouteGroup?.compilerRoute?.abiFunction;
-  const entryRouteRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-    ?.messageBusRowArguments;
   const delegateRouteRows = delegateRouteGroup?.compilerRoute?.rowArguments;
+  const selectedRowsFor = (
+    source: AbiFunction | undefined,
+  ): MessageBusRuntimeAbiFunction['messageBusRowArguments'] => (
+    source !== undefined && source === delegateRouteAbi && delegateRouteRows !== undefined
+      ? delegateRouteRows
+      : (source as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments
+  );
+  const entryRouteRows = selectedRowsFor(entryAbiFunction);
   const selectedRouteLoopMetadata = selectedMessageBusResourceMetadata([
     ...(entryRouteRows ?? []),
     ...(delegateRouteRows ?? []),
   ]);
   const selectedDelegateLoopMetadata = selectedMessageBusResourceMetadata(delegateRouteRows);
-  const entryLoopWrites = [...new Set([
-    ...(abiFunction?.entryLoopWrites ?? []),
-    ...(entryAbiFunction?.entryLoopWrites ?? []),
-    ...(delegateRouteAbi?.entryLoopWrites ?? []),
-    ...selectedRouteLoopMetadata.entryLoopWrites,
-  ])];
+  // The route ABI publishes the union of all dispatchable handlers, not the writes of this envelope.
+  // Registering an inactive collection here lets derivation seed a phantom NEW output, shifting every
+  // subsequent dynamic chunk. Select each source independently so a direct caller's own loops survive
+  // alongside selected delegate rows; absent row metadata retains the direct/legacy ABI behavior.
+  const entryLoopWrites = [...new Set([abiFunction, entryAbiFunction, delegateRouteAbi].flatMap((source) => {
+    const rows = selectedRowsFor(source);
+    return rows === undefined ? source?.entryLoopWrites ?? []
+      : selectedMessageBusResourceMetadata(rows).entryLoopWrites;
+  }))];
   // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
   // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
   // that order here or two collections written out of declaration order receive each other's locking bytecode.

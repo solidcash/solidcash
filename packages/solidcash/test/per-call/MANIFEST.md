@@ -14,7 +14,7 @@ Run one directory:
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 35 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 12 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 19 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
@@ -46,10 +46,12 @@ Total: 207 tests, all passing at the commit this file was added in.
 - **`solidcash/test/per-call/composer/`** — the resumable derivation (one program run per published site, no
   fixpoint), a re-entrant chain derived callee-first, witness and transcript assembly, block layout for the shapes
   the design lists, and both refusals.
-- **`solidcash/test/per-call/frames/`** — the master prologue evaluated in the BCH-2026 virtual machine against real
-  transactions: the category-ownership check and the recreation-in-place check each isolated, a faithful recreation
-  accepted, and the refusals attributed to the block under test, plus a stack-neutrality case proving the prologue
-  leaves the stack as it found it.
+- **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
+  virtual machine against real transactions. The prologue's two checks are exercised in isolation, a faithful
+  recreation is accepted, and a stack-neutrality case proves the prologue leaves the stack as it found it. The reader
+  recovers the block from the first push of the input's own unlocking bytecode, bounded by the length that push
+  declares, and then walks the frame fields; each field is compared against a value from outside the block, so a
+  wrong offset rejects, and one mutation per field is checked.
 
 ## What is not covered
 

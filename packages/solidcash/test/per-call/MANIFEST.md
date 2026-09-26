@@ -10,10 +10,10 @@ Run one directory:
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 29 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 35 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 35 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 58 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 27 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 28 |
@@ -23,7 +23,7 @@ Run one directory:
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 286 tests, all passing at the latest commit.
+Total: 315 tests, all passing at the latest commit.
 
 ## What each directory covers
 
@@ -55,7 +55,7 @@ Total: 286 tests, all passing at the latest commit.
 
 ## The shape the path currently carries
 
-A compiled master exists and is spent in a test: one inlined entry point, no selector dispatch, no external calls and no returns. The end-to-end test compiles a contract for the convention, deploys it through the shipped deployment, and has the virtual machine accept a real spend, with three controls refused.
+A compiled master exists and is spent in a test, for one entry point and for several: a contract with more than one entry point compiles to a single master whose entry is selected by the dispatcher selector. No external calls, no returns and no state settlement yet. The end-to-end test compiles a contract for the convention, deploys it through the shipped deployment, and has the virtual machine accept a real spend, with three controls refused.
 
 ## What is not covered
 

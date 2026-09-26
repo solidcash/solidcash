@@ -25,10 +25,10 @@ const ARG = new Uint8Array([0x09]);
 const empty = new Uint8Array(0);
 
 const callerMaster = (calls: PlannedMaster['calls']): PlannedMaster => ({
-  master: 'A0',
-  contract: 'A',
+  master: 'Ledger#0',
+  contract: 'Ledger',
   facts: {
-    contract: 'A',
+    contract: 'Ledger',
     functionName: 'deposit',
     kind: FrameKind.ROOT,
     callerIsUser: true,
@@ -49,10 +49,10 @@ const callerMaster = (calls: PlannedMaster['calls']): PlannedMaster => ({
 });
 
 const calleeMaster = (): PlannedMaster => ({
-  master: 'B0',
-  contract: 'B',
+  master: 'Vault#0',
+  contract: 'Vault',
   facts: {
-    contract: 'B',
+    contract: 'Vault',
     functionName: 'credit',
     kind: FrameKind.CALL,
     callerIsUser: false,
@@ -61,7 +61,7 @@ const calleeMaster = (): PlannedMaster => ({
     mastersOfContract: 1,
   },
   frame: { kind: FrameKind.CALL, sender: SELF_A, self: SELF_B, value: 0n },
-  enteredBy: 'A0',
+  enteredBy: 'Ledger#0',
   origin: USER_ID,
   calls: [],
   retval: empty,
@@ -72,28 +72,28 @@ const calleeMaster = (): PlannedMaster => ({
   redeemScript: new Uint8Array([0x53, 0x54]),
 });
 
-const callToB = (): PlannedMaster['calls'][number] => ({
+const callToVault = (): PlannedMaster['calls'][number] => ({
   kind: FrameKind.CALL,
-  callee: 'B0',
+  callee: 'Vault#0',
   target: SELF_B,
   value: 0n,
   argumentPushes: [SELECTOR, ARG],
   result: new Uint8Array([0x14]),
 });
 
-/** A plan whose A block holds master A0 and the validator, and whose B block holds master B0. */
+/** A plan whose first block holds the caller and the validator, and whose second holds the callee. */
 const planWithValidator = (): CompositionPlan => ({
   blocks: [
-    { contract: 'A', masters: ['A0'], validator: { id: 'VA', settles: [] }, state: [] },
-    { contract: 'B', masters: ['B0'], state: [] },
+    { contract: 'Ledger', masters: ['Ledger#0'], validator: { id: 'validator', settles: [] }, state: [] },
+    { contract: 'Vault', masters: ['Vault#0'], state: [] },
   ],
   userInputs: [{ id: USER_ID, index: USER_INDEX }],
-  masters: [callerMaster([callToB()]), calleeMaster()],
+  masters: [callerMaster([callToVault()]), calleeMaster()],
   validator: {
-    id: 'VA',
+    id: 'validator',
     // B is covered although it is not settled: it has one master that self-settles, but the call into it still
     // needs its edge bound.
-    covers: ['B'],
+    covers: ['Vault'],
     redeemScript: new Uint8Array([...CATEGORY, 0x01, 0x51, 0x52]),
     settles: [],
   },
@@ -107,7 +107,7 @@ function blockOf(input: { unlockingBytecode: Uint8Array }): ReturnType<typeof de
 describe('assembling a composition', () => {
   it('places every participant at the layout index and returns the inputs in that order', () => {
     const assembly = assembleComposition(planWithValidator());
-    expect(assembly.inputs.map((input) => `${input.id}@${input.index}`)).toStrictEqual(['A0@0', 'VA@1', 'B0@2']);
+    expect(assembly.inputs.map((input) => `${input.id}@${input.index}`)).toStrictEqual(['Ledger#0@0', 'validator@1', 'Vault#0@2']);
   });
 
   it('resolves each master\'s caller, origin and validator references to absolute indices', () => {
@@ -130,7 +130,7 @@ describe('assembling a composition', () => {
     const assembly = assembleComposition(planWithValidator());
     expect(assembly.calls).toHaveLength(1);
     expect(assembly.calls[0]!.calleeRef).toBe(2);
-    expect(assembly.calls[0]!.from).toBe('A0');
+    expect(assembly.calls[0]!.from).toBe('Ledger#0');
 
     // The hash in the block is the one the assembly reported, over the selector and the pushed argument.
     const caller = blockOf(assembly.inputs[0]!);
@@ -144,20 +144,20 @@ describe('assembling a composition', () => {
     const assembly = assembleComposition({
       ...plan,
       blocks: [
-        { contract: 'A', masters: ['A0', 'A1'], validator: { id: 'VA', settles: ['A'] }, state: ['DA'] },
-        { contract: 'B', masters: ['B0'], state: [] },
+        { contract: 'Ledger', masters: ['Ledger#0', 'Ledger#1'], validator: { id: 'validator', settles: ['Ledger'] }, state: ['DA'] },
+        { contract: 'Vault', masters: ['Vault#0'], state: [] },
       ],
-      masters: [callerMaster([callToB()]), calleeMaster(), { ...calleeMaster(), master: 'A1', contract: 'A' }],
+      masters: [callerMaster([callToVault()]), calleeMaster(), { ...calleeMaster(), master: 'Ledger#1', contract: 'Ledger' }],
       validator: {
-        id: 'VA',
-        covers: ['B'],
+        id: 'validator',
+        covers: ['Vault'],
         redeemScript: Uint8Array.from(plan.validator!.redeemScript),
         settles: [{ category: CATEGORY, stateInputs: ['DA'] }],
       },
     });
     expect(assembly.transcript).toBeDefined();
     const transcript = decodeTranscript(
-      splitFirstPush(assembly.inputs.find((input) => input.id === 'VA')!.unlockingBytecode).payload,
+      splitFirstPush(assembly.inputs.find((input) => input.id === 'validator')!.unlockingBytecode).payload,
     );
     // The layout puts A's masters and validator first, then its state, then B's block: A0@0, A1@1, VA@2, DA@3,
     // B0@4. A0 is the composition's only root and every master is covered.
@@ -171,7 +171,7 @@ describe('assembling a composition', () => {
   it('leaves the validator reference absent for a standalone master', () => {
     const plan = planWithValidator();
     const assembly = assembleComposition({
-      blocks: [{ contract: 'A', masters: ['A0'], state: [] }],
+      blocks: [{ contract: 'Ledger', masters: ['Ledger#0'], state: [] }],
       userInputs: plan.userInputs,
       masters: [callerMaster([])],
     });
@@ -184,7 +184,7 @@ describe('assembling a composition', () => {
     // A calls B, so A needs a validator; without one the composition cannot be checked.
     expect(() => assembleComposition({
       ...plan,
-      blocks: [{ contract: 'A', masters: ['A0'], state: [] }, { contract: 'B', masters: ['B0'], state: [] }],
+      blocks: [{ contract: 'Ledger', masters: ['Ledger#0'], state: [] }, { contract: 'Vault', masters: ['Vault#0'], state: [] }],
       validator: undefined,
     })).toThrow(ValidatorCoverageError);
   });
@@ -193,7 +193,7 @@ describe('assembling a composition', () => {
     const plan = planWithValidator();
     expect(() => assembleComposition({
       ...plan,
-      masters: [{ ...callerMaster([callToB()]), enteredBy: 'nobody' }, calleeMaster()],
+      masters: [{ ...callerMaster([callToVault()]), enteredBy: 'nobody' }, calleeMaster()],
     })).toThrow(UnresolvedReferenceError);
   });
 
@@ -201,7 +201,7 @@ describe('assembling a composition', () => {
     const plan = planWithValidator();
     expect(() => assembleComposition({
       ...plan,
-      masters: [{ ...callerMaster([{ ...callToB(), callee: 'A0' }]) }],
+      masters: [{ ...callerMaster([{ ...callToVault(), callee: 'Ledger#0' }]) }],
       validator: undefined,
     })).toThrow(/calls itself/);
   });
@@ -210,14 +210,14 @@ describe('assembling a composition', () => {
     const plan = planWithValidator();
     expect(() => assembleComposition({
       ...plan,
-      userInputs: [{ id: 'A0', index: 9 }],
+      userInputs: [{ id: 'Ledger#0', index: 9 }],
     })).toThrow(/both a participant and a user input/);
   });
 
   it('checks coverage through the same rule the composer exposes', () => {
     // The assembly must not invent its own admissibility rule.
     expect(() => assertValidatorCoverage([{
-      facts: callerMaster([callToB()]).facts,
+      facts: callerMaster([callToVault()]).facts,
       hasValidator: false,
     }])).toThrow(ValidatorCoverageError);
   });

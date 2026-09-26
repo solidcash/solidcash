@@ -17,7 +17,8 @@
  * walked rather than dropped: a standalone master has to know it made no call and is its category's only master,
  * and a composed one checks each call record against the site that made it. The checks consume everything but
  * `[origin, sender, value, self]`, which the caller registers as tracked slots. `origin` is the locking bytecode
- * of `originRef`, i.e. `tx.origin`.
+ * of `originRef`, i.e. `tx.origin`. Each listed event's output index is left as its own tracked slot above those
+ * frame values, so the body checks the payload it computed against the output the witness listed.
  *
  * A master admits the standalone shape by default. A master that reserves the validator hash slot admits the
  * composed shape: it recognises the validator its `validatorRef` names, checks the call records its `calls` name,
@@ -44,6 +45,17 @@ import {
 } from './frame-tail.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
+
+/**
+ * The tracked slot the body reads the output index of the `emitIndex`-th listed event from.
+ *
+ * The head's tail walk checks each listed event against the contract's category and capability; the output index
+ * it read is left here so the body can check the payload it computed against that output. The name follows the
+ * frame values the head leaves, which the body reaches the same way.
+ */
+export function eventOutputSlotName(emitIndex: number): string {
+  return `__internal__frameEventOutput_${emitIndex}`;
+}
 
 /** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
 const HASH_TYPE_ALL = 0x41;
@@ -230,6 +242,22 @@ class HeadEmitter {
   frameChecks(): void {
     if (this.composed) this.composedFrameChecks();
     else this.standaloneFrameChecks();
+    this.leaveEventSlots();
+  }
+
+  /**
+   * Moves the listed event output indices off the alt stack, where the tail walk parked them, so the body can read
+   * the one its emit names.
+   *
+   * Popping in reverse leaves the first event's index topmost, above the frame values the checks left, which is the
+   * order the body's tracked slots are registered in.
+   */
+  private leaveEventSlots(): void {
+    const count = this.tailShape.eventCount;
+    for (let popped = 1; popped <= count; popped += 1) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(eventOutputSlotName(count - popped));
+    }
   }
 
   /**

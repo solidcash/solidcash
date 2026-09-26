@@ -271,7 +271,7 @@ import {
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
-import { buildMasterHeadScript } from '../per-call/master/master-head.js';
+import { buildMasterHeadScript, eventOutputSlotName } from '../per-call/master/master-head.js';
 import { derivePerCallTailShape } from '../per-call/master/support.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
@@ -2410,14 +2410,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitEventOutputIndex(
     emitIndex: number, resolvedName: string | undefined, locationData: SingleLocationData,
   ): void {
-    if (resolvedName === undefined) {
+    const name = resolvedName ?? this.perCallEventOutputSlotName(emitIndex);
+    if (name === undefined) {
       this.emitBlockSlotIndex('event', emitIndex, locationData);
       return;
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex(resolvedName))), locationData);
+    this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
     this.emit(Op.OP_PICK, locationData);
   }
 
+  /**
+   * The tracked slot a per-call entry reads emit `emitIndex`'s listed output index from, when this is one.
+   *
+   * A per-call master has no block layout, so the index comes from the witness block's event list, which the head
+   * walks and leaves as a slot. A body that reaches an emit the head left no slot for refuses rather than reading a
+   * layout offset that does not exist.
+   */
+  private perCallEventOutputSlotName(emitIndex: number): string | undefined {
+    if (!this.perCallMaster) return undefined;
+    const name = eventOutputSlotName(emitIndex);
+    if (!this.stack.includes(name)) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master head left no output slot for emit ${emitIndex} while compiling `
+        + `'${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+    return name;
+  }
+
+  /** The output slots a per-call master left for the events its entry emits, in emit order. */
+  private perCallEventOutputSlots(emitCount: number): string[] {
+    const names: string[] = [];
+    for (let index = 0; index < emitCount; index += 1) {
+      const name = eventOutputSlotName(index);
+      if (this.stack.includes(name)) names.push(name);
+    }
+    return names;
+  }
 
   /**
    * X29. Satoshi-container identity + conservation for a graph emission handler's own transfers.
@@ -2896,6 +2927,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('__internal__frameValue');
     this.pushToStack('__internal__frameSender');
     this.pushToStack('__internal__frameOrigin');
+    // The head leaves each listed event's output index above the frame values, first event topmost. Registering
+    // them in reverse lets an inlined body read the index the witness listed instead of a block-layout offset.
+    for (let index = tail.tail.eventCount - 1; index >= 0; index -= 1) {
+      this.pushToStack(eventOutputSlotName(index));
+    }
   }
 
   visitContract(node: ContractNode): Node {
@@ -5152,10 +5188,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.isSubroutineUseProbe = this.isSubroutineUseProbe;
 
       // A per-call master's dispatched entry runs through OP_INVOKE, which pops the selector and leaves the head's
-      // four frame values on top of the constructor params. Seed them above the constructor names so this body
-      // reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the head's slots, as the inlined
-      // single-entry body does.
+      // event output slots, then its four frame values, on top of the constructor params. Seed them above the
+      // constructor names so this body reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the
+      // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
+        for (let index = 0; index < (func.emitInfos?.length ?? 0); index += 1) {
+          subTraversal.stack.push(eventOutputSlotName(index));
+        }
         subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
       }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
@@ -31706,14 +31745,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
 
       if (!resolveGraphEvent) {
-        // 1. Verify output commitment: block layout event offset OP_OUTPUTTOKENCOMMITMENT == encoded blob
+        // 1. Verify output commitment: the event's output carries the encoded blob
         const blobIdx = this.getStackIndex(stackName);
         this.emit(encodeInt(BigInt(blobIdx)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.pushToStack('(value)');
 
-        // Compute output index: event block slot + emitIndex
-        this.emitBlockSlotIndex('event', emitIndex, locationData);
+        // Resolve the event output index: the witness-block slot under per-call, the block slot otherwise.
+        this.emitEventOutputIndex(emitIndex, undefined, locationData);
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
         this.pushToStack('(value)');
 
@@ -31806,7 +31845,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.removeFromStack(expectedLockIndex);
       } else {
         // Get actual output locking bytecode
-        this.emitBlockSlotIndex('event', emitIndex, locationData);
+        this.emitEventOutputIndex(emitIndex, undefined, locationData);
         this.emit(Op.OP_OUTPUTBYTECODE, locationData);
         this.pushToStack('(value)');
 
@@ -31914,7 +31953,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Leaves the tracked stack unchanged: every value it pushes is consumed in the same span.
    */
   private emitNotTakenEventSlotBinding(emitIndex: number, locationData: SingleLocationData): void {
-    this.emitBlockSlotIndex('event', emitIndex, locationData);
+    this.emitEventOutputIndex(emitIndex, undefined, locationData);
     this.emitNotTakenEventAtComputedIndex(locationData);
   }
 
@@ -35016,7 +35055,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_BOOLAND, loc);                 // [cat, base, j, isAddressableEventCandidate]
     this.emit(Op.OP_IF, loc);
     // Leave one `allowed` boolean on top of [cat, base, j], then OP_VERIFY it.
-    if (allowedOffsets.length === 0) {
+    const perCallSlots = this.perCallMaster ? this.perCallEventOutputSlots(node.emitInfos?.length ?? 0) : undefined;
+    if (perCallSlots !== undefined) {
+      // A per-call master has no block layout: the event outputs are the ones the witness block lists, which the
+      // head has already checked for category and capability, so those listed indices are the admitted ones.
+      this.emit(encodeBool(false), loc);           // [cat, base, j, allowed]
+      for (const slot of perCallSlots) {
+        this.emit(Op.OP_OVER, loc);                // [cat, base, j, allowed, j]
+        this.emitPickTrackedFromBottom(slot, loc); // [cat, base, j, allowed, j, listed]
+        this.emit(Op.OP_NUMEQUAL, loc);            // [cat, base, j, allowed, match]
+        this.emit(Op.OP_BOOLOR, loc);              // [cat, base, j, allowed]
+      }
+    } else if (allowedOffsets.length === 0) {
       this.emit(encodeBool(false), loc);           // [cat, base, j, allowed]
     } else {
       this.emit(Op.OP_DUP, loc);                   // [cat, base, j, j]

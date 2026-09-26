@@ -26,6 +26,9 @@
  * deleted and never moved. The event and send counts are the ones the entry fixes, and each listed output is
  * checked: an event output carries the contract's category with no capability, and a send output is a user's
  * P2PKH lock. The last check is that nothing follows the final field, which is what makes the walk exact.
+ *
+ * The event walk leaves each listed output index parked on the alt stack, in list order, so the head can hand
+ * them to the body as tracked slots instead of dropping them with the rest of the tail.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -219,6 +222,10 @@ function requireRecordShape(): number[] {
  * The category comes from the active input's own token, which the prologue already proved is the contract's
  * category with minting capability; dropping that capability byte leaves the pin an immutable token carries. The
  * listed outputs must strictly increase, so no two events share one and their order is fixed.
+ *
+ * Each listed index is left parked on the alt stack, deepest first, so the caller can move them to the main stack
+ * as tracked slots. The running previous index used for the ordering check is a second copy of the same value, so
+ * it is popped and dropped once the list is consumed and only the parked copies remain.
  */
 function eventOutputSection(count: number): number[] {
   const bytes: number[] = [Opcodes.OP_1NEGATE, Opcodes.OP_TOALTSTACK];
@@ -227,7 +234,9 @@ function eventOutputSection(count: number): number[] {
       ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
       Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
       ...immutableCategoryScript(), Opcodes.OP_EQUALVERIFY,
-      Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY,
+      // Keep the index for the walker, then hand the value back as the running previous index.
+      Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
     );
   }
   bytes.push(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP);

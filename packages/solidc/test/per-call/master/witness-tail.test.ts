@@ -68,9 +68,11 @@ function masterProgram(options: MasterHeadOptions): { program: Uint8Array; lock:
       ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
     },
   );
+  // The head leaves the four frame values plus one output index per listed event for the body to consume.
+  const leaves = 4 + (options.tail?.eventCount ?? 0);
   const program = new Uint8Array([
     ...filled,
-    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,
+    ...new Array<number>(leaves).fill(Opcodes.OP_DROP), Opcodes.OP_1,
   ]);
   return { program, lock: encodeLockingBytecodeP2sh32(hash256(program)) };
 }

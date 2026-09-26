@@ -646,7 +646,7 @@ master made no `DELEGATE` or `INTERNAL` call; R4):
   - immutable NFTs appear only at the listed event outputs, and no two events share an output (T41).
 - **S3.** The `catX` state UTXOs spent in the transaction are exactly the records the master touched.
 - **S4. Values.**
-  - Every record keeps at least its input value unless a listed send pays from it.
+  - Every record keeps at least its input value unless a listed send names it as the record that pays: a send entry carries the record it pays from, so the rule can be checked on chain rather than inferred.
   - Listed sends are paid exactly (T39).
   - Value conservation beyond this is open point 10.
 
@@ -1306,7 +1306,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
         callCount:u16  { kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32 } x callCount
         segCount:u16   { recCount:u16 { in:u16 out:u16 viewIn:lp32 viewOut:lp32 } x recCount } x segCount
         eventCount:u16 { out:u16 } x eventCount
-        sendCount:u16  { out:u16 } x sendCount
+        sendCount:u16  { out:u16 from:u16 } x sendCount   from = the record whose value pays it, 0xFFFF for the funder
 ```
 
 - **Records.** A record entry names its input `in` and its output `out`:

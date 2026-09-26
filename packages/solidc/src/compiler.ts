@@ -14022,11 +14022,13 @@ function compileResolvedAst(
       );
     }
     stripFrameParameters(ast.contract);
-    // A master that makes a call is reached through one, so it checks that the validator it points at runs the
-    // expected program: the program's hash is reserved as a slot the deployment fills.
+    // A master admits a user's frame and a callee's. A callee's frame is covered by a validator that binds the
+    // facts a master cannot see, so the master has to recognise the validator it names however its entry runs:
+    // every master reserves the validator program's hash slot. A master that also makes a call records those
+    // call sites for the head to check.
     const callSites = assessment.calls ?? [];
     (mergedCompilerOptions as InternalCompilerOptions).__perCallCallSites = callSites;
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = callSites.length > 0;
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
     setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
   // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary

@@ -77,6 +77,7 @@ import {
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX,
   kernelJournalDispositionManifestDigest,
+  FrameKind,
   type AbiFunction,
 } from '@solidcash/utils';
 import {
@@ -2866,11 +2867,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const perCallOptions = this.compilerOptions as { __perCallCallSites?: readonly MasterCallSite[] };
     const calls = perCallOptions.__perCallCallSites ?? [];
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
+    // A master is entered by a user or by another master as a callee; the two frame kinds are what the head
+    // branches on. A callee's unlocking bytecode carries the call data's selector, which only a dispatcher over
+    // several entries consumes, so a single-entry master has the call arm drop it.
+    const frameKinds = [FrameKind.ROOT, FrameKind.CALL];
+    const callDataSelectorUnconsumed = entries.length === 1;
     // The head is a script, not a single data item: emit its bytes as opcodes.
     this.emit([...buildMasterHeadScript({
       blockOnTop,
+      frameKinds,
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
+      ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
     }).script], loc);
     this.pushToStack('__internal__frameSelf');
     this.pushToStack('__internal__frameValue');

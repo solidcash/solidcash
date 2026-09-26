@@ -4,7 +4,7 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  asmToScript, computeFunctionSelector, encodeWitnessBlock, scriptToBytecode, validatorAddress,
+  asmToScript, computeFunctionSelector, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
@@ -25,6 +25,7 @@ import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 const CATEGORY = new Uint8Array(32).fill(0x5a);
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any program the address rule accepts
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
+const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 const OTHER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(7));
 
@@ -77,7 +78,9 @@ interface SpendOptions {
 function evaluateSpend(source: string, options: SpendOptions): boolean {
   const artifact = compile(source);
   const placeholders = artifact.composition!.placeholders;
-  const filled = fillPlaceholders(scriptBytes(artifact), placeholders, { category: CATEGORY, contractAddress: ADDRESS });
+  const filled = fillPlaceholders(scriptBytes(artifact), placeholders, {
+    category: CATEGORY, contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
+  });
   const redeemScript = new Uint8Array([
     ...(options.constructorPushes ?? []).flatMap((push) => [...encodeDataPush(push)]),
     ...filled,

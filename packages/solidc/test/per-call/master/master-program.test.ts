@@ -4,17 +4,17 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  asmToScript, encodeWitnessBlock, scriptToBytecode, validatorAddress, type WitnessBlock,
+  asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import {
-  ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
+  ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/per-call/master/placeholders.js';
 
 /**
  * A compiled per-call master, driven through the real entry point.
  *
- * The structural half asserts what the artifact publishes and where the two deployment-time slots are. The VM half
+ * The structural half asserts what the artifact publishes and where the deployment-time slots are. The VM half
  * builds a real transaction that spends the master and asks the BCH-2026 virtual machine, because the ownership,
  * recreation and frame rules are all opinions about a transaction: only the machine can settle them, and libauth
  * reports every `OP_*VERIFY` failure with the same sentence, so each rejection below is attributed to the mutation
@@ -36,6 +36,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const compile = (): ReturnType<typeof compileString> => compileString(SOURCE, { composition: 'per-call' });
+const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: ReturnType<typeof compileString>): Uint8Array =>
@@ -49,7 +50,7 @@ const contains = (script: Uint8Array, pattern: readonly number[]): boolean => {
 };
 
 describe('a compiled per-call master', () => {
-  it('publishes the convention and the two deployment-time slots', () => {
+  it('publishes the convention and the deployment-time slots', () => {
     const artifact = compile();
     expect(artifact.composition?.convention).toBe('per-call');
     const placeholders = artifact.composition!.placeholders;
@@ -84,21 +85,33 @@ describe('a compiled per-call master', () => {
     expect(contains(script, [0x03, 0x50, 0x57, 0x01, 0x88])).toBe(true);
   });
 
-  it('carries the root-frame checks the head consumes the header with', () => {
+  it('carries the frame-kind branch and the root-frame checks', () => {
     const script = scriptBytes(compile());
-    // kind == 0, validatorRef == the u16 sentinel, callerRef != OP_INPUTINDEX.
-    expect(contains(script, [0x56, 0x79, 0x81, 0x00, 0x9d])).toBe(true); // OP_6 OP_PICK BIN2NUM 0 NUMEQUALVERIFY
-    expect(contains(script, [0x53, 0x79, 0x02, 0xff, 0xff, 0x88])).toBe(true); // OP_3 OP_PICK <ffff> EQUALVERIFY
-    // OP_5 OP_PICK BIN2NUM INPUTINDEX NUMNOTEQUAL VERIFY
+    // The head branches on the frame kind: 0 is a user's frame, 1 a message call.
+    expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 0 NUMEQUAL IF
+    expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 1 NUMEQUAL IF
+    // The call arm requires kind 1, then removes the call data's unconsumed selector from the bottom.
+    expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9d, 0x74, 0x8c, 0x7a, 0x75])).toBe(true);
+    // A caller reference is never this input: OP_5 PICK BIN2NUM INPUTINDEX NUMNOTEQUAL VERIFY.
     expect(contains(script, [0x55, 0x79, 0x81, 0xc0, 0x9e, 0x69])).toBe(true);
+    // The root arm binds origin to the caller and requires no value.
+    expect(contains(script, [0x55, 0x79, 0x81, 0x57, 0x79, 0x81, 0x9d])).toBe(true); // originRef == callerRef
     // The caller reference's lock is checked to be P2PKH and compared against the witness sender.
     expect(contains(script, [0x03, 0x76, 0xa9, 0x14, 0x88])).toBe(true);
     expect(contains(script, [0x02, 0x88, 0xac, 0x88])).toBe(true);
+    // A frame that names no validator is standalone, so only a root frame is admitted.
+    expect(contains(script, [0x02, 0xff, 0xff, 0x87, 0x63])).toBe(true); // validatorRef == the u16 sentinel
+    expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9d])).toBe(true); // standalone: kind == 0
     // The reserved address slot is pushed right before the self comparison.
-    const { addressOffset } = compile().composition!.placeholders;
+    const { addressOffset, templateHashOffset } = compile().composition!.placeholders;
     expect(script.subarray(addressOffset, addressOffset + 36).subarray(0, 1))
       .toEqual(new Uint8Array([ADDRESS_SLOT_LENGTH]));
-    expect(contains(script.subarray(0, addressOffset), [0x53, 0x79])).toBe(true);
+    expect(script.subarray(addressOffset - 1, addressOffset + 1))
+      .toEqual(new Uint8Array([0x78, ADDRESS_SLOT_LENGTH])); // OP_OVER then the slot
+    // A master that can be entered as a callee reserves the validator program hash slot its call arm reads.
+    expect(templateHashOffset).toBeTypeOf('number');
+    expect(script.subarray(templateHashOffset!, templateHashOffset! + 1))
+      .toEqual(new Uint8Array([TEMPLATE_HASH_SLOT_LENGTH]));
   });
 });
 
@@ -126,7 +139,9 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
   const placeholders = artifact.composition!.placeholders;
   const address = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
   // Deployment fills the artifact script; the SDK prepends the constructor arguments to form the redeem script.
-  const filled = fillPlaceholders(scriptBytes(artifact), placeholders, { category: CATEGORY, contractAddress: address });
+  const filled = fillPlaceholders(scriptBytes(artifact), placeholders, {
+    category: CATEGORY, contractAddress: address, templateHash: TEMPLATE_HASH,
+  });
   const redeemScript = new Uint8Array([
     ...encodeDataPush(address), // `expected`
     ...encodeDataPush(OWNER_LOCK), // `owner`
@@ -266,7 +281,7 @@ describe('a stateful per-call master', () => {
     + '   function bump() { require(msg.sender == owner); this.hits = this.hits + 1; }'
     + ' }';
 
-  it('compiles to a master with both reserved slots', () => {
+  it('compiles to a master with every reserved slot', () => {
     const artifact = compileString(STATEFUL_SOURCE, { composition: 'per-call' });
     expect(artifact.composition?.convention).toBe('per-call');
     assertPlaceholders(scriptBytes(artifact), artifact.composition!.placeholders);

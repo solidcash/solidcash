@@ -9,8 +9,9 @@
  * The category is only known once the contract is deployed, so the head reserves a zero-filled slot for it and
  * builds the pin at run time by appending the capability byte. Deployment fills that slot in place. The address
  * `addrX` the frame presents as `address(this)` and the hash of the validator program a covering master recognises
- * are reserved the same way. The validator program's hash is reserved only by a master that can be reached through
- * a call: a master that stands alone never reads it, so a standalone contract reserves no slot for it.
+ * are reserved the same way. The validator program's hash is reserved by a master that admits a call frame, because
+ * a callee runs covered by a validator it has to recognise; a master that admits only a user's frame never reads it
+ * and reserves no slot for it.
  *
  * The reader leaves `[kind, callerRef, originRef, validatorRef, sender, self, value, rest]`. The tail `rest` is
  * walked rather than dropped: a standalone master has to know it made no call and is its category's only master,
@@ -80,6 +81,12 @@ export interface MasterHeadOptions {
    */
   readonly reservesValidatorHashSlot?: boolean;
   /**
+   * True when a call frame's leading call data is a selector the body does not consume, as for a master with one
+   * entry that is reached as a callee. A user's frame to such a master carries no selector, so only the call arm
+   * removes it.
+   */
+  readonly callDataSelectorUnconsumed?: boolean;
+  /**
    * The external calls the entry makes, in execution order. Each one's record in the witness block is checked
    * against the site: the callee is not this input, its call data carries the site's selector with no
    * arguments, `SHA256(selector)` equals the record's `argsHash`, the target and kind match, and the result is
@@ -96,7 +103,11 @@ const FRAME_KIND_CALL = 1;
 /** Builds the head a master program opens with. */
 export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
   const head = new HeadEmitter(options);
-  if (options.blockOnTop) head.dropTop();
+  // A call frame's unlocking bytecode pushes the call data (its selector, then its arguments) above the block, so
+  // a master that admits a call frame can always remove the block from the bottom; the top form would remove the
+  // call data instead. The bottom form also removes a lone block, so it serves both frame kinds.
+  const admitsCall = (options.frameKinds ?? [FRAME_KIND_ROOT]).some((kind) => kind !== FRAME_KIND_ROOT);
+  if (options.blockOnTop && !admitsCall) head.dropTop();
   else head.dropBottom();
   head.prologue();
   head.emitBytes(readOwnWitnessBlockScript());
@@ -129,11 +140,13 @@ class HeadEmitter {
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
   private readonly composed: boolean;
+  private readonly callDataSelectorUnconsumed: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
+    this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -312,6 +325,10 @@ class HeadEmitter {
     this.bin2num();
     this.pushNumber(FRAME_KIND_CALL);
     this.numequalVerify();
+    // The call data's selector leads the frame's argument pushes, below the constructor arguments and the frame
+    // values. A body with a single entry never reads it, so the head removes it here rather than leaving a stray
+    // item the final stack cannot clean.
+    if (this.callDataSelectorUnconsumed) this.dropBottom();
   }
 
   /** Fails the input, for a shape the master does not admit rather than one it checks as something else. */

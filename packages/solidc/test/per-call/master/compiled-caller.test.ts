@@ -21,10 +21,9 @@ import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/mast
  * publishes where it sits, and deployment fills the category, the address and that hash.
  *
  * The VM half spends that compiled master together with its callee and a covering validator, filling the slots the
- * descriptor names. The callee's master is built from the head builder rather than compiled: the compiler emits a
- * master whose entry is a user's (`ROOT`), and a callee runs a message-call frame, which is not among the frame
- * kinds the compiler emits yet. Every input's script is evaluated, because only the machine settles whether the
- * reserved hash is load-bearing.
+ * descriptor names. The callee is built from the head builder as a small stand-in rather than compiled: this test
+ * is about the compiled caller, and the head builder lets the callee's body be a single accepting item. Every
+ * input's script is evaluated, because only the machine settles whether the reserved hash is load-bearing.
  */
 
 const CATEGORY_CALLER = new Uint8Array(32).fill(0x61);
@@ -97,8 +96,8 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     { category: CATEGORY_CALLER, contractAddress: ADDRESS_CALLER, templateHash },
   );
 
-  // The callee runs a message-call frame, which the head builder admits: the compiler emits only a user-entered
-  // (`ROOT`) master, so the callee here is the head plus a body that leaves the input truthy.
+  // The callee runs a message-call frame; the head builder admits it and a body that leaves the input truthy
+  // stands in for a compiled entry.
   const calleeHead = buildMasterHeadScript({
     blockOnTop: false, frameKinds: [0, 1], reservesValidatorHashSlot: true,
   });
@@ -238,10 +237,12 @@ describe('a compiled caller that makes a call', () => {
     assertPlaceholders(scriptBytes(artifact), placeholders);
   });
 
-  it('leaves a standalone contract with no validator program hash slot', () => {
+  it('reserves the validator program hash slot for a contract that makes no call', () => {
+    // A contract whose entries make no call can still be entered as a callee, so its master admits a call frame
+    // and has to recognise the validator that covers it.
     const standalone = compileString('pragma solidcash ^0.13.0;'
       + ' contract Standalone { function ping() { require(true); } }', { composition: 'per-call' });
-    expect(standalone.composition!.placeholders.templateHashOffset).toBeUndefined();
+    expect(standalone.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
   });
 });
 

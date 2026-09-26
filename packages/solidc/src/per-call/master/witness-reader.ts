@@ -25,10 +25,11 @@ export const WITNESS_BLOCK_HEADER_LENGTH = WITNESS_BLOCK_MAGIC.length
   + 1 // frame kind
   + 2 + 2 + 2; // caller, origin and validator references
 
-/** The two push forms a realistic witness block can take. */
+/** The length-prefixed push opcodes; a direct push carries its length in the opcode itself. */
 export const PUSHDATA1_OPCODE = 0x4c;
 export const PUSHDATA2_OPCODE = 0x4d;
 
+const PUSHDATA1_OPCODE_PUSH = encodeDataPush(new Uint8Array([PUSHDATA1_OPCODE]));
 const PUSHDATA2_OPCODE_PUSH = encodeDataPush(new Uint8Array([PUSHDATA2_OPCODE]));
 
 /** Drops the first `count` bytes of the item on top, failing when it is shorter. */
@@ -48,9 +49,25 @@ export function takePrefix(count: number): Uint8Array {
  * consecutive fields and still have the remainder on top.
  */
 export function takeLengthPrefixedField(): Uint8Array {
+  return takeLengthPrefixedFieldOfWidth(2);
+}
+
+/**
+ * Takes a `u32`-length-prefixed field from the front, leaving `[..., field, tailAfterField]`.
+ *
+ * `retval` and a call's `result` are the fields a witness block writes this way, which is why the tail of the
+ * block cannot be walked with the `u16` helper alone.
+ */
+export function takeLengthPrefixedField32(): Uint8Array {
+  return takeLengthPrefixedFieldOfWidth(4);
+}
+
+function takeLengthPrefixedFieldOfWidth(width: number): Uint8Array {
   return new Uint8Array([
-    ...encodeDataPush(minimalNumber(2)),
-    ...op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SPLIT),
+    ...encodeDataPush(minimalNumber(width)),
+    ...op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP),
+    ...unsignedLength(),
+    Opcodes.OP_SPLIT,
   ]);
 }
 
@@ -96,11 +113,78 @@ export function readOwnWitnessBlockScript(): Uint8Array {
   ]);
 }
 
+/**
+ * Splits the first push off the item on top, leaving `[..., payload, rest]`.
+ *
+ * The opcode byte of the push decides its form: a direct push (`0x01`-`0x4b`) declares its length in the opcode
+ * itself, `PUSHDATA1` follows it with one length byte, and `PUSHDATA2` with two. A push a real call data carries
+ * is one of those three, so the payload is taken at exactly the declared length and the pushes that follow are
+ * excluded — which is how a callee's argument pushes are separated from its selector and its redeem script.
+ */
+export function splitFirstPushScript(): Uint8Array {
+  const readPayload = (lengthFieldWidth: number): Uint8Array => new Uint8Array([
+    ...dropPrefix(1),
+    ...takeLengthField(lengthFieldWidth),
+    Opcodes.OP_SPLIT,
+  ]);
+  return new Uint8Array([
+    ...op(Opcodes.OP_DUP),
+    ...encodeDataPush(minimalNumber(1)),
+    ...op(Opcodes.OP_SPLIT, Opcodes.OP_DROP), // the opcode, with the item below it
+    ...op(Opcodes.OP_DUP),
+    ...PUSHDATA2_OPCODE_PUSH,
+    Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    ...op(Opcodes.OP_DROP), // the opcode, now that the two-byte form is known
+    ...readPayload(2),
+    Opcodes.OP_ELSE,
+    ...op(Opcodes.OP_DUP),
+    ...PUSHDATA1_OPCODE_PUSH,
+    Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    ...op(Opcodes.OP_DROP),
+    ...readPayload(1),
+    Opcodes.OP_ELSE,
+    // A direct push: the opcode is the length, and the payload begins after it. The opcode-only shorthands
+    // (`OP_1NEGATE` and `OP_1`-`OP_16`) push data from no length at all, so they are refused rather than read as a
+    // length.
+    ...op(Opcodes.OP_DUP),
+    ...encodeDataPush(minimalNumber(0x4b)),
+    Opcodes.OP_LESSTHANOREQUAL,
+    Opcodes.OP_VERIFY,
+    ...op(Opcodes.OP_SWAP),
+    ...dropPrefix(1),
+    Opcodes.OP_SWAP,
+    Opcodes.OP_SPLIT,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ENDIF,
+  ]);
+}
+
+/** Leaves `[..., rest]`: the item on top with its first push removed. */
+export function dropFirstPushScript(): Uint8Array {
+  return new Uint8Array([...splitFirstPushScript(), Opcodes.OP_NIP]);
+}
+
 /** Reads a fixed-width length field from the front, leaving `[rest, length]` with the length on top. */
 function takeLengthField(width: number): Uint8Array {
   return new Uint8Array([
     ...encodeDataPush(minimalNumber(width)),
-    ...op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM),
+    ...op(Opcodes.OP_SPLIT, Opcodes.OP_SWAP),
+    ...unsignedLength(),
+  ]);
+}
+
+/**
+ * Converts the length bytes on top into an unsigned VM Number.
+ *
+ * `OP_BIN2NUM` reads a signed little-endian number, so a one-byte length of `0x80` and up would come out negative
+ * and the split that follows would fail. Appending a zero byte forces the sign, which costs no meaning: the
+ * length is never negative.
+ */
+function unsignedLength(): Uint8Array {
+  return new Uint8Array([
+    ...encodeDataPush(new Uint8Array([0x00])), Opcodes.OP_CAT, Opcodes.OP_BIN2NUM,
   ]);
 }
 

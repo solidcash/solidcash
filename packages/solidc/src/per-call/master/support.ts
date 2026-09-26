@@ -70,7 +70,8 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
   if (input.needsExternalCallLowering || entryPoints.some((entry) => (entry.externalCalls?.length ?? 0) > 0)) {
-    return refuse('an external call needs the witness `calls[]` checks, which are not emitted yet');
+    return refuse('an external call needs the entry body lowered to a witness read, which is not emitted yet; '
+      + 'the call-shape checks themselves exist but nothing reaches them');
   }
   if (entryPoints.some((entry) => (entry.lowLevelCalls?.length ?? 0) > 0)) {
     return refuse('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
@@ -90,7 +91,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   for (const entry of entryPoints) {
     if (entry.returnTypes.length > 0) {
       return refuse(`the entry point '${entry.name}' returns a value, which is settled against the witness `
-        + '`retval` field, which is not emitted yet');
+        + '`retval` field, which the master head reads but does not compare a computed value with yet');
     }
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.

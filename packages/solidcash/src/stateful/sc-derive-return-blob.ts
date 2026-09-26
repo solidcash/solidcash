@@ -27,6 +27,7 @@ import {
   extractPendingReturnCommitmentAtOutput,
 } from './trace-commitment-helpers.js';
 import { extractVerifiedValuesFromTrace } from './trace-verified-value-helpers.js';
+import { extractGraphEventExpectations } from './graph-event-expectations.js';
 
 export interface DeriveReturnBlobHost {
   readonly inner: { provider: NetworkProvider; artifact: Artifact };
@@ -315,16 +316,16 @@ export function deriveReturnBlob(
 
 /** @internal Extract a participant's message-bus return commitment from a complete bus transaction. */
 export function messageBusReturnBlobFromTransaction(
-host: DeriveReturnBlobHost,
-builder: TransactionBuilder,
-returnOutputIndex: number,
-inputIndex: number,
-program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
-resultSchema?: {
-  resultTypes: readonly string[];
-  resultTypeGroups: readonly (readonly string[])[];
-  resultEncodings: readonly ExternalResultEncoding[];
-},
+  host: DeriveReturnBlobHost,
+  builder: TransactionBuilder,
+  returnOutputIndex: number,
+  inputIndex: number,
+  program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
+  resultSchema?: {
+    resultTypes: readonly string[];
+    resultTypeGroups: readonly (readonly string[])[];
+    resultEncodings: readonly ExternalResultEncoding[];
+  },
 ): Uint8Array | undefined {
   const { transaction, sourceOutputs } = program;
   const trace = evaluateProbeTrace(host.inner.provider, { inputIndex, sourceOutputs, transaction });
@@ -426,19 +427,19 @@ resultSchema?: {
       actual: transaction.outputs[returnOutputIndex]?.token?.nft?.commitment === undefined
         ? undefined : binToHex(transaction.outputs[returnOutputIndex].token!.nft!.commitment),
       selected: commitments?.[0], failure: trace.at(-1) && {
-          ip: trace.at(-1)!.ip,
-          opcode: trace.at(-1)!.instructions[trace.at(-1)!.ip]?.opcode,
-          instructionCount: trace.at(-1)!.instructions.length,
-          stack: trace.at(-1)!.stack.slice(-6).map(binToHex),
-          alternateStack: trace.at(-1)!.alternateStack.slice(-8).map(binToHex),
-          matchingParams,
-          instructions: trace.at(-1)!.instructions.slice(
-            Math.max(0, trace.at(-1)!.ip - 10), trace.at(-1)!.ip + 2,
-          ).map((instruction, offset) => ({
-            ip: Math.max(0, trace.at(-1)!.ip - 10) + offset,
-            opcode: instruction.opcode,
-            ...('data' in instruction && { data: binToHex(instruction.data) }),
-          })),
+        ip: trace.at(-1)!.ip,
+        opcode: trace.at(-1)!.instructions[trace.at(-1)!.ip]?.opcode,
+        instructionCount: trace.at(-1)!.instructions.length,
+        stack: trace.at(-1)!.stack.slice(-6).map(binToHex),
+        alternateStack: trace.at(-1)!.alternateStack.slice(-8).map(binToHex),
+        matchingParams,
+        instructions: trace.at(-1)!.instructions.slice(
+          Math.max(0, trace.at(-1)!.ip - 10), trace.at(-1)!.ip + 2,
+        ).map((instruction, offset) => ({
+          ip: Math.max(0, trace.at(-1)!.ip - 10) + offset,
+          opcode: instruction.opcode,
+          ...('data' in instruction && { data: binToHex(instruction.data) }),
+        })),
       }, observations,
     }));
   }
@@ -552,11 +553,11 @@ resultSchema?: {
  * suppresses verification, and the ordinary final preflight remains the authority for acceptance.
  */
 export function messageBusEventCommitmentsFromTransaction(
-host: DeriveReturnBlobHost,
-builder: TransactionBuilder,
-eventOutputIndices: readonly number[],
-inputIndex: number,
-program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
+  host: DeriveReturnBlobHost,
+  builder: TransactionBuilder,
+  eventOutputIndices: readonly number[],
+  inputIndex: number,
+  program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLibauthProgram(),
 ): ReadonlyMap<number, { commitment: string; lockingBytecode?: string }> {
   if (eventOutputIndices.length === 0) return new Map();
   const { transaction, sourceOutputs } = program;
@@ -582,7 +583,7 @@ program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLi
       if (!requested.has(outputIndex)) continue;
       found.set(outputIndex, binToHex(state.stack[state.stack.length - 2]));
     }
-    return new Map([...found].map(([outputIndex, commitment]) => {
+    const expectations = new Map([...found].map(([outputIndex, commitment]) => {
       const lockingBytecode = extractVerifiedValuesFromTrace(
         trace, Op.OP_OUTPUTBYTECODE, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
       )[0];
@@ -591,6 +592,10 @@ program: ReturnType<TransactionBuilder['buildLibauthProgram']> = builder.buildLi
         ...(lockingBytecode !== undefined && { lockingBytecode: binToHex(lockingBytecode) }),
       }];
     }));
+    for (const [outputIndex, expectation] of extractGraphEventExpectations(trace, requested, transaction.outputs)) {
+      expectations.set(outputIndex, expectation);
+    }
+    return expectations;
   };
   const trace = evaluateProbeTrace(host.inner.provider, { inputIndex, sourceOutputs, transaction });
   const found = extract(trace);

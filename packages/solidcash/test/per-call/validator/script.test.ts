@@ -609,4 +609,20 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_MASTER_CALLED_TWICE');
     expect(accepted(modelled, index)).toBe(false);
   });
+
+  test('refuses a covered master whose address is not its category\'s', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const wrong = new Uint8Array(35).fill(0x11);
+    const calleeId = 'A.k';
+    composition.blocks.get(calleeId)!.self = wrong;
+    const calleeIndex = composition.masterIndex.get(calleeId)!;
+    const caller = [...composition.blocks.values()].find((block) => block.calls.some(
+      (call) => call.calleeRef === calleeIndex,
+    ));
+    caller!.calls.find((call) => call.calleeRef === calleeIndex)!.target = wrong;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
+    expect(accepted(modelled, index)).toBe(false);
+  });
 });

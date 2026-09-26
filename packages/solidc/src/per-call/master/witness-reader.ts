@@ -258,13 +258,12 @@ function takeLengthField(width: number): Uint8Array {
 }
 
 /**
- * Converts the length bytes on top into an unsigned VM Number.
+ * Converts the bytes on top into an unsigned VM number.
  *
- * `OP_BIN2NUM` reads a signed little-endian number, so a one-byte length of `0x80` and up would come out negative
- * and the split that follows would fail. Appending a zero byte forces the sign, which costs no meaning: the
- * length is never negative.
+ * `OP_BIN2NUM` reads a signed little-endian number, so a byte at or above `0x80`, and a `u16` whose high byte is
+ * zero, would not be a length `OP_SPLIT` can use. Appending a zero forces the sign. The length is never negative.
  */
-function unsignedLength(): Uint8Array {
+export function unsignedLength(): Uint8Array {
   return new Uint8Array([
     ...encodeDataPush(new Uint8Array([0x00])), Opcodes.OP_CAT, Opcodes.OP_BIN2NUM,
   ]);

@@ -17,8 +17,9 @@
  */
 
 import { Opcodes, encodeDataPush } from '@bitauth/libauth';
-import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
-import { splitFirstPushScript } from '../master/witness-reader.js';
+import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
+import { splitFirstPushScript, unsignedLength } from '../master/witness-reader.js';
+import { addressCheckScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
 /** The transcript's first four bytes: the wire name and the version the program understands. */
@@ -65,10 +66,11 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_MASTER_CALLED_TWICE',
   'V9_NO_ROOT',
   'V9_ROOT_CATEGORY_MISMATCH',
+  'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
 
 /** The checks the program enforces completely. A check lands here only once every one of its rules is emitted. */
-export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V9'];
+export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V9', 'V11'];
 
 /**
  * Builds the validator program's bytecode.
@@ -122,6 +124,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitCompleteness(e);
   emitRootRules(e);
   emitEdgeRules(e);
+  emitFrameAddresses(e);
 
   // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
   e.op(O.OP_DROP, O.OP_1);
@@ -161,7 +164,7 @@ class Emitter {
     if (!Number.isInteger(value) || value < 0 || value > MAX_TRANSCRIPT_COUNT) {
       throw new RangeError(`a program constant is 0..${MAX_TRANSCRIPT_COUNT}: got ${value}`);
     }
-    return this.push(Uint8Array.from(vmNumberBytes(value)));
+    return this.push(encodeInt(BigInt(value)));
   }
 
   /**
@@ -172,7 +175,7 @@ class Emitter {
    * unsigned.
    */
   unsignedByteOnTop(): this {
-    return this.push(Uint8Array.from([0x00])).op(Opcodes.OP_CAT, Opcodes.OP_BIN2NUM);
+    return this.script(unsignedLength());
   }
 
   done(): Uint8Array {
@@ -185,19 +188,6 @@ class Emitter {
     }
     return out;
   }
-}
-
-/** A non-negative virtual-machine number's bytes: zero is the empty item, and a high top byte gets a sign byte. */
-function vmNumberBytes(value: number): number[] {
-  if (value === 0) return [];
-  const bytes: number[] = [];
-  let rest = value;
-  while (rest > 0) {
-    bytes.push(rest & 0xff);
-    rest >>= 8;
-  }
-  if ((bytes[bytes.length - 1]! & 0x80) !== 0) bytes.push(0);
-  return bytes;
 }
 
 /**
@@ -666,6 +656,49 @@ function emitCallsFrom(e: Emitter): void {
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
   e.op(O.OP_NIP, O.OP_DROP, O.OP_NIP);
+}
+
+/**
+ * A covered master whose address comes from its own category presents that category's address.
+ *
+ * Entry `[M]`, exit `[M]`. Frames that run with their caller's address are not decided here. The address is the
+ * P2SH32 lock of this program pinned to the master's own category, which is what the spent token reports.
+ */
+function emitFrameAddresses(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(1).op(O.OP_PICK, O.OP_OVER);
+  emitCountByte(e);
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP, O.OP_DUP);
+  emitOneFrameAddress(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * Entry `[index]`, exit `[]`. The pin is this input's category with the mutable capability, in the order the
+ * machine reports. The shared fragment reads `self` and compares it with the address of this program.
+ */
+function emitOneFrameAddress(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY, O.OP_SWAP, O.OP_UTXOTOKENCATEGORY);
+  // The capability byte is on top after the split. Keep the category.
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT, O.OP_SWAP);
+  e.script(addressCheckScript({ fromActiveBytecode: true }));
 }
 
 /** Consumes the item on top and requires it to be a 25-byte user lock. */

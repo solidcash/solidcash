@@ -106,10 +106,15 @@ emitted inline from the transaction, and the sites are spread across the travers
 The gate's deadline is `2026-10-23`, four weeks after the interface freeze. In the order that unblocks the acceptance
 shapes:
 
-1. **Records view mode** (stream R). It is the plan's stated main risk, and most of the acceptance tests need several
-   masters of one contract to settle against a shared state. If the first two items are not green inside about a week,
-   or they need rules outside the spec's record section, the kill criterion is trending and the plan says so.
-2. **The validator program** (`V_TEMPLATE`), tested against the TypeScript checks that already exist, replacing the
-   stand-in as each check lands.
+1. **The validator program** (`V_TEMPLATE`), tested against the TypeScript checks that already exist, replacing the
+   stand-in as each check lands. Started records view mode has moved this from third to first: a standalone master now
+   settles a single record against its own segment views, and **the part that remains cannot be driven without the
+   validator** — the cross-segment chain belongs to the validator's rules, and a master that stands alone has exactly
+   one segment. The validator is what unblocks the rest of the records stream.
+2. **The rest of the records stream**: mapping nodes, their long values, dynamic values, and the value pin, on top of
+   the settlement a standalone master already does and the chain the validator will do. The plan's kill criterion sits
+   here: if the first two records items need rules outside the spec's record section, the effort is trending to a kill.
 3. **Call-site compilation**: emitting each call's checks where it happens, so entries can differ and return values,
    conditionals and loops can come through.
+4. **The remaining wire and spec gaps**: a listed send now names the record that pays it, so a value floor can be
+   checked when sends exist; the spec correction is recorded in the Log.

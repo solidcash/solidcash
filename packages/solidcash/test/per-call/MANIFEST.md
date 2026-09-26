@@ -10,7 +10,7 @@ Run one directory:
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 110 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 117 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 113 |
@@ -23,7 +23,7 @@ Run one directory:
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 468 tests, all passing at the latest commit.
+Total: 475 tests, all passing at the latest commit.
 
 ## What each directory covers
 

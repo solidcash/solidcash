@@ -354,13 +354,18 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
 }
 
 /**
- * Settles the records a standalone master declares, without a validator.
+ * Settles the records a master declares itself, without a validator.
  *
- * A master that stands alone is its contract's only master and makes no external call, so its one segment's record
- * declarations are the whole settlement: every declared record begins at the commitment the transaction spends and
- * ends at the commitment it writes, at the index the declaration names, and the state UTXOs spent are exactly the
- * records declared. The check re-reads the block instead of reusing the shape walk, because the shape walk drops the
- * view payloads it reads.
+ * The head requires this master to be its category's only master, and the emitter calls this only for an entry that
+ * makes no external call — a condition stricter than the spec's, which asks for one master that made no `DELEGATE`
+ * or `INTERNAL` call and lets a master that makes ordinary calls settle its own records across its several
+ * segments. Such a master is not settled here: the walk below covers one segment, so a master with calls keeps its
+ * records out of settlement until the cross-segment chain is emitted.
+ *
+ * For the master that qualifies, its one segment's record declarations are the whole settlement: every declared
+ * record begins at the commitment the transaction spends and ends at the commitment it writes, at the index the
+ * declaration names, and the state UTXOs spent are exactly the records declared. The check re-reads the block
+ * instead of reusing the shape walk, because the shape walk drops the view payloads it reads.
  *
  * Only a segment declaring at most one record is settled here: a contract's data NFT is one record, so the shape
  * covers it. A segment declaring several records (mapping nodes, chunks) is refused rather than settled partly,
@@ -500,9 +505,15 @@ function stateUtxosAreDeclaredScript(): number[] {
 /**
  * Requires that an output carries a state record exactly when it is the one the segment declared.
  *
- * The record's own token is the only state token the shape admits: a standalone master has no validator to
- * recreate, and the shape's one record is its whole state. Comparing each output's own token against the declared
- * output index refuses an extra state output the same way the input rule refuses an extra state input.
+ * The record's own token is the only state token the shape admits: a self-settling master makes no external call,
+ * so the shape has no validator to recreate and its one record is its whole state. Comparing each output's own token
+ * against the declared output index refuses an extra state output the same way the input rule refuses an extra state
+ * input.
+ *
+ * The spec's S2 also allows a validator of the contract's own category to be recreated in place, which this rule
+ * refuses. Admitting it needs the validator program's hash at the census point, and the head consumes that slot in
+ * its need test, so the exemption waits for the slot to be kept for the whole head rather than pushed twice: a
+ * second reserved push would not be filled at deployment, because a descriptor publishes one offset per slot.
  */
 function stateOutputsAreDeclaredScript(): number[] {
   const bytes: number[] = [];

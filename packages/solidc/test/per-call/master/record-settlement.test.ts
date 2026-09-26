@@ -24,9 +24,10 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * master's input is the assertion. Each refusal is paired with the accept it mutates, so the refusal is the check
  * under test rather than a malformed transaction.
  *
- * A record's chain across several segments is not exercised here: self-settlement applies only to a master that
- * makes no external call, and a block with no call has one segment, so the cross-segment clause has nothing to
- * chain. That clause belongs to validator settlement, which this tree does not emit.
+ * A record's chain across several segments is not exercised here. The settlement path is emitted only for a master
+ * that makes no external call, which is stronger than the spec's condition — one master that made no `DELEGATE` or
+ * `INTERNAL` call — and a master that makes an ordinary call has two or more segments. Chaining them is the master's
+ * own business, and the emitted settlement covers one segment, so a multi-segment master is not settled here yet.
  */
 
 const CATEGORY = new Uint8Array(32).fill(0x61);

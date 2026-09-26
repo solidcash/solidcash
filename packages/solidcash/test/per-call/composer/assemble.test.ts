@@ -41,14 +41,21 @@ const callerMaster = (calls: PlannedMaster['calls']): PlannedMaster => ({
   origin: USER_ID,
   calls,
   retval: empty,
-  segments: calls.length > 0 ? [[], []] : [[]],
+  segments: Array.from({ length: calls.length + 1 }, () => []),
   events: [],
   sends: [],
   argumentPushes: [],
   redeemScript: new Uint8Array([0x51, 0x52]),
 });
 
-const calleeMaster = (): PlannedMaster => ({
+/**
+ * A callee, carrying the call data its caller recorded: a call's arguments live in the callee's unlocking bytecode,
+ * so the callee's pushes are the caller's, not the callee's own.
+ */
+const calleeMaster = (
+  argumentPushes: readonly Uint8Array[] = [],
+  overrides: Partial<PlannedMaster> = {},
+): PlannedMaster => ({
   master: 'Vault#0',
   contract: 'Vault',
   facts: {
@@ -68,8 +75,9 @@ const calleeMaster = (): PlannedMaster => ({
   segments: [[]],
   events: [],
   sends: [],
-  argumentPushes: [],
+  argumentPushes: [...argumentPushes],
   redeemScript: new Uint8Array([0x53, 0x54]),
+  ...overrides,
 });
 
 const callToVault = (): PlannedMaster['calls'][number] => ({
@@ -88,7 +96,7 @@ const planWithValidator = (): CompositionPlan => ({
     { contract: 'Vault', masters: ['Vault#0'], state: [] },
   ],
   userInputs: [{ id: USER_ID, index: USER_INDEX }],
-  masters: [callerMaster([callToVault()]), calleeMaster()],
+  masters: [callerMaster([callToVault()]), calleeMaster([SELECTOR, ARG])],
   validator: {
     id: 'validator',
     // B is covered although it is not settled: it has one master that self-settles, but the call into it still
@@ -147,7 +155,11 @@ describe('assembling a composition', () => {
         { contract: 'Ledger', masters: ['Ledger#0', 'Ledger#1'], validator: { id: 'validator', settles: ['Ledger'] }, state: ['DA'] },
         { contract: 'Vault', masters: ['Vault#0'], state: [] },
       ],
-      masters: [callerMaster([callToVault()]), calleeMaster(), { ...calleeMaster(), master: 'Ledger#1', contract: 'Ledger' }],
+      masters: [
+        callerMaster([callToVault(), { ...callToVault(), callee: 'Ledger#1', target: SELF_A }]),
+        calleeMaster([SELECTOR, ARG]),
+        calleeMaster([SELECTOR, ARG], { master: 'Ledger#1', contract: 'Ledger' }),
+      ],
       validator: {
         id: 'validator',
         covers: ['Vault'],
@@ -193,7 +205,7 @@ describe('assembling a composition', () => {
     const plan = planWithValidator();
     expect(() => assembleComposition({
       ...plan,
-      masters: [{ ...callerMaster([callToVault()]), enteredBy: 'nobody' }, calleeMaster()],
+      masters: [{ ...callerMaster([callToVault()]), enteredBy: 'nobody' }, calleeMaster([SELECTOR, ARG])],
     })).toThrow(UnresolvedReferenceError);
   });
 
@@ -220,5 +232,50 @@ describe('assembling a composition', () => {
       facts: callerMaster([callToVault()]).facts,
       hasValidator: false,
     }])).toThrow(ValidatorCoverageError);
+  });
+});
+
+describe('the call data a callee carries', () => {
+  /**
+   * Builds only the plans the call-data rule needs. The rule runs before the layout, so these plans deliberately skip
+   * the participants a whole composition needs; the case where a callee carries exactly what its caller recorded is
+   * covered by the composition above, which does have them.
+   */
+  const planWith = (masters: readonly PlannedMaster[]): CompositionPlan => ({
+    blocks: [{ contract: 'Ledger', masters: masters.map((master) => master.master), state: [] }],
+    userInputs: [{ id: USER_ID, index: 0 }],
+    masters,
+  });
+
+  it('refuses a callee carrying call data its caller did not record', () => {
+    // The caller committed to the selector and one argument; the callee carries only the selector.
+    expect(() => assembleComposition(planWith([
+      callerMaster([callToVault()]),
+      calleeMaster([SELECTOR]),
+    ]))).toThrow(/carries call data its caller did not record/);
+  });
+
+  it('refuses a master nobody calls that carries call data', () => {
+    // A user's entry has no call data, so a master with none cannot carry any.
+    expect(() => assembleComposition(planWith([
+      calleeMaster([SELECTOR, ARG]),
+    ]))).toThrow(/entered by a user, so it carries no call data/);
+  });
+
+  it('refuses two callers that pass different arguments to one callee', () => {
+    // A callee is one input with one call data, so the two cannot both be right.
+    expect(() => assembleComposition(planWith([
+      { ...callerMaster([callToVault()]), master: 'Ledger#0' },
+      { ...callerMaster([{ ...callToVault(), argumentPushes: [SELECTOR] }]), master: 'Ledger#2', enteredBy: USER_ID },
+      calleeMaster([SELECTOR, ARG]),
+    ]))).toThrow(/called with different arguments by more than one caller/);
+  });
+
+  it('refuses a call that does not begin with a four-byte selector', () => {
+    const shortSelector = { ...callToVault(), argumentPushes: [new Uint8Array([0x11])] };
+    expect(() => assembleComposition(planWith([
+      callerMaster([shortSelector]),
+      calleeMaster([new Uint8Array([0x11])]),
+    ]))).toThrow(/does not begin with a 4-byte selector/);
   });
 });

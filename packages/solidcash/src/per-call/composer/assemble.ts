@@ -13,7 +13,9 @@
 import {
   INDEX_NONE,
   PerCallEncodingError,
+  SELECTOR_LENGTH,
   argsHash,
+  bytesEqual,
   encodeArgumentList,
   type FrameKindValue,
   type RecordEntry,
@@ -129,12 +131,71 @@ export class UnresolvedReferenceError extends Error {
 }
 
 /**
+ * Requires every callee to carry exactly the call data its caller committed to.
+ *
+ * A call's arguments live in the callee's unlocking bytecode, above its witness block, and the caller commits to
+ * their hash in its own block. So the callee's call data is not the callee's to choose: it is what its caller
+ * recorded, and the two have to agree or the hash the caller's master checks on chain will not match.
+ *
+ * A callee is one input with one call data, so two callers that pass different arguments cannot both be right. A
+ * master nobody calls was entered by a user, and a user's entry carries no call data at all.
+ */
+function assertCallDataAgrees(plan: CompositionPlan): void {
+  const recorded = new Map<string, readonly Uint8Array[]>();
+  for (const master of plan.masters) {
+    for (const call of master.calls) {
+      if (call.callee === master.master) {
+        throw new PerCallEncodingError(`master "${master.master}" calls itself, which the format refuses`);
+      }
+      const selector = call.argumentPushes[0];
+      if (selector === undefined || selector.length !== SELECTOR_LENGTH) {
+        throw new PerCallEncodingError(
+          `the call from "${master.master}" to "${call.callee}" does not begin with a ${SELECTOR_LENGTH}-byte selector`,
+        );
+      }
+      const previous = recorded.get(call.callee);
+      if (previous !== undefined && !samePushes(previous, call.argumentPushes)) {
+        throw new PerCallEncodingError(
+          `"${call.callee}" is called with different arguments by more than one caller, `
+          + 'so its single input cannot carry both',
+        );
+      }
+      recorded.set(call.callee, call.argumentPushes);
+    }
+  }
+
+  for (const master of plan.masters) {
+    const committed = recorded.get(master.master);
+    if (committed === undefined) {
+      if (master.argumentPushes.length > 0) {
+        throw new PerCallEncodingError(
+          `"${master.master}" is entered by a user, so it carries no call data`,
+        );
+      }
+      continue;
+    }
+    if (!samePushes(committed, master.argumentPushes)) {
+      throw new PerCallEncodingError(
+        `"${master.master}" carries call data its caller did not record`,
+      );
+    }
+  }
+}
+
+/** True when two push lists are the same bytes in the same order. */
+function samePushes(left: readonly Uint8Array[], right: readonly Uint8Array[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((push, index) => bytesEqual(push, right[index]!));
+}
+
+/**
  * Resolves every reference and assembles the composition.
  *
  * The order of the returned inputs is the layout's, so a caller can build the transaction without recomputing any
  * index.
  */
 export function assembleComposition(plan: CompositionPlan): CompositionAssembly {
+  assertCallDataAgrees(plan);
   const layout = layoutTransaction(plan.blocks);
   const indexOf = new Map<string, number>();
   for (const participant of layout.participants) indexOf.set(participant.id, participant.index);

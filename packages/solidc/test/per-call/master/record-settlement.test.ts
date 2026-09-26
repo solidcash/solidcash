@@ -25,6 +25,11 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './val
  * master's input is the assertion. Each refusal is paired with the accept it mutates, so the refusal is the check
  * under test rather than a malformed transaction.
  *
+ * A mutable token of the contract's own category is not itself a record when the input and the output at that
+ * index are both locked to the contract address. The master is recreating its own validator in place, and the
+ * census admits the pair beside the record the segment declared. The same token under any other lock is an
+ * undeclared record and is refused. The master still stands alone: its validator reference stays the sentinel.
+ *
  * A record's chain across several segments is not exercised here. The settlement path is emitted only for a master
  * that makes no external call, which is stronger than the spec's condition — one master that made no `DELEGATE` or
  * `INTERNAL` call — and a master that makes an ordinary call has two or more segments. Chaining them is the master's
@@ -98,16 +103,23 @@ interface SpendOptions {
   readonly undeclaredState?: boolean;
   /** Write a second state output the segment does not declare. */
   readonly undeclaredOutput?: boolean;
+  /**
+   * Lock of an extra mutable pair inserted between the record and the user. Both sides carry `token(CATEGORY,
+   * 'mutable')` with an empty commitment and the same value. The user's index, and the witness references to it,
+   * move up by one; the declared record stays where it is.
+   */
+  readonly mutablePairLock?: Uint8Array;
 }
 
 /** Builds the master, its record and the user's input, and evaluates the master's own input. */
 function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: string } {
   const inputCommitment = options.inputCommitment ?? BEFORE;
   const outputCommitment = options.outputCommitment ?? AFTER;
+  const userIndex = options.mutablePairLock === undefined ? USER_INDEX : USER_INDEX + 1;
   const block: WitnessBlock = {
     kind: 0,
-    callerRef: USER_INDEX,
-    originRef: USER_INDEX,
+    callerRef: userIndex,
+    originRef: userIndex,
     validatorRef: 0xffff,
     sender: USER_LOCK,
     self: ADDRESS,
@@ -148,6 +160,19 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     sequenceNumber: 0xffffffff,
     unlockingBytecode: encodeDataPush(new Uint8Array([1])),
   };
+  const mutablePair = options.mutablePairLock === undefined
+    ? undefined
+    : {
+      lockingBytecode: options.mutablePairLock,
+      valueSatoshis: MASTER_VALUE,
+      token: token(CATEGORY, 'mutable'),
+    };
+  const mutablePairInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(6),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  };
 
   const masterOutput = { lockingBytecode: masterLock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'minting') };
   const stateOutput = {
@@ -157,22 +182,32 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
   };
   const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE };
 
-  const inputs = options.undeclaredState === true
-    ? [masterInput, stateInput, undeclaredInput, userInput]
-    : [masterInput, stateInput, userInput];
-  const outputs = options.undeclaredOutput === true
-    ? [masterOutput, stateOutput, userOutput, {
-      lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', BEFORE),
-    }]
-    : [masterOutput, stateOutput, userOutput];
-  const sourceOutputs = [
-    masterOutput,
-    { lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', inputCommitment) },
-    { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE },
-    ...(options.undeclaredState === true
-      ? [{ lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', BEFORE) }]
-      : []),
-  ];
+  const inputs = mutablePair !== undefined
+    ? [masterInput, stateInput, mutablePairInput, userInput]
+    : options.undeclaredState === true
+      ? [masterInput, stateInput, undeclaredInput, userInput]
+      : [masterInput, stateInput, userInput];
+  const outputs = mutablePair !== undefined
+    ? [masterOutput, stateOutput, mutablePair, userOutput]
+    : options.undeclaredOutput === true
+      ? [masterOutput, stateOutput, userOutput, {
+        lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', BEFORE),
+      }]
+      : [masterOutput, stateOutput, userOutput];
+  const stateSource = {
+    lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', inputCommitment),
+  };
+  const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE };
+  const sourceOutputs = mutablePair !== undefined
+    ? [masterOutput, stateSource, mutablePair, userSource]
+    : [
+      masterOutput,
+      stateSource,
+      userSource,
+      ...(options.undeclaredState === true
+        ? [{ lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', BEFORE) }]
+        : []),
+    ];
 
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };
   const vm = createVirtualMachineBch2026(false);
@@ -216,5 +251,14 @@ describe('a standalone master that reads and writes a record', () => {
   it('is refused when the record keeps less value than it held', () => {
     expect(evaluate({ outputValue: MASTER_VALUE - 1n }).accepted).toBe(false);
     expect(evaluate({ outputValue: MASTER_VALUE }).accepted).toBe(true);
+  });
+
+  it('is accepted when an extra mutable pair is locked to the contract address', () => {
+    expect(evaluate({ mutablePairLock: ADDRESS })).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when that extra mutable pair is locked to another script', () => {
+    expect(evaluate({ mutablePairLock: STATE_LOCK }).accepted).toBe(false);
+    expect(evaluate({ mutablePairLock: ADDRESS }).accepted).toBe(true);
   });
 });

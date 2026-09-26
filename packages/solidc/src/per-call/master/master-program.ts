@@ -9,11 +9,14 @@
  * optimiser rewrites the script between emission and publication; a slot is found by its exact reserved push.
  */
 
-import { bytesEqual } from '@solidcash/utils';
+import {
+  bytesEqual, encodeInt, Op, scriptToBytecode, type Script,
+} from '@solidcash/utils';
 import { SolidcDiagnosticError } from '../../Errors.js';
 import {
   ADDRESS_SLOT_LENGTH,
   CATEGORY_SLOT_LENGTH,
+  placeholderPrefixLength,
   placeholderPush,
 } from './placeholders.js';
 
@@ -68,6 +71,123 @@ function allOffsets(script: Uint8Array, pattern: Uint8Array): number[] {
     if (bytesEqual(script.subarray(index, index + pattern.length), pattern)) offsets.push(index);
   }
   return offsets;
+}
+
+/**
+ * Points the self-settlement census at the address slot the finished script actually contains.
+ *
+ * The census is emitted with the payload offset of the slot as it stood in the head. The optimiser then rewrites
+ * the bytes before that slot, so the baked split would read past the address and a mutable token locked to the
+ * contract would be refused. The slot itself is found afterwards, by its reserved push; this rewrites the census
+ * to that payload. A master that does not settle its own records has no such read, and is left unchanged.
+ */
+export function alignCensusAddressOffset(script: Script, declaresTemplateHash: boolean): Script {
+  let current = script;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const aligned = retargetCensusAddress(current, declaresTemplateHash);
+    if (aligned === current) return current;
+    current = aligned;
+  }
+  throw new SolidcDiagnosticError(
+    'PER_CALL_CODEGEN_UNAVAILABLE',
+    'the census address offset did not settle on the reserved address slot',
+    {},
+  );
+}
+
+/** One encoded push: `start` is its first byte and `end` is the byte after its payload. */
+interface EncodedPush {
+  readonly start: number;
+  readonly end: number;
+}
+
+/** The offset pushes in `OP_ACTIVEBYTECODE <offset> OP_SPLIT OP_NIP <35> OP_SPLIT OP_DROP`. */
+function censusAddressPushes(bytecode: Uint8Array): EncodedPush[] {
+  const width = scriptToBytecode([encodeInt(BigInt(ADDRESS_SLOT_LENGTH))]);
+  const sites: EncodedPush[] = [];
+  for (let index = 0; index < bytecode.length; index += 1) {
+    if (bytecode[index] !== Op.OP_ACTIVEBYTECODE) continue;
+    const offsetPush = readEncodedPush(bytecode, index + 1);
+    if (offsetPush === undefined) continue;
+    let cursor = offsetPush.end;
+    if (bytecode[cursor] !== Op.OP_SPLIT || bytecode[cursor + 1] !== Op.OP_NIP) continue;
+    cursor += 2;
+    const widthPush = readEncodedPush(bytecode, cursor);
+    if (widthPush === undefined) continue;
+    if (!bytesEqual(bytecode.subarray(widthPush.start, widthPush.end), width)) continue;
+    cursor = widthPush.end;
+    if (bytecode[cursor] !== Op.OP_SPLIT || bytecode[cursor + 1] !== Op.OP_DROP) continue;
+    sites.push(offsetPush);
+  }
+  return sites;
+}
+
+function readEncodedPush(bytecode: Uint8Array, at: number): EncodedPush | undefined {
+  if (at >= bytecode.length) return undefined;
+  const opcode = bytecode[at]!;
+  if (opcode === Op.OP_0 || opcode === Op.OP_1NEGATE || (opcode >= Op.OP_1 && opcode <= Op.OP_16)) {
+    return { start: at, end: at + 1 };
+  }
+  let header = 0;
+  let length = 0;
+  if (opcode >= 0x01 && opcode <= 0x4b) {
+    header = 1;
+    length = opcode;
+  } else if (opcode === Op.OP_PUSHDATA_1) {
+    if (at + 1 >= bytecode.length) return undefined;
+    header = 2;
+    length = bytecode[at + 1]!;
+  } else if (opcode === Op.OP_PUSHDATA_2) {
+    if (at + 2 >= bytecode.length) return undefined;
+    header = 3;
+    length = bytecode[at + 1]! | (bytecode[at + 2]! << 8);
+  } else if (opcode === Op.OP_PUSHDATA_4) {
+    if (at + 4 >= bytecode.length) return undefined;
+    header = 5;
+    length = bytecode[at + 1]!
+      | (bytecode[at + 2]! << 8)
+      | (bytecode[at + 3]! << 16)
+      | (bytecode[at + 4]! << 24);
+  } else {
+    return undefined;
+  }
+  const end = at + header + length;
+  if (end > bytecode.length) return undefined;
+  return { start: at, end };
+}
+
+/**
+ * Rewrites each census offset to the address payload, returning the same script when there is nothing to do.
+ *
+ * The two reads sit after the slot, so a same-length rewrite cannot move the slot. A rewrite that changes the
+ * push's length is applied once and the caller measures the slot again.
+ */
+function retargetCensusAddress(script: Script, declaresTemplateHash: boolean): Script {
+  const bytecode = scriptToBytecode(script);
+  const payload = findPlaceholderOffsets(bytecode, declaresTemplateHash).addressOffset
+    + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
+  const desired = scriptToBytecode([encodeInt(BigInt(payload))]);
+  const sites = censusAddressPushes(bytecode);
+  if (sites.length === 0) return script;
+  if (sites.every((site) => bytesEqual(bytecode.subarray(site.start, site.end), desired))) return script;
+  const indexes = sites.map((site) => elementIndexCovering(script, site));
+  return script.map((element, index) => (indexes.includes(index) ? encodeInt(BigInt(payload)) : element));
+}
+
+/** The script element whose encoding is exactly the push `site` names. */
+function elementIndexCovering(script: Script, site: EncodedPush): number {
+  const want = site.end - site.start;
+  let at = 0;
+  for (let index = 0; index < script.length; index += 1) {
+    const size = scriptToBytecode([script[index]!]).length;
+    if (at === site.start && size === want) return index;
+    at += size;
+  }
+  throw new SolidcDiagnosticError(
+    'PER_CALL_CODEGEN_UNAVAILABLE',
+    `the census address offset at byte ${site.start} is not one script element`,
+    { start: site.start, end: site.end },
+  );
 }
 
 function uniqueOffset(script: Uint8Array, pattern: Uint8Array, what: string): number {

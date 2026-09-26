@@ -28,7 +28,9 @@
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
 import { TokenCapability } from '@solidcash/utils';
-import { CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, placeholderPush } from './placeholders.js';
+import {
+  CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, placeholderPrefixLength, placeholderPush,
+} from './placeholders.js';
 import {
   readFrameFieldsScript,
   readFrameHeaderScript,
@@ -430,7 +432,8 @@ class HeadEmitter {
   /** Settles the segment's records when the master stands alone and the compiler asks for it. */
   private assertSelfSettlement(): void {
     if (!this.settlesOwnRecords) return;
-    this.emitBytes(selfSettlementScript(this.tailShape.sendCount));
+    const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
+    this.emitBytes(selfSettlementScript(this.tailShape.sendCount, addressPayload));
   }
 
   /** The prologue proved the active input carries the contract's category with minting; require exactly one such. */

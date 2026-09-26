@@ -60,6 +60,7 @@ import {
 import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
+  alignCensusAddressOffset,
   findPlaceholderOffsets,
   isPerCallMaster,
   setPerCallMaster,
@@ -14067,6 +14068,14 @@ function compileResolvedAst(
       console.error(scriptToAsm(optimisationResult.script));
       throw new Error('New bytecode optimisation is not backwards compatible, please report this issue to the SolidCash team');
     }
+  }
+
+  // The census baked its address offset before this rewrite. Point it at the slot the finished script contains.
+  // The comparison above is the two optimisers against each other, so the retarget stays outside it.
+  if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
+    const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
+      .__perCallReservesValidatorHash === true;
+    optimisationResult.script = alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash);
   }
 
   // Attach debug information

@@ -27,6 +27,7 @@
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
 import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
+import { ADDRESS_SLOT_LENGTH } from './placeholders.js';
 import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
@@ -375,7 +376,7 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * A listed send does not carry the record that pays it (section 16 gives a send entry only an output index), so the
  * value floor is emitted only when the entry lists no send.
  */
-export function selfSettlementScript(sendCount: number): Uint8Array {
+export function selfSettlementScript(sendCount: number, addressPayloadOffset: number): Uint8Array {
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
@@ -404,8 +405,8 @@ export function selfSettlementScript(sendCount: number): Uint8Array {
   emit(Opcodes.OP_ENDIF);
   emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, Opcodes.OP_DROP);
 
-  emit(...stateUtxosAreDeclaredScript());
-  emit(...stateOutputsAreDeclaredScript());
+  emit(...stateUtxosAreDeclaredScript(addressPayloadOffset));
+  emit(...stateOutputsAreDeclaredScript(addressPayloadOffset));
   return new Uint8Array(bytes);
 }
 
@@ -484,23 +485,8 @@ function singleRecordSettlement(sendCount: number): number[] {
  * length the block decides. The declared index is parked on the alt stack; the no-index sentinel makes the same
  * comparison refuse every state UTXO when the segment declared none.
  */
-function stateUtxosAreDeclaredScript(): number[] {
-  const bytes: number[] = [];
-  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-
-  emit(Opcodes.OP_FROMALTSTACK);
-  // [expected, i] with i on top; the increment keeps that order.
-  emit(Opcodes.OP_0);
-  emit(Opcodes.OP_BEGIN);
-  emit(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-  emit(num(1), Opcodes.OP_PICK, num(3), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL);
-  emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_VERIFY);
-  emit(Opcodes.OP_1ADD);
-  emit(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL);
-  emit(Opcodes.OP_UNTIL);
-  emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
-  return bytes;
+function stateUtxosAreDeclaredScript(addressPayloadOffset: number): number[] {
+  return censusLoop(Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, addressPayloadOffset);
 }
 
 /**
@@ -511,26 +497,66 @@ function stateUtxosAreDeclaredScript(): number[] {
  * against the declared output index refuses an extra state output the same way the input rule refuses an extra state
  * input.
  *
- * The spec's S2 also allows a validator of the contract's own category to be recreated in place, which this rule
- * refuses. Admitting it needs the validator program's hash at the census point, and the head consumes that slot in
- * its need test, so the exemption waits for the slot to be kept for the whole head rather than pushed twice: a
- * second reserved push would not be filled at deployment, because a descriptor publishes one offset per slot.
+ * A validator of the contract's own category is recreated in place at the contract address, carrying the same
+ * mutable token a record does. That index is not a record: the input and the output at it are both locked to the
+ * address the master reserves, so the census admits it beside the records the segment declared.
  */
-function stateOutputsAreDeclaredScript(): number[] {
+function stateOutputsAreDeclaredScript(addressPayloadOffset: number): number[] {
+  return censusLoop(Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_TXINPUTCOUNT, addressPayloadOffset);
+}
+
+/** The contract address, read from its reserved slot in the script that is running. */
+function pushContractAddress(payloadOffset: number): number[] {
+  return [
+    Opcodes.OP_ACTIVEBYTECODE,
+    ...encodeDataPush(scriptNumber(payloadOffset)),
+    Opcodes.OP_SPLIT,
+    Opcodes.OP_NIP,
+    ...encodeDataPush(scriptNumber(ADDRESS_SLOT_LENGTH)),
+    Opcodes.OP_SPLIT,
+    Opcodes.OP_DROP,
+  ];
+}
+
+/**
+ * Requires that index `i` carries this contract's mutable token exactly when the segment declared it, or when `i`
+ * recreates the contract's validator.
+ *
+ * Entry is the expected index on the alt stack. The address is pushed first and sits under the expected index, so
+ * the comparisons the old loop made keep their depths. Exit drops the address, the expected index and the cursor.
+ */
+function censusLoop(
+  tokenOpcode: number,
+  countOpcode: number,
+  otherCountOpcode: number,
+  addressPayloadOffset: number,
+): number[] {
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
 
+  emit(...pushContractAddress(addressPayloadOffset));
   emit(Opcodes.OP_FROMALTSTACK);
   emit(Opcodes.OP_0);
   emit(Opcodes.OP_BEGIN);
-  emit(Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+  emit(Opcodes.OP_DUP, tokenOpcode, ...mutableRecordPin(), Opcodes.OP_EQUAL);
   emit(num(1), Opcodes.OP_PICK, num(3), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL);
-  emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_VERIFY);
+  emit(Opcodes.OP_NUMEQUAL);
+  // A validator recreation: both sides exist, both locks are the contract address, and both tokens are mutable.
+  emit(num(1), Opcodes.OP_PICK, otherCountOpcode, Opcodes.OP_LESSTHAN, Opcodes.OP_IF);
+  emit(num(1), Opcodes.OP_PICK, Opcodes.OP_UTXOBYTECODE, num(4), Opcodes.OP_PICK, Opcodes.OP_EQUAL);
+  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_OUTPUTBYTECODE, num(5), Opcodes.OP_PICK, Opcodes.OP_EQUAL);
+  emit(Opcodes.OP_BOOLAND);
+  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+  emit(Opcodes.OP_BOOLAND);
+  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+  emit(Opcodes.OP_BOOLAND);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
+  emit(Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY);
   emit(Opcodes.OP_1ADD);
-  emit(Opcodes.OP_DUP, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL);
+  emit(Opcodes.OP_DUP, countOpcode, Opcodes.OP_GREATERTHANOREQUAL);
   emit(Opcodes.OP_UNTIL);
-  emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
+  emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
   return bytes;
 }
 

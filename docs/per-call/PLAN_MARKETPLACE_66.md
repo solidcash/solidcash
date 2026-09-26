@@ -1056,3 +1056,9 @@ Titles marked NEVER have not passed on any real compile to date.
   runs, so the four new cases fix that coexistence (accepted with the declared record, refused for a declaration the
   transaction does not spend, refused for a payload the body did not compute, refused for a record output the
   declaration does not name). The record sits right after its master, which is where a compiled body reads it from.
+- The next unit on the critical path is the state read itself: a compiled body reads its state as
+  `OP_INPUTINDEX + offset`, so a composed master's record has to sit immediately after it. The two places to change are
+  `emitStateFieldReadInline` (one site, `OP_INPUTINDEX <offset> OP_ADD OP_UTXOTOKENCOMMITMENT` becomes the declared
+  record's index) and the state-commitment write where the epilogue serialises the pending writes; the head has to
+  leave the declared record's input and output indices as tracked slots for the body to read, the way it already
+  leaves each listed event's output index.

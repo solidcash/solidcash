@@ -16,13 +16,16 @@ import {
   type Artifact,
   type CompositionPlaceholders,
   validatorAddress,
+  validatorTemplateHash,
 } from '@solidcash/utils';
 import { compositionPlaceholders } from 'solidc';
 
 const {
   ADDRESS_SLOT_LENGTH,
   CATEGORY_SLOT_LENGTH,
+  TEMPLATE_HASH_SLOT_LENGTH,
   assertPlaceholders,
+  declaredSlots,
   fillPlaceholders,
   placeholderPrefixLength,
   readPlaceholders,
@@ -105,14 +108,24 @@ export function deployMaster(
   const address = validatorAddress(category, validatorProgram);
   const original = programBytes(artifact);
   assertPlaceholders(original, placeholders);
-  const script = fillPlaceholders(original, placeholders, { category, contractAddress: address });
+  // The hash is only filled where the descriptor reserves a slot for it: a master that cannot be reached through a
+  // call never reads it, and passing it to a script with no slot is refused.
+  const templateHash = placeholders.templateHashOffset === undefined
+    ? undefined
+    : validatorTemplateHash(validatorProgram);
+  const script = fillPlaceholders(original, placeholders, {
+    category,
+    contractAddress: address,
+    ...(templateHash === undefined ? {} : { templateHash }),
+  });
   return { script, address, lockingBytecode: masterLock(script) };
 }
 
 /**
- * Checks a deployment against the artifact and the address rule. Every slot must read back as the value that was
- * filled, every byte outside the two slots must be the artifact's original byte, the address must equal
- * `addrV(category)`, and the master lock must be the P2SH32 of the filled program.
+ * Checks a deployment against the artifact and the address rule. Every declared slot must read back as the value that
+ * was filled, every byte outside the slots must be the artifact's original byte, the address must equal
+ * `addrV(category)`, the master lock must be the P2SH32 of the filled program, and where the descriptor reserves a
+ * slot for the validator program's hash it must hold that program's hash.
  */
 export function verifyMasterDeployment(
   deployed: DeployedMaster,
@@ -137,15 +150,24 @@ export function verifyMasterDeployment(
   if (readBack.category.length !== CATEGORY_SLOT_LENGTH || !bytesEqual(readBack.category, category)) {
     throw new PerCallDeploymentError('the category slot does not read back as the filled category');
   }
+  if (placeholders.templateHashOffset !== undefined) {
+    const expected = validatorTemplateHash(validatorProgram);
+    const read = readBack.templateHash;
+    if (read === undefined || read.length !== TEMPLATE_HASH_SLOT_LENGTH || !bytesEqual(read, expected)) {
+      throw new PerCallDeploymentError(
+        "the validator program hash slot does not read back as the program's hash",
+      );
+    }
+  }
   if (readBack.contractAddress.length !== ADDRESS_SLOT_LENGTH
     || !bytesEqual(readBack.contractAddress, deployed.address)) {
     throw new PerCallDeploymentError('the address slot does not read back as the filled address');
   }
 
-  const categoryRange = slotPayloadRange(placeholders.categoryOffset, CATEGORY_SLOT_LENGTH);
-  const addressRange = slotPayloadRange(placeholders.addressOffset, ADDRESS_SLOT_LENGTH);
-  const inSlot = (index: number): boolean => (index >= categoryRange.start && index < categoryRange.end)
-    || (index >= addressRange.start && index < addressRange.end);
+  // Every slot the descriptor declares is where a fill may land, and nowhere else.
+  const ranges = declaredSlots(placeholders).map((slot) => slotPayloadRange(slot.offset, slot.length));
+  const inSlot = (index: number): boolean =>
+    ranges.some((range) => index >= range.start && index < range.end);
   for (let index = 0; index < original.length; index += 1) {
     if (inSlot(index)) continue;
     if (deployed.script[index] !== original[index]) {

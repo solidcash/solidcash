@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compositionPlaceholders } from 'solidc';
+import {
+  asmToScript, scriptToAsm, scriptToBytecode, validatorTemplateHash, type Artifact,
+} from '@solidcash/utils';
+import { deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
 
 /**
  * The optional third slot: the hash of the validator program.
@@ -120,5 +124,56 @@ describe('the validator program hash slot', () => {
     expect(script[offset]).toBe(TEMPLATE_HASH_SLOT_LENGTH);
     expect([...script.subarray(offset + 1, offset + 1 + TEMPLATE_HASH_SLOT_LENGTH)])
       .toStrictEqual(new Array<number>(TEMPLATE_HASH_SLOT_LENGTH).fill(0));
+  });
+});
+
+describe('deploying a master that recognises a validator', () => {
+  const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52, 0x75, 0x76]);
+
+  /** An artifact over a script reserving all three slots, published the way a compiler publishes one. */
+  const artifactWithThreeSlots = (): Artifact => {
+    const { script } = scriptWith(true);
+    return {
+      contractName: 'Ledger',
+      constructorInputs: [],
+      abi: [],
+      bytecode: scriptToAsm(script),
+      source: 'contract Ledger {}',
+      composition: {
+        convention: 'per-call',
+        placeholders: {
+          version: 1,
+          categoryOffset: HEAD.length,
+          addressOffset: HEAD.length + placeholderPushLength(CATEGORY_SLOT_LENGTH),
+          templateHashOffset: HEAD.length + placeholderPushLength(CATEGORY_SLOT_LENGTH)
+            + placeholderPushLength(ADDRESS_SLOT_LENGTH),
+        },
+      },
+    };
+  };
+
+  it('fills the program hash into the reserved slot and verifies the result', () => {
+    const artifact = artifactWithThreeSlots();
+    const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
+    expect(() => verifyMasterDeployment(deployed, artifact, CATEGORY, VALIDATOR_PROGRAM)).not.toThrow();
+
+    // The slot holds the hash of the program the master is told to expect.
+    const read = readPlaceholders(deployed.script, artifact.composition!.placeholders);
+    expect([...read.templateHash!]).toStrictEqual([...validatorTemplateHash(VALIDATOR_PROGRAM)]);
+  });
+
+  it('leaves the script the same length, so every published offset still describes it', () => {
+    const artifact = artifactWithThreeSlots();
+    const before = scriptToBytecode(asmToScript(artifact.bytecode));
+    const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
+    expect(deployed.script.length).toBe(before.length);
+  });
+
+  it('reserves nothing for the hash when the descriptor declares two slots', () => {
+    // A two-slot descriptor is a standalone master: a fill touches the category and the address and nothing else.
+    const { script, placeholders } = scriptWith(false);
+    const filled = fillPlaceholders(script, placeholders, { category: CATEGORY, contractAddress: ADDRESS });
+    expect(readPlaceholders(filled, placeholders).templateHash).toBeUndefined();
+    expect(filled.length).toBe(script.length);
   });
 });

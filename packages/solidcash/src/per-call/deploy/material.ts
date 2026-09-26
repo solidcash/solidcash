@@ -9,12 +9,13 @@
 
 import { encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
+  asmToScript,
   bytesEqual,
   hash256,
-  hexToBytes,
-  validatorAddress,
+  scriptToBytecode,
   type Artifact,
   type CompositionPlaceholders,
+  validatorAddress,
 } from '@solidcash/utils';
 import { compositionPlaceholders } from 'solidc';
 
@@ -75,6 +76,26 @@ function slotPayloadRange(offset: number, length: number): { start: number; end:
  * validator can never disagree about the address. A wrong descriptor or a wrong-length category is refused by the
  * shared placeholder and identity checks before any byte is written.
  */
+/**
+ * The artifact's program as script bytes.
+ *
+ * An artifact publishes its program as assembly, so it has to be assembled before any byte offset into it means
+ * anything. A bytecode published in another form fails here rather than being filled at offsets that do not describe
+ * it.
+ */
+function programBytes(artifact: Artifact): Uint8Array {
+  let script: ReturnType<typeof asmToScript>;
+  try {
+    script = asmToScript(artifact.bytecode);
+  } catch (error) {
+    throw new PerCallDeploymentError(
+      "the artifact's program is not assembly, so its published slot offsets cannot apply: "
+      + (error as Error).message,
+    );
+  }
+  return scriptToBytecode(script);
+}
+
 export function deployMaster(
   artifact: Artifact,
   category: Uint8Array,
@@ -82,7 +103,7 @@ export function deployMaster(
 ): DeployedMaster {
   const placeholders = requirePlaceholders(artifact);
   const address = validatorAddress(category, validatorProgram);
-  const original = hexToBytes(artifact.bytecode);
+  const original = programBytes(artifact);
   assertPlaceholders(original, placeholders);
   const script = fillPlaceholders(original, placeholders, { category, contractAddress: address });
   return { script, address, lockingBytecode: masterLock(script) };
@@ -100,7 +121,7 @@ export function verifyMasterDeployment(
   validatorProgram: Uint8Array,
 ): void {
   const placeholders = requirePlaceholders(artifact);
-  const original = hexToBytes(artifact.bytecode);
+  const original = programBytes(artifact);
 
   const expectedAddress = validatorAddress(category, validatorProgram);
   if (!bytesEqual(deployed.address, expectedAddress)) {

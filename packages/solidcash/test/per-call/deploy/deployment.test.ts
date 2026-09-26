@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToHex, hexToBytes, validatorAddress } from '@solidcash/utils';
+import { bytesToHex, validatorAddress } from '@solidcash/utils';
 import { PerCallDeploymentError, deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
 import {
   ADDRESS_PAYLOAD,
   CATEGORY_PAYLOAD,
   SLOT_SCRIPT_HEX,
+  programBytesOf,
   artifactFixture,
 } from './fixture.js';
 
@@ -42,7 +43,7 @@ describe('filling deployment-time constants in a master', () => {
     const deployed = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 
     expect(bytesToHex(deployed.script)).toBe(expected);
-    expect(deployed.script.length).toBe(hexToBytes(artifact.bytecode).length);
+    expect(deployed.script.length).toBe(programBytesOf(artifact).length);
     expect(unchangedOutsideSlots(bytesToHex(deployed.script))).toBe(true);
   });
 

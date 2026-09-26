@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { TokenCapability, hexToBytes, validatorAddress } from '@solidcash/utils';
+import { TokenCapability, validatorAddress } from '@solidcash/utils';
 import { MasterPoolDeployment } from '../../../src/per-call/deploy/index.js';
-import { artifactFixture } from './fixture.js';
+import {
+  artifactFixture,
+  programBytesOf,
+} from './fixture.js';
 
 /**
  * The deployment pools of a per-call contract.
@@ -36,7 +39,7 @@ describe('deployment pools', () => {
       size: SIZE,
     });
 
-    expect(deployment.getMasterProgram().length).toBe(hexToBytes(artifact.bytecode).length);
+    expect(deployment.getMasterProgram().length).toBe(programBytesOf(artifact).length);
     expect(deployment.getMasterLockingBytecode().length).toBe(35);
     expect([...deployment.getMasterLockingBytecode()]).not.toStrictEqual([...deployment.getAddress()]);
   });

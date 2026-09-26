@@ -55,3 +55,5 @@ export type { ExtractEventNames, EventMatcherArgs, EmittingContract } from './ty
 export * as perCallComposer from './per-call/composer/index.js';
 // The independent reference model the validator derivation is compared against.
 export * as perCallReference from './per-call/validator/reference/index.js';
+// Deployment of a compiled master: filling its reserved slots and deriving its address.
+export * as perCallDeploy from './per-call/deploy/index.js';

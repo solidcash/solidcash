@@ -1545,7 +1545,7 @@ export function assertDeployabilityCertificate(
   }
   if (!certificate.withinP2shLimit || certificate.status === 'over-budget') {
     throw new Error(
-      `deployability: over P2SH budget `
+      'deployability: over P2SH budget '
         + `(${certificate.measuredBytecodeBytes} > ${certificate.p2shBytecodeLimit})`,
     );
   }
@@ -1623,7 +1623,8 @@ export interface CompositionPlaceholders {
   addressOffset: number;
 }
 
-export interface Artifact {  contractName: string;
+export interface Artifact {
+  contractName: string;
   constructorInputs: readonly AbiInput[];
   abi: readonly AbiFunction[];
   bytecode: string;

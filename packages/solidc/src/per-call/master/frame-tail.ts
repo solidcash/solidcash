@@ -53,6 +53,13 @@ export interface MasterCallSite {
   /** The address called, which `calls[k].target` must name. */
   readonly target: Uint8Array;
   /**
+   * The interface the call goes through, when the source names one. Kept for the published stop-site table, which
+   * a driver uses to name the callee; the head's own checks never read it.
+   */
+  readonly interfaceName?: string;
+  /** The method called, whose entry the callee runs. Kept for the published stop-site table. */
+  readonly functionName?: string;
+  /**
    * The call's arguments in parameter order.
    *
    * A compile-time value carries the bytes the source wrote, which the caller folds into the digest at compile

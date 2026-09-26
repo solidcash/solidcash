@@ -1,0 +1,275 @@
+/**
+ * Driving the derivation from the shipped compiler's own output.
+ *
+ * The resumable derivation (`derivation.ts`) is written against an injected host. This module supplies the real
+ * one: the stop sites come from the table the compiler published on the artifact, and each step runs the compiled,
+ * placeholder-filled master program in the BCH-2026 machine against a draft transaction.
+ *
+ * A step does not trust the site it is handed. It runs the master first, with the site's witness still unfilled,
+ * and notes where the program stopped. It then fills that witness into the draft and runs the master again. The
+ * site is reported as filled only when the second run strictly advanced on the first — the program accepted, or
+ * stopped further along its own instruction sequence. A fill that does not move the program is not progress, and
+ * the step reports nothing, which the driver refuses as a stall.
+ *
+ * The design gap this host works around: the compiled master does not report an identity at each stop site. Its
+ * head is emitted as one opaque program and the sites' checks carry no published instruction offsets, so a run's
+ * failing state (its `ip` and error) cannot be mapped back to a published site. The host therefore takes the site
+ * from the driver, which reaches them in the published order, and proves it with the two real runs rather than
+ * reading it off the machine. Closing the gap needs the compiler to publish, per site, the program offset at which
+ * its witness is consumed (or the program to push a site ordinal before consuming one); until then a step can
+ * confirm that filling a named site is what moved the program, but cannot discover the site from the VM alone.
+ *
+ * The one seam that is not yet shipped is the draft itself. How a master's input, its callees and its outputs are
+ * laid out in a transaction is the composer's layout and assembly, which are not wired to this host yet, so each
+ * execution supplies a `ShippedMasterRun`: the compiled program, the witness block it starts from, and the
+ * function that turns a block into the VM program for that input. Everything the host derives from that run —
+ * which stop site was filled, and which callee a call reaches — comes from the real compiler output and the real
+ * VM, not from a stand-in.
+ *
+ * The published `CallStopSite` holds only the call's index, so the host names a callee through the source-side
+ * facts the compiler publishes beside it (interface, method, target address), resolved to a contract by the run
+ * that owns the edge.
+ */
+
+import { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import {
+  FrameKind,
+  validateStopSiteMetadata,
+  witnessKindOf,
+  type StopSite,
+  type StopSiteMetadata,
+  type WitnessBlock,
+} from '@solidcash/utils';
+import type { DerivationHost, FrameRequest, StepOutcome } from './derivation.js';
+
+type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
+
+/** The exact program a master runs: the transaction, its source outputs, and the input under evaluation. */
+export type ShippedVmProgram = Parameters<VirtualMachine['evaluate']>[0];
+
+/** One external call as the compiler published it: the index, and what the call targets. */
+export interface PublishedCallSite {
+  readonly callIndex: number;
+  readonly interfaceName: string;
+  readonly functionName: string;
+  /** The address called, as hex. */
+  readonly target: string;
+  /** The callee's dispatcher selector, as hex. */
+  readonly selector: string;
+}
+
+/** One entry's sites, plus the call facts a driver resolves a callee through. */
+export interface PublishedEntryStopSites {
+  readonly functionName: string;
+  readonly calls: readonly PublishedCallSite[];
+  readonly sites: StopSiteMetadata;
+}
+
+/** The table a per-call artifact publishes on `artifact.composition.stopSites`. */
+export interface PublishedPerCallStopSites {
+  readonly version: 1;
+  readonly entries: readonly PublishedEntryStopSites[];
+}
+
+/** Raised when the host is asked for something the artifact or the runs do not describe. */
+export class ShippedHostError extends Error {
+  public readonly name = 'ShippedHostError';
+
+  public constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(`${code}: ${message}`);
+  }
+}
+
+/** Reads and validates the stop-site table an artifact publishes. */
+export function readPublishedStopSites(
+  artifact: { readonly composition?: unknown },
+): PublishedPerCallStopSites {
+  const composition = artifact.composition as { readonly stopSites?: unknown } | undefined;
+  const published = composition?.stopSites as PublishedPerCallStopSites | undefined;
+  if (published === undefined || typeof published !== 'object') {
+    throw new ShippedHostError(
+      'PER_CALL_HOST_STOP_SITES_UNPUBLISHED',
+      'the artifact publishes no per-call stop-site table',
+    );
+  }
+  if (published.version !== 1) {
+    throw new ShippedHostError(
+      'PER_CALL_HOST_STOP_SITES_VERSION',
+      `unsupported stop-site table version: ${String(published.version)}`,
+    );
+  }
+  if (!Array.isArray(published.entries)) {
+    throw new ShippedHostError('PER_CALL_HOST_STOP_SITES_SHAPE', 'the stop-site table has no entries array');
+  }
+  for (const entry of published.entries) validateStopSiteMetadata(entry.sites);
+  return published;
+}
+
+/**
+ * One execution: the compiled program, and how to run it against a growing draft.
+ *
+ * This is the composer's layout/assembly seam, not a test stub. `initialBlock` returns the block the execution
+ * starts from — the frame fields the source fixes, with the witness slots the driver will fill still unset.
+ * `programFor` places a block on the execution's input and returns the VM program. `fill` writes one site's
+ * witness into the block and reports the callee a call site reaches.
+ */
+export interface ShippedMasterRun {
+  /** The master identity the driver compares; matches `FrameRequest.master`. */
+  readonly master: string;
+  /** The entry identity the published table keys on; matches `FrameRequest.functionName`. */
+  readonly functionName: string;
+  /** The compiled, placeholder-filled master program this execution runs. */
+  readonly program: Uint8Array;
+  /** The witness block the execution starts from. */
+  initialBlock(): WitnessBlock;
+  /** The VM program that evaluates this execution with `block` on its input. */
+  programFor(block: WitnessBlock): ShippedVmProgram;
+  /** Writes `site`'s witness into `block`, naming the callee a call site reaches. */
+  fill(site: StopSite, block: WitnessBlock): { readonly callee?: FrameRequest };
+}
+
+/** What one real run of a master ended with. */
+export interface ExecutionStop {
+  readonly accepted: boolean;
+  /** Where the run stopped, as the instruction pointer; absent when it accepted. */
+  readonly ip?: number;
+  readonly error?: string;
+}
+
+export interface ShippedHostOptions {
+  /** Every contract in the composition, whose published tables are merged into one lookup. */
+  readonly artifacts: readonly { readonly composition?: unknown }[];
+  /** Every execution the derivation may reach, keyed by `master`. */
+  readonly runs: readonly ShippedMasterRun[];
+  /** The BCH-2026 machine to run masters in. Defaults to the consensus machine. */
+  readonly vm?: VirtualMachine;
+  /** Called after each real run, for diagnostics. */
+  readonly onRun?: (master: string, site: StopSite, stop: ExecutionStop) => void;
+}
+
+/** True when `after` reached further than `before`: the run accepted, or stopped further along the program. */
+function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
+  if (after.accepted) return true;
+  return (after.ip ?? 0) > (before.ip ?? 0);
+}
+
+/** The VM's verdict for one program, as the host reads it. */
+function runOnce(vm: VirtualMachine, program: ShippedVmProgram): ExecutionStop {
+  const state = vm.evaluate(program);
+  if (vm.stateSuccess(state) === true) return { accepted: true };
+  const typed = state as { readonly ip?: number; readonly error?: string };
+  return {
+    accepted: false,
+    ...(typed.ip === undefined ? {} : { ip: typed.ip }),
+    ...(typed.error === undefined ? {} : { error: String(typed.error) }),
+  };
+}
+
+/** The identity a published entry uses, matching `entryFunctionName` in the compiler's stop-site module. */
+export function publishedEntryName(contract: string, entry: string): string {
+  return `${contract}.${entry}()`;
+}
+
+/**
+ * Builds the real derivation host: published sites for `sitesFor`, and a running master for `step`.
+ *
+ * The file's header explains the evidence each step uses; `reachedFurther` is where the host refuses to call a
+ * fill progress when the program did not move.
+ */
+export function createShippedDerivationHost(options: ShippedHostOptions): DerivationHost {
+  const published = options.artifacts.map(readPublishedStopSites);
+  const entries = new Map<string, PublishedEntryStopSites>();
+  for (const table of published) {
+    for (const entry of table.entries) entries.set(entry.functionName, entry);
+  }
+  const runs = new Map<string, ShippedMasterRun>();
+  for (const run of options.runs) {
+    if (runs.has(run.master)) {
+      throw new ShippedHostError('PER_CALL_HOST_DUPLICATE_RUN', `two runs share the master "${run.master}"`);
+    }
+    runs.set(run.master, run);
+  }
+  const vm = options.vm ?? createVirtualMachineBch2026(false);
+  const blocks = new Map<string, WitnessBlock>();
+
+  const blockFor = (run: ShippedMasterRun): WitnessBlock => {
+    let block = blocks.get(run.master);
+    if (block === undefined) {
+      block = run.initialBlock();
+      blocks.set(run.master, block);
+    }
+    return block;
+  };
+
+  return {
+    sitesFor(functionName: string): StopSiteMetadata {
+      const entry = entries.get(functionName);
+      if (entry === undefined) {
+        throw new ShippedHostError(
+          'PER_CALL_HOST_ENTRY_UNPUBLISHED',
+          `no stop sites are published for "${functionName}"`,
+        );
+      }
+      return entry.sites;
+    },
+
+    step(request: FrameRequest, site: StopSite): StepOutcome {
+      const run = runs.get(request.master);
+      if (run === undefined) {
+        throw new ShippedHostError(
+          'PER_CALL_HOST_RUN_UNKNOWN',
+          `no run is registered for master "${request.master}" of ${request.functionName}`,
+        );
+      }
+      if (run.functionName !== request.functionName) {
+        throw new ShippedHostError(
+          'PER_CALL_HOST_RUN_MISMATCH',
+          `master "${request.master}" runs ${run.functionName}, not ${request.functionName}`,
+        );
+      }
+
+      const block = blockFor(run);
+      // The run before the fill: with this site's witness still unfilled, where does the real program stop?
+      const before = runOnce(vm, run.programFor(block));
+      options.onRun?.(run.master, site, before);
+      const { callee } = run.fill(site, block);
+      // The run after the fill: does the real program move?
+      const after = runOnce(vm, run.programFor(block));
+      options.onRun?.(run.master, site, after);
+
+      if (!reachedFurther(before, after)) return {};
+      if (site.kind === 'call') {
+        // A call's witness is the callee, so the draft must have been missing it: a run that already accepted
+        // before the fill means the site was not what the program stopped at, and the step reports nothing.
+        if (before.accepted) return {};
+        if (callee === undefined) return {};
+        return { filled: witnessKindOf(site), callee };
+      }
+      return { filled: witnessKindOf(site) };
+    },
+  };
+}
+
+/** The callee a published call site names, once a target address is resolved to a contract and master. */
+export function publishedCallee(
+  entry: PublishedEntryStopSites,
+  callIndex: number,
+  target: { readonly contract: string; readonly master: string },
+): FrameRequest {
+  const call = entry.calls.find((candidate) => candidate.callIndex === callIndex);
+  if (call === undefined) {
+    throw new ShippedHostError(
+      'PER_CALL_HOST_CALL_UNPUBLISHED',
+      `${entry.functionName} publishes no call site ${callIndex}`,
+    );
+  }
+  return {
+    contract: target.contract,
+    functionName: publishedEntryName(target.contract, call.functionName),
+    kind: FrameKind.CALL,
+    master: target.master,
+  };
+}

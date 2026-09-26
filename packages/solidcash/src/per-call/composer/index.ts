@@ -5,6 +5,7 @@
 
 export * from './refusals.js';
 export * from './derivation.js';
+export * from './shipped-host.js';
 export * from './composition.js';
 export * from './pools.js';
 export * from './layout.js';

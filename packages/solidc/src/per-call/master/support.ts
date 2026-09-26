@@ -303,6 +303,8 @@ function deriveEntryCallSites(
       kind: FrameKind.CALL,
       selector,
       target: hexToBin(slot.addressLiteral),
+      interfaceName: slot.interfaceName,
+      functionName: slot.functionName,
       arguments: args.arguments,
     });
   }

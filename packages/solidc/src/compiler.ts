@@ -60,6 +60,10 @@ import {
 import { assessPerCallMasterShape, stripFrameParameters } from './per-call/master/support.js';
 import type { MasterCallSite } from './per-call/master/frame-tail.js';
 import {
+  publishPerCallStopSites,
+  type PublishedPerCallStopSites,
+} from './per-call/master/stop-sites.js';
+import {
   alignCensusAddressOffset,
   findPlaceholderOffsets,
   isPerCallMaster,
@@ -509,6 +513,8 @@ type InternalCompilerOptions = CompilerOptions & {
   __perCallMaster?: boolean;
   /** The calls every entry makes, in execution order, as the master head checks them. */
   __perCallCallSites?: readonly MasterCallSite[];
+  /** The stop-site table a driver derives the master from, one entry per entry point. */
+  __perCallStopSites?: PublishedPerCallStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
   __perCallReservesValidatorHash?: boolean;
 };
@@ -14030,6 +14036,14 @@ function compileResolvedAst(
     const callSites = assessment.calls ?? [];
     (mergedCompilerOptions as InternalCompilerOptions).__perCallCallSites = callSites;
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
+    // The stop sites a builder resumes from, published per entry so a driver can look one up by the identity its
+    // `FrameRequest.functionName` carries. No `read` site is published: the compiler does not hold the record
+    // identity a read resolves to.
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites = publishPerCallStopSites(
+      ast.contract.name,
+      ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name),
+      callSites,
+    );
     setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
   }
   // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
@@ -14127,6 +14141,14 @@ function compileResolvedAst(
       convention: 'per-call',
       placeholders: { version: 1, ...offsets },
     };
+    // The stop-site table rides on the composition object. It is not part of the frozen placeholder type, which
+    // `@solidcash/utils` owns, so it is attached by a widened view of the same object rather than by changing it.
+    const stopSites = (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites;
+    if (stopSites !== undefined) {
+      const publication = artifact.composition as NonNullable<typeof artifact.composition>
+        & { stopSites: PublishedPerCallStopSites };
+      publication.stopSites = stopSites;
+    }
   }
   let verifiedKernelEntryJournal:
   NonNullable<NonNullable<Artifact['messageBus']>['kernelEntryJournal']> | undefined;

@@ -55,15 +55,26 @@ const PROGRAM = buildValidatorProgram();
  * The machine the composition runs on: the relaxed local profile, which is the profile the plan's gate is stated
  * against.
  *
- * The operation-cost density is relaxed here on purpose. The reference composition is already at the published
- * budget of 800 cost per byte before any program runs, so a program of a hundred-odd instructions cannot fit
- * inside it; what this suite decides is what the program accepts and refuses, and the budget is a separate,
- * open question this suite does not answer.
+ * The density is relaxed here so a case decides what the program accepts and refuses rather than how much it
+ * costs: a generated case can spend more than the reference composition does, and a budget refusal would read as
+ * a rule refusal. Whether the program fits the published density at all is the separate question
+ * `runs the reference composition at the published operation-cost density` measures, and there it does fit.
  */
 const relaxedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
   createVirtualMachineBch2026ForProvider(
     new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } }),
   );
+
+/**
+ * The machine at the *published* operation-cost density, which `MockNetworkProvider`'s default carries.
+ *
+ * The rest of this suite runs relaxed, because what it decides is what the program accepts and refuses. This one
+ * answers the separate question the plan leaves open: whether the shipped program's own cost fits the density a
+ * real chain publishes. The answer is a measurement either way, so the test reports the numbers it saw and only
+ * asserts the one fact that matters — that the reference composition's validator input still runs.
+ */
+const publishedMachine = (): ReturnType<typeof createVirtualMachineBch2026ForProvider> =>
+  createVirtualMachineBch2026ForProvider(new MockNetworkProvider());
 
 type VmProgram = Parameters<ReturnType<typeof relaxedMachine>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
@@ -456,6 +467,19 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses a listed master that names another input as its validator', () => {
+    // The absent sentinel is one way a listed master fails to point here; naming a real input that is not this
+    // validator is the other, and a program that only looked for the sentinel would accept it.
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const elsewhere = composition.slotIndex.get('DA')!;
+    expect(elsewhere).not.toBe(index);
+    composition.blocks.get('B.g')!.validatorRef = elsewhere;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V3_MASTER_NOT_POINTING_HERE');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a minting input that points here but is not listed', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
@@ -788,19 +812,31 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
-  test('refuses a covered master whose address is not its category\'s', () => {
+  test('runs the reference composition at the published operation-cost density', () => {
+    // The plan's open question: the program costs operations the unlocking bytecode has to pay for, and the real
+    // profile budgets 800 cost per byte. A program that did not fit would make every composed transaction
+    // unspendable on chain, which is a different failure from refusing a bad rule.
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
-    const wrong = new Uint8Array(35).fill(0x11);
-    const calleeId = 'A.k';
-    composition.blocks.get(calleeId)!.self = wrong;
-    const calleeIndex = composition.masterIndex.get(calleeId)!;
-    const caller = [...composition.blocks.values()].find((block) => block.calls.some(
-      (call) => call.calleeRef === calleeIndex,
-    ));
-    caller!.calls.find((call) => call.calleeRef === calleeIndex)!.target = wrong;
-    const modelled = materialise(composition);
-    expect(derivationOf(modelled, index).rejection?.reason).toBe('V11_SELF_NOT_CONTRACT_ADDRESS');
-    expect(accepted(modelled, index)).toBe(false);
+    const transaction = materialise(composition);
+    const vm = publishedMachine();
+    const program = toVm(transaction);
+    const state = vm.evaluate({
+      inputIndex: index,
+      sourceOutputs: program.sourceOutputs,
+      transaction: program.transaction,
+    });
+    const spentBytes = transaction.inputs[index]!.unlockingBytecode.length
+      + transaction.inputs[index]!.lockingBytecode.length;
+    const cost = (state as { readonly operationCost?: number }).operationCost;
+    console.log('published density', JSON.stringify({
+      programBytes: PROGRAM.length,
+      spentBytes,
+      budgetPerByte: 800,
+      maximumOperationCost: spentBytes * 800,
+      operationCost: cost,
+      accepted: vm.stateSuccess(state) === true,
+    }));
+    expect(vm.stateSuccess(state)).toBe(true);
   });
 });

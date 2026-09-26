@@ -12,3 +12,4 @@ export * from './witness.js';
 export * from './need-test.js';
 export * from './assemble.js';
 export * from './settlement.js';
+export * from './value-rules.js';

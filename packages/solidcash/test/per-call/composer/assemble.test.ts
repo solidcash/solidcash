@@ -159,8 +159,8 @@ describe('assembling a composition', () => {
     const transcript = decodeTranscript(
       splitFirstPush(assembly.inputs.find((input) => input.id === 'validator')!.unlockingBytecode).payload,
     );
-    // The layout puts A's masters and validator first, then its state, then B's block: A0@0, A1@1, VA@2, DA@3,
-    // B0@4. A0 is the composition's only root and every master is covered.
+    // The layout puts the caller's masters and its validator first, then its state, then the callee's block:
+    // Ledger#0@0, Ledger#1@1, validator@2, DA@3, Vault#0@4. Ledger#0 is the only root and every master is covered.
     expect(transcript.roots).toStrictEqual([0]);
     expect(transcript.masters).toStrictEqual([0, 1, 4]);
     expect(transcript.settles).toHaveLength(1);

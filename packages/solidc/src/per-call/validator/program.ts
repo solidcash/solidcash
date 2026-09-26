@@ -18,6 +18,7 @@
 
 import { Opcodes, encodeDataPush } from '@bitauth/libauth';
 import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH } from '@solidcash/utils';
+import { splitFirstPushScript } from '../master/witness-reader.js';
 import type { ValidatorReasonName } from './reasons.js';
 
 /** The transcript's first four bytes: the wire name and the version the program understands. */
@@ -41,6 +42,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V2_TRANSCRIPT_MALFORMED',
   'V2_ROOT_INDEX_OUT_OF_RANGE',
   'V2_MASTER_INDEX_OUT_OF_RANGE',
+  'V2_MASTER_WITNESS_BLOCK_MALFORMED',
   'V2_STATE_INPUT_INDEX_OUT_OF_RANGE',
   'V9_NO_ROOT',
   'V9_ROOT_CATEGORY_MISMATCH',
@@ -109,6 +111,12 @@ class Emitter {
 
   push(data: Uint8Array): this {
     this.chunks.push(encodeDataPush(data));
+    return this;
+  }
+
+  /** Appends a script fragment whose stack effect the caller accounts for. */
+  script(bytes: Uint8Array): this {
+    this.chunks.push(bytes);
     return this;
   }
 
@@ -269,12 +277,30 @@ function emitIndicesAreInputs(e: Emitter): void {
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
 }
 
-/** V2, the masters' indices. Entry `[M, 0, suffix]`, where `suffix` begins at the master count. */
+/**
+ * V2, the masters' indices and their witness blocks.
+ *
+ * Entry `[M, 0, suffix]`, where `suffix` begins at the master count. Each index names a real input, and that
+ * input's first push decodes as a witness block.
+ */
 function emitMasterIndices(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_NIP);
   takeCount(e);
-  emitIndicesAreInputs(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  e.script(splitFirstPushScript());
+  e.op(O.OP_DROP);
+  consumeWitnessBlock(e);
+  e.op(O.OP_DROP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
 }
 
 /**
@@ -296,4 +322,146 @@ function emitSettledStateInputs(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+}
+
+/** `0xffff` as an unsigned script number: the sentinel a missing index carries. */
+const INDEX_NONE_NUMBER = new Uint8Array([0xff, 0xff, 0x00]);
+
+/** Drops the first `n` bytes of the item on top. */
+function dropFront(e: Emitter, n: number): void {
+  e.count(n).op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+}
+
+/** Drops one length-prefixed field. `width` is the length's byte count: 2 for `lp16`, 4 for `lp32`. */
+function dropLengthPrefixed(e: Emitter, width: number): void {
+  const O = Opcodes;
+  e.count(width).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SPLIT, O.OP_NIP);
+}
+
+/** Entry `[rest]`, exit `[count, rest]`. The count is an unsigned little-endian field of `width` bytes. */
+function takeUnsignedCount(e: Emitter, width: number): void {
+  const O = Opcodes;
+  e.count(width).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+}
+
+/** Runs `body` once per count. Entry `[count, rest]`, exit `[rest]`. `body` replaces `rest` and leaves `count`. */
+function loopCounted(e: Emitter, body: (emitter: Emitter) => void): void {
+  const O = Opcodes;
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  body(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP);
+}
+
+/** The frame kind on the front of the item is in `minimum .. 5`. */
+function requireKind(e: Emitter, minimum: number): void {
+  const O = Opcodes;
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  e.count(minimum);
+  e.count(6);
+  e.op(O.OP_WITHIN, O.OP_VERIFY, O.OP_DROP);
+}
+
+/** One call record. A root kind and a missing callee are refused. */
+function dropCall(e: Emitter): void {
+  const O = Opcodes;
+  requireKind(e, 1);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL, O.OP_NOT, O.OP_VERIFY);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+}
+
+/**
+ * The two indices of one record entry.
+ *
+ * Entry `[..., in, out, rest]`, exit `[..., rest]`. Created and deleted together is refused, and an entry that
+ * names two real indices names the same one twice.
+ */
+function requireRecordShape(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_ROT, O.OP_ROT);
+  e.op(O.OP_2DUP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL);
+  e.op(O.OP_SWAP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLAND, O.OP_NOT, O.OP_VERIFY);
+  e.op(O.OP_2DUP, O.OP_NUMEQUAL);
+  e.op(O.OP_SWAP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_SWAP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_VERIFY);
+}
+
+/** One record entry: its two indices, then the commitment at each end. */
+function dropRecord(e: Emitter): void {
+  takeUnsignedCount(e, 2);
+  takeUnsignedCount(e, 2);
+  requireRecordShape(e);
+  dropLengthPrefixed(e, 4);
+  dropLengthPrefixed(e, 4);
+}
+
+/** One segment: a counted list of record entries. */
+function dropSegment(e: Emitter): void {
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropRecord);
+}
+
+/** A counted list of output indices: the event list, or the send list. */
+function dropIndexList(e: Emitter): void {
+  takeUnsignedCount(e, 2);
+  loopCounted(e, (emitter) => dropFront(emitter, 2));
+}
+
+/**
+ * Consumes one witness block.
+ *
+ * Entry `[block]`, exit `[]`. The layout is the witness-block codec's: a bad magic, a bad version, a bad frame
+ * kind, a truncated field, a segment count other than one more than the calls, a record entry that is created and
+ * deleted at once or moved, or a trailing byte, fails the script.
+ */
+function consumeWitnessBlock(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_SPLIT, O.OP_SWAP);
+  e.push(new Uint8Array([0x50, 0x57, 0x01])).op(O.OP_EQUALVERIFY);
+  requireKind(e, 0);
+  dropFront(e, 6);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  // The count sits under the unread bytes. Park a copy, then walk the calls.
+  e.op(O.OP_SWAP, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_FROMALTSTACK, O.OP_1ADD);
+  e.count(2).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  loopCounted(e, dropSegment);
+  dropIndexList(e);
+  dropIndexList(e);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_VERIFY, O.OP_DROP);
+}
+
+/** The witness-block walk on its own, leaving one truthy item when the block was consumed exactly. */
+export function witnessBlockShapeScript(): Uint8Array {
+  const e = new Emitter();
+  consumeWitnessBlock(e);
+  e.op(Opcodes.OP_DEPTH, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY, Opcodes.OP_1);
+  return e.done();
 }

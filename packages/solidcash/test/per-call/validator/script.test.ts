@@ -355,6 +355,20 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a covered master whose first push is not a witness block', () => {
+    const { composition, index } = reference();
+    const master = composition.transcript.masters[0]!;
+    const modelled = materialise(composition);
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      inputs: modelled.inputs.map((input) => (input.index === master
+        ? { ...input, unlockingBytecode: encodeDataPush(new Uint8Array([0x01, 0x02, 0x03])) }
+        : input)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a settled state input that names no input', () => {
     const { composition, index } = reference();
     const transcript = composition.transcript;

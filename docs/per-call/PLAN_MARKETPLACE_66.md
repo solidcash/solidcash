@@ -1067,3 +1067,9 @@ Titles marked NEVER have not passed on any real compile to date.
   implementation of that one helper is where the offset stops. The remaining direct uses of the compact offset are the
   single read in `emitStateFieldReadInline` and the output side of the state-commitment write. The head also has to
   leave the declared record's input and output indices as tracked slots first, because they are what those sites read.
+- V7's chain rule does not need a depth-first walk in script after all: a settled contract's records chain in the
+  order the covered masters appear in `M.masters`, each master's segments in block order, so a linear scan over that
+  list is enough. A wrong order breaks the chain and is refused, so the scan is fail-closed rather than assuming the
+  transcript is honest. What is missing is the per-master walk itself: today a validator-settled master's own segment
+  declarations are unchecked, because only a self-settling master walks them (the same walk, moved into the validator,
+  is what the chain needs first). The cross-master linkage is the second half and needs that walk as its base.

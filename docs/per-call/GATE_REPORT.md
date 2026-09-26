@@ -41,7 +41,8 @@ because `V_TEMPLATE` itself is not implemented.
 | A compiled master is deployed and spent | **done** | `solidcash/test/per-call/frames/compiled-master-spend.test.ts`: VM accepts the spend, three controls refused |
 | Selector dispatch | **done** | 64 tests in `solidc/test/per-call`; a two-entry contract compiles to one master and both entries are spent |
 | The return check | **absent** | refused by name, now naming the entry |
-| N1 emission in the master | **absent** | the decision and recognition exist in the composer; the master does not emit the check |
+| N1 and the call shape in the master | **done in the head builder, not reachable from `compileString`** | VM-proven with three inputs co-spent; a third reserved slot for `H_V` is what makes it reachable |
+| Segment and record settlement | **absent** | nothing after the call records is interpreted |
 | The caller signature's hash type | **absent** | see Deviations: the check makes callers' unlocking bytecodes load-bearing |
 | Record view mode (state settlement) | **absent** | state still read through today's direct covenant |
 | Records read through a segment view | **absent** | — |
@@ -89,7 +90,7 @@ the option refuses, and why the current state is the honest one.
 
 ## Next step
 
-The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: emit the return check; emit the need test and validator recognition in the master; add the caller signature's hash type; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the acceptance shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
+The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: reserve a third slot for `H_V` and admit calling contracts; emit the return check; add the caller signature's hash type; interpret segment and record settlement after the call records; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the acceptance shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
 done and VM-proven; what remains is to emit it as the head of a compiled master, add W0 (the first-push
 self-check) and the selector dispatch, and then give the records stream its view mode. That is the smallest
 increment that turns the composer's injected step into a real program run.

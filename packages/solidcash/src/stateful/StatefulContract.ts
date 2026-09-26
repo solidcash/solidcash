@@ -759,6 +759,7 @@ import {
 } from './sc-apply-overrides.js';
 import {
   batchRaw as batchRawImpl,
+  type BatchExecutionContextBinding,
 } from './sc-batch-raw.js';
 import {
   buildStatefulFunctionCall as buildStatefulFunctionCallImpl,
@@ -5729,6 +5730,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     logicalIdentity?: ResolvedLogicalIdentity,
     valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
     callerLockingBytecode?: Uint8Array,
+    executionContextBinding?: BatchExecutionContextBinding,
   ): StatefulFunctionCall {
     const self = this;
     return batchRawImpl(
@@ -5755,7 +5757,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       blob, routeWitnesses, internalRouteWitnesses, blockBase, emitReturn, returnBlob,
       omitLocalFeeTail, delegateExecution, rowArguments, logicalIdentity, valueChunkProductions,
-      callerLockingBytecode,
+      callerLockingBytecode, executionContextBinding,
     ) as StatefulFunctionCall;
   }
 

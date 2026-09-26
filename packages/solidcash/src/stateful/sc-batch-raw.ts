@@ -22,8 +22,8 @@ import {
   allowsWriteUnderExecutionContext,
   activeOrdinalsUnderContext,
   buildKernelExecutionContext,
-  executionContextJournalKey,
   registerExecutionContextOnSettlement,
+  type ExecutionContextLifecycle,
 } from '../message-bus/execution-context.js';
 import {
   filterEmitsUnderPathEffectSchedule,
@@ -31,7 +31,6 @@ import {
   pathEffectActivationEnvironmentFromArgs,
   type PublishedPathEffectSchedule,
 } from '../message-bus/path-effect-schedule.js';
-import { settlement } from './value-chunk-persist.js';
 import { peekBuildId } from './buildSequence.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
@@ -322,6 +321,11 @@ export interface BatchRawHost {
   }): BatchRawCall;
 }
 
+export interface BatchExecutionContextBinding {
+  lifecycle: ExecutionContextLifecycle;
+  participantIndex: number;
+}
+
 export function batchRaw(
 host: BatchRawHost,
 blob: Uint8Array,
@@ -336,6 +340,7 @@ rowArguments?: readonly RouteExpressionKeyRow[],
 logicalIdentity?: ResolvedLogicalIdentity,
 valueChunkProductions?: NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>,
 callerLockingBytecode?: Uint8Array,
+executionContextBinding?: BatchExecutionContextBinding,
 ): BatchRawCall {
   const executionArtifact = delegateExecution?.artifact ?? host.inner.artifact;
   const capability = executionArtifact.messageBus;
@@ -629,6 +634,27 @@ callerLockingBytecode?: Uint8Array,
       inactive: inactiveRouteEntrySlots,
     }));
   }
+  // Bind current arguments once per row for this materialization pass. Row indices are local
+  // to a participant; neither another participant nor a previous build may supply its context.
+  const rowExecutionContexts = reachedHandlers.map((handler, rowIndex) => {
+    const args = effectiveRowArguments?.[rowIndex]?.args;
+    const pathEffectSchedule = handler.pathEffectSchedule as PublishedPathEffectSchedule | undefined;
+    if (args === undefined || pathEffectSchedule === undefined) return undefined;
+    const selected = executionArtifact.abi.find((candidate) =>
+      candidate.selector === handler.selector || candidate.name === handler.name);
+    const params = {
+      handlerId: handler.selector ?? handler.name,
+      handlerName: handler.name,
+      rowIndex,
+      participantIndex: executionContextBinding?.participantIndex,
+      inputs: selected?.inputs ?? handler.inputs ?? [],
+      args,
+      pathEffectSchedule,
+    };
+    return executionContextBinding === undefined
+      ? buildKernelExecutionContext(params)
+      : registerExecutionContextOnSettlement(executionContextBinding.lifecycle, params);
+  });
   // `route.entryAccesses` is the union of every admitted handler. Narrow each selected row back to the
   // operations of its direct handler using the compiler-published physical-slot correspondence. Per-row route
   // slots are copies of that canonical physical slot, so replace only the `_rN` coordinate and find the exact
@@ -638,13 +664,9 @@ callerLockingBytecode?: Uint8Array,
       activation?: ExternalCallExpression;
       mutationEffectOrdinals?: readonly number[];
     },
-    rowArgs: readonly FunctionArgument[] | undefined,
-    pathEffectSchedule: PublishedPathEffectSchedule | undefined,
-    handlerInputs: readonly { name: string; type: string }[],
-    handlerId: string,
-    handlerName: string | undefined,
-    participantIndex: number,
+    rowIndex: number,
   ): boolean => {
+    const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
     const fallbackActive = (): boolean => {
       if (access.activation === undefined) return true;
       if (rowArgs === undefined) {
@@ -656,41 +678,10 @@ callerLockingBytecode?: Uint8Array,
       }
       return active;
     };
-    // path-effect activation/settle-time ExecutionContext: typed ExecutionContext binds frame ABI + pathEffectSchedule for write selection.
-    // Multi-participant journals key by participantIndex (+ nested scope from the lifecycle).
-    if (pathEffectSchedule !== undefined && rowArgs !== undefined) {
-      const lifecycle = settlement().executionContexts;
-      const nestedScopeId = lifecycle.currentNestedScope() !== 0
-        ? lifecycle.currentNestedScope()
-        : undefined;
-      const params = {
-        handlerId,
-        handlerName,
-        participantIndex,
-        ...(nestedScopeId !== undefined && { nestedScopeId }),
-        inputs: handlerInputs,
-        args: rowArgs,
-        pathEffectSchedule,
-      };
-      const journalKey = executionContextJournalKey({
-        handlerId,
-        participantIndex,
-        nestedScopeId,
-      });
-      let context = buildKernelExecutionContext(params);
-      // Settle-time lifecycle: register once per journal key while the session is open/bound.
-      try {
-        if (lifecycle.getByJournalKey(journalKey) === undefined
-          && lifecycle.getPhase() !== 'settled') {
-          context = registerExecutionContextOnSettlement(lifecycle, params);
-        } else {
-          context = lifecycle.getByJournalKey(journalKey) ?? context;
-        }
-      } catch {
-        // Session already settled — keep ephemeral context for this check.
-      }
+    const context = rowExecutionContexts[rowIndex];
+    if (context?.pathEffectSchedule !== undefined) {
       const scheduled = (access.mutationEffectOrdinals ?? []).some((ordinal) => (
-        pathEffectSchedule.effects.some((effect) => (
+        context.pathEffectSchedule!.effects.some((effect) => (
           effect.kind === 'stateWrite' && effect.ordinal === ordinal
         ))
       ));
@@ -711,14 +702,6 @@ callerLockingBytecode?: Uint8Array,
     const selected = executionArtifact.abi.find((candidate) =>
       candidate.selector === handler.selector || candidate.name === handler.name);
     const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
-    const pathEffectSchedule = (handler as { pathEffectSchedule?: PublishedPathEffectSchedule })
-      .pathEffectSchedule
-      ?? (executionArtifact.messageBus?.handlers?.find((candidate) =>
-        candidate.selector === handler.selector || candidate.name === handler.name)
-        ?.pathEffectSchedule as PublishedPathEffectSchedule | undefined);
-    const handlerInputs = selected?.inputs
-      ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
-      ?? [];
     handler.physicalEntrySlots?.forEach((physicalSlot, directIndex) => {
       const directAccess = selected?.entryAccesses?.[directIndex];
       if (!directAccess) return;
@@ -749,11 +732,6 @@ callerLockingBytecode?: Uint8Array,
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];
         const operations = fixedChunkableAccessActive(
           directAccess,
-          rowArgs,
-          pathEffectSchedule,
-          handlerInputs,
-          handler.selector ?? handler.name,
-          handler.name,
           rowIndex,
         )
           ? directAccess.operations
@@ -797,26 +775,9 @@ callerLockingBytecode?: Uint8Array,
   const activeRouteWriteCollections = [...new Set(reachedHandlers.flatMap((handler, rowIndex) => {
     const selected = executionArtifact.abi.find((candidate) =>
       candidate.selector === handler.selector || candidate.name === handler.name);
-    const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
-    const pathEffectSchedule = (handler as { pathEffectSchedule?: PublishedPathEffectSchedule })
-      .pathEffectSchedule
-      ?? (executionArtifact.messageBus?.handlers?.find((candidate) =>
-        candidate.selector === handler.selector || candidate.name === handler.name)
-        ?.pathEffectSchedule as PublishedPathEffectSchedule | undefined);
-    const handlerInputs = selected?.inputs
-      ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
-      ?? [];
     return (selected?.entryAccesses ?? [])
       .filter((access) => access.operations.includes('write')
-        && fixedChunkableAccessActive(
-          access,
-          rowArgs,
-          pathEffectSchedule,
-          handlerInputs,
-          handler.selector ?? handler.name,
-          handler.name,
-          rowIndex,
-        ))
+        && fixedChunkableAccessActive(access, rowIndex))
       .map((access) => access.collection);
   }))];
   const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>
@@ -828,8 +789,7 @@ callerLockingBytecode?: Uint8Array,
   const routeEventSlots = capability.route.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
   const routeEventWidth = routeEventSlots.length === 0 ? 0
     : Math.floor(routeEventSlots.length / capability.maximumRows);
-  // path-effect activation/settle-time ExecutionContext: filter emits by published schedule activations, preferring a settle-time
-  // ExecutionContext when one is registered for this participant journal key.
+  // Filter emits under this row's current execution context.
   // Compiler event ordinals are PATH_EFFECT_EVENT_ORDINAL_BASE + local emitIndex (pre-row remap).
   const reachedEmits = reachedHandlers.flatMap((handler, rowIndex) => {
     const rowArgs = effectiveRowArguments?.[rowIndex]?.args;
@@ -843,43 +803,11 @@ callerLockingBytecode?: Uint8Array,
     const handlerInputs = selected?.inputs
       ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
       ?? [];
-    const handlerId = handler.selector ?? handler.name;
-    let env = rowArgs === undefined
-      ? {}
-      : pathEffectActivationEnvironmentFromArgs(handlerInputs, rowArgs);
-    let activeEventOrdinals: readonly number[] | undefined;
-    if (pathEffectSchedule !== undefined && rowArgs !== undefined) {
-      const lifecycle = settlement().executionContexts;
-      const nestedScopeId = lifecycle.currentNestedScope() !== 0
-        ? lifecycle.currentNestedScope()
-        : undefined;
-      const journalKey = executionContextJournalKey({
-        handlerId,
-        participantIndex: rowIndex,
-        nestedScopeId,
-      });
-      try {
-        let context = lifecycle.getByJournalKey(journalKey);
-        if (context === undefined && lifecycle.getPhase() !== 'settled') {
-          context = registerExecutionContextOnSettlement(lifecycle, {
-            handlerId,
-            handlerName: handler.name,
-            participantIndex: rowIndex,
-            ...(nestedScopeId !== undefined && { nestedScopeId }),
-            inputs: handlerInputs,
-            args: rowArgs,
-            pathEffectSchedule,
-          });
-        }
-        if (context !== undefined) {
-          // settle-time ExecutionContext: prefer settle-time ExecutionContext activationEnv for emit gating.
-          env = context.activationEnv;
-          activeEventOrdinals = activeOrdinalsUnderContext(context, 'event');
-        }
-      } catch {
-        activeEventOrdinals = undefined;
-      }
-    }
+    const context = rowExecutionContexts[rowIndex];
+    const env = context?.activationEnv ?? (rowArgs === undefined
+      ? {} : pathEffectActivationEnvironmentFromArgs(handlerInputs, rowArgs));
+    const activeEventOrdinals = context === undefined
+      ? undefined : activeOrdinalsUnderContext(context, 'event');
     const activeEmits = filterEmitsUnderPathEffectSchedule(
       handler.emits ?? [],
       pathEffectSchedule,
@@ -1043,30 +971,10 @@ callerLockingBytecode?: Uint8Array,
       const handlerInputs = selected?.inputs
         ?? (handler as { inputs?: readonly { name: string; type: string }[] }).inputs
         ?? [];
-      let env = pathEffectActivationEnvironmentFromArgs(handlerInputs, row.args);
-      let activeTransferOrdinals: readonly number[] | undefined;
-      if (pathEffectSchedule !== undefined) {
-        const lifecycle = settlement().executionContexts;
-        const nestedScopeId = lifecycle.currentNestedScope() !== 0
-          ? lifecycle.currentNestedScope()
-          : undefined;
-        const handlerId = handler.selector ?? handler.name;
-        const journalKey = executionContextJournalKey({
-          handlerId,
-          participantIndex: rowIndex,
-          nestedScopeId,
-        });
-        try {
-          const context = lifecycle.getByJournalKey(journalKey);
-          if (context !== undefined) {
-            // settle-time ExecutionContext: prefer settle-time ExecutionContext activationEnv for transfer gating.
-            env = context.activationEnv;
-            activeTransferOrdinals = activeOrdinalsUnderContext(context, 'transfer');
-          }
-        } catch {
-          activeTransferOrdinals = undefined;
-        }
-      }
+      const context = rowExecutionContexts[rowIndex];
+      const env = context?.activationEnv ?? pathEffectActivationEnvironmentFromArgs(handlerInputs, row.args);
+      const activeTransferOrdinals = context === undefined
+        ? undefined : activeOrdinalsUnderContext(context, 'transfer');
       const activeTransfers = filterTransfersUnderPathEffectSchedule(
         handler.transfers ?? [],
         pathEffectSchedule,

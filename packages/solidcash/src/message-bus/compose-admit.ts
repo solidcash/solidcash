@@ -22,6 +22,7 @@ import {
 import {
   assertAndSettleExecutionContexts,
   planEffectsUnderLifecycle,
+  type ExecutionContextLifecycle,
 } from './execution-context.js';
 import {
   finalizeActiveConstraintFixpoint,
@@ -30,6 +31,7 @@ import {
 } from '../stateful/value-chunk-persist.js';
 
 export interface AdmitCompositionContext {
+  executionContexts: ExecutionContextLifecycle;
   options: Pick<ComposeAtomicMessageBusOptions, 'preparedCalls'>;
   assembledPredOutClaimsByParticipant?: AssemblePredOutClaimsByParticipant;
   /** settle-time ExecutionContext: when present, effect plans are checked against published slot capacity. */
@@ -72,7 +74,7 @@ export function admitCompositionBuilder(
     }),
   });
   // settle-time ExecutionContext: materialize effect plans, prune inactive slots, persist, cover-assert.
-  const executionEffectPlans = planEffectsUnderLifecycle(settlement().executionContexts);
+  const executionEffectPlans = planEffectsUnderLifecycle(ctx.executionContexts);
   settlement().executionEffectPlans = executionEffectPlans;
   if (ctx.slotInventory !== undefined) {
     const pruned = pruneComposeSlotInventoryByEffectPlans(ctx.slotInventory, executionEffectPlans);
@@ -89,7 +91,7 @@ export function admitCompositionBuilder(
     }))));
   }
   // path-effect activation/settle-time ExecutionContext: settle-time ExecutionContext lifecycle (no-op when none registered).
-  assertAndSettleExecutionContexts(settlement().executionContexts);
+  assertAndSettleExecutionContexts(ctx.executionContexts);
   // constraint fixpoint: resolve multi-domain converge fingerprints recorded during admit.
   finalizeActiveConstraintFixpoint();
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

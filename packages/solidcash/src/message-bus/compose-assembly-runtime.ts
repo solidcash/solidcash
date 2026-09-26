@@ -19,6 +19,7 @@ import {
   admitCompositionBuilder,
 } from './compose-admit.js';
 import type { ComposeSlotInventory } from './compose-slot-inventory.js';
+import { createExecutionContextLifecycle } from './execution-context.js';
 import {
   rebalanceFeeTail as rebalanceComposeFeeTail,
   eventCandidates as composeEventCandidates,
@@ -114,6 +115,9 @@ export interface ComposeAssemblyRuntime {
 export function createComposeAssemblyRuntime(
   input: CreateComposeAssemblyRuntimeInput,
 ): ComposeAssemblyRuntime {
+  // One registry per build, explicitly threaded through assembly and admission. A global
+  // settlement registry would mix participants and activations across nested/concurrent builds.
+  const executionContexts = createExecutionContextLifecycle();
   const participantReturnBlob = (
     participant: number, results: Readonly<Record<number, string>>,
   ): Uint8Array | undefined => composeParticipantReturnBlob(input.plan, participant, results);
@@ -185,6 +189,7 @@ export function createComposeAssemblyRuntime(
     rebalanceFeeTail,
     eventLockingBytecodes,
     predOutClaimsSlot,
+    executionContexts,
   });
   const assemble = async (
     graph: FinalizedGraph,
@@ -205,6 +210,7 @@ export function createComposeAssemblyRuntime(
       {
         options: input.options,
         assembledPredOutClaimsByParticipant,
+        executionContexts,
         ...(input.slotInventory !== undefined && { slotInventory: input.slotInventory }),
       },
       builder,

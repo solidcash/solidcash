@@ -49,6 +49,7 @@ import {
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
 import { peekBuilderBuildId } from '../stateful/StatefulContract.js';
 import { assertAtomicParticipantCapacity } from './capacity.js';
+import type { ExecutionContextLifecycle } from './execution-context.js';
 import {
   finalizeAtomicInvocationGraph, graphInvocationCallerIdentity, selectedGraphEventOffsets,
   type AtomicDeploymentSlotEffect, type AtomicEventSlotEffect, type AtomicResourceSlotEffect,
@@ -157,6 +158,7 @@ export type AssemblePredOutClaimsByParticipant = ReadonlyMap<number, ReadonlyArr
 }>>;
 
 export interface AssembleAtomicCompositionContext {
+  executionContexts: ExecutionContextLifecycle;
   options: Pick<ComposeAtomicMessageBusOptions, 'changeAddress' | 'feeRate' | 'preparedCalls'>;
   descriptors: readonly CallDescriptor[];
   feeFunder: UnlockableUtxo;
@@ -640,6 +642,7 @@ export async function assembleAtomicComposition(
         logicalIdentities.get(participant.participant),
         Object.freeze([...valueChunkProductions.values()]),
         frameCaller === undefined ? undefined : hexToBin(frameCaller.lockingBytecode),
+        { lifecycle: ctx.executionContexts, participantIndex: participant.participant },
       );
       // `_withChildDeployment` / `_withCompilerTransfer*` below force `StatefulFunctionCall._applyOverrides` to
       // REBUILD the frame, and that rebuild carries the call object's identity - so record it on the call too,

@@ -87,6 +87,30 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
   };
 }
 
+function effectsByParticipant(plans: readonly ExecutionContextEffectPlan[]): Map<number, {
+  activeWrites: number[];
+  activeEvents: number[];
+  activeTransfers: number[];
+  journalKeys: string[];
+}> {
+  const grouped = new Map<number, {
+    activeWrites: number[]; activeEvents: number[]; activeTransfers: number[]; journalKeys: string[];
+  }>();
+  for (const plan of plans) {
+    const participant = plan.participantIndex ?? 0;
+    const effects = grouped.get(participant) ?? {
+      activeWrites: [], activeEvents: [], activeTransfers: [], journalKeys: [],
+    };
+    // Ordinals are row-local. Two rows executing the same event require two slots.
+    effects.activeWrites.push(...plan.activeWrites);
+    effects.activeEvents.push(...plan.activeEvents);
+    effects.activeTransfers.push(...plan.activeTransfers);
+    effects.journalKeys.push(plan.journalKey);
+    grouped.set(participant, effects);
+  }
+  return grouped;
+}
+
 /**
  * settle-time ExecutionContext: consume ExecutionContext effect plans against compose slot inventory.
  * Fail closed when a participant's active events/transfers exceed published slot capacity.
@@ -97,20 +121,19 @@ export function assertComposeSlotsCoverEffectPlans(
 ): void {
   if (plans.length === 0) return;
   const eventSlots = inventory.eventSlots();
-  for (const plan of plans) {
-    const participant = plan.participantIndex ?? 0;
+  for (const [participant, plan] of effectsByParticipant(plans)) {
     const events = eventSlots.filter((slot) => slot.participant === participant);
     if (plan.activeEvents.length > events.length) {
       throw new Error(
         `execution-context: participant ${participant} activeEvents=${plan.activeEvents.length} `
-        + `exceed event slots=${events.length} (journalKey=${plan.journalKey})`,
+        + `exceed event slots=${events.length} (journalKeys=${plan.journalKeys.join(',')})`,
       );
     }
     const transfers = inventory.valueSlots.filter((slot) => slot.participant === participant);
     if (plan.activeTransfers.length > transfers.length) {
       throw new Error(
         `execution-context: participant ${participant} activeTransfers=${plan.activeTransfers.length} `
-        + `exceed transfer slots=${transfers.length} (journalKey=${plan.journalKey})`,
+        + `exceed transfer slots=${transfers.length} (journalKeys=${plan.journalKeys.join(',')})`,
       );
     }
   }
@@ -125,10 +148,7 @@ export function pruneComposeSlotInventoryByEffectPlans(
   plans: readonly ExecutionContextEffectPlan[],
 ): ComposeSlotInventory {
   if (plans.length === 0) return inventory;
-  const byParticipant = new Map<number, ExecutionContextEffectPlan>();
-  for (const plan of plans) {
-    byParticipant.set(plan.participantIndex ?? 0, plan);
-  }
+  const byParticipant = effectsByParticipant(plans);
   const fixedEventSlots = inventory.fixedEventSlots.filter((slot) => {
     const plan = byParticipant.get(slot.participant);
     if (plan === undefined) return true;

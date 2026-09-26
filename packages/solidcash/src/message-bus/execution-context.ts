@@ -52,6 +52,8 @@ export interface KernelExecutionContext {
   participantIndex?: number;
   /** Nested-compose scope id (parent scope is 0 / absent). */
   nestedScopeId?: number;
+  /** Invocation row within a participant's batch; repeated handlers have distinct contexts. */
+  rowIndex?: number;
   frame: HandlerFrameSchema;
   pathEffectSchedule?: PublishedPathEffectSchedule;
   activationEnv: PathEffectActivationEnvironment;
@@ -64,6 +66,7 @@ export type BuildKernelExecutionContextParams = {
   handlerName?: string;
   participantIndex?: number;
   nestedScopeId?: number;
+  rowIndex?: number;
   /** Visible ABI inputs (internal `__…` names are stripped for the frame). */
   inputs: readonly { name: string; type: string }[];
   args: readonly FunctionArgument[];
@@ -79,10 +82,12 @@ export function executionContextJournalKey(context: {
   handlerId: string;
   participantIndex?: number;
   nestedScopeId?: number;
+  rowIndex?: number;
 }): string {
   const scope = context.nestedScopeId ?? 0;
   const participant = context.participantIndex ?? -1;
-  return `s${scope}:p${participant}:${context.handlerId}`;
+  const row = context.rowIndex === undefined ? '' : `r${context.rowIndex}:`;
+  return `s${scope}:p${participant}:${row}${context.handlerId}`;
 }
 
 /** Build a typed ExecutionContext from handler ABI inputs, args, and optional path-effect schedule. */
@@ -106,6 +111,7 @@ export function buildKernelExecutionContext(
     ...(params.handlerName !== undefined && { handlerName: params.handlerName }),
     ...(params.participantIndex !== undefined && { participantIndex: params.participantIndex }),
     ...(params.nestedScopeId !== undefined && { nestedScopeId: params.nestedScopeId }),
+    ...(params.rowIndex !== undefined && { rowIndex: params.rowIndex }),
     frame,
     ...(params.pathEffectSchedule !== undefined && { pathEffectSchedule: params.pathEffectSchedule }),
     activationEnv,
@@ -266,6 +272,7 @@ export type ExecutionContextEffectPlan = {
   handlerName?: string;
   participantIndex?: number;
   nestedScopeId?: number;
+  rowIndex?: number;
   journalKey: string;
   activeWrites: readonly number[];
   activeEvents: readonly number[];
@@ -285,6 +292,7 @@ export function planEffectsUnderExecutionContext(
     ...(context.handlerName !== undefined && { handlerName: context.handlerName }),
     ...(context.participantIndex !== undefined && { participantIndex: context.participantIndex }),
     ...(context.nestedScopeId !== undefined && { nestedScopeId: context.nestedScopeId }),
+    ...(context.rowIndex !== undefined && { rowIndex: context.rowIndex }),
     journalKey: executionContextJournalKey(context),
     activeWrites: activeEffects.filter((effect) => effect.kind === 'stateWrite').map((e) => e.ordinal),
     activeEvents: activeEffects.filter((effect) => effect.kind === 'event').map((e) => e.ordinal),
@@ -350,11 +358,11 @@ function freezeExecutionContext(context: KernelExecutionContext): KernelExecutio
 
 /**
  * path-effect activation/settle-time ExecutionContext settle-time lifecycle: register contexts → assert path programs → settle (freeze).
- * Owned by CompositionSettlementSession so two compositions never share mutable contexts.
+ * Owned by one composition build so two compositions never share mutable contexts.
  *
  * Multi-participant / nested-compose: contexts are keyed by
- * {@link executionContextJournalKey} (`s{scope}:p{participant}:{handlerId}`) so the same
- * handler may bind under distinct participants or nested scopes. Nested compose pushes a
+ * {@link executionContextJournalKey} (`s{scope}:p{participant}:r{row}:{handlerId}` when row-bound)
+ * so the same handler may bind under distinct participants, rows, or nested scopes. Nested compose pushes a
  * scope; registrations without an explicit `nestedScopeId` inherit the current scope.
  */
 export class ExecutionContextLifecycle {

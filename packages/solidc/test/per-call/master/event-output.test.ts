@@ -4,8 +4,8 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  asmToScript, computeEventNameHash, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock,
-  scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
+  asmToScript, buildPushdataCommitment, computeEventNameHash, encodeArgumentList, encodeIntegerValue,
+  encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
@@ -138,11 +138,24 @@ interface Spend {
   readonly selector?: Uint8Array;
   /** The argument push the unlocking bytecode carries, when the entry takes one. */
   readonly argumentPushes?: Uint8Array;
+  /**
+   * A state record the entry reads and writes: the commitment the transaction spends and the one it writes, at the
+   * input and output right after the master. The segment declares the record the way the compiler's settlement
+   * expects it, which is what makes the entry's own read land on it.
+   */
+  readonly state?: { readonly committed: Uint8Array; readonly written: Uint8Array };
 }
 
 /** Builds the spend of a compiled master and asks the BCH-2026 machine. */
 function verdict(spend: Spend): { accepted: boolean; objection?: string } {
   const { program, lock } = deploy(spend.source);
+  const record = spend.state;
+  const recordInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(3),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  };
   const inputs = [
     {
       outpointIndex: 0,
@@ -155,6 +168,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
         ...encodeDataPush(program),
       ]),
     },
+    ...(record === undefined ? [] : [recordInput]),
     {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -166,14 +180,22 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
   const masterOutput: VmOutput = {
     lockingBytecode: lock, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'minting'),
   };
+  const recordOutput: VmOutput[] = record === undefined ? [] : [{
+    lockingBytecode: USER_LOCK,
+    valueSatoshis: MASTER_VALUE,
+    token: token(CATEGORY, 'mutable', record.written),
+  }];
   const transaction: VmTransaction = {
     version: 2,
     inputs,
-    outputs: [masterOutput, ...spend.outputs],
+    outputs: [masterOutput, ...recordOutput, ...spend.outputs],
     locktime: 0,
   };
   const sourceOutputs: VmProgram['sourceOutputs'] = [
     masterOutput,
+    ...(record === undefined
+      ? []
+      : [{ lockingBytecode: USER_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', record.committed) }]),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
   const vm = createVirtualMachineBch2026(false);
@@ -265,6 +287,77 @@ describe('an entry that emits an event, compiled per-call', () => {
   it('is refused when the body computes a payload the listed output does not carry', () => {
     // The entry emits 7 but the unlocking bytecode passes 9, so the body's payload is 9's and the output is not.
     expect(spendEmitter({ argumentPushes: payload(EMITTED + 2) }).accepted).toBe(false);
+  });
+});
+
+/**
+ * A stateful per-call entry that emits an event: its settlement and its event walk run on one input.
+ *
+ * The settlement parks its chain registers on the alternate stack, and the event walk parks each listed output
+ * index there before the settlement runs, so the two have to keep out of each other's way. The record sits right
+ * after the master, which is where a compiled body reads its state from.
+ */
+const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract StatefulEmitter {'
+  + '   int public counter;'
+  + '   event Ping(int value);'
+  + '   function fire(int n) {'
+  + '     this.counter = this.counter + 1;'
+  + '     emit Ping(n);'
+  + '     require(this.counter > 0);'
+  + '   }'
+  + ' }';
+
+describe('a stateful entry that emits an event, compiled per-call', () => {
+  const stateful = deploy(STATEFUL_SOURCE);
+  const statefulLock = eventCovenantLock(stateful.artifact.events![0]!.signature);
+  const commitment = (counter: bigint): Uint8Array =>
+    new Uint8Array(Buffer.from(buildPushdataCommitment(stateful.artifact.stateLayout!, { counter }, 0), 'hex'));
+  const COMMITTED = commitment(5n);
+  const WRITTEN = commitment(6n);
+  /** The record at input and output 1; the event and the filler follow it, so the event sits at output 3. */
+  const STATE_INDEX = 1;
+  const EVENT_INDEX = 3;
+
+  const spendStateful = (overrides: Partial<Spend> = {}): { accepted: boolean; objection?: string } => verdict({
+    source: STATEFUL_SOURCE,
+    block: baseBlock({
+      callerRef: 2,
+      originRef: 2,
+      events: [EVENT_INDEX],
+      segments: [[{ in: STATE_INDEX, out: STATE_INDEX, viewIn: COMMITTED, viewOut: WRITTEN }]],
+    }),
+    state: { committed: COMMITTED, written: WRITTEN },
+    argumentPushes: payload(EMITTED),
+    outputs: [FILLER, eventOutput(payload(EMITTED), statefulLock)],
+    ...overrides,
+  });
+
+  it('is accepted when the segment declares the record the body reads and writes', () => {
+    expect(spendStateful()).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the segment declares a commitment the transaction does not spend', () => {
+    expect(spendStateful({
+      block: baseBlock({
+        callerRef: 2,
+        originRef: 2,
+        events: [EVENT_INDEX],
+        segments: [[{ in: STATE_INDEX, out: STATE_INDEX, viewIn: WRITTEN, viewOut: WRITTEN }]],
+      }),
+    }).accepted).toBe(false);
+    // The control: the declaration the transaction does spend is accepted beside it.
+    expect(spendStateful().accepted).toBe(true);
+  });
+
+  it('is refused when the listed event output carries a payload the body did not compute', () => {
+    expect(spendStateful({
+      outputs: [FILLER, eventOutput(payload(EMITTED + 1), statefulLock)],
+    }).accepted).toBe(false);
+  });
+
+  it('is refused when the record output the transaction writes is not the declared one', () => {
+    expect(spendStateful({ state: { committed: COMMITTED, written: commitment(9n) } }).accepted).toBe(false);
   });
 });
 

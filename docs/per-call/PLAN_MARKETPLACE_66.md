@@ -1051,3 +1051,8 @@ Titles marked NEVER have not passed on any real compile to date.
   and the census of the first declaration need the same treatment as the chain itself before a created record can be
   read back in a later segment. The plan's shapes create records (a mapping entry written and then used) so this is
   the next thing the chain needs.
+- A stateful per-call entry that also emits an event is now proven in the machine: the settlement parks its chain
+  registers on the alternate stack, and the event walk parks each listed output index there before the settlement
+  runs, so the four new cases fix that coexistence (accepted with the declared record, refused for a declaration the
+  transaction does not spend, refused for a payload the body did not compute, refused for a record output the
+  declaration does not name). The record sits right after its master, which is where a compiled body reads it from.

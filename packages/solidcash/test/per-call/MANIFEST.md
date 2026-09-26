@@ -10,20 +10,20 @@ Run one directory:
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 9 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 35 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 22 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 27 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | — not written |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 28 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 233 tests, all passing at the latest commit.
+Total: 286 tests, all passing at the latest commit.
 
 ## What each directory covers
 
@@ -52,6 +52,10 @@ Total: 233 tests, all passing at the latest commit.
   recovers the block from the first push of the input's own unlocking bytecode, bounded by the length that push
   declares, and then walks the frame fields; each field is compared against a value from outside the block, so a
   wrong offset rejects, and one mutation per field is checked.
+
+## The shape the path currently carries
+
+A compiled master exists and is spent in a test: one inlined entry point, no selector dispatch, no external calls and no returns. The end-to-end test compiles a contract for the convention, deploys it through the shipped deployment, and has the virtual machine accept a real spend, with three controls refused.
 
 ## What is not covered
 

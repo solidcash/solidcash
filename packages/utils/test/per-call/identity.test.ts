@@ -65,7 +65,7 @@ describe('validator program identity', () => {
     expect(toHex(validatorTemplateHash(toBytes(VALIDATOR_TEMPLATE)))).toBe(VALIDATOR_TEMPLATE_HASH);
   });
 
-  it('prepends the pinned category to the program', () => {
+  it('pushes the pinned category in front of the program', () => {
     expect(toHex(validatorRedeemScript(toBytes(CATEGORY_A), toBytes(VALIDATOR_TEMPLATE))))
       .toBe(VALIDATOR_REDEEM_SCRIPT_A);
   });

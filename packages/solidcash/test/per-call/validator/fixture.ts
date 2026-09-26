@@ -177,6 +177,12 @@ export interface CompositionPlan {
   readonly eventCommitments?: Readonly<Record<string, readonly Uint8Array[]>>;
   /** Send values, by master id and ordinal. */
   readonly sendValues?: Readonly<Record<string, readonly bigint[]>>;
+  /**
+   * The validator program every address and redeem script of this composition is derived from. Defaults to the
+   * fixture's placeholder, so a plan that only exercises the derivation says nothing about it; a plan that runs on
+   * the virtual machine states the real program here.
+   */
+  readonly validatorTemplate?: Uint8Array;
 }
 
 /** One input of a laid-out composition, before it is encoded. */
@@ -232,6 +238,7 @@ interface Frame {
 
 /** Lays a plan out into a composition. */
 export function planComposition(plan: CompositionPlan): Composition {
+  const template = plan.validatorTemplate ?? VALIDATOR_TEMPLATE;
   const contractById = new Map(plan.contracts.map((contract) => [contract.id, contract]));
   const userById = new Map(plan.users.map((user) => [user.id, user]));
   const masterById = new Map(plan.masters.map((master) => [master.id, master]));
@@ -257,7 +264,7 @@ export function planComposition(plan: CompositionPlan): Composition {
       if (user === undefined) throw new CompositionPlanError(`${master.id}: root caller ${master.caller} is not a user`);
       frames.set(master.id, {
         sender: user.lock,
-        self: validatorAddress(category, VALIDATOR_TEMPLATE),
+        self: validatorAddress(category, template),
         value: 0n,
         context: category,
         originUser: user.id,
@@ -274,7 +281,7 @@ export function planComposition(plan: CompositionPlan): Composition {
     const passthrough = master.kind === FrameKind.DELEGATE || master.kind === FrameKind.INTERNAL;
     frames.set(master.id, {
       sender: passthrough ? parentFrame.sender : parentFrame.self,
-      self: passthrough ? parentFrame.self : validatorAddress(category, VALIDATOR_TEMPLATE),
+      self: passthrough ? parentFrame.self : validatorAddress(category, template),
       value: master.kind === FrameKind.STATIC
         ? 0n
         : (passthrough ? parentFrame.value : ((parent.callValues ?? [])[at] ?? 0n)),
@@ -469,11 +476,11 @@ export function planComposition(plan: CompositionPlan): Composition {
       const contract = requireContract(planned.contractId!);
       return {
         value: 10_000n,
-        lockingBytecode: validatorAddress(contract.category, VALIDATOR_TEMPLATE),
+        lockingBytecode: validatorAddress(contract.category, template),
         token: mutableTokenShape(contract.category, seedBytes(`validator:${contract.id}`, 8)),
         validator: {
           transcript: { roots: [], masters: [], settles: [] },
-          redeemScript: validatorRedeemScript(contract.category, VALIDATOR_TEMPLATE),
+          redeemScript: validatorRedeemScript(contract.category, template),
         },
       };
     }
@@ -496,7 +503,7 @@ export function planComposition(plan: CompositionPlan): Composition {
       const kind = (master.callKinds ?? [])[at] ?? FrameKind.CALL;
       const value = kind === FrameKind.STATIC ? 0n : ((master.callValues ?? [])[at] ?? 0n);
       const target = kind === FrameKind.DELEGATE
-        ? validatorAddress(requireContract(callee.contract).category, VALIDATOR_TEMPLATE)
+        ? validatorAddress(requireContract(callee.contract).category, template)
         : calleeFrame.self;
       return {
         kind,

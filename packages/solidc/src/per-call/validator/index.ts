@@ -50,3 +50,11 @@ export {
   type ValidatorReasonName,
   type ValidatorRejection,
 } from './reasons.js';
+
+export {
+  buildValidatorProgram,
+  MAX_TRANSCRIPT_COUNT,
+  TRANSCRIPT_MAGIC,
+  VALIDATOR_PROGRAM_CHECKS,
+  VALIDATOR_PROGRAM_REASONS,
+} from './program.js';

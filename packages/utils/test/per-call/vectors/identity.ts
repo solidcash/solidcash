@@ -32,13 +32,18 @@ export const SELECTOR_G = '05060708';
 export const SELECTOR_K = '0d0e0f10';
 
 /** `addrV(catA)` and `addrV(catB)` with `V_TEMPLATE`, and `addrV(catA)` with the alternate program. */
-export const ADDRESS_A = 'aa20ee7518c983e6fdd6efa779072f0b1c3184754e4c1ba111e840217aba8c66348e87';
-export const ADDRESS_B = 'aa20b26d7d16e9a65d8110a8e3035a1cf741043254e68e5d62bef96a70bfe9a1389787';
-export const ADDRESS_A_ALT_PROGRAM = 'aa2040edb76917789e522907f2fc5b025579a1154c3cb7aa9c7787e42d87f086705b87';
+export const ADDRESS_A = 'aa20102137fa7b101963c2cbd10b21d19843b94863e1c50ba752daac9447d8a2b45c87';
+export const ADDRESS_B = 'aa20ca5c16303cda47a3541329181a04ca6e53085af26a29d2ef555c3e3df9883b1f87';
+export const ADDRESS_A_ALT_PROGRAM = 'aa2019becc2cf412fa7a5b7b4e46a12f89583a413bb87a624e8097d3b509e572a2e687';
 
-/** `pin(catA, MUTABLE) || V_TEMPLATE`, the validator's redeem script. */
+/**
+ * `push(pin(catA, MUTABLE)) || V_TEMPLATE`, the validator's redeem script.
+ *
+ * The pin is data and is pushed: a bare category is 32 arbitrary bytes, and the machine would execute them as
+ * opcodes if they sat in front of the program unquoted.
+ */
 export const VALIDATOR_REDEEM_SCRIPT_A
-  = '0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200176a988ac';
+  = '210102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200176a988ac';
 
 /** `SHA256(V_TEMPLATE)`, the constant a master carries and recognises through. */
 export const VALIDATOR_TEMPLATE_HASH = '5aa55ada21ec40dd1152fe335cc72aa84163a4e00d611ea2d5272bda88fdaa1e';

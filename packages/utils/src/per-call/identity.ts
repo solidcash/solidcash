@@ -6,13 +6,13 @@
  * category, so every party can compute them from the category alone.
  *
  *   pin(cat)    = <cat || capability>
- *   addrV(cat)  = P2SH32 lock over OP_HASH256(pin(cat) || V_TEMPLATE)
+ *   addrV(cat)  = P2SH32 lock over the redeem script `push(pin(cat)) || V_TEMPLATE`
  *
  * Because the validator program is part of every address, one program is shared by all contracts of a category and
  * a change to it moves every address. The program is therefore frozen once a real-chain deployment exists.
  */
 
-import { Opcodes, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { hash256, sha256 } from '../hash.js';
 import { CATEGORY_LENGTH } from './transcript.js';
 import { CONTRACT_LOCK_LENGTH, P2PKH_LOCK_LENGTH } from './canonical.js';
@@ -76,9 +76,19 @@ export function validatorTemplateHash(validatorTemplate: Uint8Array): Uint8Array
   return sha256(validatorTemplate);
 }
 
-/** The redeem script of a validator: the category pin followed by the program. */
+/**
+ * How many bytes the pin occupies in front of the program: its push prefix and the pinned category.
+ *
+ * The pin is data, not code: a validator's redeem script is the pin pushed and then the program. A bare category is
+ * 32 arbitrary bytes, and executing them as opcodes would be a different script for every category, so the pin is
+ * always pushed. The program reads its own bytes with `OP_ACTIVEBYTECODE` and skips exactly this many of them to
+ * find itself, which is what lets one program derive every category's address.
+ */
+export const VALIDATOR_PIN_PUSH_LENGTH = 1 + CATEGORY_PIN_LENGTH;
+
+/** The redeem script of a validator: the pinned category, pushed, followed by the program. */
 export function validatorRedeemScript(category: Uint8Array, validatorTemplate: Uint8Array): Uint8Array {
-  return concatBytes([categoryPin(category, TokenCapability.MUTABLE), validatorTemplate]);
+  return concatBytes([encodeDataPush(categoryPin(category, TokenCapability.MUTABLE)), validatorTemplate]);
 }
 
 /**

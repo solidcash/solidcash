@@ -343,6 +343,31 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a master that names no input', () => {
+    const { composition, index } = reference();
+    const transcript = composition.transcript;
+    const beyondTheEnd = composition.inputs.length + 3;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...transcript,
+      masters: [beyondTheEnd, ...transcript.masters],
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_MASTER_INDEX_OUT_OF_RANGE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a settled state input that names no input', () => {
+    const { composition, index } = reference();
+    const transcript = composition.transcript;
+    const beyondTheEnd = composition.inputs.length + 3;
+    const category = transcript.settles[0]?.category ?? new Uint8Array(32).fill(0x11);
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...transcript,
+      settles: [{ category, stateInputs: [beyondTheEnd] }],
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_STATE_INPUT_INDEX_OUT_OF_RANGE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a first root whose own category is another contract\'s', () => {
     // Two user-entered roots, one per contract, which is the only shape in which a validator can be pointed at the
     // wrong owner. The reference plan is reversed so the first root belongs to the other contract.

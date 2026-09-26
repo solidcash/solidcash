@@ -40,6 +40,8 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V1_NO_MASTER_OF_OWN_CATEGORY',
   'V2_TRANSCRIPT_MALFORMED',
   'V2_ROOT_INDEX_OUT_OF_RANGE',
+  'V2_MASTER_INDEX_OUT_OF_RANGE',
+  'V2_STATE_INPUT_INDEX_OUT_OF_RANGE',
   'V9_NO_ROOT',
   'V9_ROOT_CATEGORY_MISMATCH',
 ];
@@ -55,8 +57,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V9'];
  *
  * 1. entry: `[M, pin]` — the pin must be a 33-byte pinned category whose capability is mutable; then it is dropped;
  * 2. V1 on `[M, pin]`: the validator recreates itself at its own index, and a master of its category is spent;
- * 3. V2 on `[M]`: the transcript carries the wire name and a version this program understands, and every root it
- *    lists names a real input;
+ * 3. V2 on `[M]`: the transcript carries the wire name and a version this program understands, and every root,
+ *    master and settled state input it lists names a real input;
  * 4. V9 on `[M, rootCount, rest]`: the first root's own category is this validator's.
  */
 export function buildValidatorProgram(): Uint8Array {
@@ -79,9 +81,11 @@ export function buildValidatorProgram(): Uint8Array {
   emitTranscriptHeader(e);
   emitRootCategory(e);
   emitRootsAreInputs(e);
+  emitMasterIndices(e);
+  emitSettledStateInputs(e);
 
-  // The transcript, its root count and the roots left unexamined are all that is left on the data stack, and the
-  // program leaves one truthy item: the input succeeds when the program reaches the end.
+  // `[M, 0, unread]`: the exhausted settle count and whatever follows the settled inputs. The input succeeds when
+  // the program reaches the end and leaves one truthy item.
   e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_1);
   return e.done();
 }
@@ -190,11 +194,15 @@ function emitTranscriptHeader(e: Emitter): void {
   // The wire name is compared on a copy of the transcript's head, which `OP_DROP` leaves on the stack.
   e.op(O.OP_DUP).count(4).op(O.OP_SPLIT, O.OP_DROP);
   e.push(TRANSCRIPT_MAGIC).op(O.OP_EQUALVERIFY);
-  // `[M, rootCount, rest]`: the root count, read unsigned, and the roots themselves.
+  // `[M, rootCount, rest]`: the root count, read unsigned, and everything after it left as bytes. Converting the
+  // remainder would re-encode it as a script number and drop a trailing zero, which is where an empty settle list
+  // keeps its count.
   e.op(O.OP_DUP).count(4).op(O.OP_SPLIT, O.OP_NIP);
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
+  e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_DUP, O.OP_0NOTEQUAL, O.OP_VERIFY);
+  e.op(O.OP_SWAP);
 }
 
 /** V9. The first root the transcript lists is a master whose own category is this validator's. */
@@ -217,7 +225,8 @@ function emitRootsAreInputs(e: Emitter): void {
   const O = Opcodes;
   // `[M, remaining, cursor]`, where `cursor` holds the roots not yet examined, one byte each.
   e.op(O.OP_BEGIN);
-  e.op(O.OP_DUP, O.OP_0NOTEQUAL, O.OP_IF);
+  // The count, not the cursor: the cursor is raw transcript bytes and is not a script number.
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
@@ -225,5 +234,66 @@ function emitRootsAreInputs(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   // until every root has been examined.
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+}
+
+/**
+ * Reads the one-byte count on top of a byte string.
+ *
+ * Entry `[..., bytes]`, exit `[..., count, rest]`. The count is an unsigned byte; `rest` is everything after it.
+ */
+function takeCount(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+}
+
+/**
+ * Every index in a counted list names a real input.
+ *
+ * Entry `[..., remaining, cursor]`, exit `[..., 0, unread]`. `remaining` is how many index bytes to read, and the
+ * guard is that count: a cursor that still holds later fields must not be read once the count is exhausted.
+ */
+function emitIndicesAreInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY, O.OP_DROP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+}
+
+/** V2, the masters' indices. Entry `[M, 0, suffix]`, where `suffix` begins at the master count. */
+function emitMasterIndices(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_NIP);
+  takeCount(e);
+  emitIndicesAreInputs(e);
+}
+
+/**
+ * V2, the state inputs each settled contract lists.
+ *
+ * Entry `[M, 0, suffix]`, where `suffix` begins at the settle count. A settled contract is a 32-byte category, a
+ * count, and that many input indices. The category is not decided here.
+ */
+function emitSettledStateInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  emitIndicesAreInputs(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
 }

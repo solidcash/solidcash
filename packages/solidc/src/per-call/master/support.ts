@@ -11,12 +11,22 @@
  */
 
 import {
+  ArrayType,
+  FixedType,
   FrameKind,
+  FunctionType,
+  IntType,
+  MappingType,
+  PrimitiveType,
+  StructType,
+  TokenContainerType,
+  TupleType,
+  ValueType,
   computeFunctionSelector,
   computeFunctionSignature,
-  encodeArgumentList,
   encodeIntegerValue,
 } from '@solidcash/utils';
+import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
   BoolLiteralNode,
@@ -34,7 +44,7 @@ import {
   WhileNode,
 } from '../../ast/AST.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
-import type { MasterCallSite, MasterTailShape } from './frame-tail.js';
+import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -287,43 +297,84 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `
         + 'selector the master head can check' };
     }
-    const args = encodeSiteArguments(slot);
+    const args = encodeSiteArguments(slot, interfaces);
     if ('reason' in args) return { calls: [], reason: args.reason };
     calls.push({
       kind: FrameKind.CALL,
       selector,
       target: hexToBin(slot.addressLiteral),
-      argumentPushes: args.pushes,
+      arguments: args.arguments,
     });
   }
   return { calls };
 }
 
 /**
- * The argument pushes a call site passes, in the canonical encoding, or why the head cannot bind the record to
- * the caller's own computation.
+ * The call's arguments as the site can account for them, or why the head cannot bind the record to the caller's
+ * own computation.
  *
- * The head computes `SHA256(selector || argument pushes)` from these bytes and requires the record to carry it,
- * so they must be the values the source passes. Only a compile-time value has a byte encoding at compile time; a
- * runtime argument has none, and falling back to the callee's bytes would bind the record to itself, so such a
- * call is refused.
+ * The site computes `SHA256(selector || argument pushes)` from these. A compile-time value has its bytes at
+ * compile time, so they are folded in as a constant. A run-time value is one only the running code holds, and the
+ * site turns the value on the stack into the push the wire carries, which needs a scalar the code holds as one
+ * item; a value with a composite encoding is refused rather than guessed.
  */
-function encodeSiteArguments(slot: ExternalCallSlot): { pushes: Uint8Array } | { reason: string } {
+function encodeSiteArguments(
+  slot: ExternalCallSlot,
+  interfaces: readonly InterfaceNode[],
+): { arguments: SiteArgument[] } | { reason: string } {
   const parameters = slot.sourceCallNode?.parameters ?? [];
-  const values: Uint8Array[] = [];
-  for (const parameter of parameters) {
-    const value = compileTimeArgumentValue(parameter);
-    if (value === undefined) {
-      return { reason: `the call to '${slot.functionName}' passes an argument that is not a compile-time value, `
-        + 'so the caller cannot compute the digest its record must carry' };
-    }
-    values.push(value);
-  }
-  if (values.length === 0 && (slot.argSources?.length ?? 0) > 0) {
+  if (parameters.length === 0 && (slot.argSources?.length ?? 0) > 0) {
     return { reason: `the call to '${slot.functionName}' passes arguments the compiler cannot recover, so the `
       + 'caller cannot compute the digest its record must carry' };
   }
-  return { pushes: encodeArgumentList(values) };
+  const declared = declaredParameterTypes(slot, interfaces);
+  const siteArguments: SiteArgument[] = [];
+  for (const [index, parameter] of parameters.entries()) {
+    const value = compileTimeArgumentValue(parameter);
+    if (value !== undefined) {
+      siteArguments.push({ kind: 'constant', bytes: value });
+      continue;
+    }
+    const type = declared[index];
+    if (type === undefined || !isScalarArgumentType(type)) {
+      return { reason: `the call to '${slot.functionName}' passes a run-time argument whose value the compiler `
+        + 'cannot encode into one push, so the caller cannot compute the digest its record must carry' };
+    }
+    siteArguments.push({ kind: 'runtime', numeric: holdsAsNumber(type) });
+  }
+  return { arguments: siteArguments };
+}
+
+/** The declared types of the interface method the slot calls, in parameter order. */
+function declaredParameterTypes(
+  slot: ExternalCallSlot,
+  interfaces: readonly InterfaceNode[],
+): readonly Type[] {
+  const iface = interfaces.find((candidate) => candidate.name === slot.interfaceName);
+  const fn = iface?.functions.find((candidate) => candidate.name === slot.functionName);
+  return (fn?.parameters ?? []).map((parameter) => parameter.type);
+}
+
+/**
+ * True when a run-time value of `type` reaches the code as one stack item the site can encode.
+ *
+ * A struct, an array, a mapping, a tuple, a function pointer and a token container are several items or a
+ * composite encoding, which this site does not build.
+ */
+function isScalarArgumentType(type: Type): boolean {
+  const resolved = type instanceof ValueType ? type.underlyingType : type;
+  if (resolved instanceof ArrayType || resolved instanceof StructType || resolved instanceof MappingType) {
+    return false;
+  }
+  if (resolved instanceof TupleType || resolved instanceof FunctionType) return false;
+  if (resolved instanceof TokenContainerType) return false;
+  return true;
+}
+
+/** True when the VM holds a value of `type` as a number, whose minimal encoding is the canonical one. */
+function holdsAsNumber(type: Type): boolean {
+  const resolved = type instanceof ValueType ? type.underlyingType : type;
+  return resolved === PrimitiveType.BOOL || resolved instanceof IntType || resolved instanceof FixedType;
 }
 
 /**
@@ -364,13 +415,20 @@ function sameCallSites(left: readonly MasterCallSite[], right: readonly MasterCa
       && site.kind === other.kind
       && bytesEqual(site.selector, other.selector)
       && bytesEqual(site.target, other.target)
-      && bytesEqual(siteArguments(site), siteArguments(other));
+      && sameSiteArguments(site.arguments ?? [], other.arguments ?? []);
   });
 }
 
-/** A site's argument pushes: the empty string for a call with no argument. */
-function siteArguments(site: MasterCallSite): Uint8Array {
-  return site.argumentPushes ?? new Uint8Array(0);
+/** True when two argument lists ask for the same pushes: the same constant bytes, or the same run-time form. */
+function sameSiteArguments(left: readonly SiteArgument[], right: readonly SiteArgument[]): boolean {
+  return left.length === right.length && left.every((argument, index) => {
+    const other = right[index];
+    if (other === undefined || argument.kind !== other.kind) return false;
+    if (argument.kind === 'constant') {
+      return other.kind === 'constant' && bytesEqual(argument.bytes, other.bytes);
+    }
+    return other.kind === 'runtime' && argument.numeric === other.numeric;
+  });
 }
 
 /** Byte-wise equality, small enough not to pull in a dependency for it. */

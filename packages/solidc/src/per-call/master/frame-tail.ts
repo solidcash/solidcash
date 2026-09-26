@@ -53,13 +53,20 @@ export interface MasterCallSite {
   /** The address called, which `calls[k].target` must name. */
   readonly target: Uint8Array;
   /**
-   * The argument pushes the source passes, in parameter order and the canonical encoding: exactly the bytes the
-   * callee carries between its selector and its redeem script. `SHA256(selector || argumentPushes)` is the digest
-   * the caller's own code computes at the call site, and the record must carry it. Absent for a call with no
-   * argument.
+   * The call's arguments in parameter order.
+   *
+   * A compile-time value carries the bytes the source wrote, which the caller folds into the digest at compile
+   * time. A run-time value is one only the running code holds, and the site turns it into the push the wire
+   * carries; `numeric` says the value reaches the site as a VM number, whose minimal encoding is the canonical
+   * one.
    */
-  readonly argumentPushes?: Uint8Array;
+  readonly arguments?: readonly SiteArgument[];
 }
+
+/** One argument of a call, as the caller's own code can account for it. */
+export type SiteArgument =
+  | { readonly kind: 'constant'; readonly bytes: Uint8Array }
+  | { readonly kind: 'runtime'; readonly numeric: boolean };
 
 /**
  * The tail sections after the calls that a master's own code fixes.

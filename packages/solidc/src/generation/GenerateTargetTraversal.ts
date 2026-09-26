@@ -6,6 +6,7 @@ import {
   ArrayType,
   MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
+  encodeArgumentPayload,
   decodeInt,
   encodeInt,
   encodeString,
@@ -275,6 +276,7 @@ import {
   buildMasterHeadScript, eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
+import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import { derivePerCallTailShape } from '../per-call/master/support.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
@@ -2974,7 +2976,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const site = this.perCallCallSites[index]!;
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
-    this.emit([...callSiteCheckScript(site, index, usesResult)], locationData);
+    // A call whose arguments are all compile-time values carries the digest the compiler folded from them. One
+    // with a run-time argument computes the digest here, from the values the code holds when it calls.
+    const computesDigest = (site.arguments ?? []).some((argument) => argument.kind === 'runtime');
+    if (computesDigest) {
+      this.emitPerCallArgumentDigest(node, site, locationData);
+      // The check parks the digest on the alternate stack and consumes it at the record's `argsHash`, so the
+      // value leaves the frame here even though the check itself is emitted as raw bytes.
+      this.popFromStack();
+    }
+    this.emit([...callSiteCheckScript(site, index, usesResult, { digestFromStack: computesDigest })], locationData);
     if (!usesResult) return;
     // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
     // the direct path decodes a return event's commitment.
@@ -2984,6 +2995,48 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitPushdataDecode(returnTypes[field]!, locationData);
     }
     for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+  }
+
+  /**
+   * Leaves the digest a call's record must carry, computed from the values the code holds where it calls.
+   *
+   * `SHA256(selector || argument pushes)`: the selector, then each argument in parameter order, each turned into
+   * the push the wire carries. A compile-time argument contributes its push as a constant; a run-time one is
+   * canonicalized from the value the body has on the stack, so the digest is a fact about the values the caller
+   * acted on rather than a constant a builder could pair with any call data.
+   */
+  private emitPerCallArgumentDigest(
+    node: ExternalFunctionCallNode,
+    site: MasterCallSite,
+    loc: SingleLocationData,
+  ): void {
+    this.emit([...encodeDataPush(site.selector)], loc);
+    this.pushToStack('(value)');
+    (site.arguments ?? []).forEach((argument, index) => {
+      if (argument.kind === 'constant') {
+        this.emit([...encodeArgumentPayload(argument.bytes)], loc);
+        this.pushToStack('(value)');
+      } else {
+        const parameter = node.parameters[index];
+        if (parameter === undefined) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call call site '${node.interfaceName}.${node.functionName}' records a run-time argument `
+            + `at position ${index}, which the source does not pass`,
+            { interface: node.interfaceName, function: node.functionName, position: index },
+          );
+        }
+        // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
+        this.visit(parameter);
+        this.emit([...canonicalPushScript(argument.numeric)], loc);
+      }
+      this.emit(Op.OP_CAT, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    });
+    this.emit(Op.OP_SHA256, loc);
+    this.popFromStack();
+    this.pushToStack('(value)');
   }
 
   visitContract(node: ContractNode): Node {

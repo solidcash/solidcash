@@ -27,7 +27,7 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { argsHash } from '@solidcash/utils';
+import { argsHash, encodeArgumentList } from '@solidcash/utils';
 import type { MasterCallSite } from './frame-tail.js';
 import {
   dropFirstPushScript,
@@ -45,11 +45,23 @@ import {
  *
  * `index` is the site's position among the entry's external calls, which is the record it addresses. `usesResult`
  * is true when the caller's code consumes the call's value; false requires the record to carry an empty result.
+ *
+ * `digestFromStack` says the caller's own code computed the argument digest where it calls, from values only the
+ * running execution holds, and left it on top of the stack. The constant form the compiler folds from compile-time
+ * arguments is the other, smaller case.
  */
-export function callSiteCheckScript(site: MasterCallSite, index: number, usesResult: boolean): Uint8Array {
+export function callSiteCheckScript(
+  site: MasterCallSite,
+  index: number,
+  usesResult: boolean,
+  options: { readonly digestFromStack?: boolean } = {},
+): Uint8Array {
+  const digestFromStack = options.digestFromStack === true;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-
+  // The digest the caller computed goes where the walk can reach it: beneath the walk's own scratch, on the
+  // alternate stack.
+  if (digestFromStack) emit(Opcodes.OP_TOALTSTACK);
   // The caller's own block, read from the first push of its own unlocking bytecode.
   emit(...readOwnWitnessBlockScript());
   // The magic and version are required; the four fixed header fields are only walked past.
@@ -65,7 +77,7 @@ export function callSiteCheckScript(site: MasterCallSite, index: number, usesRes
   emit(...takeFixedWidthField(2), Opcodes.OP_NIP);
   // The records before this site's, stepped over by their own widths.
   for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
-  emit(...bindCallRecord(site, usesResult));
+  emit(...bindCallRecord(site, usesResult, digestFromStack));
   return new Uint8Array(bytes);
 }
 
@@ -82,7 +94,7 @@ function skipCallRecord(): number[] {
 }
 
 /** The checks one `calls[k]` record must satisfy, consuming the record and binding the result. */
-function bindCallRecord(site: MasterCallSite, usesResult: boolean): number[] {
+function bindCallRecord(site: MasterCallSite, usesResult: boolean, digestFromStack: boolean): number[] {
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
 
@@ -99,12 +111,19 @@ function bindCallRecord(site: MasterCallSite, usesResult: boolean): number[] {
   emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,
     Opcodes.OP_INPUTINDEX, Opcodes.OP_NUMNOTEQUAL, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK);
   // argsHash: the record must carry the digest the source's own argument values produce.
-  emit(...takeFixedWidthField(32), Opcodes.OP_SWAP,
-    Opcodes.OP_DUP, ...encodeDataPush(callerArgumentDigest(site)), Opcodes.OP_EQUALVERIFY);
+  emit(...takeFixedWidthField(32), Opcodes.OP_SWAP, Opcodes.OP_DUP);
+  if (digestFromStack) {
+    // The caller's own computed digest is below the parked callee reference. Both come up, the rotation puts the
+    // record's own hash next to the digest for the comparison, and the callee reference is left on top — the
+    // record's hash is still there for the callee's own bytes, exactly as in the folded form below.
+    emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_ROT, Opcodes.OP_EQUALVERIFY);
+  } else {
+    emit(...encodeDataPush(callerArgumentDigest(site)), Opcodes.OP_EQUALVERIFY, Opcodes.OP_FROMALTSTACK);
+  }
   // The callee's unlocking bytecode is its witness block, its call data and its redeem script. The call data is
   // what the first and the last push leave between them: the selector's push and then the argument pushes.
   // Hashing the selector with those pushes must give the recorded digest the code's own operands produced.
-  emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_INPUTBYTECODE,
+  emit(Opcodes.OP_INPUTBYTECODE,
     ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
     Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
     Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
@@ -119,9 +138,25 @@ function bindCallRecord(site: MasterCallSite, usesResult: boolean): number[] {
   return bytes;
 }
 
-/** The digest a site's own code computes: `SHA256(selector || argument pushes)` over the source's values. */
-function callerArgumentDigest(site: MasterCallSite): Uint8Array {
-  return argsHash(site.selector, site.argumentPushes ?? new Uint8Array(0));
+/**
+ * The digest a site's own code folds from its compile-time arguments: `SHA256(selector || argument pushes)`.
+ *
+ * A site with a run-time argument computes the same digest from the values it holds instead, and never asks for
+ * this one.
+ */
+export function callerArgumentDigest(site: MasterCallSite): Uint8Array {
+  const pushes = constantArgumentPushes(site);
+  if (pushes === undefined) {
+    throw new Error('call-site: a site with a run-time argument has no compile-time digest');
+  }
+  return argsHash(site.selector, pushes);
+}
+
+/** The concatenated argument pushes of a call whose arguments are all compile-time values. */
+export function constantArgumentPushes(site: MasterCallSite): Uint8Array | undefined {
+  const siteArguments = site.arguments ?? [];
+  if (siteArguments.some((argument) => argument.kind !== 'constant')) return undefined;
+  return encodeArgumentList(siteArguments.map((argument) => (argument as { bytes: Uint8Array }).bytes));
 }
 
 /** Appends opcode bytes and pushed payloads, so a builder can mix numbers and `encodeDataPush` results. */

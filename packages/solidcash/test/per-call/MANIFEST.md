@@ -9,12 +9,12 @@ Run one directory:
 
 | Directory | Package | Tests |
 | --- | --- | --- |
-| `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 71 |
+| `packages/utils/test/per-call/` | `@solidcash/utils` | 119 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 91 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 25 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 100 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 33 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 107 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
@@ -23,7 +23,7 @@ Run one directory:
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 410 tests, all passing at the latest commit.
+Total: 439 tests, all passing at the latest commit.
 
 ## What each directory covers
 

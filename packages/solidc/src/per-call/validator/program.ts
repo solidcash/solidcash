@@ -39,6 +39,9 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V1_VALIDATOR_OUTPUT_NOT_RECREATED',
   'V1_VALIDATOR_OUTPUT_VALUE_DECREASED',
   'V1_NO_MASTER_OF_OWN_CATEGORY',
+  'V2_VALIDATOR_UNLOCKING_MALFORMED',
+  'V2_VALIDATOR_REDEEM_SCRIPT_MISMATCH',
+  'V2_VALIDATOR_LOCK_NOT_DERIVED',
   'V2_TRANSCRIPT_MALFORMED',
   'V2_ROOT_INDEX_OUT_OF_RANGE',
   'V2_MASTER_INDEX_OUT_OF_RANGE',
@@ -98,6 +101,12 @@ export function buildValidatorProgram(): Uint8Array {
 
   // The program's own bytes: everything after the pin push. Read once, kept on the alternate stack.
   e.op(O.OP_ACTIVEBYTECODE).count(VALIDATOR_PIN_PUSH_LENGTH).op(O.OP_SPLIT, O.OP_NIP, O.OP_TOALTSTACK);
+
+  // The lock is the P2SH32 address of the script now running. A different lock is not this program's address.
+  e.op(O.OP_ACTIVEBYTECODE, O.OP_HASH256);
+  e.push(new Uint8Array([0xaa, 0x20])).op(O.OP_SWAP, O.OP_CAT);
+  e.push(new Uint8Array([0x87])).op(O.OP_CAT);
+  e.op(O.OP_INPUTINDEX, O.OP_UTXOBYTECODE, O.OP_EQUALVERIFY);
 
   emitSelfRecreation(e);
   emitTranscriptHeader(e);

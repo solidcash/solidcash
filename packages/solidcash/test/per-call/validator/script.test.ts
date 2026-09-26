@@ -322,6 +322,45 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a validator whose unlocking bytecode is not a transcript and its program', () => {
+    const { composition, index } = reference();
+    const modelled = materialise(composition);
+    const redeem = composition.inputs[index]!.validator!.redeemScript;
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      inputs: modelled.inputs.map((input) => (input.index === index
+        ? { ...input, unlockingBytecode: encodeDataPush(redeem) }
+        : input)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_VALIDATOR_UNLOCKING_MALFORMED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a validator whose program is not the one its address commits to', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.inputs[index]!.validator!.redeemScript = new Uint8Array([0x51]);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V2_VALIDATOR_REDEEM_SCRIPT_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a validator whose lock is not the address of its program', () => {
+    const { modelled, index } = reference();
+    const wrong = encodeLockingBytecodeP2sh32(new Uint8Array(32).fill(0x44));
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      inputs: modelled.inputs.map((input) => (input.index === index
+        ? { ...input, lockingBytecode: wrong }
+        : input)),
+      outputs: modelled.outputs.map((output) => (output.index === index
+        ? { ...output, lockingBytecode: wrong }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_VALIDATOR_LOCK_NOT_DERIVED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a transcript that does not carry the wire name and version', () => {
     const { composition, index } = reference();
     // The transcript's wire name, version and the rest, with the name replaced by bytes no decoder accepts.

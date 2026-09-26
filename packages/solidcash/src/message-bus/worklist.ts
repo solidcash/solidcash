@@ -1,4 +1,4 @@
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
   artifactExecutionIdentityFingerprint,
   scriptToBytecode,
@@ -438,15 +438,31 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     const owner = intern(participant);
     const invocation = invocations.length;
+    let boundTarget = targetLockingBytecode
+      ?? participant.logicalLockingBytecode ?? participant.lockingBytecode;
+    if (parent !== null
+      && participants[invocations[parent].callee].artifact.compiler?.options?.solidityImportCompat === true
+      && /^(?:0{24})?[0-9a-f]{40}$/i.test(boundTarget)) {
+      // Imported Solidity may evaluate a state/producer-derived target as a 20-byte identity or ABI word.
+      // The native graph must name the exact co-spent lock, which the compiler re-projects and
+      // checks against that source value. Only the selected participant's authenticated identities
+      // are candidates; an unknown or ambiguous projection still fails planCompiledGraph's gate.
+      const identities = [...new Set([
+        participant.lockingBytecode.toLowerCase(), participant.logicalLockingBytecode?.toLowerCase(),
+      ].filter((value): value is string => value !== undefined))];
+      const matches = identities.filter((identity) => {
+        const projected = lockingBytecodeToSolidityAddressPayload(hexToBin(identity));
+        return projected !== undefined && binToHex(projected) === boundTarget.slice(-40).toLowerCase();
+      });
+      if (matches.length === 1) [boundTarget] = matches;
+    }
     invocations.push({
       parent, callee: owner, function: functionName, args,
       ...(selector !== undefined && { selector }), ...(callMode && { callMode }),
       ...(consumerCallsiteId !== undefined && { consumerCallsiteId }),
       ...(sourceOccurrence !== undefined && sourceOccurrence),
       ...(parent !== null && {
-        targetLockingBytecode: targetLockingBytecode
-          ?? participant.logicalLockingBytecode
-          ?? participant.lockingBytecode,
+        targetLockingBytecode: boundTarget,
       }),
       ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
     });

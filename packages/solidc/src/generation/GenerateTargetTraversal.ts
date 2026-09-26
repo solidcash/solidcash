@@ -19614,6 +19614,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (evaluatedTargetExpression) this.stack[0] = '(__graph_target)';
     else this.pushToStack('(__graph_target)');
+    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+      // Struct/state reads may retain a canonical ABI address word. Narrow it before proving the
+      // source target against the rooted row's full locking bytecode, just like a 20-byte result.
+      // Reject non-zero high bytes rather than silently accepting a malformed ABI address.
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(encodeInt(12n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(new Uint8Array(12), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
     // Imported-Solidity producer results carry addresses as 20-byte identities. The authenticated graph transcript
     // is deliberately native and names the full target locking bytecode. Recover that full value from the current
     // rooted emission row, prove its canonical projection equals the runtime value, and then frame the full value.

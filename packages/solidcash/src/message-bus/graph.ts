@@ -2069,7 +2069,8 @@ export function planCompiledGraph(
       return { lockingBytecode: logical, offset: participant.logicalIdentityOffset ?? 0 };
     }
     throw new Error(
-      `messageBus: invocation ${index} target is not an authenticated identity of participant ${invocation.callee}`,
+      `messageBus: invocation ${index} target is not an authenticated identity of participant ${invocation.callee}`
+      + ` (function=${invocation.function}, target=${requested}, physical=${physical}, logical=${logical ?? 'none'})`,
     );
   };
 

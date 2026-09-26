@@ -271,7 +271,9 @@ import {
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
-import { buildMasterHeadScript, eventOutputSlotName } from '../per-call/master/master-head.js';
+import {
+  buildMasterHeadScript, eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName,
+} from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { derivePerCallTailShape } from '../per-call/master/support.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
@@ -2919,6 +2921,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     // The head is a script, not a single data item: emit its bytes as opcodes.
+    // A stateful master reads its state from the record block its own frame declares, so the head has to keep
+    // that declaration: without it the body could only read a fixed offset from its own input.
+    const keepsRecordIndices = node.stateVariables.length > 0;
     this.emit([...buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -2926,6 +2931,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A master that stands alone settles its own records: its segment's declarations are compared with the
       // commitments the transaction spends and writes, and the state UTXOs spent are the records it declared.
       settlesOwnRecords: true,
+      ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
@@ -2938,6 +2944,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // them in reverse lets an inlined body read the index the witness listed instead of a block-layout offset.
     for (let index = tail.tail.eventCount - 1; index >= 0; index -= 1) {
       this.pushToStack(eventOutputSlotName(index));
+    }
+    // The declared record indices sit above the event slots, output side registered first so the input side is
+    // the outer of the two, which is the one a read reaches for.
+    if (keepsRecordIndices) {
+      this.pushToStack(recordOutputIndexSlotName());
+      this.pushToStack(recordInputIndexSlotName());
     }
   }
 
@@ -5232,6 +5244,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // constructor names so this body reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
+        // The seeded array is the frame top-first, so the outermost item is pushed first.
+        if (this.stack.includes(recordInputIndexSlotName())) {
+          subTraversal.stack.push(recordInputIndexSlotName());
+          subTraversal.stack.push(recordOutputIndexSlotName());
+        }
         for (let index = 0; index < (func.emitInfos?.length ?? 0); index += 1) {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
@@ -24326,7 +24343,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const nftIdx of sortedNftIndices) {
       const compactOffset = this.compactOffsetMap.get(nftIdx)!;
       // data NFT category base matches master's
-      this.emitMasterInputIndex(locationData);
+      // The contract's own record block: the frame's own declaration in a per-call master, and otherwise the
+      // one authority for the base, which is the active input or the authenticated owner of a frame that has one.
+      if (this.readsRecordsFromFrame) this.emitRecordBlockBase('in', locationData);
+      else this.emitMasterInputIndex(locationData);
       this.emit(encodeInt(BigInt(compactOffset)), locationData);
       this.emit(Op.OP_ADD, locationData);
       this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
@@ -29206,6 +29226,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       tagged: this.isMultiDataNft(),
     };
     const offset = this.compactOffsetMap.get(sv.nftIndex)!;
+    // A per-call master's record block is where its own frame declared it, so the read is written where it is
+    // made: the index a shared helper would bake in is a depth the invoking frame does not share.
+    if (this.readsRecordsFromFrame) {
+      this.emitStateFieldReadInline({ offset, decode }, loc);
+      return;
+    }
     const key = [
       'state-read',
       offset,
@@ -29243,11 +29269,37 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     },
     loc: SingleLocationData,
   ): void {
-    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emitRecordBlockBase('in', loc);
     this.emit(encodeInt(BigInt(read.offset)), loc);
     this.emit(Op.OP_ADD, loc);
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
     this.emitStateFieldDecodeInline(read.decode, loc);
+  }
+
+  /**
+   * True when the program reads its data-NFT block through the slots the head left.
+   *
+   * A per-call master whose contract has state carries them: its own frame's block declares where its records
+   * are, and the sites read that declaration instead of a fixed offset from the input the frame runs on.
+   */
+  private get readsRecordsFromFrame(): boolean {
+    return this.perCallMaster && this.stack.includes(recordInputIndexSlotName());
+  }
+
+  /**
+   * Leaves the base of the contract's data-NFT block for `side`, as the running frame's own block declared it.
+   *
+   * The base is the item the direct path takes from `OP_INPUTINDEX`, so the layout's one-based offsets add onto
+   * it unchanged; a frame that declares no record leaves the sentinel, which no index opcode accepts.
+   */
+  private emitRecordBlockBase(side: 'in' | 'out', loc: SingleLocationData): void {
+    if (!this.readsRecordsFromFrame) {
+      this.emit(Op.OP_INPUTINDEX, loc);
+      return;
+    }
+    const name = side === 'in' ? recordInputIndexSlotName() : recordOutputIndexSlotName();
+    this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+    this.emit(Op.OP_PICK, loc);
   }
 
   /** Verify a data NFT preserves its locking bytecode and token category. */
@@ -29257,6 +29309,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // them preserve a neighbouring consumed master instead of the survivor dataNft.
     if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitDataNftPreservationInline(offset, loc, true);
+      return;
+    }
+    if (this.readsRecordsFromFrame) {
+      this.emitDataNftPreservationInline(offset, loc);
       return;
     }
     let id = this.dataNftPreserveIds.get(offset);
@@ -29279,20 +29335,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData,
     delegate: boolean = false,
   ): void {
-    const emitIndex = (): void => {
+    const emitIndex = (side: 'in' | 'out'): void => {
       if (delegate) this.emitMasterInputIndex(loc);
-      else this.emit(Op.OP_INPUTINDEX, loc);
+      else this.emitRecordBlockBase(side, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
     };
-    emitIndex();
+    emitIndex('in');
     this.emit(Op.OP_UTXOBYTECODE, loc);
-    emitIndex();
+    emitIndex('out');
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
-    emitIndex();
+    emitIndex('in');
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    emitIndex();
+    emitIndex('out');
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
   }
@@ -29300,6 +29356,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
     if (this.currentFunctionIsDelegate || this.usesMessageBusOwnerBlockBase()) {
       this.emitDataNftCommitmentPreservationInline(offset, loc, true);
+      return;
+    }
+    if (this.readsRecordsFromFrame) {
+      this.emitDataNftCommitmentPreservationInline(offset, loc);
       return;
     }
     let id = this.dataNftCommitPreserveIds.get(offset);
@@ -29322,15 +29382,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData,
     delegate: boolean = false,
   ): void {
-    const emitIndex = (): void => {
+    const emitIndex = (side: 'in' | 'out'): void => {
       if (delegate) this.emitMasterInputIndex(loc);
-      else this.emit(Op.OP_INPUTINDEX, loc);
+      else this.emitRecordBlockBase(side, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
     };
-    emitIndex();
+    emitIndex('in');
     this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    emitIndex();
+    emitIndex('out');
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
   }
@@ -29341,6 +29401,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      return;
+    }
+    if (this.readsRecordsFromFrame) {
+      this.emitDataNftOutputCommitmentInline(offset, loc);
       return;
     }
     // Keep journal settlement introspection adjacent to its equality. Besides being smaller for this one-use
@@ -29369,7 +29433,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.usesMessageBusOwnerBlockBase()) {
       this.emitMasterInputIndex(loc);
     } else {
-      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emitRecordBlockBase('out', loc);
     }
     this.emit(encodeInt(BigInt(offset)), loc);
     this.emit(Op.OP_ADD, loc);
@@ -35904,16 +35968,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Data NFT satoshi and fungible token preservation (for all accessed NFTs)
     for (const [, compactOffset] of this.compactOffsetMap) {
+      const emitIndex = (side: 'in' | 'out'): void => {
+        if (this.readsRecordsFromFrame) this.emitRecordBlockBase(side, locationData);
+        else this.emitMasterInputIndex(locationData);
+        this.emit(encodeInt(BigInt(compactOffset)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      };
       // Exact satoshi preservation: inputValue == outputValue
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      emitIndex('in');
       this.emit(Op.OP_UTXOVALUE, locationData);
       this.pushToStack('(value)');
 
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      emitIndex('out');
       this.emit(Op.OP_OUTPUTVALUE, locationData);
       this.pushToStack('(value)');
 
@@ -35921,15 +35987,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       // Fungible token amount preservation
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      emitIndex('in');
       this.emit(Op.OP_UTXOTOKENAMOUNT, locationData);
       this.pushToStack('(value)');
 
-      this.emitMasterInputIndex(locationData);
-      this.emit(encodeInt(BigInt(compactOffset)), locationData);
-      this.emit(Op.OP_ADD, locationData);
+      emitIndex('out');
       this.emit(Op.OP_OUTPUTTOKENAMOUNT, locationData);
       this.pushToStack('(value)');
 

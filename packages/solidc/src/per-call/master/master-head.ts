@@ -62,6 +62,22 @@ export function eventOutputSlotName(emitIndex: number): string {
   return `__internal__frameEventOutput_${emitIndex}`;
 }
 
+/**
+ * The tracked slot holding the base of the contract's data-NFT input block, as the frame's own block declared it.
+ *
+ * A per-call master's records are separate UTXOs, so a body that read them at a fixed offset from its own input
+ * would only be right when the transaction happens to lay them out that way. The frame's first segment declares
+ * where the block is, and the head leaves that declaration on the stack for the state sites to read.
+ */
+export function recordInputIndexSlotName(): string {
+  return '__internal__frameRecordInput';
+}
+
+/** The tracked slot holding the base of the contract's data-NFT output block, as the frame's own block declared it. */
+export function recordOutputIndexSlotName(): string {
+  return '__internal__frameRecordOutput';
+}
+
 /** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
 const HASH_TYPE_ALL = 0x41;
 /** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
@@ -124,6 +140,11 @@ export interface MasterHeadOptions {
    * UTXOs it spends. A master that stands alongside another does not settle them; the validator does.
    */
   readonly settlesOwnRecords?: boolean;
+  /**
+   * True when the head keeps the first segment's declared record indices as slots: a body with data NFTs reads
+   * its state block where the frame's own block declared it instead of at a fixed offset from its input.
+   */
+  readonly keepsRecordIndices?: boolean;
 }
 
 /** The frame kind of a user's call. */
@@ -174,6 +195,7 @@ class HeadEmitter {
   private readonly composed: boolean;
   private readonly callDataSelectorUnconsumed: boolean;
   private readonly settlesOwnRecords: boolean;
+  private readonly keepsRecordIndices: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -182,6 +204,7 @@ class HeadEmitter {
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
     this.settlesOwnRecords = options.settlesOwnRecords === true;
+    this.keepsRecordIndices = options.keepsRecordIndices === true;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -255,6 +278,7 @@ class HeadEmitter {
     if (this.composed) this.composedFrameChecks();
     else this.standaloneFrameChecks();
     this.leaveEventSlots();
+    this.leaveRecordSlots();
   }
 
   /**
@@ -273,13 +297,29 @@ class HeadEmitter {
   }
 
   /**
+   * Moves the declared record indices off the alt stack, where the tail walk parked them beneath the event
+   * indices, so a state site reads the data-NFT block where the frame's block said it is.
+   *
+   * The walk parks the input side first, so the output side comes back first and the input side ends above it —
+   * the same order the four frame values are left in, with the item a site reads on the outside.
+   */
+  private leaveRecordSlots(): void {
+    if (!this.keepsRecordIndices) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(recordOutputIndexSlotName());
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(recordInputIndexSlotName());
+  }
+
+  /**
    * The standalone shape: a user entered the execution, no validator covers it, and it makes no external call.
    *
    * The tail is walked rather than dropped: `retval` must be empty and the call count zero, which is N1's second
    * half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites, this.tailShape));
+    this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
+      { keepsRecordIndices: this.keepsRecordIndices }));
     this.forget('rest');
     this.assertSelfSettlement();
     this.assertFrameKindRoot();
@@ -305,7 +345,8 @@ class HeadEmitter {
    * constant, and its tail holds as many call records as its sites number.
    */
   private composedFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites, this.tailShape));
+    this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
+      { keepsRecordIndices: this.keepsRecordIndices }));
     this.forget('rest');
     this.assertCallerIsNotSelf();
     this.assertSelfEqualsReservedAddress();

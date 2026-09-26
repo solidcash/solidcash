@@ -266,4 +266,10 @@ describe('a compiled master whose execution is split at a call', () => {
     expect(verdict({ undeclaredState: true }).accepted).toBe(false);
     expect(verdict({ undeclaredState: false }).accepted).toBe(true);
   });
+
+  it('is accepted when the layout puts the record away from its master', () => {
+    // The body reads and writes its state through the index its own frame's segment declared, so the record does
+    // not have to follow the master input: every segment claims it where the layout put it.
+    expect(verdict({ recordLast: true })).toStrictEqual({ accepted: true });
+  });
 });

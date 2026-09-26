@@ -23,6 +23,11 @@
  *
  * The event walk leaves each listed output index parked on the alt stack, in list order, so the head can hand
  * them to the body as tracked slots instead of dropping them with the rest of the tail.
+ *
+ * The first segment's walk can park its declared record indices the same way, so a body reads the data-NFT block
+ * where the frame's own block declared it rather than at a fixed offset from the input the frame runs on. The
+ * parked pair is the base of that block, one below the first declared index — the same convention the direct
+ * path's `OP_INPUTINDEX` and the layout's one-based offsets use.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -112,18 +117,24 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * site that made the call binds it in the caller's own body. The segment count must be the call count plus one,
  * and every segment's records are walked. The event and send counts must equal the shape's, and each listed
  * output is checked. The remaining tail must be empty, so nothing follows the last field.
+ *
+ * With `keepsRecordIndices` the first segment's declared record indices are parked on the alt stack, input index
+ * first, beneath the event walk's own parkings; a segment that declares no record parks the no-index sentinel
+ * under the same convention, so the pair is always there and always means the same thing.
  */
 export function verifyTailScript(
   callSites: readonly MasterCallSite[],
   tail: MasterTailShape = zeroTailShape(callSites.length),
+  options: { readonly keepsRecordIndices?: boolean } = {},
 ): Uint8Array {
+  const keepsRecordIndices = options.keepsRecordIndices === true;
   const bytes: number[] = [];
   bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   bytes.push(...requireU16Equals(callSites.length));
   for (let site = 0; site < callSites.length; site += 1) bytes.push(...callRecordSkip());
   bytes.push(...requireU16Equals(callSites.length + 1));
   for (let segment = 0; segment < callSites.length + 1; segment += 1) {
-    bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment]));
+    bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment], keepsRecordIndices && segment === 0));
   }
   bytes.push(...requireU16Equals(tail.eventCount));
   if (tail.eventCount > 0) bytes.push(...eventOutputSection(tail.eventCount));
@@ -147,10 +158,13 @@ function requireU16Equals(expected: number): number[] {
  * When the entry fixes the count the list is required to hold exactly that many records and is unrolled; without
  * one the declared count is walked, because the records a segment touches are decided by settlement.
  */
-function segmentRecordSection(expected: number | undefined): number[] {
-  if (expected === undefined) return recordWalkScript();
+function segmentRecordSection(expected: number | undefined, keepIndices = false): number[] {
+  if (expected === undefined) return recordWalkScript(keepIndices);
   const bytes: number[] = [...requireU16Equals(expected)];
-  for (let entry = 0; entry < expected; entry += 1) bytes.push(...recordEntryCheck());
+  if (keepIndices && expected === 0) bytes.push(...parkAbsentRecordBase());
+  for (let entry = 0; entry < expected; entry += 1) {
+    bytes.push(...recordEntryCheck(keepIndices && entry === 0));
+  }
   return bytes;
 }
 
@@ -160,14 +174,19 @@ function segmentRecordSection(expected: number | undefined): number[] {
  * The count is not known, so it is read and its entries walked. The walk is guarded so a segment with no record
  * consumes none: the loop runs at least once, so a zero count would otherwise read a record that is not there.
  * The count and the cursor sit below the tail on the main stack, so the tail stays on top for the field reader.
+ *
+ * With `keepIndices` the first entry's own two index fields are parked before the walk consumes them, and a
+ * segment that declares none parks the sentinel instead.
  */
-function recordWalkScript(): number[] {
+function recordWalkScript(keepIndices = false): number[] {
   return [
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP,
     Opcodes.OP_0, Opcodes.OP_SWAP,
     ...encodeDataPush(scriptNumber(2)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
     Opcodes.OP_IF,
+    ...(keepIndices ? parkAbsentRecordBase() : []),
     Opcodes.OP_ELSE,
+    ...(keepIndices ? parkFirstRecordBase() : []),
     Opcodes.OP_BEGIN,
     ...recordEntryCheck(),
     // cursor += 1, then continue while cursor < count.
@@ -182,14 +201,46 @@ function recordWalkScript(): number[] {
   ];
 }
 
+/**
+ * Park the base of the record block a segment declared none of: the sentinel, one below itself, so a state site
+ * that reads through it fails the index rather than reading some other input.
+ */
+function parkAbsentRecordBase(): number[] {
+  return [
+    ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
+    ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
+  ];
+}
+
+/**
+ * Park the base of the record block the first entry of a segment declares, without consuming the entry.
+ *
+ * Entry `[..., count, cursor, rest]`, exit the same with the base of the first entry's input block and of its
+ * output block parked on the alt stack, input first. The two index fields lead the entry, so each is read from a
+ * copy of the remainder and the entry itself is left for the walk.
+ */
+function parkFirstRecordBase(): number[] {
+  const parked = (): number[] => [Opcodes.OP_DROP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK];
+  return [
+    Opcodes.OP_DUP, ...takeFixedWidthField(2), ...parked(),
+    Opcodes.OP_DUP, ...takeFixedWidthField(2), ...parked(),
+  ];
+}
+
 /** Consumes one record entry and requires its shape: kept in place, created, or deleted. */
-function recordEntryCheck(): number[] {
+function recordEntryCheck(keepBase = false): number[] {
   return [
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...skipLengthPrefixed32(),
     ...skipLengthPrefixed32(),
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
+    ...(keepBase
+      ? [
+        Opcodes.OP_2DUP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
+        Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
+      ]
+      : []),
     ...requireRecordShape(),
   ];
 }

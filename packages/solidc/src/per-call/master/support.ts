@@ -186,11 +186,11 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' passes arguments, whose pushes the master `
         + 'head does not read yet' };
     }
-    if (slot.callMode !== undefined
-      && slot.callMode !== ExternalCallMode.REGULAR
-      && slot.callMode !== ExternalCallMode.STATICCALL) {
-      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
-        + 'master head cannot check' };
+    if (slot.callMode !== undefined && slot.callMode !== ExternalCallMode.REGULAR) {
+      // A read-only call would make the callee run a static frame, and the emitted kind branch has no arm for one,
+      // so the callee would refuse it at run time. Refusing here says which shape is missing.
+      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, and a callee `
+        + 'cannot yet run a static frame' };
     }
     if (slot.addressLiteral === undefined) {
       return { calls: [], reason: `the call to '${slot.functionName}' targets an address only known at run time, `
@@ -210,7 +210,7 @@ function deriveEntryCallSites(
         + 'selector the master head can check' };
     }
     calls.push({
-      kind: slot.callMode === ExternalCallMode.STATICCALL ? FrameKind.STATIC : FrameKind.CALL,
+      kind: FrameKind.CALL,
       selector,
       target: hexToBin(slot.addressLiteral),
     });

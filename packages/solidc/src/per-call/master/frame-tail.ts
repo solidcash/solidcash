@@ -42,8 +42,11 @@
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
 import { TokenCapability, argsHash } from '@solidcash/utils';
 import {
+  WITNESS_BLOCK_HEADER_LENGTH,
   dropFirstPushScript,
   dropLastPushScript,
+  dropPrefix,
+  readOwnWitnessBlockScript,
   splitFirstPushScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
@@ -382,6 +385,157 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
     // The reserved hash, consumed with the index.
     Opcodes.OP_DROP,
   ]);
+}
+
+/**
+ * Settles the records a standalone master declares, without a validator.
+ *
+ * A master that stands alone is its contract's only master and makes no external call, so its one segment's record
+ * declarations are the whole settlement: every declared record begins at the commitment the transaction spends and
+ * ends at the commitment it writes, at the index the declaration names, and the state UTXOs spent are exactly the
+ * records declared. The check re-reads the block instead of reusing the shape walk, because the shape walk drops the
+ * view payloads it reads.
+ *
+ * Only a segment declaring at most one record is settled here: a contract's data NFT is one record, so the shape
+ * covers it. A segment declaring several records (mapping nodes, chunks) is refused rather than settled partly,
+ * because their chains are not emitted.
+ *
+ * A listed send does not carry the record that pays it (section 16 gives a send entry only an output index), so the
+ * value floor is emitted only when the entry lists no send.
+ */
+export function selfSettlementScript(sendCount: number): Uint8Array {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+
+  emit(...readOwnWitnessBlockScript());
+  // Everything before the one segment's record list: the fixed header, then the variable frame fields, then the
+  // call count and the segment count.
+  emit(...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+  emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
+  emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
+  emit(...requireU16Equals(0));
+  emit(...requireU16Equals(1));
+
+  // The record list, walked with the count and a cursor below it, as the shape walk does.
+  emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_SWAP);
+  emit(num(2), Opcodes.OP_PICK, num(2), Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY);
+  emit(num(2), Opcodes.OP_PICK, num(1), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+  emit(...singleRecordSettlement(sendCount));
+  emit(Opcodes.OP_ELSE);
+  // No record: no state UTXO may be spent, expressed as an index no input can have.
+  emit(...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_ENDIF);
+  emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, Opcodes.OP_DROP);
+
+  emit(...stateUtxosAreDeclaredScript());
+  return new Uint8Array(bytes);
+}
+
+/**
+ * The checks one declared record must satisfy, leaving the walk state and parking the index a spent state UTXO is
+ * expected at on the alt stack.
+ *
+ * Entry `[recordCount, cursor, tail]`, exit the same. The four record fields are parked and brought back with the
+ * input index on top. A kept record's declaration is required to be the real input and output commitments; a created
+ * or deleted record has one side without an index, and the missing side is not compared.
+ */
+function singleRecordSettlement(sendCount: number): number[] {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+
+  emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK);
+  emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK);
+  emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+  emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
+  // [in, out, viewIn, viewOut, tail, cursor, recordCount]
+
+  // The shape the record walk checks, on a copy of the pair so the indices stay for the comparisons below.
+  emit(Opcodes.OP_2DUP, ...requireRecordShape());
+
+  // The input the record is carried at must be a state record and its commitment must be the declared `viewIn`.
+  // The gate compares a copy, so the arm that checks runs against the untouched stack and both arms are neutral.
+  emit(Opcodes.OP_DUP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_ELSE);
+  emit(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUALVERIFY);
+  emit(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCOMMITMENT, num(3), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY);
+  emit(Opcodes.OP_ENDIF);
+
+  // The output the record is written to must be a state record and its commitment must be the declared `viewOut`.
+  emit(num(1), Opcodes.OP_PICK, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_ELSE);
+  emit(num(1), Opcodes.OP_PICK, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUALVERIFY);
+  emit(num(1), Opcodes.OP_PICK, Opcodes.OP_OUTPUTTOKENCOMMITMENT, num(4), Opcodes.OP_PICK, Opcodes.OP_EQUALVERIFY);
+  emit(Opcodes.OP_ENDIF);
+
+  // A record the entry lists no send from keeps at least the value it held.
+  if (sendCount === 0) {
+    emit(num(0), Opcodes.OP_PICK, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL);
+    emit(num(2), Opcodes.OP_PICK, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL);
+    emit(Opcodes.OP_NOT, Opcodes.OP_SWAP, Opcodes.OP_NOT, Opcodes.OP_BOOLAND, Opcodes.OP_IF);
+    emit(num(1), Opcodes.OP_PICK, Opcodes.OP_OUTPUTVALUE);
+    emit(num(1), Opcodes.OP_PICK, Opcodes.OP_UTXOVALUE);
+    emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+    emit(Opcodes.OP_ENDIF);
+  }
+
+  // Park the index the transaction spends the record at, or the no-index sentinel for a created record. The gate
+  // compares a copy, so the arm that checks runs against the untouched stack.
+  emit(Opcodes.OP_DUP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_ELSE);
+  emit(Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_ENDIF);
+  emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
+  return bytes;
+}
+
+/**
+ * Requires that an input carries a state record exactly when it is the one the segment declared.
+ *
+ * The state UTXOs the transaction spends are exactly the records the master touched. Comparing each input's own
+ * token against the declared index, rather than collecting the declared set, needs no storage for a set whose
+ * length the block decides. The declared index is parked on the alt stack; the no-index sentinel makes the same
+ * comparison refuse every state UTXO when the segment declared none.
+ */
+function stateUtxosAreDeclaredScript(): number[] {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+
+  emit(Opcodes.OP_FROMALTSTACK);
+  // [expected, i] with i on top; the increment keeps that order.
+  emit(Opcodes.OP_0);
+  emit(Opcodes.OP_BEGIN);
+  emit(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+  emit(num(1), Opcodes.OP_PICK, num(3), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL);
+  emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_VERIFY);
+  emit(Opcodes.OP_1ADD);
+  emit(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL);
+  emit(Opcodes.OP_UNTIL);
+  emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
+  return bytes;
+}
+
+/** The pin of a state record's token, `catX` with the mutable capability, read from the active input's category. */
+function mutableRecordPin(): number[] {
+  return [
+    Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY,
+    ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...encodeDataPush(new Uint8Array([TokenCapability.MUTABLE])), Opcodes.OP_CAT,
+  ];
+}
+
+/** Appends opcode bytes and pushed payloads, so a builder can mix numbers and `encodeDataPush` results. */
+function pushAll(target: number[], ops: readonly (number | Uint8Array)[]): void {
+  for (const op of ops) {
+    if (typeof op === 'number') target.push(op);
+    else target.push(...op);
+  }
 }
 
 /** A script number in its minimal push form; zero is the empty push. */

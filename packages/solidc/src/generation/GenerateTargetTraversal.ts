@@ -2919,6 +2919,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       blockOnTop,
       frameKinds,
       tail: tail.tail,
+      // A master that stands alone settles its own records: its segment's declarations are compared with the
+      // commitments the transaction spends and writes, and the state UTXOs spent are the records it declared.
+      settlesOwnRecords: true,
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),

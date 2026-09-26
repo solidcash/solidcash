@@ -38,6 +38,7 @@ import {
   assertP2pkhShapeScript,
   recogniseValidatorScriptAgainstReservedHash,
   requireSingleMasterScript,
+  selfSettlementScript,
   verifyTailScript,
   zeroTailShape,
   type MasterCallSite,
@@ -114,6 +115,12 @@ export interface MasterHeadOptions {
    * no event, no send and no record in any segment.
    */
   readonly tail?: MasterTailShape;
+  /**
+   * True when the master settles its own records: a standalone master is the contract's only one, so its segment's
+   * record declarations are compared with the commitments the transaction spends and writes and with the state
+   * UTXOs it spends. A master that stands alongside another does not settle them; the validator does.
+   */
+  readonly settlesOwnRecords?: boolean;
 }
 
 /** The frame kind of a user's call. */
@@ -163,6 +170,7 @@ class HeadEmitter {
   private readonly admittedKinds: readonly number[];
   private readonly composed: boolean;
   private readonly callDataSelectorUnconsumed: boolean;
+  private readonly settlesOwnRecords: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -170,6 +178,7 @@ class HeadEmitter {
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
+    this.settlesOwnRecords = options.settlesOwnRecords === true;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -269,6 +278,7 @@ class HeadEmitter {
   private standaloneFrameChecks(): void {
     this.emitBytes(verifyTailScript(this.callSites, this.tailShape));
     this.forget('rest');
+    this.assertSelfSettlement();
     this.assertFrameKindRoot();
     this.assertNoValidator();
     this.assertCallerIsNotSelf();
@@ -413,7 +423,14 @@ class HeadEmitter {
       this.emitRefusal();
     }
     if (this.admittedKinds.some((kind) => kind !== FRAME_KIND_ROOT)) this.assertFrameKindRoot();
+    if (this.callSites.length === 0) this.assertSelfSettlement();
     this.emitSingleMasterCheck();
+  }
+
+  /** Settles the segment's records when the master stands alone and the compiler asks for it. */
+  private assertSelfSettlement(): void {
+    if (!this.settlesOwnRecords) return;
+    this.emitBytes(selfSettlementScript(this.tailShape.sendCount));
   }
 
   /** The prologue proved the active input carries the contract's category with minting; require exactly one such. */

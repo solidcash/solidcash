@@ -497,7 +497,15 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     copy(REGISTER.chainViewOut);
     copy(RECORD.viewIn, 1);
     emit(Opcodes.OP_EQUALVERIFY);
-    if (sendCount === 0) emitValueFloor();
+    if (sendCount === 0) {
+      // A record the execution created has no value it held before it, so the floor is the first declaration's
+      // business and a continuation only has to keep what a transaction input already held.
+      copy(REGISTER.censusIn);
+      absent();
+      emit(Opcodes.OP_EQUAL, Opcodes.OP_NOT, Opcodes.OP_IF);
+      emitValueFloor();
+      emit(Opcodes.OP_ENDIF);
+    }
 
     // The new registers, the deepest of the four first, so the top of the stack reads `declared, chainViewOut,
     // chainIndex, censusIn` once the block has replaced them.

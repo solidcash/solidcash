@@ -1046,3 +1046,8 @@ Titles marked NEVER have not passed on any real compile to date.
 - The settlement's own tests are 13 cases that drive the emitted walk on its own over real witness blocks and
   transactions (chained, unchained, empty segments, created and deleted records, an undeclared state UTXO, a value
   loss, a block with a call record) and 7 that drive a compiled stateful master whose execution is split at a call.
+- A chain whose first declaration creates its record — the record is not among the transaction's inputs — is refused
+  fail-closed: the settlement reads the record's index in the index space inputs and outputs share, so the value floor
+  and the census of the first declaration need the same treatment as the chain itself before a created record can be
+  read back in a later segment. The plan's shapes create records (a mapping entry written and then used) so this is
+  the next thing the chain needs.

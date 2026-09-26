@@ -66,6 +66,8 @@ interface WalkOptions {
   readonly callCount?: number;
   /** Drop the state token from the second input and output, for a master whose execution carries no record. */
   readonly plainSecondPair?: boolean;
+  /** Drop the state token from the *first* input, so the record it names only exists as an output. */
+  readonly plainFirstPair?: boolean;
 }
 
 /** The program under test with the address slot the census reads, at the offset its own push puts it. */
@@ -159,10 +161,11 @@ function evaluate(options: WalkOptions): { accepted: boolean; objection?: string
   };
   const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
 
+  const carriesRecord = plain === false && options.plainFirstPair !== true;
   const recordSource = {
-    lockingBytecode: plain ? USER_LOCK : RECORD_LOCK,
+    lockingBytecode: carriesRecord ? RECORD_LOCK : USER_LOCK,
     valueSatoshis: VALUE,
-    ...(plain ? {} : { token: token(CATEGORY, 'mutable', options.inputCommitment ?? BEFORE) }),
+    ...(carriesRecord ? { token: token(CATEGORY, 'mutable', options.inputCommitment ?? BEFORE) } : {}),
   };
   const masterSource = { lockingBytecode: masterLock, valueSatoshis: VALUE, token: token(CATEGORY, 'minting') };
   const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };

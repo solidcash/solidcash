@@ -1073,3 +1073,11 @@ Titles marked NEVER have not passed on any real compile to date.
   transcript is honest. What is missing is the per-master walk itself: today a validator-settled master's own segment
   declarations are unchecked, because only a self-settling master walks them (the same walk, moved into the validator,
   is what the chain needs first). The cross-master linkage is the second half and needs that walk as its base.
+- The state index cannot be moved by changing the settlement alone: the head's frame model is built by the checks
+  that run before the settlement, so an item the walk leaves on the stack shifts every pick in them. The settlement
+  has to be emitted after the frame values are arranged — in the composed path after the two rotations that put
+  `origin` and `sender` on top, and in both arms of the need test with the same item count, because the frame's shape
+  must not depend on which arm ran. The body then reads the record's offset from its ordinal in the frame, since
+  untracked operands sit above the frame at every state site. An attempt that left the offset where the settlement
+  currently runs broke the frame for every per-call master, and was reverted; doing it properly starts with that
+  emission order.

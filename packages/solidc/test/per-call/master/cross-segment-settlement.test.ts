@@ -68,6 +68,7 @@ const token = (
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmInput = VmTransaction['inputs'][number];
+type VmOutput = VmTransaction['outputs'][number];
 
 /** The caller's own input, its record right after it, its validator, the user, and the callee. */
 const CALLER_INDEX = 0;
@@ -97,13 +98,20 @@ interface Options {
   readonly undeclaredState?: boolean;
   /** The value the state output carries, against the floor the settlement checks. */
   readonly outputValue?: bigint;
+  /** Put the record at the last index instead of right after its master. */
+  readonly recordLast?: boolean;
 }
 
 /** The record at its own index, kept in place. */
-const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
-  ({ in: STATE_INDEX, out: STATE_INDEX, viewIn, viewOut });
+const kept = (viewIn: Uint8Array, viewOut: Uint8Array, index = STATE_INDEX): RecordEntry =>
+  ({ in: index, out: index, viewIn, viewOut });
 
 function build(options: Options = {}): VmProgram {
+  // Which index each role takes. The record sits right after its master by default, and last when a case moves it
+  // away from the master that reads it.
+  const at = options.recordLast === true
+    ? { caller: 0, validator: 1, user: 2, callee: 3, state: 4 }
+    : { caller: 0, state: 1, validator: 2, user: 3, callee: 4 };
   const fill = (name: string, category: Uint8Array, address: Uint8Array): Uint8Array => {
     const artifact = artifacts[name]!;
     return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
@@ -113,16 +121,16 @@ function build(options: Options = {}): VmProgram {
   const callerProgram = fill('Caller', CATEGORY_CALLER, ADDRESS_CALLER);
   const calleeProgram = fill('Callee', CATEGORY_CALLEE, ADDRESS_CALLEE);
   const validator = validatorSpend(CATEGORY_CALLER, {
-    roots: [CALLER_INDEX], masters: [CALLER_INDEX, CALLEE_INDEX], settles: [],
+    roots: [at.caller], masters: [at.caller, at.callee], settles: [],
   });
   const callerLock = encodeLockingBytecodeP2sh32(hash256(callerProgram));
   const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
 
   const callerBlock: WitnessBlock = {
     kind: 0,
-    callerRef: USER_INDEX,
-    originRef: USER_INDEX,
-    validatorRef: VALIDATOR_INDEX,
+    callerRef: at.user,
+    originRef: at.user,
+    validatorRef: at.validator,
     sender: USER_LOCK,
     self: ADDRESS_CALLER,
     value: 0n,
@@ -131,19 +139,22 @@ function build(options: Options = {}): VmProgram {
       kind: 1,
       target: ADDRESS_CALLEE,
       value: 0n,
-      calleeRef: CALLEE_INDEX,
+      calleeRef: at.callee,
       argsHash: sha256(CALLEE_SELECTOR),
       result: new Uint8Array(0),
     }],
-    segments: [[options.first ?? kept(BEFORE, MIDDLE)], [options.second ?? kept(MIDDLE, AFTER)]],
+    segments: [
+      [options.first ?? kept(BEFORE, MIDDLE, at.state)],
+      [options.second ?? kept(MIDDLE, AFTER, at.state)],
+    ],
     events: [],
     sends: [],
   };
   const calleeBlock: WitnessBlock = {
     kind: 1,
-    callerRef: CALLER_INDEX,
-    originRef: USER_INDEX,
-    validatorRef: VALIDATOR_INDEX,
+    callerRef: at.caller,
+    originRef: at.user,
+    validatorRef: at.validator,
     sender: ADDRESS_CALLER,
     self: ADDRESS_CALLEE,
     value: 0n,
@@ -160,54 +171,55 @@ function build(options: Options = {}): VmProgram {
     sequenceNumber: 0xffffffff,
     unlockingBytecode: encodeDataPush(new Uint8Array([1])),
   });
-  const inputs: VmInput[] = [
-    {
-      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array([
-        ...encodeDataPush(encodeWitnessBlock(callerBlock)), ...encodeDataPush(callerProgram),
-      ]),
-    },
-    plainInput(2),
-    {
-      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
-      unlockingBytecode: validator.unlockingBytecode,
-    },
-    {
-      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
-      unlockingBytecode: callerUnlockingBytecode(),
-    },
-    {
-      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(5), sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array([
-        ...encodeDataPush(encodeWitnessBlock(calleeBlock)), ...encodeDataPush(CALLEE_SELECTOR),
-        ...encodeDataPush(calleeProgram),
-      ]),
-    },
-  ];
-  const stateInput = {
-    lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', BEFORE),
+  const callerInput: VmInput = {
+    outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
+    unlockingBytecode: new Uint8Array([
+      ...encodeDataPush(encodeWitnessBlock(callerBlock)), ...encodeDataPush(callerProgram),
+    ]),
   };
+  const calleeInput: VmInput = {
+    outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(5), sequenceNumber: 0xffffffff,
+    unlockingBytecode: new Uint8Array([
+      ...encodeDataPush(encodeWitnessBlock(calleeBlock)), ...encodeDataPush(CALLEE_SELECTOR),
+      ...encodeDataPush(calleeProgram),
+    ]),
+  };
+  const validatorInput: VmInput = {
+    outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(3), sequenceNumber: 0xffffffff,
+    unlockingBytecode: validator.unlockingBytecode,
+  };
+  const userInput: VmInput = {
+    outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
+    unlockingBytecode: callerUnlockingBytecode(),
+  };
+  const callerOutput = { lockingBytecode: callerLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'minting') };
+  const calleeOutput = { lockingBytecode: calleeLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLEE, 'minting') };
+  const validatorOutput = {
+    lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable'),
+  };
+  const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
   const recordOutput = {
     lockingBytecode: USER_LOCK,
     valueSatoshis: options.outputValue ?? VALUE,
     token: token(CATEGORY_CALLER, 'mutable', options.outputCommitment ?? AFTER),
   };
-  const outputs = [
-    { lockingBytecode: callerLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'minting') },
-    recordOutput,
-    { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable') },
-    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
-    { lockingBytecode: calleeLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLEE, 'minting') },
-  ];
-  const sourceOutputs = [
-    { lockingBytecode: callerLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'minting') },
-    options.undeclaredState === true
-      ? { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', MIDDLE) }
-      : stateInput,
-    { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable') },
-    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
-    { lockingBytecode: calleeLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLEE, 'minting') },
-  ];
+  const stateInput = {
+    lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', BEFORE),
+  };
+  const spentState = options.undeclaredState === true
+    ? { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', MIDDLE) }
+    : stateInput;
+
+  const inputs: VmInput[] = [];
+  const outputs: VmOutput[] = [];
+  const sourceOutputs: VmProgram['sourceOutputs'] = [];
+  inputs[at.caller] = callerInput; outputs[at.caller] = callerOutput; sourceOutputs[at.caller] = callerOutput;
+  inputs[at.state] = plainInput(2); outputs[at.state] = recordOutput; sourceOutputs[at.state] = spentState;
+  inputs[at.validator] = validatorInput;
+  outputs[at.validator] = validatorOutput;
+  sourceOutputs[at.validator] = validatorOutput;
+  inputs[at.user] = userInput; outputs[at.user] = userOutput; sourceOutputs[at.user] = userOutput;
+  inputs[at.callee] = calleeInput; outputs[at.callee] = calleeOutput; sourceOutputs[at.callee] = calleeOutput;
 
   return { sourceOutputs, transaction: { version: 2, inputs, outputs, locktime: 0 } };
 }

@@ -1607,8 +1607,23 @@ export function buildMessageBusResourceBudgets(params: {
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
-export interface Artifact {
-  contractName: string;
+/**
+ * Where a compiled master's deployment-time constants sit, so deployment can fill them in place.
+ *
+ * A master script reserves a zero-filled push for its state category and one for its contract address; both are only
+ * known once the contract exists. The offsets are authoritative and are checked before a fill, because a wrong fill
+ * would overwrite live script bytes.
+ */
+export interface CompositionPlaceholders {
+  /** Schema version, so a script and its descriptor cannot be paired across a format change. */
+  version: 1;
+  /** Byte offset of the 32-byte state category slot within the script. */
+  categoryOffset: number;
+  /** Byte offset of the 35-byte contract address slot within the script. */
+  addressOffset: number;
+}
+
+export interface Artifact {  contractName: string;
   constructorInputs: readonly AbiInput[];
   abi: readonly AbiFunction[];
   bytecode: string;
@@ -1641,6 +1656,15 @@ export interface Artifact {
    * eligibility, diagnostics, and message-bus planning. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
+  /**
+   * Set when the artifact was compiled for a composition convention other than the direct one. The script is then a
+   * master program: an entry recreates it in place, and its frame fields come from the witness block that leads its
+   * unlocking bytecode. `placeholders` names the two constants only deployment can fill.
+   */
+  composition?: {
+    convention: 'per-call';
+    placeholders: CompositionPlaceholders;
+  };
   messageBus?: {
     version: 1;
     selector: '53434231';

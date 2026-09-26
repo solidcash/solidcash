@@ -58,7 +58,10 @@ export function registerCreateBuilderBuilderState(
     entryArgs: readonly any[];
     pendingEntryValueTails: readonly any[];
     transportedProductions: readonly any[];
-    valueChunkMints: readonly any[];
+    valueChunkMints: readonly {
+      collection: string; slotIndex: number; slot: Uint8Array; value: Uint8Array;
+      digest: Uint8Array; chunks: readonly Uint8Array[];
+    }[];
     maxBhLocktime: number;
     functionName: string;
     timing?: (label: string) => void;
@@ -331,6 +334,10 @@ export function registerCreateBuilderBuilderState(
   // overwrote earlier resources and left later covenants without their authenticated continuation family.
   let composedMintCursor = 0;
   for (const mint of valueChunkMints) {
+    // Precomputed values bypass trace-based value-chunk derivation, which normally completes this
+    // header too. Publish the entry and its continuations from the same value, preserving its successor
+    // and exact write lane: another lane can read the same collection/key without owning this update.
+    builder.completeExistingEntryValueTail(mint.collection, mint.slot, mint.value, mint.slotIndex);
     const chunkAddr = getValueChunkAddress(host.inner, host.categoryId, mint.collection, mint.slot, mint.digest);
     const chunkLock = addressToLockScript(chunkAddr);
     const mintBandBase = composedChunkBase === undefined

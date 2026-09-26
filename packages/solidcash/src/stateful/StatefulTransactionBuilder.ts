@@ -5472,8 +5472,11 @@ export class StatefulTransactionBuilder {
   }
 
   /** Complete an existing chunkable entry update from the value authenticated by its continuation covenant. */
-  completeExistingEntryValueTail(collection: string, slot: Uint8Array, value: Uint8Array): boolean {
+  completeExistingEntryValueTail(
+    collection: string, slot: Uint8Array, value: Uint8Array, slotIndex?: number,
+  ): boolean {
     for (const entry of this.entryNfts) {
+      if (slotIndex !== undefined && entry.slotIndex !== slotIndex) continue;
       if (!entry.exists || entry.collection !== collection || !entry.utxo?.token?.nft) continue;
       const priorHex = this.entryRawCommitments.get(entry.slotIndex)
         ?? entry.utxo.token.nft.commitment;

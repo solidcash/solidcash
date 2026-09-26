@@ -8378,7 +8378,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       slotIndex: number; collection: string; slot: Uint8Array; seed: string; next: Uint8Array; chunkable: boolean;
     }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
-    const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
+    const valueChunkMints: Array<{
+      collection: string; slotIndex: number; slot: Uint8Array; value: Uint8Array;
+      digest: Uint8Array; chunks: Uint8Array[];
+    }> = [];
     const loopValueChunkMints: Array<{
       collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[];
     }> = [];
@@ -9320,7 +9323,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     && !valueChunkMints.some((mint) => mint.collection === access.collection
                       && binToHex(mint.slot) === binToHex(slot))) {
                     valueChunkMints.push({
-                      collection: access.collection, slot, digest: sha256Sync(vB),
+                      collection: access.collection, slotIndex, slot, value: vB, digest: sha256Sync(vB),
                       chunks: splitValueIntoValueChunks(vB),
                     });
                     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -9510,7 +9513,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (vBytes) {
               if (vBytes.length > 60) {
                 valueChunkMints.push({
-                  collection: access.collection, slot, digest: sha256Sync(vBytes),
+                  collection: access.collection, slotIndex, slot, value: vBytes, digest: sha256Sync(vBytes),
                   chunks: splitValueIntoValueChunks(vBytes),
                 });
               }
@@ -9595,7 +9598,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // halts the probe first - a deadlock this branch breaks.
               if (kernelEncodedValue && kernelEncodedValue.length > 60) {
                 valueChunkMints.push({
-                  collection: access.collection, slot, digest: sha256Sync(kernelEncodedValue),
+                  collection: access.collection, slotIndex, slot, value: kernelEncodedValue,
+                  digest: sha256Sync(kernelEncodedValue),
                   chunks: splitValueIntoValueChunks(kernelEncodedValue),
                 });
               } else if (!valueChunkMints.some((mint) => mint.collection === access.collection

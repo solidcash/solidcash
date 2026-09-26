@@ -146,9 +146,9 @@ type CallSitesDerivation =
  * Derives the call sites every entry of the contract makes, which the master head has to check.
  *
  * The head is one prefix, so it checks the same calls[] records whichever entry runs: every entry must make the
- * same calls, and only calls whose shape the head's checks describe are admitted — a zero-argument call to a
- * compile-time address whose result is unused. Anything else is refused by name, because the head would have to
- * check a shape it cannot describe.
+ * same calls, and only calls whose shape the head's checks describe are admitted — a call to a compile-time
+ * address whose result is unused, with any argument pushes the callee carries. Anything else is refused by name,
+ * because the head would have to check a shape it cannot describe.
  */
 function derivePerCallMasterCallSites(
   interfaces: readonly InterfaceNode[],
@@ -181,10 +181,6 @@ function deriveEntryCallSites(
     if (slot.hasReturnValues === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' returns a value, which the master head `
         + 'reads from the witness but does not settle against a computed value yet' };
-    }
-    if ((slot.argSources?.length ?? 0) > 0 || (slot.rawArgSources?.length ?? 0) > 0) {
-      return { calls: [], reason: `the call to '${slot.functionName}' passes arguments, whose pushes the master `
-        + 'head does not read yet' };
     }
     if (slot.callMode !== undefined && slot.callMode !== ExternalCallMode.REGULAR) {
       // A read-only call would make the callee run a static frame, and the emitted kind branch has no arm for one,

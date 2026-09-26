@@ -166,6 +166,88 @@ export function dropFirstPushScript(): Uint8Array {
   return new Uint8Array([...splitFirstPushScript(), Opcodes.OP_NIP]);
 }
 
+/**
+ * Leaves `[..., leading]`: the item on top with its **last** push removed.
+ *
+ * A master's unlocking bytecode ends with the redeem script, so removing the last push leaves the pushes before it
+ * — the call data a callee's selector and argument pushes sit in. Which push is last is found by walking forward
+ * from the start rather than by reading backwards: each push declares its own length, so the walk advances one
+ * push at a time and remembers where its last step began. No assumption is made about how many pushes precede the
+ * last one.
+ *
+ * A direct push (`0x01`-`0x4b`) declares its length in the opcode, `PUSHDATA1` follows it with one length byte and
+ * `PUSHDATA2` with two, and the `OP_0`, `OP_1NEGATE` and `OP_1`-`OP_16` shorthands occupy their opcode alone. The
+ * length bytes are read with `unsignedLength`, for the same reason `splitFirstPushScript` reads its own that way:
+ * `OP_BIN2NUM` reads a signed little-endian number, so a length byte at or above `0x80` would otherwise come out
+ * negative and the split that follows would fail.
+ */
+export function dropLastPushScript(): Uint8Array {
+  const bytes: number[] = [];
+  const emit = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const number = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  // Leaves `[...]` with `base + B[pos + 1 : pos + 1 + width]` on top, both read as unsigned VM numbers.
+  const lengthFieldPlusBase = (width: number, base: number): void => {
+    number(3); emit(Opcodes.OP_PICK); // B
+    number(2); emit(Opcodes.OP_PICK); // pos
+    emit(Opcodes.OP_1ADD, Opcodes.OP_SPLIT, Opcodes.OP_NIP); // B from pos + 1
+    number(width); emit(Opcodes.OP_SPLIT, Opcodes.OP_DROP); // the length bytes
+    emit(...unsignedLength());
+    number(base); emit(Opcodes.OP_ADD);
+  };
+
+  // [B] -> [B, total, pos, lastPos]
+  emit(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP);
+  emit(Opcodes.OP_0, Opcodes.OP_DUP);
+  emit(Opcodes.OP_BEGIN);
+  // total > pos ?
+  number(2); emit(Opcodes.OP_PICK);
+  number(2); emit(Opcodes.OP_PICK);
+  emit(Opcodes.OP_GREATERTHAN, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP, Opcodes.OP_DUP); // lastPos = pos
+  // The opcode at pos, as an unsigned number.
+  number(3); emit(Opcodes.OP_PICK); // B
+  number(2); emit(Opcodes.OP_PICK); // pos
+  emit(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+  number(1); emit(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  emit(...unsignedLength());
+  // The push's total length, from the opcode that introduces it.
+  emit(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP, Opcodes.OP_1); // OP_0 pushes nothing and is one byte
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP);
+  number(0x4b); emit(Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_1ADD); // a direct push: opcode plus payload
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP);
+  number(0x4c); emit(Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP); lengthFieldPlusBase(1, 2); // PUSHDATA1
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP);
+  number(0x4d); emit(Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP); lengthFieldPlusBase(2, 3); // PUSHDATA2
+  emit(Opcodes.OP_ELSE, Opcodes.OP_DUP);
+  number(0x4e); emit(Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(Opcodes.OP_DROP); lengthFieldPlusBase(4, 5); // PUSHDATA4
+  emit(Opcodes.OP_ELSE);
+  // A shorthand: `OP_1NEGATE` or `OP_1`-`OP_16`, whose byte comes from the opcode alone.
+  emit(Opcodes.OP_DROP, Opcodes.OP_1);
+  emit(Opcodes.OP_ENDIF); // PUSHDATA4
+  emit(Opcodes.OP_ENDIF); // PUSHDATA2
+  emit(Opcodes.OP_ENDIF); // PUSHDATA1
+  emit(Opcodes.OP_ENDIF); // direct push
+  emit(Opcodes.OP_ENDIF); // OP_0
+  // pos += size
+  emit(Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP);
+  emit(Opcodes.OP_0);
+  emit(Opcodes.OP_ELSE, Opcodes.OP_1);
+  emit(Opcodes.OP_ENDIF);
+  emit(Opcodes.OP_UNTIL);
+  // [B, total, pos, lastPos] -> [leading]
+  emit(Opcodes.OP_NIP); // pos
+  number(2); emit(Opcodes.OP_PICK); // B
+  emit(Opcodes.OP_OVER); // lastPos
+  // Split B at the last push's start, then keep only its first part.
+  emit(Opcodes.OP_SPLIT, Opcodes.OP_DROP, Opcodes.OP_NIP, Opcodes.OP_NIP, Opcodes.OP_NIP);
+  return new Uint8Array(bytes);
+}
+
 /** Reads a fixed-width length field from the front, leaving `[rest, length]` with the length on top. */
 function takeLengthField(width: number): Uint8Array {
   return new Uint8Array([

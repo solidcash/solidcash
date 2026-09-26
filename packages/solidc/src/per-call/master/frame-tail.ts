@@ -10,24 +10,24 @@
  * The call-shape checks are the whole of a call's proof on the caller's side:
  *
  *   - the callee is not this input (a master never calls itself);
- *   - the callee's unlocking bytecode carries the selector the site names, and its call data after that selector
- *     is exactly the argument pushes;
- *   - `SHA256(selector || args)` equals the record's `argsHash`;
+ *   - the callee's unlocking bytecode carries the selector the site names, with its argument pushes after it;
+ *   - `SHA256(selector || args)` equals the record's `argsHash`, computed from the callee's own call data;
  *   - the callee address the record names is the one the code calls, and the frame kind is the one it records.
  *
  * The result is read from the record and must be empty here: a site whose callee returns a value needs the value
  * on the stack, which the entry-return machinery does not emit yet.
  *
- * The two arguments of a call are the bytes between the callee's selector push and its redeem-script push. A
- * site with an argument would need that region extracted from a variable number of pushes; only a zero-argument
- * site is emitted, and the region is then required to be empty. Segment settlement — the records a segment
- * computed equalling its `viewOut` — is a separate stream and is not emitted.
+ * The arguments of a call are the pushes between its selector push and the redeem-script push that closes the
+ * callee's unlocking bytecode. Both pushes are stripped, so the arguments are however many pushes the callee
+ * carries — none for a call with no arguments, in which case the hash is over the selector bytes alone. Segment
+ * settlement — the records a segment computed equalling its `viewOut` — is a separate stream and is not emitted.
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { TokenCapability, sha256 } from '@solidcash/utils';
+import { TokenCapability } from '@solidcash/utils';
 import {
   dropFirstPushScript,
+  dropLastPushScript,
   splitFirstPushScript,
   takeFixedWidthField,
   takeLengthPrefixedField,
@@ -42,11 +42,6 @@ export interface MasterCallSite {
   readonly selector: Uint8Array;
   /** The address called, which `calls[k].target` must name. */
   readonly target: Uint8Array;
-}
-
-/** The `argsHash` a zero-argument call records: the selector bytes with no argument pushes after them. */
-export function callSiteArgsHash(site: MasterCallSite): Uint8Array {
-  return sha256(site.selector);
 }
 
 /**
@@ -82,13 +77,14 @@ function callRecordChecks(site: MasterCallSite): number[] {
     Opcodes.OP_INPUTINDEX, Opcodes.OP_NUMNOTEQUAL, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK);
   // argsHash
   bytes.push(...takeFixedWidthField(32), Opcodes.OP_SWAP);
-  // The callee's call data is the push after its witness block, up to its redeem-script push. A zero-argument
-  // site requires the region after the selector push to be exactly one push, the redeem script.
+  // The callee's unlocking bytecode is its witness block, then its call data, then its redeem script. The call
+  // data is what the first and last pushes leave between them: the selector's own push, then the argument pushes.
+  // Hashing the selector's payload concatenated with the argument pushes is `SHA256(selector || args)`; a call
+  // with no arguments leaves that region empty and hashes the selector bytes alone, so one path serves both.
   bytes.push(Opcodes.OP_FROMALTSTACK, Opcodes.OP_INPUTBYTECODE,
-    ...dropFirstPushScript(), ...splitFirstPushScript(),
-    Opcodes.OP_SWAP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
-    Opcodes.OP_DUP, ...dropFirstPushScript(), Opcodes.OP_0, Opcodes.OP_EQUALVERIFY, Opcodes.OP_DROP,
-    ...encodeDataPush(callSiteArgsHash(site)), Opcodes.OP_EQUALVERIFY);
+    ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
+    Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
+    Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
   // result: a supported call returns nothing.
   bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   return bytes;

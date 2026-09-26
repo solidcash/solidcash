@@ -19043,7 +19043,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A call folded into a deploy genesis is inert here - its effect is emitted by the deploy covenant.
     if (node.foldedIntoDeploy) return node;
     // A per-call master checks each call against the witness block's call records in its head, so the body emits
-    // nothing for the call itself. The shape is admitted only when the call has no arguments and no result.
+    // nothing for the call itself. The argument values are the callee's unlocking bytecode, which the head hashes;
+    // the shape is admitted only when the call has no result to settle against the witness.
     if (this.perCallMaster) return node;
     // Do NOT visit categoryExpression or parameters here - they were resolved during
     // semantic analysis. Visiting them would cause stack operations (OP_ROLL/OP_PICK)

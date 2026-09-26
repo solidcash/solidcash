@@ -37,6 +37,7 @@ import {
 import {
   categoryOf,
   masterTokenShape,
+  seedBytes,
   materialise,
   mutableTokenShape,
   planComposition,
@@ -45,7 +46,7 @@ import {
   type CompositionPlan,
 } from './fixture.js';
 import { generateCases } from './generator.js';
-import { abbaPlan, singleContractPlan, userPlan } from './plans.js';
+import { abbaContracts, abbaPlan, singleContractPlan, userPlan } from './plans.js';
 
 /** The program under test: the same bytes every master carries the hash of and every address is derived from. */
 const PROGRAM = buildValidatorProgram();
@@ -670,6 +671,56 @@ describe('the validator program refuses each rule it enforces', () => {
     composition.blocks.get('A.f')!.calls[0]!.argsHash = new Uint8Array(32).fill(0x44);
     const modelled = materialise(composition);
     expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_ARGS_HASH_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a contract a borrowed frame runs on when it is not settled', () => {
+    // One master per contract, and the second contract's only frame is entered by a delegate call, so the borrowed
+    // rule is the sole reason the first contract has to be settled here.
+    const plan: CompositionPlan = {
+      contracts: abbaContracts(),
+      users: [userPlan('U')],
+      stateSlots: [{ id: 'DA', contract: 'A', commitment: seedBytes('DA:0', 6), value: 3_000n }],
+      createdSlots: [],
+      masters: [
+        {
+          id: 'A.go',
+          contract: 'A',
+          kind: FrameKind.ROOT,
+          caller: 'U',
+          selector: selectorOf('go'),
+          args: [],
+          children: ['B.g'],
+          callKinds: [FrameKind.DELEGATE],
+          callValues: [0n],
+          segments: [{ touches: [{ slot: 'DA', viewOut: seedBytes('DA:1', 6) }] }, { touches: [] }],
+          retval: new Uint8Array(0),
+        },
+        {
+          id: 'B.g',
+          contract: 'B',
+          kind: FrameKind.DELEGATE,
+          caller: 'A.go',
+          selector: selectorOf('g'),
+          args: [],
+          children: [],
+          segments: [{ touches: [] }],
+          retval: new Uint8Array(0),
+        },
+      ],
+      changeUser: 'U',
+    };
+    const settled = laidOut(plan);
+    const index = settled.validatorIndex;
+    expect(derivationOf(materialise(settled), index).accepted).toBe(true);
+    expect(accepted(materialise(settled), index)).toBe(true);
+
+    const transcript = settled.inputs[index]!.validator!.transcript;
+    expect(transcript.settles.length).toBeGreaterThan(0);
+    settled.inputs[index]!.validator!.transcript = { ...transcript, settles: [] };
+    const modelled = materialise(settled);
+    // The derivation reaches the delegated frame's context rule before its settles rule and names that one.
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_CONTEXT_NOT_SETTLED');
     expect(accepted(modelled, index)).toBe(false);
   });
 

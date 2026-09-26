@@ -1047,7 +1047,19 @@ function emitSettlementMembership(e: Emitter): void {
   e.op(O.OP_DROP);
   emitRequireDeclaredCategory(e);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+  // A borrowed frame runs on its caller's records, so its context is a contract that needs settling too.
+  e.op(O.OP_DUP);
+  emitIndexHead(e);
+  e.op(O.OP_2DROP);
+  e.op(O.OP_DUP);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL);
+  e.op(O.OP_OVER);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_IF);
   e.op(O.OP_DROP);
+  emitContextCategory(e);
+  emitRequireDeclaredCategory(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
   e.op(O.OP_ENDIF);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);

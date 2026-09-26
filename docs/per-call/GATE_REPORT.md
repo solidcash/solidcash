@@ -37,7 +37,9 @@ because `V_TEMPLATE` itself is not implemented.
 | Composer derivation, assembly, layout, refusals | done | `packages/solidcash/src/per-call/composer/`, 35 tests |
 | Record reuse claim tested rather than assumed | done, one divergence | `packages/solidc/test/per-call/records/`, 29 tests |
 | Master ownership and recreation checks, VM-proven | done | `packages/solidc/src/per-call/master/prologue.ts`, 12 VM tests in `packages/solidcash/test/per-call/frames/` |
-| Compiler emits a per-call master | **absent** | option refuses with `PER_CALL_CODEGEN_UNAVAILABLE`; the prologue exists but nothing embeds it |
+| Compiler emits a per-call master | **done for one shape** | one inlined entry point, no external calls, no returns; 29 tests in `solidc/test/per-call/master` |
+| A compiled master is deployed and spent | **done** | `solidcash/test/per-call/frames/compiled-master-spend.test.ts`: VM accepts the spend, three controls refused |
+| Selector dispatch, the return check, the need test | **absent** | refused by name in `support.ts` |
 | Records read through a segment view | **absent** | — |
 | Registry of the plan's own go/kill bounds (12K lines, 5 s Y2) | partly measurable | 1,366 compiler source lines added; composer suite ~2.6 s on a stub step |
 | Tests, all green | done | 219 tests across six focused directories; the full build and the existing utils suite pass |
@@ -83,7 +85,7 @@ the option refuses, and why the current state is the honest one.
 
 ## Next step
 
-The plan's Phase 1 (stream C, then R) is unchanged and is the whole remaining critical path. The pin-and-recreate half of C2 is
+The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: emit the selector dispatch so a contract with several entry points compiles as one master; emit the return check; add the need test and validator recognition; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the toys and shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
 done and VM-proven; what remains is to emit it as the head of a compiled master, add W0 (the first-push
 self-check) and the selector dispatch, and then give the records stream its view mode. That is the smallest
 increment that turns the composer's injected step into a real program run.

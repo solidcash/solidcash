@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { INDEX_NONE, type RecordEntry } from '@solidcash/utils';
 import {
-  assertRecordChains, recordChainIssues, RecordChainError,
+  assertCompositionSettlement, assertRecordChains, recordChainIssues, RecordChainError,
   type SettlementFacts,
 } from '../../../src/per-call/composer/settlement.js';
 
@@ -125,5 +125,44 @@ describe('a record chain', () => {
   it('reports every failing declaration rather than stopping at the first', () => {
     const issues = recordChainIssues([[kept(C9, C1)], [kept(C1, C9)]], facts());
     expect(issues.length).toBeGreaterThan(1);
+  });
+});
+
+describe('a composition whose record spans executions', () => {
+  it('chains one record across two masters in execution order', () => {
+    const order = [
+      { master: 'Ledger#0', segments: [[kept(C0, C1)]] },
+      { master: 'Vault#0', segments: [[kept(C1, C2)]] },
+    ];
+    expect(() => assertCompositionSettlement(order, facts())).not.toThrow();
+  });
+
+  it('refuses the same declarations in the wrong order', () => {
+    // The second execution's declaration starts from a state the first never produced.
+    const order = [
+      { master: 'Ledger#0', segments: [[kept(C0, C1)]] },
+      { master: 'Vault#0', segments: [[kept(C2, C1)]] },
+    ];
+    let raised: RecordChainError | undefined;
+    try {
+      assertCompositionSettlement(order, facts());
+    } catch (error) {
+      raised = error as RecordChainError;
+    }
+    expect(raised).toBeInstanceOf(RecordChainError);
+    // The fault is inside the second execution's declaration, and the message says so.
+    expect(raised!.issue.owner).toBe('Vault#0');
+    expect(raised!.message).toMatch(/of Vault#0/);
+  });
+
+  it('checks each record separately, so one broken record does not hide another', () => {
+    const order = [
+      { master: 'Ledger#0', segments: [[kept(C0, C1), kept(C0, C1, 3)]] },
+    ];
+    const withThird = facts({ inputCommitments: new Map([[0, C0], [3, C0]]), outputCommitments: new Map([[0, C2], [3, C2]]) });
+    // Record 0 stops at C1 while the transaction writes C2; record 3 has the same shape.
+    const issues = recordChainIssues(order[0]!.segments, withThird);
+    expect(issues.filter((issue) => /written at output/.test(issue.reason)).map((issue) => issue.record))
+      .toStrictEqual([0, 3]);
   });
 });

@@ -28,6 +28,8 @@ export interface RecordChainIssue {
   readonly record: number;
   /** The segment whose declaration is at fault, when the fault is inside the chain. */
   readonly segment?: number;
+  /** The master whose execution declared it, when the chain spans executions. */
+  readonly owner?: string;
   readonly reason: string;
 }
 
@@ -119,7 +121,11 @@ export function recordChainIssues(
 /** Raised when a plan's segments do not chain into one transition. */
 export class RecordChainError extends Error {
   constructor(readonly issue: RecordChainIssue) {
-    super(`record ${issue.record}${issue.segment === undefined ? '' : ` in segment ${issue.segment}`}: ${issue.reason}`);
+    super([
+      `record ${issue.record}`,
+      issue.segment === undefined ? undefined : `in segment ${issue.segment}`,
+      issue.owner === undefined ? undefined : `of ${issue.owner}`,
+    ].filter((part) => part !== undefined).join(' ') + `: ${issue.reason}`);
     this.name = 'RecordChainError';
   }
 }
@@ -131,6 +137,40 @@ export function assertRecordChains(
 ): void {
   const [first] = recordChainIssues(segments, facts);
   if (first !== undefined) throw new RecordChainError(first);
+}
+
+/** One execution's contribution to a composition's settlement, in the order it ran. */
+export interface OrderedExecutionSegments {
+  /** The master whose execution this is, for diagnostics. */
+  readonly master: string;
+  readonly segments: readonly (readonly RecordEntry[])[];
+}
+
+/**
+ * Checks the chains of a whole composition.
+ *
+ * A record can be touched by more than one master — that is what composing is for — so its chain is the
+ * concatenation of every execution's declarations, in the order the executions ran. The caller supplies that order
+ * because only the derivation knows it; checking each master's declarations separately would accept a chain whose
+ * halves belong to different executions in the wrong order.
+ */
+export function assertCompositionSettlement(
+  order: readonly OrderedExecutionSegments[],
+  facts: SettlementFacts,
+): void {
+  // Every execution's declarations, in execution order, with the master recorded so an issue can name it.
+  const concatenated: (readonly RecordEntry[])[] = [];
+  const ownerOfSegment: string[] = [];
+  for (const execution of order) {
+    for (const segment of execution.segments) {
+      concatenated.push(segment);
+      ownerOfSegment.push(execution.master);
+    }
+  }
+  const issue = recordChainIssues(concatenated, facts)[0];
+  if (issue === undefined) return;
+  const owner = issue.segment === undefined ? undefined : ownerOfSegment[issue.segment];
+  throw new RecordChainError(owner === undefined ? issue : { ...issue, owner });
 }
 
 /** The commitment a record holds, for a caller assembling the facts a settlement is checked against. */

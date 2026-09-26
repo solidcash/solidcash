@@ -88,11 +88,12 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V10_STATIC_SEND',
   'V10_STATIC_VALUE_CALL',
   'V10_STATIC_NON_STATIC_CALL',
+  'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
 
 /** The checks the program enforces completely. A check lands here only once every one of its rules is emitted. */
-export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V9', 'V10', 'V11'];
+export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V8', 'V9', 'V10', 'V11'];
 
 /**
  * Builds the validator program's bytecode.
@@ -1115,6 +1116,45 @@ function emitCountCategory(e: Emitter): void {
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
   e.op(O.OP_DROP, O.OP_NIP);
+}
+
+/**
+ * The contract whose records the frame on top runs on.
+ *
+ * Entry `[index]`, exit `[category]`. A delegate or internal frame runs on its caller's records, so the walk follows
+ * the caller chain until it reaches a frame that uses its own category. The call tree is acyclic once the rules
+ * before this one hold. `OP_UNTIL` repeats while its item is false, so each arm leaves that condition: a borrowed
+ * frame asks for another step with a zero, and a resolved frame stops with a one.
+ */
+function emitContextCategory(e: Emitter): void {
+  const O = Opcodes;
+  e.count(0);
+  e.op(O.OP_BEGIN);
+  // `[current, steps]`: the frame under examination is below the step count, so the copy is an `OP_OVER`.
+  e.op(O.OP_OVER);
+  emitIndexHead(e);
+  e.op(O.OP_DROP);
+  e.op(O.OP_OVER);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL);
+  e.count(2).op(O.OP_PICK);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_IF);
+  e.op(O.OP_NIP);
+  e.op(O.OP_ROT, O.OP_DROP, O.OP_SWAP, O.OP_1ADD);
+  e.count(0);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
+  e.count(1);
+  e.op(O.OP_ENDIF, O.OP_UNTIL);
+}
+
+/** The context walk on its own, for a caller that has the frame's index on the stack. */
+export function contextCategoryScript(): Uint8Array {
+  const e = new Emitter();
+  emitContextCategory(e);
+  return e.done();
 }
 
 /** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */

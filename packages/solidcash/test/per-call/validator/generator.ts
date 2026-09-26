@@ -660,6 +660,9 @@ function isValidComposition(plan: CompositionPlan): boolean {
   }
 }
 
+/** The catalogue's size. Cases cycle through it, so `n * MUTATION_COUNT` cases apply every mutation `n` times. */
+export const MUTATION_COUNT = MUTATIONS.length;
+
 /** Generates `count` deterministic cases from one seed. */
 export function generateCases(seed: number, count: number): GeneratedCase[] {
   const cases: GeneratedCase[] = [];

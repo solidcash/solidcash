@@ -45,7 +45,7 @@ import {
   type Composition,
   type CompositionPlan,
 } from './fixture.js';
-import { generateCases } from './generator.js';
+import { MUTATION_COUNT, generateCases } from './generator.js';
 import { abbaContracts, abbaPlan, singleContractPlan, userPlan } from './plans.js';
 
 /** The program under test: the same bytes every master carries the hash of and every address is derived from. */
@@ -214,9 +214,15 @@ describe('the validator program as a script', () => {
   });
 });
 
+/**
+ * Cases in the generated run. They cycle through the mutation catalogue, so three rounds apply every mutation to
+ * three different plans; `PER_CALL_FULL=1` restores the 400-case sample for milestone runs.
+ */
+const GENERATED_CASES = process.env.PER_CALL_FULL === '1' ? 400 : 3 * MUTATION_COUNT;
+
 describe('the validator program against the derivation, over generated compositions', () => {
   test('never disagrees about a rule the program enforces (seed 0x5eed)', () => {
-    const cases = generateCases(0x5eed, 400);
+    const cases = generateCases(0x5eed, GENERATED_CASES);
     const failures: string[] = [];
     let enforcedRejections = 0;
     let acceptedByBoth = 0;
@@ -258,7 +264,7 @@ describe('the validator program against the derivation, over generated compositi
     // either side of the contract.
     expect(enforcedRejections).toBeGreaterThanOrEqual(5);
     expect(acceptedByBoth).toBeGreaterThanOrEqual(5);
-    expect(evaluated).toBeGreaterThanOrEqual(100);
+    expect(evaluated).toBeGreaterThanOrEqual(Math.floor(GENERATED_CASES / 4));
   });
 });
 

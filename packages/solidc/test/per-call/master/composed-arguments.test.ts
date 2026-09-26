@@ -16,15 +16,17 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
 /**
  * A call that passes an argument, between two compiled masters that one validator covers.
  *
- * The caller records the call and its argument hash in its witness block. The arguments themselves live in the
- * callee's own unlocking bytecode, between the selector's push and the redeem script, so the caller re-reads them
- * from there and recomputes `SHA256(selector || args)` instead of trusting a constant. That is what admits a call
- * with arguments at all, and it leaves the zero-argument shape identical: with no argument pushes the region is
- * empty and the hash is over the selector bytes alone.
+ * The caller's call site binds its record to the digest of the source's own argument, and the callee carries that
+ * argument between its selector push and its redeem script. Only two compiled masters show the cases kept here: the
+ * whole composition accepted with an argument, the argument reaching the compiled callee's body, and a foreign
+ * selector in the callee's call data refused by the caller.
+ *
+ * The digest refusals are covered where they are decided: a mismatched or forged record and an argument the source
+ * did not pass in `call-site-compilation.test.ts`, the callee's pushes against the record in the validator
+ * program's suite. The zero-argument shape is `composed-compiled.test.ts`.
  *
  * Everything is compiled through `compileStringMulti`, filled by deployment, and settled by the machine's own
- * verdict. Each refusal is shown together with the inputs it does not touch, so the refusal is the check under
- * test rather than a malformed composition.
+ * verdict.
  */
 
 const CATEGORY_CALLER = seededCategory('composed arguments caller');
@@ -43,8 +45,6 @@ const OTHER_SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', 
 
 /** The argument `7`, in the one encoding the wire format allows: a minimal push of its script number. */
 const ARGUMENT_PUSHES = encodeArgumentList([encodeIntegerValue(7n)]);
-/** The same argument one value higher, so the callee still accepts but the recorded hash no longer matches. */
-const OTHER_ARGUMENT_PUSHES = encodeArgumentList([encodeIntegerValue(8n)]);
 
 /** Master input indices: the caller, its callee, the validator that covers both, then the user. */
 const CALLER_INDEX = 0;
@@ -56,7 +56,6 @@ interface Variant {
   readonly withArgument: boolean;
 }
 const WITH_ARGUMENT: Variant = { withArgument: true };
-const WITHOUT_ARGUMENT: Variant = { withArgument: false };
 
 /** The compiled selector of the callee's `ping`, which the caller's interface resolves the site to as well. */
 const calleeSelectorOf = (artifacts: ReturnType<typeof compileStringMulti>): Uint8Array =>
@@ -75,8 +74,15 @@ const callingSource = (variant: Variant): string => {
     + ' }';
 };
 
-const compile = (variant: Variant): ReturnType<typeof compileStringMulti> =>
-  compileStringMulti(callingSource(variant), { composition: 'per-call' });
+/** Compiled once per variant: every case spends the same two masters, and compiling dominates the file's time. */
+const compiled = new Map<boolean, ReturnType<typeof compileStringMulti>>();
+const compile = (variant: Variant): ReturnType<typeof compileStringMulti> => {
+  const cached = compiled.get(variant.withArgument);
+  if (cached !== undefined) return cached;
+  const artifacts = compileStringMulti(callingSource(variant), { composition: 'per-call' });
+  compiled.set(variant.withArgument, artifacts);
+  return artifacts;
+};
 
 /** The finished script as bytes: the artifact publishes it as ASM, deployment fills the slots in the bytes. */
 const scriptBytes = (artifact: { bytecode: string }): Uint8Array => scriptToBytecode(asmToScript(artifact.bytecode));
@@ -232,52 +238,10 @@ function accepted(variant: Variant, options: CompositionOptions, inputIndex: num
 }
 
 describe('a caller that passes an argument to its callee', () => {
-  it('publishes both masters with a validator program hash slot', () => {
-    const artifacts = compile(WITH_ARGUMENT);
-    expect(artifacts.Caller!.composition?.convention).toBe('per-call');
-    expect(artifacts.Callee!.composition?.convention).toBe('per-call');
-    // A call is admitted with arguments now, so both masters publish the validator program hash slot.
-    expect(artifacts.Caller!.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
-    expect(artifacts.Callee!.composition!.placeholders.templateHashOffset).toBeTypeOf('number');
-  });
-
   it('is accepted at every input when the callee carries the recorded argument', () => {
     expect(accepted(WITH_ARGUMENT, {}, CALLER_INDEX)).toBe(true);
     expect(accepted(WITH_ARGUMENT, {}, CALLEE_INDEX)).toBe(true);
     expect(accepted(WITH_ARGUMENT, {}, VALIDATOR_INDEX)).toBe(true);
-  });
-
-  it('is refused when the caller records an argument hash that is not the callee\'s', () => {
-    // A hash of the right shape over a different argument: only recomputing it from the callee refuses it.
-    const mutated = new Uint8Array(argsHash(calleeSelectorOf(compile(WITH_ARGUMENT)), ARGUMENT_PUSHES));
-    mutated[0] ^= 0xff;
-    expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, CALLER_INDEX)).toBe(false);
-    // The callee does not recompute the caller's digest. The validator does, from the callee's own pushes.
-    expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, CALLEE_INDEX)).toBe(true);
-    expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(false);
-  });
-
-  it('is refused when the argument and the recorded hash are changed together', () => {
-    // The forgery this case exists to catch. The argument the callee carries and the hash the caller records are
-    // both chosen by whoever builds the transaction, so a pair that agrees with itself satisfies every check the
-    // caller makes — and the call runs with the caller's authority while carrying an argument the caller's source
-    // never passed. Refusing it takes the caller computing the hash from its own argument rather than re-reading the
-    // callee's.
-    const forgedSelector = calleeSelectorOf(compile(WITH_ARGUMENT));
-    const forgedRecord = new Uint8Array(argsHash(forgedSelector, OTHER_ARGUMENT_PUSHES));
-    expect(accepted(
-      WITH_ARGUMENT,
-      { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES, recordedArgsHash: forgedRecord },
-      CALLER_INDEX,
-    )).toBe(false);
-  });
-
-  it('is refused when one of the callee\'s argument pushes changes', () => {
-    // The callee still accepts `8 > 0`, so only the caller's digest can refuse the composition.
-    expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, CALLEE_INDEX)).toBe(true);
-    expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, CALLER_INDEX)).toBe(false);
-    // The recorded hash still names the original argument, so the callee's new push fails the validator too.
-    expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, VALIDATOR_INDEX)).toBe(false);
   });
 
   it('runs the callee body with the argument it was entered with', () => {
@@ -291,25 +255,5 @@ describe('a caller that passes an argument to its callee', () => {
     // site is what refuses it.
     expect(accepted(WITH_ARGUMENT, { calleeSelector: OTHER_SELECTOR }, CALLEE_INDEX)).toBe(true);
     expect(accepted(WITH_ARGUMENT, { calleeSelector: OTHER_SELECTOR }, CALLER_INDEX)).toBe(false);
-  });
-});
-
-describe('a caller that passes no argument still works the same way', () => {
-  it('is accepted at every input', () => {
-    expect(accepted(WITHOUT_ARGUMENT, {}, CALLER_INDEX)).toBe(true);
-    expect(accepted(WITHOUT_ARGUMENT, {}, CALLEE_INDEX)).toBe(true);
-    expect(accepted(WITHOUT_ARGUMENT, {}, VALIDATOR_INDEX)).toBe(true);
-  });
-
-  it('records the hash of the selector alone, and refuses any other digest', () => {
-    const mutated = new Uint8Array(sha256(calleeSelectorOf(compile(WITHOUT_ARGUMENT))));
-    mutated[0] ^= 0xff;
-    expect(accepted(WITHOUT_ARGUMENT, { recordedArgsHash: mutated }, CALLER_INDEX)).toBe(false);
-    expect(accepted(WITHOUT_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(false);
-  });
-
-  it('is refused when the callee carries an argument push the caller did not record', () => {
-    // The extra push makes the callee's call data hash differently from the selector-alone digest.
-    expect(accepted(WITHOUT_ARGUMENT, { calleeArgumentPushes: ARGUMENT_PUSHES }, CALLER_INDEX)).toBe(false);
   });
 });

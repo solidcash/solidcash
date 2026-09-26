@@ -7,23 +7,27 @@ Run one directory:
 
     yarn workspace <package> vitest run <directory>
 
+The generated program-versus-derivation check in `validator/script.test.ts` runs three cases per mutation by
+default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at milestones.
+
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 113 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 125 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 145 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
-| `packages/solidcash/test/per-call/validator/` | `solidcash` | 36 |
+| `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
+| `packages/solidcash/test/per-call/validator/` | `solidcash` | 75 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 113 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 39 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 494 tests, all passing at the latest commit.
+Total: 563 tests, all passing at the latest commit.
 
 ## What each directory covers
 

@@ -12601,7 +12601,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const preparedAtomicNodeByExternalGroup = lowLevelNestedCaches.preparedAtomicNodeByExternalGroup;
     const latestPreparedAtomicNodeByPhysicalGroup =
       lowLevelNestedCaches.latestPreparedAtomicNodeByPhysicalGroup;
-    const preparedChildProducerPath = lowLevelNestedCaches.preparedChildProducerPath;
+    // Materialization initializes/replaces the node list after cache creation. Resolve the parent here,
+    // from the current list, rather than capturing the cache prelude's initially undefined array.
+    const preparedChildProducerPath = (
+      parentIndex: number,
+      source: Parameters<typeof lowLevelNestedCaches.preparedChildProducerPath>[1],
+    ) => lowLevelNestedCaches.preparedChildProducerPath(preparedAtomicNodes?.[parentIndex], source);
     let nestedFunderIndex = lowLevelNestedCaches.nestedFunderIndex;
     type PreparedAtomicNode = NonNullable<typeof preparedAtomicNodes>[number];
     // low-level-nested-caches-complete (size-guarded end marker for prepareCreateBuilderLowLevelNestedCaches)

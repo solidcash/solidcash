@@ -249,7 +249,12 @@ export function assertPreparedInvocationIdentity(
     ? canonicalValueChunkProducerPathContext(plannedPath.context)
     : 'unavailable';
   if (preparedPathKey === undefined || preparedPathKey !== plannedPathKey) {
-    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`);
+    throw new Error(`messageBus: prepared invocation ${index} producer path disagrees with the compiled graph`
+      + ` (${semanticJson({
+        function: descriptor.functionName,
+        prepared: descriptor.producerPath,
+        compiled: invocation.producerPath,
+      })})`);
   }
   // A transported selector authorizes a producer effect domain, so it must be the graph's own dispatch target.
   // The prepared side may legitimately withhold a selector (runtime-dispatched edges carry none), but a

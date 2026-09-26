@@ -66,7 +66,11 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   preparedAtomicNodes: any[] | undefined;
   preparedAtomicNodeByExternalGroup: Map<number, number>;
   latestPreparedAtomicNodeByPhysicalGroup: Map<number, number>;
-  preparedChildProducerPath: (...args: any[]) => ValueChunkProducerPathDisposition;
+  preparedChildProducerPath: (
+    parent: PreparedAtomicMessageBusCall | undefined,
+    source: Pick<Parameters<typeof deriveValueChunkProducerChildPath>[0],
+      'sourceCallsiteId' | 'sourceLogicalIndex' | 'occurrenceIndex' | 'sourceEffectOrdinal'>,
+  ) => ValueChunkProducerPathDisposition;
   nestedFunderIndex: number;
 };
 
@@ -320,17 +324,11 @@ const preparedAtomicNodeByExternalGroup = new Map<number, number>();
 // latest reached callsite, so a later sequential row is copied wholly from one stable node rather than mixing
 // mutable physical arguments with the selector/path of the first call that happened to allocate the group.
 const latestPreparedAtomicNodeByPhysicalGroup = new Map<number, number>();
-const preparedChildProducerPath = (
-  parentIndex: number,
-  source: {
-    sourceCallsiteId?: number;
-    sourceLogicalIndex?: number;
-    occurrenceIndex?: number;
-    sourceEffectOrdinal?: number;
-  },
-): ValueChunkProducerPathDisposition => {
-  const parent = preparedAtomicNodes?.[parentIndex];
-  if (!parent) return Object.freeze({ status: 'unavailable' });
+const preparedChildProducerPath: PrepareCreateBuilderLowLevelNestedCachesResult['preparedChildProducerPath'] = (
+  parent,
+  source,
+) => {
+  if (!parent?.producerPath) return Object.freeze({ status: 'unavailable' });
   return deriveValueChunkProducerChildPath({
     parent: parent.producerPath,
     parentExecutionLockingBytecode: parent.executor?.inner.lockingBytecode

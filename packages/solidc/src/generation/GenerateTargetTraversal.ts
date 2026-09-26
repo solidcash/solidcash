@@ -19860,8 +19860,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_SPLIT, locationData);
           this.emit(Op.OP_DROP, locationData);
           for (let previous = 0; previous < i; previous += 1) {
-            this.emitGenericPushdataDecode(new BytesType(), locationData);
-            this.emit(Op.OP_NIP, locationData);
+            // Composite arguments have inline field/element encodings, not one outer push each.
+            // Advance by their complete types before recovering this address from the rooted row.
+            this.emitPushdataSkip(callManifestArgumentParameters[previous].parameter.type!, locationData);
           }
           this.emitGenericPushdataDecode(new BytesType(), locationData);
           this.emit(Op.OP_DROP, locationData);

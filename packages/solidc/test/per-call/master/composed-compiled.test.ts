@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * Two contracts that call each other, both compiled as masters and co-spent with a validator.
@@ -179,7 +180,8 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
       sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array(0),
+      // The user's signed P2PKH input: a root frame reads its signature's hash type.
+      unlockingBytecode: callerUnlockingBytecode(),
     },
   ];
   const outputs = [

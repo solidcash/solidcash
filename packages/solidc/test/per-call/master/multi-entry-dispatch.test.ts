@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * A compiled per-call master with several entry points, driven through the real entry point.
@@ -130,7 +131,8 @@ function evaluateSpend(source: string, options: SpendOptions): boolean {
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(7),
     sequenceNumber: 0xffffffff,
-    unlockingBytecode: new Uint8Array(0),
+    // The user's signed P2PKH input: the root frame reads its signature's hash type.
+    unlockingBytecode: callerUnlockingBytecode(),
   };
   const masterInput = {
     outpointIndex: 0,

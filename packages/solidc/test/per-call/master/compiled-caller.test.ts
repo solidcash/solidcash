@@ -10,6 +10,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
 import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * A compiled caller and the composition it is entered through.
@@ -79,6 +80,8 @@ interface CompositionOptions {
   readonly templateHash?: Uint8Array;
   /** Replace the caller's recorded argument hash. */
   readonly argsHash?: Uint8Array;
+  /** The hash type the user's signature ends in. */
+  readonly callerHashType?: number;
 }
 
 interface Composition {
@@ -195,7 +198,8 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
       sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array(0),
+      // The user's signed P2PKH input: the caller's root frame reads its signature's hash type.
+      unlockingBytecode: callerUnlockingBytecode(options.callerHashType ?? SIGHASH_ALL),
     },
   ];
   const outputs = [
@@ -264,6 +268,16 @@ describe('a caller, its callee and a validator evaluated in the BCH-2026 virtual
     mutated[0] ^= 0xff;
     const results = verdicts({ argsHash: mutated });
     expect(results[CALLER_INDEX]).toBe(false);
+    expect(results[VALIDATOR_INDEX]).toBe(true);
+  });
+
+  it('has a caller refused for a hash type other than SIGHASH_ALL, while the callee is unaffected', () => {
+    // Only the root frame reads its caller's signature; the callee runs a message-call frame entered by another
+    // master, so the co-spent callee still accepts when the user's signature does not commit as SIGHASH_ALL.
+    expect(verdicts({ callerHashType: SIGHASH_ALL })[CALLER_INDEX]).toBe(true);
+    const results = verdicts({ callerHashType: 0x03 });
+    expect(results[CALLER_INDEX]).toBe(false);
+    expect(results[CALLEE_INDEX]).toBe(true);
     expect(results[VALIDATOR_INDEX]).toBe(true);
   });
 });

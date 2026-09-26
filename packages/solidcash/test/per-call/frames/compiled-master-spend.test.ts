@@ -5,6 +5,7 @@ import { compileString } from 'solidc';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
+import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * A compiled per-call master, deployed and spent.
@@ -43,6 +44,10 @@ const RELAXED_LIMITS = {
 interface SpendOptions {
   readonly block?: Partial<WitnessBlock>;
   readonly category?: Uint8Array;
+  /** The hash type the caller's signature ends in; a value other than the two accepted ones is refused. */
+  readonly callerHashType?: number;
+  /** Give the caller an unlocking bytecode with no push at all. */
+  readonly callerUnlockBare?: boolean;
 }
 
 /** Compiles, deploys, then builds and evaluates a real transaction that spends the master at input 1. */
@@ -77,6 +82,9 @@ function evaluateMasterSpend(options: SpendOptions = {}): { accepted: boolean; o
 
   const tokenCategory = options.category ?? CATEGORY;
   const masterToken = { category: tokenCategory, amount: 0n, nft: { capability: 'minting' as const, commitment: new Uint8Array(0) } };
+  const callerUnlocking = options.callerUnlockBare === true
+    ? new Uint8Array(0)
+    : callerUnlockingBytecode(options.callerHashType ?? SIGHASH_ALL);
   const transaction = {
     version: 2,
     inputs: [
@@ -84,7 +92,8 @@ function evaluateMasterSpend(options: SpendOptions = {}): { accepted: boolean; o
         outpointIndex: 0,
         outpointTransactionHash: new Uint8Array(32),
         sequenceNumber: 0xffffffff,
-        unlockingBytecode: new Uint8Array(0),
+        // The user's signed P2PKH input: the master's root frame reads its signature's hash type.
+        unlockingBytecode: callerUnlocking,
       },
       {
         outpointIndex: 1,
@@ -138,5 +147,22 @@ describe('a compiled master, deployed and spent', () => {
 
   it('is refused when the frame is not entered by a user', () => {
     expect(evaluateMasterSpend({ block: { kind: 1 } }).accepted).toBe(false);
+  });
+
+  it('accepts a caller signed with SIGHASH_ALL or SIGHASH_ALL | SIGHASH_UTXOS', () => {
+    expect(evaluateMasterSpend({ callerHashType: SIGHASH_ALL })).toStrictEqual({ accepted: true });
+    expect(evaluateMasterSpend({ callerHashType: 0x61 })).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the caller\'s signature does not commit as SIGHASH_ALL', () => {
+    // The 0x41 case is the control: only the hash type changes, so the refusal is the hash-type check.
+    expect(evaluateMasterSpend({ callerHashType: SIGHASH_ALL }).accepted).toBe(true);
+    for (const hashType of [0x01, 0x02, 0x03]) {
+      expect(evaluateMasterSpend({ callerHashType: hashType }).accepted).toBe(false);
+    }
+  });
+
+  it('is refused when the caller carries no signature push at all', () => {
+    expect(evaluateMasterSpend({ callerUnlockBare: true }).accepted).toBe(false);
   });
 });

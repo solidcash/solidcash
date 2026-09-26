@@ -6,6 +6,7 @@ import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { assembleComposition, type CompositionPlan } from '../../../src/per-call/composer/assemble.js';
 import { FrameKind } from '@solidcash/utils';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import { callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * The composer's assembly, deployed and spent.
@@ -102,7 +103,8 @@ function evaluateAssembledSpend(options: SpendOptions = {}): { accepted: boolean
   ];
   const inputs = [
     { index: 0, unlockingBytecode: master.unlockingBytecode },
-    { index: 1, unlockingBytecode: new Uint8Array(0) },
+    // The user's signed P2PKH input: the master's root frame reads its signature's hash type.
+    { index: 1, unlockingBytecode: callerUnlockingBytecode() },
   ].sort((left, right) => left.index - right.index).map((input) => ({
     outpointIndex: input.index,
     outpointTransactionHash: new Uint8Array(32).fill(input.index),

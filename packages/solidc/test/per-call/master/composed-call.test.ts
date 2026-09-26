@@ -10,6 +10,7 @@ import {
 import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * A composed transaction: one master calls another and a validator input covers both.
@@ -226,7 +227,8 @@ function buildComposition(options: CompositionOptions = {}): Composition {
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(4),
       sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array(0),
+      // The user's signed P2PKH input: the caller's root frame reads its signature's hash type.
+      unlockingBytecode: callerUnlockingBytecode(),
     },
   ];
 
@@ -277,7 +279,10 @@ function verdicts(options: CompositionOptions = {}): Record<number, { accepted: 
  * how many masters of its own category the transaction spends. The masters share a program and differ only in
  * their outpoints, which is the same contract spent twice.
  */
-function standaloneVerdicts(masterCount: number): readonly { accepted: boolean; objection?: string }[] {
+function standaloneVerdicts(
+  masterCount: number,
+  callerHashType: number = SIGHASH_ALL,
+): readonly { accepted: boolean; objection?: string }[] {
   const master = masterProgram({
     category: CATEGORY_A,
     address: ADDRESS_A,
@@ -313,7 +318,8 @@ function standaloneVerdicts(masterCount: number): readonly { accepted: boolean; 
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(0xf0),
       sequenceNumber: 0xffffffff,
-      unlockingBytecode: new Uint8Array(0),
+      // The user's signed P2PKH input: the standalone master's root frame reads its signature's hash type.
+      unlockingBytecode: callerUnlockingBytecode(callerHashType),
     },
   ];
   const outputs: VmTransaction['outputs'] = [
@@ -347,6 +353,12 @@ describe('a standalone master and how many masters its contract has', () => {
     // It names no validator, so it stands alone only if it is the only master of its category; a scan of the
     // inputs is what refuses the second one.
     expect(standaloneVerdicts(2).every((result) => !result.accepted)).toBe(true);
+  });
+
+  it('is refused when its caller\'s signature does not commit as SIGHASH_ALL', () => {
+    // The standalone arm checks the same hash type the composed root arm does; only the hash type changes here.
+    expect(standaloneVerdicts(1, 0x01)[0]!.accepted).toBe(false);
+    expect(standaloneVerdicts(1, SIGHASH_ALL)[0]!.accepted).toBe(true);
   });
 });
 

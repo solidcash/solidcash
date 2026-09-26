@@ -31,6 +31,7 @@ import {
   readFrameFieldsScript,
   readFrameHeaderScript,
   readOwnWitnessBlockScript,
+  splitFirstPushScript,
 } from './witness-reader.js';
 import {
   recogniseValidatorScriptAgainstReservedHash,
@@ -45,6 +46,11 @@ const P2PKH_SUFFIX = new Uint8Array([0x88, 0xac]);
 const P2PKH_LENGTH = 25;
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
+
+/** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
+const HASH_TYPE_ALL = 0x41;
+/** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
+const HASH_TYPE_UTXOS_BIT_MASK = 0xdf;
 
 /** The head a compiled master opens with, and where its deployment-time constants sit. */
 export interface MasterHead {
@@ -233,6 +239,7 @@ class HeadEmitter {
     this.assertFrameKindRoot();
     this.assertNoValidator();
     this.assertCallerIsNotSelf();
+    this.assertCallerSignatureHashType();
     this.assertOriginIsCaller();
     this.assertSenderIsTheCallersLock();
     this.assertOriginIsTheCallersLock();
@@ -300,8 +307,8 @@ class HeadEmitter {
   }
 
   /**
-   * A root frame: the caller reference is a P2PKH lock that is both the witness `sender` and the origin, and the
-   * frame carries no value. The signature's hash type is not checked yet.
+   * A root frame: the caller reference is a P2PKH lock that is both the witness `sender` and the origin, the
+   * frame carries no value, and the caller's signature commits to this transaction's calls.
    */
   private assertRootFrame(): void {
     this.assertOriginIsCaller();
@@ -315,6 +322,7 @@ class HeadEmitter {
     this.assertP2pkhShape();
     this.pick('sender');
     this.equalVerify();
+    this.assertCallerSignatureHashType();
     this.dropName('callerLock');
     this.assertZeroValue();
   }
@@ -406,6 +414,40 @@ class HeadEmitter {
     this.push('bool');
     this.emitOp(Opcodes.OP_VERIFY);
     this.pop(1);
+  }
+
+  /**
+   * A root frame is entered by a user's signed P2PKH input, and the signature's last byte must be the hash type
+   * `0x41` (`SIGHASH_ALL`) or `0x61` (`SIGHASH_ALL | SIGHASH_UTXOS`). `ANYONECANPAY`, `NONE` and `SINGLE` do not
+   * commit to this transaction's calls, so an input signed with one of them could be reused in a transaction the
+   * user never saw. The two accepted values differ only in bit 5, so clearing that bit and comparing to `0x41`
+   * accepts exactly them.
+   *
+   * The signature is the first push of the caller's unlocking bytecode. A caller whose unlocking bytecode carries
+   * no push fails the split rather than being read as one.
+   */
+  private assertCallerSignatureHashType(): void {
+    this.pick('callerRef');
+    this.bin2num();
+    this.emitPopPush(Opcodes.OP_INPUTBYTECODE, 'callerUnlocking');
+    this.emitBytes(splitFirstPushScript());
+    this.remove(0); // callerUnlocking, replaced by the split's two results
+    this.push('signature', 'rest');
+    this.dropTop(); // the pubkey push and whatever the caller's unlocking bytecode carries after the signature
+    // The last byte of the signature.
+    this.emitOp(Opcodes.OP_SIZE);
+    this.stack.unshift('size');
+    this.emitOp(Opcodes.OP_1SUB);
+    this.replaceTop('lastIndex');
+    this.split();
+    this.nip();
+    this.replaceTop('hashType');
+    this.pushData(new Uint8Array([HASH_TYPE_UTXOS_BIT_MASK]));
+    this.emitOp(Opcodes.OP_AND);
+    this.pop(2);
+    this.push('maskedHashType');
+    this.pushData(new Uint8Array([HASH_TYPE_ALL]));
+    this.equalVerify();
   }
 
   private assertOriginIsCaller(): void {

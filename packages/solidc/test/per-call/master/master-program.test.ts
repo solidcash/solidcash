@@ -10,6 +10,7 @@ import { compileString } from '../../../src/compiler.js';
 import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/per-call/master/placeholders.js';
+import { SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode } from './caller-input.js';
 
 /**
  * A compiled per-call master, driven through the real entry point.
@@ -113,6 +114,12 @@ describe('a compiled per-call master', () => {
     expect(script.subarray(templateHashOffset!, templateHashOffset! + 1))
       .toEqual(new Uint8Array([TEMPLATE_HASH_SLOT_LENGTH]));
   });
+
+  it('checks the caller signature\'s hash type in the root arm', () => {
+    const script = scriptBytes(compile());
+    // The signature's last byte: SIZE 1SUB SPLIT NIP, then clear bit 5 and compare with `SIGHASH_ALL` (`0x41`).
+    expect(contains(script, [0x82, 0x8c, 0x7f, 0x77, 0x01, 0xdf, 0x84, 0x01, 0x41, 0x88])).toBe(true);
+  });
 });
 
 // Consensus rules only: the master's unlocking bytecode leads with a witness-block push, which the additional
@@ -131,6 +138,10 @@ interface SpendOptions {
   readonly outputValue?: bigint;
   /** Spend from a caller that is not the transaction's first P2PKH input, with a decoy lock at index 0. */
   readonly decoyCaller?: boolean;
+  /** The hash type the caller signs with; a value other than the two accepted ones is refused. */
+  readonly callerHashType?: number;
+  /** Give the caller an unlocking bytecode with no push at all. */
+  readonly callerUnlockBare?: boolean;
 }
 
 /** Builds the spend of a filled master and asks the BCH-2026 machine. */
@@ -189,11 +200,14 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
     };
 
   const decoyLock = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(3));
+  const callerUnlocking = options.callerUnlockBare === true
+    ? new Uint8Array(0)
+    : callerUnlockingBytecode(options.callerHashType ?? SIGHASH_ALL);
   const callerInput = {
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(7),
     sequenceNumber: 0xffffffff,
-    unlockingBytecode: new Uint8Array(0),
+    unlockingBytecode: callerUnlocking,
   };
   const decoyInput = {
     outpointIndex: 0,
@@ -235,6 +249,23 @@ describe('a per-call master evaluated in the BCH-2026 virtual machine', () => {
     // The decoy at index 0 is a P2PKH input that is not the caller: `msg.sender` and `tx.origin` can only be
     // answered from the frame's references, not from a scan for the transaction's first P2PKH lock.
     expect(evaluateSpend({ decoyCaller: true })).toBe(true);
+  });
+
+  it('accepts a root spend whose caller signed with SIGHASH_ALL | SIGHASH_UTXOS', () => {
+    // `0x41` and `0x61` differ only in one bit, and both commit to this transaction's calls.
+    expect(evaluateSpend({ callerHashType: SIGHASH_UTXOS_ALL })).toBe(true);
+  });
+
+  it('refuses a root spend whose caller signed with a hash type other than SIGHASH_ALL', () => {
+    // `0x41` (SIGHASH_ALL) is the control: only the hash type changes, so the refusal is the check under test.
+    expect(evaluateSpend({ callerHashType: SIGHASH_ALL })).toBe(true);
+    for (const hashType of [0x01, 0x02, 0x03]) {
+      expect(evaluateSpend({ callerHashType: hashType })).toBe(false);
+    }
+  });
+
+  it('refuses a root spend whose caller carries no signature push at all', () => {
+    expect(evaluateSpend({ callerUnlockBare: true })).toBe(false);
   });
 
   it('refuses an origin reference that is not the caller reference', () => {

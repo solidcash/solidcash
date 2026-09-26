@@ -412,4 +412,25 @@ describe('a host driving a caller whose entry makes no call', () => {
     expect(verdicts).toStrictEqual([true, true]);
   });
 
+  it('refuses an artifact that publishes no stop-site table', () => {
+    // A master compiled before the table existed, or one compiled for the direct convention, publishes nothing:
+    // the host has to refuse it rather than derive against a guessed set of sites.
+    const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
+    const withoutTable: { [key: string]: unknown } = { ...artifact.composition as { [key: string]: unknown } };
+    delete withoutTable.stopSites;
+    expect(() => readPublishedStopSites({ composition: withoutTable }))
+      .toThrow(/PER_CALL_HOST_STOP_SITES_UNPUBLISHED/);
+    expect(() => createShippedDerivationHost({ artifacts: [{ composition: withoutTable }], runs: [] }))
+      .toThrow(/PER_CALL_HOST_STOP_SITES_UNPUBLISHED/);
+  });
+
+  it('refuses a stop-site table whose schema version it does not know', () => {
+    // The schema is frozen with a version, so a table written by a later compiler is refused by name rather than
+    // read as if it had today's shape.
+    const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Caller!;
+    const composition = artifact.composition as { stopSites?: { version?: number } };
+    const future = { ...composition, stopSites: { ...composition.stopSites, version: 2 } };
+    expect(() => readPublishedStopSites({ composition: future }))
+      .toThrow(/PER_CALL_HOST_STOP_SITES_VERSION/);
+  });
 });

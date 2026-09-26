@@ -446,23 +446,30 @@ Items not needed for the 66 are in 4.7.
 **Stream B: validator** (spec 3.2, 7.2). Its tests use hand-built transactions with stub masters (small scripts
 holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B needs no compiler work.
 - [x] B1 V1: recreation in place; a master of its own category present.
-- [ ] B2 V2: parse `M` and every covered master's first-push witness block; reject any encoding the master would not
-  accept.
-- [ ] B3 V3: completeness.
-- [ ] B4 V4: roots, and the forest rule.
-- [ ] B5 V5: edges, for each kind:
+- [ ] B2 V2 (partial): parse `M` and every covered master's first-push witness block; reject any encoding the master
+  would not accept. Emitted: the wire name and version, the root, master and settled-state indices, the witness-block
+  shape and the empty settle tail. Not emitted: the remaining encoding rules.
+- [x] B3 V3: completeness.
+- [x] B4 V4: roots, and the forest rule.
+- [ ] B5 V5 (partial): edges, for each kind. Emitted for an ordinary call: caller, kind, origin, value, sender,
+  address, result, and the callee's own pushes hashed against the recorded digest. Not emitted: the `DELEGATE` target
+  rule and the `INTERNAL` same-contract rule.
   - `CALL`, `STATIC`, `CREATE`: sender is the caller's `self`, and `self` is the recorded target;
   - `DELEGATE`: passthrough, and the callee's category matches the target (T37);
   - `INTERNAL`: passthrough, same contract;
   - for all kinds: origin, values (passed through for `DELEGATE` and `INTERNAL`), `retval`, and `argsHash` over the
     callee's argument pushes.
-- [ ] B6 V6: the derived depth-first order; every master visited exactly once.
-- [ ] B7 V7: settlement. The input rule, per-record chains across every frame on the contract's records, the census
-  (containers, distinct event outputs), and values (spec S4).
-- [ ] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records).
+- [ ] B6 V6 (partial): every master visited exactly once, so cycles and unreachable masters are refused. The ordering
+  half — a callee running between its caller's segments, so roots never interleave (T30) — needs the record chains
+  and is open until B7 lands.
+- [ ] B7 V7 (partial): no category settled twice. Open: the input rule, per-record chains across every frame on the
+  contract's records, the census (containers, distinct event outputs), and values (spec S4).
+- [x] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records). Both halves
+  are emitted and each has its own refusal; the branch for the borrowed half was written but not called until
+  `b52b7ec5b`, which an end-to-end refusal test caught.
 - [x] B9 V9: owner policy.
-- [ ] B10 V10: static frames.
-- [ ] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
+- [x] B10 V10: static frames.
+- [x] B11 V11: addresses, with `addrV` built from `OP_ACTIVEBYTECODE` (matches the A4 vectors).
 - [ ] B12 The `ABBA` golden transaction, with stub masters carrying the A7 blocks, is accepted.
 - [ ] B13 One hostile unit test per V-check.
 - [ ] B14 Reference model and differential tests. An independent TypeScript model of V1-V11, written from the spec
@@ -961,6 +968,12 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-26 | 9f21fb5e5 | per-call | fifth review | n/a | Corrections after the fifth review. The send rule was reverted to the wire form: the frozen codec, its vectors and every consumer write `{ out }`, and the revision that added a paying record to the spec never reached the codec. Section 20's clause that any value over 64 bytes takes the length prefix is removed, because the shipped classifier decides the form from the type. The reasoning that put the validator first was wrong: the spec's self-settlement condition is one master that made no `DELEGATE` or `INTERNAL` call, not one that made no call at all, so a master with ordinary calls has several segments and chains them itself; what blocked that chain was compiling calls at their call site. The order of the remaining work is restated in the gate report, and the kill criterion is recorded as untestable rather than trended. |
 
 | 2026-09-26 | 3033a1fbd | per-call | census attempt | n/a | The census exemption for a validator of the contract's own category was implemented (the head parks its reserved validator-program hash on the alternate stack; the census reads it and admits a state token that is the declared record or a recognised validator of the category, keeping the strict rule when no hash is parked). The impostor control refuses as it should, and every existing settlement test passes with the hash taken, but the accept case for a hand-built validator input does not, and the cause is the recognition's reading of the validator's unlocking bytecode rather than the census. Unverified script is not shipped: the change was reverted to the committed state and the diagnosis recorded. |
+
+| 2026-09-26 | 8acc2d640, dbfd3495a | per-call | byte order | n/a | The category byte order is settled everywhere: a pin, a reserved category slot, `addrV` and the recognition that reads them are built in the chain's order, while a token handed to the machine stays in the display order (`OP_UTXOTOKENCATEGORY` answers with the display category reversed, measured against libauth). The suites that check a pin now use seeded categories, so a category of one repeated byte can no longer hide a missing reversal, and a deployment test reads the slot back out of a real deployment and requires the chain order. Repeated-byte categories remain only in tests of the deployment format itself. |
+
+| 2026-09-26 | 9ad622305 | per-call | census | n/a | The census admits the contract's own validator. A state token of the contract's category is allowed when input i and output i are both locked to the address baked into the master, so settling a record can consume and recreate the validator in place without the census calling it an unexpected mutable. The address is read from the running script rather than from a second placeholder, and the pushes the census compares are rewritten to the post-optimiser payload offset, because the optimiser moves the slot and the baked offset would otherwise be compared against the wrong bytes. |
+
+| 2026-09-26 | fe317b366, 89643c3f2, bfca66217, 408b01a9f, 7a6010303, a02658692, bcdf73cf2, 63bbc70d4, fbeae527e, b52b7ec5b | per-call | validator program | n/a | Seven of the eleven checks are now enforced by the shipped program and differentially tested against the derivation over 400 generated compositions plus one targeted refusal each: V1, V3, V4, V8, V9, V10, V11. Two more are partial and are not claimed: V5 covers an ordinary call completely — the callee must record the same caller, kind, origin, value, sender, address and result, and its own pushes must hash to the recorded digest — but not the `DELEGATE` target rule or the `INTERNAL` same-contract rule; V2 parses the transcript and every covered master's witness block without deciding every encoding rule. V6 contributes reachability, so cycles and unreachable masters are refused and each covered master is entered exactly once, while its ordering half — a callee running between its caller's segments — is carried by the record chains and is not emitted, so V6 is not claimed either. V7 contributes one rule, that no category is settled twice. The settlement rule is complete, both halves: `b52b7ec5b` fixed a borrowed-frame branch that was written but never called, and an end-to-end case with one root master delegating into a second contract is accepted when the transcript settles the caller's contract and refused when it does not. The program's own lock is the address of the script running it, and every covered master presents the address of its own category. |
 
 ## Deviations
 - The category reversal is measured against libauth itself: `OP_UTXOTOKENCATEGORY` pushes `token.category.slice().reverse()` (`bch-2023-tokens.js:213`), and libauth stores the category in display order. So a pin, a reserved category slot and `addrV` are built in the chain's order, and a token is handed to the machine in display order. The master side was affected too: `deployMaster` filled the slot as given and the emitted prologue compared it with the reversed answer, so every real deployment would fail its own category check. The master tests could not see it: all of them use a category of one repeated byte, which reads the same reversed, and one fixture was even chosen around an earlier bug (`fill(0x61)`, an inert `OP_NOP`).

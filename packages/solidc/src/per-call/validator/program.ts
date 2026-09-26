@@ -93,8 +93,14 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
 
-/** The checks the program enforces completely. A check lands here only once every one of its rules is emitted. */
-export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V6', 'V8', 'V9', 'V10', 'V11'];
+/**
+ * The checks the program enforces completely. A check lands here only once every one of its rules is emitted.
+ *
+ * `V6` is absent on purpose: the program requires every covered master to be reached exactly once, which closes
+ * cycles and unreachable masters, but the ordering half of that check — a callee running between its caller's
+ * segments — is carried by the record chains, which are not emitted yet.
+ */
+export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V8', 'V9', 'V10', 'V11'];
 
 /**
  * Builds the validator program's bytecode.
@@ -114,7 +120,9 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  *    Every covered master that is not a root is named by exactly one call;
  * 8. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
  * 9. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
- *    calls only read-only frames.
+ *    calls only read-only frames;
+ * 10. settles on `[M]`: no category is settled twice, and every category the covered masters need settled — one that
+ *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();

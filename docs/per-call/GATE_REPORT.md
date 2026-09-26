@@ -39,7 +39,8 @@ because `V_TEMPLATE` itself is not implemented.
 | Master ownership and recreation checks, VM-proven | done | `packages/solidc/src/per-call/master/prologue.ts`, 12 VM tests in `packages/solidcash/test/per-call/frames/` |
 | Compiler emits a per-call master | **done for one shape** | one inlined entry point, no external calls, no returns; 29 tests in `solidc/test/per-call/master` |
 | A compiled master is deployed and spent | **done** | `solidcash/test/per-call/frames/compiled-master-spend.test.ts`: VM accepts the spend, three controls refused |
-| Selector dispatch | **done** | 64 tests in `solidc/test/per-call`; a two-entry contract compiles to one master and both entries are spent |
+| Selector dispatch | **done** | a two-entry contract compiles to one master and both entries are spent |
+| A callee compiles as well as a caller | **done** | both masters compiled, co-spent with a validator, accepted |
 | The return check | **absent** | refused by name, now naming the entry |
 | N1 and the call shape in the master | **done and reachable** | a calling contract compiles and publishes three placeholder offsets; VM-proven with three inputs co-spent |
 | Segment and record settlement | **absent** | nothing after the call records is interpreted |
@@ -90,7 +91,7 @@ the option refuses, and why the current state is the honest one.
 
 ## Next step
 
-The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: admit the call frame kinds so a callee compiles as well as a caller; lower calls with arguments and return values rather than only checking them; emit the return check; add the caller signature's hash type; interpret segment and record settlement after the call records; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the acceptance shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
+The shape the compiler can carry is now proven end to end, so the remaining work is no longer a question of whether a master can exist. What is left, in the order it unblocks: lower calls with arguments and return values rather than only checking them; emit the return check; add the caller signature's hash type; interpret segment and record settlement after the call records; and implement the record view mode so a stateful master settles against its segment view rather than today's direct covenant. Then the acceptance shapes can settle, which is what the gate actually asks for. The pin-and-recreate half of C2 is
 done and VM-proven; what remains is to emit it as the head of a compiled master, add W0 (the first-push
 self-check) and the selector dispatch, and then give the records stream its view mode. That is the smallest
 increment that turns the composer's injected step into a real program run.

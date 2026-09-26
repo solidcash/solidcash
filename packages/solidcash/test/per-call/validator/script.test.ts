@@ -673,6 +673,19 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses an unsettled contract that runs on two of its masters', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    // A contract the reference composition settles runs on two of its masters, so it has to be settled there.
+    const transcript = composition.inputs[index]!.validator!.transcript;
+    expect(transcript.settles.length).toBeGreaterThan(0);
+    composition.inputs[index]!.validator!.transcript = { ...transcript, settles: [] };
+    const modelled = materialise(composition);
+    const decision = derivationOf(modelled, index);
+    expect(decision.rejection?.reason).toBe('V8_SETTLE_REQUIRED_MISSING');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a covered master no root reaches', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;

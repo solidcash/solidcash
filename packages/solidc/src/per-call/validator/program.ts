@@ -152,6 +152,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitEdgeRules(e);
   emitExecutionOrder(e);
   emitReadOnlyFrames(e);
+  emitSettlementMembership(e);
   emitFrameAddresses(e);
 
   // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
@@ -1014,6 +1015,122 @@ function requireStaticSegments(e: Emitter): void {
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
   e.op(O.OP_NIP);
+}
+
+/**
+ * A contract with two or more covered masters is one the transcript settles.
+ *
+ * Entry `[M]`, exit `[M]`. Every category that two or more covered masters share is one the transcript settles. The
+ * categories are compared in the order the machine reports a spent token's category, which is the reverse of the
+ * order the transcript writes them. A contract that is settled only because a frame runs on its records is not
+ * decided here.
+ */
+function emitSettlementMembership(e: Emitter): void {
+  const O = Opcodes;
+  emitDeclaredCategories(e);
+  e.op(O.OP_TOALTSTACK);
+  emitMasterByteString(e);
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(3).op(O.OP_PICK, O.OP_1, O.OP_PICK);
+  emitCountCategory(e);
+  e.op(O.OP_DUP);
+  e.count(2).op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  emitRequireDeclaredCategory(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * The category on top is one the transcript settles.
+ *
+ * Entry `[..., category]`, exit `[..., category]`. `declared` is peeked from the alternate stack, so the run is
+ * unchanged.
+ */
+function emitRequireDeclaredCategory(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
+  emitFound32(e);
+  e.op(O.OP_VERIFY);
+}
+
+/** Entry `[M]`, exit `[M, declared]`. The settled categories, each reversed to the machine's order. */
+function emitDeclaredCategories(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_SWAP, O.OP_REVERSEBYTES);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/** Entry `[M]`, exit `[M, masters]`. One byte per covered master. */
+function emitMasterByteString(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+}
+
+/** Entry `[masters, category]`, exit `[count]`. Covered masters whose category is the one given. */
+function emitCountCategory(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_ROT);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_DROP, O.OP_SWAP, O.OP_1ADD, O.OP_SWAP);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_NIP);
+}
+
+/** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */
+function emitFound32(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_ROT);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_SWAP);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_SWAP, O.OP_1ADD, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_NIP);
 }
 
 /**

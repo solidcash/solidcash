@@ -29,7 +29,8 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 ### Since revision 10 (third review, 2026-09-25)
 
 - **Absence proofs** compare the masked slot `s(k)`, never the raw hash; slot 0 stays reserved for HEAD (section 20).
-- **Values over 64 bytes**, fixed-width or not, take the length-prefixed form (section 20).
+- **Values over 64 bytes** — later corrected: the classifier decides the form from the value's type, not from a
+  measurement, so only variable-width values take the length prefix (section 20).
 - **Validators cannot run out inside a transaction.** One validator of the first root's category can cover every
   root, so the old second exhaustion clause could never fire; it is replaced (sections 12, 21).
 - **No step cap.** Derivation terminates because each step fills a witness of one bounded execution (section 18).

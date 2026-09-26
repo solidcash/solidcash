@@ -54,6 +54,12 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V4_ROOT_CALLER_NOT_P2PKH',
   'V4_ROOT_ORIGIN_MISMATCH',
   'V4_NON_ROOT_CALLER_NOT_A_MASTER',
+  'V5_CALLEE_NOT_A_MASTER',
+  'V5_CALLER_MISMATCH',
+  'V5_KIND_MISMATCH',
+  'V5_ORIGIN_MISMATCH',
+  'V5_MASTER_UNREACHED_BY_A_CALL',
+  'V5_MASTER_CALLED_TWICE',
   'V9_NO_ROOT',
   'V9_ROOT_CATEGORY_MISMATCH',
 ];
@@ -73,7 +79,9 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  *    master and settled state input it lists names a real input. Nothing follows the settle list;
  * 4. V9 on `[M, rootCount, rest]`: the first root's own category is this validator's;
  * 5. V3 on `[M]`: `M.masters` is exactly the set of minting inputs whose witness names this validator;
- * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one.
+ * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
+ * 7. edges on `[M]`: every call names a covered master that records this caller, this kind and this origin, and
+ *    every covered master that is not a root is named by exactly one call.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -104,6 +112,7 @@ export function buildValidatorProgram(): Uint8Array {
 
   emitCompleteness(e);
   emitRootRules(e);
+  emitEdgeRules(e);
 
   // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
   e.op(O.OP_DROP, O.OP_1);
@@ -452,6 +461,202 @@ function emitCoveredFrame(e: Emitter): void {
   e.count(1).op(O.OP_NUMEQUALVERIFY);
   e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP);
   e.op(O.OP_ENDIF);
+}
+
+/**
+ * Every call names a covered master, and that master records the caller, the kind and the origin the call does.
+ * A covered master that is not a root is named by exactly one such call.
+ *
+ * Entry `[M]`, exit `[M]`. Value, sender, result and argument hash are not decided here.
+ */
+function emitEdgeRules(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
+
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(1).op(O.OP_PICK, O.OP_OVER);
+  emitCountByte(e);
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  emitEdgesOfMaster(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(2).op(O.OP_PICK, O.OP_OVER);
+  emitCountByte(e);
+  e.count(2).op(O.OP_PICK);
+  e.count(2).op(O.OP_PICK);
+  emitCountByte(e);
+  // `[M, roots, masters, i, rootCount, masterCount]`. A non-root covered master is called once.
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_DUP);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.count(1).op(O.OP_PICK, O.OP_OVER);
+  emitTimesCalled(e);
+  e.count(1).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * The calls of the master index on top.
+ *
+ * Entry `[..., index]`, exit `[..., index]`. The origin is read from the master's own witness, and each call is
+ * checked against the master it names.
+ */
+function emitEdgesOfMaster(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  emitIndexHead(e);
+  e.op(O.OP_NIP, O.OP_NIP);
+  e.op(O.OP_OVER, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneEdge(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_DROP);
+}
+
+/** Kind, caller and origin of the input index on top. Entry `[index]`, exit `[kind, caller, origin]`. */
+function emitIndexHead(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY, O.OP_SIZE);
+  e.count(8).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.count(3).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  e.unsignedByteOnTop();
+}
+
+/**
+ * One call of the master under inspection.
+ *
+ * Entry `[index, origin, callCount, rest]`, exit the same with that call consumed. The callee has to be a covered
+ * master whose own witness names this index, this call's kind and this origin.
+ */
+function emitOneEdge(e: Emitter): void {
+  const O = Opcodes;
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_SWAP);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  // `[index, origin, callCount, kind, callee, rest]`.
+  e.count(6).op(O.OP_PICK);
+  e.count(2).op(O.OP_PICK);
+  emitCountByte(e);
+  e.count(1).op(O.OP_NUMEQUALVERIFY);
+  e.count(1).op(O.OP_PICK);
+  emitIndexHead(e);
+  e.count(1).op(O.OP_PICK);
+  e.count(9).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.count(2).op(O.OP_PICK);
+  e.count(6).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DUP);
+  e.count(8).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_NIP, O.OP_NIP);
+}
+
+/**
+ * How many calls, across every covered master, name the target.
+ *
+ * Entry `[masters, target]`, exit `[count]`.
+ */
+function emitTimesCalled(e: Emitter): void {
+  const O = Opcodes;
+  e.count(0);
+  e.count(0).op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(3).op(O.OP_PICK);
+  e.count(1).op(O.OP_PICK);
+  emitCountByte(e);
+  e.op(O.OP_DUP);
+  e.count(1).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_DUP);
+  e.count(3).op(O.OP_PICK);
+  emitCallsFrom(e);
+  e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_1ADD, O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_NIP, O.OP_NIP);
+}
+
+/** Entry `[index, target]`, exit `[count]`: calls of that master whose callee is the target. */
+function emitCallsFrom(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_SWAP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  e.count(0).op(O.OP_SWAP, O.OP_ROT, O.OP_SWAP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_NIP);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  dropFront(e, 32);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_SWAP);
+  e.count(4).op(O.OP_PICK, O.OP_NUMEQUAL);
+  e.count(3).op(O.OP_ROLL, O.OP_ADD);
+  e.op(O.OP_SWAP, O.OP_ROT, O.OP_SWAP);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_NIP);
 }
 
 /** Consumes the item on top and requires it to be a 25-byte user lock. */

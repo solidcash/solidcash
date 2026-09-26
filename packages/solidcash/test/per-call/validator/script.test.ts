@@ -510,4 +510,64 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V3_DUPLICATE_MASTER');
     expect(accepted(tampered, index)).toBe(false);
   });
+
+  test('refuses a call whose callee is not a covered master', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('A.f')!.calls[0]!.calleeRef = composition.slotIndex.get('DA')!;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_CALLEE_NOT_A_MASTER');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a callee that records a different caller', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.callerRef = composition.masterIndex.get('A.k')!;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_CALLER_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a callee whose frame kind is not the kind the call recorded', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.kind = FrameKind.STATIC;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_KIND_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a callee whose origin is not its caller\'s origin', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const callee = composition.blocks.get('B.g')!;
+    callee.originRef = callee.callerRef;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_ORIGIN_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a covered master that no call names', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.blocks.get('A.f')!;
+    root.calls = [];
+    root.segments = [[]];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_MASTER_UNREACHED_BY_A_CALL');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a master named by two calls', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.blocks.get('A.f')!;
+    const call = root.calls[0]!;
+    root.calls = [call, { ...call }];
+    root.segments = [[], [], []];
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_MASTER_CALLED_TWICE');
+    expect(accepted(modelled, index)).toBe(false);
+  });
 });

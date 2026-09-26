@@ -4,7 +4,8 @@ import {
   FrameKind, categoryPin, concatBytes, sha256, TokenCapability, validatorTemplateHash,
 } from '@solidcash/utils';
 import {
-  decideValidatorNeed, recogniseValidator, standaloneObjections, type EntryFacts, type ValidatorUtxo,
+  assertValidatorCoverage, decideValidatorNeed, recogniseValidator, standaloneObjections,
+  ValidatorCoverageError, type EntryFacts, type ValidatorUtxo,
 } from '../../../src/per-call/composer/need-test.js';
 
 /**
@@ -166,5 +167,58 @@ describe('recognising a validator', () => {
     const other = validatorTemplateHash(new Uint8Array([0x53, 0x54]));
     expect([...other]).not.toStrictEqual([...expectation.templateHash]);
     expect(sha256(VALIDATOR_PROGRAM).length).toBe(32);
+  });
+});
+
+describe('a plan\'s validator coverage', () => {
+  const covered = (facts: Partial<EntryFacts>, hasValidator: boolean): { facts: EntryFacts; hasValidator: boolean } =>
+    ({ facts: standaloneFacts(facts), hasValidator });
+
+  it('accepts a plan that covers every entry which needs a validator', () => {
+    expect(() => assertValidatorCoverage([
+      covered({ kind: FrameKind.CALL, callerIsUser: false }, true),
+      covered({ makesExternalCall: true }, true),
+      covered({ mastersOfContract: 2 }, true),
+    ])).not.toThrow();
+  });
+
+  it('accepts a standalone entry that satisfies the conditions for standing alone', () => {
+    expect(() => assertValidatorCoverage([covered({}, false)])).not.toThrow();
+  });
+
+  it('accepts an entry that is covered although it did not need to be', () => {
+    expect(() => assertValidatorCoverage([covered({}, true)])).not.toThrow();
+  });
+
+  it('refuses an entry that needs a validator and has none, naming why', () => {
+    let raised: ValidatorCoverageError | undefined;
+    try {
+      assertValidatorCoverage([covered({ makesExternalCall: true }, false)]);
+    } catch (error) {
+      raised = error as ValidatorCoverageError;
+    }
+    expect(raised).toBeInstanceOf(ValidatorCoverageError);
+    expect(raised!.contract).toBe('Ledger');
+    expect(raised!.functionName).toBe('deposit');
+    expect(raised!.reasons.join(' ')).toMatch(/external call/);
+  });
+
+  it('refuses a standalone entry that fails a condition for standing alone', () => {
+    let raised: ValidatorCoverageError | undefined;
+    try {
+      assertValidatorCoverage([covered({ originEqualsCaller: false }, false)]);
+    } catch (error) {
+      raised = error as ValidatorCoverageError;
+    }
+    expect(raised).toBeInstanceOf(ValidatorCoverageError);
+    expect(raised!.reasons.join(' ')).toMatch(/origin is its caller/);
+  });
+
+  it('reports the first entry that cannot be covered, with its name', () => {
+    expect(() => assertValidatorCoverage([
+      covered({}, false),
+      covered({ functionName: 'withdraw' } as Partial<EntryFacts>, false),
+    ].map((entry, index) => (index === 1 ? { ...entry, facts: { ...entry.facts, originEqualsCaller: false } } : entry))))
+      .toThrow(/Ledger.withdraw/);
   });
 });

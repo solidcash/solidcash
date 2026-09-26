@@ -110,6 +110,47 @@ export function standaloneObjections(facts: EntryFacts): readonly string[] {
   return objections;
 }
 
+/** One entry as the plan intends to run it. */
+export interface PlannedEntry {
+  readonly facts: EntryFacts;
+  /** Whether the plan gives this entry a validator input. */
+  readonly hasValidator: boolean;
+}
+
+/** Raised when a plan does not cover an entry the rules require to be covered. */
+export class ValidatorCoverageError extends Error {
+  constructor(
+    readonly contract: string,
+    readonly functionName: string,
+    readonly reasons: readonly string[],
+  ) {
+    super(`${contract}.${functionName}: ${reasons.join('; ')}`);
+    this.name = 'ValidatorCoverageError';
+  }
+}
+
+/**
+ * Requires the plan to be admissible as a whole: every entry that needs a validator has one, and every entry that has
+ * none satisfies the conditions for standing alone.
+ *
+ * A validator may be present where one is not needed — an entry reached only from its own contract can still be
+ * covered — so the rule only refuses in the two directions that would produce an artifact that cannot be checked.
+ */
+export function assertValidatorCoverage(entries: readonly PlannedEntry[]): void {
+  for (const entry of entries) {
+    const need = decideValidatorNeed(entry.facts);
+    if (need.needsValidator && !entry.hasValidator) {
+      throw new ValidatorCoverageError(entry.facts.contract, entry.facts.functionName, need.reasons);
+    }
+    if (!need.needsValidator && !entry.hasValidator) {
+      const objections = standaloneObjections(entry.facts);
+      if (objections.length > 0) {
+        throw new ValidatorCoverageError(entry.facts.contract, entry.facts.functionName, [...objections]);
+      }
+    }
+  }
+}
+
 /**
  * Recognises a validator: it holds a mutable token of the composition's category, and its redeem script is the
  * category pin followed by a program hashing to the expected constant.

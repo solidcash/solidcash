@@ -197,6 +197,16 @@ describe('the settlement walk chains a record across segments', () => {
     expect(evaluate({ segments: [[kept(BEFORE, AFTER)]] })).toStrictEqual({ accepted: true });
   });
 
+  it('accepts a chain that creates the record and then reads it back', () => {
+    // The record is not among the transaction's inputs: it is created at the record's index and carried on from
+    // there by the next segment.
+    expect(evaluate({
+      segments: [[{ in: 0xffff, out: RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: MIDDLE }],
+        [kept(MIDDLE, AFTER)]],
+      plainFirstPair: true,
+    })).toStrictEqual({ accepted: true });
+  });
+
   it('accepts a segment that declares nothing, carrying the chain over it', () => {
     expect(evaluate({ segments: [[kept(BEFORE, MIDDLE)], [], [kept(MIDDLE, AFTER)]] }))
       .toStrictEqual({ accepted: true });

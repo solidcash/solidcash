@@ -78,9 +78,6 @@ export function zeroTailShape(callCount: number): MasterTailShape {
 /** The `u16` sentinel a record entry uses for an input or output index it does not have. */
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
 
-/** The same absence, minimally encoded, as a record field a walk has normalised into a VM number. */
-const INDEX_NONE_NUMBER = new Uint8Array([0x81]);
-
 /** A 25-byte P2PKH locking bytecode: `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG`. */
 const P2PKH_PREFIX = new Uint8Array([0x76, 0xa9, 0x14]);
 const P2PKH_SUFFIX = new Uint8Array([0x88, 0xac]);
@@ -413,8 +410,12 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
   const fromAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_FROMALTSTACK); };
   const toAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_TOALTSTACK); };
-  /** Absence, as a field this walk has normalised into a VM number: the minimal encoding of -1. */
-  const absent = (): void => emit(Opcodes.OP_1NEGATE);
+  /**
+   * Absence, as the codec writes it: the `u16` sentinel an entry with no index carries. `OP_BIN2NUM` leaves it
+   * alone (the machine reads those two bytes as one large negative number), so the raw field is what every
+   * comparison in this walk uses.
+   */
+  const absent = (): void => emit(...encodeDataPush(INDEX_NONE_BYTES));
   /** A copy of the item at `depth` in the layout the surrounding block describes, `held` values above it. */
   const copy = (depth: number, held = 0): void => emit(num(depth + held), Opcodes.OP_PICK);
   /** Removes the item at `depth` (plus `held`), keeping every other item in order. */
@@ -481,7 +482,7 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     // Kept in place, created or deleted, and never moved.
     copy(RECORD.in);
     copy(RECORD.out, 1);
-    emit(...requireRecordShape(INDEX_NONE_NUMBER));
+    emit(...requireRecordShape());
 
     // The chain as this declaration found it, by register depth: declared 6, chainViewOut 7, chainIndex 8,
     // censusIn 9. The record's own fields stay at 0..3 for the whole block.

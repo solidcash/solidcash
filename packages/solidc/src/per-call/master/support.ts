@@ -10,15 +10,27 @@
  * convention while violating its frame rules.
  */
 
-import { FrameKind, computeFunctionSelector, computeFunctionSignature } from '@solidcash/utils';
+import {
+  FrameKind,
+  computeFunctionSelector,
+  computeFunctionSignature,
+  encodeArgumentList,
+  encodeIntegerValue,
+} from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
+  BoolLiteralNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode,
+  ExpressionNode,
   ExternalCallMode,
+  ExternalCallSlot,
   FunctionDefinitionNode,
+  HexLiteralNode,
   InterfaceNode,
+  IntLiteralNode,
+  StringLiteralNode,
   WhileNode,
 } from '../../ast/AST.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
@@ -221,8 +233,8 @@ type CallSitesDerivation =
  *
  * The head is one prefix, so it checks the same calls[] records whichever entry runs: every entry must make the
  * same calls, and only calls whose shape the head's checks describe are admitted — a call to a compile-time
- * address whose result is unused, with any argument pushes the callee carries. Anything else is refused by name,
- * because the head would have to check a shape it cannot describe.
+ * address whose result is unused, with compile-time argument values the caller's own code can hash. Anything else
+ * is refused by name, because the head would have to check a shape it cannot describe.
  */
 function derivePerCallMasterCallSites(
   interfaces: readonly InterfaceNode[],
@@ -279,13 +291,59 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.interfaceName}.${slot.functionName}' has no four-byte `
         + 'selector the master head can check' };
     }
+    const args = encodeSiteArguments(slot);
+    if ('reason' in args) return { calls: [], reason: args.reason };
     calls.push({
       kind: FrameKind.CALL,
       selector,
       target: hexToBin(slot.addressLiteral),
+      argumentPushes: args.pushes,
     });
   }
   return { calls };
+}
+
+/**
+ * The argument pushes a call site passes, in the canonical encoding, or why the head cannot bind the record to
+ * the caller's own computation.
+ *
+ * The head computes `SHA256(selector || argument pushes)` from these bytes and requires the record to carry it,
+ * so they must be the values the source passes. Only a compile-time value has a byte encoding at compile time; a
+ * runtime argument has none, and falling back to the callee's bytes would bind the record to itself, so such a
+ * call is refused.
+ */
+function encodeSiteArguments(slot: ExternalCallSlot): { pushes: Uint8Array } | { reason: string } {
+  const parameters = slot.sourceCallNode?.parameters ?? [];
+  const values: Uint8Array[] = [];
+  for (const parameter of parameters) {
+    const value = compileTimeArgumentValue(parameter);
+    if (value === undefined) {
+      return { reason: `the call to '${slot.functionName}' passes an argument that is not a compile-time value, `
+        + 'so the caller cannot compute the digest its record must carry' };
+    }
+    values.push(value);
+  }
+  if (values.length === 0 && (slot.argSources?.length ?? 0) > 0) {
+    return { reason: `the call to '${slot.functionName}' passes arguments the compiler cannot recover, so the `
+      + 'caller cannot compute the digest its record must carry' };
+  }
+  return { pushes: encodeArgumentList(values) };
+}
+
+/**
+ * The canonical byte value of a compile-time argument expression, or undefined when it is a runtime value.
+ *
+ * The encodings match what the callee receives: an integer or boolean is its minimal script number, and a string
+ * or byte string is its raw bytes. Anything else is a value only the running code knows.
+ */
+function compileTimeArgumentValue(expression: ExpressionNode): Uint8Array | undefined {
+  if (expression instanceof IntLiteralNode) return encodeIntegerValue(expression.value);
+  if (expression instanceof BoolLiteralNode) return encodeIntegerValue(expression.value ? 1n : 0n);
+  if (expression instanceof StringLiteralNode) {
+    return expression.solidityBytes ?? new TextEncoder().encode(expression.value);
+  }
+  if (expression instanceof HexLiteralNode) return expression.value;
+  return undefined;
 }
 
 /** The selector an interface method dispatches to, from its name and declared parameter types. */
@@ -309,8 +367,14 @@ function sameCallSites(left: readonly MasterCallSite[], right: readonly MasterCa
     return other !== undefined
       && site.kind === other.kind
       && bytesEqual(site.selector, other.selector)
-      && bytesEqual(site.target, other.target);
+      && bytesEqual(site.target, other.target)
+      && bytesEqual(siteArguments(site), siteArguments(other));
   });
+}
+
+/** A site's argument pushes: the empty string for a call with no argument. */
+function siteArguments(site: MasterCallSite): Uint8Array {
+  return site.argumentPushes ?? new Uint8Array(0);
 }
 
 /** Byte-wise equality, small enough not to pull in a dependency for it. */

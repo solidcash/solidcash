@@ -104,9 +104,9 @@ export interface MasterHeadOptions {
   readonly callDataSelectorUnconsumed?: boolean;
   /**
    * The external calls the entry makes, in execution order. Each one's record in the witness block is checked
-   * against the site: the callee is not this input, its call data carries the site's selector followed by its
-   * argument pushes, `SHA256(selector || args)` over that call data equals the record's `argsHash`, the target and
-   * kind match, and the result is empty.
+   * against the site: the callee is not this input, the record's `argsHash` is the digest the caller's own code
+   * computes from its argument values (`SHA256(selector || argument pushes)`), the callee's call data carries the
+   * site's selector and hashes to that same digest, the target and kind match, and the result is empty.
    */
   readonly calls?: readonly MasterCallSite[];
   /**

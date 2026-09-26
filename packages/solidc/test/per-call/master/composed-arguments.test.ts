@@ -257,6 +257,21 @@ describe('a caller that passes an argument to its callee', () => {
     expect(accepted(WITH_ARGUMENT, { recordedArgsHash: mutated }, VALIDATOR_INDEX)).toBe(true);
   });
 
+  it('is refused when the argument and the recorded hash are changed together', () => {
+    // The forgery this case exists to catch. The argument the callee carries and the hash the caller records are
+    // both chosen by whoever builds the transaction, so a pair that agrees with itself satisfies every check the
+    // caller makes — and the call runs with the caller's authority while carrying an argument the caller's source
+    // never passed. Refusing it takes the caller computing the hash from its own argument rather than re-reading the
+    // callee's.
+    const forgedSelector = calleeSelectorOf(compile(WITH_ARGUMENT));
+    const forgedRecord = new Uint8Array(argsHash(forgedSelector, OTHER_ARGUMENT_PUSHES));
+    expect(accepted(
+      WITH_ARGUMENT,
+      { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES, recordedArgsHash: forgedRecord },
+      CALLER_INDEX,
+    )).toBe(false);
+  });
+
   it('is refused when one of the callee\'s argument pushes changes', () => {
     // The callee still accepts `8 > 0`, so only the caller's digest can refuse the composition.
     expect(accepted(WITH_ARGUMENT, { calleeArgumentPushes: OTHER_ARGUMENT_PUSHES }, CALLEE_INDEX)).toBe(true);

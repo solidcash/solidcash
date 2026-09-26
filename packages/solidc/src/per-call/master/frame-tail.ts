@@ -10,12 +10,20 @@
  * The call-shape checks are the whole of a call's proof on the caller's side:
  *
  *   - the callee is not this input (a master never calls itself);
- *   - the callee's unlocking bytecode carries the selector the site names, with its argument pushes after it;
- *   - `SHA256(selector || args)` equals the record's `argsHash`, computed from the callee's own call data;
+ *   - the recorded `argsHash` is the digest the caller's own code computes from the argument values it passes:
+ *     `SHA256(selector || argument pushes)`, the pushes being the source values in the canonical encoding;
+ *   - the callee's unlocking bytecode carries the selector the site names, with its argument pushes after it, and
+ *     `SHA256(selector || args)` over those bytes is the same recorded digest;
  *   - the callee address the record names is the one the code calls, and the frame kind is the one it records.
  *
  * The result is read from the record and must be empty here: a site whose callee returns a value needs the value
  * on the stack, which the entry-return machinery does not emit yet.
+ *
+ * The recorded digest is the caller's own computation, so a builder cannot forge an argument by changing the
+ * callee's bytes and the recorded hash together: the code's operands are the source's values. The callee's bytes
+ * are still tied to the same digest, so a call whose callee carries other arguments than the source passed is
+ * refused as well. A site whose arguments are not compile-time values has no digest the code can compute and is
+ * refused by name rather than checked against the callee's bytes.
  *
  * The arguments of a call are the pushes between its selector push and the redeem-script push that closes the
  * callee's unlocking bytecode. Both pushes are stripped, so the arguments are however many pushes the callee
@@ -32,7 +40,7 @@
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
-import { TokenCapability } from '@solidcash/utils';
+import { TokenCapability, argsHash } from '@solidcash/utils';
 import {
   dropFirstPushScript,
   dropLastPushScript,
@@ -50,6 +58,12 @@ export interface MasterCallSite {
   readonly selector: Uint8Array;
   /** The address called, which `calls[k].target` must name. */
   readonly target: Uint8Array;
+  /**
+   * The argument pushes the caller's code passes, in parameter order and the canonical encoding: exactly the
+   * bytes the callee carries between its selector and its redeem script. `SHA256(selector || argumentPushes)` is
+   * the digest the caller's own code computes, and the record must carry it. Absent for a call with no argument.
+   */
+  readonly argumentPushes?: Uint8Array;
 }
 
 /**
@@ -265,6 +279,11 @@ function sendOutputSection(count: number): number[] {
   return bytes;
 }
 
+/** The digest a site's own code computes: `SHA256(selector || argument pushes)` over the caller's passed values. */
+function callerArgumentDigest(site: MasterCallSite): Uint8Array {
+  return argsHash(site.selector, site.argumentPushes ?? new Uint8Array(0));
+}
+
 /** The checks one `calls[k]` record must satisfy, consuming it from the front of the tail. */
 function callRecordChecks(site: MasterCallSite): number[] {
   const bytes: number[] = [];
@@ -279,8 +298,12 @@ function callRecordChecks(site: MasterCallSite): number[] {
   // calleeRef, kept on the alt stack while the hash is read.
   bytes.push(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,
     Opcodes.OP_INPUTINDEX, Opcodes.OP_NUMNOTEQUAL, Opcodes.OP_VERIFY, Opcodes.OP_TOALTSTACK);
-  // argsHash
+  // argsHash: the recorded digest must be the one the caller's own code computes from the argument values it
+  // passes. The record is not the authority; the code's operands are the source's values, so a builder cannot
+  // forge an argument by changing the callee's bytes and the recorded hash together. The record is kept while the
+  // callee's bytes are checked below, which ties them to the same digest.
   bytes.push(...takeFixedWidthField(32), Opcodes.OP_SWAP);
+  bytes.push(Opcodes.OP_DUP, ...encodeDataPush(callerArgumentDigest(site)), Opcodes.OP_EQUALVERIFY);
   // The callee's unlocking bytecode is its witness block, then its call data, then its redeem script. The call
   // data is what the first and last pushes leave between them: the selector's own push, then the argument pushes.
   // Hashing the selector's payload concatenated with the argument pushes is `SHA256(selector || args)`; a call

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { singleContractPlan, abbaPlan } from './plans.js';
-import { planComposition, type CompositionPlan } from './fixture.js';
+import { materialise, planComposition, type CompositionPlan } from './fixture.js';
 
 /**
  * The fixture's transaction lists are in index order.
@@ -29,4 +29,17 @@ describe('the fixture transaction lists', () => {
       expect(indexes).toStrictEqual([...indexes].sort((left, right) => left - right));
     });
   }
+
+  it('puts each frame\'s send value at the index the frame lists', () => {
+    // The value a check reads for a send is the transaction's, so the fixture and the transaction must agree.
+    const plan = singleContractPlan();
+    const composition = planComposition(plan);
+    const modelled = materialise(composition);
+    const sends = composition.blocks.get('A.go')!.sends;
+    const planned = plan.sendValues!['A.go']!;
+    expect(sends.length).toBe(planned.length);
+    for (const [at, index] of sends.entries()) {
+      expect(modelled.outputs[index]!.value).toBe(planned[at]);
+    }
+  });
 });

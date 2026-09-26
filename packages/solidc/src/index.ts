@@ -90,4 +90,5 @@ export const version = '0.13.1';
 // Composition conventions and the validator decision procedure a composition is checked against.
 export * as composition from './per-call/master/composition.js';
 export * as masterPrologue from './per-call/master/prologue.js';
+export * as witnessReader from './per-call/master/witness-reader.js';
 export * as perCallValidator from './per-call/validator/index.js';

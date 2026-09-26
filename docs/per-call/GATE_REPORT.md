@@ -101,19 +101,40 @@ values are VM-proven (`C4`, `C5`; `packages/solidcash/test/per-call/frames/`).
 ## Next step
 
 The gate's deadline is `2026-10-23`, four weeks after the interface freeze. In the order that unblocks the acceptance
-shapes:
+shapes, corrected after the fifth review:
 
-1. **The validator program** (`V_TEMPLATE`), tested against the TypeScript checks that already exist, replacing the
-   stand-in as each check lands. Started records view mode moved this from third to first, and it is now part-landed:
-   the program exists and enforces V1, V9 and the transcript header and root indices, with a differential suite that
-   grows a rule at a time. Next inside it: V3 (which masters point at this validator, which needs the witness block's
-   `validatorRef`) and V4/V6 (the roots and the derived order), because the records chain needs the order. The
-   per-input cost budget is the constraint to watch: a rule costs operations that the reference composition does not
+1. **The validator's structural checks against stub masters**: V3 (which masters point at this validator, read from
+   each master's witness block), then V4 and V6 (the roots and the derived order). The program is part-landed: it
+   enforces V1, V9 and the transcript header and root indices, with a differential suite that grows a rule at a time.
+   The per-input cost budget is the constraint to watch: a rule costs operations the reference composition does not
    have spare.
-2. **The rest of the records stream**: mapping nodes, their long values, dynamic values, and the value pin, on top of
-   the settlement a standalone master already does and the chain the validator will do. The plan's kill criterion sits
-   here: if the first two records items need rules outside the spec's record section, the effort is trending to a kill.
-3. **Call-site compilation**: emitting each call's checks where it happens, so entries can differ and return values,
-   conditionals and loops can come through.
-4. **The remaining wire and spec gaps**: a listed send now names the record that pays it, so a value floor can be
-   checked when sends exist; the spec correction is recorded in the Log.
+2. **Call sites, then runtime arguments.** Binding a call to its own record where the source makes it is landed,
+   including a call whose result the caller uses. A call still takes only compile-time argument values, and no
+   marketplace call passes only those, so **runtime-valued arguments are what keep every real call from compiling** —
+   the caller's code must encode each argument it holds and hash it, rather than comparing against a constant folded
+   at compile time.
+3. **Ordering and cross-master settlement, with reads from segment views**: the validator's V7 chains, and the
+   master's own multi-segment chain. The spec lets a contract settle its own records whenever it has one master that
+   made no `DELEGATE` or `INTERNAL` call; such a master may still make ordinary calls, so it has two or more segments
+   and the chain between them is the master's own business. The earlier report treated "no inner call" as "no external
+   call at all" and concluded the validator was what unblocked the records stream. That was wrong: what the validator
+   is needed for is a contract entered more than once in a transaction, and what blocks the multi-segment chain is
+   compiling calls where they happen, which is now landed.
+4. **The rest of the records stream**: mapping nodes, their long values, dynamic values and the value pin.
+5. **I1 and the wire gaps.** A listed send carries no paying record on the wire; the frozen codec, its vectors and
+   every consumer agree on `{ out }`, and v1 pays a send from the contract's state record, so the spec was reverted
+   rather than the codec version-bumped.
+
+**Two known gaps in what is landed**, both fail-closed:
+
+- The self-settlement census refuses every mutable token of the contract other than the record it declares, so a
+  composition in which a self-settling master of X shares its transaction with a validator of X's own category —
+  which the spec's S2 allows — is refused. The validator's own recreated token must be admitted. Latent today only
+  because a self-settling master currently makes no external call, so the shape does not yet arise.
+- A segment declaring two or more records is refused rather than settled partly; the chains of mapping nodes and
+  chunks are not emitted.
+
+**On the kill criterion**: the plan kills if the gate is not reached by `2026-10-23`. Nothing here measures how close
+that is. The hard part of view mode — a second master reading state from another frame's segment view — has not been
+attempted, so the criterion is not testable yet in either direction, and an earlier "not trending" note here was
+premature.

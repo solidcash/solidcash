@@ -8,6 +8,15 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 
 ## 0. Changes
 
+### Since the implementation (2026-09-26)
+
+- **Value tails.** The clause that said any value over 64 bytes takes the length-prefixed form is removed. The shipped
+  classifier decides the form from the value's type, so `sig` and an unbounded `bigint` are stored verbatim and can
+  exceed the 64-byte tail (section 20); no code measurement ever contradicted that.
+- **Sends.** The wire form is what it always was, `{ out }`: the frozen codec, its vectors and every consumer agree on
+  it, and the revision that added a paying record to the spec did not reach the codec. v1 pays a send from the
+  contract's state record (section 11), and the 66 make no BCH send, so nothing needs the payer on the wire.
+
 ### Since revision 11 (fourth review, 2026-09-25)
 
 - **Size.** Worked totals for the loader: the total improves about 2x, to about 64 KB at 4 KB facets and 100-125 KB
@@ -651,7 +660,8 @@ master made no `DELEGATE` or `INTERNAL` call; R4):
   - immutable NFTs appear only at the listed event outputs, and no two events share an output (T41).
 - **S3.** The `catX` state UTXOs spent in the transaction are exactly the records the master touched.
 - **S4. Values.**
-  - Every record keeps at least its input value unless a listed send names it as the record that pays: a send entry carries the record it pays from, so the rule can be checked on chain rather than inferred.
+  - Every record keeps at least its input value unless a listed send pays from it. In v1 a listed send pays from the
+    contract's state record (section 11), and the 66 make no BCH send, so the wire form does not carry the payer.
   - Listed sends are paid exactly (T39).
   - Value conservation beyond this is open point 10.
 
@@ -1317,7 +1327,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
         callCount:u16  { kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32 } x callCount
         segCount:u16   { recCount:u16 { in:u16 out:u16 viewIn:lp32 viewOut:lp32 } x recCount } x segCount
         eventCount:u16 { out:u16 } x eventCount
-        sendCount:u16  { out:u16 from:u16 } x sendCount   from = the record whose value pays it, 0xFFFF for the funder
+        sendCount:u16  { out:u16 } x sendCount
 ```
 
 - **Records.** A record entry names its input `in` and its output `out`:
@@ -1478,7 +1488,7 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 - **Value tails.** A node's tail holds 64 bytes, and both thresholds come from it:
   - a value whose type has a fixed width fills the tail directly. The shipped classifier decides this from the **type**, not from a measurement of the encoding, so two types are stored verbatim however long they are and can exceed the tail: `sig`, and an unbounded `bigint`. A collection whose value type is either needs a chunked form the tail does not provide;
   - every other value carries a 4-byte length: variable-width values (`string`, `bytes`, a chunkable struct or
-    array), and any value whose encoding is over 64 bytes, fixed-width or not (a 65-byte signature, a large struct);
+    array), whatever their length;
   - a length-prefixed value of at most 60 bytes fits inline, since `len4 || v` is then at most 64 bytes. A longer one
     is a long value, stored as the 64-byte head. The table's "over 60 bytes" counts the value, not the tail;
   - `len4` tells inline from long, and the collection's value type tells a direct value from a length-prefixed one.

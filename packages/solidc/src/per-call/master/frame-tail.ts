@@ -425,12 +425,15 @@ export function selfSettlementScript(sendCount: number): Uint8Array {
   emit(num(2), Opcodes.OP_PICK, num(1), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
   emit(...singleRecordSettlement(sendCount));
   emit(Opcodes.OP_ELSE);
-  // No record: no state UTXO may be spent, expressed as an index no input can have.
+  // No record: no state UTXO may be spent and no state output may exist, expressed as an index no input or output
+  // can have. The output index is parked first, so the input rule's pass reads its own index first.
+  emit(...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
   emit(...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
   emit(Opcodes.OP_ENDIF);
   emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP, Opcodes.OP_DROP);
 
   emit(...stateUtxosAreDeclaredScript());
+  emit(...stateOutputsAreDeclaredScript());
   return new Uint8Array(bytes);
 }
 
@@ -483,13 +486,20 @@ function singleRecordSettlement(sendCount: number): number[] {
     emit(Opcodes.OP_ENDIF);
   }
 
-  // Park the index the transaction spends the record at, or the no-index sentinel for a created record. The gate
-  // compares a copy, so the arm that checks runs against the untouched stack.
+  // Park the indices the transaction must carry the record at: the output index first, then the input index, so
+  // the input rule's pass reads its own index from the alt stack first. The no-index sentinel stands in for a side
+  // the record does not have.
+  emit(num(1), Opcodes.OP_PICK, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_IF);
+  emit(...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_ELSE);
+  emit(num(1), Opcodes.OP_PICK, Opcodes.OP_TOALTSTACK);
+  emit(Opcodes.OP_ENDIF);
   emit(Opcodes.OP_DUP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_EQUAL, Opcodes.OP_IF);
   emit(Opcodes.OP_DROP, ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_TOALTSTACK);
   emit(Opcodes.OP_ELSE);
   emit(Opcodes.OP_TOALTSTACK);
   emit(Opcodes.OP_ENDIF);
+  // The two parked indices left the stack, so only `out`, `viewIn` and `viewOut` are dropped.
   emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
   return bytes;
 }
@@ -516,6 +526,31 @@ function stateUtxosAreDeclaredScript(): number[] {
   emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_VERIFY);
   emit(Opcodes.OP_1ADD);
   emit(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL);
+  emit(Opcodes.OP_UNTIL);
+  emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
+  return bytes;
+}
+
+/**
+ * Requires that an output carries a state record exactly when it is the one the segment declared.
+ *
+ * The record's own token is the only state token the shape admits: a standalone master has no validator to
+ * recreate, and the shape's one record is its whole state. Comparing each output's own token against the declared
+ * output index refuses an extra state output the same way the input rule refuses an extra state input.
+ */
+function stateOutputsAreDeclaredScript(): number[] {
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+
+  emit(Opcodes.OP_FROMALTSTACK);
+  emit(Opcodes.OP_0);
+  emit(Opcodes.OP_BEGIN);
+  emit(Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+  emit(num(1), Opcodes.OP_PICK, num(3), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL);
+  emit(Opcodes.OP_NUMEQUAL, Opcodes.OP_VERIFY);
+  emit(Opcodes.OP_1ADD);
+  emit(Opcodes.OP_DUP, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL);
   emit(Opcodes.OP_UNTIL);
   emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
   return bytes;

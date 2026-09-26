@@ -94,6 +94,8 @@ interface SpendOptions {
   readonly outputValue?: bigint;
   /** Spend a second state UTXO the segment does not declare. */
   readonly undeclaredState?: boolean;
+  /** Write a second state output the segment does not declare. */
+  readonly undeclaredOutput?: boolean;
 }
 
 /** Builds the master, its record and the user's input, and evaluates the master's own input. */
@@ -156,7 +158,11 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
   const inputs = options.undeclaredState === true
     ? [masterInput, stateInput, undeclaredInput, userInput]
     : [masterInput, stateInput, userInput];
-  const outputs = [masterOutput, stateOutput, userOutput];
+  const outputs = options.undeclaredOutput === true
+    ? [masterOutput, stateOutput, userOutput, {
+      lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', BEFORE),
+    }]
+    : [masterOutput, stateOutput, userOutput];
   const sourceOutputs = [
     masterOutput,
     { lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', inputCommitment) },
@@ -198,6 +204,11 @@ describe('a standalone master that reads and writes a record', () => {
     expect(evaluate({ undeclaredState: true }).accepted).toBe(false);
     // The same transaction without the extra state UTXO is accepted.
     expect(evaluate({ undeclaredState: false }).accepted).toBe(true);
+  });
+
+  it('is refused when a state output is written that the segment does not declare', () => {
+    expect(evaluate({ undeclaredOutput: true }).accepted).toBe(false);
+    expect(evaluate({ undeclaredOutput: false }).accepted).toBe(true);
   });
 
   it('is refused when the record keeps less value than it held', () => {

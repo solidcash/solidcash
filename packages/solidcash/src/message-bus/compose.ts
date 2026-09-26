@@ -15,7 +15,6 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
-  stickyKernelLeftoverScalarWrites,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 

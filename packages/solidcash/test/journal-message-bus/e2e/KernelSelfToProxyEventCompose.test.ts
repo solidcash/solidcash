@@ -35,8 +35,8 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
 /**
  * self→proxy × counter+emit under recipe compose+executionArtifact.
  *
- * Compose `stickyKernelLeftoverScalarWrites` (immediately before aggregate publish) applies
- * leftover +1 when `__forward` derivation left the proxy data NFT at its input commitment.
+ * Complete-graph resource observations derive the implementation's exact state update when
+ * local `__forward` derivation leaves the proxy data NFT at its input commitment.
  */
 describe('kernel self→proxy event under composition', () => {
   it('settles Caller.poke→deployProxy counter+emit under recipe compose+executionArtifact', async () => {

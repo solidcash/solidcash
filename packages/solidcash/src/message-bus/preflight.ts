@@ -302,16 +302,20 @@ const convergeMessageBusMutableResourceOutputs = (
       'messageBus: mutable resource output convergence entered a repeated state',
     );
     // constraint fixpoint: multi-candidate API — single progressing key here; soft-exit when joint cycles.
-    const picked = selectActiveConstraintCandidate(
-      'resource',
-      [stateKey],
-      'messageBus: mutable resource output convergence entered a repeated state',
-    );
-    if (picked === undefined) {
-      finalizeMonotonePass(commitmentLattice, stateKey);
-      return freezeGeometry({
-        repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
-      });
+    // Observation does not advance the mutable convergence session. It must remain repeatable after a
+    // prior build finalized that session, or a later build/send can silently lose exact state claims.
+    if (observedProposals === undefined) {
+      const picked = selectActiveConstraintCandidate(
+        'resource',
+        [stateKey],
+        'messageBus: mutable resource output convergence entered a repeated state',
+      );
+      if (picked === undefined) {
+        finalizeMonotonePass(commitmentLattice, stateKey);
+        return freezeGeometry({
+          repairs, rounds: round, outputs: [...changedOutputs].sort((a, b) => a - b),
+        });
+      }
     }
 
     const transaction = builder.buildLibauthTransaction();
@@ -392,13 +396,15 @@ const convergeMessageBusMutableResourceOutputs = (
         continue;
       }
       const ranked = rankResourceOtcConflictCandidatesMany(candidates);
-      selectActiveConstraintCandidate(
-        'resource-otc-conflict',
-        ranked.map((candidate) => (
-          `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
-        )),
-        'messageBus: OTC conflict fingerprint entered a repeated state',
-      );
+      if (observedProposals === undefined) {
+        selectActiveConstraintCandidate(
+          'resource-otc-conflict',
+          ranked.map((candidate) => (
+            `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
+          )),
+          'messageBus: OTC conflict fingerprint entered a repeated state',
+        );
+      }
       if (isVmValidationOnly()) {
         proposals.set(outputIndex, ranked[0]!);
         continue;
@@ -429,7 +435,7 @@ const convergeMessageBusMutableResourceOutputs = (
     }
 
     // constraint fixpoint: multi-proposal + cross-output joint OTC ranking fingerprint.
-    if (proposals.size > 0) {
+    if (observedProposals === undefined && proposals.size > 0) {
       const proposalKeys = [...proposals.entries()]
         .map(([outputIndex, { commitment }]) => `${outputIndex}:${binToHex(commitment)}`)
         .sort();

@@ -1,7 +1,7 @@
 /**
  * phase-boundary extract: compose recipe / materialization helpers (phase-boundary extract from compose.ts).
  * Child-deployment recipes, fixed BCH transfer materialization, EVM/native provisional results,
- * computed value-chunk claim predicates, and sticky scalar leftover writes.
+ * computed value-chunk claim predicates.
  */
 
 import {
@@ -10,18 +10,17 @@ import {
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   decodePushdataValue, encodePushdataValue,
-  buildEntryCommitment, buildPushdataCommitment, bytecodeToScript, scriptToAsm,
+  buildEntryCommitment, bytecodeToScript, scriptToAsm,
   AddressType, BytesType, FixedType, IntType,
-  parseArrayTypeString, parsePushdataCommitment, parseTypeStrict, PrimitiveType,
+  parseArrayTypeString, parseTypeStrict, PrimitiveType,
   getDefaultStateValue, hash160, hash256, ripemd160, sha256,
 } from '@solidcash/utils';
 import type {
-  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
+  Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateValue,
   StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
-import { TransactionBuilder } from '../TransactionBuilder.js';
 import { Contract } from '../Contract.js';
 import { addressToLockScript } from '../utils.js';
 import {
@@ -913,101 +912,4 @@ export function minimumActualSizeForComputedValueChunkClaims(
     }
   }
   return minimumSize;
-}
-
-const isOptimisticIntegerType = (type: string): boolean => (
-  type === 'int' || type === 'uint' || type === 'bigint' || /^u?int\d+$/.test(type)
-);
-
-type StickyWritingRow = {
-  handler: { name: string; writesState?: boolean; emits?: readonly unknown[]; inputs: readonly { name: string; type: string }[] };
-  args: readonly FunctionArgument[];
-};
-
-/**
- * ahead-of-time compose coverage/I4: when a message-bus shell left a single-int data NFT at its input commitment, apply the
- * recipe post-state before aggregate publish so converge does not need extract-from-failed-VM.
- *
- * - Writers with `emits` → leftover +1 (counter+emit; emit payload ints are not the write source).
- * - Writers without emits + one visible int arg → assign that arg (Mid.seen = next beside outState).
- */
-export function stickyKernelLeftoverScalarWrites(
-  local: TransactionBuilder,
-  artifact: Artifact,
-  blockLayout: { slots: readonly { kind: string; offset: number }[] },
-  writingRows: readonly StickyWritingRow[] = [],
-): boolean {
-  const layout = artifact.stateLayout as StateLayout | undefined;
-  if (!layout) return false;
-  // Ignore compiler-internal holds (`__messageBusHold`) — event-only proxies still carry one.
-  const intFields = layout.variables.filter((variable) => !variable.dynamic
-    && !variable.name.includes('$')
-    && !variable.name.startsWith('__')
-    && isOptimisticIntegerType(variable.type));
-  if (intFields.length !== 1) return false;
-  const stateWriters = writingRows.filter((row) => (
-    row.handler.writesState !== false
-    && row.handler.name !== 'initialize'
-    && row.handler.name !== 'constructor'
-    && row.handler.name !== '__forward'
-    && !row.handler.name.startsWith('__message_bus')
-  ));
-  const hasScalarWriter = stateWriters.length > 0 || artifact.abi.some((entry) => (
-    entry.writesState === true
-    && entry.name !== 'initialize'
-    && entry.name !== 'constructor'
-    && entry.name !== '__forward'
-    && !entry.name.startsWith('__message_bus')
-  ));
-  if (!hasScalarWriter) return false;
-  const field = intFields[0];
-  const nftIndex = field.nftIndex;
-  const primaryWriter = stateWriters.length === 1 ? stateWriters[0] : undefined;
-  const writerEmits = (primaryWriter?.handler.emits?.length ?? 0) > 0
-    || (primaryWriter === undefined && artifact.abi.some((entry) => (
-      entry.writesState === true
-      && (entry.emits?.length ?? 0) > 0
-      && entry.name !== 'initialize'
-      && entry.name !== 'constructor'
-      && entry.name !== '__forward'
-      && !entry.name.startsWith('__message_bus')
-    )));
-  let assignedValue: bigint | undefined;
-  if (primaryWriter && !writerEmits) {
-    const visible = primaryWriter.handler.inputs
-      .map((input, index) => ({ input, index }))
-      .filter(({ input }) => !input.name.startsWith('__internal__') && isOptimisticIntegerType(input.type));
-    if (visible.length === 1) {
-      const arg = primaryWriter.args[visible[0].index];
-      if (typeof arg === 'bigint') assignedValue = arg;
-    }
-  }
-  let wrote = false;
-  for (const slot of blockLayout.slots) {
-    if (slot.kind !== 'dataNft') continue;
-    const input = local.inputs[slot.offset];
-    const output = local.outputs[slot.offset];
-    if (input?.token?.nft?.capability !== 'mutable' || output?.token?.nft?.capability !== 'mutable') {
-      continue;
-    }
-    const inCommit = input.token.nft.commitment ?? '';
-    const outCommit = output.token.nft.commitment ?? '';
-    try {
-      const parsed = parsePushdataCommitment(inCommit, layout, nftIndex);
-      const current = parsed[field.name];
-      if (typeof current !== 'bigint') continue;
-      // Arg-assign (I4): replace a wrong leftover +1 / stale commitment with the invocation int.
-      // Leftover +1 (ahead-of-time compose coverage): only when the NFT still mirrors its input commitment.
-      if (assignedValue === undefined && outCommit !== inCommit) continue;
-      const nextValue = assignedValue !== undefined ? assignedValue : current + 1n;
-      const nextState: Record<string, StateValue> = { ...parsed, [field.name]: nextValue };
-      const nextCommit = buildPushdataCommitment(layout, nextState, nftIndex);
-      if (outCommit === nextCommit) continue;
-      output.token.nft.commitment = nextCommit;
-      wrote = true;
-    } catch {
-      // Malformed or non-scalar commitments stay untouched.
-    }
-  }
-  return wrote;
 }

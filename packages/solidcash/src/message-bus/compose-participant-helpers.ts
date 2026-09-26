@@ -106,7 +106,6 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
-  stickyKernelLeftoverScalarWrites,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 import {
@@ -117,7 +116,6 @@ import {
   materializeChildDeploymentEntryScalar,
   materializeChildDeploymentEntryValue,
   provisionalInvocationResult,
-  stickyKernelLeftoverScalarWrites,
   minimumActualSizeForComputedValueChunkClaims,
   evmInvocationResultLength,
   // Internal helpers still used by AtomicMessageBusComposition orchestration:

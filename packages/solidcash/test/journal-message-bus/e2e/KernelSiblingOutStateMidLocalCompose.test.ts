@@ -36,8 +36,8 @@ const vmAccepts = (builder: TransactionBuilder): boolean => {
  * Anchors:
  * - `KernelSiblingOutStateCompose` — Mid projects Leaf.outState (no Mid local write) green.
  * - Mid local write without outState (below) green.
- * - Combined shape greens via emit-aware optimistic arg→field assign (`seen = next` /
- *   `seen = projected` with `require(projected == next)`), so recipe converge needs no VM extract.
+ * - Combined shape uses complete-graph discovery of the exact write (`seen = projected`),
+ *   without inferring an assignment from the visible integer argument.
  */
 describe('kernel sibling outState + Mid local scalar', () => {
   it('settles Mid local write without outState under recipe', async () => {

@@ -110,7 +110,6 @@ import {
   materializeChildDeploymentEntryScalar,
   materializeChildDeploymentEntryValue,
   provisionalInvocationResult,
-  stickyKernelLeftoverScalarWrites,
   minimumActualSizeForComputedValueChunkClaims,
   evmInvocationResultLength,
   // Internal helpers still used by AtomicMessageBusComposition orchestration:
@@ -1633,34 +1632,6 @@ export async function assembleAtomicComposition(
             }),
           };
         }
-      }
-      // ahead-of-time compose coverage/I4: sticky scalar post-state immediately before publish. Proxy `__forward` / message-bus
-      // shells can leave fixed data NFTs at input commitment or a wrong leftover +1; apply after
-      // local rewrites/mirrors so recipe converge does not need extract-from-failed-VM.
-      // Writer metadata for proxy+executionArtifact must come from the impl (ping), while the NFT
-      // commitments live on the proxy participant layout/artifact.
-      if (participant.blockLayout && participant.artifact.stateLayout) {
-        const writingRows = (participant.invocations ?? []).flatMap((invocationIndex) => {
-          const descriptor = descriptors[invocationIndex];
-          const planned = plan.invocations[invocationIndex];
-          if (!descriptor || planned?.selectorHex === undefined) return [];
-          const handlerArtifact = descriptor.executionArtifact ?? participant.artifact;
-          const published = findMessageBusHandlerForInvocation(handlerArtifact, {
-            function: descriptor.functionName,
-            selectorHex: planned.selectorHex,
-          });
-          const selector = (published?.selector ?? planned.selectorHex).toLowerCase();
-          const handler = handlerArtifact.abi.find((candidate) =>
-            candidate.selector?.toLowerCase() === selector)
-            ?? handlerArtifact.abi.find((candidate) => candidate.name === descriptor.functionName);
-          if (!handler || handler.writesState === false) return [];
-          const modifiers = handler.modifiers ?? [];
-          if (modifiers.includes('view') || modifiers.includes('pure')) return [];
-          return [{ handler, args: descriptor.args }];
-        });
-        stickyKernelLeftoverScalarWrites(
-          local, participant.artifact, participant.blockLayout, writingRows,
-        );
       }
       for (let localIndex = 0; localIndex < local.inputs.length; localIndex++) {
         const input = local.inputs[localIndex];

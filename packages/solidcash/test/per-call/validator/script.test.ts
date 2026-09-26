@@ -400,4 +400,114 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V9_ROOT_CATEGORY_MISMATCH');
     expect(accepted(tampered, index)).toBe(false);
   });
+
+  test('refuses a listed master that does not point at this validator', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.validatorRef = 0xffff;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V3_MASTER_NOT_POINTING_HERE');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a minting input that points here but is not listed', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const listed = composition.transcript.masters;
+    expect(listed.length).toBeGreaterThan(1);
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...composition.transcript,
+      masters: listed.slice(1),
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V3_MASTERS_MISSING');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a root listed twice', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.transcript.roots[0]!;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...composition.transcript,
+      roots: [root, root],
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V4_DUPLICATE_ROOT');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a user-entered master that the transcript does not list as a root', () => {
+    const composition = laidOut(twoRootPlan());
+    const index = composition.validatorIndex;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...composition.transcript,
+      roots: composition.transcript.roots.slice(0, 1),
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V4_ROOT_MISSING');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a root listing of a master a user did not enter', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const called = composition.masterIndex.get('B.g')!;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...composition.transcript,
+      roots: [...composition.transcript.roots, called],
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V4_ROOT_NOT_A_ROOT');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a root whose caller names no input', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.blocks.get('A.f')!;
+    root.callerRef = composition.inputs.length + 3;
+    root.originRef = root.callerRef;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V4_ROOT_INPUT_MISSING');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a root whose caller is not a user', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const caller = composition.blocks.get('A.f')!.callerRef;
+    composition.inputs[caller]!.lockingBytecode = encodeLockingBytecodeP2sh32(new Uint8Array(32).fill(0x44));
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V4_ROOT_CALLER_NOT_P2PKH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a root whose origin is not its caller', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const root = composition.blocks.get('A.f')!;
+    root.originRef = root.callerRef === 0 ? 1 : 0;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V4_ROOT_ORIGIN_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a called master whose caller is not a covered master', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const stateIndex = composition.slotIndex.get('DA')!;
+    composition.blocks.get('B.g')!.callerRef = stateIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V4_NON_ROOT_CALLER_NOT_A_MASTER');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a master listed twice', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const listed = composition.transcript.masters;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...composition.transcript,
+      masters: [listed[0]!, ...listed],
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V3_DUPLICATE_MASTER');
+    expect(accepted(tampered, index)).toBe(false);
+  });
 });

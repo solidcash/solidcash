@@ -1062,3 +1062,8 @@ Titles marked NEVER have not passed on any real compile to date.
   record's index) and the state-commitment write where the epilogue serialises the pending writes; the head has to
   leave the declared record's input and output indices as tracked slots for the body to read, the way it already
   leaves each listed event's output index.
+- The state read and write do not compute their index ad hoc: most sites go through `emitMasterInputIndex` (which
+  already returns a frame's authenticated owner instead of the active input for delegate frames), so a per-call
+  implementation of that one helper is where the offset stops. The remaining direct uses of the compact offset are the
+  single read in `emitStateFieldReadInline` and the output side of the state-commitment write. The head also has to
+  leave the declared record's input and output indices as tracked slots first, because they are what those sites read.

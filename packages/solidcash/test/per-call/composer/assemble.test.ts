@@ -72,8 +72,8 @@ const calleeMaster = (): PlannedMaster => ({
   redeemScript: new Uint8Array([0x53, 0x54]),
 });
 
-const callToB = () => ({
-  kind: FrameKind.CALL as const,
+const callToB = (): PlannedMaster['calls'][number] => ({
+  kind: FrameKind.CALL,
   callee: 'B0',
   target: SELF_B,
   value: 0n,

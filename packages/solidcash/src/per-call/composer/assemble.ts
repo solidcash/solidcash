@@ -177,9 +177,11 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       if (calleeRef === resolve(master.master, 'master')) {
         throw new PerCallEncodingError(`master "${master.master}" calls itself, which the format refuses`);
       }
-      const argsHash = argsHashOf(call);
-      resolvedCalls.push({ from: master.master, callee: call.callee, calleeRef, argsHash });
-      return { kind: call.kind, target: call.target, value: call.value, calleeRef, argsHash, result: call.result };
+      const hashed = argsHashOf(call);
+      resolvedCalls.push({ from: master.master, callee: call.callee, calleeRef, argsHash: hashed });
+      return {
+        kind: call.kind, target: call.target, value: call.value, calleeRef, argsHash: hashed, result: call.result,
+      };
     });
 
     const witness = assembleMasterWitness({

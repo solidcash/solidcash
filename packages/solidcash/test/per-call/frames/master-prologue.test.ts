@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32, Opcodes } from '@bitauth/libauth';
 import { masterPrologue } from 'solidc';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 
@@ -26,8 +27,8 @@ const relaxedLimits = {
   hashDigestIterationsPerByte: 3,
 };
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
-const FOREIGN = new Uint8Array(32).fill(0x77);
+const CATEGORY = seededCategory('master prologue');
+const FOREIGN = seededCategory('master prologue foreign');
 
 /** A body that succeeds, standing in for the function the prologue prefixes. */
 const ACCEPTING_BODY = new Uint8Array([Opcodes.OP_1]);

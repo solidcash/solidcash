@@ -10,6 +10,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
+import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * A compiled per-call entry that emits an event, driven through the real entry point.
@@ -22,7 +23,7 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * Each refusal is shown beside the case it does not touch, so the machine's verdict is the check under test.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('event output');
 /** The validator program. A standalone master only bakes the address; this one never spends a validator. */
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]);
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
@@ -63,7 +64,7 @@ function deploy(source: string): { artifact: Artifact; program: Uint8Array; lock
   const artifact = compile(source);
   const { placeholders } = artifact.composition!;
   const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), placeholders, {
-    category: CATEGORY,
+    category: categorySlotValue(CATEGORY),
     contractAddress: ADDRESS,
     ...(placeholders.templateHashOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
   });
@@ -78,7 +79,7 @@ function eventCovenantLock(signature: string): Uint8Array {
   const nameHash = computeEventNameHash(signature);
   const script = new Uint8Array([
     0xc0, 0xce, 0x01, 0x20, 0x7f, 0x7c, // OP_INPUTINDEX OP_UTXOTOKENCATEGORY <32> OP_SPLIT OP_SWAP
-    0x20, ...CATEGORY,                  // the contract's category, as an introspection result carries it
+    0x20, ...categorySlotValue(CATEGORY), // the category in the order introspection reports it
     0x88, 0x00,                         // OP_EQUALVERIFY, empty capability
     0x88, 0x14, ...nameHash,            // OP_EQUALVERIFY, the event signature hash
     0x75, 0x02, 0x90, 0x00, 0xb2, 0x75, // OP_DROP <144> OP_CHECKSEQUENCEVERIFY OP_DROP
@@ -219,7 +220,7 @@ describe('an entry that emits an event, compiled per-call', () => {
 
   it('is refused when the listed output carries another category', () => {
     const output = eventOutput(payload(EMITTED), eventLock);
-    output.token = token(new Uint8Array(32).fill(0x77), 'none', payload(EMITTED));
+    output.token = token(seededCategory('event output other'), 'none', payload(EMITTED));
     expect(spendEmitter({ outputs: [FILLER, output] }).accepted).toBe(false);
   });
 

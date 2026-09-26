@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToHex, validatorAddress } from '@solidcash/utils';
+import { bytesToHex, chainCategory, validatorAddress } from '@solidcash/utils';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { PerCallDeploymentError, deployMaster, verifyMasterDeployment } from '../../../src/per-call/deploy/index.js';
 import {
   ADDRESS_PAYLOAD,
@@ -45,6 +46,19 @@ describe('filling deployment-time constants in a master', () => {
     expect(bytesToHex(deployed.script)).toBe(expected);
     expect(deployed.script.length).toBe(programBytesOf(artifact).length);
     expect(unchangedOutsideSlots(bytesToHex(deployed.script))).toBe(true);
+  });
+
+  it('writes a non-repeating category in the order the chain reports', () => {
+    const category = seededCategory('deployment read-back');
+    const artifact = artifactFixture();
+    const deployed = deployMaster(artifact, category, VALIDATOR_PROGRAM);
+    const slot = deployed.script.subarray(CATEGORY_PAYLOAD.start, CATEGORY_PAYLOAD.end);
+    const chain = chainCategory(category);
+
+    // A repeated byte would match either order, so this category has to differ from its reverse.
+    expect([...category]).not.toStrictEqual([...chain]);
+    expect([...slot]).toStrictEqual([...chain]);
+    expect(() => verifyMasterDeployment(deployed, artifact, category, VALIDATOR_PROGRAM)).not.toThrow();
   });
 
   it('derives the contract address with the validator address rule, so the two cannot drift', () => {

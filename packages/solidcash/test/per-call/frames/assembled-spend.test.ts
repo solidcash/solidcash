@@ -5,6 +5,7 @@ import { createVirtualMachineBch2026ForProvider } from '../../../src/network/cre
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { assembleComposition, type CompositionPlan } from '../../../src/per-call/composer/assemble.js';
 import { FrameKind } from '@solidcash/utils';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { callerUnlockingBytecode } from './caller-input.js';
 
@@ -28,7 +29,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('assembled spend');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]);
 const OWNER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 const RELAXED_LIMITS = {

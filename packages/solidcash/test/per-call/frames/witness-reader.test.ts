@@ -4,6 +4,7 @@ import { masterPrologue, witnessReader } from 'solidc';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 
 /**
  * Reading a witness block inside script, evaluated in the VM.
@@ -23,7 +24,7 @@ const relaxedLimits = {
   hashDigestIterationsPerByte: 3,
 };
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('witness reader');
 const SENDER = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 const SELF = new Uint8Array([0xaa, 0x20, ...new Uint8Array(32).fill(0x33), 0x87]);
 const VALUE = 20_000n;

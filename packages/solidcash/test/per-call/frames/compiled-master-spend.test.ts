@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import { encodeWitnessBlock, validatorAddress, type WitnessBlock } from '@solidcash/utils';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { compileString } from 'solidc';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
@@ -29,7 +30,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('compiled master spend');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]);
 const OWNER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 const RELAXED_LIMITS = {
@@ -142,7 +143,7 @@ describe('a compiled master, deployed and spent', () => {
 
   it('is refused when the spent token is another category', () => {
     // Ownership is what stops one contract's master from being spent as another's.
-    expect(evaluateMasterSpend({ category: new Uint8Array(32).fill(0x77) }).accepted).toBe(false);
+    expect(evaluateMasterSpend({ category: seededCategory('compiled master spend foreign') }).accepted).toBe(false);
   });
 
   it('is refused when the frame is not entered by a user', () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, hash256, encodeLockingBytecodeP2sh32, Opcodes } from '@bitauth/libauth';
 import { TokenCapability, categoryPin, categoryPinScript } from '@solidcash/utils';
+import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { MockNetworkProvider } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 
@@ -22,7 +23,7 @@ const RELAXED_LIMITS = {
   hashDigestIterationsPerByte: 3,
 };
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('category pin');
 const COMMITMENT = new Uint8Array(32).fill(0x7e);
 
 interface PinOptions {
@@ -94,7 +95,7 @@ describe('the category pin', () => {
   });
 
   it('refuses a pin that names another category', () => {
-    const other = new Uint8Array(32).fill(0x77);
+    const other = seededCategory('category pin other');
     expect(evaluatePin({ capability: 'mutable', pinScript: categoryPinScript(other, TokenCapability.MUTABLE) })
       .accepted).toBe(false);
   });

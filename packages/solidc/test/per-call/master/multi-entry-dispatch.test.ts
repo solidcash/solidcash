@@ -10,6 +10,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
+import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * A compiled per-call master with several entry points, driven through the real entry point.
@@ -23,7 +24,7 @@ import { callerUnlockingBytecode } from './caller-input.js';
  * `address(this)`. A mutation that satisfies one and not the other proves which body ran.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('multi entry');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any program the address rule accepts
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const TEMPLATE_HASH = sha256(VALIDATOR_PROGRAM);
@@ -80,7 +81,7 @@ function evaluateSpend(source: string, options: SpendOptions): boolean {
   const artifact = compile(source);
   const placeholders = artifact.composition!.placeholders;
   const filled = fillPlaceholders(scriptBytes(artifact), placeholders, {
-    category: CATEGORY, contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
+    category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH,
   });
   const redeemScript = new Uint8Array([
     ...(options.constructorPushes ?? []).flatMap((push) => [...encodeDataPush(push)]),

@@ -11,6 +11,7 @@ import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/per-call/master/placeholders.js';
 import { SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode } from './caller-input.js';
+import { categorySlotValue, seededCategory } from './validator-input.js';
 
 /**
  * A compiled per-call master, driven through the real entry point.
@@ -22,7 +23,7 @@ import { SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode } from './calle
  * that produced it.
  */
 
-const CATEGORY = new Uint8Array(32).fill(0x5a);
+const CATEGORY = seededCategory('master program');
 const VALIDATOR_PROGRAM = new Uint8Array([0x51, 0x52]); // OP_1 OP_2, any program the address rule accepts
 const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
@@ -151,7 +152,7 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
   const address = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
   // Deployment fills the artifact script; the SDK prepends the constructor arguments to form the redeem script.
   const filled = fillPlaceholders(scriptBytes(artifact), placeholders, {
-    category: CATEGORY, contractAddress: address, templateHash: TEMPLATE_HASH,
+    category: categorySlotValue(CATEGORY), contractAddress: address, templateHash: TEMPLATE_HASH,
   });
   const redeemScript = new Uint8Array([
     ...encodeDataPush(address), // `expected`

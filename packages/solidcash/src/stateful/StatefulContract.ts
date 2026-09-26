@@ -9556,8 +9556,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const completeIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__completePushValue_${slotIndex}`
                   || input.name === '__internal__completePushValue');
-                // Complete folded value is the kernel-encoded array after every active row; leading is prior rows.
-                kernelEncodedValue = completeValue ?? leadingValue;
+                // Fold witnesses contain only this route's mutations. The handler appends them to
+                // the authenticated old array, so persistence must retain that same prefix too.
+                // Keep the ABI witnesses as mutation-only payloads to avoid replaying old elements.
+                kernelEncodedValue = completeValue
+                  ? concatenateEncodedArrays(
+                    authenticatedChunkableValue
+                      ?? encodePushdataValue([], collection.valueType, stateLayout.structs),
+                    completeValue,
+                  ) : undefined;
                 if (leadingValue && leadingIndex >= 0) {
                   entryArgs[leadingIndex] = leadingValue;
                   if (entryAbiFunction === abiFunction) finalArgs[leadingIndex] = leadingValue;

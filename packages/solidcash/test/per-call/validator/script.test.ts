@@ -610,6 +610,69 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses a callee whose value is not the value the call recorded', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.value = 7n;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_VALUE_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a callee whose sender is not the caller\'s address', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.sender = new Uint8Array(25).fill(0x22);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_SENDER_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a call whose target is not the callee\'s address', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const calleeIndex = composition.masterIndex.get('B.g')!;
+    composition.blocks.get('A.f')!.calls.find((call) => call.calleeRef === calleeIndex)!.target
+      = new Uint8Array(35).fill(0x33);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_SELF_NOT_TARGET');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses an internal frame whose address is not its caller\'s address', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const caller = composition.blocks.get('A.f')!;
+    const callee = composition.blocks.get('B.g')!;
+    const calleeIndex = composition.masterIndex.get('B.g')!;
+    caller.calls.find((call) => call.calleeRef === calleeIndex)!.kind = FrameKind.INTERNAL;
+    callee.kind = FrameKind.INTERNAL;
+    callee.sender = caller.sender;
+    callee.value = caller.value;
+    callee.self = new Uint8Array(35).fill(0x46);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_SELF_NOT_CALLER_SELF');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a callee whose result is not the result the call recorded', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('B.g')!.retval = new Uint8Array([0x99]);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_RETVAL_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
+  test('refuses a call whose argument digest is not the callee\'s pushes', () => {
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    composition.blocks.get('A.f')!.calls[0]!.argsHash = new Uint8Array(32).fill(0x44);
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).rejection?.reason).toBe('V5_ARGS_HASH_MISMATCH');
+    expect(accepted(modelled, index)).toBe(false);
+  });
+
   test('refuses a covered master whose address is not its category\'s', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;

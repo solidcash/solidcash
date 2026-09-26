@@ -17,8 +17,17 @@
  */
 
 import { Opcodes, encodeDataPush } from '@bitauth/libauth';
-import { TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
-import { splitFirstPushScript, unsignedLength } from '../master/witness-reader.js';
+import { FrameKind, TokenCapability, VALIDATOR_PIN_PUSH_LENGTH, encodeInt } from '@solidcash/utils';
+import {
+  dropFirstPushScript,
+  dropLastPushScript,
+  dropPrefix,
+  splitFirstPushScript,
+  takeFixedWidthField,
+  takeLengthPrefixedField,
+  takeLengthPrefixedField32,
+  unsignedLength,
+} from '../master/witness-reader.js';
 import { addressCheckScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
@@ -62,6 +71,12 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_CALLER_MISMATCH',
   'V5_KIND_MISMATCH',
   'V5_ORIGIN_MISMATCH',
+  'V5_VALUE_MISMATCH',
+  'V5_SENDER_MISMATCH',
+  'V5_SELF_NOT_TARGET',
+  'V5_SELF_NOT_CALLER_SELF',
+  'V5_RETVAL_MISMATCH',
+  'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
   'V5_MASTER_CALLED_TWICE',
   'V9_NO_ROOT',
@@ -85,8 +100,9 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 4. V9 on `[M, rootCount, rest]`: the first root's own category is this validator's;
  * 5. V3 on `[M]`: `M.masters` is exactly the set of minting inputs whose witness names this validator;
  * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
- * 7. edges on `[M]`: every call names a covered master that records this caller, this kind and this origin, and
- *    every covered master that is not a root is named by exactly one call.
+ * 7. edges on `[M]`: every call names a covered master that records this caller, this kind, this origin, the value,
+ *    the sender, the address and the result the call recorded, and the argument hash of the callee's own pushes.
+ *    Every covered master that is not a root is named by exactly one call.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -463,10 +479,11 @@ function emitCoveredFrame(e: Emitter): void {
 }
 
 /**
- * Every call names a covered master, and that master records the caller, the kind and the origin the call does.
- * A covered master that is not a root is named by exactly one such call.
+ * Every call names a covered master that records the caller, the kind, the origin, the value, the sender, the
+ * address and the result the call recorded, and whose own pushes hash to the call's argument digest. A covered
+ * master that is not a root is named by exactly one such call.
  *
- * Entry `[M]`, exit `[M]`. Value, sender, result and argument hash are not decided here.
+ * Entry `[M]`, exit `[M]`.
  */
 function emitEdgeRules(e: Emitter): void {
   const O = Opcodes;
@@ -530,11 +547,13 @@ function emitEdgesOfMaster(e: Emitter): void {
   e.op(O.OP_OVER, O.OP_INPUTBYTECODE);
   emitSoftFirstPayload(e);
   e.op(O.OP_VERIFY);
-  dropFront(e, 10);
-  dropLengthPrefixed(e, 2);
-  dropLengthPrefixed(e, 2);
-  dropFront(e, 8);
-  dropLengthPrefixed(e, 4);
+  e.script(dropPrefix(10));
+  e.script(takeLengthPrefixedField());
+  e.script(takeLengthPrefixedField());
+  e.script(takeFixedWidthField(8));
+  // The caller's own return value is not an edge. The tail that follows is the call list.
+  e.script(takeLengthPrefixedField32());
+  e.op(O.OP_NIP);
   takeUnsignedCount(e, 2);
   e.op(O.OP_BEGIN);
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
@@ -542,7 +561,7 @@ function emitEdgesOfMaster(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
-  e.op(O.OP_NIP, O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_NIP, O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_DROP);
 }
 
 /** Kind, caller and origin of the input index on top. Entry `[index]`, exit `[kind, caller, origin]`. */
@@ -563,40 +582,146 @@ function emitIndexHead(e: Emitter): void {
   e.unsignedByteOnTop();
 }
 
+/** Eight zero bytes: the only `u64` a read-only call may carry, and the value its callee must carry. */
+const ZERO_U64 = new Uint8Array(8);
+
 /**
  * One call of the master under inspection.
  *
- * Entry `[index, origin, callCount, rest]`, exit the same with that call consumed. The callee has to be a covered
- * master whose own witness names this index, this call's kind and this origin.
+ * Entry `[index, origin, sender, self, callerValue, callCount, rest]`, exit the same with that call consumed.
+ * The callee is a covered master. It records this caller, this kind and this origin. Its value, sender, address
+ * and result are the ones the call recorded, and its unlocking bytecode hashes to the call's argument digest.
  */
 function emitOneEdge(e: Emitter): void {
   const O = Opcodes;
-  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
-  e.unsignedByteOnTop();
-  e.op(O.OP_SWAP);
-  dropLengthPrefixed(e, 2);
-  dropFront(e, 8);
-  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
-  e.op(O.OP_SWAP);
-  dropFront(e, 32);
-  dropLengthPrefixed(e, 4);
+  // `[index, origin, sender, self, callerValue, callCount, rest]`.
+  e.script(takeFixedWidthField(1));
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
   e.op(O.OP_SWAP);
-  // `[index, origin, callCount, kind, callee, rest]`.
-  e.count(6).op(O.OP_PICK);
-  e.count(2).op(O.OP_PICK);
+  e.script(takeLengthPrefixedField());
+  e.script(takeFixedWidthField(8));
+  e.script(takeFixedWidthField(2));
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  e.script(takeFixedWidthField(32));
+  e.script(takeLengthPrefixedField32());
+  // `[..., kind, target, callValue, callee, argsHash, result, rest]`.
+  e.count(13).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitCountByte(e);
   e.count(1).op(O.OP_NUMEQUALVERIFY);
-  e.count(1).op(O.OP_PICK);
+  requireCalleeHead(e);
+  requireCalleeBody(e);
+  e.count(5).op(O.OP_PICK);
+  e.count(7).op(O.OP_PICK);
+  emitArgumentHash(e);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_NIP, O.OP_NIP, O.OP_NIP, O.OP_NIP, O.OP_NIP, O.OP_NIP);
+}
+
+/**
+ * The callee records this caller, this kind and this origin.
+ *
+ * Entry is the stack `emitOneEdge` holds once the call is parsed. Exit drops the callee's head.
+ */
+function requireCalleeHead(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
   emitIndexHead(e);
   e.count(1).op(O.OP_PICK);
-  e.count(9).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.count(16).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
   e.count(2).op(O.OP_PICK);
-  e.count(6).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.count(10).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
   e.op(O.OP_DUP);
-  e.count(8).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
-  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP, O.OP_NIP, O.OP_NIP);
+  e.count(15).op(O.OP_PICK, O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * The callee's value, sender, address and result are the ones the call recorded.
+ *
+ * Entry is the parsed call. Exit leaves the callee's value, address and sender above the same call, so the
+ * argument digest can still see it.
+ */
+function requireCalleeBody(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitCalleeMaterial(e);
+  e.count(5).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.count(9).op(O.OP_PICK);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL);
+  // The comparison leaves its result, so the kind is one deeper than it was.
+  e.count(10).op(O.OP_PICK);
+  e.count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL, O.OP_BOOLOR, O.OP_IF);
+  emitDelegateEdge(e);
+  e.op(O.OP_ELSE);
+  emitMessageEdge(e);
+  e.op(O.OP_ENDIF);
+}
+
+/** Entry `[index]`, exit `[sender, self, value, retval]`. The value stays eight raw bytes, so it compares equal. */
+function emitCalleeMaterial(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  e.script(dropPrefix(10));
+  e.script(takeLengthPrefixedField());
+  e.script(takeLengthPrefixedField());
+  e.script(takeFixedWidthField(8));
+  e.script(takeLengthPrefixedField32());
+  e.op(O.OP_DROP);
+}
+
+/**
+ * A message call, a read-only call or a create. The callee's sender is the caller's address, its address is the
+ * recorded target, and a read-only call carries no value on either side.
+ *
+ * Entry is the stack `emitOneEdge` holds after the callee's material is read. Exit drops nothing.
+ */
+function emitMessageEdge(e: Emitter): void {
+  const O = Opcodes;
+  e.count(2).op(O.OP_PICK);
+  e.count(13).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.count(1).op(O.OP_PICK);
+  e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.count(9).op(O.OP_PICK);
+  e.count(FrameKind.STATIC).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DUP);
+  e.push(ZERO_U64).op(O.OP_EQUALVERIFY);
+  e.count(7).op(O.OP_PICK);
+  e.push(ZERO_U64).op(O.OP_EQUALVERIFY);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DUP);
+  e.count(8).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
+}
+
+/**
+ * A delegate or internal call. The callee carries the caller's value, sender and address.
+ *
+ * Entry is the stack `emitOneEdge` holds after the callee's material is read. Exit drops nothing.
+ */
+function emitDelegateEdge(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.count(12).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.count(2).op(O.OP_PICK);
+  e.count(14).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.count(1).op(O.OP_PICK);
+  e.count(13).op(O.OP_PICK, O.OP_EQUALVERIFY);
+}
+
+/** Entry `[argsHash, index]`, exit `[]`. The digest is `SHA256(selector || argument pushes)`. */
+function emitArgumentHash(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTBYTECODE);
+  e.script(dropFirstPushScript());
+  e.script(dropLastPushScript());
+  e.script(splitFirstPushScript());
+  e.op(O.OP_CAT, O.OP_SHA256, O.OP_EQUALVERIFY);
 }
 
 /**

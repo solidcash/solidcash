@@ -17,7 +17,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 275 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 276 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -31,7 +31,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 859 tests, all passing at `8a2c56e99` (114 + 313 + 432).
+Total: 860 tests, all passing at `dfa91f535` (114 + 314 + 432).
 
 ## What each directory covers
 
@@ -44,7 +44,9 @@ Total: 859 tests, all passing at `8a2c56e99` (114 + 313 + 432).
   offsets, the frame checks the machine enforces on a real spend (ownership, recreation, hash type, `msg.sender`,
   `tx.origin`, `address(this)`), the witness-block reader, dispatch over one master's entry points, state read and
   written through the frame's declared record indices, record settlement across the segments of one execution, the
-  returns an entry settles against the frame's `retval`, call sites and their argument digests, a dynamic value's
+  returns an entry settles against the frame's `retval`, one head serving bodies that make different numbers of
+  calls and each body pinning the block's declared count to its own, call sites and their argument digests, a
+  dynamic value's
   chunk run addressed from the frame's declared record block rather than from the master's own input
   (`dynamic-state-record.test.ts`, which lays the block away from the master so a fixed offset would fail), and the
   shapes the generator refuses by name (including imports that contribute emitted definitions, which a
@@ -155,11 +157,16 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   whose unit contributes free functions, which a master emits nothing before
   (`EACCToken.sol` and `MockSablierLockup.sol` both stop there). The ladder stands at "blocked at compile" and no
   title count is claimed.
-- The composer lays out the shapes whose entries make the same number of external calls: the two-contract round trip
-  the design's worked example uses is refused before composition, because a contract entered twice has one entry
-  that calls and one that does not, so the entries disagree about how many call records the head's tail holds. A
-  user-entered multi-entry master and a two-master contract whose validator has nothing to settle are refused by
-  name, and so are delegatecall, mapping records and value sends.
+- A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
+  the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state
+  write — is emitted and deploys, and a block declaring a count no body makes is refused at the caller. What is not
+  settled is the *composition* of such a shape: the two-contract round trip (`frames/two-contract-round-trip.test.ts`)
+  compiles and deploys but its transaction is not assembled or evaluated yet, so no machine verdict is claimed for
+  it. A user-entered multi-entry master and a two-master contract whose validator has nothing to settle are still
+  refused by name, and so are delegatecall, mapping records and value sends. One wall the round-trip source met on
+  the way: a contract that emits inside one of two entries is refused with "the contract emits an event that is not
+  attributed to a body", so the round-trip test drops that entry's event; the attribution the event region needs does
+  not survive that shape and is not diagnosed here.
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.

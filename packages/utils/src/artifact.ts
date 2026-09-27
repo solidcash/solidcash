@@ -1710,13 +1710,16 @@ export interface Artifact {
      * Present when route geometry reserves `tokenContainer` slots beside trailing dyn capacity.
      */
     tokenContainerCoLayout?: import('./token-container-co-layout.js').TokenContainerCoLayoutProof;
-    /** Direct chunkable whole-entry writes whose handler-local continuation pin is sound only when the complete
-     * participant route selects at most `maximumRows` rows from this selector family. The covenant enforces the
-     * aggregate bound; SDK encoders mirror it for deterministic preflight diagnostics. */
+    /** Direct chunkable whole-entry writes. Handler-local continuation pins require the aggregate `maximumRows`
+     * bound, except for the explicit subset proved to settle through the shared route cache. The covenant
+     * enforces the bound; SDK encoders mirror it for deterministic preflight diagnostics. */
     fixedChunkableWritePolicy?: {
       version: 1;
       maximumRows: 1;
       selectors: readonly string[];
+      /** Subset whose completed lowering shares one pending value per resource across all route rows and
+       * flushes only at route exit. These selectors do not consume the handler-local occurrence bound. */
+      pooledSelectors?: readonly string[];
     };
     /** Compiler-published admission and message-envelope contract for atomic composition. */
     atomicMessageBus?: {

@@ -27,6 +27,7 @@ import {
   MappingAccessNode,
   MappingAssignNode,
   MappingDeleteNode,
+  MappingFieldAssignNode,
   Node,
   NullaryOpNode,
   ParameterNode,
@@ -201,6 +202,37 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     const collections = new Map(node.collections.map((collection) => [collection.name, collection]));
+    // Capture the route before generated cache loads/flushes are installed. A raw access already in this body
+    // must never be mistaken for one of those authenticated accesses when discharging an occurrence guard.
+    const rawCollections = (fn: FunctionDefinitionNode): Set<string> => {
+      const names = new Set<string>();
+      const locals = new Set(fn.parameters.map((parameter) => parameter.name));
+      this.walk(fn.body, (child) => { if (child instanceof VariableDefinitionNode) locals.add(child.name); });
+      this.walk(fn.body, (child) => {
+        if (child instanceof MappingAccessNode || child instanceof MappingAssignNode
+          || child instanceof MappingDeleteNode || child instanceof MappingFieldAssignNode) names.add(child.name);
+        else if (child instanceof ArrayAccessNode && child.array instanceof IdentifierNode
+          && !locals.has(child.array.name)) names.add(child.array.name);
+        else if ((child instanceof ArrayAssignNode || child instanceof ArrayDeleteNode)
+          && !locals.has(child.name)) names.add(child.name);
+        // An unresolved function pointer can reach an unjournalled helper; no collection is proven pooled.
+        else if (child instanceof IndirectCallNode) for (const name of collections.keys()) names.add(name);
+      });
+      return new Set([...names].filter((name) => collections.has(name)));
+    };
+    const callees = (fn: FunctionDefinitionNode): Set<FunctionDefinitionNode> => {
+      const targets = new Set<FunctionDefinitionNode>();
+      this.walk(fn.body, (child) => {
+        if (!(child instanceof FunctionCallNode)) return;
+        // Arity changes during journalling. Overloads are conservatively included; a unique generated clone
+        // keeps its identity independent of appended synthetic operands.
+        for (const target of node.functions) if (target.name === child.identifier.name) targets.add(target);
+      });
+      return targets;
+    };
+    const routes = node.functions.filter((fn) => fn.messageBusRoute).map((fn) => ({
+      fn, raw: rawCollections(fn), callees: callees(fn), pooled: new Set<FunctionDefinitionNode>(),
+    }));
     const dynamicArrays = new Map(node.stateVariables.filter((state) =>
       state.isDynamic && state.type instanceof ArrayType)
       .map((state) => [state.name, state.type as ArrayType]));
@@ -483,6 +515,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
+      const route = routes.find((candidate) => candidate.fn === fn);
+      if (route) route.pooled = new Set(this.activeMultiCaches.keys());
       // A pooled dynamic array may only be cached here when EVERY writer of that array in this body is threaded
       // through the journal tuple. A writer that is not (a call emitted directly, or a direct state write) keeps
       // its own frame authoritative, and the pooled flush after the row loop would write this body's PRE-call
@@ -588,6 +622,55 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       candidate.fn.blockLayout = undefined;
       this.invalidateSemanticMetadata(candidate.fn);
       candidate.fn.collectionJournal = true;
+    }
+    for (const route of routes) {
+      // Every reachable helper must now be free of physical accesses to a discharged resource. This rejects
+      // mixed pooled/unpooled readers as well as writers: a later read must observe the previous row's value.
+      const unpooled = new Set(route.raw);
+      const visited = new Set<FunctionDefinitionNode>();
+      const inspect = (fn: FunctionDefinitionNode): void => {
+        if (visited.has(fn)) return;
+        visited.add(fn);
+        for (const name of rawCollections(fn)) unpooled.add(name);
+        for (const target of callees(fn)) inspect(target);
+      };
+      for (const target of route.callees) inspect(target);
+      const discharged = new Set<string>();
+      for (const source of node.functions) {
+        const selector = source.messageBusKernelJournalDispositionSelectorHex;
+        if (!source.isEntryPoint || source.messageBusFixedChunkableWriteMaxRows !== 1
+          || !selector || !source.messageBusFixedChunkableResources?.length) continue;
+        const resources = new Set(source.messageBusFixedChunkableResources.map((resource) => resource.collection));
+        if ([...resources].some((name) => unpooled.has(name))) continue;
+        const variants = [...route.callees].filter((fn) =>
+          fn.messageBusKernelJournalDispositionSelectorHex === selector);
+        if (variants.length === 0 || variants.some((fn) => {
+          const candidate = [...this.threadedMultis].find((entry) => entry.fn === fn);
+          return !route.pooled.has(fn) || !candidate || fn.collectionJournal !== true
+            || [...resources].some((name) => !candidate.entries.some((entry) =>
+              entry.collection === name && entry.mutates));
+        })) continue;
+        // Do not publish a capability unless this exact route contains its compiler-stamped guard.
+        let guarded = false;
+        this.walk(route.fn.body, (child) => {
+          if (child instanceof RequireNode && child.messageBusFixedChunkableWriteGuard === selector) guarded = true;
+        });
+        if (!guarded) continue;
+        source.messageBusPooledChunkableWrite = true;
+        discharged.add(selector);
+      }
+      if (discharged.size === 0) continue;
+      this.walk(route.fn.body, (child) => {
+        if (!(child instanceof BlockNode)) return;
+        child.statements = child.statements?.filter((statement) =>
+          !discharged.has(statement.messageBusFixedChunkableWriteGuard ?? ''));
+      });
+      let remainingGuard = false;
+      this.walk(route.fn.body, (child) => {
+        if (child instanceof RequireNode && child.messageBusFixedChunkableWriteGuard) remainingGuard = true;
+      });
+      if (!remainingGuard) route.fn.body.statements = route.fn.body.statements?.filter((statement) =>
+        !(statement instanceof VariableDefinitionNode && statement.name === '__message_bus_fixed_chunkable_write_count'));
     }
     return node;
   }

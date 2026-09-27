@@ -4169,7 +4169,8 @@ const nodeContainsChunkableWrite = (
  * continuation-resource claims so each band is authenticated independently under the scalar band[0] witness.
  * A write may also sit behind a single bool-parameter BranchNode (empty else); its activation recipe is
  * published on the entry access so inactive resources omit continuation bands without shifting entry layout.
- * A route-level aggregate selector counter still supplies the missing terminality fact across rows.
+ * A route-level aggregate selector counter supplies the missing terminality fact across rows unless completed
+ * collection-journal lowering proves all accesses share the route's one pending-value pool and terminal flush.
  */
 function fixedChunkableWriteWithSingleOccurrenceBound(
   fn: FunctionDefinitionNode,
@@ -5764,6 +5765,7 @@ function synthesizeMessageBusRoute(
         fn, collectionByName, signatureClosureByName, footprintCache,
       ) : undefined;
     fn.messageBusFixedChunkableWriteMaxRows = fixedChunkableWriteCollection === undefined ? undefined : 1;
+    fn.messageBusPooledChunkableWrite = undefined;
     fn.messageBusFixedChunkableWriteEffectOrdinal = fixedChunkableWrite?.effectOrdinal;
     fn.messageBusPooledChunkableArrayPush = pooledChunkableArrayPush === undefined ? undefined : true;
     fn.messageBusPooledChunkableArrayPushActivation = pooledChunkableArrayPush?.activation;
@@ -11690,6 +11692,24 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  // Stamp only the generated dispatch guard, not a similarly spelled statement in a source handler. The
+  // collection-journal pass may discharge it after proving the complete route uses one pending-value pool.
+  const fixedChunkableSelectors = new Set([...fixedChunkableWriteHandlers].map(selector));
+  walkInvocationAst(route.body, (node) => {
+    if (!(node instanceof BranchNode) || !(node.condition instanceof BinaryOpNode)
+      || node.condition.operator !== BinaryOperator.EQ
+      || !(node.condition.left instanceof IdentifierNode) || node.condition.left.name !== 'rowSelector'
+      || !(node.condition.right instanceof HexLiteralNode)) return;
+    const selected = binToHex(node.condition.right.value);
+    if (!fixedChunkableSelectors.has(selected)) return;
+    const statements = node.ifBlock.statements ?? [];
+    const index = statements.findIndex((statement) => statement instanceof AssignNode
+      && statement.identifier.name === '__message_bus_fixed_chunkable_write_count');
+    const guard = statements[index + 1];
+    if (index < 0 || !(guard instanceof RequireNode)) return;
+    statements[index].messageBusFixedChunkableWriteGuard = selected;
+    guard.messageBusFixedChunkableWriteGuard = selected;
+  });
   route.usesDynamicChunkInputBase = eligible.some((fn) => fn.usesDynamicChunkInputBase === true);
   const expectedReadCarrierScopes = (compilerOptions as InternalCompilerOptions)
     .__kernelReadCarrierAuthorizationBox?.expectedScopes;
@@ -14987,6 +15007,14 @@ function compileResolvedAst(
           version: 1 as const,
           maximumRows: 1 as const,
           selectors: fixedChunkableWriteSelectors,
+          ...(() => {
+            const pooledSelectors = ast.contract.functions.filter((fn) => fn.isEntryPoint
+              && fn.messageBusEligible === true && fn.messageBusPooledChunkableWrite === true
+              && fn.functionSelector !== undefined)
+              .map((fn) => binToHex(fn.functionSelector!))
+              .filter((selected) => fixedChunkableWriteSelectors.includes(selected)).sort();
+            return pooledSelectors.length > 0 ? { pooledSelectors } : {};
+          })(),
         },
       }),
       atomicMessageBus: {

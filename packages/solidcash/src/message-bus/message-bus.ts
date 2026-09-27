@@ -727,9 +727,12 @@ export function encodeMessageBatch(
   const fixedChunkablePolicy = capability.fixedChunkableWritePolicy;
   if (fixedChunkablePolicy !== undefined) {
     const selectors = fixedChunkablePolicy.selectors.map(normalizeFunctionSelector);
+    const pooledSelectors = (fixedChunkablePolicy.pooledSelectors ?? []).map(normalizeFunctionSelector);
     if (fixedChunkablePolicy.version !== 1 || fixedChunkablePolicy.maximumRows !== 1
       || selectors.some((selector) => selector === undefined)
-      || new Set(selectors).size !== selectors.length) {
+      || new Set(selectors).size !== selectors.length
+      || pooledSelectors.some((selector) => selector === undefined || !selectors.includes(selector))
+      || new Set(pooledSelectors).size !== pooledSelectors.length) {
       throw new MessageBusDiagnosticError(
         'L3_PROTOCOL_METADATA_MALFORMED',
         `artifact '${artifact.contractName}' publishes malformed fixed chunkable-write policy metadata`,
@@ -738,7 +741,8 @@ export function encodeMessageBatch(
     }
     const selected = invocations.filter((invocation) => {
       const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
-      return handler !== undefined && selectors.includes(normalizeFunctionSelector(handler.selector));
+      const selector = handler === undefined ? undefined : normalizeFunctionSelector(handler.selector);
+      return selector !== undefined && selectors.includes(selector) && !pooledSelectors.includes(selector);
     }).length;
     if (selected > fixedChunkablePolicy.maximumRows && options.atomicContinuationConvergence !== true) {
       throw new Error(

@@ -34,6 +34,7 @@ describe('required kernel admission', () => {
     expect(handler).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
       version: 1, maximumRows: 1, selectors: [handler?.selector],
+      pooledSelectors: [handler?.selector],
     });
     expect(abi?.sourceEffectOrder).toBe('unsupported-flow');
     expect(abi?.entryAccesses).toEqual([
@@ -102,7 +103,7 @@ describe('required kernel admission', () => {
     })]);
   });
 
-  it('admits one direct linear chunkable whole-entry transition behind an authenticated occurrence bound', () => {
+  it('admits a direct linear chunkable whole-entry transition with completed route pooling', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record {
         address owner;
@@ -131,6 +132,7 @@ describe('required kernel admission', () => {
     expect(handler).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.fixedChunkableWritePolicy).toEqual({
       version: 1, maximumRows: 1, selectors: [handler?.selector],
+      pooledSelectors: [handler?.selector],
     });
     expect(abi?.entryAccesses).toEqual([
       expect.objectContaining({

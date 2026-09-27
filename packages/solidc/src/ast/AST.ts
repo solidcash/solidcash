@@ -834,8 +834,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** This handler owns one direct chunkable whole-entry transition family (unconditional and/or bool-param
    * activated). The generated participant route authenticates that at most one row from the complete marked
    * selector family executes, so its body is the unique terminal continuation producer. This is an occurrence
-   * bound, not permission to chain mutations. */
+   * bound, not permission to chain mutations unless completed lowering additionally proves route pooling. */
   messageBusFixedChunkableWriteMaxRows?: 1;
+  /** Completed collection-journal lowering proved every access to these resources shares the route cache. */
+  messageBusPooledChunkableWrite?: true;
   /** Exact mutation identity in the selector-scoped fixed-chunkable occurrence domain. */
   messageBusFixedChunkableWriteEffectOrdinal?: number;
   /** Per-resource fixed-chunkable descriptors, including optional bool-param activation recipes. */
@@ -1063,7 +1065,10 @@ export class StateVariableNode extends Node implements Named, Typed {
   }
 }
 
-export abstract class StatementNode extends Node { }
+export abstract class StatementNode extends Node {
+  /** Compiler-generated occurrence counter/guard; only completed route-journal lowering may discharge it. */
+  messageBusFixedChunkableWriteGuard?: string;
+}
 
 export class StateAssignNode extends StatementNode {
   stateVariable?: StateVariableNode;

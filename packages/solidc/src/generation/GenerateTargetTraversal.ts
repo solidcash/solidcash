@@ -3102,13 +3102,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * body behind the head reads or writes dynamic state.
    *
    * The width is measured in input-consuming slots, so a coordinate an output-only slot reserves does not shift it:
-   * a body that returns a value and one that does not still agree on where the run sits. The width is a fact about
-   * the contract's layout, so bodies that share the head have to agree on it; a disagreement is refused by name
-   * rather than approximated, because one coordinate cannot address runs whose layouts differ.
+   * a body that returns a value and one that does not still agree on where the run sits. The bodies this counts are
+   * the ones the master serves: a body whose own layout places the run elsewhere is refused by name before the head
+   * is emitted, so a disagreement here is a bug in that decision rather than a shape, and it still refuses.
    */
   private perCallDynamicChunkWidth(node: ContractNode): number | undefined {
     const bodies = [node.constructorDef, ...node.functions].filter(
-      (fn): fn is FunctionDefinitionNode => fn !== undefined && fn.usesDynamicChunkInputBase === true,
+      (fn): fn is FunctionDefinitionNode => fn !== undefined && fn.usesDynamicChunkInputBase === true
+        && !this.perCallRefusedEntries.has(fn.name),
     );
     if (bodies.length === 0) return undefined;
     const widths = new Set(bodies.map((fn) => {

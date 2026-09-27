@@ -14,6 +14,7 @@ import {
   ArrayType,
   FixedType,
   FrameKind,
+  blockInputSize,
   FunctionType,
   IntType,
   MappingType,
@@ -668,6 +669,39 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
         + 'makes have no entry to bind their records to');
     }
   }
+  // A body that reads or writes a dynamic value addresses its chunk run one layout width past the block's declared
+  // records, and the head leaves that one coordinate for every body it serves. Bodies whose layouts place the run at
+  // different widths therefore cannot share the coordinate: the master serves the width most of them use and refuses
+  // the rest by name, each with the width its own layout needs, rather than approximating a coordinate that would
+  // address the wrong bytes for one of them.
+  const dynamicBodies = [
+    ...(contract.constructorDef ? [contract.constructorDef] : []),
+    ...contract.functions,
+  ].filter((fn) => fn.usesDynamicChunkInputBase === true);
+  if (dynamicBodies.length > 1) {
+    const widthOf = (fn: FunctionDefinitionNode): number | undefined =>
+      fn.blockLayout === undefined ? undefined : blockInputSize(fn.blockLayout);
+    const counts = new Map<number, number>();
+    for (const fn of dynamicBodies) {
+      const width = widthOf(fn);
+      if (width !== undefined) counts.set(width, (counts.get(width) ?? 0) + 1);
+    }
+    let preferred: number | undefined;
+    for (const fn of dynamicBodies) {
+      const width = widthOf(fn);
+      if (width === undefined) continue;
+      if (preferred === undefined || (counts.get(width) ?? 0) > (counts.get(preferred) ?? 0)) {
+        preferred = width;
+      }
+    }
+    for (const fn of dynamicBodies) {
+      const width = widthOf(fn);
+      if (width === preferred) continue;
+      refuseBody(fn, `the body's layout places the dynamic-value chunk run at ${width ?? 'an unknown'} slot(s) `
+        + `past the block's declared records, and the master leaves one coordinate for the bodies it serves, which `
+        + `is the width most of them use (${preferred ?? 'unknown'})`);
+    }
+  }
   // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value
   // its own code computed against it, and a void entry requires it empty. Each returning entry's shape is checked
   // one by one.
@@ -727,7 +761,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       entryCalls,
       callCount: 0,
       tail: tail.tail,
-      ...(refusals.size > 0 ? { refusedEntries: renderRefusals(entryPoints, refusals) } : {}),
+      ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
     };
   }
   return {
@@ -735,18 +769,21 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     entryCalls,
     callCount: calls.callCount,
     tail: tail.tail,
-    ...(refusals.size > 0 ? { refusedEntries: renderRefusals(entryPoints, refusals) } : {}),
+    ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
   };
 }
 
 /** The refusals as the entry list the assessment publishes, in entry order. */
 function renderRefusals(
+  contract: ContractNode,
   entryPoints: readonly FunctionDefinitionNode[],
   refusals: ReadonlyMap<string, string>,
 ): readonly { readonly entryName: string; readonly reason: string }[] {
-  return entryPoints
-    .filter((entry) => refusals.has(entry.name))
-    .map((entry) => ({ entryName: entry.name, reason: refusals.get(entry.name)! }));
+  // The constructor is dispatched like an entry behind the same head, so a refusal it carries is published beside
+  // the entries': a builder reads which body of the contract is unsupported, and the constructor is one.
+  return [...(contract.constructorDef ? [contract.constructorDef] : []), ...entryPoints]
+    .filter((body) => refusals.has(body.name))
+    .map((body) => ({ entryName: body.name, reason: refusals.get(body.name)! }));
 }
 
 interface RefusedBody {

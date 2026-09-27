@@ -13,6 +13,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
   findDeploymentByAddress,
@@ -93,6 +94,7 @@ export async function resolveExternalExpressionReturns(
     resultConsumers?: readonly ExternalResultConsumerAbi[];
     lane: 'condition';
   },
+  occurrenceIndex = 0,
 ): Promise<Map<string, FunctionArgument>> {
   const resolved = new Map<string, FunctionArgument>();
   const producerByCallsite = new Map<number, ExternalCallAbi>();
@@ -126,7 +128,8 @@ export async function resolveExternalExpressionReturns(
         ? findDeploymentByLockingBytecode(host.inner.provider, binToHex(target))?.contract
         : undefined;
     return (deploymentAtTarget
-      ?? (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })._externalRegistry.get(interfaceName)
+      ?? (registryOwner as unknown as { _externalRegistry: Map<string, StatefulContract> })
+        ._externalRegistry.get(interfaceName)
       ?? host.externalRegistry.get(interfaceName)
       ?? findDeploymentByName(host.inner.provider, interfaceName)?.contract) as StatefulContract | {
       forward(name: string, args: FunctionArgument[]): StatefulFunctionCall;
@@ -314,13 +317,13 @@ export async function resolveExternalExpressionReturns(
       if (producer.addressSource?.kind === 'expression') await visit(producer.addressSource.expression);
       const values = host.resolveExternalArgs(
         sources, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-        0, false, executionSelfAddress,
+        occurrenceIndex, false, executionSelfAddress,
       );
       if (!values) return undefined;
       const target = producer.addressSource
         ? host.resolveExternalArgs(
           [producer.addressSource], functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-          0, false, executionSelfAddress,
+          occurrenceIndex, false, executionSelfAddress,
         )?.[0]
         : undefined;
       const rawTarget = producer.interfaceName === '__raw__'
@@ -371,11 +374,7 @@ export async function resolveExternalExpressionReturns(
       resolvingProducers.delete(callsiteId);
     }
   };
-  const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
-    if (!expression) return;
-    for (const child of [expression.target, expression.expression, expression.left, expression.right,
-      expression.condition, expression.ifTrue, expression.ifFalse]) await visit(child);
-    for (const child of expression.args ?? []) await visit(child);
+  const visitNode = async (expression: ExternalCallExpression): Promise<void> => {
     if (expression.kind === 'producerResult' && expression.callsiteId !== undefined) {
       const producer = producerByCallsite.get(expression.callsiteId);
       const resultIndex = expression.resultIndex;
@@ -419,18 +418,25 @@ export async function resolveExternalExpressionReturns(
     const functionName = expression.name.slice(separator + 1);
     const values = (expression.args ?? []).map((argument) => host.evaluateExternalExpression(
       argument, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-      0, false, executionSelfAddress,
+      occurrenceIndex, false, executionSelfAddress,
     ));
     if (values.some((value) => value === undefined)) return;
     const target = expression.target && host.evaluateExternalExpression(
       expression.target, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
-      0, false, executionSelfAddress,
+      occurrenceIndex, false, executionSelfAddress,
     );
     const value = await derive(
       interfaceName, functionName, values as FunctionArgument[], target,
       expression.type ? [expression.type] : undefined,
     );
     if (value !== undefined) resolved.set(JSON.stringify(expression), value);
+  };
+  const visit = async (expression: ExternalCallExpression | undefined): Promise<void> => {
+    if (!expression) return;
+    await visitExternalExpressionEvaluationPath(expression, visitNode, (candidate) => host.evaluateExternalExpression(
+      candidate, functionArgs, registryOwner.inner.artifact, state, callerInputs, resolved,
+      occurrenceIndex, false, executionSelfAddress,
+    ));
   };
   for (const source of argSources ?? []) await visit(source.expression);
   return resolved;

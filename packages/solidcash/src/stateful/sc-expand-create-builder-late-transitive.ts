@@ -7,6 +7,7 @@ import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
   type AbiFunction,
+  type ArgSource,
   type ExternalCallAbi,
   type StateLayout,
   type StateValue,
@@ -21,6 +22,7 @@ import {
   getEntryNftAddress,
 } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 import {
@@ -145,15 +147,75 @@ export async function expandCreateBuilderLateTransitive(
     if (!parentFn?.externalCalls?.length) continue;
     const graphPlanningResults = createGraphPlanningProducerResultContext();
     const parentState = await logicalParentContract.getState() as Record<string, StateValue>;
+    const expressionReturns = (
+      sources: readonly ArgSource[] | undefined,
+      args: FunctionArgument[],
+      allowProvisional: boolean,
+      iterationIndex = 0,
+      conditionCallsite?: ExternalCallAbi,
+    ): Promise<Map<string, FunctionArgument> | undefined> => sources?.some((source) => source.kind === 'expression')
+      ? logicalParentContract._resolveExternalExpressionReturns(
+        sources, args, logicalParentContract, parentState, parentFn.inputs,
+        parentOutgoingSelfAddress, parentFn.externalCalls, allowProvisional, graphPlanningResults,
+        conditionCallsite && {
+          callsiteId: conditionCallsite.callsiteId, resultConsumers: parentFn.resultConsumers, lane: 'condition',
+        }, iterationIndex,
+      ) : Promise.resolve(undefined);
+    const frames: Array<{ nested: ExternalCallAbi; iterationIndex: number; occurrenceIndex: number }> = [];
     for (const nested of parentFn.externalCalls) {
       if (allGroupParentIndices.some((candidate, index) => candidate === parentGroupIndex
         && (allGroupEcSlots[index] as ExternalCallAbi | undefined)?.callsiteId === nested.callsiteId)) {
         continue;
       }
+      let iterationIndices = [0];
+      if (nested.occurrence === 'loop') {
+        const domain = nested.iterationDomain;
+        if (!domain) throw new Error(`Late external callsite ${nested.callsiteId} has no exact iteration domain`);
+        const domainReturns = await expressionReturns(
+          [domain.initialValue, domain.stepValue, domain.continueCondition]
+            .map((expression) => ({ kind: 'expression', expression })), logicalParentArgs, false,
+        );
+        iterationIndices = externalCallIterationIndices(domain, (expression, bindings) =>
+          logicalParentContract._evaluateExternalExpression(
+            expression, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
+            domainReturns, 0, false, parentOutgoingSelfAddress, bindings,
+          ));
+      }
+      let occurrenceIndex = 0;
+      for (const iterationIndex of iterationIndices) {
+        if (nested.condition) {
+          const conditionReturns = await expressionReturns(
+            [{ kind: 'expression', expression: nested.condition }], logicalParentArgs, false,
+            iterationIndex, nested,
+          );
+          const active = logicalParentContract._evaluateExternalExpression(
+            nested.condition, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
+            conditionReturns, iterationIndex, false, parentOutgoingSelfAddress,
+          );
+          if (typeof active !== 'boolean') throw new Error(
+            `Could not resolve runtime predicate for late external callsite ${nested.callsiteId}`,
+          );
+          if (!active) continue;
+        }
+        // Legacy compact return carriers are addressed by source iteration. Dense reached rows can reuse
+        // that coordinate, but filtering an earlier iteration separates it from the graph occurrence.
+        // Do not publish a compact result at a coordinate the generated caller will not read.
+        if (nested.hasReturnValues && iterationIndex !== occurrenceIndex) throw new Error(
+          `Late external callsite ${nested.callsiteId} return metadata has no per-occurrence source identity`,
+        );
+        frames.push({ nested, iterationIndex, occurrenceIndex });
+        occurrenceIndex += 1;
+      }
+    }
+    for (const { nested, iterationIndex, occurrenceIndex } of frames) {
+      const addressReturns = await expressionReturns(
+        nested.addressSource ? [nested.addressSource] : undefined, logicalParentArgs, preparedAtomicNodes !== undefined,
+        iterationIndex,
+      );
       const resolvedAddressTarget = nested.addressSource
         ? logicalParentContract._resolveExternalArgs(
           [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
-          parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+          parentFn.inputs, addressReturns, iterationIndex, false, parentOutgoingSelfAddress,
         )?.[0]
         : nested.addressStateVar
           ? parentState[nested.addressStateVar] as FunctionArgument | undefined
@@ -195,20 +257,33 @@ export async function expandCreateBuilderLateTransitive(
       };
       const proxyCallee = 'implementation' in registeredCallee ? registeredCallee : undefined;
       const callee = (proxyCallee?.proxy ?? registeredCallee) as any;
+      const graphChildSources = nested.rawArgSources ?? nested.argSources;
+      if (preparedAtomicNodes && parentFn.resultConsumers) {
+        // Validate the compiler's argument lanes before speculative probing; authenticated result refreshes
+        // below use the same source/consumer identity, never a function-name match.
+        externalReturnsForCallsites(graphChildSources, new Map(), parentFn.externalCalls,
+          nested.callsiteId === undefined ? undefined : {
+            callsiteId: nested.callsiteId, resultConsumers: parentFn.resultConsumers,
+          });
+      }
+      const childReturns = await expressionReturns(
+        graphChildSources, logicalParentArgs, preparedAtomicNodes !== undefined, iterationIndex,
+      );
       const childArgs = logicalParentContract._resolveExternalArgs(
-        nested.rawArgSources ?? nested.argSources,
+        graphChildSources,
         logicalParentArgs, logicalParentArtifact, parentState,
-        parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+        parentFn.inputs, childReturns, iterationIndex, false, parentOutgoingSelfAddress,
       );
       if (childArgs === undefined) continue;
+      const graphChildReturns = preparedAtomicNodes
+        ? await expressionReturns(graphChildSources, [...graphParentArgs], true, iterationIndex) : childReturns;
       const graphChildArgs = graphParentArgs === logicalParentArgs
         ? childArgs
         : logicalParentContract._resolveExternalArgs(
-          nested.rawArgSources ?? nested.argSources,
+          graphChildSources,
           [...graphParentArgs], logicalParentArtifact, parentState,
-          parentFn.inputs, undefined, 0, false, parentOutgoingSelfAddress,
+          parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
         ) ?? childArgs;
-      const graphChildSources = nested.rawArgSources ?? nested.argSources;
       const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
         ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
           const externalReturns = externalReturnsForCallsites(
@@ -221,7 +296,7 @@ export async function expandCreateBuilderLateTransitive(
           if (externalReturns.size === 0) return undefined;
           return logicalParentContract._resolveExternalArgs(
             graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
-            parentFn.inputs, externalReturns, 0, false, parentOutgoingSelfAddress,
+            parentFn.inputs, externalReturns, iterationIndex, false, parentOutgoingSelfAddress,
           );
         }
         : undefined;
@@ -739,11 +814,11 @@ export async function expandCreateBuilderLateTransitive(
             }),
             ...(nested.callsiteId !== undefined && {
               sourceCallsiteId: nested.callsiteId,
-              ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+              occurrenceIndex,
             }),
             producerPath: preparedChildProducerPath(parentAtomicNode, {
               sourceCallsiteId: nested.callsiteId,
-              ...((nested.occurrence ?? 'once') !== 'loop' && { occurrenceIndex: 0 }),
+              occurrenceIndex,
               sourceEffectOrdinal: nested.sourceEffectOrdinal,
             }),
             ...(resolveGraphChildArgs && { resolveArgsFromResults: resolveGraphChildArgs }),

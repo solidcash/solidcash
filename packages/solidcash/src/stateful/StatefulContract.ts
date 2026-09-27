@@ -13999,6 +13999,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       resultConsumers?: readonly ExternalResultConsumerAbi[];
       lane: 'condition';
     },
+    occurrenceIndex = 0,
   ): Promise<Map<string, FunctionArgument>> {
     return resolveExternalExpressionReturnsImpl(
       {
@@ -14010,7 +14011,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
       },
       argSources, functionArgs, registryOwner, state, callerInputs, executionSelfAddress,
-      producerCalls, allowProvisional, planningContext, consumer,
+      producerCalls, allowProvisional, planningContext, consumer, occurrenceIndex,
     );
   }
 

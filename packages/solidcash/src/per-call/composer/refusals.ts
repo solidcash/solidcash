@@ -13,7 +13,8 @@ import type { FrameRequest } from './derivation.js';
 export type ComposerRefusalCode =
   | 'PER_CALL_POOL_EXHAUSTED'
   | 'PER_CALL_DERIVATION_STALLED'
-  | 'PER_CALL_MAPPING_UNPLANNABLE';
+  | 'PER_CALL_MAPPING_UNPLANNABLE'
+  | 'PER_CALL_CHUNK_UNPLANNABLE';
 
 /** A refusal the composer raises before it builds anything. */
 export class PerCallComposerError extends Error {
@@ -78,5 +79,16 @@ export function mappingIndexUnavailable(slot: Uint8Array, side: 'input' | 'outpu
   return new PerCallComposerError(
     'PER_CALL_MAPPING_UNPLANNABLE',
     `the mapping node at slot ${bytesToHex(slot)} needs an ${side} index the layout gives it none of`,
+  );
+}
+
+/**
+ * A write to a dynamic value cannot be laid out as chunk records: the variable is not one of the layout's dynamic
+ * variables, or the write changes how many chunks the value occupies.
+ */
+export function chunkRunUnplannable(variable: string, reason: string): PerCallComposerError {
+  return new PerCallComposerError(
+    'PER_CALL_CHUNK_UNPLANNABLE',
+    `the dynamic value "${variable}" cannot be planned: ${reason}`,
   );
 }

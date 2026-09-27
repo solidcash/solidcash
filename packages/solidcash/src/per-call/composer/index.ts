@@ -16,3 +16,4 @@ export * from './assemble.js';
 export * from './settlement.js';
 export * from './value-rules.js';
 export * from './mapping-plan.js';
+export * from './chunk-plan.js';

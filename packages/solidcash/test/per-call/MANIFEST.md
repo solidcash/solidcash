@@ -13,11 +13,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 175 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 185 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 76 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 121 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 128 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | — not written |
 
-Total: 603 tests, all passing at the latest commit.
+Total: 620 tests, all passing at the latest commit.
 
 ## What each directory covers
 

@@ -3,6 +3,8 @@ import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
   computeEventNameHash,
+  computeFunctionSelector,
+  computeFunctionSignature,
   encodeEventCommitment,
   hash256,
   validatorAddress,
@@ -28,13 +30,14 @@ import {
  * names it by index, and the master's own body checks the payload it computed against the token there.
  *
  * The two-contract round trip whose entry emits after its call returns is where the shipped path stops: the
- * derivation stalls on the first master whose witness block carries both a call section and an event list
- * (`PER_CALL_DERIVATION_STALLED`), which is pinned below. The shape that does run — an entry that emits without
- * making a call — is driven end to end, and a unit whose contracts emit different numbers of events is emitted
- * for every one of them, because an event region is sized by the contract's own bodies.
+ * derivation reaches the re-entered entry, whose own program fails an `OP_VERIFY` (`PER_CALL_DERIVATION_STALLED`),
+ * which is pinned below. The shape that does run — an entry that emits without making a call — is driven end to
+ * end, and a unit whose contracts emit different numbers of events is emitted for every one of them, because an
+ * event region is sized by the contract's own bodies.
  */
 
 const CATEGORY_A = seededCategory('round trip events A');
+const VALIDATOR_ID_UNUSED = 0;
 const CATEGORY_B = seededCategory('round trip events B');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
@@ -51,6 +54,9 @@ const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 
 const EMPTY = new Uint8Array(0);
+const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
+const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
+const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
 const EVENT_VALUE = 1_000n;
 
 const token = (
@@ -144,10 +150,10 @@ function buildRoundTrip(): {
     enteredBy: USER_ID, origin: USER_ID,
     calls: [{
       kind: FrameKind.CALL, callee: B_MASTER, target: ADDRESS_B, value: 0n,
-      argumentPushes: [new Uint8Array(4).fill(0x11)],
+      argumentPushes: [G_SELECTOR],
     }],
     retval: EMPTY, segments: [[], []], events: [eventIndex], sends: [],
-    argumentPushes: [], redeemScript: a.script, dispatches: true,
+    argumentPushes: [F_SELECTOR], redeemScript: a.script, dispatches: true,
   };
   const bMaster: DraftMaster = {
     master: B_MASTER, contract: 'B', functionName: ENTRY_G, program: b.script,
@@ -156,10 +162,10 @@ function buildRoundTrip(): {
     enteredBy: A_FIRST, origin: USER_ID,
     calls: [{
       kind: FrameKind.CALL, callee: A_SECOND, target: ADDRESS_A, value: 0n,
-      argumentPushes: [new Uint8Array(4).fill(0x22)],
+      argumentPushes: [K_SELECTOR],
     }],
     retval: EMPTY, segments: [[], []], events: [eventIndex + 1], sends: [],
-    argumentPushes: [new Uint8Array(4).fill(0x11)], redeemScript: b.script,
+    argumentPushes: [G_SELECTOR], redeemScript: b.script,
   };
   const aSecond: DraftMaster = {
     master: A_SECOND, contract: 'A', functionName: ENTRY_K, program: a.script,
@@ -167,7 +173,7 @@ function buildRoundTrip(): {
     frame: { kind: FrameKind.CALL, sender: ADDRESS_B, self: ADDRESS_A, value: 0n },
     enteredBy: B_MASTER, origin: USER_ID,
     calls: [], retval: EMPTY, segments: [[]], events: [], sends: [],
-    argumentPushes: [new Uint8Array(4).fill(0x22)], redeemScript: a.script,
+    argumentPushes: [K_SELECTOR], redeemScript: a.script,
   };
 
   const plan: CompositionDraftPlan = {
@@ -219,10 +225,12 @@ describe('a plan whose entry emits after its call returns', () => {
       .toStrictEqual([placed.index, placed.index + 1]);
   });
 
-  it('is refused by the shipped derivation at the entry\'s call site', () => {
-    // A master's witness block that carries both a call section and an event list does not verify, so the
-    // derivation never advances past the entry's first call site. Until that is emitted, the round trip whose
-    // entry emits after its call returns cannot be derived.
+  it('stops deriving at the re-entered entry, whose own program does not verify', () => {
+    // The entry's call site fills and the derivation reaches the callee and then the entry the callee calls back
+    // into. That last execution's program fails an `OP_VERIFY` before its first segment close, so the derivation
+    // refuses rather than guessing; the message names the master and the site, so this test flips when the wall is
+    // gone. The plan names each entry by the selector its program dispatches on, because a multi-entry master
+    // picks its body from that call data and a made-up selector never resolves to one.
     const { plan, artifacts } = buildRoundTrip();
     const { host } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
 
@@ -233,7 +241,8 @@ describe('a plan whose entry emits after its call returns', () => {
       message = String((error as { message?: string }).message ?? error);
     }
     expect(message).toContain('PER_CALL_DERIVATION_STALLED');
-    expect(message).toContain(`${ENTRY_F} filled no witness at site 0 (call 0)`);
+    expect(message).toContain(`master "${A_SECOND}" of ${ENTRY_K}`);
+    expect(message).toContain('site 0 (close of segment 0)');
   });
 
   it('emits every contract of a unit whose contracts attribute different numbers of events', () => {

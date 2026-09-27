@@ -20,7 +20,7 @@ const extractAddressHash = (offset: bigint): Script => [
   encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
 ];
 
-/** Convert a native variable-width BCH address into the SDK's canonical 20-byte Solidity ABI identity. */
+/** Convert a native BCH address or a Solidity ABI address word into the canonical 20-byte identity. */
 export function compileAddressToEvmIdentity(): Script {
   return [
     Op.OP_SIZE, encodeInt(0n), Op.OP_EQUAL,
@@ -31,6 +31,12 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_IF,
     // Raw 20-byte address: already narrowed.
     Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(32n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // Graph arguments and constructed address arrays can retain the right-aligned Solidity ABI word.
+    // This is an address conversion, not bytes32-to-bytes20 truncation: discard the 12-byte left padding.
+    encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
+    Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
     Op.OP_IF,
     ...extractAddressHash(2n),
@@ -40,6 +46,7 @@ export function compileAddressToEvmIdentity(): Script {
     Op.OP_HASH160,
     Op.OP_ELSE,
     ...extractAddressHash(3n),
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,

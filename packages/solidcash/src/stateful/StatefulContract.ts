@@ -106,6 +106,8 @@ import {
   encodeMessageBatch, encodeMessageBusArguments, evaluateFixedEffectPredicate, inactiveMessageBusRouteWitness,
 } from '../message-bus/message-bus.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
+import { evaluateChildDeploymentRecipe } from '../message-bus/compose-recipes.js';
+import { loadFixedEffectEntries, type FixedEffectEntryResolver } from '../message-bus/fixed-effect-entries.js';
 export { inactiveMessageBusRouteWitness } from '../message-bus/message-bus.js';
 import {
   foldChunkableResource,
@@ -6233,10 +6235,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     handler: AbiFunction,
     executionArtifact: Artifact = this.inner.artifact,
     authenticatedState?: Readonly<Record<string, FunctionArgument>>,
+    entryResolver?: FixedEffectEntryResolver,
+    logicalCaller?: FunctionArgument,
   ): Promise<boolean> {
-    void executionArtifact;
     const state = authenticatedState ?? await this.getState() as Readonly<Record<string, FunctionArgument>>;
-    const result = evaluateFixedEffectPredicate(expression, args, state);
+    const result = expression.kind === 'fixedEffectRecipe' && expression.fixedEffectRecipe
+      ? evaluateChildDeploymentRecipe(
+        expression.fixedEffectRecipe, args, handler.inputs.map((input) => input.type),
+        artifactUsesSolidityAbi(executionArtifact), state, logicalCaller,
+        entryResolver ?? await loadFixedEffectEntries([expression.fixedEffectRecipe], executionArtifact, this),
+      ) : evaluateFixedEffectPredicate(expression, args, state);
     if (typeof result !== 'boolean') {
       throw new Error(`Could not resolve fixed BCH-transfer predicate in '${handler.name}'.`);
     }
@@ -8048,7 +8056,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     },
   ): Promise<StatefulTransactionBuilder> {
     const physicalAbiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
-    const abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
+    let abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
     if (abiFunction) args = this._validateAbiFrame(abiFunction, args);
@@ -8074,6 +8082,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // while the mock/provider drains prior transaction work, producing the same peak-memory stall as a late scan.
       ? await signerUtxoSnapshot(this._signer) : undefined);
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
+    const { resolveSatoshiContainerRouteAbi } = await import('../message-bus/selected-satoshi-container.js');
+    abiFunction = await resolveSatoshiContainerRouteAbi(abiFunction, this);
     const mockStorage = (this.inner.provider as unknown as {
       indexer?: { storage?: { _test?: unknown } };
     }).indexer?.storage;

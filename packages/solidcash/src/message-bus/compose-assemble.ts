@@ -119,6 +119,7 @@ import {
   preparedInvocationResult,
 } from './compose-recipes.js';
 import type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
+import { loadFixedEffectEntries } from './fixed-effect-entries.js';
 import {
   type AtomicMessageBusFunder,
   type ComposeAtomicMessageBusOptions,
@@ -702,6 +703,14 @@ export async function assembleAtomicComposition(
             })),
           }));
         }
+        const executionArtifact = supplied.executionArtifact ?? participant.artifact;
+        const logicalCaller = invocation.caller === null
+          ? rootCaller : hexToBin(graphInvocationCallerIdentity(
+            plan.participants, plan.invocations, invocation,
+          ).lockingBytecode);
+        const entryResolver = await loadFixedEffectEntries((handler?.transfers ?? []).flatMap((transfer) => [
+          transfer.recipientRecipe, transfer.amountRecipe, transfer.condition?.fixedEffectRecipe,
+        ]), executionArtifact, contract);
         for (const transfer of handler?.transfers ?? []) {
           if (transfer.condition === null) {
             throw new Error(
@@ -710,17 +719,12 @@ export async function assembleAtomicComposition(
           }
           if (transfer.condition !== undefined && !(await contract._resolveCompilerEffectPredicate(
             transfer.condition, supplied.args, handler!, supplied.executionArtifact ?? participant.artifact,
-            authenticatedState,
+            authenticatedState, entryResolver, logicalCaller,
           ))) continue;
-          const executionArtifact = supplied.executionArtifact ?? participant.artifact;
           const inputTypes = handler!.inputs.map((input) => input.type);
-          const logicalCaller = invocation.caller === null
-            ? rootCaller : hexToBin(graphInvocationCallerIdentity(
-              plan.participants, plan.invocations, invocation,
-            ).lockingBytecode);
           const materialized = materializeFixedBchTransfer(
             transfer, supplied.args, inputTypes, executionArtifact, provider,
-            authenticatedState, logicalCaller,
+            authenticatedState, logicalCaller, entryResolver,
           );
           const transferSlots = participant.blockLayout!.slots
             .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined);

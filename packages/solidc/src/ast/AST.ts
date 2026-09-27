@@ -1,4 +1,5 @@
 import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './Operator.js';
@@ -2757,6 +2758,7 @@ export interface ExternalCallArgSource {
 
 export interface ExternalCallExpression {
   kind: string;
+  fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
   /** Physical producer/consumer lane after repeated-owner collapse. */
   callsiteId?: number;

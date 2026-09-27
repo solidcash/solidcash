@@ -313,6 +313,14 @@ export type ChildDeploymentValueRecipe =
   | { kind: 'logicalCaller'; resultType: 'address' }
   /** A scalar decoded from the authenticated incoming participant state commitment. */
   | { kind: 'state'; name: string; resultType: string }
+  /** A typed leaf of an authenticated incoming mapping entry, with source-position key snapshots. */
+  | {
+    kind: 'entry';
+    collection: string;
+    keys: readonly ChildDeploymentValueRecipe[];
+    path: readonly (string | number)[];
+    resultType: string;
+  }
   | { kind: 'intLiteral'; value: string; resultType: string }
   | { kind: 'boolLiteral'; value: boolean; resultType: string }
   | { kind: 'bytesLiteral'; value: string; resultType: string }
@@ -1051,6 +1059,8 @@ export interface ArgSource {
 
 export interface ExternalCallExpression {
   kind: string;
+  /** Closed typed fixed-effect predicate; callers without authenticated entry context must leave it unknown. */
+  fixedEffectRecipe?: ChildDeploymentValueRecipe;
   name?: string;
   /**
    * Physical producer/consumer lane within the containing function after repeated-owner collapse.

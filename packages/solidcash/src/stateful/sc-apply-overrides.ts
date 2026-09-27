@@ -13,6 +13,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose.js';
+import { loadFixedEffectEntries } from '../message-bus/fixed-effect-entries.js';
 import { addressToLockScript } from '../utils.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import type { ExternalCallInfo } from './stateful-lifecycle-types.js';
@@ -257,14 +258,17 @@ export async function applyOverrides(
       const handlerAbi = plan.executionArtifact.abi.find((candidate) =>
         candidate.selector === plan.handler.selector || candidate.name === plan.handler.name);
       if (!handlerAbi) throw new Error(`Message-bus handler ABI '${plan.handler.name}' is missing`);
-      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
-        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState,
-      ))) continue;
       // An owner-local route authenticates msg.sender as tx.origin. The ordinary builder guarantees that a
       // connected signer contributes that native P2PKH input; use the same identity for compiler-authored
       // fixed effects rather than accepting a caller supplied as an ABI value.
       const sender = host.parentContract!._signer ?? host.parentContract!._logicalNonceSigner;
       const logicalCaller = sender ? addressToLockScript(sender.getAddress()) : undefined;
+      const entries = await loadFixedEffectEntries([
+        plan.transfer.recipientRecipe, plan.transfer.amountRecipe, plan.transfer.condition?.fixedEffectRecipe,
+      ], plan.executionArtifact, host.parentContract!);
+      if (plan.transfer.condition !== undefined && !(await host.parentContract!._resolveCompilerEffectPredicate(
+        plan.transfer.condition, plan.args, handlerAbi, plan.executionArtifact, authenticatedState, entries, logicalCaller,
+      ))) continue;
       materialized.push({
         outputSlot: plan.outputSlot,
         ...materializeFixedBchTransfer(
@@ -275,6 +279,7 @@ export async function applyOverrides(
           host.parentContract!.inner.provider,
           authenticatedState as Readonly<Record<string, FunctionArgument>>,
           logicalCaller,
+          entries,
         ),
       });
     }

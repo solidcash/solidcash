@@ -936,11 +936,17 @@ const transferEffects = (
     nested.add(definition);
     return operandRecipe(definition.expression, nested);
   };
-  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions, contract.stateVariables);
+  const fixedEffectRecipes = analyzeFixedBchEffectRecipes(
+    fn, contract.functions, contract.stateVariables, contract.collections,
+  );
   const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn);
   const activationExpression = (
     recipe: ChildDeploymentValueRecipe,
   ): ExternalCallExpression => {
+    const containsEntry = (value: unknown): boolean => value !== null && typeof value === 'object'
+      && ((value as { kind?: string }).kind === 'entry' || Object.values(value).some(containsEntry));
+    if (containsEntry(recipe)) return { kind: 'fixedEffectRecipe', fixedEffectRecipe: recipe };
+    if (recipe.kind === 'entry') throw new Error('Entry recipe must use the typed activation protocol');
     if (recipe.kind === 'handlerInput') {
       return { kind: 'source', source: { kind: 'forward', paramIndex: recipe.inputIndex } };
     }

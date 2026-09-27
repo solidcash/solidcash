@@ -18,7 +18,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
 import {
-  decodeSelectedHandlerArguments, selectedSatoshiContainerRequired,
+  bindSatoshiContainerSelection, decodeSelectedHandlerArguments, selectedSatoshiContainerRequired,
 } from '../message-bus/selected-satoshi-container.js';
 import { evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
 import {
@@ -977,6 +977,11 @@ executionContextBinding?: BatchExecutionContextBinding,
       .graphEcrecoverCalls = graphEcrecoverCalls;
   }
   const routeSelector = hexToBin(capability.selector);
+  if (reachedHandlers.length === rowCount && cursor === blob.length) {
+    bindSatoshiContainerSelection(effectiveRoute, {
+      artifact: executionArtifact, selectors: reachedHandlers.map((handler) => handler.selector), args: reachedArguments,
+    });
+  }
   const attachCompilerTransfers = (call: BatchRawCall): BatchRawCall => {
     const transferSlots = capability.route.blockLayout?.slots
       .filter((slot) => slot.kind === 'transfer' && slot.slotIndex !== undefined) ?? [];

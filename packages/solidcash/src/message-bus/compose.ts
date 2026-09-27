@@ -135,7 +135,7 @@ export class AtomicMessageBusComposition {
         this.resultPropagationDepth + 1,
       )._build();
     }
-    const settlement = createComposeSettlementContext({
+    const settlement = await createComposeSettlementContext({
       options: this.options,
       descriptors,
       descriptorWitnesses,

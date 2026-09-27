@@ -32,6 +32,7 @@ import {
 import { isCanonicalEvmScalarReturnVector } from '../stateful/StatefulContract.js';
 import { artifactUsesSolidityAbi, resolveExternalResultEncoding } from '../stateful/solidityAbi.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import type { FixedEffectEntryResolver } from './fixed-effect-entries.js';
 
 /** Minimal claim shape for continuation seeding predicates (avoids compose orchestration types). */
 type ComputedValueChunkClaim = {
@@ -248,8 +249,12 @@ export const evaluateChildDeploymentRecipe = (
   solidityAbi: boolean,
   state: Readonly<Record<string, FunctionArgument>> = {},
   logicalCaller?: FunctionArgument,
+  entryResolver?: FixedEffectEntryResolver,
 ): FunctionArgument => {
   const resultType = recipeType(recipe, inputTypes);
+  const evaluate = (value: ChildDeploymentValueRecipe): FunctionArgument => evaluateChildDeploymentRecipe(
+    value, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+  );
   if (recipe.kind === 'handlerInput') {
     if (recipe.inputIndex < 0 || recipe.inputIndex >= args.length) {
       throw new Error(`messageBus: deployment recipe input ${recipe.inputIndex} is out of range`);
@@ -262,6 +267,10 @@ export const evaluateChildDeploymentRecipe = (
     }
     return state[recipe.name];
   }
+  if (recipe.kind === 'entry') {
+    if (!entryResolver) throw new Error('messageBus: authenticated entry recipe context is unavailable');
+    return entryResolver(recipe, recipe.keys.map(evaluate));
+  }
   if (recipe.kind === 'logicalCaller') {
     if (logicalCaller === undefined) {
       throw new Error('messageBus: authenticated logical caller recipe is unavailable');
@@ -269,8 +278,7 @@ export const evaluateChildDeploymentRecipe = (
     return logicalCaller;
   }
   if (recipe.kind === 'aggregate') {
-    return recipe.elements.map((element) =>
-      evaluateChildDeploymentRecipe(element, args, inputTypes, solidityAbi, state)) as ConstructorArgument[];
+    return recipe.elements.map(evaluate) as ConstructorArgument[];
   }
   if (recipe.kind === 'concat') {
     if (recipe.operands.length === 0) {
@@ -287,7 +295,7 @@ export const evaluateChildDeploymentRecipe = (
         throw new Error(`messageBus: deployment concat operand ${operandTypeName} is not concatenable`);
       }
       return byteRecipeValue(
-        evaluateChildDeploymentRecipe(operand, args, inputTypes, solidityAbi, state), operandTypeName, solidityAbi,
+        evaluate(operand), operandTypeName, solidityAbi,
       );
     });
     const joined = Uint8Array.from(values.flatMap((value) => [...value]));
@@ -304,7 +312,7 @@ export const evaluateChildDeploymentRecipe = (
       throw new Error(`messageBus: deployment ${recipe.algorithm} recipe cannot produce ${resultType}`);
     }
     const operand = byteRecipeValue(
-      evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state),
+      evaluate(recipe.operand),
       recipeType(recipe.operand, inputTypes),
       solidityAbi,
     );
@@ -323,11 +331,11 @@ export const evaluateChildDeploymentRecipe = (
     return coerceRecipeValue(hexToBin(recipe.value), `bytes${recipe.value.length / 2}`, resultType, solidityAbi);
   }
   if (recipe.kind === 'cast') {
-    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    const operand = evaluate(recipe.operand);
     return coerceRecipeValue(operand, recipeType(recipe.operand, inputTypes), resultType, solidityAbi);
   }
   if (recipe.kind === 'unary') {
-    const operand = evaluateChildDeploymentRecipe(recipe.operand, args, inputTypes, solidityAbi, state);
+    const operand = evaluate(recipe.operand);
     const operandTypeName = recipeType(recipe.operand, inputTypes);
     const operandType = parseTypeStrict(operandTypeName);
     const result = parseTypeStrict(resultType);
@@ -355,12 +363,12 @@ export const evaluateChildDeploymentRecipe = (
       || recipeType(recipe.ifFalse, inputTypes) !== resultType) {
       throw new Error('messageBus: conditional recipe branches must match its declared type');
     }
-    const condition = evaluateChildDeploymentRecipe(recipe.condition, args, inputTypes, solidityAbi, state);
+    const condition = evaluate(recipe.condition);
     const selected = numericRecipeValue(condition, conditionType, solidityAbi) !== 0n
       ? recipe.ifTrue : recipe.ifFalse;
-    return evaluateChildDeploymentRecipe(selected, args, inputTypes, solidityAbi, state);
+    return evaluate(selected);
   }
-  const leftValue = evaluateChildDeploymentRecipe(recipe.left, args, inputTypes, solidityAbi, state);
+  const leftValue = evaluate(recipe.left);
   const leftType = recipeType(recipe.left, inputTypes);
   if (recipe.operator === '&&' || recipe.operator === '||') {
     const rightType = recipeType(recipe.right, inputTypes);
@@ -370,11 +378,11 @@ export const evaluateChildDeploymentRecipe = (
     const left = numericRecipeValue(leftValue, leftType, solidityAbi) !== 0n;
     if (recipe.operator === '&&' && !left) return false;
     if (recipe.operator === '||' && left) return true;
-    const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+    const rightValue = evaluate(recipe.right);
     const right = numericRecipeValue(rightValue, rightType, solidityAbi) !== 0n;
     return recipe.operator === '&&' ? left && right : left || right;
   }
-  const rightValue = evaluateChildDeploymentRecipe(recipe.right, args, inputTypes, solidityAbi, state);
+  const rightValue = evaluate(recipe.right);
   const rightType = recipeType(recipe.right, inputTypes);
   const leftParsedType = parseTypeStrict(leftType);
   const rightParsedType = parseTypeStrict(rightType);
@@ -434,6 +442,7 @@ export const materializeFixedBchTransfer = (
   provider: NetworkProvider,
   state: Readonly<Record<string, FunctionArgument>> = {},
   logicalCaller?: FunctionArgument,
+  entryResolver?: FixedEffectEntryResolver,
 ): { lockingBytecode: Uint8Array; amount: bigint } => {
   const solidityAbi = artifactUsesSolidityAbi(executionArtifact);
   const recipientValue = transfer.derivedRecipient
@@ -468,7 +477,9 @@ export const materializeFixedBchTransfer = (
       return hexToBin(child.lockingBytecode);
     })()
     : transfer.recipientRecipe
-      ? evaluateChildDeploymentRecipe(transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+      ? evaluateChildDeploymentRecipe(
+        transfer.recipientRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+      )
       : transfer.recipient.kind === 'forward' && transfer.recipient.paramIndex !== undefined
         ? args[transfer.recipient.paramIndex] : undefined;
   let lockingBytecode = recipientValue;
@@ -477,7 +488,9 @@ export const materializeFixedBchTransfer = (
       : hexToBin(lockingBytecode.startsWith('0x') ? lockingBytecode.slice(2) : lockingBytecode);
   }
   const amountValue = transfer.amountRecipe
-    ? evaluateChildDeploymentRecipe(transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller)
+    ? evaluateChildDeploymentRecipe(
+      transfer.amountRecipe, args, inputTypes, solidityAbi, state, logicalCaller, entryResolver,
+    )
     : transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
       ? args[transfer.amount.paramIndex]
       : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined

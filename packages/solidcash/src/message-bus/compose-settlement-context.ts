@@ -2,6 +2,7 @@
  * phase-boundary extract: Compose phase-boundary extract — lifecycle validation, indexes, slots, deployments, assembly runtime.
  */
 
+import { hexToBin } from '@bitauth/libauth';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
@@ -18,6 +19,7 @@ import { resolveComposeParticipantIndexes } from './compose-participant-indexes.
 import type { CallDescriptor, ComposeAtomicMessageBusOptions } from './compose-prepared-invocation.js';
 import { validateComposePreparedCallArguments } from './compose-prepared-call-validation.js';
 import { inventoryComposeSlots, type ComposeSlotInventory } from './compose-slot-inventory.js';
+import { decodeSelectedHandlerArguments, resolveSelectedSatoshiContainerRequired } from './selected-satoshi-container.js';
 import { validateComposeUpgradeTargets } from './compose-upgrade-validation.js';
 import {
   finalizeAtomicInvocationGraph,
@@ -73,10 +75,22 @@ export interface ComposeSettlementContext {
  * After participant indexes + prepared results are known (and initial result propagation has settled),
  * inventory slots, materialize deployments, seed an empty provisional graph, and build the assembly runtime.
  */
-export function createComposeSettlementContext(
+export async function createComposeSettlementContext(
   input: CreateComposeSettlementContextInput,
-): ComposeSettlementContext {
-  const slots = inventoryComposeSlots(input.plan);
+): Promise<ComposeSettlementContext> {
+  const selectedContainers = new Map<number, boolean | undefined>();
+  await Promise.all(input.plan.participants.map(async (participant) => {
+    const contract = input.descriptors[participant.invocations[0]].contract;
+    const invocations = participant.invocations.map((index) => input.plan.invocations[index]);
+    selectedContainers.set(participant.participant, await resolveSelectedSatoshiContainerRequired({
+      artifact: participant.artifact,
+      selectors: invocations.map((invocation) => invocation.selectorHex),
+      args: invocations.map((invocation) => decodeSelectedHandlerArguments(
+        participant.artifact, invocation.selectorHex, hexToBin(invocation.argsHex),
+      )),
+    }, { getState: () => input.stateOf(contract), getEntries: (collection) => contract.getEntries(collection) }));
+  }));
+  const slots = inventoryComposeSlots(input.plan, selectedContainers);
   const suppliedDeployments = input.options.childDeployments ?? [];
   const usedDeployments = new Set<number>();
   const materializedDeployments = materializeComposeDeployments({

@@ -6802,7 +6802,9 @@ function synthesizeMessageBusRoute(
       (total, type) => total + (staticAbiByteSize(type) ?? 32), 0,
     );
     if (compilerOptions.messageBusKernel === true) {
-      const fixedEffectRecipes = analyzeFixedBchEffectRecipes(fn, contract.functions, contract.stateVariables);
+      const fixedEffectRecipes = analyzeFixedBchEffectRecipes(
+        fn, contract.functions, contract.stateVariables, contract.collections,
+      );
       const contractRecipientRecipes = analyzeChildDeploymentRecipes(fn, contract.functions);
       const auditActivation = (
         value: unknown, seen = new WeakSet<object>(),
@@ -12828,7 +12830,9 @@ function compileResolvedAst(
   // properties rather than helper names or application shapes.
   if (mergedCompilerOptions.messageBusKernel === true) {
     for (const fn of ast.contract.functions) {
-      const sourceRecipes = analyzeFixedBchEffectRecipes(fn, ast.contract.functions, ast.contract.stateVariables);
+      const sourceRecipes = analyzeFixedBchEffectRecipes(
+        fn, ast.contract.functions, ast.contract.stateVariables, ast.contract.collections,
+      );
       const sourceHandlerInputTypes = new Map(fn.parameters
         .filter((parameter) => !parameter.name.startsWith('__internal__'))
         .map((parameter) => [parameter.name, abiTypeString(parameter.type)]));

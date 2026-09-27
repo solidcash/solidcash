@@ -3502,7 +3502,9 @@ export function assertAssemblyLayoutWitnessesMatchResolve(
         trailingCapacity: block.blockLayout.trailingCapacity,
         dynChunkCount: assertDyn ? 0 : undefined,
         valueChunkBandOffset: assertValueChunk ? publishedBandOffset : undefined,
-        valueChunkCount: assertValueChunk ? 1 : undefined,
+        // An all-inline entry update can publish the dormant trailing coordinate with zero capacity.
+        // Check that coordinate without inventing an occupied chunk in a compiler-published empty band.
+        valueChunkCount: assertValueChunk ? (block.blockLayout.trailingCapacity === 0 ? 0 : 1) : undefined,
         predOuts: predOutClaims,
         participant: block.participant,
       });

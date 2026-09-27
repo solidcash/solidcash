@@ -30,7 +30,10 @@ export interface ComposeSlotInventory {
 /**
  * Collect compiler-published block-layout slots used by assemble / semantic-claim orchestration.
  */
-export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInventory {
+export function inventoryComposeSlots(
+  plan: CompiledGraphPlan,
+  selectedContainers: ReadonlyMap<number, boolean | undefined> = new Map(),
+): ComposeSlotInventory {
   const fixedEventSlots = plan.participants.flatMap((participant) =>
     participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
       participant: participant.participant, offset: slot.offset,
@@ -59,11 +62,11 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
       // A slot reserved for an unselected BCH-transfer handler is a balanced placeholder, not a claim that
       // the real container is co-spent. Keep its fixed offset, but do not authenticate it as a container.
       .filter((slot) => slot.kind !== 'satoshiContainer'
-        || selectedSatoshiContainerRequired(participant.artifact,
+        || (selectedContainers.get(participant.participant) ?? selectedSatoshiContainerRequired(participant.artifact,
           participant.invocations.map((index) => plan.invocations[index].selectorHex),
           participant.invocations.map((index) => decodeSelectedHandlerArguments(
             participant.artifact, plan.invocations[index].selectorHex, hexToBin(plan.invocations[index].argsHex),
-          ))) !== false)
+          )))) !== false)
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset, kind: slot.kind,
       })));

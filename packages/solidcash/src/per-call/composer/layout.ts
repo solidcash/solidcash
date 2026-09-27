@@ -61,6 +61,25 @@ export interface OutputRegions {
   readonly changeIndex: number;
 }
 
+/** One trailing output the plan states, with the output index the layout gives it. */
+export interface PlacedTrailingOutput<T> {
+  readonly index: number;
+  readonly output: T;
+}
+
+/**
+ * Places the plan's trailing outputs in the order the plan states them, beginning one past the last participant.
+ *
+ * A trailing output is not recreated by any input, so its index is an output index only: funder inputs keep their
+ * own indices and their recreations follow the trailing region.
+ */
+export function placeTrailingOutputs<T>(
+  layout: TransactionLayout,
+  outputs: readonly T[],
+): readonly PlacedTrailingOutput<T>[] {
+  return outputs.map((output, offset) => ({ index: layout.participantCount + offset, output }));
+}
+
 /** Assigns every participant its input and output index, following the block convention. */
 export function layoutTransaction(blocks: readonly ContractBlock[]): TransactionLayout {
   const seenContracts = new Set<string>();

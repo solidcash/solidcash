@@ -10,8 +10,10 @@ import { hexOf, seededAddress } from '../shapes/harness.js';
  * One head serves every body a master dispatches, so the compiler used to refuse this shape outright. The head now
  * walks the call section with the length the block declares and leaves that length for the body, which pins it to
  * the number of calls its own source makes, so the shape compiles and deploys. What is asserted here is that front
- * door and the two controls that mutate only the property that used to close it; the composition itself is what the
- * two controls do not exercise, and it is recorded as the next wall in the plan's log rather than claimed here.
+ * door and the two controls that mutate only the property that used to close it. The composition of the same shape
+ * is driven elsewhere: `round-trip-composition.test.ts` derives a stateless reduction of it to a machine verdict on
+ * every contract input, and `round-trip-stateful.test.ts` carries the records this one writes and pins the wall
+ * their writes meet.
  */
 
 const A_ADDRESS = seededAddress('the entering contract');

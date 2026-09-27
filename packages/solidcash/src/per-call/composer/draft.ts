@@ -48,7 +48,12 @@ import {
   type ShippedMasterRun,
   type ShippedVmProgram,
 } from './shipped-host.js';
-import type { ContractBlock, TransactionLayout } from './layout.js';
+import {
+  placeTrailingOutputs,
+  type ContractBlock,
+  type PlacedTrailingOutput,
+  type TransactionLayout,
+} from './layout.js';
 
 /** Raised when a plan cannot be turned into a draft. */
 export class CompositionDraftError extends Error {
@@ -77,6 +82,18 @@ export interface DraftToken {
 
 /** One input's source output: the UTXO the machine reads when it evaluates that input. */
 export interface DraftSourceOutput {
+  readonly lockingBytecode: Uint8Array;
+  readonly valueSatoshis: bigint;
+  readonly token?: DraftToken;
+}
+
+/**
+ * One output the plan states that no input recreates: an event NFT, a value send, or a created UTXO.
+ *
+ * A master's witness block lists an event or a send by output index, and those indices are otherwise the ones the
+ * inputs recreate. A trailing output fills an index past the participants that no input sits at.
+ */
+export interface DraftTrailingOutput {
   readonly lockingBytecode: Uint8Array;
   readonly valueSatoshis: bigint;
   readonly token?: DraftToken;
@@ -147,6 +164,11 @@ export interface CompositionDraftPlan {
   readonly masters: readonly DraftMaster[];
   /** Every input the transaction spends, keyed by the identity the layout and the plan's calls use. */
   readonly inputs: Readonly<Record<string, DraftInput>>;
+  /**
+   * The outputs no input recreates, in the order the plan states them. They fill the indices past the
+   * participants, so a block's `events` or `sends` can name one.
+   */
+  readonly trailingOutputs?: readonly DraftTrailingOutput[];
   readonly validator?: {
     readonly id: string;
     readonly covers: readonly string[];
@@ -160,6 +182,8 @@ export interface CompositionDraft {
   readonly layout: TransactionLayout;
   readonly assembly: CompositionAssembly;
   readonly runs: readonly ShippedMasterRun[];
+  /** The plan's trailing outputs, with the index the layout gave each. */
+  readonly trailingOutputs: readonly PlacedTrailingOutput<DraftTrailingOutput>[];
   /** The witness block a master's derivation mutates, as it currently stands. */
   blockOf(master: string): WitnessBlock;
   /** The unlocking bytecode a master's input carries as the draft currently stands. */
@@ -299,8 +323,19 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   };
   /** The output an input recreates: the plan's, or the input unchanged. */
   const outputOf = (id: string): DraftSourceOutput => plan.inputs[id]?.output ?? sourceOf(id);
+
+  // Every participant recreates at its own index; the plan's trailing outputs take the indices past the
+  // participants, which no input recreates; the funders' recreations follow the trailing outputs.
+  const trailing = placeTrailingOutputs(layout, plan.trailingOutputs ?? []);
+  const participantIds = layout.participants.map((placed) => placed.id);
+  const participantSet = new Set(participantIds);
+  const funderIds = orderedIds.filter((id) => !participantSet.has(id));
   const sourceOutputs = orderedIds.map(sourceOf) as unknown as ShippedVmProgram['sourceOutputs'];
-  const outputs = orderedIds.map(outputOf) as unknown as ShippedVmProgram['transaction']['outputs'];
+  const outputs = [
+    ...participantIds.map(outputOf),
+    ...trailing.map((placed) => placed.output),
+    ...funderIds.map(outputOf),
+  ] as unknown as ShippedVmProgram['transaction']['outputs'];
 
   /** The unlocking bytecode of an input, with a master's block overridable by the one under evaluation. */
   const unlockingFor = (id: string, block?: WitnessBlock): Uint8Array => {
@@ -370,6 +405,7 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
     layout,
     assembly,
     runs,
+    trailingOutputs: trailing,
     blockOf: (master) => {
       const block = blocks.get(master);
       if (block === undefined) throw new CompositionDraftError(`no block for master "${master}"`);

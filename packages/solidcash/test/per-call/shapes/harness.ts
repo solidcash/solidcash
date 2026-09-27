@@ -137,6 +137,7 @@ export interface MasterSpec {
   readonly calls?: readonly DraftCall[];
   readonly segments?: readonly (readonly RecordEntry[])[];
   readonly argumentPushes?: readonly Uint8Array[];
+  readonly dispatches?: boolean;
 }
 
 /** Builds the draft master a plan lists, filling the defaults a stateless, event-free execution has. */
@@ -159,6 +160,7 @@ export function master(spec: MasterSpec): DraftMaster {
     sends: [],
     argumentPushes: spec.argumentPushes ?? [],
     redeemScript: spec.program,
+    ...(spec.dispatches === undefined ? {} : { dispatches: spec.dispatches }),
   };
 }
 

@@ -21,25 +21,26 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 314 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 335 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
-| `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 142 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 69 |
+| `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
+| `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 148 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 37 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | 21 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 47 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 49 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 12 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 28 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 872 tests (114 + 352 + 406), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
-(`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
-table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,
-check whether `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
+Total: 972 tests (114 + 376 + 482), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 376 is the four rows above it, and `solidcash` 482 is the nine rows above it.
+An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
+from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
+`validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
 
 ## What each directory covers
 
@@ -161,13 +162,18 @@ listed under the table, and none of those is claimed anywhere else.
 | A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator/script.test.ts` (thirteen cases) |
 | A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator/script.test.ts` (settled twice, paying) and `validator-settlement.test.ts` (changing a record, emitting) |
 | A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |
+| A record declaration that reads a view an intervening write has already passed (a stale read) | `stale-view.test.ts` (one case) |
+| A standalone master whose reserved address slot is filled with an address its category does not derive | `standalone-address-slot.test.ts` (one case refused; a slot and a presented address that agree on a foreign address are accepted there, which is the residual only the deployment gate recomputes) |
+| One contract's masters split across two validators | `validator-split-view.test.ts` (one case, with a second validator input beside the first) |
+| An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |
+| A proxy: a fallback that dispatches, or a body that issues a delegatecall | `proxy-binding.test.ts` (refused at compile by name; there is no spend to mutate) |
 
-Not covered by `hostile/`, and not claimed by any other directory: a standalone master whose reserved address slot is
-filled with an address its category does not derive (the on-chain head compares the witness `self` with the reserved
-slot; only the deployment gate recomputes it); reordered segments and stale reads; one view spread over two
-validators; a witness selecting a `catch` branch; proxy and implementation binding (per-call delegate shapes are
-refused at compile, so there is no spend to mutate); a value send made as a plain output (the composer refuses value
-sends by name); and the receipt form, which the plan records as a residual.
+Not covered by `hostile/`, and not claimed by any other directory: reordered segments, which the machine accepts —
+its chain walk is order-free, so a master whose segment declarations are reordered is refused by the derivation as
+`V7_CHAIN_START_MISMATCH` but accepted by the program, whose ordering half of `V6` is not emitted — and a witness
+selecting a `catch` branch, which no witness can express: the block carries no branch field and the compiler makes
+every catch a no-op. A value send made as a plain output is refused at compile by name, and that refusal is already
+made in `edges/refused-contract-shapes.test.ts`; no compiled master fixes a send, so there is no spend to mutate.
 
 ## The shape the path currently carries
 

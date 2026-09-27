@@ -25,6 +25,16 @@ function expectEveryContractInputAccepted(outcome: ReturnType<typeof composeAndD
   expect(rejected.map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`)).toStrictEqual([]);
 }
 
+/** The error a shipped call raised, or a failure when it returned normally. */
+function shippedRefusal(run: () => unknown): Error {
+  try {
+    run();
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('the shipped code accepted the composition, so there is no refusal to record');
+}
+
 /** Asserts the derivation filled the same bytes assembly produced, so the composer's two outputs agree. */
 function expectDerivationConvergedWithAssembly(
   outcome: ReturnType<typeof composeAndDerive>,
@@ -200,20 +210,78 @@ describe('two independent roots of two different contracts', () => {
 });
 
 describe('one contract entering another of its own entries', () => {
+  const ownAddress = seededAddress('the self-calling contract');
+  const SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface IOwn { function inner(); }'
+    + ' contract Own {'
+    + `   function start() { IOwn(0x${hexOf(ownAddress)}).inner.call(); require(true); }`
+    + '   function inner() { require(true); }'
+    + ' }';
+
   it('is emitted although the root entry calls and the self-called entry does not', () => {
     // The user enters `start`, which calls `inner` on the same contract, so the contract runs on two masters. One
     // master head serves both: it walks the call section with the length the block declares, and each entry pins
     // that length to the calls its own source makes.
-    const ownAddress = seededAddress('the self-calling contract');
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface IOwn { function inner(); }'
-      + ' contract Own {'
-      + `   function start() { IOwn(0x${hexOf(ownAddress)}).inner.call(); require(true); }`
-      + '   function inner() { require(true); }'
-      + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
     expect(artifacts.Own?.composition?.convention).toBe('per-call');
     expect(artifacts.Own?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'start']);
+  });
+
+  it('runs on two masters of the one contract, derives the self-called entry first, '
+    + 'and the machine accepts the spend', () => {
+    const { artifacts, contracts } = compileAndDeploy(SOURCE, { Own: 'the self-calling contract' });
+    const own = contracts.Own!;
+    const validator = validatorFor(own.category);
+    const start = selectorOf(artifacts, 'Own', 'start');
+    const inner = selectorOf(artifacts, 'Own', 'inner');
+    const plan: CompositionDraftPlan = {
+      blocks: [{ contract: 'Own', masters: ['own-1', 'own-2'], validator: { id: 'validator', settles: [] }, state: [] }],
+      userInputs: userInputs(['user'], 3),
+      masters: [
+        master({
+          master: 'own-1', contract: 'Own', entry: 'start', program: own.program,
+          facts: {
+            contract: 'Own', functionName: 'start', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: own.address, value: 0n },
+          enteredBy: 'user', origin: 'user',
+          argumentPushes: [start], dispatches: true,
+          calls: [{ kind: FrameKind.CALL, callee: 'own-2', target: own.address, value: 0n, argumentPushes: [inner] }],
+        }),
+        master({
+          master: 'own-2', contract: 'Own', entry: 'inner', program: own.program,
+          facts: {
+            contract: 'Own', functionName: 'inner', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.CALL, sender: own.address, self: own.address, value: 0n },
+          enteredBy: 'own-1', origin: 'user', argumentPushes: [inner],
+        }),
+      ],
+      inputs: {
+        'own-1': { source: masterInput(own) },
+        'own-2': { source: masterInput(own) },
+        validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(own.category, 'mutable') } },
+        user: userInput(),
+      },
+      validator: {
+        id: 'validator', covers: [],
+        // The contract runs on two masters, so the validator settles it; it keeps no records, so none is listed.
+        settles: [{ category: own.category, stateInputs: [] }], redeemScript: validator.redeem,
+      },
+    };
+
+    const outcome = composeAndDerive(plan, [artifacts.Own!], [rootOf('Own', 'start', 'own-1')]);
+
+    expect(['own-1', 'own-2', 'validator'].map((id) => participant(outcome.draft.layout, id).index))
+      .toStrictEqual([0, 1, 2]);
+    // The self-called entry completes before the entry that called it.
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Own', 'inner'), entryName('Own', 'start')]);
+    expect(outcome.draft.assembly.calls.map((call) => call.calleeRef)).toStrictEqual([1]);
+    expectEveryContractInputAccepted(outcome);
+    expectDerivationConvergedWithAssembly(outcome, ['own-1', 'own-2']);
   });
 
   it('is refused by the compiler when the self-call target is address(this): the site holds no single value to check', () => {
@@ -286,19 +354,26 @@ describe('two entry points of one contract entered independently', () => {
     + ' contract Twin { function left() { require(true); } function right() { require(true); } }';
 
   /** Two masters of one contract, one validator, entered by two separate users. */
-  function planFor(twin: DeployedContract, withSelectors: boolean): CompositionDraftPlan {
+  function planFor(twin: DeployedContract, options: {
+    readonly selectors: boolean;
+    readonly dispatches?: boolean;
+    readonly settles?: boolean;
+  }): CompositionDraftPlan {
     const validator = validatorFor(twin.category);
     const left = selectorOfSignature('left');
     const right = selectorOfSignature('right');
-    const build = (masterId: string, entry: string, user: string, selector: Uint8Array): ReturnType<typeof master> => master({
-      master: masterId, contract: 'Twin', entry, program: twin.program,
-      facts: {
-        contract: 'Twin', functionName: entry, kind: FrameKind.ROOT,
-        callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 2,
-      },
-      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: twin.address, value: 0n },
-      enteredBy: user, origin: user,
-      ...(withSelectors ? { argumentPushes: [selector] } : {}),
+    const build = (masterId: string, entry: string, user: string, selector: Uint8Array): ReturnType<typeof master> => ({
+      ...master({
+        master: masterId, contract: 'Twin', entry, program: twin.program,
+        facts: {
+          contract: 'Twin', functionName: entry, kind: FrameKind.ROOT,
+          callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 2,
+        },
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: twin.address, value: 0n },
+        enteredBy: user, origin: user,
+        ...(options.selectors ? { argumentPushes: [selector] } : {}),
+      }),
+      ...(options.dispatches === true ? { dispatches: true } : {}),
     });
     return {
       blocks: [{ contract: 'Twin', masters: ['twin-left', 'twin-right'], validator: { id: 'validator', settles: [] }, state: [] }],
@@ -311,23 +386,151 @@ describe('two entry points of one contract entered independently', () => {
         'user-left': userInput(),
         'user-right': userInput(),
       },
-      validator: { id: 'validator', covers: [], settles: [], redeemScript: validator.redeem },
+      validator: {
+        id: 'validator', covers: [],
+        settles: options.settles === true ? [{ category: twin.category, stateInputs: [] }] : [],
+        redeemScript: validator.redeem,
+      },
     };
   }
+
+  it('is served when each user-entered entry carries its own selector, and the machine accepts the spend', () => {
+    const { artifacts, contracts } = compileAndDeploy(SOURCE, { Twin: 'two entries of one contract' });
+    const outcome = composeAndDerive(
+      planFor(contracts.Twin!, { selectors: true, dispatches: true, settles: true }),
+      [artifacts.Twin!],
+      [rootOf('Twin', 'left', 'twin-left'), rootOf('Twin', 'right', 'twin-right')],
+    );
+
+    // The one validator sits after the two masters it orders, and both roots complete in entry order.
+    expect(['twin-left', 'twin-right', 'validator'].map((id) => participant(outcome.draft.layout, id).index))
+      .toStrictEqual([0, 1, 2]);
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Twin', 'left'), entryName('Twin', 'right')]);
+    expectEveryContractInputAccepted(outcome);
+    expectDerivationConvergedWithAssembly(outcome, ['twin-left', 'twin-right']);
+  });
 
   it('is refused by the composer: a user-entered master may not carry the call data that names its entry', () => {
     const { contracts } = compileAndDeploy(SOURCE, { Twin: 'two entries of one contract' });
     // The only field that carries the entry's selector is the master's call data, and the composer refuses call
     // data on a master nobody calls, so the selector cannot reach the dispatcher through this plan.
-    expect(() => composeDraft(planFor(contracts.Twin!, true)))
+    expect(() => composeDraft(planFor(contracts.Twin!, { selectors: true })))
       .toThrow(/entered by a user, so it carries no call data/);
   });
 
   it('is refused by the derivation when the selector is left out: the master never reaches an entry', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Twin: 'two entries of one contract' });
-    expect(() => composeAndDerive(planFor(contracts.Twin!, false), [artifacts.Twin!], [
+    expect(() => composeAndDerive(planFor(contracts.Twin!, { selectors: false }), [artifacts.Twin!], [
       rootOf('Twin', 'left', 'twin-left'),
       rootOf('Twin', 'right', 'twin-right'),
     ])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+  });
+});
+
+describe('two independent pairs that each need their own validator', () => {
+  // `Left` calls `LeftCallee`, `Right` calls `RightCallee`, and neither pair reaches the other, so each pair's first
+  // root needs its own validator. A plan carries one validator, so the second pair cannot be given a validator input
+  // of its own and the shipped assembly refuses the plan that tries to declare two.
+  const leftCalleeAddress = seededAddress('the first callee');
+  const rightCalleeAddress = seededAddress('the second callee');
+  const SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface ILeftCallee { function ping(); }'
+    + ' interface IRightCallee { function ping(); }'
+    + ' contract Left {'
+    + `   function callIt() { ILeftCallee(0x${hexOf(leftCalleeAddress)}).ping.call(); require(true); }`
+    + ' }'
+    + ' contract LeftCallee { function ping() { require(true); } }'
+    + ' contract Right {'
+    + `   function callIt() { IRightCallee(0x${hexOf(rightCalleeAddress)}).ping.call(); require(true); }`
+    + ' }'
+    + ' contract RightCallee { function ping() { require(true); } }';
+
+  it('is refused by the composer: one plan\'s single validator covers a contract twice once both pairs host one', () => {
+    const { artifacts, contracts } = compileAndDeploy(SOURCE, {
+      Left: 'the first caller', LeftCallee: 'the first callee',
+      Right: 'the second caller', RightCallee: 'the second callee',
+    });
+    const left = contracts.Left!;
+    const leftCallee = contracts.LeftCallee!;
+    const right = contracts.Right!;
+    const rightCallee = contracts.RightCallee!;
+    const leftValidator = validatorFor(left.category);
+    const leftPing = selectorOf(artifacts, 'LeftCallee', 'ping');
+    const rightPing = selectorOf(artifacts, 'RightCallee', 'ping');
+    const plan: CompositionDraftPlan = {
+      blocks: [
+        { contract: 'Left', masters: ['left-1'], validator: { id: 'left-validator', settles: [] }, state: [] },
+        { contract: 'LeftCallee', masters: ['left-callee-1'], state: [] },
+        { contract: 'Right', masters: ['right-1'], validator: { id: 'right-validator', settles: [] }, state: [] },
+        { contract: 'RightCallee', masters: ['right-callee-1'], state: [] },
+      ],
+      userInputs: userInputs(['user-left', 'user-right'], 6),
+      masters: [
+        master({
+          master: 'left-1', contract: 'Left', entry: 'callIt', program: left.program,
+          facts: {
+            contract: 'Left', functionName: 'callIt', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: left.address, value: 0n },
+          enteredBy: 'user-left', origin: 'user-left',
+          calls: [{
+            kind: FrameKind.CALL, callee: 'left-callee-1', target: leftCallee.address,
+            value: 0n, argumentPushes: [leftPing],
+          }],
+        }),
+        master({
+          master: 'left-callee-1', contract: 'LeftCallee', entry: 'ping', program: leftCallee.program,
+          facts: {
+            contract: 'LeftCallee', functionName: 'ping', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.CALL, sender: left.address, self: leftCallee.address, value: 0n },
+          enteredBy: 'left-1', origin: 'user-left', argumentPushes: [leftPing],
+        }),
+        master({
+          master: 'right-1', contract: 'Right', entry: 'callIt', program: right.program,
+          facts: {
+            contract: 'Right', functionName: 'callIt', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: right.address, value: 0n },
+          enteredBy: 'user-right', origin: 'user-right',
+          calls: [{
+            kind: FrameKind.CALL, callee: 'right-callee-1', target: rightCallee.address,
+            value: 0n, argumentPushes: [rightPing],
+          }],
+        }),
+        master({
+          master: 'right-callee-1', contract: 'RightCallee', entry: 'ping', program: rightCallee.program,
+          facts: {
+            contract: 'RightCallee', functionName: 'ping', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.CALL, sender: right.address, self: rightCallee.address, value: 0n },
+          enteredBy: 'right-1', origin: 'user-right', argumentPushes: [rightPing],
+        }),
+      ],
+      inputs: {
+        'left-1': { source: masterInput(left) },
+        'left-callee-1': { source: masterInput(leftCallee) },
+        'right-1': { source: masterInput(right) },
+        'right-callee-1': { source: masterInput(rightCallee) },
+        'left-validator': {
+          source: { lockingBytecode: leftValidator.lock, valueSatoshis: 20_000n, token: token(left.category, 'mutable') },
+        },
+        'user-left': userInput(),
+        'user-right': userInput(),
+      },
+      // The one validator the plan can carry, covering the first pair's callee; the second pair has no field left
+      // to name its own.
+      validator: { id: 'left-validator', covers: ['LeftCallee'], settles: [], redeemScript: leftValidator.redeem },
+    };
+
+    const refusal = shippedRefusal(() => composeDraft(plan));
+
+    expect(refusal.name).toBe('PerCallEncodingError');
+    expect(refusal.message).toBe('"LeftCallee" is covered by more than one validator');
   });
 });

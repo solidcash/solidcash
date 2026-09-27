@@ -69,13 +69,9 @@ describe('composite values at an entry boundary', () => {
     expect(message).toContain("the entry point 'f' returns a struct");
   });
 
-  it('refuses an entry that returns an array', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Arr { function f() returns (int[3]) { int[3] memory a; a[0] = 1; return a; } }';
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain("the entry point 'f' returns an array");
-  });
+  // An entry that returns a fixed-size array is admitted, not refused: the array is one value the language holds
+  // already encoded, so the frame records the words the entry's own `return` built and compares them. The accept
+  // and its refusals are machine cases in `solidc/test/per-call/master/composite-return.test.ts`.
 
   it('refuses a call that passes a run-time struct argument', () => {
     const source = 'pragma solidcash ^0.13.0;'

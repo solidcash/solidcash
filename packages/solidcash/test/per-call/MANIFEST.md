@@ -35,8 +35,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 933 tests, all passing at `7c76dcef4` (114 + 347 + 472). The counts are the per-directory runs above, and
-the two package totals are full-config runs of `vitest.per-call.config.ts` in `solidc` and `solidcash`.
+Total: 938 tests (114 + 352 + 472), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts` and the directory counts are per-directory runs of the same config. One caveat on
+reproducing them: the working tree also carries an unrelated edit pass over these same directories that was not
+made by this work and is not committed, so a fresh count of the working tree is lower than the committed one until
+that pass lands or is reverted.
 
 ## What each directory covers
 

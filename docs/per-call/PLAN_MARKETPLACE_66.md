@@ -554,7 +554,12 @@ risk. Take the slices in order, each with its own tests.
   - exact read, and absence proof by predecessor;
   - update in place;
   - insert: a created record plus a relinked predecessor;
-  - delete as the default value;
+  - delete as the default value: driven end to end at `07c80be46`. A source-level `delete m[k]` lowers to the
+    upsert of the value type's default, so the published access is a write and the frame's record group is the same
+    write's — the node kept in place for an update, the relinked predecessor and the created node for an insert —
+    and the machine accepts both through the shipped compile, deploy and derivation
+    (`solidc/test/per-call/master/mapping-delete-write.test.ts`). A record declaring the node removed, as a splice
+    would, is refused, so the case drives the settlement rather than the encoding;
   - nodes created and relinked across frames.
   - The read of the entry a write targets is derived from the same group as of `3d432f7a9`: an access that reads
     and writes one target is admitted, and the machine accepts both its present and its absent case
@@ -581,11 +586,13 @@ risk. Take the slices in order, each with its own tests.
     body derive as of `aaddcb5fc`: the record groups are read in one walk, in the order the frame declares them, and
     the created-record count is the body's region, so a body that writes `balances[to] += amount` and
     `allowances[owner][spender] -= amount` is accepted with a group declared for the other collection refused
-    (`several-collections-write.test.ts`). **What is not settled is a removal**: `delete balances[k]` compiles —
-    identically to writing the default, 14,821.5 bytes measured — and no test declares a removal's record group, so
-    whether the derivation's update/insert branch reads one is open; the derivation takes its successor from the
-    written node, while a removal's node carries the empty viewOut the mapping plan writes for it. Mappings inside
-    structs, keys below the second level, and a removal driven end to end are unexercised.
+    (`several-collections-write.test.ts`). **The removal is settled** at `07c80be46`, and the other way round from
+    what was open: `delete balances[k]` lowers to the upsert of the value type's default, so the compiler never
+    emits a removal's record group for the derivation to read — the group it declares is the default write's, whose
+    written node the derivation does read, and the machine accepts both the update and the insert shape. Refused
+    controls: a segment declaring the target removed and a written node declared under the empty view a splice would
+    carry (`mapping-delete-write.test.ts`). Mappings inside structs and keys below the second level are
+    unexercised.
 - [ ] R7 Value pin (the spec's D2 rule) for mapping nodes and chunks, which carry none today (T39).
 - Satoshi and token containers: not needed for the 66; deferred.
 

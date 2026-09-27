@@ -140,6 +140,10 @@ export async function expandCreateBuilderLateTransitive(
       lockingBytecode: parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
+    // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
+    // and not the transaction signer. Keep this immutable frame value in authenticated-result refreshes too.
+    const parentIncomingCallerAddress = parent.callerIdentity
+      ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
     const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
     const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
@@ -158,7 +162,13 @@ export async function expandCreateBuilderLateTransitive(
       iterationIndex = 0,
     ): Promise<void> => {
       const hydrated = await hydrateExternalPredicateState({
-        evaluateExternalExpression: (...args: any[]) => logicalParentContract._evaluateExternalExpression(...args),
+        evaluateExternalExpression: (
+          expression, args, artifact, state, inputs, returns, occurrenceIndex, priorWrites, self,
+          bindings, deltas, strict,
+        ) => logicalParentContract._evaluateExternalExpression(
+          expression, args, artifact, state, inputs, returns, occurrenceIndex, priorWrites, self,
+          bindings, deltas, strict, parentIncomingCallerAddress,
+        ),
         getEntries: (...args: any[]) => logicalParentContract.getEntries(...args),
       }, expressions, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
       parentOutgoingSelfAddress, [iterationIndex]);
@@ -176,7 +186,7 @@ export async function expandCreateBuilderLateTransitive(
         parentOutgoingSelfAddress, parentFn.externalCalls, allowProvisional, graphPlanningResults,
         conditionCallsite && {
           callsiteId: conditionCallsite.callsiteId, resultConsumers: parentFn.resultConsumers, lane: 'condition',
-        }, iterationIndex,
+        }, iterationIndex, parentIncomingCallerAddress,
       ) : Promise.resolve(undefined);
     const frames: Array<{ nested: ExternalCallAbi; iterationIndex: number; occurrenceIndex: number }> = [];
     for (const nested of parentFn.externalCalls) {
@@ -197,6 +207,7 @@ export async function expandCreateBuilderLateTransitive(
           logicalParentContract._evaluateExternalExpression(
             expression, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
             domainReturns, 0, false, parentOutgoingSelfAddress, bindings,
+            undefined, false, parentIncomingCallerAddress,
           ));
       }
       let occurrenceIndex = 0;
@@ -210,6 +221,7 @@ export async function expandCreateBuilderLateTransitive(
           const active = logicalParentContract._evaluateExternalExpression(
             nested.condition, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
             conditionReturns, iterationIndex, false, parentOutgoingSelfAddress,
+            undefined, undefined, false, parentIncomingCallerAddress,
           );
           if (typeof active !== 'boolean') throw new Error(
             `Could not resolve runtime predicate for late external callsite ${nested.callsiteId}`,
@@ -238,6 +250,7 @@ export async function expandCreateBuilderLateTransitive(
         ? logicalParentContract._resolveExternalArgs(
           [nested.addressSource], logicalParentArgs, logicalParentArtifact, parentState,
           parentFn.inputs, addressReturns, iterationIndex, false, parentOutgoingSelfAddress,
+          parentIncomingCallerAddress,
         )?.[0]
         : nested.addressStateVar
           ? parentState[nested.addressStateVar] as FunctionArgument | undefined
@@ -295,6 +308,7 @@ export async function expandCreateBuilderLateTransitive(
         graphChildSources,
         logicalParentArgs, logicalParentArtifact, parentState,
         parentFn.inputs, childReturns, iterationIndex, false, parentOutgoingSelfAddress,
+        parentIncomingCallerAddress,
       );
       if (childArgs === undefined) continue;
       const graphChildReturns = preparedAtomicNodes
@@ -305,6 +319,7 @@ export async function expandCreateBuilderLateTransitive(
           graphChildSources,
           [...graphParentArgs], logicalParentArtifact, parentState,
           parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,
+          parentIncomingCallerAddress,
         ) ?? childArgs;
       const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
         ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
@@ -319,6 +334,7 @@ export async function expandCreateBuilderLateTransitive(
           return logicalParentContract._resolveExternalArgs(
             graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
             parentFn.inputs, externalReturns, iterationIndex, false, parentOutgoingSelfAddress,
+            parentIncomingCallerAddress,
           );
         }
         : undefined;

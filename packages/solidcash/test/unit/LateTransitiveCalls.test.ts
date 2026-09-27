@@ -387,7 +387,11 @@ describe('late transitive call preparation', () => {
     }) as FixtureContract['_resolveExternalArgs'];
     first._externalRegistry.set('Source', source);
     first._externalRegistry.set('Sink', sink);
-    const fixture = preparation([group(first)]);
+    const resolveArgs = vi.spyOn(first, '_resolveExternalArgs');
+    const callerAddress = Uint8Array.of(0x52);
+    const fixture = preparation([{
+      ...group(first), callerIdentity: { categoryId: '99'.repeat(32), lockingBytecode: '52' },
+    }]);
     await fixture.expand();
     expect(fixture.groups.map((value) => value.categoryId)).toEqual([
       first.categoryId, source.categoryId, sink.categoryId,
@@ -398,7 +402,11 @@ describe('late transitive call preparation', () => {
     expect(resolveResults).toHaveBeenCalledWith(
       consumer.argSources, [9n], first, {}, fn.inputs, new Uint8Array([0x51]),
       fn.externalCalls, true, expect.objectContaining({ entries: expect.any(Map) }),
-      undefined, 0,
+      undefined, 0, callerAddress,
+    );
+    expect(resolveArgs).toHaveBeenLastCalledWith(
+      consumer.argSources, [9n], first.inner.artifact, {}, fn.inputs, expect.any(Map),
+      0, false, Uint8Array.of(0x51), callerAddress,
     );
   });
 

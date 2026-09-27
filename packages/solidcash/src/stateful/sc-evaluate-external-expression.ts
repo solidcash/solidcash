@@ -28,6 +28,7 @@ export interface EvaluateExternalExpressionHost {
     occurrenceIndex?: number,
     stateIncludesPriorWrites?: boolean,
     executionSelfAddress?: FunctionArgument,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined;
 }
 
@@ -45,11 +46,13 @@ executionSelfAddress?: FunctionArgument,
 localBindings?: ReadonlyMap<string, FunctionArgument>,
 stateLengthDeltas?: Readonly<Record<string, bigint>>,
 strictFieldAccess = false,
+executionCallerAddress?: FunctionArgument,
 ): FunctionArgument | undefined {
   const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
     evaluateExternalExpression(host,
       candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
       stateIncludesPriorWrites, executionSelfAddress, localBindings, stateLengthDeltas, strictFieldAccess,
+      executionCallerAddress,
     )
   );
   const concat = (parts: Uint8Array[]): Uint8Array => {
@@ -271,6 +274,7 @@ strictFieldAccess = false,
     return host.resolveExternalArgs(
       [expression.source], functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+      executionCallerAddress,
     )?.[0];
   }
   if (expression.kind === 'literal') {
@@ -508,6 +512,7 @@ strictFieldAccess = false,
         evaluateExternalExpression(host,
           candidate, functionArgs, artifact, state, callerInputs, externalReturns, occurrenceIndex,
           stateIncludesPriorWrites, executionSelfAddress, bindings,
+          stateLengthDeltas, strictFieldAccess, executionCallerAddress,
         )
       );
       let remainingDefaultElements = 10_000;

@@ -14055,6 +14055,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       lane: 'condition';
     },
     occurrenceIndex = 0,
+    executionCallerAddress?: FunctionArgument,
   ): Promise<Map<string, FunctionArgument>> {
     return resolveExternalExpressionReturnsImpl(
       {
@@ -14067,6 +14068,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       argSources, functionArgs, registryOwner, state, callerInputs, executionSelfAddress,
       producerCalls, allowProvisional, planningContext, consumer, occurrenceIndex,
+      executionCallerAddress,
     );
   }
 
@@ -14085,6 +14087,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     occurrenceIndex = 0,
     stateIncludesPriorWrites = false,
     executionSelfAddress?: FunctionArgument,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument[] | undefined {
     return resolveExternalArgsImpl(
       {
@@ -14094,6 +14097,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
       argSources, functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress,
+      executionCallerAddress,
     );
   }
 
@@ -14195,6 +14199,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     localBindings?: ReadonlyMap<string, FunctionArgument>,
     stateLengthDeltas?: Readonly<Record<string, bigint>>,
     strictFieldAccess = false,
+    executionCallerAddress?: FunctionArgument,
   ): FunctionArgument | undefined {
     return evaluateExternalExpressionImpl(
       {
@@ -14203,6 +14208,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       expression, functionArgs, artifact, state, callerInputs, externalReturns,
       occurrenceIndex, stateIncludesPriorWrites, executionSelfAddress, localBindings,
       stateLengthDeltas, strictFieldAccess,
+      executionCallerAddress,
     );
   }
 

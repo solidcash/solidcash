@@ -665,7 +665,11 @@ risk. Take the slices in order, each with its own tests.
 ### 4.3 Wave 2: deployment, proxies and acceptance tests (F and G, with R continuing)
 
 **Stream F: deployment, pools, proxies, addresses** (spec 12, 19, 21, open point 13).
-- [ ] F1 Genesis with the master pool, and the validator pool at `addrV(cat)`; sizes as needed (D6).
+- [x] F1 Genesis with the master pool, and the validator pool at `addrV(cat)`; sizes as needed (D6). Landed with the
+  constructor-frame derivation (`867cafe09`): the shipped deploy entry point selects the convention from the
+  artifact, the master pool is minted at the master lock, the validator pool is one UTXO at the contract's own
+  address, and one record per data NFT carries the commitment the constructor's frame computed. The marketplace
+  fixture's four escrow contracts now deploy through it.
 - [x] F2 Bake `addrX` into `code_X`; `getAddress()` returns `addrV(cat)`.
 - [ ] F3 CREATE look-ahead:
   - reserve genesis-eligible UTXOs;
@@ -710,55 +714,66 @@ risk. Take the slices in order, each with its own tests.
   - [ ] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters.
   - [ ] Row 26: A multi-megabyte master script in the mock (MarketplaceV1).
 - [ ] G3 Hostile tests, one per threat (spec section 9); each must be rejected:
-  - [ ] T1: execute on a non-master UTXO (loose BCH at `lockA`, or a foreign minting NFT placed there).
-  - [ ] T2: forged `msg.sender` in standalone mode (`callerRef` pointing at a contract input, no validator).
-  - [ ] T3: forged caller or call edge when a validator is present.
-  - [ ] T4: a validator left out where one is needed.
-  - [ ] T5: a fake validator (wrong derived lock, or no same-category mutable NFT).
-  - [ ] T6: a master pointing to a validator that does not list it.
-  - [ ] T7: split view across two validators (an edge or a contract's masters spanning them).
-  - [ ] T8: forged arguments, selector or result.
-  - [ ] T9: reordered segments; stale read (`A.k` placed before `A.f`'s write).
-  - [ ] T10: self-settlement claimed while a second master of the contract exists.
-  - [ ] T11: partial settlement of a multi-master contract.
-  - [ ] T12: a state UTXO spent outside settlement.
-  - [ ] T13: a forged or missing event.
-  - [ ] T14: a master or validator drained, duplicated, or not recreated.
-  - [ ] T15: an identity check keyed on a commitment instead of category, capability and lock.
-  - [ ] T18: a second A master claims `callerRef` = the first A master, which made no such call, and calls an
+  - [x] T1: execute on a non-master UTXO (loose BCH at `lockA`, or a foreign minting NFT placed there).
+  - [ ] T2: forged `msg.sender` in standalone mode (`callerRef` pointing at a contract input, no validator). Open:
+    the address-slot case below is a different mutation, and no case names a standalone sender forgery.
+  - [x] T3: forged caller or call edge when a validator is present.
+  - [x] T4: a validator left out where one is needed.
+  - [x] T5: a fake validator (wrong derived lock, or no same-category mutable NFT).
+  - [x] T6: a master pointing to a validator that does not list it.
+  - [x] T7: split view across two validators (an edge or a contract's masters spanning them). `hostile/validator-split-view.test.ts`: a second validator input re-pointed at one of the contract's masters is refused by the derivation (`V3_MASTER_NOT_POINTING_HERE`) and by the machine.
+  - [x] T8: forged arguments, selector or result.
+  - [ ] T9: reordered segments; stale read (`A.k` placed before `A.f`'s write). The stale read is refused (`hostile/stale-view.test.ts`, `V7_CHAIN_BROKEN`, machine refuses). Reordering stays open: swapping one master's two segments makes the derivation refuse as `V7_CHAIN_START_MISMATCH` while the shipped program accepts, measured from the fixture (see the Deviations).
+  - [x] T10: self-settlement claimed while a second master of the contract exists.
+  - [x] T11: partial settlement of a multi-master contract.
+  - [x] T12: a state UTXO spent outside settlement.
+  - [x] T13: a forged or missing event.
+  - [x] T14: a master or validator drained, duplicated, or not recreated.
+  - [x] T15: an identity check keyed on a commitment instead of category, capability and lock.
+  - [x] T18: a second A master claims `callerRef` = the first A master, which made no such call, and calls an
     `onlySelf` function. Also a master that names itself as caller or callee.
-  - [ ] T19: `callerRef` pointing at `DA` (a state UTXO at `stateA`) or at the validator.
-  - [ ] T20: the root user's input signed with `ALL|ANYONECANPAY`, `NONE` and `SINGLE`, one variant each.
-  - [ ] T21: `originRef` pointing at a second signed user in the transaction, at the root and on a callee.
+  - [x] T19: `callerRef` pointing at `DA` (a state UTXO at `stateA`) or at the validator.
+  - [x] T20: the root user's input signed with `ALL|ANYONECANPAY`, `NONE` and `SINGLE`, one variant each.
+  - [x] T21: `originRef` pointing at a second signed user in the transaction, at the root and on a callee.
   - [ ] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
-    must succeed.
-  - [ ] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
+    must succeed. Unreachable: the block carries no branch or status field and the compiler makes every catch dead
+    code, so no witness can select a branch (general `try`/`catch` coverage exists in `solidc/test/TryCatch.test.ts`).
+  - [x] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
     the EVM expectations recorded in the Log (2026-09-25 probe).
-  - [ ] T24: a funder P2PKH placed before the root user's input is never taken as `msg.sender` or `tx.origin`.
-  - [ ] T25: `this.g()` inline and `IA(t).g()` with `t == address(this)` on a second master give the same
+  - [x] T24: a funder P2PKH placed before the root user's input is never taken as `msg.sender` or `tx.origin`.
+  - [x] T25: `this.g()` inline and `IA(t).g()` with `t == address(this)` on a second master give the same
     `msg.sender`.
   - [ ] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
-    target), and a master presenting its code lock instead of its address.
+    target), and a master presenting its code lock instead of its address. Open, and there is no spend to mutate: the
+    per-call delegate shapes are refused at compile, which `hostile/proxy-binding.test.ts` pins by name (a fallback or
+    receive that dispatches by selector; a body that issues a low-level call).
   - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
     creator that ran no `new`.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
-    one master's segments out of order.
-  - [ ] T31: two masters naming each other as caller, with no user root.
-  - [ ] T32 is a residual (D8). Add a test recording that an extra call naming an already-used signed input is
-    accepted, so that adopting receipts later flips it.
-  - [ ] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
-  - [ ] T34: a `STATIC` callee that writes a record or emits.
-  - [ ] T35: a value send to a contract made as a plain output.
+    one master's segments out of order. Open for its second half, which is T9's reorder finding: the program accepts
+    a master whose segments are swapped while the derivation refuses.
+  - [x] T31: two masters naming each other as caller, with no user root.
+  - [x] T32 is a residual (D8). Add a test recording that an extra call naming an already-used signed input is
+    accepted, so that adopting receipts later flips it. `hostile/reused-signature.test.ts` records it, asserting the
+    two roots name one input and that the machine accepts, beside the faithful composition.
+  - [x] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
+  - [x] T34: a `STATIC` callee that writes a record or emits.
+  - [x] T35: a value send to a contract made as a plain output.
   - [ ] T36: a master whose `self` is not `addrV` of its category (V11), and a fake contract presenting another
-    contract's address.
+    contract's address. Partial: a reserved slot filled with an address its category does not derive is refused by the
+    head's own binding (`hostile/standalone-address-slot.test.ts`), but a slot and a presented address that agree on a
+    foreign address are accepted, because the category-to-address rule is a deployment gate rather than an on-chain
+    one (`verifyMasterDeployment`).
   - [ ] T37: a `DELEGATE` callee that is a master of other code than the named target, and an `INTERNAL` callee of
-    another contract.
-  - [ ] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
-  - [ ] T39: a record, master or validator recreated with less value.
-  - [ ] T40: a callee claiming a `msg.value` its caller did not send.
-  - [ ] T41: two frames listing the same event output.
+    another contract. Open, for the same reason as T26/T27: per-call delegate and internal frames are refused at
+    compile, so no spend reaches a mutation.
+  - [x] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
+  - [x] T39: a record, master or validator recreated with less value.
+  - [x] T40: a callee claiming a `msg.value` its caller did not send.
+  - [ ] T41: two frames listing the same event output. Open: the event cases refuse a payload the body did not
+    compute and a body that emits at an unlisted output, but not two frames naming one output.
   - [ ] T16 (non-critical): changing a master's witness after the user signed either fails or yields identical
-    outputs.
+    outputs. Open; the signature-hash-type cases are the closest coverage today.
   - T17 (pool contention) is liveness only: no test; pools are sized per section 21.
 - [ ] G4 Toys (neutral names), each settling with exact post-state, events and balances:
   - [ ] **Y1 same-entry appends.** A `Hub` calls `Log.append(id, item)` k = 3 times; `append` pushes onto `items[id]`
@@ -786,14 +801,19 @@ risk. Take the slices in order, each with its own tests.
     - an `Escrow.refund()` gated on `tx.origin`, reached through `Market.refund()`, sees the root user;
     - each expectation matches the EVM result of the same Solidity source (the Log's 2026-09-25 probe method).
 - [ ] G5 The shapes of spec 5.4, with the same scripts and builder and no special case:
-  - [ ] `A`
-  - [ ] `AA`
-  - [ ] `AB`
-  - [ ] `ABBA`
-  - [ ] `ABCBA`
-  - [ ] `A.x` and `C.y`, independent: 0 validators
-  - [ ] `AB` and `CD`, independent: 2 validators
-  - [ ] `A.x` and `A.y`: 1 validator
+  - [x] `A` — one master and its user, derived and accepted at every contract input.
+  - [x] `AA` — one contract entered twice through an address literal (a run-time `address(this)` target is refused
+    by the compiler, because the site holds no single value to check its record against); the self-called entry
+    derives first and the machine accepts the spend (`8b89a9bda`).
+  - [x] `AB` — the callee is placed after the caller and its validator, derives first, and the machine accepts.
+  - [x] `ABBA` — the re-entered contract's entries make different numbers of calls; the end-to-end composer run is
+    `frames/round-trip-composition.test.ts`.
+  - [ ] `ABCBA` — the three contracts are emitted, but no run places the call-back chain end to end.
+  - [x] `A.x` and `C.y`, independent: 0 validators — both masters and both users, accepted at every input.
+  - [ ] `AB` and `CD`, independent: 2 validators — a draft plan names one validator, and assembly refuses a master
+    covered twice, so the shape is pinned against that boundary rather than served.
+  - [x] `A.x` and `A.y`: 1 validator — served once each user-entered master carries its own selector behind the
+    dispatcher flag; the refusals for a selector without the flag and for no selector are kept.
 - [ ] G6 Every edge of spec section 22 is exercised by at least one named test. The map is kept in `MANIFEST.md`.
 - [ ] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone
   I2b).
@@ -1570,3 +1590,9 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | (this round) | per-call | I2: Y3 threads a read's result into a later call | 114 + 376 + 452 | **A call record's `result` is the callee's declared return value, read from the plan rather than left empty.** `composeDraft` and `toCompositionPlan` wrote an empty `result` into every call record, so a caller that consumed a call's value read nothing and recomputed the later call's digest from an empty result; the composer now fills it from the callee master's `retval` (`callResultOf`), which is what the validator's V5 check requires (`calleeBlock.retval === call.result`, `checks.ts:296`) and what a caller's body decodes when its source consumes the call's value. **The Y3 toy settles**: with `id` a value the running code holds (`tx.inputs.length`), the composed transaction derives, completes callee-first (`fee-1`, `pay-1`, `claimer-1`), every contract input is accepted by the composition machine, the claimer's static read carries the fee callee's `retval` and its later void call an empty one - both read back out of the bytes the machine evaluates - and the later call's `argsHash` equals the shipped encoders' digest of the wire pushes (`fee` then `id`). **Two walls are pinned by name rather than papered over**: a user-entered root cannot take the parameter the plan's `A.f(id)` writes (a user-entered master carries no call data, so the parameter case is refused before composition), and a later call that also passes a compile-time argument still stalls - the caller's run-time digest appends the compile-time argument's *value* (`0x07` for the literal `7`) where the wire push is `0x57`, an emission bug in `emitPerCallArgumentDigest` (`GenerateTargetTraversal.ts`) rather than a composer one, left refused with its mechanism named. The toy's own plan also stated its second call's pushes in parameter order where the encoders read wire order, which is corrected. Shape catalog unchanged; the MANIFEST's line for the toys is updated to match. |
 | 2026-09-27 | (this round) | per-call | I1: the connectivity walk lands, and a detached cycle is refused | 114 + 376 + 453 | **The chains rule follows views and takes as it follows, which is what makes a fabricated pair refusable.** `emitCheckRecordEntryChain` now walks each entry's record: it computes the start view (nothing when the entry's input is the sentinel, otherwise the commitment the transaction spends at that input, required to exist), builds the needle `key || view`, and takes - removes from its own copy of the blob - the declaration that starts at that view. A read-only declaration (both its start and its end window match) is taken before any advancing one, so a declaration that only records the state at a view cannot strand another declaration starting there; only when none is left does the walk take an advancing declaration and follow the view it ends at. The walk fits only when the last declaration it took is anchored (the gather's marker: the write lands at the transaction's own output, or the entry deletes the record) and when no declaration of that record is left over - a detached pair or a cycle runs out of declarations rather than arriving, which is exactly the hole the pairing rule had. Nothing carries on from a deletion, decided before the walk because the walk follows views in the blob's order rather than in the executions'. The take pass gained an optional second window so a read-only declaration is one search rather than two; with it omitted the emitted code is byte-identical to the pass verified in isolation last round. **The hostile case flips**: `refuses a chain that never leaves a fabricated view, which the derivation refuses as broken`, which asserted acceptance yesterday. **The generator's detached cycle lands with it**, verified red before the rule and green after: with the pre-rule program restored, the generated corpus reports `seed 24301 case 1 (detached cycle): missed V7_CHAIN_BROKEN: the derivation refuses and the machine accepts`. **Measured under the composition profile through the shipped path**: the program is 10,246 bytes, the reference composition's validator input 10,329 bytes of unlocking and 35 of locking, and the composition costs 5,150,891 of 8,296,000 operation-cost units (62%) at the published density, accepted; the validator directory is 94 tests green, including the differential's `every generated composition decides the same way in both models`. **Two completeness costs are stated rather than hidden**: the walk is greedy and never backtracks, so a branching chain - two advancing declarations starting at one view, which the derivation accepts when the executions order it one way - can be refused, and the deletion-continuation check is order-free, so it cannot tell a declaration that reads at a view before a deletion (legitimate) from one that reads after it (refused, as the pairing rule also refused). **Ticked on this round**: B7 (its partial note was stale), R2, and I1, whose last open clause this rule was; the per-call suites are solidc 376 and solidcash 453, with `tsc -b tsconfig.packages.json` at exit 0. |
 | 2026-09-27 | (no code) | per-call | the ladder's rung is the per-call deployment, not the compile | 114 + 376 + 453 | **The compile is green, and the rung the ladder actually stands on is measured.** `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4` reports `Compiled 9/9 file(s), 7 contract artifact(s)` with exit 0, so the rung expected to be a codegen refusal is behind us. The fixture title then fails inside the deploy: the upstream test's own `Unicrow.deploy(...)` runs the *direct* stateful SDK path - `ContractFactory.deploy` to `deployStatefulContract` to `deriveDeployCommitments` (`sc-derive-deploy-commitments.ts:728`) - which evaluates the constructor against a synthetic transaction whose unlocking carries the direct convention's shape, and the per-call master's prologue refuses that unlocking: `Failed to derive initial state commitments from constructor. Ensure the constructor writes all state variables. VM error at instruction 27/2516: Program failed an OP_VERIFY operation`. The compiled artifact does publish the convention (`composition.convention: 'per-call'`, with the placeholder offsets and the stop sites), and the half that fills a master's deployment-time constants exists and is green (`packages/solidcash/src/per-call/deploy/`, its five test files inside the 453), so what is missing is the per-call *stateful* deploy: the constructor's own frame run to derive the initial records, the pool the deployment funds, and a route from the shipped SDK entry points so that which convention compiled an artifact is not the caller's problem. **Measured on the committed round**: the per-call directories are green (utils 114, solidc 376, solidcash 453), the guardrail grep over the per-call source diff finds no application name (`no application-name matches`), and no plan checkbox is ticked by this row. |
+
+| 2026-09-27 | 867cafe09 | per-call | the deploy rung | 47 deploy tests; fixture 1 failed / 65 skipped | **A deployment now derives a per-call contract's genesis state by running its constructor frame.** The direct probe's synthetic unlocking is refused by the head before the constructor runs, so the derivation lays the block instead: a signed caller, the master carrying the category's minting token, one state record per data NFT, a validator input for a master that cannot stand alone. The commitment a constructor writes cannot be declared in advance, so the loop reads it back: each record starts at the pre-state, a written record's close fails against that declaration and leaves the computed and the declared value on the stack, and the loop converges one record per run. The shipped deploy entry point selects the convention from the artifact, so the marketplace fixture's four escrow contracts deploy through it (previously the first `Unicrow.deploy` died inside the direct derivation). Refused by name rather than probed: a constructor that emits, writes a mapping or a dynamic value, makes a value send, or carries an internal witness parameter. **The fixture's next rung is named**: after the four deploys, `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for` (MS9's proxy half, P30's row). Focused suite: 6 files, 47 tests. Also removes the scratch probe an earlier commit had picked up by mistake, which drove a stand-in validator program. |
+| 2026-09-27 | 50b33ec71 | per-call | a dynamic run's width change | 24 in the three touched files, composer 148 | **A value held in chunks is now plannable across a width change.** The chunks both sides hold are kept in place at their own index; the chunks only the written value holds are created, with an output at the chunk's index and no input; the chunks only the spent value holds are removed, by an input that carries the write authorization and writes no record, its satoshis paid to a lock the caller names because the body pins the chunk address on exactly the chunks the written value holds. A growing run and a shrinking run each compile, deploy, plan, derive and settle in the machine, with the record entries and the chunk outputs read back through the shipped encoders. **What the run still does not carry is a value from one frame to the next**: the transaction's chunk output holds the final element stream, so a frame whose value is not the final one closes its segment against a commitment its body did not compute and the derivation stalls (`PER_CALL_DERIVATION_STALLED`). The emitted read and the close, which resolve the run against the transaction rather than against the frame's declared view, are the change that would close it; the toy pins the limit there. |
+| 2026-09-27 | 8b89a9bda | per-call | shapes and hostile coverage | 114 + 376 + 482 | **The shape suite gains the runs it had only asserted at compile**, and two shapes stay pinned against the boundary that refuses them. One contract entered twice now runs end to end on two masters, with the self-called entry derived first and every contract input accepted; two entry points of one contract entered by two users are served by one validator once each user-entered master carries its own selector behind the dispatcher flag. The two independent validator-bearing pairs are refused because a draft plan names one validator and assembly refuses a master covered twice, and a self-call whose target is a run-time `address(this)` is refused by the compiler, so the twice-entered contract is served through an address literal. **The hostile suite closes T7** (one contract's masters split across two validators: the derivation names `V3_MASTER_NOT_POINTING_HERE` and the machine refuses), **T32** (recorded as accepted, so adopting receipts flips it) and **T35** (a value send refused at compile, cited from `edges/`), and pins T26/T27 by the compile-time refusal that makes a spend-level mutation impossible. **Two findings are recorded rather than fixed:** segment order is not enforced by the emitted program (swapping one master's two segments makes the derivation refuse as `V7_CHAIN_START_MISMATCH` while the machine accepts), and the category-to-address rule lives in the deployment gate, not on the chain, so a reserved slot and a presented address that agree on a foreign address are accepted. Ticks: F1, the six G5 shapes the runs serve, and the threats whose case exists (T2, T9, T16, T22, T26/T27, T30, T36, T37 and T41 stay open with the reason on the line). The manifest's per-directory table and totals are refreshed from the same runs (972, was 872 with rows that had gone stale). |
+
+- **Segment order inside one master is not enforced by the emitted program, and the machine accepts a transcript the derivation refuses.** The record chain's rule is deliberately order-free, since the gathered blob groups a record's declarations by master rather than by the executions that ran (`gather` above), and the ordering half of `V6` is not among the emitted checks. The consequence is measured from the fixture, not argued: swapping the two segments of one master's transcript in the reference composition makes the shipped derivation refuse with `V7_CHAIN_START_MISMATCH` while the shipped program **accepts** the same transaction at the validator input. The master's own input is unaffected, so what a hostile assembler gains is bounded by the master head's own checks on its declarations; what is missing is the program's own statement that a master's segments ran in the order the transcript lists them. Reordering a `DELEGATE` or `INTERNAL` frame's segments (T30's second half) and T9's reorder case are the same hole and stay unticked until a check binds the segment order.

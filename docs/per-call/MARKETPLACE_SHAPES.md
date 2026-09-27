@@ -67,8 +67,8 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 | P26 | Depth 4 below the root, plus proxy hops | MS4, MS7 | a 4-contract chain settles (`edges/deep-chain`) |
 | P27 | The innermost revert reported after state-changing calls (E3) | MS10 | refused by the derivation, not reported |
 | P28 | `STATIC` root reads off-chain, including reverting views (E4) | MS8 | none |
-| P29 | CREATE-predicted, circular addresses (F3) | MS9 | none |
-| P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | none |
+| P29 | CREATE-predicted, circular addresses (F3) | MS9 | partial, as of `867cafe09`. The four escrow contracts deploy through the shipped factory path at their real addresses and are referenced by the next deployment; the fixture stops before the proxy half, so the prediction is exercised but not yet asserted (the assertion is F7's) |
+| P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 ## 3. Test mechanics the titles also need (not shapes)
 

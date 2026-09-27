@@ -200,6 +200,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const artifactCache = process.env.SOLIDC_COMPILE_CACHE !== '0';
     const compilerOptions = {
       ...hre.config.solc,
+      // A project config may pin the composition convention directly; it overrides the free-form solc map.
+      ...(hre.config.composition !== undefined && { composition: hre.config.composition }),
       suppressWarnings,
       maximumInputBytes: maxShardBytes,
       commitmentLimit: Math.min(

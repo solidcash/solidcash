@@ -59,6 +59,12 @@ export interface SolidcashConfig {
   solc?: Record<string, unknown>;
   /** Compiler options passed through to solidc. Preferred over the legacy `solc` name. */
   compiler?: Record<string, unknown>;
+  /**
+   * Composition convention the compiler targets. `direct` (the default) gives every entry point its own
+   * top-level function and block layout; `per-call` compiles each entry point as a master program that settles
+   * the contract's state once per transaction. Passed through to solidc `compileString` / `compileStringMulti`.
+   */
+  composition?: 'direct' | 'per-call';
   /** Optional generated TypeChain-compatible bindings. */
   typegen?: TypegenConfig;
 }
@@ -72,6 +78,7 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
+  composition?: 'direct' | 'per-call';
   typegen: {
     targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[];
     jsonArtifactModules?: boolean;
@@ -93,6 +100,7 @@ export const solidcashConfigSchema = {
     } },
     defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
     compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
+    composition: { enum: ['direct', 'per-call'] },
     networks: { type: 'object', additionalProperties: { type: 'object' } },
     accounts: { type: 'object' },
     typegen: { type: 'object', properties: { targets: { type: 'array', items: {
@@ -130,6 +138,7 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     accounts: config.accounts,
     solc: compiler,
     compiler,
+    composition: config.composition,
     typegen: {
       jsonArtifactModules: config.typegen?.jsonArtifactModules,
       targets: configuredTargets.map((target) => ({

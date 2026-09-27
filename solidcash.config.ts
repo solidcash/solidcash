@@ -21,6 +21,9 @@ export default defineConfig({
     optimizeForCompilationSpeed: true,
     suppressWarnings: true,
   },
+  // Compile the per-call composition convention: every entry point is a master program, so a transaction that
+  // reaches one contract several times settles its state exactly once.
+  composition: 'per-call',
   typegen: {
     jsonArtifactModules: true,
     targets: [{

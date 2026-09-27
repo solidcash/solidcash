@@ -11,7 +11,11 @@ import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
 describe('kernel mixed continuation and scalar entry insertion', () => {
-  it('inserts a scalar entry beside preserved dynamic state and updated long values', async () => {
+  it.each([
+    { secondInsert: false, existing: false },
+    { secondInsert: true, existing: false },
+    { secondInsert: true, existing: true },
+  ])('inserts a scalar entry ($secondInsert/$existing)', async ({ secondInsert, existing }) => {
     const provider = createMessageBusCapstoneTestProvider();
     const payload = 'retained record payload '.repeat(16);
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
@@ -24,17 +28,20 @@ describe('kernel mixed continuation and scalar entry insertion', () => {
         bytes public second;
         mapping(uint => Record) public records;
         mapping(uint => Stats) public stats;
+        ${secondInsert ? 'mapping(uint => Stats) public extraStats;' : ''}
         mapping(uint => Note[]) public notes;
         function initialize() public { this.first = hex"0102"; this.second = hex"0304"; }
         function seed(uint key, string memory payload) public {
           this.records[key] = Record(payload, 0);
         }
+        ${existing ? 'function seedStats(uint key) public { this.stats[key] = Stats(3, 10); }' : ''}
         function update(uint key) public {
           require(this.notes[key].length == 0);
           this.records[key].count += 1;
           Stats storage result = this.stats[key];
           result.score = 7;
           result.count += 1;
+          ${secondInsert ? 'this.extraStats[key] = Stats(9, 2);' : ''}
         }
       }
       contract Coordinator {
@@ -59,6 +66,7 @@ describe('kernel mixed continuation and scalar entry insertion', () => {
     const caller = await upgrades.deployProxy(getContractFactory(artifacts.Coordinator, signer), []);
     caller.implementation._registerResolvedExternal('ILedger', ledger.proxy);
     await expect(ledger.forward('seed', [7n, payload]).send()).resolves.toBeDefined();
+    if (existing) await expect(ledger.forward('seedStats', [7n]).send()).resolves.toBeDefined();
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       preparedCalls: [
@@ -69,6 +77,15 @@ describe('kernel mixed continuation and scalar entry insertion', () => {
       ],
       funder, changeAddress: funder.unlocker.generateLockingBytecode(),
     });
+    const assertState = async (): Promise<void> => {
+      expect((await ledger.proxy.getEntries('records'))[0].value).toMatchObject({ payload, count: 1n });
+      expect((await ledger.proxy.getEntries('stats'))[0].value).toMatchObject({ score: 7n, count: existing ? 11n : 1n });
+      if (secondInsert) {
+        expect((await ledger.proxy.getEntries('extraStats'))[0].value).toMatchObject({ score: 9n, count: 2n });
+      }
+      expect((await ledger.proxy.getState()).first).toEqual(Uint8Array.of(1, 2));
+      expect((await ledger.proxy.getState()).second).toEqual(Uint8Array.of(3, 4));
+    };
     const builder = await composition.build();
     expect(messageBusVmAccepts(builder)).toBe(true);
     const transaction = builder.buildLibauthTransaction();
@@ -76,24 +93,23 @@ describe('kernel mixed continuation and scalar entry insertion', () => {
     const inputIndex = builder.inputs.findIndex(({ unlocker }) => isContractUnlocker(unlocker)
       && unlocker.contract.artifact.contractName === 'Ledger');
     expect(inputIndex).toBeGreaterThanOrEqual(0);
-    const statsCollection = artifacts.Ledger.stateLayout!.collections!.find((entry) => entry.name === 'stats')!;
-    const entryLock = binToHex(getEntryNftLockingBytecode(
-      ledger.proxy.inner, ledger.proxy.categoryId, statsCollection.signature,
-    ));
-    const outputIndex = transaction.outputs.findIndex((output) => binToHex(output.lockingBytecode) === entryLock
-      && output.token?.nft && output.token.nft.commitment.slice(0, 32).some((byte) => byte !== 0));
-    expect(outputIndex).toBeGreaterThanOrEqual(0);
     const vm = createVirtualMachineBch2026ForProvider(provider);
-    for (const mutation of ['lock', 'value'] as const) {
-      const forged = structuredClone(transaction);
-      if (mutation === 'lock') forged.outputs[outputIndex].lockingBytecode = Uint8Array.of(0x51);
-      else forged.outputs[outputIndex].token!.nft!.commitment[64] ^= 1;
-      expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction: forged }))).not.toBe(true);
+    for (const collectionName of ['stats', ...(secondInsert ? ['extraStats'] : [])]) {
+      const collection = artifacts.Ledger.stateLayout!.collections!.find((entry) => entry.name === collectionName)!;
+      const entryLock = binToHex(getEntryNftLockingBytecode(
+        ledger.proxy.inner, ledger.proxy.categoryId, collection.signature,
+      ));
+      const outputIndex = transaction.outputs.findIndex((output) => binToHex(output.lockingBytecode) === entryLock
+        && output.token?.nft && output.token.nft.commitment.slice(0, 32).some((byte) => byte !== 0));
+      expect(outputIndex).toBeGreaterThanOrEqual(0);
+      for (const mutation of ['lock', 'value'] as const) {
+        const forged = structuredClone(transaction);
+        if (mutation === 'lock') forged.outputs[outputIndex].lockingBytecode = Uint8Array.of(0x51);
+        else forged.outputs[outputIndex].token!.nft!.commitment[64] ^= 1;
+        expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction: forged }))).not.toBe(true);
+      }
     }
     await composition.send();
-    expect((await ledger.proxy.getEntries('records'))[0].value).toMatchObject({ payload, count: 1n });
-    expect((await ledger.proxy.getEntries('stats'))[0].value).toMatchObject({ score: 7n, count: 1n });
-    expect((await ledger.proxy.getState()).first).toEqual(Uint8Array.of(1, 2));
-    expect((await ledger.proxy.getState()).second).toEqual(Uint8Array.of(3, 4));
+    await assertState();
   }, 180_000);
 });

@@ -1382,6 +1382,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
+  private scalarEntryInsertCountActive = false;
+  private static readonly SCALAR_ENTRY_INSERT_COUNT = '__internal__scalarEntryInsertCount';
   private runtimeLoopEntryInputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_INPUT_COUNT = '__internal__runtimeLoopEntryInputCount';
   // Route-owned pending-entry journal count. Individual bounded records live on the shared altstack so the legal
@@ -5915,6 +5917,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryDeletes = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
+    this.scalarEntryInsertCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
     this.runtimeLoopEntryJournalCountActive = false;
     this.runtimeLoopEntryOutputCountActive = false;
@@ -6600,10 +6603,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
-    // Long sorted-mapping values occupy the leading trailing-output region. Remember their runtime total so the
-    // entry node which references each chunked value is verified after that value's materialized chunk run.
-    // Allocate the accumulator before control flow: a chunkable write may be conditional, but every path must
-    // reach the dynamic-write epilogue with the same physical stack shape.
+    // Scalar upserts outside a fixed sorted batch share one trailing NEW-entry band. Only an executed INSERT
+    // occupies a new position: updates and inactive/aliased lanes leave this cursor unchanged. Allocate it before
+    // control flow so conditional writes retain the same frame shape on both branches.
+    const scalarWriteSlots = this.entrySlots.filter((entry) => !entry.inLoop
+      && entry.operations.includes('write')
+      && this.collectionDefinitions.some((collection) => collection.name === entry.collection && collection.sorted)
+      && !node.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(entry.slotIndex)));
+    if (!this.isDefineSubTraversal && scalarWriteSlots.length > 1) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.SCALAR_ENTRY_INSERT_COUNT);
+      this.scalarEntryInsertCountActive = true;
+    }
+
     if (runtimeLoopEntryInputCountRequired) {
       if (!this.isDefineSubTraversal) {
         this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
@@ -21933,8 +21945,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       emitInsertReconstructedBase();
     }
+    if (this.scalarEntryInsertCountActive) {
+      // Five raw predecessor fields and the running output index are above the tracked frame.
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.SCALAR_ENTRY_INSERT_COUNT, loc, 6,
+      );
+      this.emit(Op.OP_ADD, loc);
+    }
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7, 6);               // NEW = Hk32 || coNext32 || v
     this.emit(Op.OP_DROP, loc); this.popFromStack();                    // recomputed entry address
+    if (this.scalarEntryInsertCountActive) {
+      this.emitPickCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.SCALAR_ENTRY_INSERT_COUNT, loc, 5,
+      );
+      this.emit(Op.OP_1ADD, loc);
+      this.pushToStack('(scalar_entry_insert_count_next)');
+      this.emitReplaceCompilerRouteFrameValue(
+        GenerateTargetTraversalWithLocation.SCALAR_ENTRY_INSERT_COUNT, node, 5,
+      );
+      this.popFromStack();
+    }
     // Predecessor plus new node, plus one per co-spent read slot, is the whole footprint of an insert.
     if (pinsCollectionOutputCount) this.emit(encodeInt(2n + extraCollectionOutputs), loc);
     this.emit(Op.OP_ENDIF, loc);

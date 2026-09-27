@@ -100,6 +100,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V10_STATIC_VALUE_CALL',
   'V10_STATIC_NON_STATIC_CALL',
   'V7_SETTLE_CATEGORY_DUPLICATE',
+  'V7_STATE_INPUTS_MISMATCH',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -175,6 +176,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitReadOnlyFrames(e);
   emitSettleCategoriesAreDistinct(e);
   emitSettlementMembership(e);
+  emitSettlementStateInputs(e);
   emitFrameAddresses(e);
 
   // The padding block: pushed and dropped where the program ends, so the stack a caller sees is the one the checks
@@ -1100,6 +1102,120 @@ function emitRequireDeclaredCategory(e: Emitter): void {
   e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_SWAP);
   emitFound32(e);
   e.op(O.OP_VERIFY);
+}
+
+/**
+ * For each settled contract, the state UTXOs the transaction spends are exactly the inputs the transcript lists
+ * for it.
+ *
+ * Entry `[M]`, exit `[M]`. A contract's state UTXO is a mutable NFT of its category that is not the validator; the
+ * validator itself holds a mutable NFT of the category it runs on, so it is not one. Every listed index has to be
+ * such an input, every such input has to be listed, and the list has to name each of them once.
+ */
+function emitSettlementStateInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  // `[M, settleCount, settles]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneSettleStateInputs(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+}
+
+/**
+ * The state inputs of one settled contract.
+ *
+ * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`, where `after` is the settles that follow this
+ * one. The category is reversed to the order the machine reports a spent token's and parked on the alternate stack
+ * for the walk. The number of state inputs the transaction spends must equal the number of indices listed.
+ */
+function emitOneSettleStateInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.count(32).op(O.OP_SPLIT);
+  e.op(O.OP_SWAP, O.OP_REVERSEBYTES, O.OP_TOALTSTACK);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_SWAP);
+  // The listed indices are walked against a copy, then the transaction's own state inputs are counted and the two
+  // counts compared, so every listed input is a state UTXO and there are exactly as many of them.
+  e.op(O.OP_DUP);
+  emitListedAreStateInputs(e);
+  emitCountStateInputs(e);
+  e.op(O.OP_SWAP, O.OP_SIZE, O.OP_NIP, O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/** Entry `[.., list]`, exit `[.., list, count]`. How many inputs are state UTXOs of the settled contract. */
+function emitCountStateInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.count(0);
+  e.count(0);
+  // `[.., list, count, index]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.op(O.OP_DUP);
+  emitIsStateInput(e);
+  e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP, O.OP_1ADD);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_GREATERTHANOREQUAL, O.OP_UNTIL);
+  // The loop leaves `[.., count, index]`, and the index, not the count, is on top.
+  e.op(O.OP_DROP);
+}
+
+/**
+ * Every listed index is a state UTXO of the settled contract, and no index is listed twice.
+ *
+ * Entry `[.., list, listed]`, exit `[.., list]`. `list` is compared against itself, so a repeated index fails the
+ * occurrence count and a listed index that is not a state UTXO fails the shape.
+ */
+function emitListedAreStateInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  // `[.., list, listed, index]`.
+  e.op(O.OP_DUP);
+  emitIsStateInput(e);
+  e.op(O.OP_VERIFY);
+  e.count(2).op(O.OP_PICK, O.OP_SWAP);
+  emitCountByte(e);
+  e.count(1).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+}
+
+/**
+ * Whether the input index on top is a state UTXO of the settled contract.
+ *
+ * Entry `[.., index]`, exit `[.., flag]`, with the contract's category, in the machine's order, on the alternate
+ * stack. A state UTXO is a mutable NFT of that category; the validator's own input carries one of its category's
+ * and is excluded, because the transcript does not list it as a state input.
+ */
+function emitIsStateInput(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
+  e.op(O.OP_SIZE);
+  e.count(33).op(O.OP_NUMEQUAL, O.OP_IF);
+  // The capability byte follows the category, so the size and the last byte together say mutable NFT.
+  e.op(O.OP_DUP).count(32).op(O.OP_SPLIT, O.OP_NIP);
+  e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_EQUAL, O.OP_IF);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_EQUAL);
+  e.op(O.OP_OVER, O.OP_INPUTINDEX, O.OP_NUMEQUAL, O.OP_NOT, O.OP_BOOLAND);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_0, O.OP_ENDIF);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_0, O.OP_ENDIF);
+  e.op(O.OP_NIP);
 }
 
 /**

@@ -819,6 +819,37 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('accepts a composition whose spent state UTXO the transcript lists', () => {
+    const { composition, modelled, index } = reference();
+    const stateIndex = composition.slotIndex.get('DA')!;
+    expect(composition.transcript.settles[0]!.stateInputs).toEqual([stateIndex]);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+  });
+
+  test('refuses a spent state UTXO the transcript does not list', () => {
+    const { composition, index } = reference();
+    const transcript = composition.transcript;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...transcript,
+      settles: transcript.settles.map((settled) => ({ ...settled, stateInputs: [] })),
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_STATE_INPUTS_MISMATCH');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a settled list that names an input carrying no state UTXO', () => {
+    const { composition, index } = reference();
+    const transcript = composition.transcript;
+    const user = composition.inputs.length - 1;
+    const tampered = withTranscript(composition, encodeTranscript({
+      ...transcript,
+      settles: transcript.settles.map((settled) => ({ ...settled, stateInputs: [...settled.stateInputs, user] })),
+    }));
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_STATE_INPUTS_MISMATCH');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses an unsettled contract that runs on two of its masters', () => {
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;

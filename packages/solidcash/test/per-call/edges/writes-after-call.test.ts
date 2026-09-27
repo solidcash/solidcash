@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { encodeDataPush } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, computeFunctionSelector, computeFunctionSignature, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
@@ -8,6 +8,7 @@ import {
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 
 /**
  * An execution that writes before and after an external call.
@@ -121,7 +122,7 @@ const ROOT = { contract: 'Ledger', functionName: entryName('Ledger', 'bump'), ki
 /** The ledger master's own input, asked of the machine in the currently composed draft. */
 function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['draft']): { accepted: boolean; objection?: string } {
   const program = draft.programFor('ledger-1');
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
   });

@@ -11,6 +11,7 @@ import {
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -185,7 +186,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
 /** One input's verdict in the BCH-2026 machine. */
 function accepted(options: CompositionOptions, inputIndex: number): boolean {
   const composition = buildComposition(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
   })) === true;
@@ -309,7 +310,7 @@ function acceptedStandalone(selector: Uint8Array, retval: Uint8Array): boolean {
     ],
     locktime: 0,
   };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({ inputIndex: 1, sourceOutputs, transaction })) === true;
 }
 
@@ -394,7 +395,7 @@ function acceptedView(retval: Uint8Array): boolean {
     outputs: [...sourceOutputs],
     locktime: 0,
   };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex: VIEW_INDEX.master, sourceOutputs, transaction,
   })) === true;
@@ -483,7 +484,7 @@ function acceptedWrite(retval: Uint8Array, outCommitment: Uint8Array = WRITE_OUT
     ],
     locktime: 0,
   };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction })) === true;
 }
 

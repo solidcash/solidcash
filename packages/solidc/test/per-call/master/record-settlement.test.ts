@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -210,7 +211,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     ];
 
   const transaction: VmTransaction = { version: 2, inputs, outputs, locktime: 0 };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }

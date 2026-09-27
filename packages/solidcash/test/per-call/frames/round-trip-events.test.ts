@@ -8,6 +8,7 @@ import {
   validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -59,7 +60,7 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmOutput = NonNullable<NonNullable<VmProgram['transaction']>['outputs'][number]>;
 
 /** The machine every verdict in this file is taken from. */
-const machine = (): ReturnType<typeof createVirtualMachineBch2026> => createVirtualMachineBch2026(false);
+const machine = (): ReturnType<typeof createVirtualMachineBch2026> => compositionMachine();
 const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
 const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
@@ -388,7 +389,7 @@ describe('an entry that emits and makes no call', () => {
     expect(draft.assembly.outputs.eventIndices).toStrictEqual(placed.map((entry) => entry.index));
 
     const program = draft.programFor(LOG_MASTER);
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const state = vm.evaluate({ inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction });
     expect(vm.stateSuccess(state)).toBe(true);
   });

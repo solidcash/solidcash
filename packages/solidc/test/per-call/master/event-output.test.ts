@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -207,7 +208,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
       : [{ lockingBytecode: USER_LOCK, valueSatoshis: MASTER_VALUE, token: token(CATEGORY, 'mutable', record.committed) }]),
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }

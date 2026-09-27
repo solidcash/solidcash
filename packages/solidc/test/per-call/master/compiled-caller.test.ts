@@ -10,6 +10,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
 import { assertPlaceholders, fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import {
   ALTERNATE_ACCEPTING_PROGRAM, REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
@@ -224,7 +225,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
 /** Every input's verdict, so a composition is accepted only when all of them are. */
 function verdicts(options: CompositionOptions = {}): Record<number, boolean> {
   const composition = buildComposition(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX].map((index) => [
     index,
     vm.stateSuccess(vm.evaluate({

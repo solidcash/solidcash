@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -146,7 +147,7 @@ function build(options: Options = {}): VmProgram {
 /** The master input's verdict in the BCH-2026 machine. */
 function verdict(options: Options = {}): boolean {
   const built = build(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex: MASTER_INDEX, sourceOutputs: built.sourceOutputs, transaction: built.transaction,
   })) === true;

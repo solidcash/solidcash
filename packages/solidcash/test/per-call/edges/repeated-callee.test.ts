@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   asmToScript,
@@ -19,6 +19,7 @@ import {
   seededAddress, selectorOf, token, userInput, validatorFor, USER_LOCK,
 } from '../shapes/harness.js';
 import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
@@ -205,7 +206,7 @@ function derive(run: Run): { readonly draft: CompositionDraft; readonly complete
   return { draft, completed: result.completed.map((frame) => frame.master), stops };
 }
 
-const vm = createVirtualMachineBch2026(false);
+const vm = compositionMachine();
 
 /** The machine's verdict on one participant's input of the assembled transaction. */
 function verdictAt(draft: CompositionDraft, id: string): { readonly accepted: boolean; readonly objection?: string } {

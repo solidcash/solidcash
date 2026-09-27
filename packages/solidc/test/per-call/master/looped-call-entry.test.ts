@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
+  encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import {
   FrameKind, asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -151,7 +152,7 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string; ip?: nu
     outputs: sourceOutputs,
     locktime: 0,
   };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: CALLER_INDEX, sourceOutputs, transaction });
   const accepted = vm.stateSuccess(state) === true;
   return {
@@ -270,7 +271,7 @@ describe('an entry whose call runs inside a loop, behind an arm that skips it', 
         outputs: sourceOutputs,
         locktime: 0,
       };
-      const vm = createVirtualMachineBch2026(false);
+      const vm = compositionMachine();
       return vm.stateSuccess(vm.evaluate({ inputIndex: CALLER_INDEX, sourceOutputs, transaction })) === true;
     };
     expect(spend(3, 2)).toBe(true);

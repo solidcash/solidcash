@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   Opcodes,
-  createVirtualMachineBch2026,
   encodeDataPush,
   encodeLockingBytecodeP2sh32,
   hash256,
 } from '@bitauth/libauth';
 import { FrameKind, chainCategory, encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
 import { contextCategoryScript } from '../../../src/per-call/validator/program.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The context walk on the virtual machine.
@@ -53,7 +53,7 @@ function answersWith(calleeKind: number, candidate: Uint8Array): boolean {
     Opcodes.OP_NIP,
   ]);
   const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const sourceOutputs = [
     { lockingBytecode: lock, valueSatoshis: 10_000n, token: masterToken(callerCategory) },
     { lockingBytecode: lock, valueSatoshis: 10_000n, token: masterToken(calleeCategory) },
@@ -105,7 +105,7 @@ describe('the context walk', () => {
       Opcodes.OP_NIP,
     ]);
     const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const sourceOutputs = [
       { lockingBytecode: lock, valueSatoshis: 10_000n, token: masterToken(callerCategory) },
       { lockingBytecode: lock, valueSatoshis: 10_000n, token: masterToken(calleeCategory) },

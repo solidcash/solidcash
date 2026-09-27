@@ -8,6 +8,7 @@ import {
 } from '@solidcash/utils';
 import { ADDRESS_SLOT_LENGTH, placeholderPrefixLength } from '../../../src/per-call/master/placeholders.js';
 import { selfSettlementScript, type SelfSettlementShape } from '../../../src/per-call/master/frame-tail.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The record chain a self-settling master walks: one transition across every segment of its execution.
@@ -216,7 +217,7 @@ function evaluate(options: WalkOptions): { accepted: boolean; objection?: string
       ? [masterSource, recordSource, { ...recordSource, token: token(CATEGORY, 'mutable', BEFORE) }, userSource]
       : [masterSource, recordSource, userSource];
 
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex: MASTER_INDEX,
     sourceOutputs,

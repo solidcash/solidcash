@@ -10,6 +10,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -182,7 +183,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     { lockingBytecode: CHUNK_LOCK, valueSatoshis: CHUNK_VALUE, token: token(CATEGORY, 'mutable', spentChunk) },
   ];
 
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }

@@ -18,6 +18,7 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -194,7 +195,7 @@ export function composeAndDerive(
   const { host, draft } = createComposedDerivationHost({ artifacts, plan });
   const derived = deriveComposition(roots, host);
   const program = draft.programFor(plan.masters[0]!.master);
-  const vm: VirtualMachine = createVirtualMachineBch2026(false);
+  const vm: VirtualMachine = compositionMachine();
   const contractInputs = draft.layout.participants.map((placed) => ({ id: placed.id, index: placed.index }));
   const verdicts = contractInputs.map((input) => {
     const state = vm.evaluate({

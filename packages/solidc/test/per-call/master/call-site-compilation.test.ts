@@ -11,6 +11,7 @@ import {
 import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript } from '../../../src/per-call/master/master-head.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -267,7 +268,7 @@ function buildComposition(options: CompositionOptions): Composition {
 /** One input's verdict in the BCH-2026 machine. */
 function accepted(options: CompositionOptions, inputIndex: number): boolean {
   const composition = buildComposition(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
   })) === true;

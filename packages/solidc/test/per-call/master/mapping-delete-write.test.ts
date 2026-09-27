@@ -11,6 +11,7 @@ import { compileString } from '../../../src/compiler.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
@@ -126,7 +127,7 @@ function masterInput(block: WitnessBlock): Input {
 function verdict(master: number, sourceOutputs: SourceOutput[], transaction: VmTransaction): {
   accepted: boolean; objection?: string;
 } {
-  const vm = createVirtualMachineBch2026(true);
+  const vm = compositionMachine(true);
   const state = vm.evaluate({
     inputIndex: master,
     sourceOutputs: sourceOutputs as unknown as VmProgram['sourceOutputs'],

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind, computeFunctionSelector, computeFunctionSignature, validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
@@ -131,7 +131,7 @@ describe('a chain of four contracts, each calling the next', () => {
     expect(LINKS.map((link) => participant(draft.layout, `${link.name.toLowerCase()}-1`).index))
       .toStrictEqual([0, 2, 3, 4]);
 
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const rejected = LINK_IDS.map((id) => {
       const program = draft.programFor(id);
       const state = vm.evaluate({

@@ -9,6 +9,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -224,7 +225,7 @@ function build(options: Options = {}): VmProgram {
 /** The caller input's verdict in the BCH-2026 machine, with the refusal reason for a diagnosis. */
 function verdict(options: Options = {}): { accepted: boolean; objection?: string } {
   const program = build(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex: CALLER_INDEX, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildMasterUnlockingBytecode } from '@solidcash/utils';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
 import {
   USER_LOCK,
@@ -32,7 +33,7 @@ type VmProgram = ReturnType<ReturnType<typeof machine>['evaluate']>[0];
 
 /** The BCH-2026 machine with the relaxed budget a verdict needs, not a cost profile. */
 function machine(): ReturnType<typeof createVirtualMachineBch2026> {
-  return createVirtualMachineBch2026(false);
+  return compositionMachine();
 }
 
 interface Built {

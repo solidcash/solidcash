@@ -13,6 +13,7 @@ import {
   bytesToSlotValue, encodeEntryCommitment, keyToSlot,
 } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
@@ -181,7 +182,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', NODE_B_BEFORE) },
   ];
 
-  const vm = createVirtualMachineBch2026(true);
+  const vm = compositionMachine(true);
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }
@@ -349,7 +350,7 @@ function evaluateInsert(options: InsertOptions = {}): { accepted: boolean; objec
     { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', MIDDLE_BEFORE) },
   ];
 
-  const vm = createVirtualMachineBch2026(true);
+  const vm = compositionMachine(true);
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }

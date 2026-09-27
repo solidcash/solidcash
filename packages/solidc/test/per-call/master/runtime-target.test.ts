@@ -12,6 +12,7 @@ import {
 import { compileStringMulti } from '../../../src/compiler.js';
 import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -230,7 +231,7 @@ function build(options: Options = {}): Composition {
 /** Every input's verdict, so a composition is accepted only when all of them are. */
 function verdicts(options: Options = {}): Record<number, boolean> {
   const composition = build(options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX].map((index) => [
     index,
     vm.stateSuccess(vm.evaluate({

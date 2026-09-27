@@ -8,6 +8,7 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   chunkRecordId,
@@ -67,7 +68,7 @@ const WRITTEN = utf8('hello!');
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmOutput = NonNullable<NonNullable<VmProgram['transaction']>['outputs'][number]>;
 
-const machine = (): ReturnType<typeof createVirtualMachineBch2026> => createVirtualMachineBch2026(false);
+const machine = (): ReturnType<typeof createVirtualMachineBch2026> => compositionMachine();
 const token = (
   category: Uint8Array, capability: 'minting' | 'mutable', commitment: Uint8Array = EMPTY,
 ): VmOutput['token'] => ({ category, amount: 0n, nft: { capability, commitment } });

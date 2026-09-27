@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
   hash256,
 } from '@bitauth/libauth';
 import { asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 import { publishedRefusals, refusalOf } from './refused-entry.js';
@@ -95,7 +96,7 @@ function spend(entry: string): boolean {
     locktime: 0,
   };
   const sourceOutputs = [{ lockingBytecode: OWNER_LOCK, valueSatoshis: 100_000n }, masterSource];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({ inputIndex: 1, sourceOutputs, transaction })) === true;
 }
 

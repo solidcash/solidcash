@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
+  encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
   hash256,
 } from '@bitauth/libauth';
 import {
@@ -10,6 +10,7 @@ import { compileString } from '../../../src/compiler.js';
 import {
   ADDRESS_SLOT_LENGTH, CATEGORY_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, assertPlaceholders, fillPlaceholders,
 } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, SIGHASH_UTXOS_ALL, callerUnlockingBytecode } from './caller-input.js';
 import { categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -237,7 +238,7 @@ function evaluateSpend(options: SpendOptions = {}): boolean {
     ? [decoySource, masterSource, callerSource]
     : [callerSource, masterSource];
 
-  const vm = createVirtualMachineBch2026(relaxed);
+  const vm = compositionMachine(relaxed);
   return vm.stateSuccess(vm.evaluate({ inputIndex: masterIndex, sourceOutputs, transaction })) === true;
 }
 

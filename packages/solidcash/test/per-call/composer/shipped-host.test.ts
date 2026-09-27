@@ -10,6 +10,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
@@ -414,7 +415,7 @@ describe('the runs a derivation spends', () => {
     // needed for a master's first site. Counting the machine's own evaluations pins the saving: the caller publishes
     // three sites (its call and the two segment closes) and the callee one, so the derivation spends four fresh
     // runs and two reused verdicts, against eight runs if every site ran the program before and after its fill.
-    const machine = createVirtualMachineBch2026(false);
+    const machine = compositionMachine();
     let evaluations = 0;
     const counting = new Proxy(machine, {
       get(target, property, receiver) {

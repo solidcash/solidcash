@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
+  encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import { encodeWitnessBlock, type WitnessBlock } from '@solidcash/utils';
 import { witnessBlockShapeScript } from '../../../src/per-call/validator/program.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The witness-block walk the validator program runs on each covered master.
@@ -40,7 +41,7 @@ const call = {
 function accepted(payload: Uint8Array): boolean {
   const redeem = witnessBlockShapeScript();
   const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const source = { lockingBytecode: lock, valueSatoshis: 10_000n };
   const transaction = {
     version: 2,

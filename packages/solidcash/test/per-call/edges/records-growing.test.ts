@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind, buildEntryNftCovenantScript, bytesToHex, computeCollectionHash, encodeIntegerValue,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { encodeEntryCommitment } from '../../../src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../src/utils.js';
@@ -113,7 +114,7 @@ describe('a mapping entry that creates a record', () => {
       .toStrictEqual([[[HEAD_INDEX, HEAD_INDEX], [0xffff, CREATED_INDEX]]]);
 
     const program = draft.programFor('registry-1');
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const state = vm.evaluate({
       inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });

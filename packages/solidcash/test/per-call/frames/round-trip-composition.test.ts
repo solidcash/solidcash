@@ -12,6 +12,7 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { decideValidator, type PerCallTransaction, type TokenShape } from '../../../../solidc/src/per-call/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -320,7 +321,7 @@ describe('a contract entered twice, composed on the machine', () => {
 
     // One program carries the whole transaction, so the same view decides every input.
     const program = draft.programFor(A_FIRST);
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const at = (index: number): string => verdict(vm, program.transaction, program.sourceOutputs, index)
       .objection ?? 'accepted';
 
@@ -345,7 +346,7 @@ describe('a contract entered twice, composed on the machine', () => {
     stray.segments = [[], []];
 
     const program = draft.programFor(A_SECOND);
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const state = vm.evaluate({
       ...program,
       transaction: {
@@ -373,7 +374,7 @@ function fillRootCall(): {
   const filled = host.step(ROOT, site!);
   expect(filled.callee?.master).toBe(B_MASTER);
   const program = draft.programFor(A_FIRST);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return { vm, draft, transaction: program.transaction, sourceOutputs: program.sourceOutputs };
 }
 

@@ -16,6 +16,7 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   decideValidator, type PerCallTransaction, type TokenShape,
 } from '../../../../solidc/src/per-call/validator/index.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -319,7 +320,7 @@ function buildComposition(options: {
 const ROOT = { contract: 'A', functionName: ENTRY_F, kind: FrameKind.ROOT, master: A_FIRST };
 
 function machine(): ReturnType<typeof createVirtualMachineBch2026> {
-  return createVirtualMachineBch2026(false);
+  return compositionMachine();
 }
 
 /** The machine's verdict on one input of the assembled transaction. */

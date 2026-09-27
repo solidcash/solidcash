@@ -10,6 +10,7 @@ import {
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -219,7 +220,7 @@ function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['d
   objection?: string;
 } {
   const program = draft.programFor(LEDGER_MASTER);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex: program.inputIndex,
     sourceOutputs: program.sourceOutputs,

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  Opcodes, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
+  Opcodes, encodeDataPush, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import { bigIntToVmNumber } from '@bitauth/libauth';
 import { canonicalPushScript } from '../../../src/per-call/master/argument-push.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The canonical push fragment against libauth's own encoder.
@@ -42,7 +43,7 @@ function pushesTo(
     locktime: 0,
   };
   const sourceOutputs = [{ lockingBytecode: lock, valueSatoshis: 10_000n }];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }

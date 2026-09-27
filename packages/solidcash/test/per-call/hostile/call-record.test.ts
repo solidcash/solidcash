@@ -10,6 +10,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -158,7 +159,7 @@ function deriveComposition(): {
   const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
   deriveDepthFirst(ROOT, host);
   const program = draft.programFor(CALLER_MASTER);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return { vm, transaction: program.transaction, sourceOutputs: program.sourceOutputs, draft };
 }
 

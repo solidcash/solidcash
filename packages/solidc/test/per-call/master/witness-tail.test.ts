@@ -11,6 +11,7 @@ import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import type { MasterTailShape } from '../../../src/per-call/master/frame-tail.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 
@@ -179,7 +180,7 @@ function verdict(execution: Execution): { accepted: boolean; objection?: string 
     masterOutput,
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
   ];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }

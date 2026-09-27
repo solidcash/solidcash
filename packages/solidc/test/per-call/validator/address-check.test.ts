@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   Opcodes,
-  createVirtualMachineBch2026,
   encodeDataPush,
   encodeLockingBytecodeP2sh32,
   hash256,
@@ -18,6 +17,7 @@ import {
 } from '@solidcash/utils';
 import { addressCheckScript } from '../../../src/per-call/validator/address-check.js';
 import { buildValidatorProgram } from '../../../src/per-call/validator/program.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The self check for one covered master, on the virtual machine.
@@ -56,7 +56,7 @@ const block = (overrides: Partial<WitnessBlock> = {}): WitnessBlock => ({
 function accepted(payload: Uint8Array): string | true {
   const redeem = new Uint8Array([...addressCheckScript(program), Opcodes.OP_1]);
   const lock = encodeLockingBytecodeP2sh32(hash256(redeem));
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const source = { lockingBytecode: lock, valueSatoshis: 10_000n };
   const transaction = {
     version: 2,

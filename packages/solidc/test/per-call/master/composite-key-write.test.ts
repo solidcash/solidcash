@@ -12,6 +12,7 @@ import { refusalMessageOf } from './refused-entry.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, seededCategory } from './validator-input.js';
 
@@ -172,7 +173,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
     { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', SENTINEL_BEFORE) },
   ];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }
@@ -305,7 +306,7 @@ function evaluateUpdateOf(options: {
     { lockingBytecode: options.lock, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
     { lockingBytecode: options.entryLock, valueSatoshis: 20_000n, token: token('mutable', options.nodeBefore) },
   ];
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: UPDATE_MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true
     ? { accepted: true }

@@ -12,6 +12,7 @@ import { compileString } from '../../../src/compiler.js';
 import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { compositionMachine } from '../machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -297,7 +298,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
 
 /** Evaluates one input's script; libauth decides one input at a time, so a composition is every input. */
 function outcome(composition: Composition, inputIndex: number): { accepted: boolean; objection?: string } {
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex,
     sourceOutputs: composition.sourceOutputs,

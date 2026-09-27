@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
+  encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
 import {
   asmToScript, buildPushdataCommitment, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
@@ -8,6 +8,7 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { SIGHASH_ALL, callerUnlockingBytecode } from '../frames/caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
 
@@ -133,7 +134,7 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
   const sourceOutputs = [masterSource, recordSource, userSource];
 
   const transaction = { version: 2, inputs, outputs, locktime: 0 };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({ inputIndex: MASTER_INDEX, sourceOutputs, transaction });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }

@@ -5,6 +5,7 @@ import {
 } from '@bitauth/libauth';
 import { encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
 import { declaredRecordViewScript } from '../../../src/per-call/master/declared-view.js';
+import { compositionMachine } from '../machine.js';
 
 /**
  * The walk a body uses to read its own segment's declared record view, driven on its own.
@@ -99,7 +100,7 @@ function read(options: {
     outputs: [masterSource, userSource],
     locktime: 0,
   };
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   const state = vm.evaluate({
     inputIndex: MASTER_INDEX,
     sourceOutputs: [masterSource, userSource],

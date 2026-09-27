@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { encodeDataPush } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
 import {
@@ -8,6 +8,7 @@ import {
 } from '../../../src/per-call/composer/index.js';
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 
 /**
  * A guard field in the record, on both sides of a call.
@@ -119,7 +120,7 @@ describe('a guard field carried across the call split', () => {
     expect(draft.blockOf('guarded-1').segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_INDEX], [RECORD_INDEX]]);
     const program = draft.programFor('guarded-1');
-    const vm = createVirtualMachineBch2026(false);
+    const vm = compositionMachine();
     const state = vm.evaluate({
       inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });

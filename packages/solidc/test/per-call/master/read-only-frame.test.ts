@@ -17,6 +17,7 @@ import {
   ValidatorReason, decideValidator, tokenShape,
   type PerCallTransaction, type TokenShape,
 } from '../../../src/per-call/validator/index.js';
+import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
 
@@ -198,7 +199,7 @@ function readComposition(readerSource: string, options: ReadOptions = {}): ReadC
 /** Every input's verdict, so a composition is accepted only when all of them are. */
 function readVerdicts(readerSource: string, options: ReadOptions = {}): Record<number, boolean> {
   const composition = readComposition(readerSource, options);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return Object.fromEntries([CALLER_INDEX, CALLEE_INDEX, VALIDATOR_INDEX].map((index) => [
     index,
     vm.stateSuccess(vm.evaluate({
@@ -362,7 +363,7 @@ function buildMutant(): MutantComposition {
 }
 function mutantAccepted(inputIndex: number): boolean {
   const composition = buildMutant();
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
   })) === true;
@@ -555,7 +556,7 @@ function buildStateful(viewIn: Uint8Array): StatefulComposition {
 /** The stateful caller's own verdict, with the segment declaration's `viewIn` given. */
 function statefulAccepted(viewIn: Uint8Array = COUNTER_BEFORE): boolean {
   const composition = buildStateful(viewIn);
-  const vm = createVirtualMachineBch2026(false);
+  const vm = compositionMachine();
   return vm.stateSuccess(vm.evaluate({
     inputIndex: CALLER_INDEX, sourceOutputs: composition.sourceOutputs, transaction: composition.transaction,
   })) === true;

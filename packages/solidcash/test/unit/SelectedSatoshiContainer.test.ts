@@ -1,6 +1,8 @@
-import type { AbiFunction, Artifact } from '@solidcash/utils';
+import { encodePushdataValue, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
-import { selectedSatoshiContainerRequired } from '../../src/message-bus/selected-satoshi-container.js';
+import {
+  decodeSelectedHandlerArguments, selectedSatoshiContainerRequired,
+} from '../../src/message-bus/selected-satoshi-container.js';
 import { loadCreateBuilderSatoshiContainer } from '../../src/stateful/sc-load-create-builder-satoshi-container.js';
 import type { MessageBusRuntimeAbiFunction } from '../../src/stateful/sc-batch-raw.js';
 
@@ -18,6 +20,40 @@ const active: AbiFunction = {
 const artifact = { abi: [inactive, active] } as Artifact;
 
 describe('selected satoshi-container resources', () => {
+  it('uses exact encoded handler arguments and refuses truncated or trailing row bytes', () => {
+    const source = { ...artifact, messageBus: { handlers: [{
+      selector: active.selector, eligible: true, inputs: [{ name: 'active', type: 'bool' }],
+    }] } } as Artifact;
+    const bytes = encodePushdataValue(false, 'bool');
+    expect(decodeSelectedHandlerArguments(source, active.selector!, bytes)).toEqual([false]);
+    expect(decodeSelectedHandlerArguments(source, active.selector!, bytes.slice(0, -1))).toBeUndefined();
+    expect(decodeSelectedHandlerArguments(source, active.selector!, Uint8Array.from([...bytes, 0])))
+      .toBeUndefined();
+    expect(decodeSelectedHandlerArguments(source, 'ffffffff', bytes)).toBeUndefined();
+    expect(decodeSelectedHandlerArguments({ ...source, messageBus: {
+      ...source.messageBus!, handlers: [{ ...source.messageBus!.handlers[0], eligible: false }],
+    } }, active.selector!, bytes)).toBeUndefined();
+  });
+
+  it('requires a container unless every selected transfer predicate is provably false', () => {
+    const conditional: AbiFunction = { ...active, inputs: [{ name: 'active', type: 'bool' }], transfers: [{
+      transferIndex: 0, recipient: { kind: 'forward', paramIndex: 1 },
+      amount: { kind: 'literal', type: 'bigint', value: '1000' },
+      condition: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+    }] };
+    const selected = { ...artifact, abi: [inactive, conditional] };
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd'], [[false]])).toBe(false);
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd'], [[true]])).toBe(true);
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd'], [[]])).toBe(true);
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd'])).toBe(true);
+    expect(selectedSatoshiContainerRequired(selected, ['aabbccdd', 'aabbccdd'], [[false], [true]])).toBe(true);
+    expect(selectedSatoshiContainerRequired({ ...selected, abi: [{ ...conditional, transferCount: 2 }] },
+      ['aabbccdd'], [[false]])).toBe(true);
+    expect(selectedSatoshiContainerRequired({ ...selected, abi: [{ ...conditional, transfers: [{
+      ...conditional.transfers![0], condition: { kind: 'state', name: 'enabled' },
+    }] }] }, ['aabbccdd'], [[false]])).toBe(true);
+  });
+
   it('selects exact overloads and retains a container required by any row', () => {
     expect(selectedSatoshiContainerRequired(artifact, ['01020304'])).toBe(false);
     expect(selectedSatoshiContainerRequired(artifact, ['AABBCCDD'])).toBe(true);

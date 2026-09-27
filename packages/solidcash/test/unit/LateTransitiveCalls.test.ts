@@ -2,6 +2,7 @@ import type { AbiFunction, ArgSource, Artifact, ExternalCallAbi, ExternalCallExp
 import { describe, expect, it, vi, type Mock } from 'vitest';
 import type { FunctionArgument } from '../../src/Argument.js';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
+import * as covenants from '../../src/stateful/covenant-helpers.js';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
 import { resolveExternalArgs, type ResolveExternalArgsHost } from '../../src/stateful/sc-resolve-external-args.js';
 import {
@@ -130,6 +131,42 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
 }
 
 describe('late transitive call preparation', () => {
+  it.each([true, false])('materializes a late satoshi-container slot without shifting later resources (funded %s)', async (funded) => {
+    const sink = contract(2, [{ ...handler('run', [], true), blockLayout: {
+      blockSize: 3, slots: [{ kind: 'master', offset: 0 }, { kind: 'satoshiContainer', offset: 1 },
+        { kind: 'transfer', offset: 2, slotIndex: 0, conditional: true }],
+    } }]);
+    const first = contract(1, [handler('run', [edge('Sink')])]);
+    first._externalRegistry.set('Sink', sink);
+    const fixture = preparation([group(first)]);
+    const unlocker = { generateLockingBytecode: () => Uint8Array.of(0x51),
+      generateUnlockingBytecode: () => new Uint8Array() };
+    const container = { txid: 'cd'.repeat(32), vout: 0, satoshis: 50_000n };
+    let funderIndex = 0;
+    fixture.host.shiftSharedFunder = () => ({
+      txid: 'ab'.repeat(32), vout: funderIndex++, satoshis: 1000n, unlocker,
+    });
+    const lookup = vi.fn(async () => funded ? [container] : []);
+    fixture.host.nestedAddressUtxos = lookup;
+    const address = vi.spyOn(covenants, 'getSatoshiContainerAddress').mockReturnValue('container-address');
+    const create = vi.spyOn(covenants, 'createSatoshiContainerUnlocker')
+      .mockReturnValue(unlocker as ReturnType<typeof covenants.createSatoshiContainerUnlocker>);
+    try {
+      await fixture.expand();
+      const inputs = fixture.groups[1].blockInputs!;
+      expect(inputs).toHaveLength(3);
+      expect(inputs[0].txid).toBe(sink.categoryId);
+      expect(inputs[1]).toMatchObject(funded ? container : { txid: 'ab'.repeat(32), vout: 0 });
+      expect(inputs[2]).toMatchObject({ txid: 'ab'.repeat(32), vout: funded ? 0 : 1 });
+      expect(lookup).toHaveBeenCalledWith('container-address');
+      if (funded) expect(create).toHaveBeenCalledWith(sink.inner, 0, sink.categoryId);
+      else expect(create).not.toHaveBeenCalled();
+    } finally {
+      address.mockRestore();
+      create.mockRestore();
+    }
+  });
+
   it('refuses sparse return carriers whose source index differs from their compact occurrence', async () => {
     const literal = (value: number): ExternalCallExpression => ({ kind: 'literal', type: 'bigint', value: String(value) });
     const loop: ExternalCallAbi = {

@@ -2,11 +2,12 @@
  * phase-boundary extract: Compose phase-boundary extract — inventory fixed/runtime event + resource/value/token/sidecar slots.
  */
 
+import { hexToBin } from '@bitauth/libauth';
 import type { ExecutionContextEffectPlan } from './execution-context.js';
 import type { AtomicSidecarSlotEffect } from './graph.js';
 import { findMessageBusHandlerForInvocation } from './graph-handler-join.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
-import { selectedSatoshiContainerRequired } from './selected-satoshi-container.js';
+import { decodeSelectedHandlerArguments, selectedSatoshiContainerRequired } from './selected-satoshi-container.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 
@@ -58,8 +59,11 @@ export function inventoryComposeSlots(plan: CompiledGraphPlan): ComposeSlotInven
       // A slot reserved for an unselected BCH-transfer handler is a balanced placeholder, not a claim that
       // the real container is co-spent. Keep its fixed offset, but do not authenticate it as a container.
       .filter((slot) => slot.kind !== 'satoshiContainer'
-        || selectedSatoshiContainerRequired(participant.artifact, participant.invocations.map((index) =>
-          plan.invocations[index].selectorHex)) !== false)
+        || selectedSatoshiContainerRequired(participant.artifact,
+          participant.invocations.map((index) => plan.invocations[index].selectorHex),
+          participant.invocations.map((index) => decodeSelectedHandlerArguments(
+            participant.artifact, plan.invocations[index].selectorHex, hexToBin(plan.invocations[index].argsHex),
+          ))) !== false)
       .map((slot) => ({
         participant: participant.participant, offset: slot.offset, kind: slot.kind,
       })));

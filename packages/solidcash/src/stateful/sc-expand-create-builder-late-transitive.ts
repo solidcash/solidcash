@@ -19,7 +19,9 @@ import { tryCashAddressToLockScript } from '../utils.js';
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
+  createSatoshiContainerUnlocker,
   getEntryNftAddress,
+  getSatoshiContainerAddress,
 } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
@@ -440,6 +442,17 @@ export async function expandCreateBuilderLateTransitive(
                 );
               }
               lateBlockInputs.push(data);
+              continue;
+            }
+            if (slot.kind === 'satoshiContainer') {
+              const address = getSatoshiContainerAddress(callee.inner, callee.categoryId);
+              const container = (await nestedAddressUtxos(address)).find((utxo) => !utxo.token);
+              // Keep the fixed slot even when no container is present, matching direct nested assembly.
+              // A conditional transfer can leave it inactive; active transfers remain covenant-checked.
+              lateBlockInputs.push(container ? {
+                ...container,
+                unlocker: createSatoshiContainerUnlocker(callee.inner, 0, callee.categoryId),
+              } : makeLateFunder());
               continue;
             }
             if (slot.kind === 'entry') {

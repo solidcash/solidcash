@@ -17,7 +17,9 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import type { PreparedAtomicMessageBusCall } from '../message-bus/compose-prepared-invocation.js';
 import { hasCanonicalBatchBlobLineage } from '../message-bus/internal-batch-authority.js';
-import { selectedSatoshiContainerRequired } from '../message-bus/selected-satoshi-container.js';
+import {
+  decodeSelectedHandlerArguments, selectedSatoshiContainerRequired,
+} from '../message-bus/selected-satoshi-container.js';
 import { evaluateFixedEffectPredicate } from '../message-bus/message-bus.js';
 import {
   allowsWriteUnderExecutionContext,
@@ -571,6 +573,7 @@ executionContextBinding?: BatchExecutionContextBinding,
   // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
   // would silently debit the container even though the covenant correctly skipped those slots.
   const reachedHandlers: typeof capability.handlers = [];
+  const reachedArguments: Array<FunctionArgument[] | undefined> = [];
   let cursor = 7;
   // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
   // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
@@ -583,6 +586,12 @@ executionContextBinding?: BatchExecutionContextBinding,
     if (handler) reachedHandlers.push(handler);
     const argsLengthOffset = cursor + 10;
     const argsLength = blob[argsLengthOffset] | (blob[argsLengthOffset + 1] << 8);
+    if (handler) {
+      const argsEnd = cursor + header + argsLength;
+      reachedArguments.push(argsEnd <= blob.length ? decodeSelectedHandlerArguments(
+        executionArtifact, selector, blob.slice(cursor + header, argsEnd),
+      ) : undefined);
+    }
     cursor += header + argsLength;
   }
   // Choose carrier ownership from the selectors authenticated by the canonical batch blob, not from mutable
@@ -600,7 +609,9 @@ executionContextBinding?: BatchExecutionContextBinding,
   // selected non-transfer row require a funded container. Narrow only with a complete, selector-exact direct
   // layout for every row; incomplete/older metadata retains the conservative route-wide requirement.
   const activeSatoshiContainer = reachedHandlers.length === rowCount
-    ? selectedSatoshiContainerRequired(executionArtifact, reachedHandlers.map((handler) => handler.selector))
+    ? selectedSatoshiContainerRequired(
+      executionArtifact, reachedHandlers.map((handler) => handler.selector), reachedArguments,
+    )
     : undefined;
   if (readCarrierCapability && selectedHandlerAbis.some((handler) => handler === undefined)) {
     throw new Error('Compiler internal-read-carrier capability selected a handler without exact ABI metadata.');

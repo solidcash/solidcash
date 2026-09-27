@@ -11,8 +11,10 @@ import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
   createRelocatedDataNftUnlocker,
+  createSatoshiContainerUnlocker,
 } from './covenant-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { sameOutpoint } from './external-call-utxo-group.js';
 
 export interface MaterializedNftUnlockerReconcileHost {
   readonly allInputs: UnlockableUtxo[];
@@ -155,6 +157,39 @@ export function reconcileMaterializedEntryNftUnlockers(
   return changed;
 }
 
+/** Rebind real container spends, leaving inactive funding pads at their original locks. */
+export function reconcileMaterializedSatoshiContainerUnlockers(
+  host: MaterializedNftUnlockerReconcileHost,
+  builder: TransactionBuilder,
+): boolean {
+  let changed = false;
+  for (const group of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
+    if (group.sharedGroupIndex !== undefined) continue;
+    const masterIndex = host.findMintingInputIndex(group.categoryId);
+    if (masterIndex < 0) continue;
+    for (const slot of group.blockLayout?.slots ?? []) {
+      if (slot.kind !== 'satoshiContainer') continue;
+      const input = group.blockInputs?.[slot.offset];
+      if (!input || input.token || !isContractUnlocker(input.unlocker)) continue;
+      const params = input.unlocker.abiFunction.inputs;
+      const flag = params.findIndex((param) => param.name === 'flag');
+      const master = params.findIndex((param) => param.name === 'masterInputIndex');
+      if (flag < 0 || master < 0 || input.unlocker.params[flag] !== 1n
+        || input.unlocker.params[master] === BigInt(masterIndex)) continue;
+      const unlocker = createSatoshiContainerUnlocker(group.externalContract.inner, masterIndex, group.categoryId);
+      if (!binsAreEqual(unlocker.generateLockingBytecode(), input.unlocker.generateLockingBytecode())) continue;
+      const rebound = { ...input, unlocker };
+      group.blockInputs![slot.offset] = rebound;
+      const flatIndex = host.allInputs.findIndex((candidate) => sameOutpoint(candidate, input));
+      if (flatIndex >= 0) host.allInputs[flatIndex] = rebound;
+      const builtIndex = builder.inputs.findIndex((candidate) => sameOutpoint(candidate, input));
+      if (builtIndex >= 0) builder.inputs[builtIndex] = rebound;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** Rebind hidden callee-master arguments from the final physical input order. */
 export function reconcileMaterializedInputWitnesses(
   host: MaterializedNftUnlockerReconcileHost,
@@ -162,6 +197,7 @@ export function reconcileMaterializedInputWitnesses(
 ): boolean {
   const dataNftsChanged = reconcileMaterializedDataNftUnlockers(host, builder);
   const entryNftsChanged = reconcileMaterializedEntryNftUnlockers(host, builder);
+  const containersChanged = reconcileMaterializedSatoshiContainerUnlockers(host, builder);
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
     if (!carrier.mintingInputWitnessCategories || !carrier.refreshInternalArgs) continue;
@@ -176,7 +212,7 @@ export function reconcileMaterializedInputWitnesses(
     carrier.internalArgs = { ...carrier.internalArgs, ...updates };
     changedCarriers.add(carrier);
   }
-  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged;
+  if (changedCarriers.size === 0) return dataNftsChanged || entryNftsChanged || containersChanged;
   host.syncRefreshedCarrierMasters(builder, changedCarriers);
   return true;
 }

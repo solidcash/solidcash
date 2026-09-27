@@ -322,7 +322,8 @@ export async function expandCreateBuilderLateTransitive(
           parentIncomingCallerAddress,
         ) ?? childArgs;
       const resolveGraphChildArgs = preparedAtomicNodes && graphChildSources
-        ? (results: ReadonlyMap<number, FunctionArgument>): FunctionArgument[] | undefined => {
+        ? (results: ReadonlyMap<number, FunctionArgument>, parentArgs?: readonly FunctionArgument[]):
+        FunctionArgument[] | undefined => {
           const externalReturns = externalReturnsForCallsites(
             graphChildSources, results, parentFn.externalCalls ?? [],
             nested.callsiteId === undefined ? undefined : {
@@ -330,9 +331,9 @@ export async function expandCreateBuilderLateTransitive(
               resultConsumers: parentFn.resultConsumers,
             },
           );
-          if (externalReturns.size === 0) return undefined;
+          if (externalReturns.size === 0 && parentArgs === undefined) return undefined;
           return logicalParentContract._resolveExternalArgs(
-            graphChildSources, [...graphParentArgs], logicalParentArtifact, parentState,
+            graphChildSources, [...(parentArgs ?? graphParentArgs)], logicalParentArtifact, parentState,
             parentFn.inputs, externalReturns, iterationIndex, false, parentOutgoingSelfAddress,
             parentIncomingCallerAddress,
           );

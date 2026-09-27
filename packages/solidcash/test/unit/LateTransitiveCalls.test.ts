@@ -410,6 +410,26 @@ describe('late transitive call preparation', () => {
     );
   });
 
+  it('refreshes forwarded and expression arguments from the current parent frame without sibling returns', async () => {
+    const amount = { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } as const;
+    const sink = contract(2, [handler('run', [], true)]);
+    const sources: ArgSource[] = [
+      { kind: 'forward', paramIndex: 0 },
+      { kind: 'expression', expression: {
+        kind: 'binary', operator: '+', left: amount,
+        right: { kind: 'literal', type: 'uint256', value: '3' },
+      } },
+    ];
+    const first = withExpressionResolution(contract(1, [handler('run', [{ ...edge('Sink'), argSources: sources }])]));
+    first._externalRegistry.set('Sink', sink);
+    const fixture = preparation([group(first)]);
+    await fixture.expand();
+    const node = fixture.nodes.at(-1)!;
+    expect(node.args).toEqual([9n, 12n]);
+    expect(node.resolveArgsFromResults(new Map(), [80n])).toEqual([80n, 83n]);
+    expect(node.resolveArgsFromResults(new Map())).toBeUndefined();
+  });
+
   it('closes newly appended descendants and keeps their exact logical arguments and parents', async () => {
     const leaf = contract(3, [handler('run', [], true)]);
     const middle = contract(2, [handler('run', [edge('Leaf')])]);

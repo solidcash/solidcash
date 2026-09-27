@@ -222,9 +222,10 @@ export interface PreparedAtomicMessageBusCall {
    * fixed-point seed: the composed transaction still has to expose the same result and pass every covenant.
    */
   provisionalResultCommitment?: Uint8Array;
-  /** @internal Rebuild complete arguments from authenticated sibling results, keyed by parent-local callsite. */
+  /** @internal Rebuild arguments from sibling results and the current parent frame, in graph source order. */
   resolveArgsFromResults?: (
     results: ReadonlyMap<number, FunctionArgument>,
+    parentArgs?: readonly FunctionArgument[],
   ) => readonly FunctionArgument[] | undefined;
 }
 

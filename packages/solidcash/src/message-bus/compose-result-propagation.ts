@@ -64,10 +64,16 @@ export function propagateResultDependentArguments(
     resultsByParent.set(invocation.parent, siblings);
   }
   let propagated = false;
-  const resolvedArguments = ctx.descriptors.map((descriptor, index): readonly FunctionArgument[] => {
+  const resolvedArguments: Array<readonly FunctionArgument[]> = [];
+  ctx.descriptors.forEach((descriptor, index) => {
     const invocation = ctx.plan.invocations[index];
     const siblingResults = invocation.parent === null
       ? undefined : resultsByParent.get(invocation.parent);
+    // Descriptors are in depth-first source order. A changed producer argument must reach every
+    // descendant before rebuilding the graph, including void/raw calls with no returning siblings.
+    const parentArgs = invocation.parent === null ? undefined : resolvedArguments[invocation.parent];
+    const parentChanged = parentArgs !== undefined
+      && semanticJson(parentArgs) !== semanticJson(ctx.descriptors[invocation.parent!].args);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
       console.error('atomic-result-descriptor', JSON.stringify({
@@ -84,7 +90,8 @@ export function propagateResultDependentArguments(
         siblingCallsites: siblingResults === undefined ? null : [...siblingResults.keys()],
       }));
     }
-    const resolved = siblingResults && descriptor.resolveArgsFromResults?.(siblingResults);
+    const resolved = siblingResults || parentChanged
+      ? descriptor.resolveArgsFromResults?.(siblingResults ?? new Map(), parentArgs) : undefined;
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1' && siblingResults
       && descriptor.resolveArgsFromResults) {
@@ -97,12 +104,10 @@ export function propagateResultDependentArguments(
           && semanticJson(resolved) !== semanticJson(descriptor.args),
       }));
     }
-    let args = descriptor.args;
     if (resolved && semanticJson(resolved) !== semanticJson(descriptor.args)) {
       propagated = true;
-      return resolved;
     }
-    return args;
+    resolvedArguments.push(resolved ?? descriptor.args);
   });
   // A changed row can alter a terminal collection value produced by a later sibling even when that later
   // sibling's own public arguments are unchanged. Refresh all capable rows against the now-complete shared

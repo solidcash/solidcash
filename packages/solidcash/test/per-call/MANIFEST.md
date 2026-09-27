@@ -13,11 +13,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 233 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 239 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 129 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 44 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 
-Total: 720 tests, all passing at `0af283aa7` (114 + 271 + 335).
+Total: 734 tests, all passing at `c44994de8` (114 + 277 + 343).
 
 ## What each directory covers
 
@@ -108,11 +108,13 @@ indices, and is held to its own derivation by a generated differential check.
 
 ## What is not covered
 
-- The marketplace harness is pointed at `composition: 'per-call'`, but the project does not compile on that path: a
-  compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a constructor
-  body that asks the head for something it does not carry — the first marketplace root stops on a constructor that
-  writes a mapping, which needs a batch-slot operand the head does not supply. The ladder therefore stands at
-  "blocked at compile" and no title count is claimed.
+- The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
+  path: a compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a body
+  that writes a mapping — the first marketplace root stops on its constructor, which carries the sorted-list
+  coordinate `__internal__vmapBatchSlot_<n>` the direct convention's SDK allocates. The settlement can now chain the
+  records such a write declares, and the composer can plan them, but the emitted batch verification still reads that
+  operand rather than the declared records, so the refusal stays. The ladder stands at "blocked at compile" and no
+  title count is claimed.
 - The composer lays out the shapes whose entries make the same number of external calls: a call-back shape, a
   user-entered multi-entry master, and a two-master contract whose validator has nothing to settle are refused by
   name. Delegatecall, mapping records and value sends are refused by name as well.

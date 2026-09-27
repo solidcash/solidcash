@@ -10,7 +10,7 @@ import { createMessageBusSemanticTestProvider } from '../journal-message-bus/e2e
 import { setupStatefulUtxos } from '../test-util.js';
 
 describe('authenticated hashed return probes', () => {
-  it('derives a five-word EVM fixed-array result across the NFT commitment boundary', async () => {
+  it.each([true, false])('derives a five-word EVM fixed-array result (fast compilation: %s)', async (fast) => {
     const provider = createMessageBusSemanticTestProvider();
     const artifact = compileString(`pragma solidity ^0.8.0;
       contract ArrayProducer {
@@ -24,7 +24,7 @@ describe('authenticated hashed return probes', () => {
         }
       }`, {
       forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
-      solidityImportCompat: true, optimizeForCompilationSpeed: true,
+      solidityImportCompat: true, optimizeForCompilationSpeed: fast,
       maximumInputBytes: 1_000_000, suppressWarnings: true,
     });
     const base = new Contract(artifact, [], { provider });

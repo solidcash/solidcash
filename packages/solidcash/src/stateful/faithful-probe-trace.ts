@@ -21,6 +21,7 @@ import {
   createVirtualMachineBch2026ForProvider,
 } from '../network/createVirtualMachine.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
+import { captureProbeContinuations } from './probe-instruction-sequence.js';
 
 export function isP2sh32LockingBytecode(bytes: Uint8Array | undefined): boolean {
   return !!bytes && bytes.length === 35 && bytes[0] === 0xaa && bytes[1] === 0x20 && bytes[34] === 0x87;
@@ -389,6 +390,7 @@ export class BoundedProbeTraceCollector {
     }
     return {
       ...state,
+      ...captureProbeContinuations(state),
       stack,
       alternateStack: [],
       // Object frames retain caller stacks. Instruction-array identity on each observation preserves the
@@ -411,6 +413,7 @@ export class BoundedProbeTraceCollector {
 
     const full = {
       ...state,
+      ...captureProbeContinuations(state),
       stack: state.stack.slice(),
       alternateStack: state.alternateStack.slice(),
       controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),
@@ -751,6 +754,7 @@ export function compactFaithfulProbeTrace(
   };
   const project = (state: AuthenticationProgramStateCommon, terminal = false): AuthenticationProgramStateCommon => ({
     ...state,
+    ...captureProbeContinuations(state),
     stack: projectStack(state, terminal),
     alternateStack: [],
     controlStack: state.controlStack.filter((frame) => typeof frame === 'boolean'),

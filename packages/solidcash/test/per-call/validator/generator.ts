@@ -333,6 +333,39 @@ const MUTATIONS: ReadonlyArray<{
 }> = [
   { name: 'none', apply: () => {} },
   {
+    name: 'detached cycle',
+    apply: (rng, composition) => {
+      // Two read-only declarations of one record read at an input are given the same fabricated view in and out, so
+      // they pair with each other while the record's honest declarations still chain and anchor the output. Reading
+      // a record without writing it is what makes the pair detachable: nothing else continues from the view the pair
+      // leaves, and nothing needs the pair to reach the output. Pairing alone accepts it; connectivity refuses it,
+      // because the fabricated pair hangs off no view the spent commitment reaches.
+      const byInput = new Map<number, import('@solidcash/utils').RecordEntry[]>();
+      for (const block of composition.blocks.values()) {
+        for (const segment of block.segments) {
+          for (const entry of segment) {
+            if (entry.in === INDEX_NONE || entry.out === INDEX_NONE) continue;
+            if (entry.viewIn.length !== entry.viewOut.length) continue;
+            if (!entry.viewIn.every((byte, at) => byte === entry.viewOut[at])) continue;
+            const list = byInput.get(entry.in) ?? [];
+            list.push(entry);
+            byInput.set(entry.in, list);
+          }
+        }
+      }
+      const pair = [...byInput.values()].find((entries) => entries.length >= 2);
+      if (pair === undefined) return;
+      const fake = seedBytes(`mut-cycle-${rng.int(1000)}`, 4);
+      const first = pair[rng.int(pair.length)]!;
+      let second = pair[rng.int(pair.length)]!;
+      while (second === first) second = pair[rng.int(pair.length)]!;
+      first.viewIn = fake;
+      first.viewOut = fake;
+      second.viewIn = fake;
+      second.viewOut = fake;
+    },
+  },
+  {
     name: 'master lock is a loader lock',
     apply: (_rng, composition) => {
       for (const input of composition.inputs) {

@@ -1097,15 +1097,15 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
-  test('accepts today a chain that never leaves a fabricated view, which the derivation refuses', () => {
+  test('refuses a chain that never leaves a fabricated view, which the derivation refuses as broken', () => {
     // Pairing is not connectivity, and this case is the difference. Two read-only declarations of one record that
     // both claim the same view pair with each other - each names a declaration it continues from and one that
     // continues from it - and the record's honest write still anchors the chain at the output, so a rule built from
-    // pairing and an anchor accepts a record whose chain never leaves the fabricated view. The derivation refuses it
-    // as a broken chain. **This test records the hole**: the program's assertion flips to `false` when the
-    // connectivity rule lands, and until then it is the proof that the rule is missing. What the hole buys an
-    // attacker is the shape the record toys care about: a user-entered call to a view function that pairs with the
-    // honest caller's read-only read, so the caller computes a payout from a record nobody wrote.
+    // pairing and an anchor accepted a record whose chain never leaves the fabricated view. The connectivity walk
+    // starts at the spent commitment and takes as it follows: the fabricated pair hangs off no reached view, so the
+    // walk stops with both still in its working copy and refuses, which is the derivation's `V7_CHAIN_BROKEN`. What
+    // the hole bought an attacker was the shape the record toys care about: a user-entered call to a view function
+    // that pairs with the honest caller's read-only read, so the caller computes a payout from a record nobody wrote.
     const composition = laidOut(twoReadOnlyCallsPlan());
     const index = composition.validatorIndex;
     const modelled = materialise(composition);
@@ -1120,7 +1120,7 @@ describe('the validator program refuses each rule it enforces', () => {
     }
     const tampered = materialise(composition);
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_BROKEN');
-    expect(accepted(tampered, index)).toBe(true);
+    expect(accepted(tampered, index)).toBe(false);
   });
 
   test('refuses a declaration that carries on from a deleted record', () => {

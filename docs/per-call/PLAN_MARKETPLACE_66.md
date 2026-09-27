@@ -841,6 +841,14 @@ risk. Take the slices in order, each with its own tests.
 
 ### 4.6 Rules
 
+- [ ] **Order before the ladder** (the user's I2b decision, made operational on 2026-09-27). Until I2b is ticked:
+  - a round takes the first unticked item of I1, then I2 (Y1-Y7, G5, G3), then I2b (MS1-MS10), and its Log row names
+    that item and the `MARKETPLACE_SHAPES.md` row it moved;
+  - the marketplace project is compiled at most once per milestone, to refresh the catalog; no title and no fixture
+    runs, and a Log row carries no ladder paragraph;
+  - a toy or replica settles in its own shape. A narrower variant (a loop for separate call statements, a scalar
+    rewrite for an array append, fewer turns, no events) is logged as partial and leaves the toy's box and the
+    catalog row's status unchanged.
 - [ ] Per-title time budget of 1 day. When it is exceeded, write a reduced neutral reproducer and move on.
 - [ ] One full run per day at most. Single-title runs otherwise.
 - [ ] Acceptance (Track P4): the new path builds no `OP_RETURN` outputs, no bare `OP_1` outputs, no dummy funders

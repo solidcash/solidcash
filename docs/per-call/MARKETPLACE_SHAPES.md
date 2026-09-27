@@ -34,14 +34,15 @@ a `CALL` to the proxy plus a `DELEGATE` into its implementation. M, D and T are 
 
 ## 2. Primitives the flows are made of
 
-Each primitive either settles in its own focused test or inside a flow replica. Status re-read at `a8df9de6d` for the rows below that changed; the rest is as of `fbf2776d5`.
+Each primitive either settles in its own focused test or inside a flow replica. Status as of `fbf2776d5`; P3 and P4
+re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant is recorded as partial (plan 4.6).
 
 | # | Primitive | In | Status |
 | --- | --- | --- | --- |
 | P1 | Proxy entry: `CALL` to the proxy, `DELEGATE` into the implementation (toy Y4, plan F5) | MS1-MS8 | none; per-call delegate shapes are refused at compile |
 | P2 | Proxy-to-proxy call: the callee sees `msg.sender` = the calling proxy's address and gates on it | MS2-MS7 | none |
-| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | settles for k = 2 through the shipped composer: the published site is resumed once per turn, the callee's record chains across the turns, and the machine accepts every participant (`edges/repeated-callee.test.ts`). k = 3 turns the caller's own input past its operation-cost budget (800 units per byte of its unlocking bytecode), which is the wire form's limit rather than the derivation's |
-| P4 | Calls in data-dependent loops with k > 1, a `STATIC` read per iteration, a revert mid-loop | MS2, MS4, MS7 | settles for k = 1 (`edges/reads-and-loops`) |
+| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | partial. A `for` loop calling one callee twice, each turn rewriting one scalar record, settles through the shipped composer: the published site is resumed once per turn and the callee's record chains across the turns (`edges/repeated-callee.test.ts`). Toy Y1's shape is still refused: separate call statements to one callee ("the call to 'append' runs repeatedly"), each appending to one array and emitting. Three turns exceed the caller's own operation-cost budget (2,184,834 of 2,184,800 units), which `publishJobPost`'s 8 calls from one master will hit unless the caller's input gets headroom as the validator's did |
+| P4 | Calls in data-dependent loops with k > 1, a `STATIC` read per iteration, a revert mid-loop | MS2, MS4, MS7 | partial. A loop's calls compile for any trip count and the machine accepts 0 to 3 records against one program (`master/looped-call-entry.test.ts`); two turns derive and settle (P3's case). A body that reads its own records and repeats is refused by name; a `STATIC` read per iteration and a revert mid-loop are untested |
 | P5 | One call's result as another call's argument (toy Y3) | MS3 | refused today |
 | P6 | Fan-in: a second caller's frame reads the record the first caller's frame wrote (toy Y6) | MS3 | compiles; refused by the derivation (V7 / R2) |
 | P7 | Re-entry with intermediate state: a `STATIC` read-back of a write made higher up (toy Y2) | MS4, MS7 | none |

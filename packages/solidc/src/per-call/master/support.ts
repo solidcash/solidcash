@@ -836,86 +836,119 @@ function derivePerCallMasterCallSites(
 }
 
 /**
- * How many calls a body makes on every path, and where each one sits, or undefined when the paths disagree.
+ * Why the source does not fix how many calls a body makes: the statement the walk could not count.
+ *
+ * Each kind is named so a refusal can say what the shape actually is rather than call every one of them
+ * conditional: an arm pair that makes different numbers of calls is a branch, a trip count the source does not fix
+ * is a loop, and a switch is a set of arms that need not agree.
+ */
+export type CallSetDivergence = 'arms' | 'loop' | 'switch' | 'nested';
+
+/** How many calls a body makes on every path, and where each one sits, or why the source does not fix that. */
+export type CallSetDerivation =
+  | { readonly pathCount: number; readonly calls: readonly number[] }
+  | { readonly divergence: CallSetDivergence };
+
+/**
+ * How many calls a body makes on every path, and where each one sits.
  *
  * A body binds its own calls: the k-th call of the execution is the k-th record, and the code after it resumes in
  * segment k + 1. Both are positions in the execution rather than in the source, so a call inside a branch sits at
  * the same position on either arm — the record and the segment the code after the branch uses are facts of every
  * path only while the paths agree on how many calls came before. A loop's trip count is a run-time value, and a
- * switch's arms need not agree, so both are refused here rather than counted; a catch block is not an executable
- * path, which is the same reading the invocation walk takes.
+ * switch's arms need not agree, so both are answered as a divergence rather than counted; a catch block is not an
+ * executable path, which is the same reading the invocation walk takes.
  *
  * `calls[i]` is the position of the i-th call the source reaches, in the order the walk reaches it: a branch's
  * condition, then its arms as the source writes them.
  */
-export function callsOnEveryPath(
-  block: BlockNode | undefined,
-): { readonly pathCount: number; readonly calls: readonly number[] } | undefined {
+export function callsOnEveryPath(block: BlockNode | undefined): CallSetDerivation {
   const calls: number[] = [];
   const pathCount = countCallsOnEveryPath(block, calls, 0);
-  return pathCount === undefined ? undefined : { pathCount, calls };
+  return typeof pathCount === 'number' ? { pathCount, calls } : { divergence: pathCount };
 }
 
 /** The walking half of {@link callsOnEveryPath}, which records each call's position as the walk reaches it. */
-function countCallsOnEveryPath(block: BlockNode | undefined, calls: number[], base: number): number | undefined {
+function countCallsOnEveryPath(block: BlockNode | undefined, calls: number[], base: number): number | CallSetDivergence {
   let total = 0;
   for (const statement of block?.statements ?? []) {
     if (statement instanceof BranchNode) {
       // The arms run exclusively, so each is reached at the same position: the one the branch starts at, after the
       // condition's own calls. They have to end at the same place for the code after the branch to have a position.
       const inCondition = callsIn(statement.condition, calls, base + total);
-      if (inCondition === undefined) return undefined;
+      if (typeof inCondition !== 'number') return inCondition;
       const armBase = base + total + inCondition;
       const inIf = countCallsOnEveryPath(statement.ifBlock, calls, armBase);
       const inElse = statement.elseBlock === undefined
         ? 0
         : countCallsOnEveryPath(statement.elseBlock, calls, armBase);
-      if (inIf === undefined || inElse === undefined || inIf !== inElse) return undefined;
+      if (typeof inIf !== 'number') return inIf;
+      if (typeof inElse !== 'number') return inElse;
+      if (inIf !== inElse) return 'arms';
       total += inCondition + inIf;
       continue;
     }
     if (statement instanceof BlockNode) {
       const inner = countCallsOnEveryPath(statement, calls, base + total);
-      if (inner === undefined) return undefined;
+      if (typeof inner !== 'number') return inner;
       total += inner;
       continue;
     }
-    if (statement instanceof WhileNode || statement instanceof DoWhileNode || statement instanceof SwitchNode) {
-      return undefined;
-    }
+    if (statement instanceof SwitchNode) return 'switch';
+    if (statement instanceof WhileNode || statement instanceof DoWhileNode) return 'loop';
     if (statement instanceof TryCatchNode) {
       const inExpression = callsIn(statement.expression, calls, base + total);
-      if (inExpression === undefined) return undefined;
+      if (typeof inExpression !== 'number') return inExpression;
       const inTry = statement.tryBlock === undefined
         ? 0
         : countCallsOnEveryPath(statement.tryBlock, calls, base + total + inExpression);
-      if (inTry === undefined) return undefined;
+      if (typeof inTry !== 'number') return inTry;
       total += inExpression + inTry;
       continue;
     }
     const own = callsIn(statement, calls, base + total);
-    if (own === undefined) return undefined;
+    if (typeof own !== 'number') return own;
     total += own;
   }
   return total;
 }
 
 /**
- * The calls one statement makes outside any nested block, or undefined when it contains a branch of its own.
+ * The calls one statement makes outside any nested block, or the divergence it contains.
  *
  * Their positions are contiguous from `base`, in the order the invocation walk reaches them.
  */
-function callsIn(value: unknown, calls: number[], base: number): number | undefined {
+function callsIn(value: unknown, calls: number[], base: number): number | CallSetDivergence {
   let found = 0;
-  let structured = false;
+  let structured: CallSetDivergence | undefined;
   walkInvocationAst(value, (node) => {
     if (node instanceof ExternalFunctionCallNode) {
       calls.push(base + found);
       found += 1;
-    } else if (node instanceof BranchNode || node instanceof SwitchNode
-      || node instanceof WhileNode || node instanceof DoWhileNode) structured = true;
+    } else if (node instanceof SwitchNode) structured ??= 'switch';
+    else if (node instanceof WhileNode || node instanceof DoWhileNode) structured ??= 'loop';
+    else if (node instanceof BranchNode) structured ??= 'nested';
   });
-  return structured ? undefined : found;
+  return structured ?? found;
+}
+
+/**
+ * How a refusal describes a body whose call set the source does not fix.
+ *
+ * The phrase says which statement the walk could not count, so a reader is not told a call is conditional when it
+ * is the trip count of a loop that is the open question.
+ */
+function divergencePhrase(divergence: CallSetDivergence, entryName: string): string {
+  switch (divergence) {
+    case 'loop':
+      return 'is in a body that loops, and the trip count is what decides how many calls it makes';
+    case 'switch':
+      return 'is in a body that switches, and its arms need not make the same number of calls';
+    case 'nested':
+      return 'is in a body whose call count a branch or a loop in an expression decides';
+    default:
+      return `runs conditionally, and the paths through '${entryName}' do not make the same number of calls`;
+  }
 }
 
 /** The call sites one entry makes, or why the head cannot check them. */
@@ -926,7 +959,8 @@ function deriveEntryCallSites(
   const calls: MasterCallSite[] = [];
   // The position each call sits at, which the same walk answers for the whole body: a descriptor's place in this
   // list is not its place in the execution once arms can share one.
-  const positions = callsOnEveryPath(entry.body)?.calls;
+  const walk = callsOnEveryPath(entry.body);
+  const positions = 'calls' in walk ? walk.calls : undefined;
   let descriptor = 0;
   for (const slot of entry.externalCalls ?? []) {
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
@@ -941,10 +975,13 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
-    if (slot.condition !== undefined && callsOnEveryPath(entry.body) === undefined) {
-      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally, and the paths through `
-        + `'${entry.name}' do not make the same number of calls, so its call records are not a fixed set the head `
-        + 'can check' };
+    // A call the source does not fix the occurrence of is refused, and the phrase names which statement the walk
+    // could not count: a loop whose trip count is a run-time value is admitted only while it makes one call, which
+    // is asserted through the machine in `solidcash/test/per-call/edges/reads-and-loops.test.ts`, so what is
+    // refused here is a call a branch can skip entirely.
+    if (slot.condition !== undefined && 'divergence' in walk) {
+      return { calls: [], reason: `the call to '${slot.functionName}' ${divergencePhrase(walk.divergence, entry.name)}`
+        + ', so its call records are not a fixed set the head can check' };
     }
     if (slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
       || slot.inlineLoopDispatch === true || (slot.batchInvocations?.length ?? 0) > 1) {
@@ -986,7 +1023,7 @@ function deriveEntryCallSites(
     });
     descriptor += 1;
   }
-  return { calls, pathCount: callsOnEveryPath(entry.body)?.pathCount };
+  return { calls, pathCount: 'pathCount' in walk ? walk.pathCount : undefined };
 }
 
 /**

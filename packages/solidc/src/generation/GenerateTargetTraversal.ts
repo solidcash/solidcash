@@ -29787,7 +29787,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private perCallExecutionCallCount(): number {
     const name = this.currentFunction?.name ?? '';
-    return callsOnEveryPath(this.currentFunction?.body)?.pathCount
+    const walk = callsOnEveryPath(this.currentFunction?.body);
+    return ('pathCount' in walk ? walk.pathCount : undefined)
       ?? this.perCallEntryCallSites.get(name)?.length ?? 0;
   }
 

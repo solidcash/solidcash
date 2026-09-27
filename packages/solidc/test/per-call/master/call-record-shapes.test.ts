@@ -40,6 +40,20 @@ const BALANCED_ARMS = HEAD + INTERFACES
   + `     else { IPeek(0x${CALLEE}).peek(); } require(true); }`
   + ' }';
 
+/**
+ * A caller whose call a branch inside a loop can skip, so neither the count nor the occurrence is fixed.
+ *
+ * A loop whose trip count is a run-time value is admitted while it makes one call per iteration and the caller asks
+ * for one iteration, which the machine asserts in `solidc`'s sibling suite for a plain loop. What has no fixed
+ * record set is a call an arm can skip, and the refusal says which statement the walk stopped at.
+ */
+const BRANCHED_IN_LOOP_CALL = HEAD + INTERFACES
+  + ' contract Caller {'
+  + '   function go(bool take, int n) {'
+  + `     for (int i = 0; i < n; i = i + 1) { if (take) { IState(0x${CALLEE}).add(1); } require(true); }`
+  + '   }'
+  + ' }';
+
 /** A caller whose call runs only in one branch, which is a call set the source does not fix. */
 const CONDITIONAL_CALL = HEAD + INTERFACES
   + ' contract Caller {'
@@ -98,5 +112,15 @@ describe('a call whose occurrence the source does not fix', () => {
     expect(refusal.message).toContain('runs conditionally');
     expect(refusal.message).toContain('do not make the same number of calls');
     expect(refusal.message).not.toContain('resolves its callee');
+  });
+
+  it('names the loop, not a conditional, when the trip count is what the walk stopped at', () => {
+    // The call's own statement is a branch, but the walk stopped at the loop around it: how many records an
+    // execution declares is the trip count's business, so the refusal says that rather than calling the call
+    // conditional.
+    const refusal = refusalOf(BRANCHED_IN_LOOP_CALL);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('is in a body that loops, and the trip count is what decides how many calls');
+    expect(refusal.message).not.toContain('runs conditionally');
   });
 });

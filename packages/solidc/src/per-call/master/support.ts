@@ -26,6 +26,7 @@ import {
   computeFunctionSelector,
   computeFunctionSignature,
   encodeIntegerValue,
+  isDynamicStorageType,
 } from '@solidcash/utils';
 import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
@@ -53,6 +54,11 @@ import {
   MappingAssignNode,
   NullaryOpNode,
   StateAccessNode,
+  StateArrayAssignNode,
+  StateArrayDeleteNode,
+  StateArrayPopNode,
+  StateArrayPushNode,
+  StateAssignNode,
   StringLiteralNode,
   SwitchNode,
   TryCatchNode,
@@ -586,9 +592,49 @@ export interface PerCallMasterShapeAssessment {
   readonly refusedEntries?: readonly { readonly entryName: string; readonly reason: string }[];
 }
 
+/**
+ * Marks every body that touches dynamic state, so the head derives the value's chunk-run coordinate from the
+ * record block the frame declares and leaves it where the body reads it, rather than the body addressing the run
+ * from the input it happens to run on.
+ *
+ * The body's own source fixes the answer, so it is read from the access nodes here. The footprint analysis cannot
+ * answer at this point: collection and dynamic lowering value-thread those accesses through ordinary locals before
+ * a per-call master is assessed, so the accesses are no longer state reads even though the nodes remain.
+ */
+function markDynamicStateBodies(contract: ContractNode): void {
+  const dynamic = new Set(contract.stateVariables
+    .filter((state) => state.isDynamic || state.isPacked || isDynamicStorageType(state.type))
+    .map((state) => state.name));
+  if (dynamic.size === 0) return;
+  const functions = [
+    contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
+  ];
+  for (const fn of functions) {
+    if (fn === undefined || fn.usesDynamicChunkInputBase === true) continue;
+    if (touchesDynamicState(fn.body, dynamic)) fn.usesDynamicChunkInputBase = true;
+  }
+}
+
+/** True when the body names one of `dynamic` at a state access site. */
+function touchesDynamicState(body: BlockNode, dynamic: ReadonlySet<string>): boolean {
+  let found = false;
+  walkInvocationAst(body, (node) => {
+    if (found) return;
+    const name = (node as { readonly name?: unknown }).name;
+    if (typeof name !== 'string' || !dynamic.has(name)) return;
+    if (node instanceof StateAccessNode || node instanceof StateAssignNode
+      || node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+      || node instanceof StateArrayAssignNode || node instanceof StateArrayDeleteNode) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 /** Assesses whether the contract can be emitted as a per-call master program. */
 export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCallMasterShapeAssessment {
   const { contract } = input;
+  markDynamicStateBodies(contract);
   const constants = contractConstantNames(contract);
   const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
   if (contract.constructorDef) {

@@ -30,14 +30,17 @@ import {
  * so the composition carries three call records and the callee runs on one master per call.
  *
  * The log's `items` is a chunk-packed array: its bytes live in a run of chunk UTXOs locked by the value's own
- * collection covenant, and the emitted body reads that run from the transaction's co-spent chunk inputs and closes
- * each frame's segment against the transaction's chunk outputs. A write that changes the run's width creates or
- * removes chunks, and the composer lays those records out: a chunk only the later stage holds is created as a
- * trailing output, and one only the earlier stage holds is spent as a funder input. What the run still does not
- * carry is a value from one frame to the next: the transaction's chunk output at the run's index holds the final
- * element stream, and a frame's close compares its own computed value against it, so only a frame whose value is
- * the final one closes. The file pins that limit, and the derivation probe compiles a log without the event and
- * states the appends against it. The three-call shape and the dynamic array are the toy's.
+ * collection covenant. Each frame reads and closes the run against the view its own segment declares, rather than
+ * against the transaction's chunk inputs and outputs: the input holds the value the transaction spent and the
+ * output the value the last frame wrote, while the frame must continue from what the frame before it wrote. A
+ * write that changes the run's width creates or removes chunks, and the composer lays those records out: a chunk
+ * only the later stage holds is created as a trailing output, and one only the earlier stage holds is spent as a
+ * funder input. Because the frame addresses the run through its own declaration, a run that exists when the
+ * transaction starts is carried from one frame to the next, which is what the accept cases below settle. A run
+ * the transaction itself creates is not: the later frames declare it kept at an index the transaction spends
+ * nothing at, the masters still close against their declarations, and the shipped validator refuses the
+ * composition because the only state a settlement transcript names is the inputs the transaction spends. That
+ * last limit is pinned rather than papered over.
  */
 
 const HUB_LABEL = 'same entry appends hub';
@@ -73,7 +76,7 @@ function toySource(appends: readonly { readonly id: bigint; readonly item: bigin
     + ' }';
 }
 
-/** The same shape without the emit, so the run's own limit is what a probe meets. */
+/** The same shape without the event, which is the source the machine cases below run. */
 function runSource(items: readonly bigint[]): string {
   return 'pragma solidcash ^0.13.0;'
     + ' interface ILog { function append(int item); }'
@@ -87,17 +90,6 @@ function runSource(items: readonly bigint[]): string {
     + '     require(true);'
     + '   }'
     + ' }';
-}
-
-/** The exact error a shipped call raised, or a failure when it returned normally. */
-function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
-  try {
-    run();
-  } catch (error) {
-    const refusal = error as { name?: string; code?: string; message: string };
-    return { name: refusal.name, code: refusal.code, message: refusal.message };
-  }
-  throw new Error('the shipped per-call path accepted the shape, so there is no refusal to record');
 }
 
 const ELEMENT_WIDTH = packFixedWidthElement(1n, 'int256').length;
@@ -380,40 +372,88 @@ describe('one entry appending to one log three times', () => {
       .toStrictEqual(headerOf(single.artifacts.Log!.stateLayout!, itemsBytes([7n, 10n])));
   });
 
-  it('does not carry a run one frame writes to the next: the second append stalls', () => {
-    // The second frame reads the run from the transaction's one chunk input, which holds the spent value rather
-    // than the value the first frame wrote, so the record its segment declares is not what its body computes.
+  it('carries a run one frame writes to the next: the second append reads what the first wrote', () => {
+    // Each frame reads and closes the run against the view its own segment declares, so the value the first
+    // append wrote is the run the second append reads, although the transaction's one chunk input holds the value
+    // it spent and its one chunk output the value the last frame wrote.
     const pair = build([7n], [10n, 20n]);
-    const { host } = createComposedDerivationHost({
+    const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
       artifacts: [pair.artifacts.Hub!, pair.artifacts.Log!],
       plan: pair.plan,
     });
-    const refusal = refusalOf(() => deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host));
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message).toMatch(/master "log-1" of Log\.append\(\) filled no witness at site 0/);
+    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'hub-1']);
+    expect(verdictAt(draft, 'log-1')).toBe('accepted');
+    expect(verdictAt(draft, 'log-2')).toBe('accepted');
+    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+
+    // The run's chunk carries the whole element stream, and the log's header the value's byte length, both read
+    // back from the encoders the composer shipped.
+    const program = draft.programFor('hub-1');
+    expect(program.transaction.outputs[participant(draft.layout, pair.chunkIds[0]!).index]!.token?.nft?.commitment)
+      .toStrictEqual(chunkOf(0, itemsBytes([7n, 10n, 20n])));
+    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(headerOf(pair.artifacts.Log!.stateLayout!, itemsBytes([7n, 10n, 20n])));
   });
 
-  it('composes the three appends from empty, and stalls where each frame closes its own run', () => {
-    // The run is laid out now — its first chunk is created, so the composition assembles — but the transaction
-    // writes one chunk output, holding the final element stream, and a frame's close compares its own computed
-    // value against it. Only a frame whose value is the final one closes, so the first append already stalls.
-    const three = build([], APPENDS.map((append) => append.item));
-    const { host } = createComposedDerivationHost({
+  it('composes the three appends, each frame reading the run the frame before it wrote', () => {
+    // The run starts with one element. Each append reads the view the frame before it declared and closes its
+    // own segment against the view it declares, so the value grows one element at a time even though the
+    // transaction's chunk input holds the value it spent and its chunk outputs the value the last frame wrote.
+    // The last append crosses 120 bytes, so the transaction creates a second chunk beside the kept one.
+    const three = build([7n], APPENDS.map((append) => append.item));
+    const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
       artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
       plan: three.plan,
     });
-    const refusal = refusalOf(() => deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host));
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message).toMatch(/master "log-1" of Log\.append\(\) filled no witness at site 0 \(close of segment 0\)/);
+    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
+    expect(verdictAt(draft, 'log-1')).toBe('accepted');
+    expect(verdictAt(draft, 'log-2')).toBe('accepted');
+    expect(verdictAt(draft, 'log-3')).toBe('accepted');
+    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+
+    // The run's chunks hold the whole element stream and the log's header its byte length, all read back through
+    // the encoders the composer shipped. The kept chunk recreates in place; the last append creates the next.
+    const values = [7n, ...APPENDS.map((append) => append.item)];
+    const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));
+    expect(chunks).toHaveLength(2);
+    const program = draft.programFor('hub-1');
+    const keptIndex = participant(draft.layout, three.chunkIds[0]!).index;
+    expect(program.transaction.outputs[keptIndex]!.token?.nft?.commitment).toStrictEqual(chunks[0]);
+    expect(program.transaction.outputs[keptIndex + 1]!.token?.nft?.commitment).toStrictEqual(chunks[1]);
+    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
   });
 
-  it('refuses a run whose written chunk the frame did not compute', () => {
-    // The control for the accept above: the same settled transaction with the chunk output rewritten to a value no
-    // frame computed makes the callee's own input refused.
+  it('refuses a run the transaction creates, because a later frame reads a record it spends nothing at', () => {
+    // The run does not exist when the transaction starts, so the first append creates its chunk and the later
+    // appends declare it kept at an index the transaction spends nothing at. Each frame closes against its own
+    // declaration, so every master input settles; the shipped validator refuses the composition, because the
+    // only state a settlement transcript names is the inputs the transaction spends and a created record is not
+    // one of them. The refusal is the machine's, and it is what stands between this shape and a spend.
+    const three = build([], APPENDS.map((append) => append.item));
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(),
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
+    });
+    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
+    expect(verdictAt(draft, 'log-1')).toBe('accepted');
+    expect(verdictAt(draft, 'log-2')).toBe('accepted');
+    expect(verdictAt(draft, 'log-3')).toBe('accepted');
+    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('refused: Program failed an OP_VERIFY operation.');
+  });
+
+  it('refuses a run whose declared close is not the one the frame computed', () => {
+    // The control for the accept above: the body computes the run its append writes and closes the segment
+    // against the view the segment declares, so a declaration rewritten to a value no frame computed is refused.
     const single = build([7n], [10n]);
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
@@ -422,16 +462,15 @@ describe('one entry appending to one log three times', () => {
     });
     deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
 
+    const record = draft.blockOf('log-1').segments[0]!;
+    record[record.length - 1]!.viewOut = chunkOf(0, itemsBytes([7n, 99n]));
+
     const vm = compositionMachine();
     const program = draft.programFor('hub-1');
-    const chunkIndex = participant(draft.layout, single.chunkIds[0]!).index;
-    const outputs = program.transaction.outputs.map((output, index) => (index === chunkIndex
-      ? { ...output, token: token(LOG_CATEGORY, 'mutable', chunkOf(0, itemsBytes([7n, 99n]))) }
-      : output));
     const state = vm.evaluate({
       inputIndex: participant(draft.layout, 'log-1').index,
       sourceOutputs: program.sourceOutputs,
-      transaction: { ...program.transaction, outputs },
+      transaction: program.transaction,
     });
     expect(vm.stateSuccess(state)).not.toBe(true);
   });

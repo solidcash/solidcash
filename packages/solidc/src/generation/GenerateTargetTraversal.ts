@@ -29692,12 +29692,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(new Uint8Array([0x01]), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
       this.emitVerifyCatBaseEqMaster(loc, 2); // consumes cat -> [..., outIdx]
-      // (c) commitment == expected. TIGHT pattern <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
-      // so the SDK trace extractor (extractCommitmentsFromTrace) reads each chunk's expected commitment.
+      // (c) commitment == expected. The direct convention keeps the TIGHT pattern
+      // <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY so the SDK trace extractor
+      // (extractCommitmentsFromTrace) reads each chunk's expected commitment; a per-call frame closes against the
+      // view its own segment declares, so a run one frame wrote is the run the next frame settles.
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: outIdx on top
       this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
       this.emit(Op.OP_SWAP, loc); // [..., expected, outIdx]
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc); // [..., expected, commitment]
+      this.emitRecordCommitmentRead('out', loc); // [..., expected, commitment]
       this.emit(Op.OP_EQUALVERIFY, loc); // [..., (dyn_expected)]
 
       // --- clean up body-local temporaries ((dyn_expected)) back to the snapshot depth ---
@@ -29736,9 +29738,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Orphan-bound: exactly nNew outputs carry the chunk address (no extra/duplicate chunk outputs that
       // would corrupt a future read). Old-chunk consumption: all old chunks (ceil(oldLen/CHUNK)) are
-      // co-spent as inputs, so a shrink/replace leaves no stale chunk behind.
-      this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
-      this.emitDynamicOldChunkConsumption(sv, loc);
+      // co-spent as inputs, so a shrink/replace leaves no stale chunk behind. A per-call frame writes only its
+      // own view of the run, and the run another frame wrote or created shares the transaction, so the counts are
+      // the settlement's to check rather than the frame's.
+      if (!this.readsRecordsFromFrame) {
+        this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
+        this.emitDynamicOldChunkConsumption(sv, loc);
+      }
 
       // Drop nNew / chunk-address / loop i NOW, while the names still exist. A later
       // untracked leftover of (dyn_chunkaddr) becomes the needle for the delegate
@@ -30638,24 +30644,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 1)), loc); // +1: inputIdx-partial untracked
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_ADD, loc);
-    // (a) input bytecode == chunk address
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_UTXOBYTECODE, loc);
-    this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rchunkaddr)') + 2)), loc); // +2: inputIdx, bytecode
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    // (b) category base == master + mutable
-    this.emit(Op.OP_DUP, loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_NIP, loc);
-    this.emit(new Uint8Array([0x01]), loc);
-    this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emitVerifyCatBaseEqMaster(loc, 2); // consumes cat -> [..., inputIdx]
-    // (c) commitment -> chunkIndex (== i) ++ chunkData
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); // [..., commitment]
+    // (a) input bytecode == chunk address; (b) category base == master + mutable. A per-call frame addresses the
+    // run through the record its own segment declares, and another frame in the same execution may have created
+    // the chunk this one reads, so the transaction need not carry an input at the coordinate - the declaration is
+    // the source and settlement ties it to the transaction. The direct convention reads the co-spent chunk itself.
+    if (!this.readsRecordsFromFrame) {
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOBYTECODE, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_rchunkaddr)') + 2)), loc); // +2: inputIdx, bytecode
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(new Uint8Array([0x01]), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emitVerifyCatBaseEqMaster(loc, 2); // consumes cat -> [..., inputIdx]
+    }
+    // (c) commitment -> chunkIndex (== i) ++ chunkData. A per-call frame reads its own segment's declared view of
+    // the record at the coordinate, so the run one frame wrote is the run the next frame reads.
+    this.emitRecordCommitmentRead('in', loc); // [..., commitment]
     this.emitPushdataDecode(lenType, loc); // [..., chunkIndex, remainder]
     this.emit(Op.OP_SWAP, loc); // [..., remainder, chunkIndex]
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 2)), loc); // +2: remainder, chunkIndex

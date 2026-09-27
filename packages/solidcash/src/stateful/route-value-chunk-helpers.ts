@@ -220,12 +220,10 @@ export function extractFailingP2sh32OutputPin(
       && candidate.stack.length >= 2);
     if (!equalStep) continue;
     const actual = equalStep.stack[equalStep.stack.length - 1];
-    const expected = isP2sh32LockingBytecode(equalStep.stack[equalStep.stack.length - 2])
-      ? equalStep.stack[equalStep.stack.length - 2]
-      : [...equalStep.stack].reverse().find((item) => (
-        isP2sh32LockingBytecode(item) && binToHex(item) !== binToHex(actual)
-      ));
-    if (!expected || !isP2sh32LockingBytecode(expected)) continue;
+    const expected = equalStep.stack[equalStep.stack.length - 2];
+    // Only the compared operands can authenticate a positional locking-bytecode pin. Identity scans keep
+    // their redeem lock deeper in the frame while comparing chunk commitments or final match counts.
+    if (!isP2sh32LockingBytecode(expected)) continue;
     if (binToHex(expected) === binToHex(actual)) continue;
     const indexItem = state.stack[state.stack.length - 1];
     const outputIndex = Number(decodeScriptNumber(indexItem));
@@ -433,15 +431,18 @@ export function deriveRouteValueChunks(
   };
   const identityPin = extractIdentityScanValueChunkPin(trace);
   const continuationBase = explicitBase ?? sharedBand?.start ?? -1;
-  const positionalPin = extractRouteChunkPin(trace)
-    ?? extractFailingP2sh32OutputPin(trace, pinBand);
-  const pin = positionalPin ?? (identityPin && continuationBase >= 0
+  // A count mismatch authenticates the identity-scanned run, not the last output visited by the scan.
+  // Do not let that earlier OUTPUTBYTECODE read impose a positional minimum width or relocate this run.
+  const scanPin = identityPin && continuationBase >= 0
     ? {
       outputIndex: continuationBase,
       lockingBytecode: identityPin.lockingBytecode,
       commitment: '00',
     }
-    : undefined);
+    : undefined;
+  const positionalPin = scanPin ? undefined : (extractRouteChunkPin(trace)
+    ?? extractFailingP2sh32OutputPin(trace, pinBand));
+  const pin = scanPin ?? positionalPin;
   if (!pin) return { changed: false, discovered: false };
   if (usesSharedBand && isP2sh32LockingBytecode(pin.lockingBytecode)) {
     stb.setJobEventsRedeemLock(pin.lockingBytecode);

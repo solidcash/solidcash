@@ -543,8 +543,9 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   function is unsupported instead of the whole contract. The refusal closes over invocations, so an entry that runs
   a refused body is refused with it and named with the body it runs. Contract-wide stays contract-wide: a shape the
   head or the tail fixes (no entry point, a constructor the head cannot share, a fallback, contract creation,
-  function pointers, inline assembly, layouts whose chunk run sits at different widths) refuses the unit rather than
-  a body.
+  function pointers, inline assembly) refuses the unit rather than a body. A layout question is asked per body too: a
+  body whose own layout places the dynamic-value chunk run at a width the head's one coordinate does not address is
+  refused by name, and the master fixes the width most of its bodies use.
 
 **Stream R: records and settlement, view mode** (spec 20, spec 7.1 checks spec S1-S4, spec 7.3). This is the main
 risk. Take the slices in order, each with its own tests.
@@ -1141,9 +1142,26 @@ Titles marked NEVER have not passed on any real compile to date.
   derivation's own `isImmutableNft` reads the model, not the wire.
 - A refusal the emitter raises on its own is still contract-wide: the per-body rule of C15 is what the assessment
   owns, and a shape the head or the tail fixes — no entry point, a constructor the head cannot share, a fallback,
-  contract creation, function pointers, inline assembly, and layouts whose chunk run sits at different widths — is
-  reported for the unit rather than for a body. Where such a shape is one body's, the next step is to move the
-  question into the assessment so the body is refused and published by name like the rest.
+  contract creation, function pointers, inline assembly — is reported for the unit rather than for a body. Where such
+  a shape is one body's, the next step is to move the question into the assessment so the body is refused and
+  published by name like the rest.
+- The dynamic-value chunk coordinate is a per-body refusal now, and no focused case reproduces the disagreement yet:
+  the `.scash` front end and a small `.sol` contract with one dynamic state variable each compile at one width, so
+  the shape that splits is the marketplace's multi-variable layout (measured on `MarketplaceDataV1.sol`: its user
+  bodies carry widths 3 and 4). The rule's evidence is that project compile and the suites staying green; a neutral
+  reproducer is owed and is the first thing the next attempt should take.
+- The marketplace project cannot yet compile as a per-call master while the kernel message bus is co-enabled, and the
+  measurements say where. With both on, the bus's generated bodies are synthesized during the contract visit, where
+  the per-call emitter reaches them: `__message_bus_entry_publishJobPost` refuses with "no call descriptors for the
+  function ... whose body makes an external call", and `__message_bus_verify_atomic_program` with "tx.origin is read
+  outside the frame's slots". Leaving the generated entries out is not enough either: the unit then publishes a
+  verifier lock the emitted program cannot match ("message-bus route verifier lock does not match the published
+  verifier program"). Turning the bus off is refused by the source: `SafeERC20.safePermit` repeats calls to one state
+  owner (`MESSAGE_BUS_REQUIRED`), which is the shape the per-call convention exists to serve; removing only the
+  kernel options instead refuses `MarketplaceV1.sol` for its inline assembly, so the sources depend on that lowering.
+  The plan owes a decision on which convention owns the lowering under `composition: 'per-call'`: skip the bus
+  lowering there (which also makes the repeated-callee restriction inapplicable, the same error's other reading), or
+  compile the generated bus bodies outside the per-call master.
 - The harness column of two Log rows read a report that listed both suites twice (`812` is `406`, and the `1174` in
   the row after it is the same slip); both are annotated where they stand, and every count written from this round
   on is a measured run of the three focused suites: `114 + 373 + 408`.

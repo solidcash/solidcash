@@ -45,6 +45,7 @@ import {
 } from '../../ast/AST.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
+import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
 
 /**
  * Synthetic parameters that carry the direct path's transaction-level sender category.
@@ -80,8 +81,12 @@ export function stripFrameParameters(contract: ContractNode): void {
   ];
   for (const fn of functions) {
     if (!fn) continue;
+    // The sorted-batch operands are derived from the master's own frame, so they are not supplied as arguments
+    // any more than the frame values are; publishing them would ask a caller for values it cannot know.
+    const derived = derivableBatchWitnessNames(fn);
     fn.parameters = fn.parameters.filter((parameter) =>
-      !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
+      !(derived?.has(parameter.name) ?? false)
+      && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
       && !isExternalCallParameter(parameter.name));
   }
 }
@@ -95,6 +100,69 @@ function isExternalCallParameter(name: string): boolean {
     // The direct path checks the co-spent callee's selector through this operand. A site checks its record's
     // selector against the compile-time value it folds, so a composed body neither supplies nor reads it.
     || /^__internal__externalCallSelector\d*$/.test(name);
+}
+
+/**
+ * The sorted-batch operands a per-call master derives from its own frame, or undefined for a shape it cannot.
+ *
+ * The derivation reads the master's witness block back and leaves the five operands the sorted-batch verification
+ * consumes. It covers one logical target whose record is the only record the entry's segment declares: the write
+ * is the entry's whole collection footprint (`entryAccesses` holds exactly that slot), it is unconditional and
+ * in place (`operations` is a lone `write`), its key is one bare parameter, and the batch is the non-linear
+ * single-target form. Anything wider would make the segment's record count, or the record the write proves
+ * against, a fact the frame does not fix, so it is left refused rather than derived approximately.
+ */
+export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<string> | undefined {
+  const batches = entry.sortedBatchInfo ?? [];
+  if (batches.length !== 1) return undefined;
+  const batch = batches[0]!;
+  if (batch.linear === true || batch.slotIndices.length !== 1) return undefined;
+  const slot = batch.slotIndices[0]!;
+  const accesses = entry.entryAccesses ?? [];
+  if (accesses.length !== 1) return undefined;
+  const access = accesses[0]!;
+  if (access.slotIndex !== slot) return undefined;
+  if (access.operations.length !== 1 || access.operations[0] !== 'write') return undefined;
+  if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
+    || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
+  if (access.keyParams.length !== 1) return undefined;
+  const source = access.keySources?.[0];
+  if (source === undefined || source.kind !== 'param' || source.paramName === undefined) return undefined;
+  if (!entry.parameters.some((parameter) => parameter.name === source.paramName)) return undefined;
+  const names = new Set<string>();
+  for (const kind of BATCH_DERIVATION_SLOT_ORDER) names.add(batchDerivationSlotName(kind, slot));
+  return names;
+}
+
+/**
+ * Why a body's sorted-batch writes cannot be settled from its own frame, or undefined when they can.
+ *
+ * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
+ * from the records its own frame declares, which it can do for one logical target written in place: the target's
+ * record is then the only record the entry's segment declares, so the segment's count fixes which transition ran.
+ * Anything wider — several targets in one batch, a batched or aliased write, a key the body computes rather than
+ * holds — makes the record a segment declares, or the transition it proves, a fact the frame does not fix.
+ */
+function unsupportedBatchWriteShape(entry: FunctionDefinitionNode): string | undefined {
+  const batches = entry.sortedBatchInfo ?? [];
+  if (batches.length === 0) return undefined;
+  if (derivableBatchWitnessNames(entry) !== undefined) return undefined;
+  if (batches.length !== 1 || batches[0]!.slotIndices.length !== 1) {
+    return `the body writes ${batches.reduce((total, batch) => total + batch.slotIndices.length, 0)} mapping `
+      + 'targets, and a master derives the sorted-batch operands from its own frame only for one target written '
+      + 'in place';
+  }
+  return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '
+    + 'segment would not fix which transition ran';
+}
+
+/** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
+function isUndeclaredHiddenParameter(entry: FunctionDefinitionNode, name: string): boolean {
+  return name.startsWith('__internal__')
+    && !FRAME_PARAMETERS.has(name)
+    && !RETURN_EVENT_PARAMETERS.has(name)
+    && !isExternalCallParameter(name)
+    && !(derivableBatchWitnessNames(entry)?.has(name) ?? false);
 }
 
 export interface PerCallMasterShapeInput {
@@ -171,12 +239,11 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   }
   for (const entry of entryPoints) {
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
-    // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.
-    const hidden = entry.parameters.filter((parameter) =>
-      parameter.name.startsWith('__internal__')
-      && !FRAME_PARAMETERS.has(parameter.name)
-      && !RETURN_EVENT_PARAMETERS.has(parameter.name)
-      && !isExternalCallParameter(parameter.name));
+    // supplies the frame values itself and derives the batch operands it can, so any other hidden operand would be
+    // read from the wrong stack position.
+    const batchShape = unsupportedBatchWriteShape(entry);
+    if (batchShape !== undefined) return refuse(batchShape);
+    const hidden = entry.parameters.filter((parameter) => isUndeclaredHiddenParameter(entry, parameter.name));
     if (hidden.length > 0) {
       return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
         + 'which the master head does not supply');
@@ -190,6 +257,17 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   }
   const calls = derivePerCallMasterCallSites(input.interfaces, entryPoints);
   if (!calls.supported) return refuse(calls.reason);
+  // A derived mapping write is settled in the segment its own code runs, which the derivation reads as the first
+  // segment. A master that makes a call splits the execution, so which segment the write lands in is a fact the
+  // frame does not fix and the derivation will not guess.
+  const derivedBatches = [
+    ...(contract.constructorDef ? [contract.constructorDef] : []),
+    ...entryPoints,
+  ].some((fn) => derivableBatchWitnessNames(fn) !== undefined);
+  if (derivedBatches && calls.callCount > 0) {
+    return refuse('a verified-mapping write is derived from the segment the entry runs, but the master makes '
+      + 'external calls, which split the execution into later segments');
+  }
   const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
   if (tail.reason !== undefined) return refuse(tail.reason);
   return { supported: true, entryCalls: calls.entryCalls, callCount: calls.callCount, tail: tail.tail };
@@ -205,11 +283,10 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
  * unchanged; a constructor that only establishes the contract's immutable references is exactly that shape.
  */
 function unsupportedConstructorShape(constructorDef: FunctionDefinitionNode): string | undefined {
+  const batchShape = unsupportedBatchWriteShape(constructorDef);
+  if (batchShape !== undefined) return `the constructor ${batchShape.replace(/^the body /, '')}`;
   const hidden = constructorDef.parameters.filter((parameter) =>
-    parameter.name.startsWith('__internal__')
-    && !FRAME_PARAMETERS.has(parameter.name)
-    && !RETURN_EVENT_PARAMETERS.has(parameter.name)
-    && !isExternalCallParameter(parameter.name));
+    isUndeclaredHiddenParameter(constructorDef, parameter.name));
   if (hidden.length > 0) {
     return `the constructor carries the hidden parameter '${hidden[0].name}', which the master head does not supply`;
   }

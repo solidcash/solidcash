@@ -278,7 +278,10 @@ import {
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
-import { derivePerCallTailShape } from '../per-call/master/support.js';
+import { derivePerCallTailShape, derivableBatchWitnessNames } from '../per-call/master/support.js';
+import {
+  BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchWitnessDerivationScript,
+} from '../per-call/master/batch-witness-derivation.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
@@ -3049,6 +3052,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     return sites;
+  }
+
+  /**
+   * Leaves the sorted-batch operands the body's own verification reads, derived from the master's witness block.
+   *
+   * The direct convention receives these five per logical target from its SDK; a per-call master has no such
+   * argument list, but its frame declares the records the write touches. Each target's operands are derived from
+   * the target's runtime key and the block, registered as tracked slots the existing verification then consumes
+   * unchanged. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
+   * witnesses, because the key is a function parameter that only the running code holds.
+   */
+  private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
+    const batches = node.sortedBatchInfo ?? [];
+    if (batches.length === 0) return;
+    // The admission rule admits a contract only when every one of its bodies writes the derivable single-target
+    // shape. An internal body the advisory check does not cover would otherwise be compiled with a derivation its
+    // record declarations do not fit, so refuse by name instead of emitting one that does not describe it.
+    if (derivableBatchWitnessNames(node) === undefined) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master has no derivation for the verified-mapping writes of '${node.name}'`,
+        { function: node.name },
+      );
+    }
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    for (const batch of batches) {
+      for (const slot of batch.slotIndices) {
+        const keyParam = (node.entryAccesses ?? [])
+          .find((access) => access.slotIndex === slot)?.keySources?.[0]?.paramName;
+        const keyDepth = keyParam === undefined ? -1 : this.getStackIndex(keyParam, true);
+        if (keyDepth < 0) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
+            + `'${node.name}': its key is not a bare parameter the body holds`,
+            { function: node.name, slot },
+          );
+        }
+        this.emit(
+          [...buildBatchWitnessDerivationScript({ keyDepth, callCount: this.perCallCallCount })],
+          loc,
+        );
+        // Deepest first, so the tracked names line up with the values the script left above the frame.
+        for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+          this.pushToStack(batchDerivationSlotName(kind, slot));
+        }
+      }
+    }
   }
 
   /**
@@ -6901,6 +6952,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
+    // A per-call master derives the sorted-batch operands its own body verification reads, from the witness block
+    // the head already walked. They must exist before the aliasing preflight snapshots them, so the derivation
+    // runs here, where the write's runtime key is live, rather than in the head.
+    if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {
       for (const collection of this.vmapRuntimeCollections(node)) {

@@ -444,20 +444,33 @@ describe('the runs a derivation spends', () => {
  * descriptor list's. The frame chooses the second arm, so the first arm's site has nothing to fill: the run a
  * driver makes is what shows that, and the table is what lets it step over the site instead of reading a stall.
  *
- * What the composition does with that table is not settled here: the derivation needs a fixture whose frame
- * actually reaches the second arm, and the one built for it stopped at the first arm's check instead, so the
- * derivation-level cases were removed rather than landing unverified.
+ * The derivation below runs the real compiled programs through the real host with a frame that reached the second
+ * arm, so the first arm's site is stepped over, the reached arm's callee is derived, and the caller then completes
+ * over its own closes. Which arm a site binds is read from the published descriptor rather than from the order the
+ * sites come in: the record ordinal alone does not tell the two arms apart.
  */
 const CHOOSER_ENTRY = 'Chooser.choose()';
 const NEAR_ENTRY = 'Near.pong()';
+const CHOOSER_MASTER = 'chooser-1';
+const NEAR_MASTER = 'near-1';
 /** The arm the frame does not take, whose callee is therefore not co-spent at all. */
 const DESCRIPTOR_FAR = 0;
 const DESCRIPTOR_NEAR = 1;
 
 const CATEGORY_NEAR = seededCategory('conditional arm near');
 const CATEGORY_FAR = seededCategory('conditional arm far');
+const CATEGORY_CHOOSER = seededCategory('conditional chooser');
 const ADDRESS_NEAR = validatorAddress(CATEGORY_NEAR, VALIDATOR_PROGRAM);
 const ADDRESS_FAR = validatorAddress(CATEGORY_FAR, VALIDATOR_PROGRAM);
+const ADDRESS_CHOOSER = validatorAddress(CATEGORY_CHOOSER, VALIDATOR_PROGRAM);
+const PONG_SELECTOR = computeFunctionSelector(computeFunctionSignature('pong', []));
+
+/** Master input indices: the chooser, the callee its second arm calls, the validator, then the user. */
+const CHOOSER_INDEX = 0;
+const NEAR_INDEX = 1;
+
+/** The argument the frame entered with: the `else` arm runs, so the callee called is the near one. */
+const CHOOSER_ARGUMENT = new Uint8Array(0);
 
 const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IFar { function ping(); }'
@@ -483,5 +496,164 @@ describe('a caller whose arms each call a different contract', () => {
       { kind: 'segmentClose', site: 3, segmentIndex: 1 },
     ]);
     expect(entry.calls.map((call) => call.functionName)).toStrictEqual(['ping', 'pong']);
+  });
+
+  it('derives the callee of the arm that ran, step over the arm that did not', () => {
+    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'per-call' });
+    const chooserEntry = readPublishedStopSites(artifacts.Chooser!).entries
+      .find((entry) => entry.functionName === CHOOSER_ENTRY)!;
+    const fillProgram = (
+      artifact: NonNullable<(typeof artifacts)[string]>,
+      category: Uint8Array,
+      address: Uint8Array,
+    ): Uint8Array => fillPlaceholders(
+      scriptToBytecode(asmToScript(artifact.bytecode)),
+      artifact.composition!.placeholders,
+      { category: categorySlotValue(category), contractAddress: address, templateHash: TEMPLATE_HASH },
+    );
+    const chooserProgram = fillProgram(artifacts.Chooser!, CATEGORY_CHOOSER, ADDRESS_CHOOSER);
+    const nearProgram = fillProgram(artifacts.Near!, CATEGORY_NEAR, ADDRESS_NEAR);
+
+    const validator = validatorSpend(CATEGORY_CHOOSER, {
+      roots: [CHOOSER_INDEX], masters: [CHOOSER_INDEX, NEAR_INDEX], settles: [],
+    });
+    // The record the frame declares: the call its second arm makes, whose callee the draft has not recorded yet.
+    const chooserBlock: WitnessBlock = {
+      kind: FrameKind.ROOT,
+      callerRef: USER_INDEX,
+      originRef: USER_INDEX,
+      validatorRef: VALIDATOR_INDEX,
+      sender: USER_LOCK,
+      self: ADDRESS_CHOOSER,
+      value: 0n,
+      retval: new Uint8Array(0),
+      calls: [{
+        kind: FrameKind.CALL,
+        target: ADDRESS_NEAR,
+        value: 0n,
+        calleeRef: UNFILLED_CALLEE,
+        argsHash: sha256(PONG_SELECTOR),
+        result: new Uint8Array(0),
+      }],
+      segments: [[], []],
+      events: [],
+      sends: [],
+    };
+    const nearBlock: WitnessBlock = {
+      kind: FrameKind.CALL,
+      callerRef: CHOOSER_INDEX,
+      originRef: USER_INDEX,
+      validatorRef: VALIDATOR_INDEX,
+      sender: ADDRESS_CHOOSER,
+      self: ADDRESS_NEAR,
+      value: 0n,
+      retval: new Uint8Array(0),
+      calls: [],
+      segments: [[]],
+      events: [],
+      sends: [],
+    };
+    const masterValue = 20_000n;
+    const sourceOutputs = [
+      { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(chooserProgram)), valueSatoshis: masterValue,
+        token: token(CATEGORY_CHOOSER, 'minting') },
+      { lockingBytecode: encodeLockingBytecodeP2sh32(hash256(nearProgram)), valueSatoshis: masterValue,
+        token: token(CATEGORY_NEAR, 'minting') },
+      { lockingBytecode: validator.lock, valueSatoshis: masterValue, token: token(CATEGORY_CHOOSER, 'mutable') },
+      { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+    ];
+    const transaction = (): VmTransaction => ({
+      version: 2,
+      inputs: [
+        {
+          outpointIndex: 0,
+          outpointTransactionHash: new Uint8Array(32).fill(1),
+          sequenceNumber: 0xffffffff,
+          // A frame that takes an argument pushes it above the block, below the redeem script.
+          unlockingBytecode: new Uint8Array([
+            ...encodeDataPush(encodeWitnessBlock(chooserBlock)),
+            ...encodeDataPush(CHOOSER_ARGUMENT),
+            ...encodeDataPush(chooserProgram),
+          ]),
+        },
+        {
+          outpointIndex: 0,
+          outpointTransactionHash: new Uint8Array(32).fill(2),
+          sequenceNumber: 0xffffffff,
+          unlockingBytecode: new Uint8Array([
+            ...encodeDataPush(encodeWitnessBlock(nearBlock)),
+            ...encodeDataPush(PONG_SELECTOR),
+            ...encodeDataPush(nearProgram),
+          ]),
+        },
+        {
+          outpointIndex: 0,
+          outpointTransactionHash: new Uint8Array(32).fill(3),
+          sequenceNumber: 0xffffffff,
+          unlockingBytecode: validator.unlockingBytecode,
+        },
+        {
+          outpointIndex: 0,
+          outpointTransactionHash: new Uint8Array(32).fill(4),
+          sequenceNumber: 0xffffffff,
+          unlockingBytecode: callerUnlockingBytecode(),
+        },
+      ],
+      outputs: sourceOutputs,
+      locktime: 0,
+    });
+    const programFor = (index: number): VmProgram => ({
+      inputIndex: index,
+      sourceOutputs,
+      transaction: transaction(),
+    });
+
+    const fills: string[] = [];
+    const host = createShippedDerivationHost({
+      artifacts: [artifacts.Chooser!, artifacts.Near!],
+      runs: [
+        {
+          master: CHOOSER_MASTER,
+          functionName: CHOOSER_ENTRY,
+          program: chooserProgram,
+          initialBlock: () => chooserBlock,
+          programFor: () => programFor(CHOOSER_INDEX),
+          fill: (site, block) => {
+            if (site.kind !== 'call') return {};
+            // Which arm this site binds comes from the published descriptor: both arms name record 0, so the
+            // ordinal alone cannot tell them apart. The frame declared the near arm, so the far arm's site has
+            // nothing to write and the run it makes is what reports that.
+            if (site.descriptor !== DESCRIPTOR_NEAR) return {};
+            block.calls[site.callIndex]!.calleeRef = NEAR_INDEX;
+            fills.push(`call ${site.site}`);
+            return {
+              callee: publishedCallee(chooserEntry, site.descriptor, { contract: 'Near', master: NEAR_MASTER }),
+            };
+          },
+        },
+        {
+          master: NEAR_MASTER,
+          functionName: NEAR_ENTRY,
+          program: nearProgram,
+          initialBlock: () => nearBlock,
+          programFor: () => programFor(NEAR_INDEX),
+          fill: () => ({}),
+        },
+      ],
+    });
+
+    const result = deriveDepthFirst(
+      { contract: 'Chooser', functionName: CHOOSER_ENTRY, kind: FrameKind.ROOT, master: CHOOSER_MASTER },
+      host,
+    );
+
+    // The unreached arm's site is stepped over, the reached arm's callee is derived between the caller's own runs,
+    // and the caller finishes over its two closes.
+    expect(result.runs.map((run) => [run.frame.functionName, run.site.site])).toStrictEqual([
+      [CHOOSER_ENTRY, 0], [CHOOSER_ENTRY, 1], [NEAR_ENTRY, 0], [CHOOSER_ENTRY, 2], [CHOOSER_ENTRY, 3],
+    ]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([NEAR_ENTRY, CHOOSER_ENTRY]);
+    // Only the arm the frame reached was written into the draft.
+    expect(fills).toStrictEqual(['call 1']);
   });
 });

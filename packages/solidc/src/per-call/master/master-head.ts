@@ -584,8 +584,6 @@ class HeadEmitter {
     if (!this.settlesOwnRecords) return;
     const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
     this.emitBytes(selfSettlementScript({
-      callCount: this.callCount,
-      segmentCount: this.callCount + 1,
       sendCount: this.tailShape.sendCount,
       addressPayloadOffset: addressPayload,
     }));

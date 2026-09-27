@@ -98,6 +98,18 @@ export type SiteArgument =
   | { readonly kind: 'runtime'; readonly numeric: boolean };
 
 /**
+ * Steps over the call section the block declares, and requires the segment count to be its successor.
+ *
+ * Entry `[..., tail]`, exit `[...]`. The declared call count is left parked on the alt stack, so a caller can use
+ * it and drop it; the count itself is never fixed: one head serves every body a master dispatches, and two bodies
+ * may make different numbers of calls, so how many records the tail holds is what the block declares. A body that
+ * runs pins that count to its own source, which is what holds a declaration to the execution that made it.
+ */
+export function callSectionWalkScript(): number[] {
+  return [...callWalkScript(), ...segmentCountCheckScript()];
+}
+
+/**
  * The tail sections after the calls that a master's own code fixes.
  *
  * `segmentRecordCounts`, when present, is the record count every segment must declare, in segment order. It is
@@ -566,10 +578,6 @@ export function recogniseValidatorScriptAgainstReservedHash(): Uint8Array {
  * value floor is emitted only when the entry lists no send.
  */
 export interface SelfSettlementShape {
-  /** How many call records the tail holds, and so how many segments the execution has after the first. */
-  readonly callCount: number;
-  /** How many segments the block declares: the call count plus one. */
-  readonly segmentCount: number;
   /** How many sends the entry lists, which decides whether the value floor can be checked. */
   readonly sendCount: number;
   /** Where the contract address's payload sits in the running script, for the census. */
@@ -577,7 +585,7 @@ export interface SelfSettlementShape {
 }
 
 export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
-  const { callCount, segmentCount, sendCount, addressPayloadOffset } = shape;
+  const { sendCount, addressPayloadOffset } = shape;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
@@ -620,18 +628,18 @@ export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
     emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
     emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
     emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-    emit(...requireU16Equals(callCount));
-    for (let site = 0; site < callCount; site += 1) emit(...callRecordSkip());
-    emit(...requireU16Equals(segmentCount));
-    // Alt: [index]. Main: [block]. The flags go below the index, so `copyAlt` can reach them with the block never
-    // leaving the top of the main stack.
+    // The call section is the block's own, so the walk steps over however many records it declares and keeps the
+    // declared segment count as this walk's segment counter.
+    emit(...callSectionWalkScript());
+    emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
+    // Alt: [index]. Main: [segments, block]. The flags go below the index, so `copyAlt` can reach them with the
+    // block never leaving the top of the main stack.
     emit(Opcodes.OP_0);
     emit(Opcodes.OP_0);
     emit(absent());
     // Alt: [seenIn, seenOut, lastView, index].
     toAlt(3);
-    emit(num(segmentCount), Opcodes.OP_SWAP);
-    // Main: [block, segments]
+    // Main: [segments, block]
     emit(Opcodes.OP_BEGIN);
     {
       // The segment's record count comes off the front of the block, leaving the block back on top.

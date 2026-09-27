@@ -2975,9 +2975,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
     // an argument; otherwise it sits below them as the unlocking bytecode's first push.
     const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
-    // The head is one prefix, so it fixes one call count: the count every entry declared. The call records
-    // themselves are bound where each entry's own source makes the call, so the sites of all entries are handed
-    // to the head only for the kinds it has to recognise; the count it walks is the shared one.
+    // The head is one prefix, so it holds one number for how many call records a frame may declare. The records
+    // themselves are bound where each entry's own source makes the call, and how many a block declares is what the
+    // block says; the bound only tells the head whether the master can make a call at all, and sizes the tail it
+    // walks. It is the largest any entry makes on every path, which is the number a body pins its own to.
     const calls = [...this.perCallEntryCallSites.values()].flat();
     const callCount = this.perCallCallCount;
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
@@ -3191,15 +3192,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
-    // The count the body pins is the number of calls its own execution makes, which the source fixes: a descriptor
-    // list holds one entry per call in source order, so a body whose arms each make a call has more descriptors
-    // than the execution makes calls. The count is asked of the body rather than taken from that list, and a body
-    // whose paths disagree never reaches here — the admission refuses it before a program is emitted.
-    const own = this.currentFunction === undefined
-      ? 0
-      : callsOnEveryPath(this.currentFunction.body)?.pathCount
-        ?? this.perCallEntryCallSites.get(this.currentFunction.name)?.length ?? 0;
-    this.emit(encodeInt(BigInt(own)), loc);
+    this.emit(encodeInt(BigInt(this.perCallExecutionCallCount())), loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
@@ -3296,8 +3289,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     });
     const script = slots.length === 1
-      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, callCount: this.perCallCallCount })
-      : buildBatchTargetsDerivationScript({ keyDepths, callCount: this.perCallCallCount });
+      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]! })
+      : buildBatchTargetsDerivationScript({ keyDepths });
     this.emit([...script], loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {
@@ -29780,9 +29773,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(bytecodeToScript(declaredRecordViewScript({
       segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
-      callCount: this.perCallEntryCallSites.get(this.currentFunction?.name ?? '')?.length ?? 0,
+      callCount: this.perCallExecutionCallCount(),
       side,
     })), loc);
+  }
+
+  /**
+   * How many calls the body that is running makes on every path.
+   *
+   * A body's own source fixes it, so the block's declared count is held to this number. The descriptor list is not
+   * that number: a body whose arms each make a call names one descriptor per arm, so the count is asked of the
+   * body itself and the list is only the fallback for a body the walk does not reach.
+   */
+  private perCallExecutionCallCount(): number {
+    const name = this.currentFunction?.name ?? '';
+    return callsOnEveryPath(this.currentFunction?.body)?.pathCount
+      ?? this.perCallEntryCallSites.get(name)?.length ?? 0;
   }
 
   /**

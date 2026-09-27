@@ -569,7 +569,7 @@ export interface PerCallMasterShapeAssessment {
   readonly reason?: string;
   /** One descriptor list per entry, in entry order; each entry's sites resolve against its own list. */
   readonly entryCalls?: readonly PerCallEntryCallSites[];
-  /** How many call records every entry's tail holds, which is the count the master head's walk is fixed to. */
+  /** The largest number of calls any entry makes on every path, which bounds the tail the head walks. */
   readonly callCount?: number;
   /** The event-region size and send count the master's tail fixes, which the master head checks. */
   readonly tail?: MasterTailShape;
@@ -827,10 +827,11 @@ function derivePerCallMasterCallSites(
     if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
     entryCalls.push({ entryName: entry.name, calls: derived.calls, pathCount: derived.pathCount });
   }
-  // The bodies may declare different numbers of calls: the walk reads the count the block declares and each body
-  // pins it to its own, so only the master-level shape needs one number. A master that makes any call at all is a
-  // composed one, so the largest count is what decides whether it can also be entered as a standalone root.
-  const callCount = Math.max(0, ...entryCalls.map((entry) => entry.calls.length));
+  // The bound the head holds is how many records the body with the most calls declares, which is a path count
+  // rather than a descriptor list: a body whose arms each call names one descriptor per arm while its execution
+  // makes one call. The head reads the count each block declares and every body pins it to its own, so bodies may
+  // make different numbers of calls; the bound is what says whether the master can make a call at all.
+  const callCount = Math.max(0, ...entryCalls.map((entry) => entry.pathCount ?? entry.calls.length));
   return { supported: true, entryCalls, callCount };
 }
 

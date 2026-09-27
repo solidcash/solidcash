@@ -39,12 +39,11 @@ import {
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
 } from './witness-reader.js';
+import { callSectionWalkScript } from './frame-tail.js';
 
 export interface BatchWitnessDerivationOptions {
   /** Top-relative depths of the one target's keys, in source order, when the script begins. */
   readonly keyDepths: readonly number[];
-  /** How many call records the master's tail holds, which the walk steps over before the segments. */
-  readonly callCount: number;
 }
 
 /**
@@ -90,15 +89,6 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
     num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_NIP); // drop the slot half
     num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_DROP); // drop everything after the successor
   };
-  /** Leaves the nth call record's fixed and length-prefixed fields, the way the head's tail walk steps over them. */
-  const skipCallRecord = (): void => {
-    takeAndDrop(1); // kind
-    raw(takeLengthPrefixedField()); op(Opcodes.OP_NIP); // target
-    takeAndDrop(8); // value
-    takeAndDrop(2); // calleeRef
-    takeAndDrop(32); // argsHash
-    takeAndDropLp32(); // result
-  };
 
   // Slot = the masked key hash the write path computes: each key hashed, the hashes concatenated, hashed again
   // when there is more than one, and the high bit of the last byte cleared. A key's depth is taken from the frame
@@ -122,9 +112,10 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   raw(takeLengthPrefixedField()); op(Opcodes.OP_NIP); // self
   takeAndDrop(8); // value
   takeAndDropLp32(); // retval
-  takeAndDrop(2); // callCount
-  for (let call = 0; call < options.callCount; call += 1) skipCallRecord();
-  takeAndDrop(2); // segment count
+  // The call section is the block's own, so the walk steps over the records it declares and requires the segment
+  // count to be their successor; the declared count it parks is spent here.
+  raw(new Uint8Array(callSectionWalkScript())); // [block, Slot]
+  raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
   takeField(2); // [block, records, Slot]
 
   // A single target declares one record (update) or two (insert); require that and branch on it.
@@ -193,8 +184,6 @@ function minimalNumber(value: number): Uint8Array {
 export interface BatchTargetsDerivationOptions {
   /** Top-relative depths of each target's keys, in target order and, inside a target, in source order. */
   readonly keyDepths: readonly (readonly number[])[];
-  /** How many call records the master's tail holds, which the walk steps over before the segments. */
-  readonly callCount: number;
 }
 
 /**
@@ -289,9 +278,11 @@ class BatchTargetsDerivationBuilder {
     this.dropLengthField(); // self
     this.dropFixedField(8); // value
     this.dropLengthField32(); // retval
-    this.dropFixedField(2); // call count
-    for (let call = 0; call < this.options.callCount; call += 1) this.skipCallRecord();
-    this.dropFixedField(2); // segment count
+    // The call section is the block's own: step over the records it declares and require the segment count to be
+    // their successor. The declared count the walk parks on the alt stack is spent here, so the modelled stacks
+    // are as the walk found them.
+    this.raw(new Uint8Array(callSectionWalkScript()));
+    this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
     this.takeFixedField(2, 'record_count');
     this.nip(); // drop the declared count, keep the entries
     this.main[0] = 'records';
@@ -508,15 +499,6 @@ class BatchTargetsDerivationBuilder {
     const remainder = this.main.shift();
     this.main.unshift(name);
     this.main.unshift(remainder!);
-  }
-
-  private skipCallRecord(): void {
-    this.dropFixedField(1); // kind
-    this.dropLengthField(); // target
-    this.dropFixedField(8); // value
-    this.dropFixedField(2); // callee reference
-    this.dropFixedField(32); // argument digest
-    this.dropLengthField32(); // result
   }
 
   /** Emits both arms, requiring each to leave the same modelled stacks so the join is well-formed. */

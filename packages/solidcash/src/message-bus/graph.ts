@@ -5,7 +5,8 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, messageBusTransactionSignatureFrameHex, resolveMessageBusAbiFunction, resolveMessageBusHandler,
+  encodeMessageBatch, evaluateFixedEffectPredicate, messageBusTransactionSignatureFrameHex,
+  resolveMessageBusAbiFunction, resolveMessageBusHandler,
   type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
@@ -2191,7 +2192,12 @@ export function planCompiledGraph(
       const parentHandler = resolveMessageBusHandler(
         parentParticipant.artifact, parentInvocation.function, parentAbi?.selector,
       );
-      if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value')) {
+      // A conditional native payment can share its handler with an ordinary token call on the opposite path.
+      // Only suppress the value bit when the compiler's predicate proves that transfer inactive for this row;
+      // unknown/state-dependent predicates retain the conservative commitment and covenant verification.
+      if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value'
+        && (!transfer.condition
+          || evaluateFixedEffectPredicate(transfer.condition, parentInvocation.args ?? []) !== false))) {
         bits |= CALL_OPTION_VALUE;
       }
     }

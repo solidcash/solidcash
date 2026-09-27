@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 51 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 54 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
@@ -31,7 +31,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 864 tests, all passing at `bb9411880` (114 + 314 + 436).
+Total: 867 tests, all passing at `5c2f5a0be` (114 + 314 + 439).
 
 ## What each directory covers
 
@@ -68,11 +68,13 @@ Total: 864 tests, all passing at `bb9411880` (114 + 314 + 436).
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
   machine's acceptance of the caller, its callee and the validator, twice on the same bytes, with two mutated
   controls refused. `two-contract-round-trip.test.ts` drives the two-contract round trip the design's worked
-  example uses: the compile-time wall that used to refuse it is gone, and `round-trip-composition.test.ts` drives
-  the shape through the shipped deployment and composer — the layout places the two masters of the re-entered
-  contract, the validator and the callee, the root master's call record fills through the shipped host, and the
-  machine accepts that input twice with the same verdict, with a control that presents another contract's address
-  refused. The full derivation still stops, one wall on: `B.g`'s first segment close never advances its program.
+  example uses, and `round-trip-composition.test.ts` derives it end to end: the layout places the two masters of
+  the re-entered contract, the validator and the callee; the shipped host fills every published stop site, callee
+  first (`A.k`, then `B.g`, then `A.f`); the machine accepts all four contract inputs of the assembled transaction,
+  twice with the same verdict; and the validator's own derivation walks all eleven checks and derives the order the
+  spec states for the shape. Controls refused: a re-entered master presenting another contract's address, and a
+  block that declares a call its entry's source does not make. The round trip carries no records yet, so it is not
+  the spec's worked example's output set.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -161,14 +163,15 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state
-  write — is emitted and deploys, and a block declaring a count no body makes is refused at the caller. What is not
-  settled is the *composition* of such a shape: the two-contract round trip (`frames/two-contract-round-trip.test.ts`)
-  compiles and deploys but its transaction is not assembled or evaluated yet, so no machine verdict is claimed for
-  it. A user-entered multi-entry master and a two-master contract whose validator has nothing to settle are still
-  refused by name, and so are delegatecall, mapping records and value sends. One wall the round-trip source met on
-  the way: a contract that emits inside one of two entries is refused with "the contract emits an event that is not
-  attributed to a body", so the round-trip test drops that entry's event; the attribution the event region needs does
-  not survive that shape and is not diagnosed here.
+  write — is emitted and deploys, and a block declaring a count no body makes is refused at the caller. The
+  composition of such a shape is derived and settled too, when both entries' sources make the calls their blocks
+  declare: `frames/round-trip-composition.test.ts` reaches a machine verdict on every contract input and the
+  validator decides all eleven checks. A contract the transaction settles while spending none of its state — several
+  covered masters, no records of its own — is stated by an empty state-input list in the transcript, which the codec
+  and the shipped program both carry. What the round trip does not carry is the spec's output set: its two contracts
+  keep no records and emit no events, so an event output and a value send have no supplier in the composer, and a
+  contract that emits inside one of two entries is still refused with "the contract emits an event that is not
+  attributed to a body". Delegatecall, mapping records and value sends are refused by name as before.
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.

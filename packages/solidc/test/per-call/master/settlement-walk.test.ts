@@ -33,6 +33,8 @@ type VmOutput = VmTransaction['outputs'][number];
 const MASTER_INDEX = 0;
 const RECORD_INDEX = 1;
 const USER_INDEX = 2;
+/** A second record's index when the execution touches two of them. */
+const SECOND_RECORD_INDEX = 2;
 
 const commitment = (byte: number, length = 4): Uint8Array => new Uint8Array(length).fill(byte);
 const BEFORE = commitment(0x11);
@@ -51,6 +53,10 @@ function token(
 const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
   ({ in: RECORD_INDEX, out: RECORD_INDEX, viewIn, viewOut });
 
+/** A record kept in place at any index, for an execution that touches more than one. */
+const keptAt = (index: number, viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
+  ({ in: index, out: index, viewIn, viewOut });
+
 interface WalkOptions {
   /** One entry per segment, in execution order. */
   readonly segments: readonly (readonly RecordEntry[])[];
@@ -68,6 +74,13 @@ interface WalkOptions {
   readonly plainSecondPair?: boolean;
   /** Drop the state token from the *first* input, so the record it names only exists as an output. */
   readonly plainFirstPair?: boolean;
+  /** Carry a second state record at `SECOND_RECORD_INDEX`, which its own declarations name. */
+  readonly secondRecord?: boolean;
+  /** The commitment the second record's input holds, and the one its output writes. */
+  readonly secondInput?: Uint8Array;
+  readonly secondOutput?: Uint8Array;
+  /** Drop the state token from the record's own output, for a chain that ends by deleting its record. */
+  readonly deletedRecord?: boolean;
 }
 
 /** The program under test with the address slot the census reads, at the offset its own push puts it. */
@@ -157,7 +170,9 @@ function evaluate(options: WalkOptions): { accepted: boolean; objection?: string
   const recordOutput = {
     lockingBytecode: plain ? USER_LOCK : RECORD_LOCK,
     valueSatoshis: options.outputValue ?? VALUE,
-    ...(plain ? {} : { token: token(CATEGORY, 'mutable', options.outputCommitment ?? AFTER) }),
+    ...(plain || options.deletedRecord === true
+      ? {}
+      : { token: token(CATEGORY, 'mutable', options.outputCommitment ?? AFTER) }),
   };
   const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
 
@@ -173,16 +188,39 @@ function evaluate(options: WalkOptions): { accepted: boolean; objection?: string
   const inputs = options.undeclaredRecord === true
     ? [masterInput, recordInput, undeclaredInput, userInput]
     : [masterInput, recordInput, userInput];
+  const second = options.secondRecord === true;
+  const secondInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(5),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  };
+  const secondSource = {
+    lockingBytecode: RECORD_LOCK,
+    valueSatoshis: VALUE,
+    token: token(CATEGORY, 'mutable', options.secondInput ?? BEFORE),
+  };
+  const secondOutput = {
+    lockingBytecode: RECORD_LOCK,
+    valueSatoshis: VALUE,
+    token: token(CATEGORY, 'mutable', options.secondOutput ?? AFTER),
+  };
   const outputs = [masterOutput, recordOutput, userOutput];
-  const sourceOutputs = options.undeclaredRecord === true
-    ? [masterSource, recordSource, { ...recordSource, token: token(CATEGORY, 'mutable', BEFORE) }, userSource]
-    : [masterSource, recordSource, userSource];
+  const allInputs = second ? [masterInput, recordInput, secondInput, userInput] : inputs;
+  const allOutputs = second
+    ? [masterOutput, recordOutput, secondOutput, userOutput]
+    : outputs;
+  const sourceOutputs = second
+    ? [masterSource, recordSource, secondSource, userSource]
+    : options.undeclaredRecord === true
+      ? [masterSource, recordSource, { ...recordSource, token: token(CATEGORY, 'mutable', BEFORE) }, userSource]
+      : [masterSource, recordSource, userSource];
 
   const vm = createVirtualMachineBch2026(false);
   const state = vm.evaluate({
     inputIndex: MASTER_INDEX,
     sourceOutputs,
-    transaction: { version: 2, inputs, outputs, locktime: 0 },
+    transaction: { version: 2, inputs: allInputs, outputs: allOutputs, locktime: 0 },
   });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
@@ -240,9 +278,15 @@ describe('the settlement walk chains a record across segments', () => {
     }).accepted).toBe(false);
   });
 
-  it('refuses a segment that declares several records', () => {
+  it('accepts several declarations of one record in a single segment, chained', () => {
+    // A segment may carry more than one declaration — a mapping write declares the predecessor it relinks and the
+    // node it creates — and each carries on from the one before it.
     expect(evaluate({
       segments: [[kept(BEFORE, MIDDLE), kept(MIDDLE, AFTER)]],
+    })).toStrictEqual({ accepted: true });
+    // The control breaks the chain between the two declarations of the same segment.
+    expect(evaluate({
+      segments: [[kept(BEFORE, MIDDLE), kept(BEFORE, AFTER)]],
     }).accepted).toBe(false);
     expect(evaluate({ segments: [[kept(BEFORE, AFTER)]] }).accepted).toBe(true);
   });
@@ -271,5 +315,106 @@ describe('the settlement walk chains a record across segments', () => {
     expect(evaluate({ segments: [[], []] }).accepted).toBe(false);
     // One segment declaring nothing, with no state token in the transaction at all.
     expect(evaluate({ segments: [[]], plainSecondPair: true })).toStrictEqual({ accepted: true });
+  });
+});
+
+describe('the settlement walk chains every record a segment declares', () => {
+  it('accepts two records in one segment, each chained across both segments', () => {
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      segments: [
+        [kept(BEFORE, MIDDLE), keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+        [kept(MIDDLE, AFTER), keptAt(SECOND_RECORD_INDEX, AFTER, AFTER)],
+      ],
+      outputCommitment: AFTER,
+    })).toStrictEqual({ accepted: true });
+  });
+
+  it('refuses a second record whose declaration does not carry on from the first', () => {
+    // Only the second record's first declaration changes, so the refusal is that chain's.
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      segments: [
+        [kept(BEFORE, MIDDLE), keptAt(SECOND_RECORD_INDEX, BEFORE, AFTER)],
+        [kept(MIDDLE, AFTER), keptAt(SECOND_RECORD_INDEX, AFTER, AFTER)],
+      ],
+    }).accepted).toBe(false);
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      segments: [
+        [kept(BEFORE, MIDDLE), keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+        [kept(MIDDLE, AFTER), keptAt(SECOND_RECORD_INDEX, AFTER, AFTER)],
+      ],
+      outputCommitment: AFTER,
+    }).accepted).toBe(true);
+  });
+
+  it('refuses a second record the transaction does not write', () => {
+    // The second chain ends at the commitment the transaction already holds, not the one it writes.
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      secondOutput: MIDDLE,
+      segments: [
+        [kept(BEFORE, MIDDLE), keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+      ],
+    }).accepted).toBe(false);
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      secondOutput: AFTER,
+      outputCommitment: AFTER,
+      segments: [
+        [kept(BEFORE, AFTER), keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+      ],
+    }).accepted).toBe(true);
+  });
+
+  it('accepts a kept record and a created one in the same segment', () => {
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      plainFirstPair: true,
+      segments: [
+        [keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER), { in: 0xffff, out: RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: MIDDLE }],
+        [kept(MIDDLE, AFTER)],
+      ],
+      outputCommitment: AFTER,
+    })).toStrictEqual({ accepted: true });
+  });
+
+  it('refuses the same index being created twice', () => {
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      secondOutput: AFTER,
+      segments: [
+        [keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER), { in: 0xffff, out: SECOND_RECORD_INDEX, viewIn: new Uint8Array(0), viewOut: AFTER }],
+      ],
+    }).accepted).toBe(false);
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      secondOutput: AFTER,
+      plainSecondPair: true,
+      segments: [[keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)]],
+    }).accepted).toBe(true);
+  });
+
+  it('accepts one chain deleted while another carries on', () => {
+    expect(evaluate({
+      secondRecord: true,
+      secondInput: MIDDLE,
+      segments: [
+        [{ in: RECORD_INDEX, out: 0xffff, viewIn: BEFORE, viewOut: new Uint8Array(0) }, keptAt(SECOND_RECORD_INDEX, MIDDLE, AFTER)],
+      ],
+      plainFirstPair: false,
+      outputCommitment: AFTER,
+      secondOutput: AFTER,
+      deletedRecord: true,
+    })).toStrictEqual({ accepted: true });
   });
 });

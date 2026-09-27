@@ -481,232 +481,269 @@ export interface SelfSettlementShape {
   readonly addressPayloadOffset: number;
 }
 
-/**
- * Where one segment block keeps the fields it read, with the record's input index topmost, and where it keeps the
- * chain's registers: below the block's remainder and the count it declared.
- */
-const RECORD = { in: 0, out: 1, viewIn: 2, viewOut: 3 } as const;
-const REGISTER = { declared: 6, chainViewOut: 7, chainIndex: 8, censusIn: 9 } as const;
-
-
 export function selfSettlementScript(shape: SelfSettlementShape): Uint8Array {
   const { callCount, segmentCount, sendCount, addressPayloadOffset } = shape;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-  const fromAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_FROMALTSTACK); };
+  const absent = (): Uint8Array => encodeDataPush(INDEX_NONE_BYTES);
   const toAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_TOALTSTACK); };
+  const fromAlt = (count: number): void => { for (let item = 0; item < count; item += 1) emit(Opcodes.OP_FROMALTSTACK); };
+  /** A copy of the item at `depth` in the main stack, leaving it in place. */
+  const copy = (depth: number, held = 0): void => { emit(num(depth + held), Opcodes.OP_PICK); };
+  /** Keeps the shape check's raw two-byte fields, which the sentinel comparison reads as written. */
+  const copyNumber = (depth: number, held = 0): void => { copy(depth, held); emit(Opcodes.OP_BIN2NUM); };
+  /** A copy of the item at alt-stack `depth`, leaving the alt stack as it was. */
+  const copyAlt = (depth: number): void => {
+    fromAlt(depth + 1);
+    emit(Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
+    for (let held = 0; held < depth; held += 1) emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
+  };
   /**
-   * Absence, as the codec writes it: the `u16` sentinel an entry with no index carries. `OP_BIN2NUM` leaves it
-   * alone (the machine reads those two bytes as one large negative number), so the raw field is what every
-   * comparison in this walk uses.
+   * Replaces the alt-stack item at `depth` with the single value `newValue` leaves on the main stack.
+   *
+   * The items above the one replaced come off first and go back in the same order — pushing them back in the
+   * order they were popped would reverse them — and `newValue` is emitted between the two, so it can read the
+   * main stack with the popped items already above it, which is what `held` names.
    */
-  const absent = (): void => emit(...encodeDataPush(INDEX_NONE_BYTES));
-  /** A copy of the item at `depth` in the layout the surrounding block describes, `held` values above it. */
-  const copy = (depth: number, held = 0): void => emit(num(depth + held), Opcodes.OP_PICK);
-  /** Removes the item at `depth` (plus `held`), keeping every other item in order. */
-  const discard = (depth: number, held = 0): void => emit(num(depth + held), Opcodes.OP_ROLL, Opcodes.OP_DROP);
-  /** Leaves whether the item at `depth` (plus `held`) has no index, as the record entries express absence. */
-  const indexIsAbsent = (depth: number, held = 0): void => { copy(depth, held); absent(); emit(Opcodes.OP_EQUAL); };
-  /** A record the entry lists no send from keeps at least the value it held. */
-  const emitValueFloor = (): void => {
-    indexIsAbsent(RECORD.in); // the input side
-    emit(Opcodes.OP_NOT);
-    indexIsAbsent(RECORD.out, 1); // the output side
-    emit(Opcodes.OP_NOT, Opcodes.OP_BOOLAND, Opcodes.OP_IF);
-    copy(RECORD.out);
-    emit(Opcodes.OP_OUTPUTVALUE);
-    copy(RECORD.in, 1);
-    emit(Opcodes.OP_UTXOVALUE);
-    emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-    emit(Opcodes.OP_ENDIF);
+  const replaceAlt = (depth: number, newValue: (held: number) => void): void => {
+    fromAlt(depth);
+    emit(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP);
+    newValue(depth);
+    toAlt(depth + 1);
   };
 
-  emit(...readOwnWitnessBlockScript());
-  // Everything before the segments: the fixed header, the variable frame fields, and the calls.
-  emit(...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
-  emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
-  emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
-  emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
-  emit(...requireU16Equals(callCount));
-  for (let call = 0; call < callCount; call += 1) emit(...callRecordSkip());
-  emit(...requireU16Equals(segmentCount));
-
-  // The chain's registers, parked so that taking them back leaves the flag topmost: whether any segment has
-  // declared the record at all, the commitment its last declaration ended at, the record's live index, and the
-  // input index the census declares.
+  // The index under test, and the pass over every index the transaction could name.
   emit(Opcodes.OP_0);
-  emit(Opcodes.OP_TOALTSTACK); // declared
-  emit(Opcodes.OP_0);
-  emit(Opcodes.OP_TOALTSTACK); // chainViewOut
-  absent();
-  emit(Opcodes.OP_TOALTSTACK); // chainIndex
-  absent();
-  emit(Opcodes.OP_TOALTSTACK); // censusIn
+  emit(Opcodes.OP_BEGIN);
+  {
+    emit(Opcodes.OP_TOALTSTACK);
+    // The pass's prologue: the block, its fixed prefix, and the three values the walk carries.
+    emit(...readOwnWitnessBlockScript());
+    emit(...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+    emit(...takeLengthPrefixedField(), Opcodes.OP_NIP);
+    emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
+    emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
+    emit(...requireU16Equals(callCount));
+    for (let site = 0; site < callCount; site += 1) emit(...callRecordSkip());
+    emit(...requireU16Equals(segmentCount));
+    // Alt: [index]. Main: [block]. The flags go below the index, so `copyAlt` can reach them with the block never
+    // leaving the top of the main stack.
+    emit(Opcodes.OP_0);
+    emit(Opcodes.OP_0);
+    emit(absent());
+    // Alt: [seenIn, seenOut, lastView, index].
+    toAlt(3);
+    emit(num(segmentCount), Opcodes.OP_SWAP);
+    // Main: [block, segments]
+    emit(Opcodes.OP_BEGIN);
+    {
+      // The segment's record count comes off the front of the block, leaving the block back on top.
+      emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
+      emit(Opcodes.OP_SWAP);
+      // Main: [block, count, segments] — the layout every declaration below is written against. A segment that
+      // declares nothing runs no declaration at all, which the loop cannot express on its own: it tests its
+      // condition after the body, so the body is guarded rather than entered once for nothing.
+      emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN);
+      emit(Opcodes.OP_IF);
+      emit(Opcodes.OP_BEGIN);
+      {
+        // One declaration: its four fields come off the front of the block and are parked above the flags, so the
+        // block returns to the top of the main stack after each one.
+        emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // in
+        emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // out
+        emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // viewIn
+        emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // viewOut
+        fromAlt(4);
+        // Main: [in, out, viewIn, viewOut, block, count, segments]. Alt: [seenIn, seenOut, lastView, index].
+        emit(Opcodes.OP_2DUP);
+        emit(...requireRecordShape());
 
-  for (let segment = 0; segment < segmentCount; segment += 1) {
-    // The registers come up from the park and the block's remainder goes on top of them, so the segment's own
-    // fields can be taken off its front: `[tail, declared, chainViewOut, chainIndex, censusIn]`.
-    fromAlt(4);
-    emit(num(4), Opcodes.OP_ROLL);
-    // The declared record count, as a number: `[count, tail, declared, chainViewOut, chainIndex, censusIn]`.
-    emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM);
-    // At most one record is settled: several would need a chain each, and only one is walked.
-    emit(Opcodes.OP_DUP, num(2), Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY);
-    emit(Opcodes.OP_DUP, num(1), Opcodes.OP_NUMEQUAL, Opcodes.OP_IF);
+        // Does this declaration read the index under test?
+        copyNumber(0);
+        copyAlt(3);
+        emit(Opcodes.OP_EQUAL);
+        emit(Opcodes.OP_IF);
+        {
+          // A declaration that reads the index: the chain starts at the commitment the transaction spends, or
+          // carries on from the commitment the previous declaration ended at.
+          // A declaration carries on from the chain when the record has been seen at all: either the input side
+          // was read before, or the record was created at this index by an earlier declaration.
+          copyAlt(0); // seenIn
+          copyAlt(1); // seenOut
+          emit(Opcodes.OP_BOOLOR, Opcodes.OP_NOT);
+          emit(Opcodes.OP_IF);
+          {
+            copyAlt(3); // index
+            emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
+            copy(3); // viewIn
+            emit(Opcodes.OP_EQUALVERIFY);
+            if (sendCount === 0) {
+              // The value floor applies where the record is written back: a kept record keeps what it held.
+              copyNumber(1); // out
+              emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN, Opcodes.OP_NOT);
+              emit(Opcodes.OP_IF);
+              copyAlt(3);
+              emit(Opcodes.OP_OUTPUTVALUE);
+              copyAlt(3);
+              emit(Opcodes.OP_UTXOVALUE);
+              emit(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+              emit(Opcodes.OP_ENDIF);
+            }
+            replaceAlt(0, () => emit(Opcodes.OP_1)); // seenIn = 1
+          }
+          emit(Opcodes.OP_ELSE);
+          {
+            copy(2); // viewIn
+            copyAlt(2); // lastView
+            emit(Opcodes.OP_EQUALVERIFY);
+          }
+          emit(Opcodes.OP_ENDIF);
 
-    // The four declared fields come off the block onto the top, in the order the reader leaves them:
-    // `[in, out, viewIn, viewOut, tail, count, declared, chainViewOut, chainIndex, censusIn]`. The two index
-    // fields are normalised, so an index that has none reads as the same number the chain registers use.
-    emit(Opcodes.OP_SWAP);
-    emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK);
-    emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK);
-    emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
-    emit(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
-    fromAlt(4);
-    // Kept in place, created or deleted, and never moved.
-    copy(RECORD.in);
-    copy(RECORD.out, 1);
-    emit(...requireRecordShape());
+          // Where the record goes: kept at its own index, or deleted. The shape check already refused a move.
+          copyNumber(1); // out
+          copyAlt(3);
+          emit(Opcodes.OP_EQUAL);
+          emit(Opcodes.OP_IF);
+          {
+            replaceAlt(2, (held) => copy(3, held)); // lastView = viewOut
+            replaceAlt(1, () => emit(Opcodes.OP_1)); // seenOut = 1
+          }
+          emit(Opcodes.OP_ELSE);
+          {
+            replaceAlt(2, () => emit(absent())); // a deletion ends the chain
+            replaceAlt(1, () => emit(Opcodes.OP_0));
+          }
+          emit(Opcodes.OP_ENDIF);
+        }
+        emit(Opcodes.OP_ELSE);
+        {
+          // A declaration that does not read the index can still create the record at it.
+          copyNumber(1); // out
+          copyAlt(3);
+          emit(Opcodes.OP_EQUAL);
+          emit(Opcodes.OP_IF);
+          {
+            copyNumber(0); // in
+            emit(Opcodes.OP_0, Opcodes.OP_LESSTHAN);
+            emit(Opcodes.OP_VERIFY); // a created record has no index to be read at
+            copyAlt(1); // seenOut
+            emit(Opcodes.OP_NOT, Opcodes.OP_VERIFY); // and it is created once
+            replaceAlt(2, (held) => copy(3, held)); // lastView = viewOut
+            replaceAlt(1, () => emit(Opcodes.OP_1)); // seenOut = 1
+          }
+          emit(Opcodes.OP_ENDIF);
+        }
+        emit(Opcodes.OP_ENDIF);
 
-    // The chain as this declaration found it, by register depth: declared 6, chainViewOut 7, chainIndex 8,
-    // censusIn 9. The record's own fields stay at 0..3 for the whole block.
-    copy(REGISTER.declared);
-    emit(Opcodes.OP_IF);
-    // A continuation: the record is already in the chain, so this declaration has to carry on from it.
-    copy(REGISTER.chainIndex);
-    absent();
-    emit(Opcodes.OP_EQUAL, Opcodes.OP_NOT, Opcodes.OP_VERIFY);
-    copy(REGISTER.chainIndex);
-    copy(RECORD.in, 1);
-    emit(Opcodes.OP_EQUALVERIFY);
-    copy(REGISTER.chainViewOut);
-    copy(RECORD.viewIn, 1);
-    emit(Opcodes.OP_EQUALVERIFY);
-    if (sendCount === 0) {
-      // A record the execution created has no value it held before it, so the floor is the first declaration's
-      // business and a continuation only has to keep what a transaction input already held.
-      copy(REGISTER.censusIn);
-      absent();
-      emit(Opcodes.OP_EQUAL, Opcodes.OP_NOT, Opcodes.OP_IF);
-      emitValueFloor();
+        // The four fields have been read and judged; the layout is back to [block, count, segments].
+        emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
+        emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+        // The loop repeats until this is true, so the condition is "no declaration is left".
+        emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
+        emit(Opcodes.OP_UNTIL);
+      }
       emit(Opcodes.OP_ENDIF);
+      // Main: [block, 0, segments]
+      emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_DROP);
+      emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+      emit(num(1), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL);
+      emit(Opcodes.OP_UNTIL);
     }
+    // Two counters are spent, and the block's own remainder with them.
+    emit(Opcodes.OP_DROP, Opcodes.OP_DROP);
 
-    // The new registers, the deepest of the four first, so the top of the stack reads `declared, chainViewOut,
-    // chainIndex, censusIn` once the block has replaced them.
-    copy(REGISTER.censusIn); // unchanged: the record first appears where the chain says it does
-    indexIsAbsent(RECORD.out, 1);
+    // The pass's closing checks: what the chain ended at, and the census at this index.
+    copyAlt(1); // seenOut
     emit(Opcodes.OP_IF);
-    absent(); // a deleted record: its index is gone, which ends the chain
-    emit(Opcodes.OP_ELSE);
-    copy(RECORD.out, 1);
+    {
+      copyAlt(2); // lastView
+      copyAlt(3); // index
+      emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT);
+      emit(Opcodes.OP_EQUALVERIFY);
+    }
     emit(Opcodes.OP_ENDIF);
-    copy(RECORD.viewOut, 2); // chainViewOut = viewOut
-    emit(num(1)); // declared
+    emit(...indexCensusScript('input', addressPayloadOffset));
+    emit(...indexCensusScript('output', addressPayloadOffset));
 
-    emit(Opcodes.OP_ELSE);
-    // A first declaration: the record is not in the chain yet, so this one establishes where it lives.
-    if (sendCount === 0) emitValueFloor();
-    // A declaration that spends the record has to be the commitment the transaction spends.
-    indexIsAbsent(RECORD.in);
-    emit(Opcodes.OP_IF);
-    emit(Opcodes.OP_ELSE);
-    copy(RECORD.in);
-    emit(Opcodes.OP_UTXOTOKENCOMMITMENT);
-    copy(RECORD.viewIn, 1);
-    emit(Opcodes.OP_EQUALVERIFY);
-    emit(Opcodes.OP_ENDIF);
-
-    copy(RECORD.in); // censusIn = the index the record was read at
-    indexIsAbsent(RECORD.out, 1);
-    emit(Opcodes.OP_IF);
-    absent(); // a deleted record ends the chain where it was
-    emit(Opcodes.OP_ELSE);
-    indexIsAbsent(RECORD.in, 1);
-    emit(Opcodes.OP_IF);
-    copy(RECORD.out, 1); // created: the record lives where it is written
-    emit(Opcodes.OP_ELSE);
-    copy(RECORD.in, 1); // kept in place: the index it was read at
-    emit(Opcodes.OP_ENDIF);
-    emit(Opcodes.OP_ENDIF);
-    copy(RECORD.viewOut, 2); // chainViewOut = viewOut
-    emit(num(1)); // declared
-    emit(Opcodes.OP_ENDIF);
-
-    // The four new registers sit above what the block read, so the fields, the count and the registers this
-    // declaration replaces are four and five deep; dropping them leaves the block's remainder and the new four.
-    const replaced = RECORD.viewOut + 1;
-    discard(replaced); // in
-    discard(replaced); // out
-    discard(replaced); // viewIn
-    discard(replaced); // viewOut
-    for (let count = 0; count < 5; count += 1) discard(replaced + 1);
-    toAlt(4);
-
-    emit(Opcodes.OP_ELSE);
-    // No record in this segment: the chain carries over unchanged.
-    emit(Opcodes.OP_DROP); // count
-    emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
-    emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
-    emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
-    emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
-    emit(Opcodes.OP_ENDIF);
+    // The pass's own values go with it; the index is the loop's.
+    fromAlt(3);
+    emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
+    emit(Opcodes.OP_FROMALTSTACK);
   }
-
-  // The chain's end: where the last declaration left the record is what the transaction writes. The registers come
-  // back as `[declared, chainViewOut, chainIndex, censusIn]`, with the block's remainder below them.
-  fromAlt(4);
-  discard(REGISTER.declared - REGISTER.declared); // the flag, which has no part in the closing comparison
-  // `[chainViewOut, chainIndex, censusIn, tail]`.
-  copy(1);
-  absent();
-  emit(Opcodes.OP_EQUAL, Opcodes.OP_IF);
-  emit(Opcodes.OP_DROP); // nothing was declared, or the record was deleted, so there is no output to compare
-  emit(Opcodes.OP_ELSE);
-  copy(1);
-  emit(Opcodes.OP_OUTPUTTOKENCOMMITMENT);
-  copy(0, 1);
-  emit(Opcodes.OP_EQUALVERIFY);
-  emit(Opcodes.OP_DROP); // the commitment the last declaration ended at
-  emit(Opcodes.OP_ENDIF);
-
-  // The census reads the transaction rather than the walk's leavings, so the block's own remainder goes with the
-  // rest: `[chainIndex, censusIn, tail]` becomes an empty stack and two parked indices.
-  emit(Opcodes.OP_TOALTSTACK); // chainIndex, the index the census expects a state output at
-  emit(Opcodes.OP_TOALTSTACK); // censusIn, the index it expects a state UTXO at
-  emit(Opcodes.OP_DROP); // the block's own remainder
-  emit(...stateUtxosAreDeclaredScript(addressPayloadOffset));
-  emit(...stateOutputsAreDeclaredScript(addressPayloadOffset));
+  emit(Opcodes.OP_1ADD);
+  emit(Opcodes.OP_DUP);
+  emit(Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX);
+  emit(Opcodes.OP_GREATERTHANOREQUAL);
+  emit(Opcodes.OP_UNTIL);
+  emit(Opcodes.OP_DROP);
   return new Uint8Array(bytes);
 }
 
 /**
- * Requires that an input carries a state record exactly when it is the one the segment declared.
+ * Requires the transaction to carry a state token at the index under test exactly when the pass said it does.
  *
- * The state UTXOs the transaction spends are exactly the records the master touched. Comparing each input's own
- * token against the declared index, rather than collecting the declared set, needs no storage for a set whose
- * length the block decides. The declared index is parked on the alt stack; the no-index sentinel makes the same
- * comparison refuse every state UTXO when the segment declared none.
+ * The index is visited whatever side it names, and the side that has no item at that index is skipped rather than
+ * read. A validator of the contract's own category is recreated in place at the contract address carrying the same
+ * mutable token a record does, and that index is not a record: the census admits it beside the ones the pass saw.
  */
-function stateUtxosAreDeclaredScript(addressPayloadOffset: number): number[] {
-  return censusLoop(Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, addressPayloadOffset);
-}
+function indexCensusScript(side: 'input' | 'output', addressPayloadOffset: number): number[] {
+  const countOpcode = side === 'input' ? Opcodes.OP_TXINPUTCOUNT : Opcodes.OP_TXOUTPUTCOUNT;
+  const otherCountOpcode = side === 'input' ? Opcodes.OP_TXOUTPUTCOUNT : Opcodes.OP_TXINPUTCOUNT;
+  const tokenOpcode = side === 'input' ? Opcodes.OP_UTXOTOKENCATEGORY : Opcodes.OP_OUTPUTTOKENCATEGORY;
+  const lockOpcode = side === 'input' ? Opcodes.OP_UTXOBYTECODE : Opcodes.OP_OUTPUTBYTECODE;
+  const flagDepth = side === 'input' ? 0 : 1;
+  const bytes: number[] = [];
+  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
+  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
+  const copyAlt = (depth: number): void => {
+    for (let item = 0; item <= depth; item += 1) emit(Opcodes.OP_FROMALTSTACK);
+    emit(Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
+    for (let held = 0; held < depth; held += 1) emit(num(1), Opcodes.OP_ROLL, Opcodes.OP_TOALTSTACK);
+  };
 
-/**
- * Requires that an output carries a state record exactly when it is the one the segment declared.
- *
- * The record's own token is the only state token the shape admits beside the contract's validator, which a master
- * that makes an ordinary call recreates in place. Comparing each output's own token against the declared output
- * index refuses an extra state output the same way the input rule refuses an extra state input.
- *
- * A validator of the contract's own category is recreated in place at the contract address, carrying the same
- * mutable token a record does. That index is not a record: the input and the output at it are both locked to the
- * address the master reserves, so the census admits it beside the records the segment declared.
- */
-function stateOutputsAreDeclaredScript(addressPayloadOffset: number): number[] {
-  return censusLoop(Opcodes.OP_OUTPUTTOKENCATEGORY, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_TXINPUTCOUNT, addressPayloadOffset);
+  // The index under test is at alt depth 3, and the flag that says whether this side carries the record at 0.
+  copyAlt(3);
+  emit(countOpcode, Opcodes.OP_LESSTHAN);
+  emit(Opcodes.OP_IF);
+  {
+    // What the transaction carries at the index, against the token a record is pinned with.
+    copyAlt(3);
+    emit(tokenOpcode);
+    emit(...mutableRecordPin());
+    emit(Opcodes.OP_EQUAL);
+    // The flag the pass ended at.
+    copyAlt(flagDepth);
+    emit(Opcodes.OP_EQUAL);
+    // Or a validator of the contract's own category, recreated in place at the contract address: both sides exist
+    // at the index, both locks are the address, and both tokens are the mutable one a record carries.
+    copyAlt(3);
+    emit(countOpcode, Opcodes.OP_LESSTHAN);
+    copyAlt(3);
+    emit(otherCountOpcode, Opcodes.OP_LESSTHAN);
+    emit(Opcodes.OP_BOOLAND);
+    emit(Opcodes.OP_IF);
+    {
+      copyAlt(3);
+      emit(Opcodes.OP_UTXOBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
+      copyAlt(3);
+      emit(Opcodes.OP_OUTPUTBYTECODE, ...pushContractAddress(addressPayloadOffset), Opcodes.OP_EQUAL);
+      emit(Opcodes.OP_BOOLAND);
+      copyAlt(3);
+      emit(Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+      emit(Opcodes.OP_BOOLAND);
+      copyAlt(3);
+      emit(Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
+      emit(Opcodes.OP_BOOLAND);
+    }
+    emit(Opcodes.OP_ELSE);
+    emit(Opcodes.OP_0);
+    emit(Opcodes.OP_ENDIF);
+    emit(Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY);
+  }
+  emit(Opcodes.OP_ENDIF);
+  return bytes;
 }
 
 /** The contract address, read from its reserved slot in the script that is running. */
@@ -720,48 +757,6 @@ function pushContractAddress(payloadOffset: number): number[] {
     Opcodes.OP_SPLIT,
     Opcodes.OP_DROP,
   ];
-}
-
-/**
- * Requires that index `i` carries this contract's mutable token exactly when the segment declared it, or when `i`
- * recreates the contract's validator.
- *
- * Entry is the expected index on the alt stack. The address is pushed first and sits under the expected index, so
- * the comparisons the old loop made keep their depths. Exit drops the address, the expected index and the cursor.
- */
-function censusLoop(
-  tokenOpcode: number,
-  countOpcode: number,
-  otherCountOpcode: number,
-  addressPayloadOffset: number,
-): number[] {
-  const bytes: number[] = [];
-  const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-  const num = (value: number): Uint8Array => encodeDataPush(scriptNumber(value));
-
-  emit(...pushContractAddress(addressPayloadOffset));
-  emit(Opcodes.OP_FROMALTSTACK);
-  emit(Opcodes.OP_0);
-  emit(Opcodes.OP_BEGIN);
-  emit(Opcodes.OP_DUP, tokenOpcode, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-  emit(num(1), Opcodes.OP_PICK, num(3), Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL);
-  emit(Opcodes.OP_NUMEQUAL);
-  // A validator recreation: both sides exist, both locks are the contract address, and both tokens are mutable.
-  emit(num(1), Opcodes.OP_PICK, otherCountOpcode, Opcodes.OP_LESSTHAN, Opcodes.OP_IF);
-  emit(num(1), Opcodes.OP_PICK, Opcodes.OP_UTXOBYTECODE, num(4), Opcodes.OP_PICK, Opcodes.OP_EQUAL);
-  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_OUTPUTBYTECODE, num(5), Opcodes.OP_PICK, Opcodes.OP_EQUAL);
-  emit(Opcodes.OP_BOOLAND);
-  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_UTXOTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-  emit(Opcodes.OP_BOOLAND);
-  emit(num(2), Opcodes.OP_PICK, Opcodes.OP_OUTPUTTOKENCATEGORY, ...mutableRecordPin(), Opcodes.OP_EQUAL);
-  emit(Opcodes.OP_BOOLAND);
-  emit(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
-  emit(Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY);
-  emit(Opcodes.OP_1ADD);
-  emit(Opcodes.OP_DUP, countOpcode, Opcodes.OP_GREATERTHANOREQUAL);
-  emit(Opcodes.OP_UNTIL);
-  emit(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP);
-  return bytes;
 }
 
 /** The pin of a state record's token, `catX` with the mutable capability, read from the active input's category. */

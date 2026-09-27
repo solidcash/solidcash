@@ -77,6 +77,7 @@ the default no-progress report otherwise shows only the final candidate, which c
 For `SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE=1`, set `SOLIDC_TRACE_INPUT=<input index>` on large compositions;
 the opt-in VM probe snapshots that input's instruction pre-states and can report compared operands and a bounded
 `SOLIDC_DEBUG_FAILURE_POINT_TRACE_FROM`/`_TO` instruction window without retaining every participant's stacks.
+`SOLIDC_TRACE_INPUT` bounds snapshot capture only: preflight still validates every transaction input.
 Use `SOLIDC_DEBUG_FAILURE_POINT_STACK_FULL=1` only with a selected input when comparing deep frame slots;
 it reports each item's size plus bounded head/tail bytes, enough to distinguish a stale dynamic value from a
 pending update without dumping full commitments. Avoid `SOLIDC_DEBUG_FAILURE_TRACE=1` on large invoked routes:

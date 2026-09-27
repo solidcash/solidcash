@@ -1424,6 +1424,10 @@ export function snapshotPreflightDiagnosticState<T extends { stack: Uint8Array[]
   return { ...state, stack: state.stack.map((item) => item.slice()) };
 }
 
+export function shouldCapturePreflightDiagnosticInput(inputIndex: number, requestedInput?: number): boolean {
+  return requestedInput === undefined || inputIndex === requestedInput;
+}
+
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
@@ -1443,6 +1447,9 @@ const evaluateEveryInput = (
   // a misread coordinate actually resolved to.
   const failurePreStateDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_FAILURE_POINT_PRE_STATE === '1';
+  const failurePreStateInputValue = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_TRACE_INPUT;
+  const failurePreStateInput = failurePreStateInputValue === undefined ? undefined : Number(failurePreStateInputValue);
   const resourceSlotIndexDebug = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_RESOURCE_SLOT_INDEX === '1';
   let resourceSlotIndexLogged = false;
@@ -1512,7 +1519,7 @@ const evaluateEveryInput = (
       if (failurePreStateDebug) {
         const captured = unknownState as AuthenticationProgramStateCommon;
         const ownedInput = captured.program?.inputIndex;
-        if (typeof ownedInput === 'number') {
+        if (typeof ownedInput === 'number' && shouldCapturePreflightDiagnosticInput(ownedInput, failurePreStateInput)) {
           const ring = preStateRingByInput.get(ownedInput) ?? [];
           ring.push(snapshotPreflightDiagnosticState(captured));
           // 256, not 64: an input can iterate a loop (or a convergence pass) more than 64 times, and at 64 the ring

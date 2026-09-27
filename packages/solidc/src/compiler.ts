@@ -13031,8 +13031,15 @@ function compileResolvedAst(
     needsEarlyReturn, needsVMapCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
+  // The survey above answers for the whole unit, which for a multi-artifact compile is every sibling contract as
+  // well. A statefulness question is about one contract's own declarations and bodies, so under the per-call
+  // convention — where each contract becomes one master program — the hint is taken from the contract being
+  // compiled rather than from its siblings beside it.
+  const statefulnessHintSource = mergedCompilerOptions.composition === 'per-call'
+    ? surveyOptionalLowerings(ast.contract)
+    : { hasContractInstantiation, deploysWithValue, emitsEvent };
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
-    ? { hasContractInstantiation, deploysWithValue, emitsEvent }
+    ? statefulnessHintSource
     : undefined;
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 

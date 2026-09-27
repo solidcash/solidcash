@@ -38,10 +38,9 @@ const EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function ping() { emit Ping(1); }'
   + ' }';
 
-/** A state-writing contract with no event, for units that hold an emitting contract beside it. */
+/** A contract with no event and no state of its own, for units that hold an emitting contract beside it. */
 const QUIET_SIBLING = ' contract Quiet {'
-  + '   int public counter;'
-  + '   function idle() { this.counter = this.counter + 1; }'
+  + '   function idle() { require(true); }'
   + ' }';
 
 /** An entry whose event count is the loop's trip count, which the head cannot fix. */

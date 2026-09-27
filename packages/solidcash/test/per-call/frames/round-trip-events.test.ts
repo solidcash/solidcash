@@ -27,11 +27,11 @@ import {
  * the participants, where no input sits. The composer's assembled transaction carries it, a block's `events` list
  * names it by index, and the master's own body checks the payload it computed against the token there.
  *
- * The two-contract round trip whose entry emits after its call returns is where the shipped path stops. Such a
- * source does not compile unless every contract in the unit attributes an event (`PER_CALL_CODEGEN_UNAVAILABLE`),
- * and with that workaround applied the derivation stalls on the first master whose witness block carries both a
- * call section and an event list (`PER_CALL_DERIVATION_STALLED`). Both refusals are pinned below, and the shape
- * that does run — an entry that emits without making a call — is driven end to end.
+ * The two-contract round trip whose entry emits after its call returns is where the shipped path stops: the
+ * derivation stalls on the first master whose witness block carries both a call section and an event list
+ * (`PER_CALL_DERIVATION_STALLED`), which is pinned below. The shape that does run — an entry that emits without
+ * making a call — is driven end to end, and a unit whose contracts emit different numbers of events is emitted
+ * for every one of them, because an event region is sized by the contract's own bodies.
  */
 
 const CATEGORY_A = seededCategory('round trip events A');
@@ -236,9 +236,9 @@ describe('a plan whose entry emits after its call returns', () => {
     expect(message).toContain(`${ENTRY_F} filled no witness at site 0 (call 0)`);
   });
 
-  it('cannot be compiled at all when only the entry attributes an event', () => {
-    // The survey that gates the tail is unit-wide while the event list is per contract, so a unit that emits and
-    // makes an external call requires every contract in it to attribute an event to a body.
+  it('emits every contract of a unit whose contracts attribute different numbers of events', () => {
+    // Only one contract of this unit emits, and the quiet one keeps no state of its own, so nothing but the
+    // contract's own bodies can decide its event region: both masters are emitted.
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface IB { function g(); }'
       + ' interface IA { function k(); }'
@@ -251,14 +251,10 @@ describe('a plan whose entry emits after its call returns', () => {
       + '   function k() { require(true); }'
       + ' }';
 
-    let message = '';
-    try {
-      compileStringMulti(source, { composition: 'per-call' });
-    } catch (error) {
-      message = String((error as { message?: string }).message ?? error);
-    }
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('emits an event that is not attributed to a body');
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.B?.composition?.convention).toBe('per-call');
+    expect(artifacts.B?.events ?? []).toStrictEqual([]);
+    expect(artifacts.A?.events?.length).toBe(1);
   });
 });
 

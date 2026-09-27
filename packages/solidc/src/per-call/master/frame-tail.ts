@@ -90,6 +90,14 @@ export interface MasterCallSite {
   readonly ordinal?: number;
   /** True when the source does not fix whether this call runs, so a given execution may reach no witness for it. */
   readonly conditional?: boolean;
+  /**
+   * True when the caller forwards its own received call data to the callee unchanged.
+   *
+   * A proxy's fallback is one such call: it hands its own `input` to the implementation, so neither the selector
+   * nor the argument values are known to the caller's code at compile time — `selector` is empty and the site
+   * binds the callee by hashing the bytes the caller received rather than by comparing a selector.
+   */
+  readonly forwarded?: boolean;
 }
 
 /** One argument of a call, as the caller's own code can account for it. */

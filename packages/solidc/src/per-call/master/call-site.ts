@@ -70,11 +70,19 @@ export function callSiteCheckScript(
     readonly digestFromStack?: boolean;
     readonly targetFromStack?: boolean;
     readonly indexFromStack?: boolean;
+    /**
+     * True when the caller forwards its own call data, so it holds no compile-time selector to compare.
+     *
+     * The callee's call data is still hashed and compared with the recorded digest, which binds its selector and
+     * its arguments to the bytes the caller received; only the constant selector equality is left out.
+     */
+    readonly skipSelectorCheck?: boolean;
   } = {},
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
   const targetFromStack = options.targetFromStack === true;
   const indexFromStack = options.indexFromStack === true;
+  const skipSelectorCheck = options.skipSelectorCheck === true;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
@@ -103,7 +111,7 @@ export function callSiteCheckScript(
   } else {
     for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
   }
-  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack }));
+  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack, skipSelectorCheck }));
   return new Uint8Array(bytes);
 }
 
@@ -123,9 +131,10 @@ function skipCallRecord(): number[] {
 function bindCallRecord(
   site: MasterCallSite,
   usesResult: boolean,
-  options: { readonly digestFromStack: boolean; readonly targetFromStack: boolean },
+  options: { readonly digestFromStack: boolean; readonly targetFromStack: boolean;
+    readonly skipSelectorCheck: boolean },
 ): number[] {
-  const { digestFromStack, targetFromStack } = options;
+  const { digestFromStack, targetFromStack, skipSelectorCheck } = options;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
 
@@ -156,10 +165,18 @@ function bindCallRecord(
   // The callee's unlocking bytecode is its witness block, its call data and its redeem script. The call data is
   // what the first and the last push leave between them: the selector's push and then the argument pushes.
   // Hashing the selector with those pushes must give the recorded digest the code's own operands produced.
-  emit(Opcodes.OP_INPUTBYTECODE,
-    ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
-    Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
-    Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
+  if (skipSelectorCheck) {
+    // The selector is the caller's own received bytes, so there is no constant to compare: the hash of the
+    // callee's selector and argument pushes against the recorded digest binds both to what the caller forwarded.
+    emit(Opcodes.OP_INPUTBYTECODE,
+      ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
+      Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
+  } else {
+    emit(Opcodes.OP_INPUTBYTECODE,
+      ...dropFirstPushScript(), ...dropLastPushScript(), ...splitFirstPushScript(),
+      Opcodes.OP_SWAP, Opcodes.OP_DUP, ...encodeDataPush(site.selector), Opcodes.OP_EQUALVERIFY,
+      Opcodes.OP_SWAP, Opcodes.OP_CAT, Opcodes.OP_SHA256, Opcodes.OP_EQUALVERIFY);
+  }
   // result: what the body uses for the call's value, or an empty field for a call that returns nothing.
   emit(...takeLengthPrefixedField32());
   if (usesResult) {

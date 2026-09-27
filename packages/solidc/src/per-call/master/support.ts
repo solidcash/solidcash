@@ -51,6 +51,8 @@ import {
   InterfaceNode,
   IntLiteralNode,
   LiteralNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
   MappingAssignNode,
   NullaryOpNode,
   StateAccessNode,
@@ -96,6 +98,9 @@ const RETURN_EVENT_PARAMETERS = new Set(['__internal__returnOutputIdx']);
  */
 const EXTERNAL_CALL_PARAMETERS = new Set([
   '__internal__externalCallInputBase',
+  // The direct path pins a delegate call to a co-spent delegate master through this operand. A per-call body binds
+  // its delegate record against the witness block instead, so the operand is neither supplied nor read.
+  '__internal__delegateInputIndex',
 ]);
 
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
@@ -645,13 +650,29 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const refusal = unsupportedConstructorShape(contract.constructorDef, constants);
     if (refusal !== undefined) return refuse(refusal);
   }
-  if (contract.fallbackDef || contract.receiveDef) {
+  if (contract.receiveDef) {
+    return refuse('receive makes the contract dispatch by stack depth, which the master head cannot precede');
+  }
+  const entryFunctions = contract.functions.filter((fn) => fn.isEntryPoint);
+  const stateVariableNames = new Set(contract.stateVariables.map((state) => state.name));
+  // A fallback is the master's entry only when the contract is the whole proxy shape: the fallback is the sole body
+  // a user's call can reach and it forwards its own received call data to an address the contract holds. A fallback
+  // beside ordinary entries is reached only when no selector matches, which the head's dispatcher cannot express, a
+  // constructor would give it a sibling body to dispatch against, and any other fallback body neither forwards the
+  // call data it received nor names an address the contract holds.
+  const fallbackAsEntry = contract.fallbackDef !== undefined
+    && entryFunctions.length === 0 && contract.constructorDef === undefined
+    && isForwardingFallback(contract.fallbackDef, stateVariableNames);
+  if (contract.fallbackDef !== undefined && !fallbackAsEntry) {
     return refuse('fallback and receive make the contract dispatch by selector, which the master head cannot precede');
   }
-  const entryPoints = contract.functions.filter((fn) => fn.isEntryPoint);
+  const entryPoints = fallbackAsEntry ? [contract.fallbackDef!] : entryFunctions;
   if (entryPoints.length === 0) {
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
+  // The bodies the master runs: the contract's functions, with the fallback beside them when it is the entry.
+  const entryBodies: readonly FunctionDefinitionNode[] = fallbackAsEntry
+    ? [...contract.functions, contract.fallbackDef!] : contract.functions;
   if (input.hasContractInstantiation) {
     return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }
@@ -669,22 +690,21 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (!refusals.has(fn.name)) refusals.set(fn.name, reason);
   };
   const invokes = new Map<string, Set<string>>();
-  for (const fn of contract.functions) invokes.set(fn.name, invokedFunctionNames(fn.body));
+  for (const fn of entryBodies) invokes.set(fn.name, invokedFunctionNames(fn.body));
   // A body that is still invoked survives as its own subroutine definition, and a definition has no entry to bind
   // the call sites it makes: the records belong to the entry that runs the call, so a definition that makes one is
   // refused. A body the lowering folded into its call sites is not invoked and is not refused here; the entries
   // that invoke a refused one are refused with it by the closure below.
   const invoked = new Set<string>();
   for (const names of invokes.values()) for (const name of names) invoked.add(name);
-  for (const fn of contract.functions) {
+  for (const fn of entryBodies) {
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself and derives the batch operands it can, so any other hidden operand would be
     // read from the wrong stack position.
     // The reasons are asked in the order the whole-contract refusal used to ask them, so the one a reader sees
     // names the shape that decides the body rather than an operand that shape injects.
-    if ((fn.lowLevelCalls?.length ?? 0) > 0) {
-      refuseBody(fn, 'a low-level call needs the witness `calls[]` checks, which are not emitted yet');
-    }
+    const forward = forwardDelegateCalls(fn, stateVariableNames);
+    if ('reason' in forward) refuseBody(fn, forward.reason);
     const batchShape = unsupportedBatchWriteShape(fn, constants);
     if (batchShape !== undefined) refuseBody(fn, batchShape);
     const hidden = fn.parameters.filter((parameter) =>
@@ -722,7 +742,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   // address the wrong bytes for one of them.
   const dynamicBodies = [
     ...(contract.constructorDef ? [contract.constructorDef] : []),
-    ...contract.functions,
+    ...entryBodies,
   ].filter((fn) => fn.usesDynamicChunkInputBase === true);
   if (dynamicBodies.length > 1) {
     const widthOf = (fn: FunctionDefinitionNode): number | undefined =>
@@ -767,7 +787,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   }
   const served = entryPoints.filter((entry) => !refusals.has(entry.name));
 
-  const calls = derivePerCallMasterCallSites(input.interfaces, served);
+  const calls = derivePerCallMasterCallSites(input.interfaces, served, stateVariableNames);
   for (const [entryName, reason] of calls.refusals) refuseBody(
     entryPoints.find((entry) => entry.name === entryName)!, reason,
   );
@@ -1058,11 +1078,12 @@ type CallSitesDerivation = {
 function derivePerCallMasterCallSites(
   interfaces: readonly InterfaceNode[],
   entryPoints: readonly FunctionDefinitionNode[],
+  stateVariables: ReadonlySet<string>,
 ): CallSitesDerivation {
   const entryCalls: PerCallEntryCallSites[] = [];
   const refusals = new Map<string, string>();
   for (const entry of entryPoints) {
-    const derived = deriveEntryCallSites(interfaces, entry);
+    const derived = deriveEntryCallSites(interfaces, entry, stateVariables);
     if (derived.reason !== undefined) {
       refusals.set(entry.name, derived.reason);
       continue;
@@ -1215,11 +1236,114 @@ function divergencePhrase(divergence: CallSetDivergence, entryName: string): str
   }
 }
 
+/** A low-level delegatecall that hands the entry's own received call data to an address the caller's code holds. */
+interface ForwardDelegateCall {
+  /** The index the low-level call carries among the entry's low-level calls. */
+  readonly callIndex: number;
+}
+
+/** Why a low-level call whose shape a per-call master does not bind is refused. */
+const LOW_LEVEL_CALL_REFUSAL =
+  'a low-level call needs the witness `calls[]` checks, which are not emitted yet';
+
+/**
+ * The entry's low-level delegatecalls that forward its own call data, or the fact that stops the shape.
+ *
+ * A proxy's fallback is one such call: `implementation.delegatecall(input)`, where `input` is the fallback's own
+ * calldata parameter and `implementation` is an address the contract holds. The callee's selector and argument
+ * values are the caller's own received bytes, so neither is a value the caller's code knows at compile time; the
+ * site checks the callee's call data against the digest the caller computes from those bytes instead.
+ *
+ * Nothing wider is admitted: a delegatecall the site cannot bind to the entry's own received call data and to an
+ * address the contract holds would let a record describe call data the callee never saw, so it stays refused.
+ */
+function forwardDelegateCalls(
+  entry: FunctionDefinitionNode,
+  stateVariables: ReadonlySet<string>,
+): readonly ForwardDelegateCall[] | { readonly reason: string } {
+  const lowLevel = entry.lowLevelCalls ?? [];
+  if (lowLevel.length === 0) return [];
+  const forwards: ForwardDelegateCall[] = [];
+  for (const [index, call] of lowLevel.entries()) {
+    if (call.callMode !== 'delegatecall') {
+      return { reason: LOW_LEVEL_CALL_REFUSAL };
+    }
+    const node = lowLevelCallNode(entry, index);
+    if (node === undefined) {
+      return { reason: `the body's low-level call ${index} has no node to read its target and call data from` };
+    }
+    if (!isForwardedDelegate(entry, node, stateVariables)) {
+      return { reason: LOW_LEVEL_CALL_REFUSAL };
+    }
+    forwards.push({ callIndex: index });
+  }
+  return forwards;
+}
+
+/** True when a fallback is exactly the proxy shape the convention serves: one forwarded delegatecall to state. */
+function isForwardingFallback(
+  fallback: FunctionDefinitionNode,
+  stateVariables: ReadonlySet<string>,
+): boolean {
+  const forwards = forwardDelegateCalls(fallback, stateVariables);
+  return !('reason' in forwards) && forwards.length === 1;
+}
+
+/**
+ * True when a low-level call is the proxy's forwarded delegatecall.
+ *
+ * Three facts decide it: the entry is a fallback, whose sole parameter is the call data it received; the call's
+ * data operand is exactly that parameter, so the call data the callee runs is the bytes the caller received; and
+ * the target is an address the contract itself holds, which binds the `DELEGATE` record's target to the code that
+ * runs. Anything else — a constant or computed payload, a copied local, an ordinary function's argument, a target
+ * the caller supplies — describes a call the entry's own code did not receive, and is refused.
+ */
+function isForwardedDelegate(
+  entry: FunctionDefinitionNode,
+  node: LowLevelCallStatementNode | LowLevelCallNode,
+  stateVariables: ReadonlySet<string>,
+): boolean {
+  if (entry.isFallback !== true) return false;
+  const received = entry.parameters[0]?.name;
+  const data = node.data;
+  if (received === undefined || !(data instanceof IdentifierNode) || data.name !== received) return false;
+  return namesStateVariable(node.targetExpression, stateVariables);
+}
+
+/** True when the target expression names one of the contract's own state variables. */
+function namesStateVariable(target: ExpressionNode, stateVariables: ReadonlySet<string>): boolean {
+  const name = target instanceof IdentifierNode || target instanceof StateAccessNode ? target.name : undefined;
+  return name !== undefined && stateVariables.has(name);
+}
+
+/** The low-level call node the entry carries at `index`, or undefined when the walk does not reach one. */
+function lowLevelCallNode(
+  entry: FunctionDefinitionNode,
+  index: number,
+): LowLevelCallStatementNode | LowLevelCallNode | undefined {
+  let found: LowLevelCallStatementNode | LowLevelCallNode | undefined;
+  walkInvocationAst(entry.body, (node) => {
+    if (found !== undefined) return;
+    if ((node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode)
+      && node.callIndex === index) {
+      found = node;
+    }
+  });
+  return found;
+}
+
 /** The call sites one entry makes, or why the head cannot check them. */
 function deriveEntryCallSites(
   interfaces: readonly InterfaceNode[],
   entry: FunctionDefinitionNode,
+  stateVariables: ReadonlySet<string>,
 ): { calls: MasterCallSite[]; reason?: string; pathCount?: number } {
+  const forwards = forwardDelegateCalls(entry, stateVariables);
+  if ('reason' in forwards) return { calls: [], reason: forwards.reason };
+  if (forwards.length > 0 && (entry.externalCalls?.length ?? 0) > 0) {
+    return { calls: [], reason: 'the body both forwards its own call data and makes a typed external call, and a '
+      + 'master binds one call list whose records the frame fixes in execution order' };
+  }
   const calls: MasterCallSite[] = [];
   // The position each call sits at, which the same walk answers for the whole body: a descriptor's place in this
   // list is not its place in the execution once arms can share one.
@@ -1289,7 +1413,22 @@ function deriveEntryCallSites(
     });
     descriptor += 1;
   }
-  return { calls, pathCount: 'pathCount' in walk ? walk.pathCount : undefined };
+  for (const [index] of forwards.entries()) {
+    // A forwarded delegatecall records the frame kind and the address, but no selector: the callee's call data is
+    // the caller's own received bytes, which the site binds by hashing them rather than by comparing a selector.
+    calls.push({
+      kind: FrameKind.DELEGATE,
+      selector: new Uint8Array(0),
+      target: new Uint8Array(0),
+      targetFromStack: true,
+      forwarded: true,
+      ordinal: (positions?.length ?? 0) + index,
+    });
+  }
+  return {
+    calls,
+    pathCount: forwards.length > 0 ? calls.length : ('pathCount' in walk ? walk.pathCount : undefined),
+  };
 }
 
 /**

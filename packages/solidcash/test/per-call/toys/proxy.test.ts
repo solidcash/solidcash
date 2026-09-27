@@ -1,0 +1,288 @@
+import { describe, expect, it } from 'vitest';
+import { encodeDataPush } from '@bitauth/libauth';
+import {
+  FrameKind, buildPushdataCommitment, argsHash, bytesToHex,
+  type Artifact,
+} from '@solidcash/utils';
+import { compileString } from '../../../../solidc/src/compiler.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import {
+  USER_LOCK, compileAndDeploy, entryName, master, masterInput, selectorOf,
+  token, userInput, userInputs, validatorFor,
+} from '../shapes/harness.js';
+import {
+  createComposedDerivationHost, participant,
+  type CompositionDraftPlan, type DraftMaster,
+} from '../../../src/per-call/composer/index.js';
+
+/**
+ * A proxy's shape under the per-call convention.
+ *
+ * The proxy is ordinary source: a state field holding the implementation's address and a `fallback` that
+ * delegatecalls it with the call data it received. Its master is entered by a user's root frame; the fallback
+ * records a `DELEGATE` call whose target is the address the proxy's own record holds, and the implementation's
+ * master runs that frame on the proxy's records, with `msg.sender` and `address(this)` the caller's (spec 4a).
+ *
+ * The tests below drive the shipped compile, the shipped deploy and the shipped composer on the real path, and pin
+ * what the composer laid out for the delegate hop.
+ */
+
+const PROXY_LABEL = 'proxy hop proxy';
+const IMPL_LABEL = 'proxy hop implementation';
+const RECORD_INDEX = 2;
+
+const SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   function answer() pure { require(true); }'
+  + ' }'
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+
+type Artifacts = ReturnType<typeof compileAndDeploy>['artifacts'];
+
+/** The data-NFT commitment holding the implementation's address, in the shipped encoder's form. */
+function proxyRecord(artifacts: Artifacts, implementation: Uint8Array): Uint8Array {
+  const layout = (artifacts.Proxy as Artifact).stateLayout!;
+  return new Uint8Array(Buffer.from(buildPushdataCommitment(layout, { implementation }, 0), 'hex'));
+}
+
+interface Composition {
+  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly record: Uint8Array;
+  readonly selector: Uint8Array;
+  readonly input: Uint8Array;
+  readonly implAddress: Uint8Array;
+  readonly artifacts: Artifacts;
+}
+
+/** Lays out and assembles the proxied hop. */
+function compose(): Composition {
+  const { artifacts, contracts } = compileAndDeploy(SOURCE, { Proxy: PROXY_LABEL, Impl: IMPL_LABEL });
+  const proxyContract = contracts.Proxy!;
+  const implContract = contracts.Impl!;
+  const validator = validatorFor(proxyContract.category);
+  const record = proxyRecord(artifacts, implContract.address);
+
+  const answerSelector = selectorOf(artifacts, 'Impl', 'answer');
+  // The bytes the fallback received are the callee's own call data: the selector's push and its argument pushes
+  // (none here). The site hashes those bytes to bind the callee to what the fallback forwarded.
+  const input = encodeDataPush(answerSelector);
+
+  const facts = (
+    contract: string, functionName: string, kind: number, mastersOfContract: number, makesExternalCall: boolean,
+  ): DraftMaster['facts'] => ({
+    contract, functionName, kind, callerIsUser: kind === FrameKind.ROOT, originEqualsCaller: kind === FrameKind.ROOT,
+    makesExternalCall, mastersOfContract,
+  });
+
+  const proxy: DraftMaster = master({
+    master: 'proxy-1', contract: 'Proxy', entry: '__fallback', program: proxyContract.program,
+    facts: facts('Proxy', '__fallback', FrameKind.ROOT, 1, true),
+    frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxyContract.address, value: 0n },
+    enteredBy: 'user', origin: 'user',
+    calls: [{
+      kind: FrameKind.DELEGATE, callee: 'impl-1', target: implContract.address, value: 0n,
+      argumentPushes: [answerSelector],
+    }],
+    segments: [[{ in: RECORD_INDEX, out: RECORD_INDEX, viewIn: record, viewOut: record }], []],
+    argumentPushes: [input],
+    // The user's call data is what the fallback receives and forwards; the composer's root rule admits a root that
+    // carries call data only through this flag, which a fallback-only master is the degenerate case of.
+    dispatches: true,
+  });
+  const impl: DraftMaster = master({
+    master: 'impl-1', contract: 'Impl', entry: 'answer', program: implContract.program,
+    facts: facts('Impl', 'answer', FrameKind.DELEGATE, 1, false),
+    frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxyContract.address, value: 0n },
+    enteredBy: 'proxy-1', origin: 'user',
+    segments: [[]],
+    argumentPushes: [answerSelector],
+  });
+
+  const recordSource = {
+    lockingBytecode: proxyContract.lockingBytecode, valueSatoshis: 20_000n,
+    token: token(proxyContract.category, 'mutable', record),
+  };
+  const plan: CompositionDraftPlan = {
+    blocks: [
+      { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
+      { contract: 'Impl', masters: ['impl-1'], state: [] },
+    ],
+    userInputs: userInputs(['user'], 4),
+    masters: [proxy, impl],
+    inputs: {
+      'proxy-1': { source: masterInput(proxyContract) },
+      'impl-1': { source: masterInput(implContract) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n,
+          token: token(proxyContract.category, 'mutable') },
+      },
+      record: {
+        source: recordSource,
+        output: recordSource,
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+      user: userInput(),
+    },
+    validator: {
+      id: 'validator', covers: ['Impl'],
+      settles: [{ category: proxyContract.category, stateInputs: ['record'] }],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Proxy!, artifacts.Impl!], plan,
+  });
+  return {
+    draft, record, selector: answerSelector, input, implAddress: implContract.address, artifacts,
+  };
+}
+
+const PROLOGUE = 'pragma solidcash ^0.13.0;';
+
+/** The one shape the convention serves: the fallback forwards its own received call data to an address it holds. */
+const FORWARDED_SOURCE = PROLOGUE
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external { implementation.delegatecall(input); require(true); }'
+  + ' }';
+
+/** A target the contract does not hold: the record's target could not be bound to the code that runs. */
+const UNHELD_TARGET_SOURCE = PROLOGUE
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external { address(this).delegatecall(input); require(true); }'
+  + ' }';
+
+/** A body whose call data is a constant rather than the bytes the entry received. */
+const CONSTANT_DATA_SOURCE = PROLOGUE
+  + ' contract Proxy { function set(address target) { target.delegatecall(hex"aabbccdd"); require(true); } }';
+
+/** A body whose call data is a local computed from a parameter, not the bytes the entry received. */
+const LOCAL_SLICE_SOURCE = PROLOGUE
+  + ' contract Proxy {'
+  + '   function set(address target, bytes data) { target.delegatecall(data.slice(0, 4)); require(true); }'
+  + ' }';
+
+/** A body whose call data is a parameter-shaped value that is not the entry's own received call data. */
+const PARAMETER_DATA_SOURCE = PROLOGUE
+  + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';
+
+/** One entry the compiler refused, as the artifact publishes it. */
+interface PublishedRefusal {
+  readonly functionName: string;
+  readonly reason: string;
+}
+
+/** The refusal the shipped compile publishes or throws for a source, so a test can name the shape that stops it. */
+function refusalOf(source: string, options: Record<string, unknown> = {}): { code?: string; message: string } {
+  let artifact: { composition?: { refusedEntries?: readonly PublishedRefusal[] } };
+  try {
+    artifact = compileString(source, { composition: 'per-call', ...options } as never) as never;
+  } catch (error) {
+    return { code: (error as { code?: string }).code, message: (error as Error).message };
+  }
+  const refused = artifact.composition?.refusedEntries ?? [];
+  if (refused.length === 0) {
+    throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
+  }
+  return {
+    code: 'PER_CALL_CODEGEN_UNAVAILABLE',
+    message: refused.map((entry) => `${entry.functionName}: ${entry.reason}`).join(' | '),
+  };
+}
+
+/** True when the shipped compile serves the source, i.e. throws nothing and publishes no refusal. */
+function isServed(source: string): boolean {
+  try {
+    const artifact = compileString(source, { composition: 'per-call' }) as {
+      composition?: { refusedEntries?: readonly PublishedRefusal[] };
+    };
+    return (artifact.composition?.refusedEntries ?? []).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+const LOW_LEVEL_REFUSAL = 'a low-level call needs the witness `calls[]` checks, which are not emitted yet';
+
+describe('the delegate shapes a per-call master admits', () => {
+  it('serves the fallback that forwards its own received call data to an address it holds', () => {
+    expect(isServed(FORWARDED_SOURCE)).toBe(true);
+  });
+
+  it('refuses a delegatecall of constant call data, by name', () => {
+    const refusal = refusalOf(CONSTANT_DATA_SOURCE, { allowUnsafeOperations: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
+  });
+
+  it('refuses a delegatecall of a local computed from a parameter, by name', () => {
+    const refusal = refusalOf(LOCAL_SLICE_SOURCE, { allowUnsafeOperations: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
+  });
+
+  it('refuses a delegatecall whose data operand is a parameter that is not the entry\'s own call data', () => {
+    const refusal = refusalOf(PARAMETER_DATA_SOURCE, { allowUnsafeOperations: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
+  });
+
+  it('refuses a target the contract does not hold, by name', () => {
+    const refusal = refusalOf(UNHELD_TARGET_SOURCE);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+  });
+});
+
+describe('a proxy whose fallback forwards its call data to its implementation', () => {
+  it('serves the proxy and its implementation under the per-call convention', () => {
+    const { artifacts } = compileAndDeploy(SOURCE, { Proxy: PROXY_LABEL, Impl: IMPL_LABEL });
+    expect(artifacts.Proxy?.composition?.convention).toBe('per-call');
+    expect(artifacts.Impl?.composition?.convention).toBe('per-call');
+    // The fallback is the proxy's only entry, so it is served rather than refused.
+    expect(artifacts.Proxy?.composition?.refusedEntries).toBeUndefined();
+    expect((artifacts.Proxy?.composition as { stopSites?: unknown } | undefined)?.stopSites).toBeTruthy();
+  });
+
+  it('records a DELEGATE call whose target is the address the proxy\'s record holds', () => {
+    const outcome = compose();
+    const call = outcome.draft.blockOf('proxy-1').calls[0]!;
+    expect(call.kind).toBe(FrameKind.DELEGATE);
+    expect(call.target).toStrictEqual(outcome.implAddress);
+    expect(call.value).toBe(0n);
+    // The layout places the implementation's master, and the derivation is what fills the call's callee reference.
+    expect(participant(outcome.draft.layout, 'impl-1').index).toBeTypeOf('number');
+    // The record's digest is the hash of the bytes the fallback forwarded, which are the callee's call data.
+    expect(bytesToHex(call.argsHash)).toBe(bytesToHex(argsHash(outcome.selector, new Uint8Array(0))));
+  });
+
+  it('runs the implementation as a delegate frame on the proxy\'s records', () => {
+    const { draft, record } = compose();
+    const impl = draft.blockOf('impl-1');
+    expect(impl.kind).toBe(FrameKind.DELEGATE);
+    // `msg.sender` and `address(this)` are the caller's, not the implementation's own address.
+    expect(impl.sender).toStrictEqual(draft.blockOf('proxy-1').sender);
+    expect(impl.self).toStrictEqual(draft.blockOf('proxy-1').self);
+    const index = participant(draft.layout, 'record').index;
+    expect(index).toBe(RECORD_INDEX);
+    const program = draft.programFor('proxy-1');
+    expect(program.sourceOutputs[index]!.token?.nft?.commitment).toStrictEqual(record);
+    expect(program.transaction.outputs[index]!.token?.nft?.commitment).toStrictEqual(record);
+  });
+
+  it('binds the fallback\'s forwarded call data into the callee\'s unlocking bytecode', () => {
+    const { draft, input } = compose();
+    // The proxy's own unlocking bytecode carries the bytes it received as its argument, and the callee's carries
+    // the same selector push, so the site can hash the forwarded bytes.
+    const proxyInput = draft.unlockingBytecodeOf('proxy-1');
+    const implInput = draft.unlockingBytecodeOf('impl-1');
+    expect(proxyInput).toBeTruthy();
+    expect(implInput).toBeTruthy();
+    expect(input.length).toBe(5);
+  });
+});

@@ -279,6 +279,7 @@ import {
   recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
+import { dropPrefix } from '../per-call/master/witness-reader.js';
 import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
@@ -3030,7 +3031,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    const entries = node.functions.filter((fn) => fn.isEntryPoint);
+    // A fallback is a body behind the same head when it is the contract's only entry: it is what a user's call
+    // reaches, and it takes the call data the user supplied. It counts as an entry here so the head fixes the
+    // tail, the return shape and the call-data convention for the body that actually runs.
+    const fallbackAsEntry = node.fallbackDef !== undefined
+      && !node.functions.some((fn) => fn.isEntryPoint) && node.constructorDef === undefined;
+    const entries = [
+      ...node.functions.filter((fn) => fn.isEntryPoint),
+      ...(fallbackAsEntry ? [node.fallbackDef!] : []),
+    ];
     // The head's own numbers are the ones the bodies it serves fix: a body it refuses is a stub that makes no
     // call, emits nothing and returns nothing, so it must not size the tail the head walks.
     const served = entries.filter((fn) => !this.perCallRefusedEntries.has(fn.name));
@@ -3053,7 +3062,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the root. A callee's unlocking bytecode carries the call data's selector, which a dispatcher consumes, so the
     // callee arms drop it only when the program holds no dispatcher: a single body and no constructor to dispatch
     // too.
-    const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC];
+    // A master may be entered by a user, by another master as a callee, or as the delegate target of a proxy's
+    // fallback, whose frame runs on the caller's records with the caller's `msg.sender` and `address(this)`.
+    const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE];
     const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
     const callDataSelectorUnconsumed = dispatchBodyCount === 1;
     // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
@@ -3235,6 +3246,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitPushdataDecode(returnTypes[field]!, locationData);
     }
     for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+  }
+
+  /**
+   * Emits the checks a forwarded delegatecall makes against its own witness record, where the source makes it.
+   *
+   * The caller's code holds the target and the bytes it received, so the site's target is read from the stack and
+   * the argument digest is computed here from those bytes: the callee's call data carries the selector and the
+   * argument pushes, so dropping the selector push's opcode byte and hashing the rest is the digest the record
+   * must carry. The site compares the callee's own call data to nothing else — its hash binds both the selector
+   * and the arguments to the bytes the caller forwarded.
+   */
+  private emitPerCallForwardCallSite(
+    node: LowLevelCallStatementNode | LowLevelCallNode,
+    locationData: SingleLocationData,
+    usesResult: boolean,
+  ): void {
+    const sites = this.perCallSitesForCurrentFunction();
+    const site = sites[node.callIndex];
+    if (site === undefined || site.forwarded !== true) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call delegatecall at low-level site ${node.callIndex} has no forwarded descriptor for `
+        + `'${this.currentFunction?.name ?? 'unknown'}'`,
+        { function: this.currentFunction?.name, site: node.callIndex },
+      );
+    }
+    // An expression-form call's `(success, data)` result is what its caller reads. The delegate's own code ran,
+    // which the record's kind and target checks establish, so success is a constant `true` and the data is the
+    // record's result. It goes below the values the check parks, so the check leaves `[true, data]`.
+    if (usesResult) {
+      this.emit(Op.OP_1, locationData);
+      this.pushToStack('(success)');
+    }
+    // The target the caller's own code holds is emitted first, so it is parked beneath the digest the check reads.
+    this.visit(node.targetExpression);
+    this.emitPerCallForwardedDigest(node, locationData);
+    this.popFromStack(); // the digest the check parks
+    this.popFromStack(); // the target the check parks
+    this.emit(bytecodeToScript(callSiteCheckScript(site, this.perCallOrdinal, usesResult, {
+      digestFromStack: true, targetFromStack: true, skipSelectorCheck: true,
+    })), locationData);
+    if (usesResult) this.pushToStack('(returnData)');
+  }
+
+  /** Leaves the digest a forwarded call records: the hash of the caller's received bytes past the selector push. */
+  private emitPerCallForwardedDigest(
+    node: LowLevelCallStatementNode | LowLevelCallNode,
+    locationData: SingleLocationData,
+  ): void {
+    // The received bytes are the callee's own call data: the selector's push, then the argument pushes. A
+    // selector is four bytes and a minimal push of four bytes is a direct push, so its opcode is one byte and the
+    // digest is the hash of everything after it.
+    this.visit(node.data);
+    this.emit(bytecodeToScript(dropPrefix(1)), locationData);
+    this.emit(Op.OP_SHA256, locationData);
+    this.popFromStack();
+    this.pushToStack('(value)');
   }
 
   /**
@@ -4809,7 +4877,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
       && (!node.isLibraryContract || node.isSplitFacet);
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch) {
+    // A contract whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and the
+    // call data it takes is the user's, which the master's frame supplies to the body directly.
+    const fallbackIsSoleEntry = dispatchFunctions.length === 1 && dispatchFunctions[0] === node.fallbackDef
+      && allFunctions.length === 0;
+    if (fallbackIsSoleEntry
+      || (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch)) {
       this.outlineSharedFunctionBodies(outlineLoc);
       if (cheapAdmission && !keepAdmissionBody(dispatchFunctions[0])) {
         // Throwaway admission omitted the only entry body; helper defines already emitted.
@@ -21489,6 +21562,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitLowLevelCall(node: LowLevelCallNode): Node {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
+    // A per-call master's forwarded delegatecall leaves the two values its source reads, `(success, data)`, with
+    // the data being the record's result: the call is checked where the source makes it, like the statement form.
+    if (this.perCallMaster && node.callMode === 'delegatecall') {
+      this.emitPerCallForwardCallSite(node, locationData, true);
+      this.perCallSegmentIndex += 1;
+      this.perCallOrdinal += 1;
+      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+      return node;
+    }
+
     // Handle {value: X} call option
     if (node.callOptions?.value && node.valueTransferIndex >= 0) {
       const addrParam = this.getAddressParamFromTarget(node.targetExpression);
@@ -21529,6 +21612,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
     const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+
+    // A per-call master binds a delegatecall to its own witness record where the call is made: the fallback hands
+    // its own received call data to an address it holds, so the record states the frame kind and the target and
+    // the site hashes the forwarded bytes. The call closes this segment, exactly as a typed external call does.
+    if (this.perCallMaster && node.callMode === 'delegatecall') {
+      this.emitPerCallForwardCallSite(node, locationData, false);
+      this.perCallSegmentIndex += 1;
+      this.perCallOrdinal += 1;
+      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
+      return node;
+    }
 
     // Handle {value: X} call option
     if (node.callOptions?.value && node.valueTransferIndex >= 0) {

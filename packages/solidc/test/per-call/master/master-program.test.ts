@@ -105,12 +105,13 @@ describe('a compiled per-call master', () => {
     // A frame that names no validator is standalone, so only a root frame is admitted.
     expect(contains(script, [0x02, 0xff, 0xff, 0x87, 0x63])).toBe(true); // validatorRef == the u16 sentinel
     expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9d])).toBe(true); // standalone: kind == 0
-    // The reserved address slot is pushed right before the self comparison.
+    // The reserved address slot is pushed right before the self comparison, inside the arm that admits the frame
+    // kinds whose `address(this)` is their own code constant.
     const { addressOffset, templateHashOffset } = compile().composition!.placeholders;
     expect(script.subarray(addressOffset, addressOffset + 36).subarray(0, 1))
       .toEqual(new Uint8Array([ADDRESS_SLOT_LENGTH]));
     expect(script.subarray(addressOffset - 1, addressOffset + 1))
-      .toEqual(new Uint8Array([0x78, ADDRESS_SLOT_LENGTH])); // OP_OVER then the slot
+      .toEqual(new Uint8Array([0x79, ADDRESS_SLOT_LENGTH])); // OP_PICK, then the slot
     // A master that can be entered as a callee reserves the validator program hash slot its call arm reads.
     expect(templateHashOffset).toBeTypeOf('number');
     expect(script.subarray(templateHashOffset!, templateHashOffset! + 1))

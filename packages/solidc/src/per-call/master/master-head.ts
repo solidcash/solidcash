@@ -203,6 +203,8 @@ const FRAME_KIND_ROOT = 0;
 const FRAME_KIND_CALL = 1;
 /** The frame kind of a read-only call: the one a callee of a `view`/`pure` read runs. */
 const FRAME_KIND_STATIC = 2;
+/** The frame kind of a delegate call: the one a `delegatecall` callee runs on its caller's records. */
+const FRAME_KIND_DELEGATE = 3;
 
 /** Builds the head a master program opens with. */
 export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
@@ -435,8 +437,8 @@ class HeadEmitter {
       { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertCallerIsNotSelf();
-    this.assertSelfEqualsReservedAddress();
     this.computeOrigin();
+    this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
     this.branchOnValidatorNeed();
     this.dropName('kind');
@@ -449,6 +451,26 @@ class HeadEmitter {
     this.stack.push('origin', 'sender', 'value', 'self');
   }
 
+  /**
+   * Checks `address(this)` against the code constant for every frame kind whose `self` is its own address.
+   *
+   * A `ROOT`, `CALL`, `STATIC` or `CREATE` frame presents the address of its own contract, which the code holds as
+   * a constant. A `DELEGATE` or `INTERNAL` frame presents its caller's, which the validator binds, so the check is
+   * skipped there and the witness claim is left for the body. The address slot is reserved once, inside the arm.
+   */
+  private assertSelfAddressForCodeConstantKinds(): void {
+    this.emitBranch(
+      () => {
+        this.frameKindIs(FRAME_KIND_DELEGATE);
+        this.emitOp(Opcodes.OP_NOT);
+        this.pop(1);
+        this.push('bool');
+      },
+      () => this.assertSelfEqualsReservedAddress(),
+      () => {},
+    );
+  }
+
   /** `tx.origin` for any admitted frame: the lock of the origin reference. */
   private computeOrigin(): void {
     this.pick('originRef');
@@ -456,7 +478,13 @@ class HeadEmitter {
     this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
   }
 
-  /** Branches on the frame kind: a root frame is the master's to check, a callee's frame the validator's. */
+  /**
+   * Branches on the frame kind: a root frame is the master's to check, a callee's frame the validator's.
+   *
+   * A `DELEGATE` frame's `address(this)` is its caller's, so its arm leaves the witness claim instead of checking
+   * it against the code constant, and it never settles the master's own records: that frame runs on the caller's
+   * context, which the validator settles.
+   */
   private branchOnFrameKind(): void {
     this.emitBranch(
       () => {
@@ -472,7 +500,11 @@ class HeadEmitter {
         () => this.emitBranch(
           () => this.frameKindIs(FRAME_KIND_STATIC),
           () => this.assertStaticFrame(),
-          () => this.emitRefusal(),
+          () => this.emitBranch(
+            () => this.frameKindIs(FRAME_KIND_DELEGATE),
+            () => this.assertDelegateFrame(),
+            () => this.emitRefusal(),
+          ),
         ),
       ),
     );
@@ -522,6 +554,16 @@ class HeadEmitter {
    */
   private assertStaticFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_STATIC);
+    if (this.callDataSelectorUnconsumed) this.dropBottom();
+  }
+
+  /**
+   * A delegate call: the callee runs on its caller's records, so `address(this)` and `msg.sender` are the
+   * caller's, which the validator binds (V5). The witness `self` is left for the body, and the frame settles no
+   * record of its own: the caller's context contract is what the validator settles.
+   */
+  private assertDelegateFrame(): void {
+    this.assertFrameKindValue(FRAME_KIND_DELEGATE);
     if (this.callDataSelectorUnconsumed) this.dropBottom();
   }
 
@@ -614,6 +656,14 @@ class HeadEmitter {
         this.push('masterCount');
         this.pushNumber(1);
         this.numequal();
+        // A delegate frame runs on its caller's records, so it never settles the records of its own category here.
+        this.frameKindIs(FRAME_KIND_DELEGATE);
+        this.emitOp(Opcodes.OP_NOT);
+        this.pop(1);
+        this.push('bool');
+        this.emitOp(Opcodes.OP_BOOLAND);
+        this.pop(2);
+        this.push('bool');
       },
       () => this.assertSelfSettlement(),
       () => {},

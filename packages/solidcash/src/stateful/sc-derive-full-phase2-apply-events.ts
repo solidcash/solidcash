@@ -6,13 +6,14 @@ import { binToHex, type AuthenticationProgramStateCommon } from '@bitauth/libaut
 import type { EmitAbi, FunctionBlockLayout } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
+import { extractGraphEventExpectations, graphEventCandidateIndices } from './graph-event-expectations.js';
 import {
   extractCommitmentMapFromTrace,
   isDynamicChunkCommitmentAtIndex,
 } from './trace-commitment-helpers.js';
 
 export type DeriveFullPhase2DynamicChunkVar = ReturnType<
-  StatefulTransactionBuilder['getDynamicChunkVars']
+StatefulTransactionBuilder['getDynamicChunkVars']
 >[number];
 
 export type DeriveFullPhase2EventsHost = {
@@ -72,14 +73,15 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
   // dynamic commitments after value chunks have converged so the output-index range reflects the
   // builder's updated layout (NEW nodes, value chunks, pending outputs, then dynamic chunks).
   if (chunkVars.length > 0) {
+    const env = (globalThis as { process?: { env?: Record<string, string> } }).process?.env;
+    const debugDynamicChunks = env?.SOLIDC_DEBUG_ROUTE_CONCISE === '1' || env?.SOLIDC_DEBUG_RETURN === '1';
     let chunkOffset = getPhysicalChunkOutputBase();
     for (const dv of chunkVars) {
       const existing = stb.getChunkRawCommitments(dv.name);
       const commitMap = extractCommitmentMapFromTrace(
         fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
       );
-      if (['SOLIDC_DEBUG_ROUTE_CONCISE', 'SOLIDC_DEBUG_RETURN'].some((name) =>
-        (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] === '1')) {
+      if (debugDynamicChunks) {
         console.error('root-dynamic-chunk-scan', {
           iter, variable: dv.name, delegatecallInputIndex,
           chunkOffset, existing, outputCount: probeBuilder2.outputs.length,
@@ -134,7 +136,7 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
     latestEventCommits = [];
     const eventSlots = eventBlockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
     const firstEventOffset = eventSlots[0]?.offset;
-    for (const [selectedOrdinal, emitInfo] of emitInfos!.entries()) {
+    const selectedEmits = emitInfos!.map((emitInfo, selectedOrdinal) => {
       const slot = eventSlots.find((candidate) => candidate.slotIndex === emitInfo.emitIndex);
       const outputIndex = slot === undefined
         // Backward compatibility for artifacts predating block-layout event slots.
@@ -144,12 +146,23 @@ export function deriveFullPhase2ApplyDynamicRescanAndEvents(
         // that frame once; the delegate input index belongs to VM
         // execution, not to output materialization.
         : stb.getEventOutputBase() + slot.offset - (firstEventOffset ?? slot.offset);
+      return { emitInfo, selectedOrdinal, slot, outputIndex };
+    });
+    // Graph handlers search a bounded event window using both commitment and covenant identity. There is no
+    // EQUALVERIFY pin until a candidate matches, so an empty event blocks every later state/value-chunk pin.
+    // Reuse the same compiler-pattern-aware extractor as return probes, restricted to these published slots.
+    const graphExpectations = extractGraphEventExpectations(
+      fullTrace2, new Set(selectedEmits.map((emit) => emit.outputIndex)), transaction2.outputs,
+    );
+    const graphCandidates = graphEventCandidateIndices(fullTrace2);
+    for (const { emitInfo, selectedOrdinal, slot, outputIndex } of selectedEmits) {
       const eventCommitMap = extractCommitmentMapFromTrace(
         fullTrace2, { min: outputIndex, max: outputIndex + 1 }, true, false, true,
       );
       const actual = probeBuilder2.outputs[outputIndex]?.token?.nft?.commitment;
-      const mappedCommitment = eventCommitMap.get(outputIndex);
-      const fallbackCommitment = mappedCommitment === undefined
+      const mappedCommitment = graphCandidates.has(outputIndex)
+        ? graphExpectations.get(outputIndex)?.commitment : eventCommitMap.get(outputIndex);
+      const fallbackCommitment = mappedCommitment === undefined && !graphCandidates.has(outputIndex)
         ? host.extractExpectedOutputCommitmentFromTrace(fullTrace2, outputIndex, actual ?? '')
         : undefined;
       const commitment = mappedCommitment ?? fallbackCommitment;

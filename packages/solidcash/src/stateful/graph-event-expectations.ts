@@ -20,6 +20,17 @@ function graphEventLockReadIp(state: AuthenticationProgramStateCommon): number |
   return state.ip + 6;
 }
 
+/** Outputs inspected by a graph event search must not fall back to commitment-only equality matching. */
+export function graphEventCandidateIndices(
+  trace: readonly AuthenticationProgramStateCommon[],
+): ReadonlySet<number> {
+  return new Set(trace.flatMap((state) => {
+    if (state.controlStack.includes(false) || state.stack.length < 2
+      || graphEventLockReadIp(state) === undefined) return [];
+    return [Number(vmNumberToBigInt(state.stack.at(-1)!))];
+  }));
+}
+
 /**
  * A graph event searches several candidate outputs. Pair its commitment with the lock operand from the same
  * candidate comparison, then publish one expectation for the window. Generic equality extraction can cross

@@ -38,6 +38,27 @@ export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37, 0x01]);
 export const MAX_TRANSCRIPT_COUNT = 255;
 
 /**
+ * The width a declared view is padded to before it is gathered: an NFT commitment's maximum length.
+ *
+ * The padding is what makes one gathered record entry findable by a single walk of a fixed stride: an entry's key
+ * and one padded view are one contiguous window, so a search compares windows rather than re-reading the block.
+ */
+const VIEW_PADDING_BYTES = 128;
+
+/** One gathered record entry: the index pair, the record's key, the start view padded, the key, the end view. */
+const RECORD_ENTRY_STRIDE = 2 + 2 + 4 + VIEW_PADDING_BYTES + 4 + VIEW_PADDING_BYTES;
+
+/** The record's key: four bytes naming the record an entry belongs to. */
+const RECORD_ENTRY_KEY_BYTES = 4;
+
+/** The window that carries an entry's key with the view it declares at the record's start, and with its end view. */
+const RECORD_ENTRY_START_WINDOW = 2 + 2;
+const RECORD_ENTRY_END_WINDOW = RECORD_ENTRY_START_WINDOW + RECORD_ENTRY_KEY_BYTES + VIEW_PADDING_BYTES;
+
+/** A window is an entry's key with one of its two views. */
+const RECORD_ENTRY_WINDOW_BYTES = RECORD_ENTRY_KEY_BYTES + VIEW_PADDING_BYTES;
+
+/**
  * Inert bytes the program carries and drops at the end, which buy the input's own operation-cost budget.
  *
  * The budget is eight hundred units per byte of the input's unlocking bytecode, and the walk over the covered
@@ -110,6 +131,14 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V7_EVENT_OUTPUT_SHARED',
   'V7_TOUCHED_RECORDS_MISMATCH',
+  // The chains rule is the order-free half of the derivation's chaining: a chain that starts away from the
+  // transaction's own commitment, one that carries on from a view no declaration leaves, and one that carries on
+  // from a deletion are all refused. What it cannot see is the derived order, so a chain whose *last* declaration
+  // misses the record's output commitment is caught only when no other declaration shares that view; the
+  // derivation's `V7_CHAIN_END_MISMATCH` is therefore not in this list (the Log and the Deviations carry the case).
+  'V7_CHAIN_START_MISMATCH',
+  'V7_CHAIN_BROKEN',
+  'V7_CHAIN_MIDDLE_DELETE',
   'V7_RECORD_VALUE_DECREASED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
@@ -120,7 +149,9 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
  *
  * `V6` is absent on purpose: the program requires every covered master to be reached exactly once, which closes
  * cycles and unreachable masters, but the ordering half of that check — a callee running between its caller's
- * segments — is carried by the record chains, which are not emitted yet.
+ * segments — is the derived order, which the program does not hold; the record chains the ordering also carries are
+ * enforced as far as the order-free half reaches. `V7` is absent for the same reason: the chains are emitted, but
+ * the chain end they decide in the derived order is not completely decided here.
  */
 export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V8', 'V9', 'V10', 'V11'];
 
@@ -1311,6 +1342,7 @@ function emitOneSettleCensus(e: Emitter): void {
   e.op(O.OP_DROP);
   emitRequireMastersRecreated(e);
   emitRequireTouchedRecords(e);
+  emitRequireRecordChains(e);
   emitRequireRecordValues(e);
   e.op(O.OP_DROP);
 }
@@ -1648,6 +1680,233 @@ function emitCheckGatheredIndices(e: Emitter): void {
   e.op(O.OP_ELSE, O.OP_2DROP, O.OP_ENDIF);
 }
 
+
+/**
+ * V7's record chains: every view a frame declares for a record carries on from the frame before it.
+ *
+ * Entry `[.., X]`, exit the same. Every record entry the frames running on the contract declare is gathered into one
+ * blob of fixed-width records, and each entry is then weighed against the rest: the view it declares at the record's
+ * start has to be the commitment the transaction spends at the record's input, or the end view another declaration
+ * of the same record leaves; the view it declares at the record's end has to be what the transaction writes at the
+ * record's output, or the start view another declaration reads. An entry that deletes the record ends its chain, so
+ * nothing may carry on from it.
+ *
+ * The derivation decides the chains in the order it ran the frames, which the program does not hold: the transcript
+ * says which frames ran, not the order their segments ran in. What is decided here is therefore the order-free half
+ * of that rule - every entry has to name a declaration it continues from and one that continues from it - which no
+ * accepted composition can fail.
+ */
+function emitRequireRecordChains(e: Emitter): void {
+  const O = Opcodes;
+  emitCollectRecordEntries(e);
+  // `[.., X, blob]`: one copy is the haystack every search reads, the other shrinks as the walk reads it, and the
+  // count beside them keeps the walk to the entries the blob carries.
+  e.op(O.OP_DUP, O.OP_SIZE);
+  e.push(encodeInt(BigInt(RECORD_ENTRY_STRIDE))).op(O.OP_DIV, O.OP_SWAP);
+  // `[.., X, blob, count, rest]`.
+  loopCounted(e, emitCheckRecordEntryChain);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * Every record entry the frames running on the contract declare, gathered into one blob.
+ *
+ * Entry `[.., X]`, exit `[.., X, blob]`. The walk is the one the declared record outputs use, and the accumulator
+ * lives on the alternate stack so each frame's block can be read without disturbing the walk.
+ */
+function emitCollectRecordEntries(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitAppendMasterRecordEntries(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/**
+ * One frame's record entries, appended to the accumulator.
+ *
+ * Entry `[.., rest, index]`, exit `[.., rest]`. The block is walked to its segment region, exactly as the declared
+ * output walk does, and every entry of every segment is gathered whole.
+ */
+function emitAppendMasterRecordEntries(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectSegmentRecordEntries);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/** One segment: a counted list of record entries, each gathered whole. */
+function emitCollectSegmentRecordEntries(e: Emitter): void {
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectRecordEntry);
+}
+
+/**
+ * One record entry, appended to the accumulator as one fixed-width record.
+ *
+ * Entry `[.., count, rest]`, exit `[.., count, rest]`. The record is the index pair, the record's key, the start
+ * view padded, the key again, and the end view padded: the key twice, so one search compares it with the view a
+ * declaration starts at and another with the view it ends at.
+ */
+function emitCollectRecordEntry(e: Emitter): void {
+  const O = Opcodes;
+  takeRawField(e, 2);
+  takeRawField(e, 2);
+  // `[.., count, in, out, rest]`: the indices are appended as copies, since the key needs them both.
+  e.count(2).op(O.OP_PICK);
+  emitAppendAccumulated(e);
+  e.count(1).op(O.OP_PICK);
+  emitAppendAccumulated(e);
+  emitAppendKey(e, 2, 2);
+  e.script(takeLengthPrefixedField32());
+  e.count(1).op(O.OP_PICK);
+  emitPadView(e);
+  emitAppendAccumulated(e);
+  emitAppendKey(e, 3, 3);
+  e.script(takeLengthPrefixedField32());
+  e.count(1).op(O.OP_PICK);
+  emitPadView(e);
+  emitAppendAccumulated(e);
+  // `[.., count, in, out, viewIn, viewOut, rest]`: the entry is consumed, its record is on the accumulator.
+  e.op(O.OP_NIP, O.OP_NIP, O.OP_NIP, O.OP_NIP);
+}
+
+/**
+ * One entry's key, appended to the accumulator from copies of the two indices.
+ *
+ * `inDepth` and `outDepth` are the two indices' depths in the walk's own stack, which differ between the two places
+ * a key is appended: the entry's views are read between them.
+ */
+function emitAppendKey(e: Emitter, inDepth: number, outDepth: number): void {
+  const O = Opcodes;
+  e.count(inDepth).op(O.OP_PICK);
+  e.count(outDepth).op(O.OP_PICK);
+  emitBuildKey(e);
+  emitAppendAccumulated(e);
+}
+
+/**
+ * One gathered record entry, weighed against the declarations of the same record.
+ *
+ * Entry `[.., blob, count, rest]`, exit `[.., blob, count, rest']`. A record's declarations chain: the view an
+ * entry starts at is the commitment the transaction spends at the record's input, or the end view of a declaration
+ * that ran before it, and the view it ends at is what the transaction writes at the record's output, or the start
+ * view of a declaration that runs after it. An entry that creates the record continues from nothing; one that
+ * deletes it ends the chain, so nothing may carry on from it.
+ *
+ * The program holds the declarations, not the order they ran in, so what is checked is the order-free half of that
+ * rule: every entry names a declaration it continues from and one that continues from it, with the transaction's
+ * own commitment standing in when it is at the chain's end. Every accepted composition satisfies it; a chain that
+ * starts in the middle, or one that carries on from a deletion, does not.
+ */
+function emitCheckRecordEntryChain(e: Emitter): void {
+  const O = Opcodes;
+  e.push(encodeInt(BigInt(RECORD_ENTRY_STRIDE))).op(O.OP_SPLIT, O.OP_SWAP);
+  // The two indices are read as numbers, because the checks compare them with the transaction's own counts and ask
+  // the machine for the commitments they hold; the block writes them as fixed two-byte fields, which is not what a
+  // number-taking operation accepts.
+  takeUnsignedCount(e, 2);
+  takeUnsignedCount(e, 2);
+  takeRawField(e, RECORD_ENTRY_KEY_BYTES);
+  takeRawField(e, VIEW_PADDING_BYTES);
+  takeRawField(e, RECORD_ENTRY_KEY_BYTES);
+  takeRawField(e, VIEW_PADDING_BYTES);
+  e.op(O.OP_DROP);
+  // `[.., blob, count, rest, in, out, key, viewIn, key, viewOut]`.
+
+  // The declarations that read what this one writes: its key with its end view, looked for in the window that pairs
+  // a declaration's key with the view it starts at.
+  e.count(3).op(O.OP_PICK);
+  e.count(1).op(O.OP_PICK);
+  e.op(O.OP_CAT);
+  e.count(9).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWindow(e, RECORD_ENTRY_STRIDE, RECORD_ENTRY_START_WINDOW, RECORD_ENTRY_WINDOW_BYTES);
+  e.op(O.OP_TOALTSTACK);
+  // The declarations that write what this one reads: its key with its start view, in the window that pairs a key
+  // with the view a declaration ends at.
+  e.count(3).op(O.OP_PICK);
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_CAT);
+  e.count(9).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWindow(e, RECORD_ENTRY_STRIDE, RECORD_ENTRY_END_WINDOW, RECORD_ENTRY_WINDOW_BYTES);
+  e.op(O.OP_TOALTSTACK);
+  // `[.., ..., self]`: an entry whose two views are equal counts itself once in each search, which is the segment
+  // that read a record without writing it, and the checks allow for exactly that.
+  e.count(2).op(O.OP_PICK);
+  e.count(1).op(O.OP_PICK);
+  e.op(O.OP_EQUAL);
+
+  // A declaration that creates the record continues from nothing.
+  e.count(6).op(O.OP_PICK);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_1);
+  e.op(O.OP_ELSE);
+  // Otherwise it continues from the commitment the record's input holds, or from another declaration's end view.
+  e.count(6).op(O.OP_PICK);
+  e.op(O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(6).op(O.OP_PICK);
+  e.op(O.OP_UTXOTOKENCOMMITMENT);
+  emitPadView(e);
+  e.count(4).op(O.OP_PICK);
+  e.op(O.OP_EQUAL);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_0);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_FROMALTSTACK);
+  e.count(2).op(O.OP_PICK);
+  e.op(O.OP_GREATERTHAN, O.OP_BOOLOR);
+  e.op(O.OP_ENDIF);
+
+  // A declaration that deletes the record ends the chain there.
+  e.count(6).op(O.OP_PICK);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_FROMALTSTACK);
+  e.count(2).op(O.OP_PICK);
+  e.op(O.OP_EQUAL);
+  e.op(O.OP_ELSE);
+  // Otherwise another declaration reads what it writes, or the transaction writes it at the record's output.
+  e.count(6).op(O.OP_PICK);
+  e.op(O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.count(6).op(O.OP_PICK);
+  e.op(O.OP_OUTPUTTOKENCOMMITMENT);
+  emitPadView(e);
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_EQUAL);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_0);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_FROMALTSTACK);
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_GREATERTHAN, O.OP_BOOLOR);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_BOOLAND, O.OP_VERIFY);
+  e.op(O.OP_2DROP, O.OP_2DROP, O.OP_2DROP, O.OP_DROP);
+}
 
 /**
  * The records the frames on the contract read are exactly the state UTXOs it spends.
@@ -2151,6 +2410,31 @@ function emitFoundWidth(e: Emitter, width: number): void {
 }
 
 /**
+ * Entry `[haystack, needle]`, exit `[found]`: how many `stride`-byte records carry the needle in their `width` bytes
+ * at `offset`.
+ *
+ * A gathered record is a run of fixed-width records, and a search that scanned byte by byte could find a needle
+ * straddling two of them and count an entry that does not exist. This steps one whole record at a time so every
+ * comparison is a window of one record.
+ */
+function emitFoundWindow(e: Emitter, stride: number, offset: number, width: number): void {
+  const O = Opcodes;
+  e.op(O.OP_0, O.OP_ROT);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.push(encodeInt(BigInt(stride))).op(O.OP_SPLIT, O.OP_SWAP);
+  if (offset > 0) e.count(offset).op(O.OP_SPLIT, O.OP_NIP);
+  e.count(width).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_SWAP, O.OP_1ADD, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_NIP);
+}
+
+/**
  * A covered master whose address comes from its own category presents that category's address.
  *
  * Entry `[M]`, exit `[M]`. Frames that run with their caller's address are not decided here. The address is the
@@ -2364,6 +2648,44 @@ function takeUnsignedCount(e: Emitter, width: number): void {
   e.op(O.OP_SWAP);
 }
 
+
+/** Entry `[rest]`, exit `[field, rest]`. The field is left as the bytes the block wrote, not as a number. */
+function takeRawField(e: Emitter, width: number): void {
+  e.count(width).op(Opcodes.OP_SPLIT);
+}
+
+/** Entry `[.., view]`, exit `[.., view]` zero-padded on the right to a commitment's full width. */
+function emitPadView(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_0);
+  e.count(VIEW_PADDING_BYTES);
+  e.op(O.OP_NUM2BIN, O.OP_CAT);
+  e.count(VIEW_PADDING_BYTES).op(O.OP_SPLIT, O.OP_DROP);
+}
+
+/** Entry `[.., item, accumulator]`, exit `[.., accumulator]` with `item` appended. */
+function emitAppendAccumulated(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+}
+
+/**
+ * Entry `[.., in, out]`, exit `[.., key]`: the four bytes naming the record an entry belongs to.
+ *
+ * A record the segment already holds is named by the input it sits at; one the segment creates is named by the
+ * output it appears at. Two entries belong to the same record exactly when their keys are equal, which is what the
+ * chain searches compare.
+ */
+function emitBuildKey(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_OVER);
+  e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_NIP);
+  e.push(INDEX_NONE_RAW).op(O.OP_SWAP, O.OP_CAT);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_DROP, O.OP_DUP, O.OP_CAT);
+  e.op(O.OP_ENDIF);
+}
 /** Runs `body` once per count. Entry `[count, rest]`, exit `[rest]`. `body` replaces `rest` and leaves `count`. */
 function loopCounted(e: Emitter, body: (emitter: Emitter) => void): void {
   const O = Opcodes;

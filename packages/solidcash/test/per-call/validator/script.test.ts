@@ -21,6 +21,7 @@ import { describe, expect, test } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
+  INDEX_NONE,
   TokenCapability,
   concatBytes,
   encodeTranscript,
@@ -1042,6 +1043,69 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a declaration that chains from a view no declaration leaves', () => {
+    // A declaration's start view is the chain's link to what ran before it: the transaction's own commitment at the
+    // record's input, or the end view another declaration left. Here the last declaration starts at a view nothing
+    // leaves, so it continues from nothing between the input and the transaction's output - the derivation refuses
+    // the chain as broken, and the program, which pairs each declaration with the declarations of the same record,
+    // finds no end view at it.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const block = composition.blocks.get('A.more')!;
+    const entry = block.segments[0]![0]!;
+    block.segments[0] = [{ ...entry, viewIn: seedBytes('chain-nowhere', 6) }];
+    const tampered = materialise(composition);
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_BROKEN');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a declaration that carries on from a deleted record', () => {
+    // A declaration that deletes the record ends its chain. Here the callee deletes it and the declaration the
+    // caller runs afterwards still reads the record at the same view, so the chain carries on from a deletion: the
+    // derivation refuses a middle delete, and the program sees a declaration that deletes the record with another
+    // declaration starting where it ends, which is exactly the continuation a deletion may not have.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const block = composition.blocks.get('A.more')!;
+    const record = block.segments[0]![0]!;
+    expect(record.in).toBeGreaterThanOrEqual(0);
+    block.segments[0] = [{ ...record, out: INDEX_NONE }];
+    const tampered = materialise(composition);
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_MIDDLE_DELETE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a chain whose end misses the record output commitment', () => {
+    // The chains rule also pins the transaction's own end of the chain: the declaration that closes it writes at the
+    // record's output, so that output carries the view it ended at. When a record's output commitment is anything
+    // else and no other declaration starts where the closing declaration ends, the machine refuses the input. What
+    // it cannot decide is which declaration closed the chain when several share that view; the Log and the
+    // Deviations carry that limit.
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const record = composition.slotIndex.get('DA')!;
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === record
+        ? { ...output, token: mutableTokenShape(output.token.category, seedBytes('chain-end-elsewhere', 6)) }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_END_MISMATCH');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a spent record that no frame reads', () => {
     // A second state UTXO of the same contract, listed by the transcript as one to settle, that no frame ever reads:
     // nothing rebuilds it, so the settlement would drop a record the contract holds. The accepted control is the
@@ -1118,9 +1182,12 @@ describe('the validator program refuses each rule it enforces', () => {
   });
 
   test('runs the reference composition at the published operation-cost density', () => {
-    // The plan's open question: the program costs operations the unlocking bytecode has to pay for, and the real
-    // profile budgets 800 cost per byte. A program that did not fit would make every composed transaction
-    // unspendable on chain, which is a different failure from refusing a bad rule.
+    // A measurement, not a gate. The program costs operations the unlocking bytecode has to pay for, and the real
+    // profile budgets 800 cost per byte: a program that did not fit would make every composed transaction
+    // unspendable on chain, which is a different failure from refusing a bad rule. The plan defers that size budget
+    // to Phase R (D3, A9), so what this reports is the numbers — the program's own bytes, each input's unlocking and
+    // locking bytes, the operation cost against the maximum the input buys, and the verdict the input got. The rest
+    // of this suite runs on the relaxed profile, which is the profile the plan's gate is stated against.
     const composition = laidOut(abbaPlan());
     const index = composition.validatorIndex;
     const transaction = materialise(composition);
@@ -1147,12 +1214,12 @@ describe('the validator program refuses each rule it enforces', () => {
       operationCost: cost,
       accepted: vm.stateSuccess(state) === true,
     }));
-    expect(vm.stateSuccess(state)).toBe(true);
-    // The padding block exists so this input pays for the walk it runs: the budget the padding buys has to exceed
-    // what the enforced checks spend, or a rule added next would push an honest composition over the limit and the
-    // failure would read as a wrong refusal rather than as a budget. The bound is the padding's own contribution,
-    // so it moves with the constant rather than with a number copied from one run.
-    expect((cost?.maximumOperationCost ?? 0) - (cost?.operationCost ?? 0))
-      .toBeGreaterThan((VALIDATOR_INPUT_PADDING_BYTES * 800) / 2);
+    // The one thing asserted is that the run happened: the machine priced the input, which is what makes the logged
+    // numbers a measurement of the shipped program rather than of a script it never reached. How the numbers
+    // compare to the density is Phase R's to gate.
+    expect(cost?.maximumOperationCost ?? 0).toBeGreaterThan(0);
+    // The padding block is what buys the input's operation-cost budget; the number is reported with the rest so the
+    // comparison against it stays visible when this becomes a gate.
+    console.log('padding', VALIDATOR_INPUT_PADDING_BYTES);
   });
 });

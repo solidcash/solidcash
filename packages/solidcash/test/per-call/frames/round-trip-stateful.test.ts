@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
+  INDEX_NONE,
   buildMasterUnlockingBytecode,
   buildPushdataCommitment,
   computeFunctionSelector,
@@ -40,12 +41,11 @@ import {
  *
  * Everything is shipped: the sources through `compileStringMulti` with the per-call option, both programs through
  * the shipped deployment, the composer laying the two contracts' blocks out and assembling the caller, the masters
- * and the validator, and the derivation walking the call graph depth first. What the composition produces is
- * accepted by the validator decision and by the machine on the validator input and on `B`'s master. The masters
- * that write `A`'s record are where the shipped path stops: each of them compares the whole commitment it
- * reconstructs against the transaction output at the record's index, and only one output can carry one value, so a
- * frame whose write is not the transaction's last write of that record cannot accept. The tests below pin that
- * refusal by name rather than passing over it.
+ * and the validator, and the derivation walking the call graph depth first. Each frame's code reads its record from
+ * its own segment's declaration and closes against the commitment that segment declares, so a record written by
+ * several frames in one transaction can be settled: the derivation completes callee first, every contract input is
+ * accepted by the machine, and the validator's own decision accepts the transcript. The tests below also pin the
+ * refusals that hold the declarations to the frames' own computations and to the transaction.
  */
 
 const CATEGORY_A = seededCategory('round trip stateful A');
@@ -293,10 +293,7 @@ function buildComposition(options: {
 const ROOT = { contract: 'A', functionName: ENTRY_F, kind: FrameKind.ROOT, master: A_FIRST };
 
 function machine(): ReturnType<typeof createVirtualMachineBch2026> {
-  return createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  return createVirtualMachineBch2026(false);
 }
 
 /** The machine's verdict on one input of the assembled transaction. */
@@ -320,19 +317,17 @@ function compose(options: Parameters<typeof buildComposition>[0] = {}): {
 }
 
 /**
- * Drives the whole shipped path and returns the draft as far as it got.
- *
- * The derivation fills `A.f`'s call and, inside it, `B.g`'s call; the re-entered master is then what stops it.
+ * Drives the whole shipped path to completion and returns the finished draft and the derivation's result.
  */
-function driveUntilStall(): { draft: CompositionDraft; plan: CompositionDraftPlan; error: Error } {
-  const { plan, artifacts: compiled } = buildComposition();
+function deriveRoundTrip(options: Parameters<typeof buildComposition>[0] = {}): {
+  draft: CompositionDraft;
+  plan: CompositionDraftPlan;
+  result: ReturnType<typeof deriveDepthFirst>;
+} {
+  const { plan, artifacts: compiled } = buildComposition(options);
   const { host, draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
-  try {
-    deriveDepthFirst(ROOT, host);
-  } catch (error) {
-    return { draft, plan, error: error as Error };
-  }
-  throw new Error('the derivation was expected to stop on the re-entered master');
+  const result = deriveDepthFirst(ROOT, host);
+  return { draft, plan, result };
 }
 
 /**
@@ -400,54 +395,52 @@ describe('a two-contract round trip where both contracts keep records', () => {
       .toStrictEqual([[RECORD_B_INDEX], [RECORD_B_INDEX]]);
   });
 
-  it('reaches the re-entered master and stops on its record write', () => {
-    const { error } = driveUntilStall();
-    expect(error.name).toBe('PerCallComposerError');
-    expect(error.message).toContain('PER_CALL_DERIVATION_STALLED');
-    expect(error.message).toContain(`master "${A_SECOND}" of ${ENTRY_K}`);
-    expect(error.message).toContain('site 0 (close of segment 0)');
+  it('derives the round trip depth first, each callee before its caller', () => {
+    const { result } = deriveRoundTrip();
+    // The entry's call reaches `B.g`, whose call reaches the re-entered `A.k`; each callee completes before the
+    // execution that called it resumes.
+    expect(result.completed.map((frame) => frame.master)).toStrictEqual([A_SECOND, B_MASTER, A_FIRST]);
   });
 
-  it('refuses a master whose record write is not the commitment the transaction writes', () => {
-    // The re-entered master's own code computes `5 + 1` from the record it spends and reconstructs that whole
-    // commitment. The transaction's record output is the only thing the two runs below change: when it carries
-    // what the code computed the master accepts, and when it carries the value the frame that writes last leaves
-    // it refuses, so one output cannot carry both writes.
-    const at = (recordAWritten: Uint8Array): { accepted: boolean; objection?: string } => {
-      const { draft } = compose({ recordAWritten });
-      const program = draft.programFor(A_SECOND);
-      return verdict(machine(), program, participant(draft.layout, A_SECOND).index);
-    };
-    const mine = at(A_AFTER_F0);
-    expect(mine.objection ?? 'accepted').toBe('accepted');
-    const chained = at(A_WRITTEN);
-    expect(chained.accepted).toBe(false);
-    // The refusal is the reconstructed commitment failing its check, not a witness the derivation still owed.
-    expect(chained.objection).toContain('OP_VERIFY');
-  });
-
-  it('accepts the composed declarations and the validator input, so the refusal is the masters\'', () => {
-    const { draft } = driveUntilStall();
+  it('accepts every contract input and the validator', () => {
+    const { draft } = deriveRoundTrip();
     const vm = machine();
     const program = draft.programFor(A_FIRST);
     const at = (id: string): { accepted: boolean; objection?: string } =>
       verdict(vm, program, participant(draft.layout, id).index);
-
-    // The validator's own program accepts the transcript the composer assembled, and `B`'s single master settles
-    // its own record across its two segments. Only the two `A` masters refuse, because each of them would have to
-    // see the whole transaction carrying its own write.
-    expect(at(VALIDATOR_ID).objection ?? 'accepted').toBe('accepted');
+    expect(at(A_FIRST).objection ?? 'accepted').toBe('accepted');
+    expect(at(A_SECOND).objection ?? 'accepted').toBe('accepted');
     expect(at(B_MASTER).objection ?? 'accepted').toBe('accepted');
-    // Each `A` master reconstructs the whole record and requires the transaction's output to carry it; the two
-    // failures are that check, not a callee the derivation had not reached yet.
-    expect(at(A_FIRST).accepted).toBe(false);
-    expect(at(A_FIRST).objection).toContain('OP_VERIFY');
-    expect(at(A_SECOND).accepted).toBe(false);
-    expect(at(A_SECOND).objection).toContain('OP_VERIFY');
+    expect(at(VALIDATOR_ID).objection ?? 'accepted').toBe('accepted');
   });
 
-  it('decides the same transaction accepted, so the chained declarations are not what the masters refuse', () => {
-    const { draft } = driveUntilStall();
+  it('recreates every participant and leaves each record where its last declaration wrote it', () => {
+    const { draft } = deriveRoundTrip();
+    const program = draft.programFor(A_FIRST);
+    const indexOf = (id: string): number => participant(draft.layout, id).index;
+    const outputAt = (id: string): NonNullable<VmProgram['transaction']>['outputs'][number] =>
+      program.transaction.outputs[indexOf(id)]!;
+
+    // A master and the validator are recreated in place: the same lock and the same token shape, the master still
+    // holding the minting NFT of its own category.
+    for (const id of [A_FIRST, A_SECOND, B_MASTER, VALIDATOR_ID]) {
+      const source = program.sourceOutputs[indexOf(id)]!;
+      expect(outputAt(id).lockingBytecode).toStrictEqual(source.lockingBytecode);
+      expect(outputAt(id).token?.category).toStrictEqual(source.token?.category);
+      expect(outputAt(id).token?.nft?.capability).toBe(source.token?.nft?.capability);
+    }
+
+    // A record's output carries the commitment the last frame to write it declared, which is the end of the chain
+    // the settlement walks: `A`'s record is written by the entry twice and by the re-entered entry between them.
+    for (const [record, master] of [[RECORD_A, A_FIRST], [RECORD_B, B_MASTER]] as const) {
+      const written = draft.blockOf(master).segments.flat().filter((entry) => entry.out !== INDEX_NONE);
+      expect(written.length).toBeGreaterThan(0);
+      expect(outputAt(record).token?.nft?.commitment).toStrictEqual(written.at(-1)!.viewOut);
+    }
+  });
+
+  it('decides the same transaction accepted, every check accepted in the spec order', () => {
+    const { draft } = deriveRoundTrip();
     const decision = decideValidator(toModel(draft.programFor(A_FIRST)), {
       validatorTemplate: VALIDATOR_PROGRAM,
       validatorInputIndex: participant(draft.layout, VALIDATOR_ID).index,
@@ -465,11 +458,57 @@ describe('a two-contract round trip where both contracts keep records', () => {
         `(${at(B_MASTER)},1)`, `(${at(A_FIRST)},1)`]);
   });
 
+  it('refuses a frame whose computed commitment is not its segment\'s declared viewOut', () => {
+    // The re-entered entry's one segment declares the record ending at `7`, which its own code computes. Declaring
+    // `8` there while the code still computes `7` makes the master refuse, even though every other check holds.
+    const at = (second: readonly RecordEntry[]): { accepted: boolean; objection?: string } => {
+      const segments = segmentsOf();
+      const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
+      const { draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+      return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
+    };
+    expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');
+    const wrong = at([kept(RECORD_A_INDEX, A_AFTER_F0, A_WRITTEN)]);
+    expect(wrong.accepted).toBe(false);
+    expect(wrong.objection).toContain('OP_VERIFY');
+  });
+
+  it('refuses a frame whose read is not its segment\'s declared viewIn', () => {
+    // The re-entered entry reads the record from its own segment's declaration. Declaring the record still spent at
+    // `5` makes its code compute `6`, which is not the `7` the segment declares it left.
+    const at = (second: readonly RecordEntry[]): { accepted: boolean; objection?: string } => {
+      const segments = segmentsOf();
+      const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
+      const { draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+      return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
+    };
+    expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');
+    expect(at([kept(RECORD_A_INDEX, A_SPENT, A_AFTER_K)]).accepted).toBe(false);
+  });
+
+  it('refuses a standalone master whose last declaration is not the transaction\'s output', () => {
+    // `B` runs on one master, so it settles its own record and the head holds its last declared viewOut to the
+    // transaction's output at the record's index. The declarations and the body agree on `12`; a transaction that
+    // writes `11` there is refused by the settlement the master runs itself, not by the body's own close.
+    const { draft } = deriveRoundTrip();
+    const program = draft.programFor(B_MASTER);
+    const index = participant(draft.layout, B_MASTER).index;
+    expect(verdict(machine(), program, index).objection ?? 'accepted').toBe('accepted');
+    const written = program.transaction.outputs.map((output, at) => (at === RECORD_B_INDEX
+      ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: B_AFTER_G0 } } }
+      : output));
+    const wrong = verdict(machine(), {
+      ...program, transaction: { ...program.transaction, outputs: written },
+    }, index);
+    expect(wrong.accepted).toBe(false);
+    expect(wrong.objection).toContain('OP_VERIFY');
+  });
+
   it('refuses the settlement when a later segment does not carry on from the one before it', () => {
     // Every segment is internally consistent and every commitment the transaction spends or writes is unchanged;
     // the control replaces the entry's first record declaration with one the re-entered entry's write does not
     // continue from, which only the settlement walk compares.
-    const { draft, plan } = driveUntilStall();
+    const { draft, plan } = deriveRoundTrip();
     const model = toModel(draft.programFor(A_FIRST));
     const master = plan.masters.find((candidate) => candidate.master === A_FIRST)!;
     const block = structuredClone(draft.blockOf(A_FIRST)) as WitnessBlock;

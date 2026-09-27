@@ -279,6 +279,7 @@ import {
   recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
+import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKey, DYNAMIC_CHUNK_BASE_PARAMETER,
@@ -982,6 +983,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallEntryCallSites: ReadonlyMap<string, readonly MasterCallSite[]> = new Map();
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   private perCallCallCount = 0;
+  /**
+   * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
+   *
+   * A frame's storage reads and writes resolve against the segment's declared views, and for a resumable body the
+   * calls are straight-line, so the segment at a site is fixed when that site is emitted.
+   */
+  private perCallSegmentIndex = 0;
+  /**
+   * The last segment each record block offset was touched in, which is where a frame that ends after a segment it
+   * did not touch rebuilds the record: the record's value there is the one the frame left.
+   */
+  private perCallRecordSegment = new Map<number, number>();
+  /**
+   * The segment a record read resolves against while a site is emitted for a known segment rather than the one the
+   * body is currently in (a record rebuilt for a segment the body has already left).
+   */
+  private perCallReadSegment: number | undefined;
+  /**
+   * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
+   *
+   * A value the body wrote before an external call is the closing segment's, not the record's: another frame may
+   * have rewritten the record during the call. A read after the call resolves the field from the frame's own
+   * declaration instead, until the body writes the field again, which makes the value current once more.
+   */
+  private perCallStaleWrites = new Set<string>();
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
   private perCallReservesValidatorHash = false;
   /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
@@ -6437,6 +6463,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
+    this.perCallSegmentIndex = 0;
+    this.perCallRecordSegment = new Map();
+    this.perCallReadSegment = undefined;
+    this.perCallStaleWrites = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
     this.valueChunkTrailingCountActive = false;
@@ -14653,7 +14683,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
 
-    if (this.pendingStateWrites.has(key)) {
+    if (this.pendingStateWrites.has(key) && !this.perCallStaleWrites.has(key)) {
       // Read from pre-allocated / previously written stack slot
       const stackName = this.pendingStateWrites.get(key)!;
       const stackIdx = this.getStackIndex(stackName);
@@ -19049,7 +19079,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // read from the stack-tracked value instead of re-reading from the input commitment.
     // This is critical for loops: each iteration must see the previous iteration's
     // written value, not the original input value.
-    if (this.pendingStateWrites.has(key)) {
+    if (this.pendingStateWrites.has(key) && !this.perCallStaleWrites.has(key)) {
       const stackName = this.pendingStateWrites.get(key)!;
       const stackIdx = this.getStackIndex(stackName);
       this.emit(encodeInt(BigInt(stackIdx)), locationData);
@@ -19110,6 +19140,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 2. Encode to pushdata format
     this.emitPushdataEncode(sv.type, locationData);
+
+    // A write marks the record touched in this segment, for the record rebuild at the end of the body.
+    if (this.perCallMaster && this.readsRecordsFromFrame) {
+      const blockOffset = this.compactOffsetMap.get(sv.nftIndex);
+      if (blockOffset !== undefined) this.perCallRecordSegment.set(blockOffset, this.perCallSegmentIndex);
+    }
+    // A fresh write makes the field current again, so a read resolves from the slot rather than the declaration.
+    this.perCallStaleWrites.delete(key);
 
     if (this.pendingStateWrites.has(key)) {
       // The slot is already ON THE STACK (pre-allocated before a branch, OR pushed by an earlier write to this
@@ -19503,6 +19541,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // past the call section to reach the segments, events and sends.
     if (this.perCallMaster) {
       this.emitPerCallCallSite(node, { location: node.location, positionHint: PositionHint.START });
+      // The call closes this segment; the code that follows runs in the next one, whose record views differ. Any
+      // value written before the call is the closed segment's, so a later read resolves from the declaration.
+      this.perCallSegmentIndex += 1;
+      for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
       return node;
     }
     // Do NOT visit categoryExpression or parameters here - they were resolved during
@@ -24751,6 +24793,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (hasWrite && fields) {
         // Written NFT: reconstruct commitment from field values and verify
         const sortedFields = [...fields].sort((a, b) => a.fieldIndex - b.fieldIndex);
+        // A frame that ends after a segment it did not touch rebuilds the record from the segment it last touched
+        // it in, where the value the frame left still stands; the current segment need not declare the record.
+        const previousReadSegment = this.perCallReadSegment;
+        if (this.perCallMaster) {
+          this.perCallReadSegment = this.perCallRecordSegment.get(compactOffset) ?? this.perCallSegmentIndex;
+        }
 
         let firstField = true;
         // Multi-data-NFT layouts: stamp the leading nftIndex tag, then CAT the fields onto it.
@@ -24833,6 +24881,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
+        this.perCallReadSegment = previousReadSegment;
 
       } else {
         // Read-only NFT: verify commitment preservation (input == output)
@@ -29619,8 +29668,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitRecordBlockBase('in', loc);
     this.emit(encodeInt(BigInt(read.offset)), loc);
     this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    // A source read marks the record touched in this segment; a read emitted for a known earlier segment (the
+    // record rebuilt at the end of the body) does not, so the marker keeps naming the frame's last real touch.
+    if (this.perCallReadSegment === undefined) {
+      this.perCallRecordSegment.set(read.offset, this.perCallSegmentIndex);
+    }
+    this.emitRecordCommitmentRead('in', loc);
     this.emitStateFieldDecodeInline(read.decode, loc);
+  }
+
+  /**
+   * Leaves the commitment a state site reads, from the frame's own declaration when the body addresses its record
+   * block through the head's slots, and from the spent UTXO otherwise.
+   *
+   * A body runs against its segment's declared views: between two segments another frame may have rewritten the
+   * record, so the commitment the transaction spends is correct only for the first segment of the first frame to
+   * touch it. Settlement holds the declaration the body reads to the transaction's real inputs and outputs.
+   */
+  private emitRecordCommitmentRead(side: RecordSide, loc: SingleLocationData): void {
+    if (!this.readsRecordsFromFrame) {
+      this.emit(side === 'in' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      return;
+    }
+    this.emit(bytecodeToScript(declaredRecordViewScript({
+      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+      callCount: this.perCallEntryCallSites.get(this.currentFunction?.name ?? '')?.length ?? 0,
+      side,
+    })), loc);
   }
 
   /**
@@ -29779,12 +29853,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDataNftOutputCommitmentInline(offset: number, loc: SingleLocationData): void {
     if (this.usesMessageBusOwnerBlockBase()) {
       this.emitMasterInputIndex(loc);
-    } else {
-      this.emitRecordBlockBase('out', loc);
+      this.emit(encodeInt(BigInt(offset)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+      return;
     }
+    this.emitRecordBlockBase('out', loc);
     this.emit(encodeInt(BigInt(offset)), loc);
     this.emit(Op.OP_ADD, loc);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    // The frame closes against the commitment it declared for the record, not the transaction's output: the
+    // record's last write in the transaction may belong to another frame. Settlement ties the declaration the
+    // body closes against to the real output.
+    this.emitRecordCommitmentRead('out', loc);
   }
 
   /** Decode one physical data-NFT field from a commitment already on top of the stack. */

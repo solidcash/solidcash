@@ -13041,6 +13041,15 @@ function compileResolvedAst(
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
     ? statefulnessHintSource
     : undefined;
+  // Inline assembly is likewise a question about the code a master carries rather than about the unit it is
+  // compiled in: a sibling contract's assembly refuses a contract that holds none, and the lowering that answers
+  // the unit-wide flag is about to rewrite every assembly block, so the answer is taken here, before it runs. The
+  // unit's file-level functions count with the contract's own bodies because a body that reaches one is compiled
+  // with it — inlined into the body, or defined ahead of the head.
+  const ownInlineAssembly = !needsInlineAssembly ? false
+    : surveyOptionalLowerings(ast.contract).needsInlineAssembly
+      || reachedFileFunctions(ast.contract, ast.freeFunctions)
+        .some((fn) => surveyOptionalLowerings(fn).needsInlineAssembly);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
@@ -14029,7 +14038,7 @@ function compileResolvedAst(
       interfaces: ast.interfaceDefinitions,
       hasContractInstantiation,
       hasFunctionPointers,
-      needsInlineAssembly,
+      needsInlineAssembly: ownInlineAssembly,
       emitsEvent: contractEmitsEvent,
     });
     if (!assessment.supported) {
@@ -16908,6 +16917,42 @@ function reachableFreeFunctions(
     }
   }
   return freeFunctions.filter((fn) => retained.has(fn));
+}
+
+/**
+ * The unit's file-level functions the contract's own bodies reach, directly or through another one.
+ *
+ * A master is compiled with the definitions its bodies invoke, so a definition only a sibling contract reaches is
+ * not part of this program and a question about the master's own code is not a question about it. The walk is by
+ * name because it runs before symbol resolution, and a library call is spelled `L.fn`, so a definition is matched
+ * by both its qualified and its bare name — the same pair the definition emitter registers. The contract's own
+ * functions are registered too, so the closure descends through a helper into the file-level function it calls.
+ */
+function reachedFileFunctions(
+  contract: ContractNode,
+  freeFunctions: readonly FunctionDefinitionNode[],
+): FunctionDefinitionNode[] {
+  if (freeFunctions.length === 0) return [];
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  const register = (fn: FunctionDefinitionNode): void => {
+    for (const key of [fn.name, fn.name.slice(fn.name.lastIndexOf('.') + 1)]) {
+      const list = byName.get(key);
+      if (list) list.push(fn);
+      else byName.set(key, [fn]);
+    }
+  };
+  for (const fn of freeFunctions) register(fn);
+  const own = [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
+    .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+  for (const fn of own) register(fn);
+  const wanted = new Set<FunctionDefinitionNode>(freeFunctions);
+  const reached = new Set<FunctionDefinitionNode>();
+  for (const fn of own) {
+    for (const name of collectNamedFunctionClosure(fn, byName)) {
+      for (const candidate of byName.get(name) ?? []) if (wanted.has(candidate)) reached.add(candidate);
+    }
+  }
+  return freeFunctions.filter((fn) => reached.has(fn));
 }
 
 /**

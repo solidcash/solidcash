@@ -40,6 +40,7 @@ import {
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
 } from './witness-reader.js';
+import { skipCallRecordsScript } from './frame-tail.js';
 
 /**
  * The checks one call site makes against its own record.
@@ -54,15 +55,26 @@ import {
  * `targetFromStack` says the same for the record's `target`: the address is a value the caller's own code computed
  * — read from its own state, or held in a parameter or local — and parked on the alternate stack for the check.
  * When both are supplied the caller leaves the target beneath the digest, so each is reached at the field it binds.
+ *
+ * `indexFromStack` says the record's position is a value the running code holds: how many calls the execution has
+ * already made, which the caller leaves on the stack beneath the values it computed. An execution whose calls
+ * repeat — one inside a loop — reaches a position the source does not fix, so the number of records before this
+ * site's is stepped over with a loop rather than unrolled. A target and a digest parked on the alternate stack are
+ * unaffected: they are reached at their fields either way.
  */
 export function callSiteCheckScript(
   site: MasterCallSite,
   index: number,
   usesResult: boolean,
-  options: { readonly digestFromStack?: boolean; readonly targetFromStack?: boolean } = {},
+  options: {
+    readonly digestFromStack?: boolean;
+    readonly targetFromStack?: boolean;
+    readonly indexFromStack?: boolean;
+  } = {},
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
   const targetFromStack = options.targetFromStack === true;
+  const indexFromStack = options.indexFromStack === true;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
   // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
@@ -82,8 +94,15 @@ export function callSiteCheckScript(
   emit(...takeLengthPrefixedField32(), Opcodes.OP_NIP);
   // `callCount`: the head fixes how many records the tail holds, so the site only walks them.
   emit(...takeFixedWidthField(2), Opcodes.OP_NIP);
-  // The records before this site's, stepped over by their own widths.
-  for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
+  // The records before this site's, stepped over by their own widths: a fixed number when the source fixes the
+  // position, and the number the execution has reached when it does not.
+  if (indexFromStack) {
+    // The caller left the position beneath the values it computed, so it sits directly under the tail here.
+    emit(Opcodes.OP_SWAP);
+    emit(...skipCallRecordsScript());
+  } else {
+    for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
+  }
   emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack }));
   return new Uint8Array(bytes);
 }

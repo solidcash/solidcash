@@ -37,6 +37,14 @@ const callingSource = (): string => 'pragma solidcash ^0.13.0;'
 const silentSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' contract Solo { function ping() { require(true); } }';
 
+/** An entry whose call runs inside a loop, so one execution reaches the site a number of times the source does not fix. */
+const loopedCallSource = (): string => 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Callee { function ping() { require(true); } }'
+  + ' contract Caller {'
+  + `   function go(int n) { for (int i = 0; i < n; i = i + 1) { ICallee(0x${toHex(TARGET)}).ping.call(); } `
+  + 'require(true); } }';
+
 /** An entry that calls the same method at the same target twice: the lowering coalesces the two into one batch. */
 const repeatedCallSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
@@ -160,6 +168,25 @@ describe('the stop-site table published from a real compile', () => {
         },
       },
     ]);
+  });
+
+  it('marks the call site of a loop, whose repetition the source does not fix', () => {
+    // The body reaches the site as often as the loop turns, so the table describes the source's call rather than
+    // enumerating one execution's witnesses, and a driver reads the marker to know that.
+    const artifacts = compileStringMulti(loopedCallSource(), { composition: 'per-call' });
+    const entry = publicationOf(artifacts.Caller!).entries.find(
+      (candidate) => candidate.functionName === 'Caller.go()',
+    )!;
+    expect(entry.sites.sites).toStrictEqual([
+      { kind: 'call', site: 0, callIndex: 0, descriptor: 0, repeated: true },
+      { kind: 'segmentClose', site: 1, segmentIndex: 0 },
+      { kind: 'segmentClose', site: 2, segmentIndex: 1 },
+    ]);
+    // The same call written without a loop carries no marker, which is the control beside it.
+    const plain = publicationOf(
+      compileStringMulti(callingSource(), { composition: 'per-call' }).Caller!,
+    ).entries[0]!;
+    expect(plain.sites.sites[0]).toStrictEqual({ kind: 'call', site: 0, callIndex: 0, descriptor: 0 });
   });
 
   it('refuses to compile an entry that calls the same method at the same target twice', () => {

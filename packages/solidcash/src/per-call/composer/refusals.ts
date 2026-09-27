@@ -51,12 +51,21 @@ export function rootWithoutValidator(contract: string): PerCallComposerError {
   );
 }
 
-/** A resumed run filled no witness at its stop site. */
+/**
+ * A resumed run filled no witness at its stop site.
+ *
+ * A site whose calls repeat is the one case where the table describes the source rather than one execution: the
+ * site is named once and the execution reaches it as often as the loop turns, so a run that has moved past the
+ * witnesses the table lists stops here, and the refusal says which statement the driver's sequence ran out on.
+ */
 export function derivationStalled(frame: FrameRequest, site: StopSite): PerCallComposerError {
+  const repeats = site.kind === 'call' && site.repeated === true
+    ? ' (the call runs in a loop, so the published sites describe the source rather than this execution)'
+    : '';
   return new PerCallComposerError(
     'PER_CALL_DERIVATION_STALLED',
     `master "${frame.master}" of ${frame.functionName} filled no witness at site ${site.site} `
-    + `(${describeStopSite(site)})`,
+    + `(${describeStopSite(site)})${repeats}`,
   );
 }
 

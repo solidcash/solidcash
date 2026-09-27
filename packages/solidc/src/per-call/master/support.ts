@@ -561,6 +561,8 @@ export interface PerCallEntryCallSites {
   readonly calls: readonly MasterCallSite[];
   /** How many calls the entry's execution makes, which is the same on every path or the entry is refused. */
   readonly pathCount?: number;
+  /** True when the entry's calls run inside a loop, so one execution reaches a site a number of times. */
+  readonly repeats?: boolean;
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -825,7 +827,12 @@ function derivePerCallMasterCallSites(
   for (const entry of entryPoints) {
     const derived = deriveEntryCallSites(interfaces, entry);
     if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
-    entryCalls.push({ entryName: entry.name, calls: derived.calls, pathCount: derived.pathCount });
+    entryCalls.push({
+      entryName: entry.name,
+      calls: derived.calls,
+      pathCount: derived.pathCount,
+      ...(callsRepeat(entry.body) ? { repeats: true } : {}),
+    });
   }
   // The bound the head holds is how many records the body with the most calls declares, which is a path count
   // rather than a descriptor list: a body whose arms each call names one descriptor per arm while its execution
@@ -833,6 +840,23 @@ function derivePerCallMasterCallSites(
   // make different numbers of calls; the bound is what says whether the master can make a call at all.
   const callCount = Math.max(0, ...entryCalls.map((entry) => entry.pathCount ?? entry.calls.length));
   return { supported: true, entryCalls, callCount };
+}
+
+/**
+ * True when a body reaches an external call inside a loop.
+ *
+ * Such a body makes a run-time number of calls: the trip count decides how many records the execution declares
+ * and which segment a read after the loop resolves against, so neither position is one the compiler can fix.
+ */
+export function callsRepeat(block: BlockNode | undefined): boolean {
+  let repeats = false;
+  walkInvocationAst(block, (node) => {
+    if (repeats || !(node instanceof WhileNode || node instanceof DoWhileNode)) return;
+    walkInvocationAst(node, (inner) => {
+      if (inner instanceof ExternalFunctionCallNode) repeats = true;
+    });
+  });
+  return repeats;
 }
 
 /**
@@ -975,11 +999,13 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
-    // A call the source does not fix the occurrence of is refused, and the phrase names which statement the walk
-    // could not count: a loop whose trip count is a run-time value is admitted only while it makes one call, which
-    // is asserted through the machine in `solidcash/test/per-call/edges/reads-and-loops.test.ts`, so what is
-    // refused here is a call a branch can skip entirely.
-    if (slot.condition !== undefined && 'divergence' in walk) {
+    // A body whose calls repeat — a loop whose iterations make calls, whether or not an arm inside the loop skips
+    // one — is admitted: the body binds the record the number of calls it has made names and increments that
+    // number once a call's check passes, so a skipped call leaves the position where it was and the positions are
+    // values the execution carries rather than facts the head checks. Every other divergence stays refused: an
+    // arm pair that makes different numbers of calls is not a trip count, and neither is a switch's arm set.
+    const repeats = 'divergence' in walk && walk.divergence === 'loop';
+    if ('divergence' in walk && !repeats) {
       return { calls: [], reason: `the call to '${slot.functionName}' ${divergencePhrase(walk.divergence, entry.name)}`
         + ', so its call records are not a fixed set the head can check' };
     }

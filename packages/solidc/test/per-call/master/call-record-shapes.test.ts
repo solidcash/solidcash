@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { StopSite } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
 
@@ -41,11 +42,12 @@ const BALANCED_ARMS = HEAD + INTERFACES
   + ' }';
 
 /**
- * A caller whose call a branch inside a loop can skip, so neither the count nor the occurrence is fixed.
+ * A caller whose call a branch inside a loop can skip.
  *
- * A loop whose trip count is a run-time value is admitted while it makes one call per iteration and the caller asks
- * for one iteration, which the machine asserts in `solidc`'s sibling suite for a plain loop. What has no fixed
- * record set is a call an arm can skip, and the refusal says which statement the walk stopped at.
+ * The body makes a run-time number of calls and the arm decides which iterations make one, so the count and the
+ * occurrence are both values the execution produces. The body carries the count it made, so the shape is admitted:
+ * `master/looped-call-entry.test.ts` runs the same structure through the machine, accepting the two calls three
+ * iterations leave when the first is skipped and refusing a tail that declares three.
  */
 const BRANCHED_IN_LOOP_CALL = HEAD + INTERFACES
   + ' contract Caller {'
@@ -114,13 +116,18 @@ describe('a call whose occurrence the source does not fix', () => {
     expect(refusal.message).not.toContain('resolves its callee');
   });
 
-  it('names the loop, not a conditional, when the trip count is what the walk stopped at', () => {
-    // The call's own statement is a branch, but the walk stopped at the loop around it: how many records an
-    // execution declares is the trip count's business, so the refusal says that rather than calling the call
-    // conditional.
-    const refusal = refusalOf(BRANCHED_IN_LOOP_CALL);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('is in a body that loops, and the trip count is what decides how many calls');
-    expect(refusal.message).not.toContain('runs conditionally');
+  it('is admitted inside a loop, where the body counts the calls its own iterations made', () => {
+    // The walk stops at the loop, so neither the count nor the occurrence is a single value: the body binds the
+    // record the number of calls it has made names and pins the count it ended at, which is what makes the shape
+    // expressible. The machine's own cases for it live in `master/looped-call-entry.test.ts`.
+    const artifacts = compileStringMulti(BRANCHED_IN_LOOP_CALL, { composition: 'per-call' });
+    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    const sites = (artifacts.Caller?.composition?.stopSites as { entries: { sites: { sites: StopSite[] } }[] })
+      .entries[0]!.sites.sites;
+    // The site is marked both ways: the arm can skip an iteration, and the loop decides how many iterations there
+    // are, so neither the occurrence nor the number of records is a fact the table can enumerate.
+    expect(sites[0]).toStrictEqual({
+      kind: 'call', site: 0, callIndex: 0, descriptor: 0, conditional: true, repeated: true,
+    });
   });
 });

@@ -282,7 +282,7 @@ import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, callsOnEveryPath,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, callsOnEveryPath, callsRepeat,
   DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
@@ -992,6 +992,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * A frame's storage reads and writes resolve against the segment's declared views, and for a resumable body the
    * calls are straight-line, so the segment at a site is fixed when that site is emitted.
    */
+  /**
+   * How many calls the body that is running has made, when the source does not fix a position for them.
+   *
+   * One number answers three questions in such a body: which record a site binds (the calls before it), which
+   * segment a read after a call resolves against (the calls before the read), and how many calls the execution
+   * declared (the calls in the whole body). The head does not park it: it is state of the body, allocated before
+   * the body's own control flow so every path reaches the epilogue with the same stack.
+   */
+  private static readonly PER_CALL_CALLS_MADE = '__internal__perCallCallsMade';
+  private perCallCallsMadeActive = false;
   private perCallSegmentIndex = 0;
   /**
    * Which call record of its own execution the body being emitted is at, counted the same way.
@@ -3115,8 +3125,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const site = sites[index]!;
     // The descriptor is the one the source means by this call, and the record it binds is the one at the position
     // the path has reached: a call inside a branch is at the same position on both arms, so the two arms bind their
-    // own descriptors to the same record and only the arm that runs checks it.
+    // own descriptors to the same record and only the arm that runs checks it. A body whose calls repeat has no
+    // fixed position, so the record is the one the number of calls already made names.
     const recordIndex = this.perCallOrdinal;
+    const runtimeIndex = this.perCallCallsMadeActive;
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
     // A target the caller's own code computes is emitted first, so the digest (when it too is computed) is left
@@ -3125,6 +3137,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A call whose arguments are all compile-time values carries the digest the compiler folded from them. One
     // with a run-time argument computes the digest here, from the values the code holds when it calls.
     const computesDigest = (site.arguments ?? []).some((argument) => argument.kind === 'runtime');
+    // The position the check walks to is pushed first, so it sits beneath the values the check parks: the site's
+    // own code reaches it directly below the tail once those are on the alternate stack.
+    if (runtimeIndex) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(calls_made)');
+    }
     if (computesTarget) this.emitPerCallComputedTarget(node);
     if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData);
     // The check parks both on the alternate stack and consumes them where their fields are, so they leave the
@@ -3136,7 +3155,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the shared-span outliner that rewrites entry bodies would cut inside a push.
     this.emit(bytecodeToScript(callSiteCheckScript(site, recordIndex, usesResult, {
       digestFromStack: computesDigest, targetFromStack: computesTarget,
+      ...(runtimeIndex ? { indexFromStack: true } : {}),
     })), locationData);
+    if (runtimeIndex) {
+      this.popFromStack(); // the check consumed the position it walked with
+      this.emitPerCallCountOneCall(node, locationData);
+    }
     if (!usesResult) return;
     // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
     // the direct path decodes a return event's commitment.
@@ -3146,6 +3170,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitPushdataDecode(returnTypes[field]!, locationData);
     }
     for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+  }
+
+  /**
+   * Adds one to the number of calls the body has made, in place.
+   *
+   * A site's check has bound the record at that position, so the next site — and any read that follows — resolves
+   * against the next segment. The value is replaced where it sits, so a body inside a loop reaches the epilogue
+   * with the count its own execution made.
+   */
+  private emitPerCallCountOneCall(node: Node, locationData: SingleLocationData): void {
+    const slot = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(calls_made)');
+    this.emit(Op.OP_1ADD, locationData);
+    this.emitReplace(this.getStackIndex(slot), node);
+    this.popFromStack();
   }
 
   /**
@@ -3189,10 +3230,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slot = callCountSlotName();
     if (!this.stack.includes(slot)) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    // A body whose calls repeat pins the count it made where it ends, once it has made them; the check here is for
+    // a body whose source fixes that number, which it can ask before anything runs.
+    if (this.perCallCallsMadeActive) return;
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
     this.emit(encodeInt(BigInt(this.perCallExecutionCallCount())), loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  /**
+   * Pins the number of calls the body made to the count the block declares.
+   *
+   * A body whose calls repeat knows that number only once it has made them, so the check runs where the body ends
+   * rather than before it starts. Every path reaches it, so a frame declaring records the execution did not make
+   * is refused however the run reached its end.
+   */
+  private emitPerCallCallsMadeCheck(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+    this.emit(encodeInt(BigInt(this.getStackIndex(callCountSlotName()))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    this.emit(
+      encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc,
+    );
+    this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
@@ -6501,6 +6566,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingStateWrites = new Map();
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
+    this.perCallCallsMadeActive = false;
     this.perCallSegmentIndex = 0;
     this.perCallOrdinal = 0;
     this.perCallRecordSegment = new Map();
@@ -7176,6 +7242,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
+    // A body whose calls repeat reaches record positions the source does not fix, so it carries how many calls it
+    // has made: the record a site binds, the segment a read resolves against and the count the body pins are all
+    // that one number. Allocated before the body's own control flow, and only for such a body, so a shape whose
+    // positions are fixed keeps byte-identical code and no slot.
+    this.perCallCallsMadeActive = this.perCallMaster && !this.isDefineSubTraversal
+      && this.stack.includes(callCountSlotName())
+      && callsRepeat(this.currentFunction.body);
+    if (this.perCallCallsMadeActive) {
+      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
+    }
     // A per-call body pins the number of calls its own source makes against the count the block declares, and the
     // number of events it emits against the block's, before either is checked. A per-call master then derives the
     // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
@@ -7704,6 +7781,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         } else if (node.returnTypes.length > 0) {
           this.emitReturnEventCovenantVerification(node);
         }
+      }
+      // A body whose calls repeat pins the number it made against the count the block declares, here, where the
+      // body has made them all: the count is a value its own execution produced rather than one its source fixes.
+      if (this.perCallMaster && this.perCallCallsMadeActive && node.isEntryPoint
+        && !this.blockEndsWithRevert(node.body)) {
+        this.emitPerCallCallsMadeCheck(node);
       }
       // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
       // the result from its own witness record, not from a return-event output, so it has no return event to pin.
@@ -29767,6 +29850,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * touch it. Settlement holds the declaration the body reads to the transaction's real inputs and outputs.
    */
   private emitRecordCommitmentRead(side: RecordSide, loc: SingleLocationData): void {
+    if (this.readsRecordsFromFrame && this.perCallCallsMadeActive) {
+      // The record block declares one view per segment, and a body whose calls repeat runs in a segment only its
+      // own execution knows, so the declaration this read resolves against is not one the compiler can name. The
+      // refusal is the honest answer until the read locates it from the number of calls the body has made.
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the body of '${this.currentFunction?.name ?? 'unknown'}' reads its state records, and its calls repeat, so `
+        + 'which segment declares the view it reads is a run-time value the read does not yet locate',
+        { function: this.currentFunction?.name, entry: true },
+      );
+    }
     if (!this.readsRecordsFromFrame) {
       this.emit(side === 'in' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT, loc);
       return;

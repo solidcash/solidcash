@@ -45,6 +45,12 @@ export interface CallStopSite {
    * that looks a callee up needs the source's own index, and one that fills the record needs the ordinal.
    */
   descriptor?: number;
+  /**
+   * True when the execution reaches this site a number of times the source does not fix: the call runs inside a
+   * loop, so the table names the site once while one execution reaches it as often as the loop turns. The sites
+   * after it are then not the execution's witnesses either, which is what a driver reads this marker to know.
+   */
+  repeated?: boolean;
 }
 
 /** A segment close: which segment's computed records must be compared with the declared ones. */

@@ -227,6 +227,15 @@ function callWalkScript(): number[] {
     // Park a copy for the body; the copy below the cursor is dropped with it once the walk is done.
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_TOALTSTACK,
     Opcodes.OP_0, Opcodes.OP_SWAP,
+    ...countCallRecordsScript(),
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+  ];
+}
+
+/** Consumes `count` call records from `[count, 0, tail]`, leaving `[count, count, tail]`. */
+function countCallRecordsScript(): number[] {
+  return [
     ...encodeDataPush(scriptNumber(2)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
     Opcodes.OP_IF,
     Opcodes.OP_ELSE,
@@ -238,6 +247,21 @@ function callWalkScript(): number[] {
     Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_UNTIL,
     Opcodes.OP_ENDIF,
+  ];
+}
+
+/**
+ * Steps over a run-time number of call records.
+ *
+ * Entry `[..., tail, count]`, exit `[..., tail']`. A site binds the record the execution has reached, and an
+ * execution whose calls repeat — one inside a loop — reaches a position the source does not fix, so the number of
+ * records before it is a value the running code holds rather than one the compiler knows. A count of zero consumes
+ * nothing.
+ */
+export function skipCallRecordsScript(): number[] {
+  return [
+    Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_SWAP,
+    ...countCallRecordsScript(),
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
     ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
   ];

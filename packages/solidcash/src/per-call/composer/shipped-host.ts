@@ -104,7 +104,13 @@ export function readPublishedStopSites(
   if (!Array.isArray(published.entries)) {
     throw new ShippedHostError('PER_CALL_HOST_STOP_SITES_SHAPE', 'the stop-site table has no entries array');
   }
-  for (const entry of published.entries) validateStopSiteMetadata(entry.sites);
+  for (const entry of published.entries) {
+    validateStopSiteMetadata(entry.sites);
+    // A call marked `repeated` is reached a number of times the source does not fix, so the table describes the
+    // source's calls rather than enumerating one execution's witnesses. It is read rather than refused: a step is
+    // proven by two real runs of the program, so a driver whose sequence no longer describes the execution stops
+    // at the stall below rather than filling a witness the program did not ask for.
+  }
   return published;
 }
 

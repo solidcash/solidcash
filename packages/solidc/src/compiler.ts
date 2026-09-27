@@ -515,6 +515,7 @@ type InternalCompilerOptions = CompilerOptions & {
   __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __perCallCallCount?: number;
+  __perCallEntryCallRepeats?: Map<string, boolean>;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
   __perCallStopSites?: PublishedPerCallStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
@@ -14057,6 +14058,9 @@ function compileResolvedAst(
     const entryCalls = assessment.entryCalls ?? [];
     (mergedCompilerOptions as InternalCompilerOptions).__perCallEntryCallSites = new Map(
       entryCalls.map((entry) => [entry.entryName, entry.calls]),
+    );
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallEntryCallRepeats = new Map(
+      entryCalls.map((entry) => [entry.entryName, entry.repeats === true]),
     );
     (mergedCompilerOptions as InternalCompilerOptions).__perCallCallCount = assessment.callCount ?? 0;
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;

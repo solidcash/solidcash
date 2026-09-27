@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 301 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 306 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 924 tests, all passing at `7273d613e` (114 + 339 + 471).
+Total: 929 tests, all passing at `aaddcb5fc` (114 + 344 + 471).
 
 ## What each directory covers
 
@@ -175,8 +175,8 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 - The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
   path: a compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
-  in place, a whole multi-target batch, the read of the entry the write targets, a composite key, and the sender and
-  compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
+  in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
+  collections in one body, and the sender and compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
   constructor that emits shares the head. A `string`-valued state variable is no longer a wall by itself, and the composer now supplies the band: the
   head derives the chunk run's coordinate from the frame's declared record block, `planChunkRun` derives the header
   and chunk commitments and `layOutChunkRun` places the run one layout width past the block's data NFTs, and a plan
@@ -184,10 +184,11 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
   (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `7273d613e` it is `unicrow/FakeToken.sol` and the
-  batch admission's clause for several collections: "the body writes 2 mapping collections in one execution, and a
-  master derives the sorted-batch operands one collection at a time" — one wall further than the composite key the
-  round before it recorded, which the machine now accepts for an insert, an update and a read-modify-write. The
+  harness compiles the built compiler rather than the sources. At `aaddcb5fc` it is `unicrow/UnicrowClaim.sol` and
+  the free-function wall: "a per-call master is one program, so free functions that would be emitted before it are
+  not supported" — the unit that reported first the round before, `unicrow/FakeToken.sol` with its clause for
+  several collections, no longer reports, so the mapping walls ahead of it are cleared and the project's first
+  failure is the free-function one the earlier rows recorded for `EACCToken.sol` and `MockSablierLockup.sol`. The
   ladder stands at "blocked at compile" and no title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state

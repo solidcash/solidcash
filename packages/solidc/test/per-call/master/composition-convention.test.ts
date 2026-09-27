@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../../../src/compiler.js';
+import { compileString, compileStringMulti } from '../../../src/compiler.js';
 
 const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Counter(pubkey admin) {'
@@ -36,6 +36,12 @@ const EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Pinged {'
   + '   event Ping(int indexed x);'
   + '   function ping() { emit Ping(1); }'
+  + ' }';
+
+/** A state-writing contract with no event, for units that hold an emitting contract beside it. */
+const QUIET_SIBLING = ' contract Quiet {'
+  + '   int public counter;'
+  + '   function idle() { this.counter = this.counter + 1; }'
   + ' }';
 
 /** An entry whose event count is the loop's trip count, which the head cannot fix. */
@@ -185,6 +191,15 @@ describe('the tail sections a compiled master fixes', () => {
       .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(messageOf(() => compileString(LOOP_EVENT_CONTRACT, { composition: 'per-call' })))
       .toContain('loop');
+  });
+
+  it('sizes a contract\'s event region by its own bodies, not a sibling\'s emits', () => {
+    // The same unit holds one contract that emits and one that does not. A master's event region is fixed by the
+    // bodies it runs, so the quiet contract is emitted beside the emitting one rather than refused for an emit
+    // that is not its own.
+    const artifacts = compileStringMulti(EVENT_CONTRACT + QUIET_SIBLING, { composition: 'per-call' });
+    expect(artifacts.Pinged?.composition?.convention).toBe('per-call');
+    expect(artifacts.Quiet?.composition?.convention).toBe('per-call');
   });
 
   it('refuses a value send, whose list membership the recipient lock type decides, by name', () => {

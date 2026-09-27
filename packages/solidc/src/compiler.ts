@@ -14013,6 +14013,10 @@ function compileResolvedAst(
     // A per-call compile emits one master program per contract. The shapes that program can carry are checked here,
     // after semantic analysis, so a contract whose frame the head cannot supply refuses by name instead of
     // compiling into a master that would violate its own frame rules.
+    // The unit-wide survey above answers for every contract at once, so a sibling's emit would refuse a contract
+    // whose own bodies emit nothing: a master's event region is sized by the bodies it runs, so the question is
+    // asked of this contract alone.
+    const contractEmitsEvent = surveyOptionalLowerings(ast.contract).emitsEvent;
     const assessment = assessPerCallMasterShape({
       contract: ast.contract,
       interfaces: ast.interfaceDefinitions,
@@ -14020,7 +14024,7 @@ function compileResolvedAst(
       hasContractInstantiation,
       hasFunctionPointers,
       needsInlineAssembly,
-      emitsEvent,
+      emitsEvent: contractEmitsEvent,
     });
     if (!assessment.supported) {
       throw new SolidcDiagnosticError(

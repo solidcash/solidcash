@@ -7806,10 +7806,10 @@ export default class SymbolTableTraversal extends AstTraversal {
                 indexStepValue: Number(indexSource.stepValue),
               };
             }
-            // An index the compiler cannot describe as a loop induction variable (a loop-local index reached
-            // through a computed expression). The SDK expands these call sites in array order; index zero
-            // identifies the first group, and the absent step marks the expansion as unproven.
-            return { kind: 'arrayElement', paramIndex: arraySource.paramIndex, indexValue: 0 };
+            // Named constants and computed indices need the complete expression serializer below.
+            // A synthetic zero is not an unknown index: consumers would select the first element even
+            // when the executable call uses a different constant or an occurrence-dependent expression.
+            return undefined;
           }
         }
         return undefined;

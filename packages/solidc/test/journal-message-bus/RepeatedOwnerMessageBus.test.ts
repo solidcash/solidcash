@@ -228,7 +228,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
     });
   });
 
-  it('leaves an index the compiler cannot describe as an induction variable on the unproven fallback', () => {
+  it('preserves a computed loop index as an occurrence-dependent expression', () => {
     const artifact = compileString(`
       interface ISink { function put(int value) external; }
       contract Caller(address sink) {
@@ -240,10 +240,14 @@ describe('inferred message-bus batching for repeated external callees', () => {
     `);
     const run = artifact.abi.find((fn) => fn.name === 'run');
     expect(run?.externalCalls).toHaveLength(1);
-    // No step is published, so a consumer must read the source as array-order expansion of the first group
-    // rather than as an index it has been told how to advance.
     expect(run?.externalCalls?.[0]?.argSources?.[0])
-      .toEqual({ kind: 'arrayElement', paramIndex: 0, indexValue: 0 });
+      .toMatchObject({ kind: 'expression', expression: {
+        kind: 'arrayAccess',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+        right: { kind: 'binary', operator: '+',
+          left: { kind: 'source', source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' } },
+          right: { kind: 'literal', value: '1' } },
+      } });
   });
 
   it('collapses the supported repeated-owner shape by default', () => {

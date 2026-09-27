@@ -25,13 +25,15 @@ describe('kernel returned struct mutation', () => {
         }
       }
       contract Editor {
+        uint constant FIRST = 0;
+        uint constant SECOND = 1;
         uint public count;
         function initialize() public { this.count = 0; }
-        function edit(address store, uint key, bool replace) public {
+        function edit(address store, uint key, bool replace, uint16[2] memory next) public {
           Record memory record = IStore(store).read(key);
           if (replace) {
-            record.weights[0] = 100;
-            record.weights[1] = 0;
+            record.weights[FIRST] = next[FIRST];
+            record.weights[SECOND] = next[SECOND];
             record.votes[0] = record.votes[0] + 1;
             record.votes[1] = -record.votes[1];
           } else {
@@ -54,9 +56,9 @@ describe('kernel returned struct mutation', () => {
     const editor = await upgrades.deployProxy(getContractFactory(artifacts.Editor, signer), []);
     editor.implementation._registerResolvedExternal('IStore', store);
     await store.call.seed(7n).send();
-    await editor.forward('edit', [store.inner.lockingBytecode, 7n, replace]).send();
+    await editor.forward('edit', [store.inner.lockingBytecode, 7n, replace, [80n, 20n]]).send();
     expect((await store.getEntries('records'))[0].value).toEqual({
-      weights: replace ? [100n, 0n] : [0n, 75n],
+      weights: replace ? [80n, 20n] : [0n, 75n],
       votes: replace ? [1n, -1n] : [0n, 2n],
       revision: 10n,
     });

@@ -266,7 +266,8 @@ function withSecondBlock(
 describe('a contract entered twice, composed on the machine', () => {
   it('places the two A masters, the validator and B in the order the layout derives', () => {
     const { plan, artifacts } = buildComposition();
-    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
 
     expect(participant(draft.layout, A_FIRST).index).toBe(0);
     expect(participant(draft.layout, A_SECOND).index).toBe(1);
@@ -298,7 +299,8 @@ describe('a contract entered twice, composed on the machine', () => {
 
   it('derives the whole round trip depth first, callee before caller', () => {
     const { plan, artifacts } = buildComposition();
-    const { host } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
 
     const result = deriveDepthFirst(ROOT, host);
 
@@ -316,7 +318,8 @@ describe('a contract entered twice, composed on the machine', () => {
 
   it('is accepted at every contract input once the derivation has filled every witness', () => {
     const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     deriveDepthFirst(ROOT, host);
 
     // One program carries the whole transaction, so the same view decides every input.
@@ -337,7 +340,8 @@ describe('a contract entered twice, composed on the machine', () => {
     // The head walks the call section with the length the block declares and each body pins that length to the
     // calls its own source makes, so a plan that hands an entry a call record it never makes stops the program.
     const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const stray = structuredClone(draft.blockOf(A_SECOND)) as WitnessBlock;
     stray.calls = [{
       kind: FrameKind.CALL, target: ADDRESS_B, value: 0n, calleeRef: 3,
@@ -368,7 +372,8 @@ function fillRootCall(): {
   sourceOutputs: VmSourceOutputs;
 } {
   const { plan, artifacts } = buildComposition();
-  const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
   const site = nextStopSite(host.sitesFor(ENTRY_F), -1);
   expect(site?.kind).toBe('call');
   const filled = host.step(ROOT, site!);
@@ -381,7 +386,8 @@ function fillRootCall(): {
 describe('the validator decides the derived round trip', () => {
   it('walks every check and derives the order the spec states for this shape', () => {
     const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     deriveDepthFirst(ROOT, host);
 
     const decision = decideValidator(toModel(draft.programFor(A_FIRST)), {

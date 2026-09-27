@@ -183,7 +183,8 @@ describe('a plan whose entry emits after its call returns', () => {
     expect(artifacts.A!.composition?.convention).toBe('per-call');
     expect(artifacts.B!.composition?.convention).toBe('per-call');
 
-    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const placed = draft.trailingOutputs[0]!;
 
     // The event fills the first output the layout opens past the participants, where no input sits, and the
@@ -225,7 +226,8 @@ describe('a plan whose entry emits after its call returns', () => {
     // masters run that contract (7.2 V7/V8), so a master runs it only while it is its category's only master: the
     // shared entry no longer refuses the event the other frame of its own contract listed.
     const { plan, artifacts, eventIndex } = buildRoundTrip();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
 
     const derived = deriveDepthFirst(ROOT, host);
     expect([...derived.completed.map((frame) => frame.master)].sort())
@@ -254,7 +256,8 @@ describe('a plan whose entry emits after its call returns', () => {
     // The event at the listed output is bound to the payload its entry emitted: the same lock and token with a
     // payload the entry did not compute is refused, which is the control that the accept above is not vacuous.
     const { plan, artifacts, eventIndex } = buildRoundTrip();
-    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
 
     expect(verdict(draft, A_FIRST, (outputs) => ownCategoryImmutable(outputs, eventIndex, CATEGORY_A, new Uint8Array([9]))))
       .toContain('refused');
@@ -267,7 +270,8 @@ describe('a plan whose entry emits after its call returns', () => {
     // category at an output no frame of the transaction lists is refused, and the same shape one output further
     // in is refused too, so the census is over the transaction rather than over the listed index.
     const { plan, artifacts } = buildRoundTrip();
-    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const event = artifacts.B!.events![0]!;
     const payload = encodeEventCommitment(event.parameters, [1n]);
 
@@ -287,7 +291,8 @@ describe('a plan whose entry emits after its call returns', () => {
     // Measured: with a census emitted in the program this master still accepts, because this harness never
     // evaluates the validator input.
     const { plan, artifacts } = buildRoundTrip();
-    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
     const bEvent = draft.blockOf(B_MASTER).events[0]!;
 
     expect(verdict(draft, A_SECOND, (outputs) => ownCategoryImmutable(outputs, bEvent, CATEGORY_A, new Uint8Array([9]))))
@@ -376,7 +381,8 @@ describe('an entry that emits and makes no call', () => {
 
   it('derives it and the machine accepts it, with both events at their trailing outputs', () => {
     const { plan, artifacts } = build();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Log!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Log!], plan });
 
     const result = deriveDepthFirst({ contract: 'Log', functionName: FIRE, kind: FrameKind.ROOT, master: LOG_MASTER }, host);
 

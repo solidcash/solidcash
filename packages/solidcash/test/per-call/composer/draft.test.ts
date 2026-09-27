@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
@@ -227,7 +228,8 @@ describe('the composer laying a plan out for derivation', () => {
 
   it('derives the caller, its callee completing first, exactly as the hand-built fixture did', () => {
     const { artifacts, plan } = buildFixture();
-    const { host } = createComposedDerivationHost({ artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
+    const { host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
 
     const result = deriveDepthFirst(root, host);
 
@@ -245,6 +247,7 @@ describe('the composer laying a plan out for derivation', () => {
     const { artifacts, plan } = buildFixture();
     const verdicts: { master: string; kind: string; site: number; accepted: boolean }[] = [];
     const { host } = createComposedDerivationHost({
+    vm: compositionMachine(),
       artifacts: [artifacts.Caller!, artifacts.Callee!],
       plan,
       onRun: (master, site, stop) => verdicts.push({ master, kind: site.kind, site: site.site, accepted: stop.accepted }),
@@ -259,7 +262,8 @@ describe('the composer laying a plan out for derivation', () => {
 
   it('converges on the unlocking bytecode assembly produced for the same plan', () => {
     const { artifacts, plan } = buildFixture();
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
 
     deriveDepthFirst(root, host);
 

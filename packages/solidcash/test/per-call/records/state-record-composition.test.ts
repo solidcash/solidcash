@@ -234,7 +234,8 @@ function verdict(options: {
   readonly segments?: readonly (readonly RecordEntry[])[];
 } = {}): { accepted: boolean; objection?: string; recordIndex: number } {
   const { plan, artifacts: compiled } = buildComposition(options);
-  const { host, draft } = createComposedDerivationHost({ artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
   deriveDepthFirst(ROOT, host);
 
   const recordIndex = participant(draft.layout, RECORD_ID).index;
@@ -250,7 +251,8 @@ describe('a stateful composition whose record sits away from its master', () => 
 
   it('the composer places the record after the validator, not next to the master that reads it', () => {
     const { plan, artifacts: compiled } = buildComposition();
-    const { draft, host } = createComposedDerivationHost({ artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+    const { draft, host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     deriveDepthFirst(ROOT, host);
 
     expect(participant(draft.layout, LEDGER_MASTER).index).toBe(0);
@@ -271,7 +273,8 @@ describe('a stateful composition whose record sits away from its master', () => 
     // The declarations are what tells the body where its record is: without them the read has no index to reach
     // and the program stops on the first state site, which the derivation reports as a stalled step.
     const { plan, artifacts: compiled } = buildComposition({ segments: [[], []] });
-    const composed = createComposedDerivationHost({ artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+    const composed = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     expect(masterVerdict(composed.draft).accepted).toBe(false);
     expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
     // The same composition with the declarations settles, so the refusal is the declarations' and nothing else.

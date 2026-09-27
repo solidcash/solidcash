@@ -131,7 +131,8 @@ function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['d
 
 function derive(source: string): ReturnType<typeof createComposedDerivationHost> {
   const { plan, artifacts: compiled } = planFor(source);
-  const { host, draft } = createComposedDerivationHost({ artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
   deriveDepthFirst(ROOT, host);
   return { host, draft };
 }

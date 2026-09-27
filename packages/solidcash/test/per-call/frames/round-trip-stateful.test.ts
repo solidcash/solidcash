@@ -339,7 +339,8 @@ function compose(options: Parameters<typeof buildComposition>[0] = {}): {
   plan: CompositionDraftPlan;
 } {
   const { plan, artifacts: compiled } = buildComposition(options);
-  const { draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+  const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
   return { draft, plan };
 }
 
@@ -352,7 +353,8 @@ function deriveRoundTrip(options: Parameters<typeof buildComposition>[0] = {}): 
   result: ReturnType<typeof deriveDepthFirst>;
 } {
   const { plan, artifacts: compiled } = buildComposition(options);
-  const { host, draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
   const result = deriveDepthFirst(ROOT, host);
   return { draft, plan, result };
 }
@@ -478,7 +480,8 @@ describe('a two-contract round trip where both contracts keep records', () => {
     // output that carries them: with none stated the entry's own program refuses and the derivation, which asks the
     // program, cannot fill its first site.
     const { plan, artifacts: compiled } = buildComposition({ event: false });
-    const { host } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+    const { host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
     expect(() => deriveDepthFirst(ROOT, host)).toThrowError(/PER_CALL_DERIVATION_STALLED/);
   });
 
@@ -532,7 +535,8 @@ describe('a two-contract round trip where both contracts keep records', () => {
     const at = (second: readonly RecordEntry[]): { accepted: boolean; objection?: string } => {
       const segments = segmentsOf();
       const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
-      const { draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+      const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
       return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
     };
     expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');
@@ -547,7 +551,8 @@ describe('a two-contract round trip where both contracts keep records', () => {
     const at = (second: readonly RecordEntry[]): { accepted: boolean; objection?: string } => {
       const segments = segmentsOf();
       const { plan, artifacts: compiled } = buildComposition({ segments: { ...segments, aSecond: [second] } });
-      const { draft } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+      const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
       return verdict(machine(), draft.programFor(A_SECOND), participant(draft.layout, A_SECOND).index);
     };
     expect(at([kept(RECORD_A_INDEX, A_AFTER_F0, A_AFTER_K)]).objection ?? 'accepted').toBe('accepted');

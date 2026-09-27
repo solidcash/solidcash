@@ -114,7 +114,8 @@ function plan(): CompositionDraftPlan {
 
 describe('a guard field carried across the call split', () => {
   it('chains the guarded record through both segments and the machine accepts the master', () => {
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Guarded!, artifacts.Callee!], plan: plan() });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Guarded!, artifacts.Callee!], plan: plan() });
     deriveDepthFirst({ contract: 'Guarded', functionName: entryName('Guarded', 'bump'), kind: FrameKind.ROOT, master: 'guarded-1' }, host);
     // Segment 0 leaves the guard set; segment 1 reads that commitment and clears the guard.
     expect(draft.blockOf('guarded-1').segments.map((segment) => segment.map((entry) => entry.in)))

@@ -201,7 +201,7 @@ function buildHost(
   onRun?: (master: string, site: { readonly kind: string; readonly site: number }, stop: {
     readonly accepted: boolean;
   }) => void,
-  vm?: Parameters<typeof createShippedDerivationHost>[0]['vm'],
+  vm: Parameters<typeof createShippedDerivationHost>[0]['vm'] = compositionMachine(),
 ): { host: ReturnType<typeof createShippedDerivationHost>; composition: Composition } {
   const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
   const composition = buildComposition();
@@ -628,6 +628,7 @@ describe('a caller whose arms each call a different contract', () => {
 
     const fills: string[] = [];
     const host = createShippedDerivationHost({
+      vm: compositionMachine(),
       artifacts: [artifacts.Chooser!, artifacts.Near!],
       runs: [
         {

@@ -203,6 +203,7 @@ function deriveComposition(): {
 } {
   const { plan, artifacts } = buildComposition();
   const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(),
     artifacts: [artifacts.Caller!, artifacts.Callee!],
     plan,
   });
@@ -238,7 +239,8 @@ describe('a composed transaction through the shipped compile, deployment and com
     expect(artifacts.Caller!.composition!.stopSites).toBeTruthy();
     expect(artifacts.Callee!.composition!.stopSites).toBeTruthy();
 
-    const { draft, host } = createComposedDerivationHost({ artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
+    const { draft, host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
     deriveDepthFirst(ROOT, host);
 
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);

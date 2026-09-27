@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { FrameKind, encodeIntegerValue, bytesToHex } from '@solidcash/utils';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
@@ -186,6 +187,7 @@ function drive(): void {
   };
 
   const { host } = createComposedDerivationHost({
+    vm: compositionMachine(),
     artifacts: [artifacts.Hub!, artifacts.Vault!, artifacts.Token!], plan,
   });
   deriveComposition(

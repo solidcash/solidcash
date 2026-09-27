@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { FrameKind, encodeIntegerValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
@@ -160,7 +161,8 @@ describe('a static read whose callee reverts', () => {
       },
       validator: { id: 'validator', covers: ['Cal'], settles: [], redeemScript: validator.redeem },
     };
-    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Reader!, artifacts.Cal!], plan });
+    const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Reader!, artifacts.Cal!], plan });
     deriveDepthFirst({ contract: 'Reader', functionName: entryName('Reader', 'start'), kind: FrameKind.ROOT, master: 'reader-1' }, host);
     return { host, draft };
   }

@@ -467,8 +467,9 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   half — a callee running between its caller's segments, so roots never interleave (T30) — is the derived order
   itself, which the transcript need not follow, so the program decides it only as far as the order-free half of the
   chain rule reaches (B7).
-- [ ] B7 V7 (partial): the settlement rules the shipped program enforces, each held against the model over generated
-  compositions and pinned by a machine refusal of its own — no category settled twice (`emitSettleCategoriesAreDistinct`),
+- [x] B7 V7 (partial, and the settlement rules are in): every settlement rule the program lists is held against the
+  model over generated compositions and pinned by a machine refusal of its own — no category settled twice
+  (`emitSettleCategoriesAreDistinct`),
   the state-inputs half (`emitSettlementStateInputs`: every input the transcript lists as a settled contract's state
   is a mutable NFT of its category and not the validator, every such input in the transaction is listed, and no index
   twice), the records the frames read against the state UTXOs the contract spends (`2cb452941`), the census
@@ -481,11 +482,13 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   creates the record continuing from nothing and one that deletes it continued by nothing. The census reads
   `OP_OUTPUTTOKENCATEGORY` rather than the commitment because the opcode appends a capability byte only for mutable
   and minting tokens, so an immutable NFT of a settled category and a fungible token of it are the same 32 bytes on
-  the wire (the Log row and Deviations carry the measurement). Open: the chain end, which the derived order decides —
-  the program holds a record's declarations, not the order they ran in, so a closing declaration that misses the
-  record's output commitment is caught only when no other declaration shares the view it ended at (the derivation's
-  `V7_CHAIN_END_MISMATCH`; the Log and Deviations carry the differential case, and the master-side settlement covers
-  a record a frame writes) — and the V7 reasons the module's own list does not name.
+  the wire (the Log row and Deviations carry the measurement). The chains are both halves: the pairing above, and the
+  chain's end decided without the order by an anchor — every record entry carries a marker byte, one when the
+  declaration's write lands at the transaction's own output or when it deletes the record, and an entry passes only
+  if its key has a marked declaration anywhere in the blob. That is what puts `V7_CHAIN_END_MISMATCH` in the list, and
+  the rule is checked both ways: with the anchor search neutered the differential misses `seed 24301 case 55` and
+  with it the corpus is green. Not in the program's list, and outside this item's scope: `V7_MASTER_NOT_COVERED`
+  (carried by V3's master-set rule), `V7_RECORD_OUTPUT_NOT_A_RECORD` and `V7_SEND_OUTPUT_OUT_OF_RANGE`.
 - [x] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records). Both halves
   are emitted and each has its own refusal; the branch for the borrowed half was written but not called until
   `b52b7ec5b`, which an end-to-end refusal test caught.
@@ -572,8 +575,19 @@ risk. Take the slices in order, each with its own tests.
   end-of-body rebuild runs, so a frame that writes a record early and leaves it untouched later does not prove that
   early value against that segment's declaration; a record whose index changes between segments is not followed; and
   dynamic chunks still resolve against the transaction.
-- [ ] R2 Self-settlement, spec S1-S4: chains, census, the input rule (spec S3), values. The spec's state rules D1
-  and D2 in `STATE_CODE`, reusing today's data-NFT covenant with an added value pin.
+- [x] R2 Self-settlement, spec S1-S4: chains, census, the input rule (spec S3), values. The spec's state rules D1
+  and D2 in `STATE_CODE`, reusing today's data-NFT covenant with an added value pin. Each rule is enforced on both
+  paths: the master head settles the records its own frame declares against the segment views it walks from its own
+  block (`58e8f7ee3`, `c44994de8`), and the validator enforces the contract's settlement across the frames that run
+  on its records — the chains, the census, the touched-records input rule and the value floor, each with a machine
+  refusal and the differential over generated compositions (`ccde697cc`, and this round for the chain end). The
+  master-side controls are in `solidc/test/per-call/master/record-settlement.test.ts`, `settlement-walk.test.ts` and
+  `mapping-delete-write.test.ts`; the composed shape is `solidcash/test/per-call/frames/round-trip-stateful.test.ts`,
+  whose `refuses a standalone master whose last declaration is not the transaction's output` and
+  `refuses the settlement when a later segment does not carry on from the one before it` are the S1 and S2 refusals.
+  The gaps the emitted body still has are the ones R1's own text records (the close is emitted at the end-of-body
+  rebuild rather than at each intermediate segment close, an index that changes between segments is not followed,
+  and dynamic chunks still resolve against the transaction).
 - [ ] R3 Mapping nodes:
   - exact read, and absence proof by predecessor;
   - update in place;
@@ -773,8 +787,11 @@ risk. Take the slices in order, each with its own tests.
 
 ### 4.4 Integration milestones and the gate
 
-- [ ] **I1 `ABBA` end to end:** compiled masters (C, R1-R2), the composer (E) and the real validator (B). The outputs
-  are exactly those of spec 5.2.
+- [x] **I1 `ABBA` end to end:** compiled masters (C, R1-R2), the composer (E) and the real validator (B). The outputs
+  are exactly those of spec 5.2. Ticked on the end-to-end criterion: the emitting round trip derives callee-first,
+  every contract input is accepted on the composition profile, the validator's own decision accepts every check in
+  the spec order, and the transaction's outputs are 5.2's set. V7 was the last thing in the way and the chain end
+  closed with it (B7).
   - The outputs are 5.2's set complete as of `abe0de286` - six participants at 0-5, the event at 6, the user's change
     at 7 - the derivation completes callee first, and every contract input the machine is asked about is accepted.
     The validator input's own spendability closed at `7c76dcef4`: it used to spend its operation-cost budget to
@@ -783,8 +800,8 @@ risk. Take the slices in order, each with its own tests.
     carry the numbers). The union census across the masters that run on a contract's records is emitted with the
     rest of the census (`d8eb0bd16`, `106d7ab48`, `d055ac85f`): the walk is over every frame of the settled
     contract, and the multi-master controls that a master waives and the validator makes are in the validator
-    suite. What is open on I1 is V7's chain end, which the derived order decides rather than the program's
-    order-free half (B7).
+    suite. The chain end closed in the same round: the program's chains rule anchors each record's key, so the rule
+    the derived order states (`V7_CHAIN_END_MISMATCH`) is in the list the differential holds.
 - [ ] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate:
   - [ ] **GO** requires:
     - 0 per-shape rules added;
@@ -1147,48 +1164,48 @@ Titles marked NEVER have not passed on any real compile to date.
 
 - **The record chains: the design the next round should implement, and its cost.** V7's last open rule needs each record's declared views to chain across the frames that write it. The derivation groups the record entries by the index they read (`in:<i>`, or `out:<o>` for a record the transaction creates) and compares consecutive `viewOut`/`viewIn` pairs in the order it derived, which the transcript's master list need not follow. The emitted program does not derive that order as data, so the check has to be order-free: for every gathered entry, exactly one producer and one consumer of its `viewIn` and `viewOut` inside its own group, where a producer is another group member's `viewOut` or the spent input's commitment and a consumer is another member's `viewIn` or the output at the entry's own `out`; an entry that deletes (`out == NONE`) must have no member consumer, and an entry whose `viewOut` has no member consumer is a chain end, so its `out` must hold a mutable NFT of the contract with that commitment. The first piece is to gather each record entry *whole* rather than only its two indices — the entry's width is `4 + 4 + len(viewIn) + 4 + len(viewOut)`, reachable from the two length-prefixed commitments the block already writes — and the check then walks that blob, computing each entry's width the same way. Measured room when this was written: the program is 9,006 bytes and the validator input 9,124 of the standard ten-thousand-byte unlocking bytecode, so about eight hundred and seventy bytes are free against an estimated seven hundred and fifty for the two pieces. Both earlier attempts at walks of this shape ended in a program that did not terminate, so the piece to land first is the whole-entry gather with the value floor still green, then the producer-and-consumer check with its hostile case (a middle entry whose view does not chain, and a chain end whose output is not a record of the contract).
 
-- **The record chains are landed as the order-free half, and the chain end is the half the derived order keeps.**
-  `emitRequireRecordChains` gathers every record entry every covered frame declares into one blob of fixed-width
-  records — `RECORD_ENTRY_STRIDE` is 268 bytes: the index pair, the record's key, the start view padded to a
-  commitment's width, the key again, and the end view padded — and weighs each entry against the declarations of the
-  same record: what it continues from is looked for as `key || viewIn` in the window that pairs a key with a start
-  view, what continues from it as `key || viewOut` in the window that pairs a key with an end view, and an entry
-  passes when the transaction's own commitment stands in at an end (`in == NONE` continues from nothing; `out == NONE`
-  must not be continued) or when the search finds another declaration's view. This supersedes the room and cost
-  bullets around it as measurements: the rule costs 879 bytes, the program is 9,885 bytes, the reference
-  composition's validator input 9,968 of the standard ten-thousand-byte unlocking bytecode, and the composition costs
-  4,750,308 of 8,007,200 operation-cost units at the published density, so the padding block stays and no byte is
-  squeezed. What it does not decide is the chain's end: the differential's `seed 24301 case 55` mutates a record's
-  output commitment while a read-only declaration shares the view the chain ends at, so the entry that should close
-  the chain has a member consumer instead of the transaction's output and the derivation's `V7_CHAIN_END_MISMATCH`
-  has no order-free counterpart. That reason is therefore not in `VALIDATOR_PROGRAM_REASONS`; the master-side
-  settlement — the head's own `OUTPUTTOKENCOMMITMENT(out)` equals the segment's declared `viewOut` — covers a record a
-  frame writes, and the differential case is pinned rather than hidden.
+- **The record chains are landed, both halves: the pairing, and the chain's end by an anchor.** `emitRequireRecordChains`
+  gathers every record entry every covered frame declares into one blob of fixed-width records and weighs each entry
+  against the declarations of the same record: what it continues from is looked for as `key || viewIn` in the window
+  that pairs a key with a start view, what continues from it as `key || viewOut` in the window that pairs a key with
+  an end view, and an entry passes when the transaction's own commitment stands in at an end (`in == NONE` continues
+  from nothing; `out == NONE` must not be continued) or when the search finds another declaration's view. The chain's
+  end is then decided without the order: each record carries a marker byte, one when the declaration's write lands at
+  the transaction's own output (`out != NONE`, `out < txOutputCount`, `pad(viewOut)` equals the output's commitment)
+  or when it deletes the record, and an entry passes only if its key has a marked declaration anywhere in the blob.
+  That is a necessary condition of the derived rule — the last declaration of a chain anchors at the output, or the
+  chain ends with a deletion — and it closes the case the pairing alone accepted (`seed 24301 case 55`: a mutated
+  output commitment whose view a read-only declaration also ends at). **Checked both ways**: with the anchor search
+  neutered the differential misses exactly that case, and with it the differential is green over the generated
+  corpus, so `V7_CHAIN_END_MISMATCH` is back in `VALIDATOR_PROGRAM_REASONS`. This supersedes the room and cost
+  bullets around it as measurements: the rule costs 1,018 bytes in total (879 for the pairing, 139 for the anchor),
+  the program is 10,024 bytes, the reference composition's validator input 10,107 of the standard ten-thousand-byte
+  unlocking bytecode **— 107 over it —** and the composition costs 4,828,196 of 8,113,600 operation-cost units at the
+  published density, accepted. The byte budget is D3's and A9's (Phase R), and the reviewer's direction was to land
+  the rule as designed without squeezing bytes, so the overflow is recorded here rather than paid for by giving up a
+  rule: the prepared-region refactor in the measurements section is what buys it back.
 - **The chains rule's cost grows with the square of the entry count, which is the wall the marketplace shapes will
-  meet.** The check searches the whole blob twice per entry, so a composition with `n` record entries runs on the
-  order of `2n²` whole-record splits. Measured on the reference shape: the value-floor program without the rule
-  costs 4,386,854 operation-cost units at the published density and with it 4,750,308, so four entries — sixteen
-  search pairs — cost 363,454, about 22,700 units per entry squared. The input buys 8,007,200 units, so the rule as
-  emitted holds to roughly eighteen entries on a shape this size; MS7's roughly twenty-four masters, whose segments
-  declare more than that, will need the prepared region the measurement section names or a pass that orders the
-  entries by key, and the ladder should expect to pay there rather than in bytes. The byte budget is not the
-  binding one — the validator input sits at 9,968 of the standard ten-thousand-byte unlocking bytecode — and the
-  plan's D3 defers that budget to Phase R.
-- **The key-first gather, specified, so the next round emits it against a plan rather than a search.** One record is
-  `[key:4][marker:1][in:2][out:2][key:4][viewIn pad:128][viewOut pad:128]`, stride 269. The marker is `1` when the
-  declaration's write lands at the transaction's own output (`out != NONE`, `out < txOutputCount`, and
-  `pad(viewOut)` equals `OP_OUTPUTTOKENCOMMITMENT(out)`) or when it deletes the record (`out == NONE`), and `0`
-  otherwise; it is computed where the entry is appended, so the gather pays for it once per entry rather than the
-  check paying per entry per key. The two windows a search reads are then both at the second key: the window that
-  pairs a key with a start view is `offset 9, width 132`, the one that pairs a key with an end view
-  `offset 141, width 132` — the producer needle (`key || pad(viewIn)`) matches the second, the consumer needle
-  (`key || pad(viewOut)`) the first, exactly as today. The added rule per entry is one search for `key || 0x01` at
-  `offset 0, width 5`: an entry whose key has an anchored or deleting declaration anywhere in the blob satisfies it,
-  and the derivation's chain end requires that of every key (the last declaration of a chain writes at the output, or
-  the chain ends with a deletion), so it is a necessary condition with no order. Cost: the two existing searches keep
-  their stride but compare 132-byte needles as before, and the new one compares five bytes; the entry walk gains one
-  search per entry, which is the price of the rule and the reason it waits for the key-first layout rather than
-  riding on the current one.
+  meet.** The check searches the whole blob three times per entry (the producer, the consumer, and the anchor), so a
+  composition with `n` record entries runs on the order of `3n²` whole-record splits. Measured on the reference
+  shape: the value-floor program without the chains rule costs 4,386,854 operation-cost units at the published
+  density and with it 4,828,196, so four entries — sixteen entry-pairs — cost 441,342, about 27,600 units per entry
+  squared. The input buys 8,113,600 units, so the rule as emitted holds to roughly seventeen entries on a shape this
+  size; MS7's roughly twenty-four masters, whose segments declare more than that, will need the prepared region the
+  measurement section names or a pass that orders the entries by key, and the ladder should expect to pay there
+  rather than in bytes. The byte budget binds at the same time — the reference input now sits 107 bytes past the
+  standard ten-thousand-byte unlocking bytecode — and the plan's D3 defers that budget to Phase R.
+- **The key-first gather, as landed, and the correction the first specification needed.** One record is
+  `[key:4][marker:1][in:2][out:2][key:4][viewIn pad:128][key:4][viewOut pad:128]`, stride 273: the key, the marker,
+  the index pair, then each padded view behind its own copy of the key. The first specification written for this
+  round put the second key only once and gave the end window `offset 141`, which does not fit a 132-byte window in a
+  269-byte record — the machine said so at once (`OP_SPLIT` with index 132 on a 128-byte item) — so the third key
+  copy is what makes both windows contiguous: the window that pairs a key with a start view is `offset 9, width 132`,
+  the one that pairs it with an end view `offset 141, width 132`. The marker is `1` when the declaration's write
+  lands at the transaction's own output (`out != NONE`, `out < txOutputCount`, and `pad(viewOut)` equals
+  `OP_OUTPUTTOKENCOMMITMENT(out)`) or when it deletes the record (`out == NONE`), and `0` otherwise; it is computed
+  where the entry is appended, so the gather pays for it once per entry rather than the check paying per entry per
+  key. The anchor rule is then one search per entry for `key || 0x01` at `offset 0, width 5`, which compares five
+  bytes rather than 132.
 - The emitted state-inputs rule is stricter than the oracle in one degenerate place: the oracle keeps the transcript's
   list as a `Set`, so it would accept a transcript naming the same state input twice, while the machine requires each
   listed index to occur exactly once (duplicates could otherwise pad the count). No fixture or generated case carries

@@ -176,6 +176,7 @@ const compose = (options: Parameters<typeof build>[0] = {}): {
 } => {
   const built = build(options);
   const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(),
     artifacts: [compileString(SOURCE, { composition: 'per-call' })],
     plan: built.plan,
   });

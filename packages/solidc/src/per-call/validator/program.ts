@@ -45,15 +45,30 @@ export const MAX_TRANSCRIPT_COUNT = 255;
  */
 const VIEW_PADDING_BYTES = 128;
 
-/** One gathered record entry: the index pair, the record's key, the start view padded, the key, the end view. */
-const RECORD_ENTRY_STRIDE = 2 + 2 + 4 + VIEW_PADDING_BYTES + 4 + VIEW_PADDING_BYTES;
-
 /** The record's key: four bytes naming the record an entry belongs to. */
 const RECORD_ENTRY_KEY_BYTES = 4;
 
+/** The marker byte: one when the entry's write lands at the transaction's own output, or the entry deletes. */
+const RECORD_ENTRY_MARKER_BYTES = 1;
+
+/** One index of an entry: the input it read the record at, and the output it wrote it to. */
+const RECORD_ENTRY_INDEX_BYTES = 2;
+
+/**
+ * One gathered record entry: the key, the marker, the index pair, then each padded view behind its own copy of the
+ * key, so one search compares a key with the view a declaration starts at and another with the view it ends at.
+ */
+const RECORD_ENTRY_STRIDE = 3 * RECORD_ENTRY_KEY_BYTES
+  + RECORD_ENTRY_MARKER_BYTES
+  + 2 * RECORD_ENTRY_INDEX_BYTES
+  + 2 * VIEW_PADDING_BYTES;
+
 /** The window that carries an entry's key with the view it declares at the record's start, and with its end view. */
-const RECORD_ENTRY_START_WINDOW = 2 + 2;
+const RECORD_ENTRY_START_WINDOW = RECORD_ENTRY_KEY_BYTES + RECORD_ENTRY_MARKER_BYTES + 2 * RECORD_ENTRY_INDEX_BYTES;
 const RECORD_ENTRY_END_WINDOW = RECORD_ENTRY_START_WINDOW + RECORD_ENTRY_KEY_BYTES + VIEW_PADDING_BYTES;
+
+/** The window that carries an entry's key with its marker, which is where the anchor rule searches for a key. */
+const RECORD_ENTRY_MARKER_WINDOW_BYTES = RECORD_ENTRY_KEY_BYTES + RECORD_ENTRY_MARKER_BYTES;
 
 /** A window is an entry's key with one of its two views. */
 const RECORD_ENTRY_WINDOW_BYTES = RECORD_ENTRY_KEY_BYTES + VIEW_PADDING_BYTES;
@@ -131,12 +146,15 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V7_EVENT_OUTPUT_SHARED',
   'V7_TOUCHED_RECORDS_MISMATCH',
-  // The chains rule is the order-free half of the derivation's chaining: a chain that starts away from the
-  // transaction's own commitment, one that carries on from a view no declaration leaves, and one that carries on
-  // from a deletion are all refused. What it cannot see is the derived order, so a chain whose *last* declaration
-  // misses the record's output commitment is caught only when no other declaration shares that view; the
-  // derivation's `V7_CHAIN_END_MISMATCH` is therefore not in this list (the Log and the Deviations carry the case).
+  // The chains rule decides both halves of every record entry's fit into a record's chain. The start half: the view
+  // an entry reads at the record's input is the commitment the transaction holds there, or the end view of a
+  // declaration that ran before it; an entry that creates the record continues from nothing. The end half: the view
+  // it writes is what the transaction writes at the record's output, or the start view of a declaration that runs
+  // after it; a declaration that deletes the record ends the chain there. Because the program holds the
+  // declarations and not the order the derivation ran them in, the chain's own end is decided by its anchor: every
+  // key has a declaration whose write lands at the transaction's own output, or one that deletes the record.
   'V7_CHAIN_START_MISMATCH',
+  'V7_CHAIN_END_MISMATCH',
   'V7_CHAIN_BROKEN',
   'V7_CHAIN_MIDDLE_DELETE',
   'V7_RECORD_VALUE_DECREASED',
@@ -150,8 +168,8 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
  * `V6` is absent on purpose: the program requires every covered master to be reached exactly once, which closes
  * cycles and unreachable masters, but the ordering half of that check — a callee running between its caller's
  * segments — is the derived order, which the program does not hold; the record chains the ordering also carries are
- * enforced as far as the order-free half reaches. `V7` is absent for the same reason: the chains are emitted, but
- * the chain end they decide in the derived order is not completely decided here.
+ * enforced as far as the order-free half reaches. `V7` is absent because not every one of its rules is emitted here
+ * yet.
  */
 export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V8', 'V9', 'V10', 'V11'];
 
@@ -1693,8 +1711,9 @@ function emitCheckGatheredIndices(e: Emitter): void {
  *
  * The derivation decides the chains in the order it ran the frames, which the program does not hold: the transcript
  * says which frames ran, not the order their segments ran in. What is decided here is therefore the order-free half
- * of that rule - every entry has to name a declaration it continues from and one that continues from it - which no
- * accepted composition can fail.
+ * of that rule - every entry has to name a declaration it continues from and one that continues from it - together
+ * with the chain's end, which is anchored: every key has a declaration whose write lands at the transaction's own
+ * output, or one that deletes the record. No accepted composition can fail either half.
  */
 function emitRequireRecordChains(e: Emitter): void {
   const O = Opcodes;
@@ -1767,26 +1786,62 @@ function emitCollectSegmentRecordEntries(e: Emitter): void {
 /**
  * One record entry, appended to the accumulator as one fixed-width record.
  *
- * Entry `[.., count, rest]`, exit `[.., count, rest]`. The record is the index pair, the record's key, the start
- * view padded, the key again, and the end view padded: the key twice, so one search compares it with the view a
- * declaration starts at and another with the view it ends at.
+ * Entry `[.., count, rest]`, exit `[.., count, rest]`. The record is the key, a marker byte, the index pair, then
+ * each padded view behind its own copy of the key: one search compares a copy with the view a declaration starts at
+ * and another with the view it ends at. The marker is one when the entry's write lands at the transaction's own
+ * output or the entry deletes the record, so a search for the key with the marker finds the record's anchor.
  */
 function emitCollectRecordEntry(e: Emitter): void {
   const O = Opcodes;
   takeRawField(e, 2);
   takeRawField(e, 2);
-  // `[.., count, in, out, rest]`: the indices are appended as copies, since the key needs them both.
-  e.count(2).op(O.OP_PICK);
-  emitAppendAccumulated(e);
-  e.count(1).op(O.OP_PICK);
-  emitAppendAccumulated(e);
-  emitAppendKey(e, 2, 2);
   e.script(takeLengthPrefixedField32());
+  e.script(takeLengthPrefixedField32());
+  // `[.., count, in, out, viewIn, viewOut, rest]`. The views are read before the key is appended, because the marker
+  // sits between the two keys and needs the end view.
+
+  // The record's key comes first: copies of the two indices name it.
+  emitAppendKey(e, 4, 4);
+
+  // The marker: `0x01` when the entry's end is the transaction's own output or the entry deletes the record, `0x00`
+  // otherwise. The sentinel index means the entry deletes the record, so it is decided before the machine is asked
+  // for the commitment it would name.
+  e.count(3).op(O.OP_PICK);
+  e.unsignedByteOnTop();
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.push(new Uint8Array([0x01]));
+  e.op(O.OP_ELSE);
+  e.count(3).op(O.OP_PICK);
+  e.unsignedByteOnTop();
+  e.op(O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
   e.count(1).op(O.OP_PICK);
   emitPadView(e);
+  e.count(4).op(O.OP_PICK);
+  e.unsignedByteOnTop();
+  e.op(O.OP_OUTPUTTOKENCOMMITMENT);
+  emitPadView(e);
+  e.op(O.OP_EQUAL, O.OP_IF);
+  e.push(new Uint8Array([0x01]));
+  e.op(O.OP_ELSE);
+  e.push(new Uint8Array([0x00]));
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_ELSE);
+  e.push(new Uint8Array([0x00]));
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
   emitAppendAccumulated(e);
-  emitAppendKey(e, 3, 3);
-  e.script(takeLengthPrefixedField32());
+
+  // The indices as the block wrote them, then the key again and the two padded views.
+  e.count(4).op(O.OP_PICK);
+  emitAppendAccumulated(e);
+  e.count(3).op(O.OP_PICK);
+  emitAppendAccumulated(e);
+  emitAppendKey(e, 4, 4);
+  e.count(2).op(O.OP_PICK);
+  emitPadView(e);
+  emitAppendAccumulated(e);
+  // The key again, so the view a declaration ends at sits behind a copy of it and one search can read both.
+  emitAppendKey(e, 4, 4);
   e.count(1).op(O.OP_PICK);
   emitPadView(e);
   emitAppendAccumulated(e);
@@ -1797,8 +1852,7 @@ function emitCollectRecordEntry(e: Emitter): void {
 /**
  * One entry's key, appended to the accumulator from copies of the two indices.
  *
- * `inDepth` and `outDepth` are the two indices' depths in the walk's own stack, which differ between the two places
- * a key is appended: the entry's views are read between them.
+ * `inDepth` and `outDepth` are the two indices' depths in the walk's own stack at the point a key is appended.
  */
 function emitAppendKey(e: Emitter, inDepth: number, outDepth: number): void {
   const O = Opcodes;
@@ -1819,39 +1873,43 @@ function emitAppendKey(e: Emitter, inDepth: number, outDepth: number): void {
  *
  * The program holds the declarations, not the order they ran in, so what is checked is the order-free half of that
  * rule: every entry names a declaration it continues from and one that continues from it, with the transaction's
- * own commitment standing in when it is at the chain's end. Every accepted composition satisfies it; a chain that
- * starts in the middle, or one that carries on from a deletion, does not.
+ * own commitment standing in when it is at the chain's end, and every key has a declaration whose write is anchored
+ * at the transaction's own output or which deletes the record. That anchor is what decides the chain's end without
+ * the order. Every accepted composition satisfies it; a chain that starts in the middle, or one that carries on from
+ * a deletion, does not.
  */
 function emitCheckRecordEntryChain(e: Emitter): void {
   const O = Opcodes;
   e.push(encodeInt(BigInt(RECORD_ENTRY_STRIDE))).op(O.OP_SPLIT, O.OP_SWAP);
+  takeRawField(e, RECORD_ENTRY_KEY_BYTES);
+  takeRawField(e, RECORD_ENTRY_MARKER_BYTES);
   // The two indices are read as numbers, because the checks compare them with the transaction's own counts and ask
   // the machine for the commitments they hold; the block writes them as fixed two-byte fields, which is not what a
   // number-taking operation accepts.
-  takeUnsignedCount(e, 2);
-  takeUnsignedCount(e, 2);
+  takeUnsignedCount(e, RECORD_ENTRY_INDEX_BYTES);
+  takeUnsignedCount(e, RECORD_ENTRY_INDEX_BYTES);
   takeRawField(e, RECORD_ENTRY_KEY_BYTES);
   takeRawField(e, VIEW_PADDING_BYTES);
   takeRawField(e, RECORD_ENTRY_KEY_BYTES);
   takeRawField(e, VIEW_PADDING_BYTES);
   e.op(O.OP_DROP);
-  // `[.., blob, count, rest, in, out, key, viewIn, key, viewOut]`.
+  // `[.., blob, count, rest, key, marker, in, out, key, viewIn, key, viewOut]`.
 
   // The declarations that read what this one writes: its key with its end view, looked for in the window that pairs
   // a declaration's key with the view it starts at.
-  e.count(3).op(O.OP_PICK);
+  e.count(7).op(O.OP_PICK);
   e.count(1).op(O.OP_PICK);
   e.op(O.OP_CAT);
-  e.count(9).op(O.OP_PICK);
+  e.count(11).op(O.OP_PICK);
   e.op(O.OP_SWAP);
   emitFoundWindow(e, RECORD_ENTRY_STRIDE, RECORD_ENTRY_START_WINDOW, RECORD_ENTRY_WINDOW_BYTES);
   e.op(O.OP_TOALTSTACK);
   // The declarations that write what this one reads: its key with its start view, in the window that pairs a key
   // with the view a declaration ends at.
-  e.count(3).op(O.OP_PICK);
+  e.count(7).op(O.OP_PICK);
   e.count(3).op(O.OP_PICK);
   e.op(O.OP_CAT);
-  e.count(9).op(O.OP_PICK);
+  e.count(11).op(O.OP_PICK);
   e.op(O.OP_SWAP);
   emitFoundWindow(e, RECORD_ENTRY_STRIDE, RECORD_ENTRY_END_WINDOW, RECORD_ENTRY_WINDOW_BYTES);
   e.op(O.OP_TOALTSTACK);
@@ -1904,8 +1962,19 @@ function emitCheckRecordEntryChain(e: Emitter): void {
   e.count(3).op(O.OP_PICK);
   e.op(O.OP_GREATERTHAN, O.OP_BOOLOR);
   e.op(O.OP_ENDIF);
+  e.op(O.OP_BOOLAND);
+
+  // The chain's end: the entry's key has a declaration whose write is anchored at the transaction's own output, or
+  // one that deletes the record. One search for the key with the marker byte finds it, since the marker is one
+  // exactly for those declarations.
+  e.count(9).op(O.OP_PICK);
+  e.push(new Uint8Array([0x01])).op(O.OP_CAT);
+  e.count(13).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWindow(e, RECORD_ENTRY_STRIDE, 0, RECORD_ENTRY_MARKER_WINDOW_BYTES);
+  e.op(O.OP_0, O.OP_GREATERTHAN);
   e.op(O.OP_BOOLAND, O.OP_VERIFY);
-  e.op(O.OP_2DROP, O.OP_2DROP, O.OP_2DROP, O.OP_DROP);
+  e.op(O.OP_2DROP, O.OP_2DROP, O.OP_2DROP, O.OP_2DROP, O.OP_DROP);
 }
 
 /**

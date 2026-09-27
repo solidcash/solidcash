@@ -122,6 +122,7 @@ describe('a chain of four contracts, each calling the next', () => {
     };
 
     const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(),
       artifacts: LINKS.map((link) => artifacts[link.name]!),
       plan,
     });

@@ -156,7 +156,8 @@ function deriveComposition(): {
   draft: ReturnType<typeof createComposedDerivationHost>['draft'];
 } {
   const { plan, artifacts } = buildComposition();
-  const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
   deriveDepthFirst(ROOT, host);
   const program = draft.programFor(CALLER_MASTER);
   const vm = compositionMachine();

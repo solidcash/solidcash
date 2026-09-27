@@ -192,7 +192,8 @@ export function composeAndDerive(
   artifacts: readonly { readonly composition?: unknown }[],
   roots: readonly FrameRequest[],
 ): ShapeOutcome {
-  const { host, draft } = createComposedDerivationHost({ artifacts, plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts, plan });
   const derived = deriveComposition(roots, host);
   const program = draft.programFor(plan.masters[0]!.master);
   const vm: VirtualMachine = compositionMachine();

@@ -98,7 +98,8 @@ function composeInsert(): ReturnType<typeof createComposedDerivationHost> {
       },
     },
   };
-  const { host, draft } = createComposedDerivationHost({ artifacts: [artifact], plan });
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifact], plan });
   deriveDepthFirst({ contract: 'Registry', functionName: 'Registry.seed()', kind: FrameKind.ROOT, master: 'registry-1' }, host);
   return { host, draft };
 }

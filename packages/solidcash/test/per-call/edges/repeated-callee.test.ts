@@ -196,6 +196,7 @@ interface Stop {
 function derive(run: Run): { readonly draft: CompositionDraft; readonly completed: readonly string[]; readonly stops: readonly Stop[] } {
   const stops: Stop[] = [];
   const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(),
     artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
     plan: run.plan,
     onRun: (master: string, _site: unknown, stop: { accepted: boolean; error?: string }) => {
@@ -293,6 +294,7 @@ describe('one entry that calls one callee from a loop', () => {
   it('resumes the one published call site once per turn rather than once in total', () => {
     const run = build(2);
     const { host } = createComposedDerivationHost({
+    vm: compositionMachine(),
       artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
       plan: run.plan,
     });
@@ -310,6 +312,7 @@ describe('one entry that calls one callee from a loop', () => {
     // then the caller's own program asks for a third the block does not carry.
     const run = build(2, 3);
     const { host } = createComposedDerivationHost({
+    vm: compositionMachine(),
       artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
       plan: run.plan,
     });

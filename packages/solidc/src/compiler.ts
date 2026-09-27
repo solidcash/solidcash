@@ -2601,15 +2601,21 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   // the shipped proxy artifact.
   delete mergedCompilerOptions.__cheapAdmissionCodegen;
   assertNoInternalAttemptRecovery(mergedCompilerOptions);
-  const finalVerifierProgram = artifact.messageBus?.verifierProgram;
-  const finalVerifierBound = artifact.messageBus?.route.inputs.some((input) =>
-    input.name === '__internal__activeVerifierIndex') === true;
-  if (finalVerifierBound && (!finalVerifierProgram
-    || boundVerifierProgramIdentityByArtifact.get(artifact)
-      !== verifierProgramIdentity(finalVerifierProgram))) {
-    throw new Error('message-bus route verifier lock does not match the published verifier program');
+  // A per-call artifact carries no route: its program is the contract's own bodies behind one head, and the bus's
+  // bodies are not emitted into it, so the invariants that compare a published route's verifier lock with the
+  // emitted program are questions about a program this convention did not build. They are asked on the paths that
+  // emit a route.
+  if (mergedCompilerOptions.composition !== 'per-call') {
+    const finalVerifierProgram = artifact.messageBus?.verifierProgram;
+    const finalVerifierBound = artifact.messageBus?.route.inputs.some((input) =>
+      input.name === '__internal__activeVerifierIndex') === true;
+    if (finalVerifierBound && (!finalVerifierProgram
+      || boundVerifierProgramIdentityByArtifact.get(artifact)
+        !== verifierProgramIdentity(finalVerifierProgram))) {
+      throw new Error('message-bus route verifier lock does not match the published verifier program');
+    }
+    assertPublishedVerifierBinding(artifact, mergedCompilerOptions.maximumInputBytes);
   }
-  assertPublishedVerifierBinding(artifact, mergedCompilerOptions.maximumInputBytes);
   attachDelegateVariant(
     artifact, code, mergedCompilerOptions, errorListener, primaryContractName,
     cacheable || !suppressWarnings,
@@ -14028,6 +14034,14 @@ function compileResolvedAst(
   }
   // Code generation
   if (mergedCompilerOptions.composition === 'per-call') {
+    // The route is built for the lowering it performs on the source's own bodies — a low-level call becomes an
+    // authenticated call, an assembly block is lowered — and that lowering stays. The bodies the route adds are the
+    // other convention's program, which this one does not carry: a per-call master dispatches the contract's own
+    // bodies. They are dropped here, before code generation reads the unit, so nothing downstream is asked to
+    // compile a body this convention does not serve.
+    ast.contract.functions = ast.contract.functions.filter(
+      (fn) => !(fn.messageBusRoute === true || fn.name.startsWith('__message_bus')),
+    );
     // A per-call compile emits one master program per contract. The shapes that program can carry are checked here,
     // after semantic analysis, so a contract whose frame the head cannot supply refuses by name instead of
     // compiling into a master that would violate its own frame rules.

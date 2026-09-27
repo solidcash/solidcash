@@ -44,9 +44,11 @@ export const MAX_TRANSCRIPT_COUNT = 255;
  * masters' inputs spends more than a small composition's own bytes buy, so a program that never padded would fit
  * only transactions that are large for reasons of their own. The padding is one data push the program drops where
  * it ends, which leaves the stack exactly as the checks left it; a byte of it costs one unit of stack and buys
- * eight hundred, and the input stays well under the ten-thousand-byte limit on an unlocking bytecode.
+ * eight hundred. It is sized against the byte the program itself is pushed as: the redeem script and the transcript
+ * ride in the same unlocking bytecode, which a standard node caps at ten thousand bytes, so the padding shares that
+ * budget with every check the program carries.
  */
-export const VALIDATOR_INPUT_PADDING_BYTES = 2_048;
+export const VALIDATOR_INPUT_PADDING_BYTES = 1_024;
 
 /**
  * The rules this program enforces on chain.
@@ -108,6 +110,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V7_EVENT_OUTPUT_SHARED',
   'V7_TOUCHED_RECORDS_MISMATCH',
+  'V7_RECORD_VALUE_DECREASED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -146,7 +149,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  *     mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
  *     own-category output is an event a frame on that contract lists, every listed event names an output of the
  *     transaction, no two frames list the same one, every master of the contract is recreated by a master output at
- *     its own index, and the record indices the frames read are exactly the state UTXOs the contract spends.
+ *     its own index, the record indices the frames read are exactly the state UTXOs the contract spends, and every
+ *     record a frame writes keeps at least the value it came with, the frame's own sends included.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -1307,6 +1311,7 @@ function emitOneSettleCensus(e: Emitter): void {
   e.op(O.OP_DROP);
   emitRequireMastersRecreated(e);
   emitRequireTouchedRecords(e);
+  emitRequireRecordValues(e);
   e.op(O.OP_DROP);
 }
 
@@ -1517,6 +1522,120 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
   e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP);
+}
+
+/**
+ * V7's value floor: a record a frame writes keeps at least the value it came with, less what the frame pays out.
+ *
+ * Entry `[.., X]`, exit the same. The sends a frame lists are summed once; then every entry that both found a record
+ * and writes one must leave at least the record's own value, the frame's sends included. An entry whose indices name
+ * no input or no output is left alone, since another rule owns those.
+ */
+function emitRequireRecordValues(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitCheckMasterRecordValues(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+}
+
+/**
+ * One frame's records: the sends it pays out, then every record it writes.
+ *
+ * Entry `[.., rest, index]`, exit `[.., rest]`. The block is read twice, because the sends follow the segments and
+ * the total is what the segment entries are weighed against.
+ */
+function emitCheckMasterRecordValues(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  // `[.., rest, index, afterCalls]`.
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropSegment);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  dropIndexList(e);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitSumSendValue);
+  e.op(O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK);
+  // `[.., rest, index, paid]`.
+  e.op(O.OP_TOALTSTACK);
+  e.op(O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCheckSegmentValues);
+  e.op(O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/** One listed send: its output's value added to the frame's running total, which lives on the alternate stack. */
+function emitSumSendValue(e: Emitter): void {
+  const O = Opcodes;
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_OUTPUTVALUE);
+  e.op(O.OP_FROMALTSTACK, O.OP_ADD, O.OP_TOALTSTACK);
+}
+
+/** One segment: a counted list of record entries, each one weighed. */
+function emitCheckSegmentValues(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCheckRecordValue);
+}
+
+/**
+ * One entry's record keeps its value, the frame's sends included.
+ *
+ * Entry `[.., rest]`, exit `[.., rest]`. The entry's two indices are read and the commitments dropped; an index that
+ * names no input or no output leaves the check alone.
+ */
+function emitCheckRecordValue(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  takeUnsignedCount(e, 2);
+  dropLengthPrefixed(e, 4);
+  dropLengthPrefixed(e, 4);
+  e.op(O.OP_ROT, O.OP_ROT);
+  // `[.., rest, in, out]`.
+  e.op(O.OP_OVER, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN);
+  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN);
+  e.op(O.OP_BOOLAND, O.OP_IF);
+  e.op(O.OP_DUP, O.OP_OUTPUTVALUE);
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_ADD);
+  e.op(O.OP_ROT);
+  e.op(O.OP_UTXOVALUE);
+  e.op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ELSE, O.OP_2DROP, O.OP_ENDIF);
 }
 
 /**

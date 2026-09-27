@@ -1020,6 +1020,28 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a record left with less value than it came with', () => {
+    // A settlement rebuilds each record it spends; the rebuilt output may only be lighter by what the frame that
+    // wrote it pays out. Here the record loses more than the frame's one listed send accounts for, so the record
+    // the contract holds afterwards would be worth less than the one it held.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const record = composition.slotIndex.get('S')!;
+    const source = modelled.inputs[record]!;
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === record
+        ? { ...output, value: source.value - 1_001n }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_RECORD_VALUE_DECREASED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a spent record that no frame reads', () => {
     // A second state UTXO of the same contract, listed by the transcript as one to settle, that no frame ever reads:
     // nothing rebuilds it, so the settlement would drop a record the contract holds. The accepted control is the

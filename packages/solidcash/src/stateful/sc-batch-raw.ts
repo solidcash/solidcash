@@ -629,6 +629,7 @@ executionContextBinding?: BatchExecutionContextBinding,
   reachedHandlers.forEach((handler, rowIndex) => {
     for (const binding of handler.batchKeyWitnesses ?? []) {
       activeRouteEntryKeys.add(binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput);
+      for (const lane of binding.keyPool ?? []) activeRouteEntryKeys.add(lane);
       if (binding.alternateRouteInput) activeRouteEntryKeys.add(binding.alternateRouteInput);
     }
   });

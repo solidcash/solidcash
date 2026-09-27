@@ -8609,6 +8609,33 @@ function synthesizeMessageBusRoute(
   let resourceSelfAliasHandlerInvokeName: string | undefined;
   let resourceSwappedHandlerInvokeName: string | undefined;
   const kernelSwappedHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+  const kernelSelfAliasHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
+  const selfAliasHandler = (
+    handler: FunctionDefinitionNode, collection: string, sharedBase: string, varyingBase: string,
+  ): FunctionDefinitionNode => {
+    const alias = cloneNode(handler);
+    alias.name = `${handler.name}_self_alias`;
+    let retainedRead: MappingAccessNode | undefined;
+    walkInvocationAst(alias.body, (node) => {
+      if (!isMappingNode(node) || node.name !== collection) return;
+      if (!node.keys.some((key) => key instanceof IdentifierNode
+        && key.name === `${ENTRY_KEY_PREFIX}${varyingBase}`)) return;
+      retainedRead ??= Object.assign(new MappingAccessNode(
+        node.name, node.keys.map((key) => cloneNode(key) as ExpressionNode),
+      ), { location: node.location });
+      node.keys = node.keys.map((key) => key instanceof IdentifierNode
+        && key.name === `${ENTRY_KEY_PREFIX}${varyingBase}`
+        ? Object.assign(new IdentifierNode(`${ENTRY_KEY_PREFIX}${sharedBase}`), { location: key.location })
+        : key);
+    });
+    // Retain the second read-only journal field so alias and ordinary calls have the same physical frame.
+    if (retainedRead) {
+      alias.body!.statements!.push(Object.assign(new RequireNode(Object.assign(new BinaryOpNode(
+        retainedRead, BinaryOperator.EQ, cloneNode(retainedRead) as MappingAccessNode,
+      ), { location: handler.location })), { location: handler.location }));
+    }
+    return alias;
+  };
   const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   // Collection-journal clones are created before the graph-effect clone pass. A handler that both
@@ -8904,6 +8931,11 @@ function synthesizeMessageBusRoute(
         binding.routeInput === pair.base && binding.source === 'argument');
       const varyingBinding = pair && sourceHandler.messageBusKeyWitnesses?.find((binding) =>
         binding.routeInput === varying[0].base && binding.source === 'argument');
+      if (pair && varyingBinding && collectionByName.get(pair.collection)?.allKeyTypes.length === 1) {
+        const alias = selfAliasHandler(handler, pair.collection, pair.base, varying[0].base);
+        kernelSelfAliasHandlerInvokeNames.set(sourceHandler, alias.name);
+        contract.functions.push(alias);
+      }
       if (pair && sharedBinding && varyingBinding
         && collectionByName.get(pair.collection)?.allKeyTypes.length === 1) {
         sharedBinding.swappable = true;
@@ -8930,6 +8962,26 @@ function synthesizeMessageBusRoute(
         kernelSwappedHandlerInvokeNames.set(sourceHandler, swappedHandler.name);
         contract.functions.push(swappedHandler);
       }
+    }
+  }
+  // A shared-key pair can reach a different second entry on each selected row. Publish a bounded physical
+  // key pool, not a row-indexed witness band: equal keys reuse a lane and every row invokes the same handler.
+  // Its protocol capacity is independent of an individual route's requested row-count bound.
+  if (kernelLoopDispatch) {
+    for (const fn of eligible) {
+      const bindings = fn.messageBusKeyWitnesses ?? [];
+      const varying = bindings.filter((binding) => binding.routeInput.endsWith('_row'));
+      if (varying.length !== 1 || varying[0].source !== 'argument' || varying[0].perRow) continue;
+      const binding = varying[0];
+      const coordinate = routeKeyWitnessCoordinates.get(binding.routeInput);
+      const shared = bindings.find((candidate) => `${candidate.routeInput}_row` === binding.routeInput);
+      if (!coordinate || !shared || (shared.source !== 'argument' && shared.source !== 'msgSender')
+        || collectionByName.get(coordinate.collection)?.allKeyTypes.length !== 1) continue;
+      const witness = routeKeyWitnesses.get(binding.routeInput)?.[0];
+      if (!witness) throw new Error('Missing kernel key-pool witness');
+      binding.keyPool = Array.from({ length: MAX_MESSAGE_BUS_ROWS }, (_unused, lane) =>
+        lane === 0 ? binding.routeInput : `${binding.routeInput}_pool${lane}`);
+      for (const name of binding.keyPool) routeKeyWitnesses.set(name, [{ ...witness, name }]);
     }
   }
   // A leaf handler with an owner-local event, BCH transfer, or token effect must execute behind a compiler-owned
@@ -9329,6 +9381,11 @@ function synthesizeMessageBusRoute(
       const swapped = contract.functions.find((candidate) => candidate.name === kernelSwappedName);
       if (swapped) bindLogicalCaller(swapped);
     }
+    const kernelSelfAliasName = kernelSelfAliasHandlerInvokeNames.get(sourceHandler);
+    if (kernelSelfAliasName) {
+      const alias = contract.functions.find((candidate) => candidate.name === kernelSelfAliasName);
+      if (alias) bindLogicalCaller(alias);
+    }
   }
 
   // Every compiler-generated handler runs against the route's published physical block. Direct routes own the
@@ -9632,17 +9689,21 @@ function synthesizeMessageBusRoute(
       const swappableShared = swappableBindings.find((binding) => !binding.routeInput.endsWith('_row'));
       const swappableVarying = swappableShared && swappableBindings.find((binding) =>
         binding.routeInput === `${swappableShared.routeInput}_row`);
+      const matchesKey = (
+        value: string, binding: NonNullable<FunctionDefinitionNode['messageBusKeyWitnesses']>[number],
+      ): string => (binding.keyPool ?? [witnessName(binding)])
+        .map((witness) => `${value} == ${witness}`).join(' || ');
       const ordinaryKeyChecks = (fn.messageBusKeyWitnesses ?? []).filter((binding) =>
         !binding.swappable && binding.entryTupleGroup === undefined).map((binding) =>
         binding.source === 'msgSender'
           ? `require(${witnessName(binding)} == ${logicalCaller});`
           : binding.source === 'expression' ? ''
-            : `require(${decodedName(binding.inputIndex)} == ${witnessName(binding)});`).join('\n');
+            : `require(${matchesKey(decodedName(binding.inputIndex), binding)});`).join('\n');
       const swappableKeyCheck = swappableShared && swappableVarying
         ? `require((${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableShared)} && `
-          + `${decodedName(swappableVarying.inputIndex)} == ${witnessName(swappableVarying)}) || (`
+          + `(${matchesKey(decodedName(swappableVarying.inputIndex), swappableVarying)})) || (`
           + `${decodedName(swappableVarying.inputIndex)} == ${witnessName(swappableShared)} && `
-          + `${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableVarying)}));`
+          + `(${matchesKey(decodedName(swappableShared.inputIndex), swappableVarying)})));`
         : '';
       const tupleKeyChecks = [...tupleGroups.values()].map((bindings) =>
         `require((${tupleMatches(bindings, false)}) || (${tupleMatches(bindings, true)}));`).join('\n');
@@ -9808,10 +9869,20 @@ function synthesizeMessageBusRoute(
         }
         const callArgs = argumentVector.join(', ');
         const kernelSwapped = kernelSwappedHandlerInvokeNames.get(fn);
-        const kernelOrientedInvoke = kernelSwapped && swappableShared && swappableVarying
+        let kernelOrientedInvoke = kernelSwapped && swappableShared && swappableVarying
           ? `if (${decodedName(swappableShared.inputIndex)} == ${swappableShared.routeInput}) { `
             + `${invoke(callArgs)} } else { ${invoke(callArgs, kernelSwapped)} }`
           : invoke(callArgs);
+        const selfAlias = kernelSelfAliasHandlerInvokeNames.get(fn);
+        const pooledBinding = fn.messageBusKeyWitnesses?.find((binding) => binding.keyPool !== undefined);
+        if (selfAlias && pooledBinding) {
+          const varyingIndex = entryShape?.findIndex((entry) => entry.base === pooledBinding.routeInput) ?? -1;
+          const sharedIndex = entryShape?.findIndex((entry) => `${entry.base}_row` === pooledBinding.routeInput) ?? -1;
+          if (varyingIndex >= 0 && sharedIndex >= 0) {
+            kernelOrientedInvoke = `if (${entryArgs[varyingIndex]} == ${entryArgs[sharedIndex]}) { `
+              + `${invoke(callArgs, selfAlias)} } else { ${kernelOrientedInvoke} }`;
+          }
+        }
         if (!(fn === resourceShapedHandler && rowIndex !== undefined
           && entryShape && varyingEntry
           && entryShape.filter((entry) => entry.perRow
@@ -9853,7 +9924,21 @@ function synthesizeMessageBusRoute(
         }
         return dispatch;
       };
-      let dispatch = dispatchFor(physicalEntryArgs);
+      const pooledKey = fn.messageBusKeyWitnesses?.find((binding) => binding.keyPool !== undefined);
+      const dispatchWithKeyPool = (baseArgs: string[]): string => {
+        if (!pooledKey?.keyPool) return dispatchFor(baseArgs);
+        const selectedKey = swappableShared && swappableVarying === pooledKey
+          ? `(${decodedName(swappableShared.inputIndex)} == ${witnessName(swappableShared)} ? `
+            + `${decodedName(pooledKey.inputIndex)} : ${decodedName(swappableShared.inputIndex)})`
+          : decodedName(pooledKey.inputIndex);
+        let dispatch = 'require(false);';
+        for (const lane of [...pooledKey.keyPool].reverse()) {
+          const entryArgs = baseArgs.map((argument) => argument === pooledKey.routeInput ? lane : argument);
+          dispatch = `if (${selectedKey} == ${lane}) { ${dispatchFor(entryArgs)} } else { ${dispatch} }`;
+        }
+        return dispatch;
+      };
+      let dispatch = dispatchWithKeyPool(physicalEntryArgs);
       const fixedTupleGroup = [...tupleGroups.values()][0];
       if (fixedTupleGroup) {
         const alternateByBase = new Map(fixedTupleGroup.map((binding) =>
@@ -9863,7 +9948,7 @@ function synthesizeMessageBusRoute(
         // Select every component together; choosing coordinates independently could authorize a nested key that
         // no source row requested.
         dispatch = `if (${tupleMatches(fixedTupleGroup, false)}) { ${dispatch} } else { `
-          + `${dispatchFor(alternateEntryArgs)} }`;
+          + `${dispatchWithKeyPool(alternateEntryArgs)} }`;
       }
       if (rowIndex !== undefined && rowIndex > 0 && entryShape) {
         // A route row can write a collection entry which a later, different handler reads (ERC-20 approve ->
@@ -11661,6 +11746,7 @@ function synthesizeMessageBusRoute(
             resourceSelfAliasHandlerInvokeName,
             resourceSwappedHandlerInvokeName,
             kernelSwappedHandlerInvokeNames,
+            kernelSelfAliasHandlerInvokeNames,
             graphHandlerInvokeNames,
             siblingHandlerInvokeNames,
             fixedArrayHandlerInvokeNames,
@@ -11985,6 +12071,7 @@ function buildMessageBusRowAliasPlans(input: {
   resourceSelfAliasHandlerInvokeName: string | undefined;
   resourceSwappedHandlerInvokeName: string | undefined;
   kernelSwappedHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
+  kernelSelfAliasHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   graphHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   siblingHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
   fixedArrayHandlerInvokeNames: Map<FunctionDefinitionNode, string>;
@@ -12005,6 +12092,8 @@ function buildMessageBusRowAliasPlans(input: {
     }
     const kernelSwapped = input.kernelSwappedHandlerInvokeNames.get(fn);
     if (kernelSwapped) invokeNames.add(kernelSwapped);
+    const kernelSelfAlias = input.kernelSelfAliasHandlerInvokeNames.get(fn);
+    if (kernelSelfAlias) invokeNames.add(kernelSelfAlias);
     const entryShape = input.handlerEntryKeys.get(fn);
     const crossRowGroups = entryShape
       ? messageBusCrossRowGroups(entryShape, input.collectionByName, input.crossHandlerPerRowWitnesses)
@@ -13764,12 +13853,21 @@ function compileResolvedAst(
     };
     for (const source of ast.contract.functions.filter((fn) =>
       fn.messageBusEligible && fn.messageBusPhysicalEntrySlots?.length
-      && fn.messageBusKeyWitnesses?.some((binding) => binding.entryTupleGroup !== undefined))) {
+      && fn.messageBusKeyWitnesses?.some((binding) => binding.entryTupleGroup !== undefined || binding.keyPool))) {
       const alternatives = source.messageBusPhysicalEntrySlots!.map((primarySlot) => {
         const primary = messageBusRoute.entryAccesses?.find((entry) => entry.slotIndex === primarySlot);
         if (!primary) return [primarySlot];
         const bindings = primary.keyParams.map((key) => source.messageBusKeyWitnesses?.find((binding) =>
           binding.routeInput === routeKeyName(key)));
+        if (bindings.length === 1 && bindings[0]?.keyPool) {
+          return bindings[0].keyPool.map((lane) => {
+            const slot = messageBusRoute.entryAccesses?.find((entry) =>
+              entry.collection === primary.collection && entry.keyParams.length === 1
+              && routeKeyName(entry.keyParams[0]) === lane)?.slotIndex;
+            if (slot === undefined) throw new Error(`Missing physical entry for kernel key-pool lane '${lane}'`);
+            return slot;
+          });
+        }
         if (bindings.some((binding) => binding?.alternateRouteInput === undefined)) return [primarySlot];
         const group = bindings[0]?.entryTupleGroup;
         if (group === undefined || bindings.some((binding) => binding?.entryTupleGroup !== group)) {

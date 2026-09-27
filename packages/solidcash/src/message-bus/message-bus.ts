@@ -806,6 +806,21 @@ export function encodeMessageBatch(
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
+  const bindKeyPool = (
+    pool: readonly string[], value: FunctionArgument, encoded: Uint8Array,
+  ): void => {
+    const existing = pool.find((name) => {
+      const prior = keyWitnessValues.get(name);
+      return prior !== undefined && binToHex(prior.encoded) === binToHex(encoded);
+    });
+    if (existing !== undefined) return;
+    const free = pool.find((name) => !keyWitnessValues.has(name));
+    if (free === undefined) {
+      throw new MessageBusDiagnosticError('L3_RESOURCE_UNRESOLVED',
+        'message-bus fixed key pool exceeds its published physical capacity', { resourceIdentity: pool[0] });
+    }
+    keyWitnessValues.set(free, { value, encoded });
+  };
   const fixedTupleValues = new Map<number, { primary: string; alternate: string }>();
   const swappableGlobals = new Map<string, { value: FunctionArgument; encoded: Uint8Array; rowBase: string }>();
   // A resource route has one shared entry and one row-local alternative. The compiler can advertise the two as
@@ -1109,6 +1124,10 @@ export function encodeMessageBatch(
         const selectedVarying = sharedMatches
           ? { value: varyingValue, encoded: varyingEncoded }
           : { value: sharedValue, encoded: sharedEncoded };
+        if (varying.keyPool) {
+          bindKeyPool(varying.keyPool, selectedVarying.value, selectedVarying.encoded);
+          continue;
+        }
         const priorVarying = keyWitnessValues.get(varyingInput);
         if (priorVarying && binToHex(priorVarying.encoded) !== binToHex(selectedVarying.encoded)) {
           throw new MessageBusDiagnosticError(
@@ -1148,6 +1167,10 @@ export function encodeMessageBatch(
         );
       }
       const routeInput = routeInputName;
+      if (binding.keyPool) {
+        bindKeyPool(binding.keyPool, value, encodedValue);
+        continue;
+      }
       const prior = keyWitnessValues.get(routeInput);
       if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
         throw new MessageBusDiagnosticError(
@@ -1254,6 +1277,17 @@ export function encodeMessageBatch(
     throw new Error('message-bus batch row frames do not tile the authenticated blob');
   }
 
+  // Unused physical lanes must alias an authenticated lane, not introduce a default-valued phantom target.
+  for (const handler of capability.handlers) {
+    for (const binding of handler.batchKeyWitnesses ?? []) {
+      if (!binding.keyPool) continue;
+      const first = binding.keyPool.map((name) => keyWitnessValues.get(name)).find((value) => value !== undefined);
+      if (!first) continue;
+      for (const name of binding.keyPool) {
+        if (!keyWitnessValues.has(name)) keyWitnessValues.set(name, first);
+      }
+    }
+  }
   const routeWitnesses = capability.route.inputs
     .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'))
     .map((input) => {

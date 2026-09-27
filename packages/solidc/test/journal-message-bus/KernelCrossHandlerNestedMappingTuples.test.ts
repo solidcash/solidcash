@@ -99,7 +99,7 @@ describe('kernel cross-handler nested-mapping tuple metadata', () => {
     });
 
     expect(artifact.messageBus?.route.sortedBatchInfo).toEqual([
-      { collection: 'balances', slotIndices: [0, 1] },
+      { collection: 'balances', slotIndices: Array.from({ length: 9 }, (_, slot) => slot) },
     ]);
   });
 

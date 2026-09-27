@@ -8,7 +8,7 @@ import type { AbiFunction, FunctionBlockLayout, StateLayout } from '@solidcash/u
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
+import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import { compilerRouteUsesPhysicalWrapper } from './message-bus-resource-routing.js';
@@ -422,10 +422,12 @@ export function constructCreateBuilderTransactionBuilder(
         return commitment === undefined ? undefined
           : typeof commitment === 'string' ? commitment : binToHex(commitment);
       })();
-      const expectedPredOut = targetSlot instanceof Uint8Array && targetSlot.length === 32
+      const expectedPredOut = predecessorCommitment === undefined ? undefined
+        : batchPredecessorCommitment(abiFunction, finalArgs, Number(slot), predecessorCommitment)
+        ?? (targetSlot instanceof Uint8Array && targetSlot.length === 32
         && predecessorCommitment !== undefined && predecessorCommitment.length >= 128
         ? `${predecessorCommitment.slice(0, 64)}${binToHex(targetSlot)}${predecessorCommitment.slice(128)}`
-        : undefined;
+        : undefined);
       // A proof shared with another active target is recreated by that target's fixed output, not a separate P'.
       // Preserve its sentinel even if the current target is absent; otherwise the structural fallback below
       // invents an extra predecessor and the compiler's exact collection cardinality must reject the transaction.
@@ -460,7 +462,9 @@ export function constructCreateBuilderTransactionBuilder(
       const ordinal = builder.getEntryOutputSlotOrder().indexOf(Number(slot));
       const entryOutputBase = builder.getEntryOutputBase();
       const structural = entryOutputBase >= 0 && ordinal >= 0 ? entryOutputBase + ordinal : -1;
-      if (structural < 0 || !sameLock(outputLock(structural), required)) continue;
+      if (structural < 0 || !sameLock(outputLock(structural), required)
+        || expectedPredOut === undefined
+        || commitmentOf(structural)?.toLowerCase() !== expectedPredOut.toLowerCase()) continue;
       const replacement = structural;
       finalArgs[position] = BigInt(replacement);
       changed = true;

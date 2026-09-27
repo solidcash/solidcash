@@ -1944,6 +1944,8 @@ export interface Artifact {
         keyComponentIndex?: number;
         /** Corresponding component in the fixed alternate physical tuple lane. */
         alternateRouteInput?: string;
+        /** Fixed physical key pool, selected by key identity rather than message-row position. */
+        keyPool?: readonly string[];
       }[];
       /** Route entry-slot ordinals which can be consumed by this selected handler. Used by composers to leave
        * every other union-route entry coordinate as an inactive balanced slot. */

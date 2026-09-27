@@ -872,6 +872,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     keyComponentIndex?: number;
     /** The same tuple component in the route's one fixed alternate physical lane. */
     alternateRouteInput?: string;
+    /** Fixed physical key pool, selected by key identity rather than message-row position. */
+    keyPool?: string[];
   }[];
 
   /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */

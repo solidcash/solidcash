@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
-import { isPendingBatchPredecessor } from '../../src/message-bus/pending-batch-predecessor.js';
+import {
+  batchPredecessorCommitment, isPendingBatchPredecessor,
+} from '../../src/message-bus/pending-batch-predecessor.js';
 
 const first = new Uint8Array(32).fill(1);
 const second = new Uint8Array(32).fill(2);
@@ -17,6 +19,17 @@ const fn = {
 const proof = (slot: Uint8Array): string => `${binToHex(slot)}${'00'.repeat(32)}07`;
 
 describe('pending batch predecessor discovery', () => {
+  it('uses one minimum successor for distinct targets sharing an original predecessor', () => {
+    const predecessor = proof(new Uint8Array(32));
+    const args = [second, 10n, first, 10n, new Uint8Array(32), 20n];
+    const expected = `${'00'.repeat(32)}${binToHex(first)}07`;
+    expect(batchPredecessorCommitment(fn, args, 0, predecessor)).toBe(expected);
+    expect(batchPredecessorCommitment(fn, args, 1, predecessor)).toBe(expected);
+    expect(batchPredecessorCommitment(fn, [second, 10n, first, -2n], 0, predecessor))
+      .toBe(`${'00'.repeat(32)}${binToHex(second)}07`);
+    expect(batchPredecessorCommitment(fn, args, 0, proof(first))).toBeUndefined();
+  });
+
   it('preserves the inactive witness when another active target recreates the shared predecessor', () => {
     expect(isPendingBatchPredecessor(fn, [first, -1n, second, -1n, first, 23n], 1, proof(first))).toBe(false);
   });

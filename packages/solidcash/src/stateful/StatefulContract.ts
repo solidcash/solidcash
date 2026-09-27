@@ -9952,8 +9952,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (batchAliasSkips.has(slotIndex)) {
             const ownerSlot = batchAliasOwners.get(slotIndex);
             if (ownerSlot === undefined) throw new Error(`vmap alias slot has no canonical owner ${slotIndex}`);
+            // The target's logical owner can itself share an older predecessor proof. Its fixed input then
+            // contains a funding pad, so aliases must inherit the physical proof owner, not the target offset.
+            const ownerTarget = batchTargetSlots.get(ownerSlot)!;
+            const ownerProof = list.find(ownerTarget) ?? list.predecessorOf(ownerTarget);
+            const physicalOwner = ownerByUtxo.get(`${ownerProof.utxo.txid}:${ownerProof.utxo.vout}`) ?? ownerSlot;
             const ownerOffset = entryAbiFunction!.blockLayout?.slots.find(
-              (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
+              (slot) => slot.kind === 'entry' && slot.slotIndex === physicalOwner,
             )?.offset;
             if (ownerOffset === undefined) throw new Error(`vmap alias owner has no block slot ${ownerSlot}`);
             const raw = this._rawVMapBatchWitness?.get(slotIndex);

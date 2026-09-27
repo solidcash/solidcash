@@ -84,6 +84,7 @@ export function deriveComposeInvocationPlan(
     for (const binding of handler?.batchKeyWitnesses ?? []) {
       activeRouteKeys.add(binding.perRow ? `${binding.routeInput}_r${row}` : binding.routeInput);
       if (binding.alternateRouteInput) activeRouteKeys.add(binding.alternateRouteInput);
+      for (const lane of binding.keyPool ?? []) activeRouteKeys.add(lane);
     }
     ownerActiveRouteKeys.set(owner, activeRouteKeys);
     for (const binding of handler?.batchKeyWitnesses?.filter((candidate) =>

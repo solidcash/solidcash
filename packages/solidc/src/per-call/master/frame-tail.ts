@@ -81,6 +81,15 @@ export interface MasterCallSite {
    * one.
    */
   readonly arguments?: readonly SiteArgument[];
+  /**
+   * Position of this call in the execution, which is the record it binds.
+   *
+   * A call inside a branch is at the same position on either arm, so two descriptors can name one record, and the
+   * position is what a driver must fill rather than the descriptor's place in this list.
+   */
+  readonly ordinal?: number;
+  /** True when the source does not fix whether this call runs, so a given execution may reach no witness for it. */
+  readonly conditional?: boolean;
 }
 
 /** One argument of a call, as the caller's own code can account for it. */

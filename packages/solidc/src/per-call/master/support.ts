@@ -559,6 +559,8 @@ export interface PerCallMasterShapeInput {
 export interface PerCallEntryCallSites {
   readonly entryName: string;
   readonly calls: readonly MasterCallSite[];
+  /** How many calls the entry's execution makes, which is the same on every path or the entry is refused. */
+  readonly pathCount?: number;
 }
 
 export interface PerCallMasterShapeAssessment {
@@ -823,7 +825,7 @@ function derivePerCallMasterCallSites(
   for (const entry of entryPoints) {
     const derived = deriveEntryCallSites(interfaces, entry);
     if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
-    entryCalls.push({ entryName: entry.name, calls: derived.calls });
+    entryCalls.push({ entryName: entry.name, calls: derived.calls, pathCount: derived.pathCount });
   }
   // The bodies may declare different numbers of calls: the walk reads the count the block declares and each body
   // pins it to its own, so only the master-level shape needs one number. A master that makes any call at all is a
@@ -833,7 +835,7 @@ function derivePerCallMasterCallSites(
 }
 
 /**
- * The number of external calls a body makes on every path, or undefined when the paths disagree.
+ * How many calls a body makes on every path, and where each one sits, or undefined when the paths disagree.
  *
  * A body binds its own calls: the k-th call of the execution is the k-th record, and the code after it resumes in
  * segment k + 1. Both are positions in the execution rather than in the source, so a call inside a branch sits at
@@ -841,22 +843,38 @@ function derivePerCallMasterCallSites(
  * path only while the paths agree on how many calls came before. A loop's trip count is a run-time value, and a
  * switch's arms need not agree, so both are refused here rather than counted; a catch block is not an executable
  * path, which is the same reading the invocation walk takes.
+ *
+ * `calls[i]` is the position of the i-th call the source reaches, in the order the walk reaches it: a branch's
+ * condition, then its arms as the source writes them.
  */
-export function callsOnEveryPath(block: BlockNode | undefined): number | undefined {
+export function callsOnEveryPath(
+  block: BlockNode | undefined,
+): { readonly pathCount: number; readonly calls: readonly number[] } | undefined {
+  const calls: number[] = [];
+  const pathCount = countCallsOnEveryPath(block, calls, 0);
+  return pathCount === undefined ? undefined : { pathCount, calls };
+}
+
+/** The walking half of {@link callsOnEveryPath}, which records each call's position as the walk reaches it. */
+function countCallsOnEveryPath(block: BlockNode | undefined, calls: number[], base: number): number | undefined {
   let total = 0;
   for (const statement of block?.statements ?? []) {
     if (statement instanceof BranchNode) {
-      const inIf = callsOnEveryPath(statement.ifBlock);
-      const inElse = statement.elseBlock === undefined ? 0 : callsOnEveryPath(statement.elseBlock);
-      const inCondition = callsIn(statement.condition);
-      if (inIf === undefined || inElse === undefined || inCondition === undefined || inIf !== inElse) {
-        return undefined;
-      }
+      // The arms run exclusively, so each is reached at the same position: the one the branch starts at, after the
+      // condition's own calls. They have to end at the same place for the code after the branch to have a position.
+      const inCondition = callsIn(statement.condition, calls, base + total);
+      if (inCondition === undefined) return undefined;
+      const armBase = base + total + inCondition;
+      const inIf = countCallsOnEveryPath(statement.ifBlock, calls, armBase);
+      const inElse = statement.elseBlock === undefined
+        ? 0
+        : countCallsOnEveryPath(statement.elseBlock, calls, armBase);
+      if (inIf === undefined || inElse === undefined || inIf !== inElse) return undefined;
       total += inCondition + inIf;
       continue;
     }
     if (statement instanceof BlockNode) {
-      const inner = callsOnEveryPath(statement);
+      const inner = countCallsOnEveryPath(statement, calls, base + total);
       if (inner === undefined) return undefined;
       total += inner;
       continue;
@@ -865,26 +883,35 @@ export function callsOnEveryPath(block: BlockNode | undefined): number | undefin
       return undefined;
     }
     if (statement instanceof TryCatchNode) {
-      const inTry = statement.tryBlock === undefined ? 0 : callsOnEveryPath(statement.tryBlock);
-      const inExpression = callsIn(statement.expression);
-      if (inTry === undefined || inExpression === undefined) return undefined;
-      total += inTry + inExpression;
+      const inExpression = callsIn(statement.expression, calls, base + total);
+      if (inExpression === undefined) return undefined;
+      const inTry = statement.tryBlock === undefined
+        ? 0
+        : countCallsOnEveryPath(statement.tryBlock, calls, base + total + inExpression);
+      if (inTry === undefined) return undefined;
+      total += inExpression + inTry;
       continue;
     }
-    const own = callsIn(statement);
+    const own = callsIn(statement, calls, base + total);
     if (own === undefined) return undefined;
     total += own;
   }
   return total;
 }
 
-/** The calls one statement makes outside any nested block, or undefined when it contains a branch of its own. */
-function callsIn(value: unknown): number | undefined {
+/**
+ * The calls one statement makes outside any nested block, or undefined when it contains a branch of its own.
+ *
+ * Their positions are contiguous from `base`, in the order the invocation walk reaches them.
+ */
+function callsIn(value: unknown, calls: number[], base: number): number | undefined {
   let found = 0;
   let structured = false;
   walkInvocationAst(value, (node) => {
-    if (node instanceof ExternalFunctionCallNode) found += 1;
-    else if (node instanceof BranchNode || node instanceof SwitchNode
+    if (node instanceof ExternalFunctionCallNode) {
+      calls.push(base + found);
+      found += 1;
+    } else if (node instanceof BranchNode || node instanceof SwitchNode
       || node instanceof WhileNode || node instanceof DoWhileNode) structured = true;
   });
   return structured ? undefined : found;
@@ -894,8 +921,12 @@ function callsIn(value: unknown): number | undefined {
 function deriveEntryCallSites(
   interfaces: readonly InterfaceNode[],
   entry: FunctionDefinitionNode,
-): { calls: MasterCallSite[]; reason?: string } {
+): { calls: MasterCallSite[]; reason?: string; pathCount?: number } {
   const calls: MasterCallSite[] = [];
+  // The position each call sits at, which the same walk answers for the whole body: a descriptor's place in this
+  // list is not its place in the execution once arms can share one.
+  const positions = callsOnEveryPath(entry.body)?.calls;
+  let descriptor = 0;
   for (const slot of entry.externalCalls ?? []) {
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
       // A delegate frame runs on the caller's own records, and the head checks its own address, not its context:
@@ -945,13 +976,16 @@ function deriveEntryCallSites(
       kind: isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL,
       selector,
       target: target.bytes,
+      ...(slot.condition === undefined ? {} : { conditional: true }),
       ...(target.fromStack === true ? { targetFromStack: true } : {}),
       interfaceName: slot.interfaceName,
       functionName: slot.functionName,
       arguments: args.arguments,
+      ...(positions?.[descriptor] === undefined ? {} : { ordinal: positions[descriptor]! }),
     });
+    descriptor += 1;
   }
-  return { calls };
+  return { calls, pathCount: callsOnEveryPath(entry.body)?.pathCount };
 }
 
 /**

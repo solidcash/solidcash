@@ -34,6 +34,17 @@ export interface CallStopSite {
   site: number;
   /** Ordinal of the call within this execution, matching the call record it produces. */
   callIndex: number;
+  /**
+   * True when the source does not fix whether this call runs, so an execution may reach the site with nothing to
+   * fill: the arms of a branch each name a call at the same ordinal, and the one that runs is the one there is.
+   */
+  conditional?: boolean;
+  /**
+   * Which call of the source this site names, when a driver resolves a callee through a table of the caller's own
+   * calls. Two mutually exclusive arms name one ordinal, so the ordinal alone does not identify the call: a driver
+   * that looks a callee up needs the source's own index, and one that fills the record needs the ordinal.
+   */
+  descriptor?: number;
 }
 
 /** A segment close: which segment's computed records must be compared with the declared ones. */
@@ -79,14 +90,20 @@ export function validateStopSiteMetadata(metadata: StopSiteMetadata): void {
     }
   });
 
+  // A call index is a record of the execution, so two sites may report the same one only when the source fixes
+  // neither of them: the arms of a branch each name a call at the same position, and the one that ran is the one
+  // whose witness there is. Everything else has to be a distinct record.
   const callIndices = new Set<number>();
+  const conditionalIndices = new Set<number>();
   const segmentIndices = new Set<number>();
   for (const site of metadata.sites) {
     if (site.kind === 'call') {
-      if (callIndices.has(site.callIndex)) {
+      if (!callIndices.has(site.callIndex)) {
+        callIndices.add(site.callIndex);
+        if (site.conditional === true) conditionalIndices.add(site.callIndex);
+      } else if (site.conditional !== true || !conditionalIndices.has(site.callIndex)) {
         throw new PerCallEncodingError(`two call sites report call index ${site.callIndex}`);
       }
-      callIndices.add(site.callIndex);
     } else if (site.kind === 'segmentClose') {
       if (segmentIndices.has(site.segmentIndex)) {
         throw new PerCallEncodingError(`two segment closes report segment ${site.segmentIndex}`);

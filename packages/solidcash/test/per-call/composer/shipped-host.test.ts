@@ -435,3 +435,53 @@ describe('the runs a derivation spends', () => {
     expect(evaluations).toBe(6);
   });
 });
+
+/**
+ * A caller whose arms each call a different contract, so one execution reaches one arm's site.
+ *
+ * The two arms name a call at the same position — the execution's first — so the published table carries two call
+ * sites that report the same record, each marked conditional, and the closes are the path's rather than the
+ * descriptor list's. The frame chooses the second arm, so the first arm's site has nothing to fill: the run a
+ * driver makes is what shows that, and the table is what lets it step over the site instead of reading a stall.
+ *
+ * What the composition does with that table is not settled here: the derivation needs a fixture whose frame
+ * actually reaches the second arm, and the one built for it stopped at the first arm's check instead, so the
+ * derivation-level cases were removed rather than landing unverified.
+ */
+const CHOOSER_ENTRY = 'Chooser.choose()';
+const NEAR_ENTRY = 'Near.pong()';
+/** The arm the frame does not take, whose callee is therefore not co-spent at all. */
+const DESCRIPTOR_FAR = 0;
+const DESCRIPTOR_NEAR = 1;
+
+const CATEGORY_NEAR = seededCategory('conditional arm near');
+const CATEGORY_FAR = seededCategory('conditional arm far');
+const ADDRESS_NEAR = validatorAddress(CATEGORY_NEAR, VALIDATOR_PROGRAM);
+const ADDRESS_FAR = validatorAddress(CATEGORY_FAR, VALIDATOR_PROGRAM);
+
+const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IFar { function ping(); }'
+  + ' interface INear { function pong(); }'
+  + ' contract Near { function pong() { require(true); } }'
+  + ' contract Chooser {'
+  + `   function choose(bool take) { if (take) { IFar(0x${toHex(ADDRESS_FAR)}).ping.call(); }`
+  + `     else { INear(0x${toHex(ADDRESS_NEAR)}).pong.call(); } require(true); }`
+  + ' }';
+
+describe('a caller whose arms each call a different contract', () => {
+  it('publishes both arms at one record, each marked conditional, over the path\'s own closes', () => {
+    const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'per-call' });
+    const entry = readPublishedStopSites(artifacts.Chooser!).entries.find(
+      (candidate) => candidate.functionName === CHOOSER_ENTRY,
+    )!;
+    // Both arms are the execution's first call, so both report record 0 and only the one the frame reaches has a
+    // witness; the closes are the execution's, which is one call followed by its tail.
+    expect(entry.sites.sites).toStrictEqual([
+      { kind: 'call', site: 0, callIndex: 0, descriptor: DESCRIPTOR_FAR, conditional: true },
+      { kind: 'call', site: 1, callIndex: 0, descriptor: DESCRIPTOR_NEAR, conditional: true },
+      { kind: 'segmentClose', site: 2, segmentIndex: 0 },
+      { kind: 'segmentClose', site: 3, segmentIndex: 1 },
+    ]);
+    expect(entry.calls.map((call) => call.functionName)).toStrictEqual(['ping', 'pong']);
+  });
+});

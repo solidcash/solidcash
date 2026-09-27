@@ -69,12 +69,26 @@ export function entryFunctionName(contractName: string, entryName: string): stri
  * records that segment computed, which cannot be compared until the calls bounding it have returned. Publishing
  * the calls before the closes is what lets a driver derive the callees first.
  */
-export function entryStopSites(functionName: string, calls: readonly MasterCallSite[]): StopSiteMetadata {
+export function entryStopSites(
+  functionName: string,
+  calls: readonly MasterCallSite[],
+  pathCount: number = calls.length,
+): StopSiteMetadata {
   const sites: StopSite[] = [];
-  for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
-    sites.push({ kind: 'call', site: sites.length, callIndex });
+  for (let descriptor = 0; descriptor < calls.length; descriptor += 1) {
+    const call = calls[descriptor]!;
+    // The position the execution reaches this call at, which is the record it binds: two descriptors of
+    // mutually exclusive arms name the same record, so the descriptor's place in this list is not the position.
+    sites.push({
+      kind: 'call',
+      site: sites.length,
+      callIndex: call.ordinal ?? descriptor,
+      descriptor,
+      ...(call.conditional === true ? { conditional: true } : {}),
+    });
   }
-  for (let segmentIndex = 0; segmentIndex <= calls.length; segmentIndex += 1) {
+  // A segment follows each call the execution makes, so the closes are the path's, not the descriptor list's.
+  for (let segmentIndex = 0; segmentIndex <= pathCount; segmentIndex += 1) {
     sites.push({ kind: 'segmentClose', site: sites.length, segmentIndex });
   }
   const metadata: StopSiteMetadata = {
@@ -95,11 +109,15 @@ export function entryStopSites(functionName: string, calls: readonly MasterCallS
  */
 export function publishPerCallStopSites(
   contractName: string,
-  entries: readonly { readonly entryName: string; readonly calls: readonly MasterCallSite[] }[],
+  entries: readonly {
+    readonly entryName: string;
+    readonly calls: readonly MasterCallSite[];
+    readonly pathCount?: number;
+  }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls }) => {
+    entries: entries.map(({ entryName, calls, pathCount }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -110,7 +128,7 @@ export function publishPerCallStopSites(
           target: binToHex(call.target),
           selector: binToHex(call.selector),
         })),
-        sites: entryStopSites(functionName, calls),
+        sites: entryStopSites(functionName, calls, pathCount),
       };
     }),
   };

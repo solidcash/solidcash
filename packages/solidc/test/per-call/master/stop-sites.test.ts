@@ -82,7 +82,7 @@ describe('the stop-site table published from a real compile', () => {
       version: 1,
       functionName: 'Caller.callIt()',
       sites: [
-        { kind: 'call', site: 0, callIndex: 0 },
+        { kind: 'call', site: 0, callIndex: 0, descriptor: 0 },
         { kind: 'segmentClose', site: 1, segmentIndex: 0 },
         { kind: 'segmentClose', site: 2, segmentIndex: 1 },
       ],
@@ -134,7 +134,7 @@ describe('the stop-site table published from a real compile', () => {
           version: 1,
           functionName: 'Caller.a()',
           sites: [
-            { kind: 'call', site: 0, callIndex: 0 },
+            { kind: 'call', site: 0, callIndex: 0, descriptor: 0 },
             { kind: 'segmentClose', site: 1, segmentIndex: 0 },
             { kind: 'segmentClose', site: 2, segmentIndex: 1 },
           ],
@@ -153,7 +153,7 @@ describe('the stop-site table published from a real compile', () => {
           version: 1,
           functionName: 'Caller.b()',
           sites: [
-            { kind: 'call', site: 0, callIndex: 0 },
+            { kind: 'call', site: 0, callIndex: 0, descriptor: 0 },
             { kind: 'segmentClose', site: 1, segmentIndex: 0 },
             { kind: 'segmentClose', site: 2, segmentIndex: 1 },
           ],

@@ -93,7 +93,17 @@ function deriveExecution(
     // One run per site. The step must fill this site's witness; a step that fills nothing is the stall refusal.
     runs.push({ frame: request, site });
     const outcome = host.step(request, site);
-    if (outcome.filled !== witnessKindOf(site)) throw derivationStalled(request, site);
+    if (outcome.filled !== witnessKindOf(site)) {
+      // A site whose call the source does not fix may have nothing to fill on this path: the arm that ran names
+      // another call at the same position, and this site's own record is one the execution never made. The program
+      // is what answered that — the step ran it and it did not advance — so the site is stepped over rather than
+      // read as a stall. Every other unfilled site is still a stall.
+      if (site.kind === 'call' && site.conditional === true) {
+        ordinal = site.site;
+        continue;
+      }
+      throw derivationStalled(request, site);
+    }
 
     if (site.kind === 'call') {
       // The call result is the callee's return value, so the callee is derived before this execution resumes.

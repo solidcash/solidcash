@@ -5,3 +5,5 @@
 
 export * from './material.js';
 export * from './pool.js';
+export * from './genesis.js';
+export * from './stateful.js';

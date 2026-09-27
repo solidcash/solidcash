@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 887 tests, all passing at `48c19f6d8` (114 + 320 + 453).
+Total: 887 tests, all passing at `4ee6f81d5` (114 + 320 + 453).
 
 ## What each directory covers
 
@@ -84,8 +84,9 @@ Total: 887 tests, all passing at `48c19f6d8` (114 + 320 + 453).
   segment's declaration, the derivation completes callee-first, every contract input and the validator are
   accepted, the validator's derivation accepts all eleven checks in the spec's order, each record's output carries
   the commitment its last declaration wrote, and four controls are refused. `round-trip-events.test.ts` states a
-  trailing event output and pins what remains of that shape: a master whose block carries a call section and an
-  event list stalls the derivation at its call site.
+  trailing event output and pins what remains of that shape: with each entry named by the selector its program
+  dispatches on, the entry's call site fills and the derivation reaches the re-entered entry, whose own program
+  fails an `OP_VERIFY` before its first segment close.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -189,8 +190,9 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   remains of that work: the close is emitted where the end-of-body rebuild runs, so a frame that writes a record
   early and leaves it untouched later does not prove that early value against that segment's declaration; a record
   whose index changes between segments is not followed; and dynamic chunks still resolve against the transaction. A
-  master whose witness block carries both a call section and an event list stalls the derivation at its call site,
-  which is the one wall between the round trip's output set and spec 5.2. Delegatecall, mapping records and value
+  master whose witness block carries both a call section and an event list stalls the derivation, which is the one
+  wall between the round trip's output set and spec 5.2 — with the selectors the entries dispatch on, it stops at the
+  re-entered entry's own program rather than at the entry's call site. Delegatecall, mapping records and value
   sends are refused by name as before.
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than

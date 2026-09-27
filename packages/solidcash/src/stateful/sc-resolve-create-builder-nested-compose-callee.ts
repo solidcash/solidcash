@@ -13,9 +13,9 @@ import type { FunctionArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { tryCashAddressToLockScript } from '../utils.js';
 import {
-  findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
+  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
 import {
   adaptLegacyNestedJobEventArguments,
@@ -143,18 +143,13 @@ export async function resolveCreateBuilderNestedComposeCallee(
     : -1;
   const addressValue = resolvedAddress
     ?? (addressParamIndex >= 0 ? delegateVisibleArgs[addressParamIndex] : undefined);
-  const resolvedTargetLockingBytecode = tryCashAddressToLockScript(addressValue);
-  let deploymentAtAddress: unknown;
-  if (typeof addressValue === 'string') {
-    deploymentAtAddress = (
-      findDeploymentByAddress(host.provider, addressValue)
-      ?? findDeploymentByLockingBytecode(host.provider, addressValue)
-    )?.contract;
-  } else if (addressValue instanceof Uint8Array) {
-    deploymentAtAddress = findDeploymentByLockingBytecode(
-      host.provider, binToHex(addressValue),
-    )?.contract;
-  }
+  const typedAddress = typeof addressValue === 'string' || addressValue instanceof Uint8Array
+    ? addressValue : undefined;
+  const resolvedTargetLockingBytecode = typedAddress === undefined ? undefined
+    : registeredAddressValueLockingBytecode(host.provider, typedAddress)
+      ?? tryCashAddressToLockScript(typedAddress);
+  const deploymentAtAddress = typedAddress === undefined ? undefined
+    : findDeploymentByAddressValue(host.provider, typedAddress)?.contract;
   // Hardhat-style factories connect externals on the public proxy
   // instance. A manually assembled delegate may instead connect them
   // directly on the implementation. When the source supplies an address, that authenticated value

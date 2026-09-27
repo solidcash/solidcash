@@ -32054,6 +32054,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * which may be discarded. The empty legacy sentinel continues to select the already-authenticated candidate.
    */
   private emitPreferLockingBytecode(locationData: SingleLocationData): void {
+    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+      // Struct fields and authenticated return values retain the canonical Solidity ABI address word.
+      // Prove its zero padding before using the same identity check as a raw 20-byte address below.
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_IF, locationData);
+      this.emit(encodeInt(12n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(new Uint8Array(12), locationData);
+      this.emit(Op.OP_EQUALVERIFY, locationData);
+      this.emit(Op.OP_ENDIF, locationData);
+    }
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);

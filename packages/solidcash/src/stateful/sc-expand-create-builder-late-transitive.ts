@@ -27,9 +27,9 @@ import {
   memoizeGraphPlanningProducerResult,
 } from './graph-planning-producer-result.js';
 import {
-  findDeploymentByAddress,
-  findDeploymentByLockingBytecode,
+  findDeploymentByAddressValue,
   findDeploymentByName,
+  registeredAddressValueLockingBytecode,
 } from './deployment-registry.js';
 import {
   entryAccessAt,
@@ -139,36 +139,26 @@ export async function expandCreateBuilderLateTransitive(
         : nested.addressStateVar
           ? parentState[nested.addressStateVar] as FunctionArgument | undefined
           : undefined;
-      const resolvedTargetLockingBytecode = tryCashAddressToLockScript(resolvedAddressTarget);
-      let registered = logicalParentContract._externalRegistry.get(nested.interfaceName)
+      const typedAddressTarget = typeof resolvedAddressTarget === 'string'
+        || resolvedAddressTarget instanceof Uint8Array ? resolvedAddressTarget : undefined;
+      const deployment = typedAddressTarget === undefined ? undefined
+        : findDeploymentByAddressValue(host.inner.provider, typedAddressTarget);
+      const resolvedTargetLockingBytecode = typedAddressTarget === undefined ? undefined
+        : registeredAddressValueLockingBytecode(host.inner.provider, typedAddressTarget)
+          ?? tryCashAddressToLockScript(typedAddressTarget);
+      let registered = deployment?.contract ?? logicalParentContract._externalRegistry.get(nested.interfaceName)
         ?? parentContract._externalRegistry.get(nested.interfaceName)
         ?? host.externalRegistry.get(nested.interfaceName)
         ?? findDeploymentByName(host.inner.provider, nested.interfaceName)?.contract
         ?? (/^I[A-Z]/.test(nested.interfaceName)
           ? findDeploymentByName(host.inner.provider, nested.interfaceName.slice(1))?.contract : undefined);
-      if (!registered && resolvedAddressTarget !== undefined) {
-        const targetHex = resolvedAddressTarget instanceof Uint8Array
-          ? binToHex(resolvedAddressTarget) : undefined;
-        registered = targetHex
-          ? findDeploymentByLockingBytecode(host.inner.provider, targetHex)?.contract
-          : typeof resolvedAddressTarget === 'string'
-            ? (findDeploymentByAddress(host.inner.provider, resolvedAddressTarget)
-              ?? findDeploymentByLockingBytecode(host.inner.provider, resolvedAddressTarget))?.contract
-            : undefined;
-      }
       // A lowered Address/SafeERC20 edge deliberately has no source interface name. Resolve it from the
       // authenticated computed address first, then from an already co-spent deployment advertising the
       // compiler-decoded selector. Skipping this edge leaves the parent's extcall/return witnesses at -1;
       // guessing by `__raw__` in the registry can instead redirect the call to an unrelated deployment.
       if (!registered && nested.interfaceName === '__raw__') {
-        const rawTarget = resolvedAddressTarget;
-        const rawTargetHex = rawTarget instanceof Uint8Array ? binToHex(rawTarget) : undefined;
-        const deployment = rawTargetHex
-          ? findDeploymentByLockingBytecode(host.inner.provider, rawTargetHex)?.contract
-          : typeof rawTarget === 'string'
-            ? (findDeploymentByAddress(host.inner.provider, rawTarget)
-              ?? findDeploymentByLockingBytecode(host.inner.provider, rawTarget))?.contract : undefined;
-        registered = deployment ?? externalCallUtxoGroups
+        const rawTargetHex = resolvedTargetLockingBytecode && binToHex(resolvedTargetLockingBytecode);
+        registered = externalCallUtxoGroups
           .map((candidate) => candidate.externalContract as any)
           .find((candidate) => {
             if (rawTargetHex && candidate.inner.lockingBytecode !== rawTargetHex) return false;

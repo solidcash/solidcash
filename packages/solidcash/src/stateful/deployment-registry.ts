@@ -189,12 +189,45 @@ export function findDeploymentBySolidityAddressPayload(
 export function findDeploymentByAddressValue(
   provider: NetworkProvider, value: string | Uint8Array,
 ): RegisteredDeployment | undefined {
-  if (typeof value === 'string') {
-    return findDeploymentByAddress(provider, value)
-      ?? findDeploymentByLockingBytecode(provider, value);
+  const exact = typeof value === 'string'
+    ? findDeploymentByAddress(provider, value) ?? findDeploymentByLockingBytecode(provider, value)
+    : findDeploymentByLockingBytecode(provider, binToHex(value));
+  if (exact) return exact;
+  const payload = typedSolidityAddressPayload(value);
+  return payload && findDeploymentBySolidityAddressPayload(provider, payload);
+}
+
+/** Only a typed address may interpret a canonical ABI word as its right-aligned 20-byte identity. */
+function typedSolidityAddressPayload(value: string | Uint8Array): Uint8Array | undefined {
+  const bytes = value instanceof Uint8Array ? value
+    : /^(?:0x)?(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value)
+      ? hexToBin(value.replace(/^0x/iu, '')) : undefined;
+  if (bytes?.length === 20) return bytes;
+  if (bytes?.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) return bytes.subarray(12);
+  return undefined;
+}
+
+/** Recover the exact registered native address which projects to a typed Solidity identity. */
+export function registeredAddressValueLockingBytecode(
+  provider: NetworkProvider, value: string | Uint8Array,
+): Uint8Array | undefined {
+  const deployment = findDeploymentByAddressValue(provider, value);
+  if (!deployment) return undefined;
+  const payload = typedSolidityAddressPayload(value);
+  if (!payload) {
+    if (value instanceof Uint8Array) return value;
+    try { return addressToLockScript(value); } catch { return hexToBin(value.replace(/^0x/iu, '')); }
   }
-  return findDeploymentByLockingBytecode(provider, binToHex(value))
-    ?? findDeploymentBySolidityAddressPayload(provider, value);
+  const candidates = new Set([deployment.lockingBytecode, registeredExecutionLockingBytecode(deployment)]);
+  try { candidates.add(binToHex(addressToLockScript(deployment.address))); } catch { /* not a cashaddr */ }
+  const wanted = binToHex(payload);
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const bytes = hexToBin(candidate.replace(/^0x/iu, ''));
+    const identity = lockingBytecodeToSolidityAddressPayload(bytes);
+    if (identity && binToHex(identity) === wanted) return bytes;
+  }
+  return undefined;
 }
 
 /**

@@ -95,7 +95,7 @@ describe('a call whose execution depends on state', () => {
       + ' contract Chooser { int public mode; function go(int n) {'
       + `   if (n > 0) { ICal(0x${hexOf(CAL)}).ping.call(); } require(true); } }`;
     expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/runs conditionally, repeatedly or through a run-time target or selector/);
+      .toThrow(/runs conditionally or repeatedly/);
   });
 });
 

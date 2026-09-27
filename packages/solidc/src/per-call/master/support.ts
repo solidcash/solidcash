@@ -847,11 +847,21 @@ function deriveEntryCallSites(
         + 'master head has no frame kind for' };
     }
     if (slot.condition !== undefined || slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
-      || slot.inlineLoopDispatch === true || slot.runtimeSelector !== undefined || slot.fnPtrCall === true
-      || slot.opaqueReturn === true || slot.callValueEffect === true
-      || (slot.requiredDataNftIndices?.length ?? 0) > 0 || (slot.batchInvocations?.length ?? 0) > 1) {
-      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally, repeatedly or through a `
-        + 'run-time target or selector, so its call records are not a fixed set the head can check' };
+      || slot.inlineLoopDispatch === true || (slot.batchInvocations?.length ?? 0) > 1) {
+      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally or repeatedly, so its call `
+        + 'records are not a fixed set the head can check' };
+    }
+    if (slot.runtimeSelector !== undefined || slot.fnPtrCall === true) {
+      return { calls: [], reason: `the call to '${slot.functionName}' resolves its callee or its selector at run `
+        + 'time, so the record the body binds is not a fixed one the head can check' };
+    }
+    // The data-NFT inputs the direct convention co-spends for a callee are not part of the shape the site checks: a
+    // site reads the callee's record out of the witness block, and the records the callee's own frame declares are
+    // settled by the segments rather than by a co-spent input this master locates. An opaque return and a call
+    // value are the direct path's own machinery, which a per-call body does not emit.
+    if (slot.opaqueReturn === true || slot.callValueEffect === true) {
+      return { calls: [], reason: `the call to '${slot.functionName}' takes the direct path's return-event or `
+        + 'value-transfer machinery, which a per-call body does not emit' };
     }
     const target = siteTarget(slot);
     if ('reason' in target) return { calls: [], reason: target.reason };

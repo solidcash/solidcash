@@ -42,6 +42,6 @@ describe('one entry appending to one log three times', () => {
     const refusal = compileRefusal(SOURCE);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(refusal.message)
-      .toMatch(/the call to 'append' runs conditionally or repeatedly/);
+      .toMatch(/the call to 'append' runs repeatedly/);
   });
 });

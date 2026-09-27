@@ -17,7 +17,28 @@ const CALLEE = hexOf(seededAddress('call shape callee'));
 
 const HEAD = 'pragma solidcash ^0.13.0;';
 
-const INTERFACES = ' interface IState { function add(int x); }';
+const INTERFACES = ' interface IState { function add(int x); }'
+  + ' interface IPeek { function peek() returns (int); }'
+  + ' interface ISum { function sum(int x) returns (int); }';
+
+/** The shape the marketplace's claim entry has: a helper whose arms each call out, reached from the entry. */
+const HELPER_WITH_ARMS = HEAD + INTERFACES
+  + ' contract Caller {'
+  + `   function pick(bool take, int x) internal returns (int) {`
+  + '     int chosen;'
+  + `     if (take) { chosen = ISum(0x${CALLEE}).sum(x); }`
+  + `     else { chosen = ISum(0x${CALLEE}).sum(x + 1); }`
+  + '     return chosen;'
+  + '   }'
+  + '   function go(bool take, int x) { require(pick(take, x) > 0); require(true); }'
+  + ' }';
+
+/** A caller whose arms each make one call, so every path makes the same number of calls. */
+const BALANCED_ARMS = HEAD + INTERFACES
+  + ' contract Caller {'
+  + `   function go(bool take) { if (take) { IState(0x${CALLEE}).add(1); }`
+  + `     else { IPeek(0x${CALLEE}).peek(); } require(true); }`
+  + ' }';
 
 /** A caller whose call runs only in one branch, which is a call set the source does not fix. */
 const CONDITIONAL_CALL = HEAD + INTERFACES
@@ -50,11 +71,32 @@ describe('a call whose occurrence the source fixes', () => {
   });
 });
 
+describe('a branch whose arms each make one call', () => {
+  it('is admitted, because every path makes the same number of calls', () => {
+    // The execution reaches the same position on either arm, so the record a body binds, the segment the code
+    // after the branch reads, and the count it pins are facts of every path — which is what the head needs.
+    const artifacts = compileStringMulti(BALANCED_ARMS, { composition: 'per-call' });
+    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
+  });
+});
+
+describe('a helper whose arms each call out, reached from an entry', () => {
+  it('is admitted, which is the shape a claim entry has', () => {
+    // The helper is inlined into the entry, so its arms are the entry's: every path makes one call, the record is
+    // the first on either arm, and the segment the code after the branch reads is the same one.
+    const artifacts = compileStringMulti(HELPER_WITH_ARMS, { composition: 'per-call' });
+    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
+  });
+});
+
 describe('a call whose occurrence the source does not fix', () => {
   it('is refused, and the message names the conditional set rather than a run-time callee', () => {
     const refusal = refusalOf(CONDITIONAL_CALL);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('runs conditionally or repeatedly');
+    expect(refusal.message).toContain('runs conditionally');
+    expect(refusal.message).toContain('do not make the same number of calls');
     expect(refusal.message).not.toContain('resolves its callee');
   });
 });

@@ -46,6 +46,6 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     const refusal = compileRefusal(SOURCE);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(refusal.message)
-      .toMatch(/the call to 'insert' runs conditionally or repeatedly/);
+      .toMatch(/the call to 'insert' runs repeatedly/);
   });
 });

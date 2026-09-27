@@ -282,7 +282,8 @@ import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, DYNAMIC_CHUNK_BASE_PARAMETER,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, callsOnEveryPath,
+  DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -992,6 +993,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * calls are straight-line, so the segment at a site is fixed when that site is emitted.
    */
   private perCallSegmentIndex = 0;
+  /**
+   * Which call record of its own execution the body being emitted is at, counted the same way.
+   *
+   * A body that binds a record by its position among the calls needs that position to be a fact of the source: a
+   * call inside a branch runs on one path and not the other, so the position is counted per path. The count is
+   * carried across a branch the way the stack is — saved at the branch point and restored for each arm — and the
+   * arms are required to agree, which the admission has already established.
+   */
+  private perCallOrdinal = 0;
   /**
    * The last segment each record block offset was touched in, which is where a frame that ends after a segment it
    * did not touch rebuilds the record: the record's value there is the one the frame left.
@@ -3102,6 +3112,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     const site = sites[index]!;
+    // The descriptor is the one the source means by this call, and the record it binds is the one at the position
+    // the path has reached: a call inside a branch is at the same position on both arms, so the two arms bind their
+    // own descriptors to the same record and only the arm that runs checks it.
+    const recordIndex = this.perCallOrdinal;
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
     // A target the caller's own code computes is emitted first, so the digest (when it too is computed) is left
@@ -3119,7 +3133,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The site's raw script is emitted as script elements rather than a flat byte array, so its pushes stay whole:
     // a body that carries a bare push opcode as a number element reads the next opcode as that push's payload, and
     // the shared-span outliner that rewrites entry bodies would cut inside a push.
-    this.emit(bytecodeToScript(callSiteCheckScript(site, index, usesResult, {
+    this.emit(bytecodeToScript(callSiteCheckScript(site, recordIndex, usesResult, {
       digestFromStack: computesDigest, targetFromStack: computesTarget,
     })), locationData);
     if (!usesResult) return;
@@ -3177,9 +3191,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(value)');
-    // A body the master runs but for which the compiler published no calls — the constructor, or an internal
-    // body reached from one — makes none, so its count is zero.
-    const own = this.perCallEntryCallSites.get(this.currentFunction?.name ?? '')?.length ?? 0;
+    // The count the body pins is the number of calls its own execution makes, which the source fixes: a descriptor
+    // list holds one entry per call in source order, so a body whose arms each make a call has more descriptors
+    // than the execution makes calls. The count is asked of the body rather than taken from that list, and a body
+    // whose paths disagree never reaches here — the admission refuses it before a program is emitted.
+    const own = this.currentFunction === undefined
+      ? 0
+      : callsOnEveryPath(this.currentFunction.body)
+        ?? this.perCallEntryCallSites.get(this.currentFunction.name)?.length ?? 0;
     this.emit(encodeInt(BigInt(own)), loc);
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
@@ -6490,6 +6509,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryWrites = new Map();
     this.pendingEntryDeletes = new Set();
     this.perCallSegmentIndex = 0;
+    this.perCallOrdinal = 0;
     this.perCallRecordSegment = new Map();
     this.perCallReadSegment = undefined;
     this.perCallStaleWrites = new Set();
@@ -8534,6 +8554,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // transferPreallocDepth). Bracket the whole if/else emission; restored before returning below.
     this.transferPreallocDepth += 1;
     this.scopeDepth += 1;
+    // Each arm runs from the branch point, so the position a body has reached is restored for the second arm the
+    // way the stack is: a call in each arm is the same call of the execution, and the arm that runs is the one whose
+    // descriptor binds that record. The arms have to end at the same position for the join below to be a position
+    // at all, which the admission establishes before the body is emitted; a disagreement here is a bug, not a shape,
+    // so it stops the compile rather than emitting a program whose records and segments do not line up.
+    const segmentBeforeBranch = this.perCallSegmentIndex;
+    const ordinalBeforeBranch = this.perCallOrdinal;
     this.emit(Op.OP_IF, { location: node.ifBlock.location, positionHint: PositionHint.START });
 
     if (hasReturnType) {
@@ -8542,6 +8569,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.ifBlock = this.visit(node.ifBlock);
       // Capture the stack state after if-block (may include return values)
       const stackAfterIf = [...this.stack];
+      const segmentAfterIf = this.perCallSegmentIndex;
+      const ordinalAfterIf = this.perCallOrdinal;
 
       // Representative post-branch stack. When one branch aborts via revert its stack is
       // irrelevant (execution never reaches the code after the branch on that path), so the
@@ -8554,8 +8583,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         // Restore stack for else-block (both branches see same starting state)
         this.stack = [...stackBeforeBranch];
+        this.perCallSegmentIndex = segmentBeforeBranch;
+        this.perCallOrdinal = ordinalBeforeBranch;
         node.elseBlock = this.visit(node.elseBlock);
         const stackAfterElse = [...this.stack];
+        this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
         if (this.blockEndsWithRevert(node.ifBlock) && !this.blockEndsWithRevert(node.elseBlock)) {
           representative = stackAfterElse;
         }
@@ -8573,6 +8605,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Original behavior for non-return branches
       let stackDepth = this.stack.length; // AFTER pre-allocation
       node.ifBlock = this.visit(node.ifBlock);
+      const segmentAfterIf = this.perCallSegmentIndex;
+      const ordinalAfterIf = this.perCallOrdinal;
       this.removeScopedVariables(stackDepth, node.ifBlock);
       // A branch must leave the tracked stack at the height it found it, or every later read is compiled
       // against the wrong shape: the else arm below STARTS from this arm's model, and so does the code after
@@ -8591,7 +8625,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (node.elseBlock) {
         this.emit(Op.OP_ELSE, { location: node.elseBlock.location, positionHint: PositionHint.START });
         stackDepth = this.stack.length;
+        this.perCallSegmentIndex = segmentBeforeBranch;
+        this.perCallOrdinal = ordinalBeforeBranch;
         node.elseBlock = this.visit(node.elseBlock);
+        this.joinPerCallPosition(node, segmentAfterIf, ordinalAfterIf);
         this.removeScopedVariables(stackDepth, node.elseBlock);
         if (this.stack.length !== stackDepth && !this.blockEndsWithRevert(node.elseBlock)) {
           const enclosingDepth = this.stack.length;
@@ -8612,6 +8649,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     this.transferPreallocDepth -= 1;
     return node;
+  }
+
+  /**
+   * Joins the position a body has reached across the arms of a branch, which must agree.
+   *
+   * A call in each arm is the same call of the execution and the arms run exclusively, so the position after the
+   * branch is the one either arm reached. An arm that ends elsewhere means a path makes a different number of calls,
+   * and then the records the body binds, the segment its reads resolve against and the count it pins describe a
+   * program the execution does not run: the compile stops instead of emitting one.
+   */
+  private joinPerCallPosition(node: BranchNode, segmentAfterIf: number, ordinalAfterIf: number): void {
+    if (this.perCallSegmentIndex !== segmentAfterIf || this.perCallOrdinal !== ordinalAfterIf) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the arms of a branch in '${this.currentFunction?.name ?? 'unknown'}' make different numbers of calls, `
+        + 'so the records the body binds are not the ones the execution makes',
+        {
+          function: this.currentFunction?.name,
+          ifCalls: ordinalAfterIf,
+          elseCalls: this.perCallOrdinal,
+          location: node.location,
+        },
+      );
+    }
   }
 
   /**
@@ -19570,6 +19631,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The call closes this segment; the code that follows runs in the next one, whose record views differ. Any
       // value written before the call is the closed segment's, so a later read resolves from the declaration.
       this.perCallSegmentIndex += 1;
+      this.perCallOrdinal += 1;
       for (const key of this.pendingStateWrites.keys()) this.perCallStaleWrites.add(key);
       return node;
     }

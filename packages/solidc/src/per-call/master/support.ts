@@ -31,13 +31,16 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   AssignNode,
   BinaryOpNode,
+  BlockNode,
   BoolLiteralNode,
+  BranchNode,
   CastNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode,
   ExpressionNode,
   ExternalCallMode,
+  ExternalFunctionCallNode,
   ExternalCallSlot,
   FunctionCallNode,
   FunctionDefinitionNode,
@@ -50,6 +53,8 @@ import {
   NullaryOpNode,
   StateAccessNode,
   StringLiteralNode,
+  SwitchNode,
+  TryCatchNode,
   UnaryOpNode,
   VariableDefinitionNode,
   WhileNode,
@@ -827,6 +832,64 @@ function derivePerCallMasterCallSites(
   return { supported: true, entryCalls, callCount };
 }
 
+/**
+ * The number of external calls a body makes on every path, or undefined when the paths disagree.
+ *
+ * A body binds its own calls: the k-th call of the execution is the k-th record, and the code after it resumes in
+ * segment k + 1. Both are positions in the execution rather than in the source, so a call inside a branch sits at
+ * the same position on either arm — the record and the segment the code after the branch uses are facts of every
+ * path only while the paths agree on how many calls came before. A loop's trip count is a run-time value, and a
+ * switch's arms need not agree, so both are refused here rather than counted; a catch block is not an executable
+ * path, which is the same reading the invocation walk takes.
+ */
+export function callsOnEveryPath(block: BlockNode | undefined): number | undefined {
+  let total = 0;
+  for (const statement of block?.statements ?? []) {
+    if (statement instanceof BranchNode) {
+      const inIf = callsOnEveryPath(statement.ifBlock);
+      const inElse = statement.elseBlock === undefined ? 0 : callsOnEveryPath(statement.elseBlock);
+      const inCondition = callsIn(statement.condition);
+      if (inIf === undefined || inElse === undefined || inCondition === undefined || inIf !== inElse) {
+        return undefined;
+      }
+      total += inCondition + inIf;
+      continue;
+    }
+    if (statement instanceof BlockNode) {
+      const inner = callsOnEveryPath(statement);
+      if (inner === undefined) return undefined;
+      total += inner;
+      continue;
+    }
+    if (statement instanceof WhileNode || statement instanceof DoWhileNode || statement instanceof SwitchNode) {
+      return undefined;
+    }
+    if (statement instanceof TryCatchNode) {
+      const inTry = statement.tryBlock === undefined ? 0 : callsOnEveryPath(statement.tryBlock);
+      const inExpression = callsIn(statement.expression);
+      if (inTry === undefined || inExpression === undefined) return undefined;
+      total += inTry + inExpression;
+      continue;
+    }
+    const own = callsIn(statement);
+    if (own === undefined) return undefined;
+    total += own;
+  }
+  return total;
+}
+
+/** The calls one statement makes outside any nested block, or undefined when it contains a branch of its own. */
+function callsIn(value: unknown): number | undefined {
+  let found = 0;
+  let structured = false;
+  walkInvocationAst(value, (node) => {
+    if (node instanceof ExternalFunctionCallNode) found += 1;
+    else if (node instanceof BranchNode || node instanceof SwitchNode
+      || node instanceof WhileNode || node instanceof DoWhileNode) structured = true;
+  });
+  return structured ? undefined : found;
+}
+
 /** The call sites one entry makes, or why the head cannot check them. */
 function deriveEntryCallSites(
   interfaces: readonly InterfaceNode[],
@@ -846,10 +909,15 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
-    if (slot.condition !== undefined || slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
+    if (slot.condition !== undefined && callsOnEveryPath(entry.body) === undefined) {
+      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally, and the paths through `
+        + `'${entry.name}' do not make the same number of calls, so its call records are not a fixed set the head `
+        + 'can check' };
+    }
+    if (slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
       || slot.inlineLoopDispatch === true || (slot.batchInvocations?.length ?? 0) > 1) {
-      return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally or repeatedly, so its call `
-        + 'records are not a fixed set the head can check' };
+      return { calls: [], reason: `the call to '${slot.functionName}' runs repeatedly, so its call records are not `
+        + 'a fixed set the head can check' };
     }
     if (slot.runtimeSelector !== undefined || slot.fnPtrCall === true) {
       return { calls: [], reason: `the call to '${slot.functionName}' resolves its callee or its selector at run `

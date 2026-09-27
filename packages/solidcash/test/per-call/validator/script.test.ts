@@ -188,6 +188,40 @@ function twoRootPlan(): CompositionPlan {
   };
 }
 
+/** The single-contract plan with the entry making two read-only calls, so one record is read by two frames. */
+function twoReadOnlyCallsPlan(): CompositionPlan {
+  const base = singleContractPlan();
+  const entry = base.masters[0]!;
+  return {
+    ...base,
+    masters: [
+      {
+        ...entry,
+        children: ['A.more', 'A.more2'],
+        callKinds: [FrameKind.STATIC, FrameKind.STATIC],
+        callValues: [0n, 0n],
+        segments: [
+          { touches: [{ slot: 'S', viewOut: seedBytes('S:1', 6) }] },
+          { touches: [{ slot: 'S' }, { slot: 'E' }] },
+          { touches: [{ slot: 'S' }] },
+        ],
+      },
+      base.masters[1]!,
+      {
+        id: 'A.more2',
+        contract: 'A',
+        kind: FrameKind.STATIC,
+        caller: 'A.go',
+        selector: selectorOf('more2'),
+        args: [],
+        children: [],
+        segments: [{ touches: [{ slot: 'S' }] }],
+        retval: seedBytes('ret:solo2', 1),
+      },
+    ],
+  };
+}
+
 /** Replaces the transcript the validator input carries, leaving its redeem script and lock untouched. */
 function withTranscript(composition: Composition, bytes: Uint8Array): ModelledTransaction {
   const modelled = materialise(composition);
@@ -1061,6 +1095,32 @@ describe('the validator program refuses each rule it enforces', () => {
     const tampered = materialise(composition);
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_BROKEN');
     expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('accepts today a chain that never leaves a fabricated view, which the derivation refuses', () => {
+    // Pairing is not connectivity, and this case is the difference. Two read-only declarations of one record that
+    // both claim the same view pair with each other - each names a declaration it continues from and one that
+    // continues from it - and the record's honest write still anchors the chain at the output, so a rule built from
+    // pairing and an anchor accepts a record whose chain never leaves the fabricated view. The derivation refuses it
+    // as a broken chain. **This test records the hole**: the program's assertion flips to `false` when the
+    // connectivity rule lands, and until then it is the proof that the rule is missing. What the hole buys an
+    // attacker is the shape the record toys care about: a user-entered call to a view function that pairs with the
+    // honest caller's read-only read, so the caller computes a payout from a record nobody wrote.
+    const composition = laidOut(twoReadOnlyCallsPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const fake = seedBytes('fake:S', 6);
+    for (const id of ['A.more', 'A.more2']) {
+      const block = composition.blocks.get(id)!;
+      block.segments[0] = [{ in: composition.slotIndex.get('S')!, out: composition.slotIndex.get('S')!,
+        viewIn: fake, viewOut: fake }];
+    }
+    const tampered = materialise(composition);
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CHAIN_BROKEN');
+    expect(accepted(tampered, index)).toBe(true);
   });
 
   test('refuses a declaration that carries on from a deleted record', () => {

@@ -1214,6 +1214,28 @@ Titles marked NEVER have not passed on any real compile to date.
   measurement section names or a pass that orders the entries by key, and the ladder should expect to pay there
   rather than in bytes. The byte budget binds at the same time — the reference input now sits 107 bytes past the
   standard ten-thousand-byte unlocking bytecode — and the plan's D3 defers that budget to Phase R.
+- **The connectivity rule the chains check needs, and why it is a consuming walk rather than a count.** Pairing plus an
+  anchor is not connectivity (the Log row and the hostile case in the validator suite carry the repro: two read-only
+  declarations of one record given the same fabricated view pair with each other while the record's honest write
+  anchors the output). The rule has to establish that a record's declarations form one path from the spent
+  commitment — or from nothing, for a record the transaction creates — to the record's output or its deletion.
+  Order-free, that is a walk that consumes as it goes: start at the record's start view, repeatedly take the one
+  declaration whose start view is the current view (removing it from the working copy), follow the view it ends at,
+  stop when the taken declaration anchors at the transaction's output or deletes the record, bound the steps by the
+  gathered entry count, and finally require that no declaration of that key remains in the working copy — the
+  leftover is what a duplicate or a merge leaves behind, and the bound is what a detached cycle fails to reach the
+  anchor within. The walk needs a helper the program does not have: the gather's blob is searched read-only today
+  (`emitFoundWindow` returns a count), while the walk must remove the matched record and read its `out` and its end
+  view. That is a filter pass — split each record, compare its `key || viewIn` window, park the first match, append
+  the others to an accumulator on the alternate stack, return `[rest, foundRecord]` — and with the landed layout
+  (`stride 273`) the windows are the ones the check already uses: `key || viewIn` at offset 9 (width 132) and the end
+  view at offset 145. Run once per gathered entry, the walk costs on the order of `n²` searches per entry, i.e. `n³`
+  for a composition with `n` record entries: the reference shape's five entries fit the relaxed profile the gates use,
+  and the larger shapes will need the prepared region the measurements section names. The generator gains a mutation
+  for exactly this defect (`detached cycle`: two declarations of one record given the same fabricated view) **in the
+  same round as the walk**, because the differential suite compares the machine against the model case by case, so
+  the mutation turns every case whose plan carries a repeated record into a required refusal; it is parked with this
+  design rather than landed alone, since a red differential is not evidence.
 - **The key-first gather, as landed, and the correction the first specification needed.** One record is
   `[key:4][marker:1][in:2][out:2][key:4][viewIn pad:128][key:4][viewOut pad:128]`, stride 273: the key, the marker,
   the index pair, then each padded view behind its own copy of the key. The first specification written for this

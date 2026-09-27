@@ -167,7 +167,8 @@ describe('assembling a composition', () => {
         settles: [{ category: CATEGORY, stateInputs: ['DA'] }],
       },
     });
-    expect(assembly.transcript).toBeDefined();
+    expect(assembly.transcripts).toHaveLength(1);
+    expect(assembly.transcripts[0]!.validator).toBe('validator');
     const transcript = decodeTranscript(
       splitFirstPush(assembly.inputs.find((input) => input.id === 'validator')!.unlockingBytecode).payload,
     );
@@ -188,7 +189,7 @@ describe('assembling a composition', () => {
       masters: [callerMaster([])],
     });
     expect(blockOf(assembly.inputs[0]!).validatorRef).toBe(INDEX_NONE);
-    expect(assembly.transcript).toBeUndefined();
+    expect(assembly.transcripts).toStrictEqual([]);
   });
 
   it('refuses a plan whose entry needs a validator and has none', () => {

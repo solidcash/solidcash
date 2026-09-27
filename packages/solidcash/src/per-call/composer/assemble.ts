@@ -90,27 +90,94 @@ export interface PlannedSettlement {
   readonly stateInputs: readonly string[];
 }
 
+/** One validator the composition spends: the contracts it covers, what it settles, and its program. */
+export interface PlannedValidator {
+  /** The identity the hosting block names and the layout places. */
+  readonly id: string;
+  /**
+   * The contracts whose masters point at this validator, beyond the one whose block hosts it.
+   *
+   * Coverage is wider than settlement: a contract that a validator covers without settling keeps its own single
+   * master's settlement while still having every edge into it bound, so this is stated rather than derived from the
+   * contracts the validator settles.
+   */
+  readonly covers: readonly string[];
+  /** The validator's redeem script: the category pin followed by the validator program. */
+  readonly redeemScript: Uint8Array;
+  /** The contracts the validator settles, with the state inputs each spends. */
+  readonly settles: readonly PlannedSettlement[];
+}
+
+/**
+ * A composition's validators: one named directly, or one per independent group.
+ *
+ * A single-validator composition names it directly and behaves exactly as one that names a one-element list.
+ */
+export type PlannedValidators = PlannedValidator | PlannedValidator[];
+
 /** The whole plan. Every reference is an identity, and every coordinate comes from the layout. */
 export interface CompositionPlan {
   readonly blocks: readonly ContractBlock[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly PlannedMaster[];
-  /** Present when the composition has a validator. */
-  readonly validator?: {
-    readonly id: string;
-    /**
-     * The contracts whose masters point at this validator.
-     *
-     * Coverage is wider than settlement: a contract that a validator covers without settling keeps its own single
-     * master's settlement while still having every edge into it bound, so this is stated rather than derived from the
-     * contracts the validator settles.
-     */
-    readonly covers: readonly string[];
-    /** The validator's redeem script: the category pin followed by the validator program. */
-    readonly redeemScript: Uint8Array;
-    /** The contracts the validator settles, with the state inputs each spends. */
-    readonly settles: readonly PlannedSettlement[];
-  };
+  /**
+   * The composition's validators. A composition of one group names its validator directly; a composition of
+   * independent groups names one per group, each hosted by the block that names it.
+   */
+  readonly validator?: PlannedValidators;
+}
+
+/** The plan's validators, whether it named a single one or several. */
+export function declaredValidators(plan: { readonly validator?: PlannedValidators }): readonly PlannedValidator[] {
+  const declared = plan.validator;
+  if (declared === undefined) return [];
+  return Array.isArray(declared) ? declared : [declared];
+}
+
+/** How a plan's validators bind to the contracts their masters run on. */
+export interface ValidatorBinding {
+  /** Every validator the plan names. */
+  readonly validators: readonly PlannedValidator[];
+  /** The validators a block hosts, in block order. */
+  readonly hosted: readonly PlannedValidator[];
+  /** The validator that covers each contract, by contract name. */
+  readonly byContract: ReadonlyMap<string, PlannedValidator>;
+}
+
+/**
+ * Binds each contract to the validator that covers it.
+ *
+ * A validator covers the contract whose block hosts it and every contract its `covers` lists. A contract is bound
+ * to exactly one validator, because a master carries one validator reference; a second claim is refused rather than
+ * resolved.
+ */
+export function bindContractValidators(plan: {
+  readonly blocks: readonly ContractBlock[];
+  readonly validator?: PlannedValidators;
+}): ValidatorBinding {
+  const validators = declaredValidators(plan);
+  // A plan that names no validator is one whose blocks carry no coverage to bind, even if a block still names one.
+  if (validators.length === 0) return { validators, hosted: [], byContract: new Map() };
+  const byId = new Map(validators.map((validator) => [validator.id, validator]));
+  const hosted: PlannedValidator[] = [];
+  const byContract = new Map<string, PlannedValidator>();
+  for (const block of plan.blocks) {
+    if (block.validator === undefined) continue;
+    const validator = byId.get(block.validator.id);
+    if (validator === undefined) {
+      throw new PerCallEncodingError(
+        `the block for "${block.contract}" hosts validator "${block.validator.id}", which the plan does not name`,
+      );
+    }
+    if (!hosted.includes(validator)) hosted.push(validator);
+    for (const covered of [block.contract, ...validator.covers]) {
+      if (byContract.has(covered)) {
+        throw new PerCallEncodingError(`"${covered}" is covered by more than one validator`);
+      }
+      byContract.set(covered, validator);
+    }
+  }
+  return { validators, hosted, byContract };
 }
 
 /** One assembled input. */
@@ -128,6 +195,13 @@ export interface ResolvedCall {
   readonly argsHash: Uint8Array;
 }
 
+/** One validator's transcript, as the assembly built it from the plan. */
+export interface ValidatorTranscript {
+  /** The validator identity the transcript belongs to. */
+  readonly validator: string;
+  readonly transcript: Transcript;
+}
+
 /** The assembled composition. */
 export interface CompositionAssembly {
   readonly layout: TransactionLayout;
@@ -135,7 +209,8 @@ export interface CompositionAssembly {
   /** Where the trailing outputs are: one per event, one per send, one per created record, then change. */
   readonly outputs: OutputRegions;
   readonly calls: readonly ResolvedCall[];
-  readonly transcript?: Transcript;
+  /** One transcript per validator the plan spends, in block order; empty when the composition has none. */
+  readonly transcripts: readonly ValidatorTranscript[];
 }
 
 /** The outputs a plan creates records at, in first-appearance order. */
@@ -298,24 +373,15 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
   };
 
   // The validator that covers a contract is the one whose plan covers it, and a master's reference names it.
-  const validatorByContract = new Map<string, string>();
-  for (const block of plan.blocks) {
-    if (!block.validator || !plan.validator) continue;
-    for (const covered of [block.contract, ...plan.validator.covers]) {
-      if (validatorByContract.has(covered)) {
-        throw new PerCallEncodingError(`"${covered}" is covered by more than one validator`);
-      }
-      validatorByContract.set(covered, plan.validator.id);
-    }
-  }
+  const binding = bindContractValidators(plan);
 
   const entries: { facts: EntryFacts; hasValidator: boolean }[] = [];
   const assembled: AssembledInput[] = [];
   const resolvedCalls: ResolvedCall[] = [];
 
   for (const master of plan.masters) {
-    const validatorId = validatorByContract.get(master.contract);
-    const validatorRef = validatorId === undefined ? INDEX_NONE : resolve(validatorId, 'validator');
+    const validator = binding.byContract.get(master.contract);
+    const validatorRef = validator === undefined ? INDEX_NONE : resolve(validator.id, 'validator');
     entries.push({ facts: master.facts, hasValidator: validatorRef !== INDEX_NONE });
 
     const calls = master.calls.map((call) => {
@@ -350,39 +416,41 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
     });
   }
 
-  // Coverage is checked before the validator is assembled, so a plan that cannot be verified is refused as a plan
+  // Coverage is checked before the validators are assembled, so a plan that cannot be verified is refused as a plan
   // rather than producing inputs.
   assertValidatorCoverage(entries);
 
-  if (!plan.validator) {
-    return { layout, inputs: ordered(layout, assembled), outputs, calls: resolvedCalls };
+  const transcripts: ValidatorTranscript[] = [];
+  for (const validator of binding.hosted) {
+    // A validator's transcript names the masters that point at it, not every master of the composition.
+    const covered = plan.masters.filter((master) => binding.byContract.get(master.contract) === validator);
+    const transcript: Transcript = {
+      // Ascending by index, so two builders of the same composition produce the same transcript.
+      roots: covered
+        .filter((master) => master.facts.kind === 0)
+        .map((master) => resolve(master.master, 'master'))
+        .sort((left, right) => left - right),
+      masters: covered
+        .map((master) => resolve(master.master, 'master'))
+        .sort((left, right) => left - right),
+      settles: validator.settles.map((settled) => ({
+        category: settled.category,
+        stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
+      })),
+    };
+    const validatorWitness = assembleValidatorWitness({
+      transcript,
+      redeemScript: validator.redeemScript,
+    });
+    assembled.push({
+      id: validator.id,
+      index: resolve(validator.id, 'validator'),
+      unlockingBytecode: validatorWitness.unlockingBytecode,
+    });
+    transcripts.push({ validator: validator.id, transcript });
   }
 
-  const transcript: Transcript = {
-    // Ascending by index, so two builders of the same composition produce the same transcript.
-    roots: plan.masters
-      .filter((master) => master.facts.kind === 0)
-      .map((master) => resolve(master.master, 'master'))
-      .sort((left, right) => left - right),
-    masters: plan.masters
-      .map((master) => resolve(master.master, 'master'))
-      .sort((left, right) => left - right),
-    settles: plan.validator.settles.map((settled) => ({
-      category: settled.category,
-      stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
-    })),
-  };
-  const validatorWitness = assembleValidatorWitness({
-    transcript,
-    redeemScript: plan.validator.redeemScript,
-  });
-  assembled.push({
-    id: plan.validator.id,
-    index: resolve(plan.validator.id, 'validator'),
-    unlockingBytecode: validatorWitness.unlockingBytecode,
-  });
-
-  return { layout, inputs: ordered(layout, assembled), outputs, calls: resolvedCalls, transcript };
+  return { layout, inputs: ordered(layout, assembled), outputs, calls: resolvedCalls, transcripts };
 }
 
 /** The argument hash of a planned call: the selector and the argument pushes, in their canonical encoding. */

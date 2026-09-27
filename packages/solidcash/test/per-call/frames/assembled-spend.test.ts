@@ -89,7 +89,7 @@ function evaluateAssembledSpend(options: SpendOptions = {}): { accepted: boolean
 
   const assembly = assembleComposition(plan);
   expect(assembly.calls).toStrictEqual([]);
-  expect(assembly.transcript).toBeUndefined();
+  expect(assembly.transcripts).toStrictEqual([]);
 
   const masterToken = {
     category: CATEGORY,

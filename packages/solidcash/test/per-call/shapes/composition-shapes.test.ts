@@ -73,7 +73,7 @@ describe('one contract entered once with no calls', () => {
     // One master at 0, then the user that entered it; no validator, because the entry stands alone.
     expect(participant(outcome.draft.layout, 'solo-1').index).toBe(0);
     expect(outcome.draft.layout.funderInputBase).toBe(1);
-    expect(outcome.draft.assembly.transcript).toBeUndefined();
+    expect(outcome.draft.assembly.transcripts).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Solo', 'ping')]);
     expectEveryContractInputAccepted(outcome);
     expectDerivationConvergedWithAssembly(outcome, ['solo-1']);
@@ -201,7 +201,7 @@ describe('two independent roots of two different contracts', () => {
     // Neither root calls the other, so neither needs a validator and each keeps its own user as caller and origin.
     expect(participant(outcome.draft.layout, 'first-1').index).toBe(0);
     expect(participant(outcome.draft.layout, 'second-1').index).toBe(1);
-    expect(outcome.draft.assembly.transcript).toBeUndefined();
+    expect(outcome.draft.assembly.transcripts).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.functionName))
       .toStrictEqual([entryName('First', 'left'), entryName('Second', 'right')]);
     expectEveryContractInputAccepted(outcome);
@@ -430,8 +430,8 @@ describe('two entry points of one contract entered independently', () => {
 
 describe('two independent pairs that each need their own validator', () => {
   // `Left` calls `LeftCallee`, `Right` calls `RightCallee`, and neither pair reaches the other, so each pair's first
-  // root needs its own validator. A plan carries one validator, so the second pair cannot be given a validator input
-  // of its own and the shipped assembly refuses the plan that tries to declare two.
+  // root needs its own validator. The plan names one validator per pair, each hosted by the caller's block and
+  // covering its own callee, so every master points at the validator that covers it.
   const leftCalleeAddress = seededAddress('the first callee');
   const rightCalleeAddress = seededAddress('the second callee');
   const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -446,19 +446,20 @@ describe('two independent pairs that each need their own validator', () => {
     + ' }'
     + ' contract RightCallee { function ping() { require(true); } }';
 
-  it('is refused by the composer: one plan\'s single validator covers a contract twice once both pairs host one', () => {
-    const { artifacts, contracts } = compileAndDeploy(SOURCE, {
-      Left: 'the first caller', LeftCallee: 'the first callee',
-      Right: 'the second caller', RightCallee: 'the second callee',
-    });
+  function planFor(built: ReturnType<typeof compileAndDeploy>, options: {
+    readonly leftCovers?: readonly string[];
+  } = {}): CompositionDraftPlan {
+    const { artifacts, contracts } = built;
     const left = contracts.Left!;
     const leftCallee = contracts.LeftCallee!;
     const right = contracts.Right!;
     const rightCallee = contracts.RightCallee!;
     const leftValidator = validatorFor(left.category);
+    const rightValidator = validatorFor(right.category);
+    // The selector is read from the compiled callee's ABI, so the call data is the shipped one.
     const leftPing = selectorOf(artifacts, 'LeftCallee', 'ping');
     const rightPing = selectorOf(artifacts, 'RightCallee', 'ping');
-    const plan: CompositionDraftPlan = {
+    return {
       blocks: [
         { contract: 'Left', masters: ['left-1'], validator: { id: 'left-validator', settles: [] }, state: [] },
         { contract: 'LeftCallee', masters: ['left-callee-1'], state: [] },
@@ -520,17 +521,72 @@ describe('two independent pairs that each need their own validator', () => {
         'left-validator': {
           source: { lockingBytecode: leftValidator.lock, valueSatoshis: 20_000n, token: token(left.category, 'mutable') },
         },
+        'right-validator': {
+          source: { lockingBytecode: rightValidator.lock, valueSatoshis: 20_000n, token: token(right.category, 'mutable') },
+        },
         'user-left': userInput(),
         'user-right': userInput(),
       },
-      // The one validator the plan can carry, covering the first pair's callee; the second pair has no field left
-      // to name its own.
-      validator: { id: 'left-validator', covers: ['LeftCallee'], settles: [], redeemScript: leftValidator.redeem },
+      validator: [
+        {
+          id: 'left-validator',
+          covers: options.leftCovers ?? ['LeftCallee'],
+          settles: [],
+          redeemScript: leftValidator.redeem,
+        },
+        { id: 'right-validator', covers: ['RightCallee'], settles: [], redeemScript: rightValidator.redeem },
+      ],
     };
+  }
 
-    const refusal = shippedRefusal(() => composeDraft(plan));
+  it('binds each contract to its own validator and every input, the validators included, is accepted', () => {
+    const built = compileAndDeploy(SOURCE, {
+      Left: 'the first caller', LeftCallee: 'the first callee',
+      Right: 'the second caller', RightCallee: 'the second callee',
+    });
+    const plan = planFor(built);
+    const outcome = composeAndDerive(plan, [
+      built.artifacts.Left!, built.artifacts.LeftCallee!, built.artifacts.Right!, built.artifacts.RightCallee!,
+    ], [
+      rootOf('Left', 'callIt', 'left-1'),
+      rootOf('Right', 'callIt', 'right-1'),
+    ]);
+
+    // Each caller's block holds its master and its own validator; the callee's block follows.
+    expect(['left-1', 'left-validator', 'left-callee-1', 'right-1', 'right-validator', 'right-callee-1']
+      .map((id) => participant(outcome.draft.layout, id).index))
+      .toStrictEqual([0, 1, 2, 3, 4, 5]);
+    expect(outcome.draft.layout.funderInputBase).toBe(6);
+    // The callee of each pair completes before its caller, and the first pair is derived before the second.
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('LeftCallee', 'ping'), entryName('Left', 'callIt'),
+      entryName('RightCallee', 'ping'), entryName('Right', 'callIt'),
+    ]);
+    // Each call resolves to its own callee's layout index.
+    expect(outcome.draft.assembly.calls.map((call) => `${call.from}->${call.calleeRef}`))
+      .toStrictEqual(['left-1->2', 'right-1->5']);
+    // Each validator's transcript names only the masters that point at it.
+    expect(outcome.draft.assembly.transcripts.map((entry) => ({
+      validator: entry.validator,
+      roots: entry.transcript.roots,
+      masters: entry.transcript.masters,
+    }))).toStrictEqual([
+      { validator: 'left-validator', roots: [0], masters: [0, 2] },
+      { validator: 'right-validator', roots: [3], masters: [3, 5] },
+    ]);
+    expectEveryContractInputAccepted(outcome);
+    expectDerivationConvergedWithAssembly(outcome, ['left-1', 'left-callee-1', 'right-1', 'right-callee-1']);
+  });
+
+  it('is refused by the composer: a contract two validators cover is covered twice', () => {
+    const built = compileAndDeploy(SOURCE, {
+      Left: 'the first caller', LeftCallee: 'the first callee',
+      Right: 'the second caller', RightCallee: 'the second callee',
+    });
+    // The left pair's validator also claims `Right`, which the right pair's own validator hosts.
+    const refusal = shippedRefusal(() => composeDraft(planFor(built, { leftCovers: ['LeftCallee', 'Right'] })));
 
     expect(refusal.name).toBe('PerCallEncodingError');
-    expect(refusal.message).toBe('"LeftCallee" is covered by more than one validator');
+    expect(refusal.message).toBe('"Right" is covered by more than one validator');
   });
 });

@@ -32,12 +32,13 @@ import {
 } from '@solidcash/utils';
 import {
   assembleComposition,
+  bindContractValidators,
   type CompositionAssembly,
   type CompositionPlan,
   type PlannedCall,
   type PlannedMaster,
-  type PlannedSettlement,
   type PlannedUserInput,
+  type PlannedValidators,
 } from './assemble.js';
 import type { EntryFacts } from './need-test.js';
 import type { FrameRequest } from './derivation.js';
@@ -169,12 +170,10 @@ export interface CompositionDraftPlan {
    * participants, so a block's `events` or `sends` can name one.
    */
   readonly trailingOutputs?: readonly DraftTrailingOutput[];
-  readonly validator?: {
-    readonly id: string;
-    readonly covers: readonly string[];
-    readonly settles: readonly PlannedSettlement[];
-    readonly redeemScript: Uint8Array;
-  };
+  /**
+   * The composition's validators, named as the plan names them: one directly, or one per independent group.
+   */
+  readonly validator?: PlannedValidators;
 }
 
 /** The composed draft: the layout, the assembly, and the runs the derivation drives. */
@@ -279,18 +278,14 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   const mastersById = new Map(plan.masters.map((master) => [master.master, master]));
   const retvals = retvalsByMaster(plan);
 
-  // The validator covers the contract whose block hosts it, plus every contract the plan says it covers.
-  const validatorByContract = new Map<string, string>();
-  for (const block of plan.blocks) {
-    if (!block.validator || !plan.validator) continue;
-    for (const covered of [block.contract, ...plan.validator.covers]) validatorByContract.set(covered, plan.validator.id);
-  }
+  // Each contract is bound to the validator whose block hosts it or whose coverage names it.
+  const binding = bindContractValidators(plan);
 
   // The mutable blocks the derivation grows: frame references resolved, the filled slots still unset.
   const blocks = new Map<string, WitnessBlock>();
   for (const master of plan.masters) {
-    const validatorId = validatorByContract.get(master.contract);
-    const validatorRef = validatorId === undefined ? INDEX_NONE : requireIndex(indices, validatorId, 'validator');
+    const validator = binding.byContract.get(master.contract);
+    const validatorRef = validator === undefined ? INDEX_NONE : requireIndex(indices, validator.id, 'validator');
     const calls: CallRecord[] = master.calls.map((call) => ({
       kind: call.kind,
       target: call.target,
@@ -315,12 +310,13 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
     });
   }
 
-  const validatorId = plan.validator?.id;
-  const validatorUnlocking = validatorId === undefined
-    ? undefined
-    : assembly.inputs.find((input) => input.id === validatorId)?.unlockingBytecode;
-  if (validatorId !== undefined && validatorUnlocking === undefined) {
-    throw new CompositionDraftError(`the validator "${validatorId}" was not assembled`);
+  const validatorUnlocking = new Map<string, Uint8Array>();
+  for (const validator of binding.hosted) {
+    const assembledInput = assembly.inputs.find((input) => input.id === validator.id);
+    if (assembledInput === undefined) {
+      throw new CompositionDraftError(`the validator "${validator.id}" was not assembled`);
+    }
+    validatorUnlocking.set(validator.id, assembledInput.unlockingBytecode);
   }
 
   // Inputs in index order, each with the source output the machine reads and how its unlocking bytecode is built.
@@ -362,10 +358,11 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
     if (master !== undefined) {
       return buildMasterUnlockingBytecode(block ?? blocks.get(id)!, master.argumentPushes, master.redeemScript);
     }
-    if (id === validatorId) return validatorUnlocking!;
+    const validator = validatorUnlocking.get(id);
+    if (validator !== undefined) return validator;
     const provided = plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
-      throw new CompositionDraftError(`input "${id}" is not a master or the validator, so it needs unlocking bytecode`);
+      throw new CompositionDraftError(`input "${id}" is not a master or a validator, so it needs unlocking bytecode`);
     }
     return provided;
   };

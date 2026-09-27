@@ -812,7 +812,14 @@ export async function expandCreateBuilderLateTransitive(
         ...(lateRelativeOutputInternalArgs.size > 0 && {
           relativeOutputInternalArgs: [...lateRelativeOutputInternalArgs],
         }),
-        ...(lateBlockInputs && { blockInputs: lateBlockInputs, blockLayout: lateLayout }),
+        ...(lateBlockInputs && {
+          blockInputs: lateBlockInputs,
+          blockLayout: lateLayout,
+          // Late-discovered callees own the same compiler-declared return slot as
+          // eagerly prepared callees. Keep ownership with the physical block so
+          // materialization and both producer/consumer witnesses use that slot.
+          returnEventInBlock: lateLayout?.slots.some((slot) => slot.kind === 'returnEvent'),
+        }),
         ...(latePlannedEntryInserts.length > 0 && {
           plannedEntryInserts: latePlannedEntryInserts,
         }),

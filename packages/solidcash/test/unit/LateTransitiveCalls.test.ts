@@ -132,6 +132,26 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
 }
 
 describe('late transitive call preparation', () => {
+  it.each([true, false])('preserves declared late return-slot ownership (return slot %s)', async (hasReturn) => {
+    const sink = contract(2, [{ ...handler('run', [], true), blockLayout: {
+      blockSize: 2, slots: [{ kind: 'master', offset: 0 },
+        { kind: hasReturn ? 'returnEvent' : 'event', offset: 1 }],
+    } }]);
+    const first = contract(1, [handler('run', [edge('Sink')])]);
+    first._externalRegistry.set('Sink', sink);
+    const fixture = preparation([group(first)]);
+    fixture.host.shiftSharedFunder = () => ({
+      txid: 'ab'.repeat(32), vout: 0, satoshis: 1000n,
+      unlocker: { generateLockingBytecode: () => Uint8Array.of(0x51),
+        generateUnlockingBytecode: () => new Uint8Array() },
+    });
+
+    await fixture.expand();
+
+    expect(fixture.groups[1].blockInputs).toHaveLength(2);
+    expect(fixture.groups[1].returnEventInBlock).toBe(hasReturn);
+  });
+
   it.each(['enabled', 'disabled', 'missing'] as const)(
     'hydrates mapping-backed late predicates and arguments (%s entry)', async (entryState) => {
       const record: ExternalCallExpression = {

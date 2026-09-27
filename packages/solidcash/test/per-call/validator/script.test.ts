@@ -893,6 +893,70 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(modelled, index)).toBe(false);
   });
 
+  test('refuses an event output that also carries a fungible amount', () => {
+    // A CashToken may be semi-fungible: an NFT and a fungible amount together. The census's rule is about the
+    // amount, so an event NFT at an index its frame lists is still refused when it carries one.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    // The accepted control: the same composition, with the event holding the amount it was built with.
+    expect(accepted(modelled, index)).toBe(true);
+    const event = modelled.outputs.findIndex((output) =>
+      output.token.hasNft && output.token.capability === TokenCapability.NONE);
+    expect(event).toBeGreaterThanOrEqual(0);
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === event
+        ? { ...output, token: { ...output.token, amount: 1n } }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_OWN_FUNGIBLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a mutable own-category output that carries a fungible amount', () => {
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    const record = modelled.outputs.findIndex((output) =>
+      output.token.capability === TokenCapability.MUTABLE);
+    expect(record).toBeGreaterThanOrEqual(0);
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === record
+        ? { ...output, token: { ...output.token, amount: 5n } }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_OWN_FUNGIBLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses an own-category output that carries only a fungible amount', () => {
+    // No NFT at all: the machine answers with the 32-byte category alone, which is what an immutable NFT also
+    // answers with, so the amount is the only fact that tells the two apart.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    const own = modelled.outputs.findIndex((output) =>
+      output.token.hasNft && output.token.capability === TokenCapability.NONE);
+    expect(own).toBeGreaterThanOrEqual(0);
+    const fungibleOnly: TokenShape = {
+      category: modelled.outputs[own]!.token.category,
+      capability: TokenCapability.NONE,
+      hasNft: false,
+      nftCommitment: new Uint8Array(0),
+      amount: 1n,
+    };
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === own
+        ? { ...output, token: fungibleOnly }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_OWN_FUNGIBLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('runs the reference composition at the published operation-cost density', () => {
     // The plan's open question: the program costs operations the unlocking bytecode has to pay for, and the real
     // profile budgets 800 cost per byte. A program that did not fit would make every composed transaction

@@ -101,6 +101,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V10_STATIC_NON_STATIC_CALL',
   'V7_SETTLE_CATEGORY_DUPLICATE',
   'V7_STATE_INPUTS_MISMATCH',
+  'V7_CENSUS_OWN_FUNGIBLE',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -134,7 +135,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 9. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
  *    calls only read-only frames;
  * 10. settles on `[M]`: no category is settled twice, and every category the covered masters need settled — one that
- *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles.
+ *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles;
+ * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -177,6 +179,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitSettleCategoriesAreDistinct(e);
   emitSettlementMembership(e);
   emitSettlementStateInputs(e);
+  emitSettlementFungibleAmounts(e);
   emitFrameAddresses(e);
 
   // The padding block: pushed and dropped where the program ends, so the stack a caller sees is the one the checks
@@ -1151,6 +1154,94 @@ function emitOneSettleStateInputs(e: Emitter): void {
   emitCountStateInputs(e);
   e.op(O.OP_SWAP, O.OP_SIZE, O.OP_NIP, O.OP_NUMEQUALVERIFY);
   e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * V7's census, the half an own-category token's amount decides.
+ *
+ * A CashToken may be semi-fungible — an NFT and a fungible amount together — so the rule is about the amount and not
+ * about whether an NFT is present: every input and every output carrying a settled contract's category must carry a
+ * fungible amount of zero. The rule is also what makes an own-category output's class decidable in the rest of the
+ * census, because `OP_OUTPUTTOKENCATEGORY` appends a capability byte only for a mutable or minting token: with the
+ * amount at zero, a bare 32-byte answer is a pure immutable NFT.
+ *
+ * Entry `[M]`, exit `[M]`.
+ */
+function emitSettlementFungibleAmounts(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  // `[M, settleCount, settles]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneSettleFungibleAmounts(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+}
+
+/**
+ * The amounts of one settled contract's own-category tokens.
+ *
+ * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`. The category is reversed to the order the
+ * machine reports a spent token's and parked on the alternate stack for the two walks, and the entry's state-input
+ * list is the settlement rule's, so only its bytes are skipped here.
+ */
+function emitOneSettleFungibleAmounts(e: Emitter): void {
+  const O = Opcodes;
+  e.count(32).op(O.OP_SPLIT);
+  e.op(O.OP_SWAP, O.OP_REVERSEBYTES, O.OP_TOALTSTACK);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  // `[M, settleCount, after]`.
+  emitOwnCategoryAmounts(e, O.OP_TXINPUTCOUNT, O.OP_UTXOTOKENCATEGORY, O.OP_UTXOTOKENAMOUNT);
+  emitOwnCategoryAmounts(e, O.OP_TXOUTPUTCOUNT, O.OP_OUTPUTTOKENCATEGORY, O.OP_OUTPUTTOKENAMOUNT);
+  e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * Every own-category token this walk visits carries no fungible amount.
+ *
+ * Entry `[.., ]`, exit `[..]`. The walk is the transaction's own count of inputs or outputs, so it visits every one
+ * of them and ends when the count runs out: the category the opcode answers is compared by its first 32 bytes, which
+ * is the category alone for a bare value and the category followed by a capability byte otherwise, and the amount is
+ * read only from the entries that carry the parked category.
+ */
+function emitOwnCategoryAmounts(
+  e: Emitter, countOpcode: number, categoryOpcode: number, amountOpcode: number,
+): void {
+  const O = Opcodes;
+  e.op(countOpcode);
+  e.count(0);
+  // `[.., count, index]`.
+  loopCounted(e, (em) => {
+    em.op(O.OP_DUP);
+    em.op(categoryOpcode);
+    // An entry with no token answers with nothing, and one whose answer is too short to hold a category is not this
+    // walk's. The guard reads the size without consuming the answer: what it lets through is the copy inside it, so
+    // an entry it refuses leaves the walk's own items exactly as they were.
+    em.op(O.OP_SIZE);
+    em.count(32).op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
+    em.op(O.OP_DUP);
+    em.count(32).op(O.OP_SPLIT, O.OP_DROP);
+    em.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK);
+    em.op(O.OP_EQUAL, O.OP_IF);
+    // The index sits under the category the machine answered, and the amount is read at it.
+    em.count(1).op(O.OP_PICK);
+    em.op(amountOpcode);
+    em.op(O.OP_0, O.OP_NUMEQUALVERIFY);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_DROP);
+    em.op(O.OP_1ADD);
+  });
+  e.op(O.OP_DROP);
 }
 
 /** Entry `[.., list]`, exit `[.., list, count]`. How many inputs are state UTXOs of the settled contract. */

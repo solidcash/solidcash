@@ -20,24 +20,24 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 
 | Directory | Package | Tests |
 | --- | --- | --- |
-| `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
+| `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
 | `packages/solidc/test/per-call/master/` | `solidc` | 335 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 148 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 149 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 51 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 49 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 54 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 13 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 37 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 50 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 986 tests (114 + 376 + 496), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 376 is the four rows above it, and `solidcash` 496 is the nine rows above it.
+Total: 1006 tests (115 + 376 + 515), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 376 is the four rows above it, and `solidcash` 515 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -136,7 +136,10 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   the rule named), a fan-in through an allowance, settled (one node read and rewritten across two frames of one
   contract, each frame closing against the value its own declaration carries), the identity expectations the EVM
   sets for a self call, and the re-entry shape, pinned on the wall it names (a master that calls cannot carry a
-  verified-mapping write, so the vault's writing entries are refused before any run is built).
+  verified-mapping write, so the vault's writing entries are refused before any run is built), a proxy whose
+  fallback forwards its own call data to an implementation it holds (compiled and composed, with the derivation
+  still stalling at the proxy's call site), and a dynamic value whose first write creates its run (settled, with the
+  created chunk's output and the header read back through the shipped encoders).
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name.

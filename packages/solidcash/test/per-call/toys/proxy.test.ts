@@ -21,7 +21,7 @@ import {
  * The proxy is ordinary source: a state field holding the implementation's address and a `fallback` that
  * delegatecalls it with the call data it received. Its master is entered by a user's root frame; the fallback
  * records a `DELEGATE` call whose target is the address the proxy's own record holds, and the implementation's
- * master runs that frame on the proxy's records, with `msg.sender` and `address(this)` the caller's (spec 4a).
+ * master runs that frame on the proxy's own records, so its `msg.sender` and `address(this)` are the caller's.
  *
  * The tests below drive the shipped compile, the shipped deploy and the shipped composer on the real path, and pin
  * what the composer laid out for the delegate hop.

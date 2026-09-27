@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 871 tests (114 + 352 + 405), all passing. The two package totals are full-config runs of
+Total: 872 tests (114 + 352 + 406), all passing. The two package totals are full-config runs of
 `vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
 (`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
 table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,

@@ -33,11 +33,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 49 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 13 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 29 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 37 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 978 tests (114 + 376 + 488), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 376 is the four rows above it, and `solidcash` 488 is the nine rows above it.
+Total: 986 tests (114 + 376 + 496), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 376 is the four rows above it, and `solidcash` 496 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -133,7 +133,10 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   where the shipped path supports it and otherwise refused by name: a repeated call to one target, the sorted-entry
   insert/update/delete lifecycle, a read's result fed into a later call (settled when the value is one the running
   code holds; a root that takes its own argument and a later call mixing a compile-time argument are refused with
-  the rule named), and a fan-in through an allowance, still refused before composition.
+  the rule named), a fan-in through an allowance, settled (one node read and rewritten across two frames of one
+  contract, each frame closing against the value its own declaration carries), the identity expectations the EVM
+  sets for a self call, and the re-entry shape, pinned on the wall it names (a master that calls cannot carry a
+  verified-mapping write, so the vault's writing entries are refused before any run is built).
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name.

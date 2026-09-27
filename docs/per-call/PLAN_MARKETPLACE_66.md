@@ -537,8 +537,12 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   the commit that made the wire facts hold for any arity.
 - [ ] C8 spec R3 call forms:
   - internal calls and `delegatecall` to own code, inline;
-  - `this.g()` inline with `msg.sender = self`, replacing the `AstBuilder.ts:7323` behaviour under per-call;
-  - a runtime target equal to self as a `CALL`;
+  - `this.g()` inline with `msg.sender = self`, replacing the `AstBuilder.ts:7323` behaviour under per-call. Landed
+    (`0e70219d6`): the caller hands the callee its own contract address as the callee's sender and address, so
+    `msg.sender == address(this)` holds inside the self-called body and a caller-gated function reached that way is
+    refused; the base-cast spelling agrees. `msg.value` inside a value-less self call is unchanged.
+  - a runtime target equal to self as a `CALL`. Open: a call through an interface value whose run-time target equals
+    the contract is still compiled as an external call and refused by the site check;
   - `STATIC` for `view` and `pure`;
   - `try` must succeed (T22).
 - [ ] C9 W3: events at their listed outputs; `sends[]` for P2PKH value sends; a value send to a contract as a `CALL`.
@@ -738,15 +742,16 @@ risk. Take the slices in order, each with its own tests.
   - [ ] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
     must succeed. Unreachable: the block carries no branch or status field and the compiler makes every catch dead
     code, so no witness can select a branch (general `try`/`catch` coverage exists in `solidc/test/TryCatch.test.ts`).
-  - [ ] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
-    the EVM expectations recorded in the Log (2026-09-25 probe). Open, and the threat is live: C8 (`this.g()` inline
-    with `msg.sender = self`) is not landed, and the identity toy pins the divergence — `this.ownerOnly()` is
-    accepted for the owner where the EVM reverts, and an internal `this.transfer` debits the caller rather than the
-    contract (`toys/identity.test.ts`).
+  - [x] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
+    the EVM expectations recorded in the Log (2026-09-25 probe). Landed (`0e70219d6`): an inline call on `this`
+    runs with `msg.sender == address(this)`, so `this.onlySelf()` is accepted where the source asserts that, and
+    `this.ownerOnly()` called by the owner is refused, as the EVM refuses it; both are pinned by the identity toy
+    (`toys/identity.test.ts`).
   - [x] T24: a funder P2PKH placed before the root user's input is never taken as `msg.sender` or `tx.origin`.
   - [ ] T25: `this.g()` inline and `IA(t).g()` with `t == address(this)` on a second master give the same
-    `msg.sender`. Open for the same reason as T23: the rule is exactly what C8 lands, and both call forms do not give
-    `address(this)` today.
+    `msg.sender`. Partial: the inline form now carries `msg.sender = self` and agrees with the base-cast spelling
+    (`Base(this).g()`), but a call through an interface value whose runtime target equals the contract is still
+    compiled as an external call and refused by the site check, so the two forms are not yet shown to agree.
   - [ ] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
     target), and a master presenting its code lock instead of its address. Open, and there is no spend to mutate: the
     per-call delegate shapes are refused at compile, which `hostile/proxy-binding.test.ts` pins by name (a fallback or
@@ -784,7 +789,11 @@ risk. Take the slices in order, each with its own tests.
 - [ ] G4 Toys (neutral names), each settling with exact post-state, events and balances:
   - [ ] **Y1 same-entry appends.** A `Hub` calls `Log.append(id, item)` k = 3 times; `append` pushes onto `items[id]`
     and emits. (The `publishJobEvent` shape.)
-  - [ ] **Y2 re-entry.**
+  - [ ] **Y2 re-entry.** Built test-first and pinned (`b505d0e8d`, `toys/reentry.test.ts`), not settled: the shape's
+    first step cannot compile, because a master that makes an external call is refused a verified-mapping write (its
+    sorted-batch operands would have to be derived from the segment the write lands in, which a call has not fixed
+    yet), so `Vault.release` and `Vault.markClaimed` are published as refused entries and no run can be built. The
+    toy asserts the sibling entries are served, so the refusal is the conjunction rather than the shape.
     - `Vault.release(id)` writes `recs[id].state = 1`, calls `Claimer.claim(id)`, and emits the returned amounts.
     - `claim` reads `vault.get(id)` and requires `state == 1`.
     - `claim` calls `vault.markClaimed(id)`, then `vault.pay(to, amt)` twice.
@@ -798,9 +807,17 @@ risk. Take the slices in order, each with its own tests.
     on the caller's own digest, which is an emission bug rather than a composer one.)
   - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5).
   - [ ] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
-  - [ ] **Y6 fan-in.** `A.go()` calls `Token.approve(U, amt)`, then `U.pull(amt)`; `pull` calls
-    `Token.transferFrom(A, U, amt)`. (The `takeJob` shape.)
-  - [ ] **Y7 identity.** In one contract `Tok`:
+  - [x] **Y6 fan-in.** `A.go()` calls `Token.approve(U, amt)`, then `U.pull(amt)`; `pull` calls
+    `Token.transferFrom(A, U, amt)`. (The `takeJob` shape.) Ticked 2026-09-27 (`0e70219d6`): the toy settles the
+    read-modify-write of one allowance node across two frames of one contract - the approval frame closes against the
+    value its body computes, the pull frame reads that value and closes against its own, every frame and the
+    validator are accepted by the machine, and the node input and output commitments are read back through the
+    shipped sorted-list encoder, with a rewritten close refused (`toys/fan-in.test.ts`).
+  - [ ] **Y7 identity.** Partly settled as of `0e70219d6`: `this.onlySelf()` passes and `this.ownerOnly()` called by
+    the owner fails, both as the EVM has them; the contract-debited commitment is accepted when the body's
+    `this.transfer` is reached through a self call whose target is a compile-time value. Still open: the exact
+    `sweep(t)` spelling is refused because the self-called body writes a mapping (the same wall Y2 names), and the
+    `Escrow.refund()` half is unchanged. In one contract `Tok`:
     - `sweep(t)` calls `this.transfer(t, bal[address(this)])`, which must debit the contract, not the user;
     - `this.onlySelf()` passes, while `onlySelf()` called directly by a user fails;
     - `this.ownerOnly()` called by the owner fails, as in the EVM;
@@ -814,7 +831,12 @@ risk. Take the slices in order, each with its own tests.
   - [x] `AB` — the callee is placed after the caller and its validator, derives first, and the machine accepts.
   - [x] `ABBA` — the re-entered contract's entries make different numbers of calls; the end-to-end composer run is
     `frames/round-trip-composition.test.ts`.
-  - [ ] `ABCBA` — the three contracts are emitted, but no run places the call-back chain end to end.
+  - [ ] `ABCBA` — the three contracts are emitted, but no run places the call-back chain end to end. Attempted, and
+    the attempt is recorded rather than landed: the derivation stalls at the root's first call site
+    (`PER_CALL_DERIVATION_STALLED: master "first-1" of First.begin() filled no witness at site 0 (call 0)`), while
+    the two simpler variants settle — a plain three-contract chain (head to middle to tail, completion order tail
+    first), and a contract with two entries whose entry dispatches and calls another contract. So the missing piece
+    is in the chain that closes a cycle, not in chains, dispatch or re-entry on their own.
   - [x] `A.x` and `C.y`, independent: 0 validators — both masters and both users, accepted at every input.
   - [x] `AB` and `CD`, independent: 2 validators — served as of `bf3592099`: a plan names one validator or a list,
     each contract binds to the validator whose hosting block names it, each validator gets its own scoped
@@ -1609,3 +1631,6 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | 98e81d120 | per-call | a dynamic run's declared view | 114 + 376 + 488 | **A dynamic value's run is read and closed against the frame's own declaration.** The emitted body addressed the run from the input it runs on, which is right only for one master per entry: with several masters in a block, and with a run one frame writes and the next reads, the coordinate lands on the wrong input or on an output the frame did not compute, so the second frame stalled. The read now takes the segment's declared `viewIn` and the close compares its `viewOut`, through the same declared-view reader the other records use, and the head decides which bodies address a run that way from the state accesses their own source carries, since lowering has already threaded them through locals by the time a master is assessed. Every branch is gated on the convention, so the direct path keeps its byte-identical emission and its own output-count and old-chunk-consumption checks, which settlement carries for a per-call frame. The toy's two-append and three-append shapes settle end to end (each frame reads what the frame before it wrote, all contract inputs and the validator accepted, the final chunks and header read back through the shipped encoders); a run the transaction creates from nothing is still refused, and the case pins why: a validator's transcript names the inputs the transaction spends, so a record with no input cannot yet be declared to it. |
 | 2026-09-27 | bf3592099 | per-call | more than one validator in a plan | 114 + 376 + 488 | **A plan may name one validator or a list, and each validator keeps its own scoped transcript.** Assembly bound every validator-bearing block to the plan's single validator, so two independently covered pairs could not be laid out in one transaction even though layout already places several validator inputs. Now each contract binds to the validator whose hosting block names it (plus that validator's `covers`), each validator's transcript lists only the masters whose reference points at it, a block naming an undeclared validator is refused by name, and a contract two validators claim is still refused. The spec 5.4 independent pairs settle with both validators accepted, which ticks that G5 shape; a single-validator plan assembles exactly as before. Shapes 12 to 13. |
 | 2026-09-27 | (no code) | per-call | process: three ticks withdrawn, and the I2b run rule | n/a | Three G3 rows this session had ticked are withdrawn. **T23** and **T25**: C8 (`this.g()` inline running with `msg.sender = self`) is not landed, and the identity toy shows the threat is live (`this.ownerOnly()` accepted for the owner where the EVM reverts; an internal `this.transfer` debiting the caller rather than the contract), so both now state the rule and the divergence. **T35** is withdrawn for the same reason T26/T27 were left open: the compiler refuses a value send, so no compiled master carries one and there is no spend to mutate. Recorded as a lapse, not justified: the marketplace project compile and the fixture title were run before I2b, which rule 4.6 forbids; the measurements they produced are the rows above them, and no further project compile, fixture or title run happens until I2b is ticked. The stray `tmp-disasm.mjs` probe is gone (`git status --untracked-files=all` is empty). Next in order: C8, then the fan-in and re-entry toys, then Y1 as specified, then the sorted-entry toy and the proxy, then G5's call-back chain and the MS replicas. |
+
+| 2026-09-27 | 0e70219d6 | per-call | a self call's identity, and a mapping node read from the declaration | 114 + 376 + 496 | **Two rules, one principle: a frame answers from what its witness declares.** An inline call on `this` now runs with `msg.sender == address(this)`, the EVM's rule: the caller hands the callee its own contract address as the callee's sender and address through an operand the subroutine declares (a transitive closure over bodies that read `address(this)` or call themselves decides which bodies are carriers), so a source asserting `msg.sender == address(this)` inside a self-called body holds, a caller-gated function reached that way is refused exactly as the EVM refuses it, and the base-cast spelling agrees with the direct one; `msg.value` inside a value-less self call is unchanged, and a call through an interface value whose run-time target is the contract is still a refused external call. A body reading a sorted mapping now reads the node through the record its own segment declares and closes the output side against the declared view, and the frame's record base is addressed by a stable bottom ordinal because a depth measured from the top would have to know the size of each call site's working area; a contract whose state is only a mapping keeps record indices in its frame, which is what makes the declaration reachable. Tests: identity 13 -> 14 with the expectations flipped to the EVM's, the fan-in toy's pinned stall replaced by a settle (approval writes 40, the pull reads that 40 and writes 0, every frame and the validator accepted, commitments read back through the shipped sorted-list encoder) plus an honest control, direct-path byte identity 4/4 unchanged. |
+| 2026-09-27 | b505d0e8d | per-call | the re-entry toy, and the wall it names | 114 + 376 + 496 | **The design's vault-and-claimer shape is built test-first and pinned, not settled.** `Vault.release` writes a keyed record and calls `Claimer.claim`, which reads the record back, calls `Vault.markClaimed`, then `Vault.pay` twice, each payment calling the token: every address comes from the seeded category, every argument from the compiled ABI, and the publication of refusals is read off the artifacts. The first step cannot compile, and the refusal is the item's real content: a master that makes an external call is refused a verified-mapping write, because the write's sorted-batch operands are derived from the segment the entry runs and a call has not yet fixed which segment the write lands in (`support.ts:778`), so both of the vault's writing entries are published as refused, the host refuses them by name, and no run can be built. The control that makes this a conjunction rather than a blanket refusal is asserted beside it: the token's transfer, the vault's pay and read, and the claimer's four published call sites are all served. **A crash is recorded, not pinned:** reading the same records as a dynamic array rather than a mapping makes the compiler throw `StackVariableUnavailableError: Expected variable '__internal__externalReturnOutputIdx' does not exist on the stack` whenever the body also makes a value-returning call. |

@@ -293,19 +293,20 @@ describe('a per-call master whose entry writes a verified mapping', () => {
   });
 
   it('refuses an entry whose mapping writes the derivation does not cover', () => {
-    // Two logical targets make the segment's record count and the record the write proves against facts the
-    // frame does not fix, so the shape is left refused rather than derived approximately.
-    const twoWrites = 'pragma solidcash ^0.13.0;'
-      + ' contract TwoWrites {'
+    // A target whose key is a value the frame does not hold as a bare parameter (here `msg.sender`) has no slot the
+    // derivation can compute in script, so the shape is left refused rather than derived approximately. The
+    // two-bare-key form is derived instead; `batch-write.test.ts` runs it through the machine.
+    const computedKey = 'pragma solidcash ^0.13.0;'
+      + ' contract ComputedKey {'
       + '   mapping(address => uint) balances;'
-      + '   function set(address a, address b, uint amount) {'
-      + '     balances[a] = amount;'
+      + '   function set(address b, uint amount) {'
+      + '     balances[msg.sender] = amount;'
       + '     balances[b] = amount;'
       + '   }'
       + ' }';
-    expect(() => compileString(twoWrites, { composition: 'per-call' }))
+    expect(() => compileString(computedKey, { composition: 'per-call' }))
       .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
-    // The one-target shape compiles, so the refusal is the second target and nothing else.
+    // The one-target shape compiles, so the refusal is the computed key and nothing else.
     expect(artifact.composition?.convention).toBe('per-call');
   });
 });

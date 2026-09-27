@@ -88,6 +88,14 @@ export function stripFrameParameters(contract: ContractNode): void {
       !(derived?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
       && !isExternalCallParameter(parameter.name));
+    // A multi-target batch is classified as a dense linear row batch for the direct convention. The per-call master
+    // derives the operands itself and settles the batch through the general per-target arm, which reads no rank or
+    // row, so a derivable batch is reclassified here before the body is emitted.
+    if (derived !== undefined) {
+      for (const batch of fn.sortedBatchInfo ?? []) {
+        if (batch.slotIndices.length > 1 && batch.linear === true) batch.linear = undefined;
+      }
+    }
   }
 }
 
@@ -102,35 +110,67 @@ function isExternalCallParameter(name: string): boolean {
     || /^__internal__externalCallSelector\d*$/.test(name);
 }
 
+/** The batch a body's own frame can settle, and the operands the master derives for it. */
+interface DerivableTargetBatch {
+  /** The batch's target slots, in the order the writes were planned. */
+  readonly slots: readonly number[];
+  /** The collection the batch writes, whose linear row witness the reclassified verification drops. */
+  readonly collection: string;
+  /** Whether the batch was classified as a dense linear row batch, whose rank/row operands the master does not take. */
+  readonly wasLinear: boolean;
+}
+
 /**
- * The sorted-batch operands a per-call master derives from its own frame, or undefined for a shape it cannot.
+ * The batch a body can settle from its own frame, or undefined for a shape the derivation does not cover.
  *
- * The derivation reads the master's witness block back and leaves the five operands the sorted-batch verification
- * consumes. It covers one logical target whose record is the only record the entry's segment declares: the write
- * is the entry's whole collection footprint (`entryAccesses` holds exactly that slot), it is unconditional and
- * in place (`operations` is a lone `write`), its key is one bare parameter, and the batch is the non-linear
- * single-target form. Anything wider would make the segment's record count, or the record the write proves
- * against, a fact the frame does not fix, so it is left refused rather than derived approximately.
+ * One collection is written, every one of its entry accesses is the same lone unconditional write to a distinct
+ * target, each target's key is one bare parameter the body holds, and no target aliases another at run time. Under
+ * those conditions the segment declares one record group per target in write order, so the master can read the
+ * group back and derive each target's operands.
  */
-export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<string> | undefined {
+function derivableTargetBatch(entry: FunctionDefinitionNode): DerivableTargetBatch | undefined {
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length !== 1) return undefined;
   const batch = batches[0]!;
-  if (batch.linear === true || batch.slotIndices.length !== 1) return undefined;
-  const slot = batch.slotIndices[0]!;
   const accesses = entry.entryAccesses ?? [];
-  if (accesses.length !== 1) return undefined;
-  const access = accesses[0]!;
-  if (access.slotIndex !== slot) return undefined;
-  if (access.operations.length !== 1 || access.operations[0] !== 'write') return undefined;
-  if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
-    || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
-  if (access.keyParams.length !== 1) return undefined;
-  const source = access.keySources?.[0];
-  if (source === undefined || source.kind !== 'param' || source.paramName === undefined) return undefined;
-  if (!entry.parameters.some((parameter) => parameter.name === source.paramName)) return undefined;
+  if (accesses.length !== batch.slotIndices.length) return undefined;
+  for (const slot of batch.slotIndices) {
+    const access = accesses.find((candidate) => candidate.slotIndex === slot);
+    if (access === undefined) return undefined;
+    if (access.operations.length !== 1 || access.operations[0] !== 'write') return undefined;
+    if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
+      || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
+    if (access.keyParams.length !== 1) return undefined;
+    const source = access.keySources?.[0];
+    if (source === undefined || source.kind !== 'param' || source.paramName === undefined) return undefined;
+    if (!entry.parameters.some((parameter) => parameter.name === source.paramName)) return undefined;
+  }
+  return { slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true };
+}
+
+/**
+ * The sorted-batch operands a per-call master derives from its own frame, or undefined for a shape it cannot.
+ *
+ * The derivation reads the master's witness block back and leaves, per target, the four operands the sorted-batch
+ * verification consumes and, once, the trailing count. It covers one collection whose every entry is one
+ * unconditional write to a distinct target with a bare-parameter key, in place or spliced in: the target's record
+ * group is then the group the segment declares for it, so the frame fixes which transition ran. A dense linear
+ * batch's own rank and row operands are not part of that derivation, so the master drops them and settles the
+ * batch through the general arm instead. Anything wider is left refused rather than derived approximately.
+ */
+export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<string> | undefined {
+  const batch = derivableTargetBatch(entry);
+  if (batch === undefined) return undefined;
   const names = new Set<string>();
-  for (const kind of BATCH_DERIVATION_SLOT_ORDER) names.add(batchDerivationSlotName(kind, slot));
+  for (const slot of batch.slots) {
+    for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+      if (kind === 'Trailing') continue;
+      names.add(batchDerivationSlotName(kind, slot));
+    }
+    if (batch.wasLinear) names.add(`__internal__vmapBatchRank_${slot}`);
+  }
+  if (batch.wasLinear) names.add(`__internal__vmapBatchRows_${batch.collection}`);
+  names.add(batchDerivationSlotName('Trailing', 0));
   return names;
 }
 
@@ -138,19 +178,52 @@ export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<s
  * Why a body's sorted-batch writes cannot be settled from its own frame, or undefined when they can.
  *
  * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
- * from the records its own frame declares, which it can do for one logical target written in place: the target's
- * record is then the only record the entry's segment declares, so the segment's count fixes which transition ran.
- * Anything wider — several targets in one batch, a batched or aliased write, a key the body computes rather than
- * holds — makes the record a segment declares, or the transition it proves, a fact the frame does not fix.
+ * from the records its own frame declares, which it can do for one collection whose every entry is one
+ * unconditional write to a distinct target with a bare-parameter key. Anything wider — several collections, a
+ * batched or aliased write, a key the body computes rather than holds — makes the record a segment declares, or the
+ * transition it proves, a fact the frame does not fix. Each refusal names the access and the fact that stops it.
  */
 function unsupportedBatchWriteShape(entry: FunctionDefinitionNode): string | undefined {
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length === 0) return undefined;
   if (derivableBatchWitnessNames(entry) !== undefined) return undefined;
-  if (batches.length !== 1 || batches[0]!.slotIndices.length !== 1) {
-    return `the body writes ${batches.reduce((total, batch) => total + batch.slotIndices.length, 0)} mapping `
-      + 'targets, and a master derives the sorted-batch operands from its own frame only for one target written '
-      + 'in place';
+  if (batches.length !== 1) {
+    return `the body writes ${batches.length} mapping collections in one execution, and a master derives the `
+      + 'sorted-batch operands one collection at a time';
+  }
+  const batch = batches[0]!;
+  const accesses = entry.entryAccesses ?? [];
+  for (const slot of batch.slotIndices) {
+    const access = accesses.find((candidate) => candidate.slotIndex === slot);
+    if (access === undefined) return `the body writes a mapping at slot ${slot} with no entry access to read`;
+    if (access.operations.length !== 1 || access.operations[0] !== 'write') {
+      return `the body writes a mapping at slot ${slot} as a ${access.operations.join('/')}, and a master derives `
+        + 'the sorted-batch operands only for one unconditional write per target';
+    }
+    if (access.inLoop === true) {
+      return `the body writes a mapping at slot ${slot} in a loop, so the records it declares are not a fixed set`;
+    }
+    if (access.aliasCondDeleteSlot !== undefined || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) {
+      return `the body writes a mapping at slot ${slot} that can alias another target at run time, so its record `
+        + 'is not fixed';
+    }
+    if (access.keyParams.length !== 1) {
+      return `the body writes a mapping at slot ${slot} keyed by ${access.keyParams.length} values, and a master `
+        + 'derives a target slot only for a single-key write';
+    }
+    const source = access.keySources?.[0];
+    const bare = source !== undefined && source.kind === 'param' && source.paramName !== undefined
+      && entry.parameters.some((parameter) => parameter.name === source.paramName);
+    if (!bare) {
+      const described = source === undefined ? 'a value the frame does not carry'
+        : `the ${source.kind} value '${source.canonical}'`;
+      return `the body writes a mapping at slot ${slot} whose key is ${described}, and a master derives a target `
+        + 'slot only from a bare parameter the body holds';
+    }
+  }
+  if (accesses.length !== batch.slotIndices.length) {
+    return `the body touches ${accesses.length} mapping entries and writes ${batch.slotIndices.length} of them, `
+      + 'and a master derives the operands only when every entry is one of the batch targets';
   }
   return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '
     + 'segment would not fix which transition ran';

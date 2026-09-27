@@ -280,7 +280,8 @@ import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import { derivePerCallTailShape, derivableBatchWitnessNames } from '../per-call/master/support.js';
 import {
-  BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchWitnessDerivationScript,
+  BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
+  buildBatchWitnessDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
 import type { MasterCallSite } from '../per-call/master/frame-tail.js';
 
@@ -3057,18 +3058,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Leaves the sorted-batch operands the body's own verification reads, derived from the master's witness block.
    *
-   * The direct convention receives these five per logical target from its SDK; a per-call master has no such
-   * argument list, but its frame declares the records the write touches. Each target's operands are derived from
-   * the target's runtime key and the block, registered as tracked slots the existing verification then consumes
+   * The direct convention receives these per logical target from its SDK; a per-call master has no such argument
+   * list, but its frame declares the records the write touches. Each target's operands are derived from the
+   * target's runtime key and the block, registered as tracked slots the existing verification then consumes
    * unchanged. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
    * witnesses, because the key is a function parameter that only the running code holds.
    */
   private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
     if (batches.length === 0) return;
-    // The admission rule admits a contract only when every one of its bodies writes the derivable single-target
-    // shape. An internal body the advisory check does not cover would otherwise be compiled with a derivation its
-    // record declarations do not fit, so refuse by name instead of emitting one that does not describe it.
+    // The admission rule admits a contract only when every one of its bodies writes the derivable shape. An
+    // internal body the advisory check does not cover would otherwise be compiled with a derivation its record
+    // declarations do not fit, so refuse by name instead of emitting one that does not describe it.
     if (derivableBatchWitnessNames(node) === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
@@ -3078,7 +3079,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     for (const batch of batches) {
-      for (const slot of batch.slotIndices) {
+      const slots = batch.slotIndices;
+      // Every target's key is one bare parameter, so all of their depths are read before the first value is pushed.
+      const keyDepths = slots.map((slot) => {
         const keyParam = (node.entryAccesses ?? [])
           .find((access) => access.slotIndex === slot)?.keySources?.[0]?.paramName;
         const keyDepth = keyParam === undefined ? -1 : this.getStackIndex(keyParam, true);
@@ -3090,15 +3093,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             { function: node.name, slot },
           );
         }
-        this.emit(
-          [...buildBatchWitnessDerivationScript({ keyDepth, callCount: this.perCallCallCount })],
-          loc,
-        );
-        // Deepest first, so the tracked names line up with the values the script left above the frame.
+        return keyDepth;
+      });
+      const script = slots.length === 1
+        ? buildBatchWitnessDerivationScript({ keyDepth: keyDepths[0]!, callCount: this.perCallCallCount })
+        : buildBatchTargetsDerivationScript({ keyDepths, callCount: this.perCallCallCount });
+      this.emit([...script], loc);
+      // Deepest first, so the tracked names line up with the values the script left above the frame.
+      for (const slot of slots) {
         for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+          if (kind === 'Trailing') continue;
           this.pushToStack(batchDerivationSlotName(kind, slot));
         }
       }
+      this.pushToStack(batchDerivationSlotName('Trailing', 0));
     }
   }
 

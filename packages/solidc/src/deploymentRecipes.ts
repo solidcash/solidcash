@@ -5,7 +5,8 @@ import {
   computeCollectionSignature, EnumType, MappingType, PrimitiveType, StructDefinitionInfo, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AbiEncodePackedNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode,
+  AbiEncodePackedNode, ArrayAccessNode, ArrayNode, AssemblyStatementNode, AssignNode, BinaryOpNode, BlockNode,
+  BoolLiteralNode,
   BranchNode, BreakNode,
   BytesConcatNode, CastNode,
   CollectionIterationNode,
@@ -23,6 +24,12 @@ import {
   StringConcatNode,
   DeleteStateNode,
   NullaryOpNode,
+  FieldAccessNode,
+  TupleIndexOpNode,
+  ArrayAssignNode,
+  ArrayDeleteNode,
+  ArrayPushNode,
+  ArrayPopNode,
 } from './ast/AST.js';
 import { GlobalFunction } from './ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from './ast/Operator.js';
@@ -96,6 +103,40 @@ const materializableGenesisLeafType = /^(?:bool|bigint|u?int(?:8|16|24|32|40|48|
 
 const physicalRecipeType = (type: { toString(): string }): string =>
   type instanceof EnumType ? 'bigint' : abiTypeString(type as never);
+
+type ProjectionPath = readonly (string | number)[];
+// Tokens carry declaration identity only. Values remain in the source-ordered environment, including branch
+// clones/joins; no analysis state is shared between compilations or leaked into the public recipe language.
+const projectionTokens = new WeakMap<object, Map<string, object>>();
+const projectionToken = (definition: object, path: ProjectionPath): object => {
+  let tokens = projectionTokens.get(definition);
+  if (!tokens) { tokens = new Map(); projectionTokens.set(definition, tokens); }
+  const name = JSON.stringify(path);
+  let token = tokens.get(name);
+  if (!token) { token = {}; tokens.set(name, token); }
+  return token;
+};
+
+const scalarProjections = (type: Type): { path: ProjectionPath; type: Type }[] => {
+  const leaves: { path: ProjectionPath; type: Type }[] = [];
+  let budget = 256;
+  const visit = (current: Type, path: ProjectionPath, parents: ReadonlySet<Type>): void => {
+    budget -= 1;
+    if (budget < 0 || parents.has(current)) return;
+    if (current instanceof StructType) {
+      const nested = new Set(parents).add(current);
+      for (const field of current.fields) visit(field.type, [...path, field.name], nested);
+    } else if (current instanceof ArrayType) {
+      if (current.bound === undefined || current.bound > budget) return;
+      const nested = new Set(parents).add(current);
+      for (let index = 0; index < current.bound; index += 1) visit(current.elementType, [...path, index], nested);
+    } else if (materializableGenesisLeafType.test(physicalRecipeType(current))) {
+      leaves.push({ path, type: current });
+    }
+  };
+  visit(type, [], new Set());
+  return budget < 0 ? [] : leaves;
+};
 
 const cloneEquivalentDefinition = (left: object, right: object): boolean => {
   if (left === right) return true;
@@ -258,6 +299,53 @@ export function childDeploymentValueRecipe(
   helperFunctions: readonly FunctionDefinitionNode[] = [],
   helperStack: ReadonlySet<FunctionDefinitionNode> = new Set(),
 ): ChildDeploymentValueRecipe | undefined {
+  if (expression instanceof FieldAccessNode || expression instanceof ArrayAccessNode
+    || expression instanceof TupleIndexOpNode) {
+    const resolve = (value: ExpressionNode): ChildDeploymentValueRecipe | undefined => childDeploymentValueRecipe(
+      value, handlerInputs, true, handlerInputTypes, aliases, aliasDefinitions,
+      undefined, structStack, helperFunctions, helperStack,
+    );
+    const project = (
+      value: ExpressionNode, path: ProjectionPath, type: Type | undefined = value.type,
+    ): ChildDeploymentValueRecipe | undefined => {
+      if (value instanceof FieldAccessNode) return project(
+        value.expression, [value.name, ...path], value.structType ?? value.expression.type,
+      );
+      if (value instanceof ArrayAccessNode) {
+        if (!(value.index instanceof IntLiteralNode) || value.index.value < 0n
+          || value.index.value > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
+        return project(value.array, [Number(value.index.value), ...path]);
+      }
+      if (value instanceof TupleIndexOpNode) return Number.isSafeInteger(value.index) && value.index >= 0
+        ? project(value.tuple, [value.index, ...path]) : undefined;
+      if (path.length === 0) return resolve(value);
+      if (value instanceof IdentifierNode) {
+        const linked = value.definition?.definition;
+        const named = aliasDefinitions?.get(value.name);
+        const definition = named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : linked;
+        return definition ? aliases?.get(projectionToken(definition, path)) : undefined;
+      }
+      const [head, ...tail] = path;
+      if (value instanceof FunctionCallNode && type instanceof StructType
+        && value.identifier.name === type.name && !value.resolvedFunction) {
+        const index = type.fields.findIndex((field) => field.name === head);
+        return index >= 0 && value.parameters[index]
+          ? project(value.parameters[index], tail, type.fields[index].type) : undefined;
+      }
+      if (value instanceof ArrayNode && typeof head === 'number') {
+        return value.elements[head] ? project(value.elements[head], tail) : undefined;
+      }
+      if (value instanceof TernaryOpNode) {
+        const condition = resolve(value.condition);
+        const ifTrue = project(value.ifTrue, path);
+        const ifFalse = project(value.ifFalse, path);
+        return condition?.resultType === 'bool' && ifTrue?.resultType && ifTrue.resultType === ifFalse?.resultType
+          ? { kind: 'conditional', resultType: ifTrue.resultType, condition, ifTrue, ifFalse } : undefined;
+      }
+      return undefined;
+    };
+    return project(expression, []);
+  }
   if (expression instanceof IdentifierNode) {
     const linkedDefinition = expression.definition?.definition;
     const namedDefinition = aliasDefinitions?.get(expression.name);
@@ -711,6 +799,101 @@ export function analyzeFixedBchEffectRecipes(
   const cloneEnvironment = (environment: Environment): Environment => ({
     aliases: new Map(environment.aliases), definitions: new Map(environment.definitions),
   });
+  const escapedAggregates = new Set<object>();
+  const invalidateDefinition = (definition: object, environment: Environment): void => {
+    environment.aliases.delete(definition);
+    for (const token of projectionTokens.get(definition)?.values() ?? []) environment.aliases.delete(token);
+  };
+  const aggregateReference = (
+    expression: ExpressionNode, environment: Environment,
+  ): { definition: object; type: Type } | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const named = environment.definitions.get(expression.name);
+      const linked = expression.definition?.definition;
+      const definition = named && (!linked || cloneEquivalentDefinition(linked, named)) ? named : linked;
+      const type = (definition as { type?: Type } | undefined)?.type;
+      return definition && type ? { definition, type } : undefined;
+    }
+    if (expression instanceof FieldAccessNode) {
+      const parent = aggregateReference(expression.expression, environment);
+      const type = parent?.type instanceof StructType
+        ? parent.type.fields.find((field) => field.name === expression.name)?.type : undefined;
+      return parent && type ? { definition: parent.definition, type } : undefined;
+    }
+    if (expression instanceof ArrayAccessNode || expression instanceof TupleIndexOpNode) {
+      const parent = aggregateReference(
+        expression instanceof ArrayAccessNode ? expression.array : expression.tuple, environment,
+      );
+      return parent?.type instanceof ArrayType
+        ? { definition: parent.definition, type: parent.type.elementType } : undefined;
+    }
+    return undefined;
+  };
+  const bindProjections = (
+    definition: object, type: Type, expression: ExpressionNode | undefined, environment: Environment,
+  ): void => {
+    if (!(type instanceof StructType) && !(type instanceof ArrayType)) return;
+    // Aggregate-to-aggregate memory assignment may alias. Until its alias group is modeled, do not publish a
+    // snapshot for either side which could survive a mutation through the other reference.
+    const reference = expression && aggregateReference(expression, environment);
+    if (reference) {
+      escapedAggregates.add(reference.definition);
+      escapedAggregates.add(definition);
+      invalidateDefinition(reference.definition, environment);
+      invalidateDefinition(definition, environment);
+      return;
+    }
+    const invalidateEmbeddedAliases = (value: ExpressionNode, expected: Type): void => {
+      if (!(expected instanceof StructType) && !(expected instanceof ArrayType)) return;
+      const embedded = aggregateReference(value, environment);
+      if (embedded) {
+        // A lowered field update rebuilds its own aggregate. Other references embedded in a constructor can
+        // outlive this statement and alias future writes; fence both owners, including later reassignments.
+        if (embedded.definition !== definition) {
+          escapedAggregates.add(embedded.definition);
+          escapedAggregates.add(definition);
+          invalidateDefinition(embedded.definition, environment);
+        }
+      } else if (value instanceof FunctionCallNode && expected instanceof StructType
+        && value.identifier.name === expected.name && !value.resolvedFunction) {
+        value.parameters.forEach((argument, index) => {
+          if (expected.fields[index]) invalidateEmbeddedAliases(argument, expected.fields[index].type);
+        });
+      } else if (value instanceof ArrayNode && expected instanceof ArrayType) {
+        value.elements.forEach((element) => invalidateEmbeddedAliases(element, expected.elementType));
+      }
+    };
+    if (expression) invalidateEmbeddedAliases(expression, type);
+    if (escapedAggregates.has(definition)) {
+      invalidateDefinition(definition, environment);
+      return;
+    }
+    const bindings = scalarProjections(type).map((leaf) => {
+      let selected = expression;
+      let selectedType: Type = type;
+      for (const segment of leaf.path) {
+        if (!selected) break;
+        if (typeof segment === 'string' && selectedType instanceof StructType) {
+          const field = new FieldAccessNode(selected, segment);
+          field.structType = selectedType;
+          selectedType = selectedType.fields.find((candidate) => candidate.name === segment)!.type;
+          selected = field;
+        } else if (typeof segment === 'number' && selectedType instanceof ArrayType) {
+          selected = new ArrayAccessNode(selected, new IntLiteralNode(BigInt(segment)));
+          selectedType = selectedType.elementType;
+        } else return [projectionToken(definition, leaf.path), undefined] as const;
+        selected.type = selectedType;
+      }
+      if (selected) selected.type = leaf.type;
+      return [projectionToken(definition, leaf.path), selected && bindRecipe(
+        selected, physicalRecipeType(leaf.type), handlerInputs, handlerInputTypes,
+        environment.aliases, environment.definitions, helperFunctions, leaf.type,
+      )] as const;
+    });
+    // Every RHS sees the old environment, even for a compiler-lowered reconstruction of this same struct.
+    for (const token of projectionTokens.get(definition)?.values() ?? []) environment.aliases.delete(token);
+    for (const [token, bound] of bindings) if (bound) environment.aliases.set(token, bound);
+  };
   const recipeUsesTransactionSignature = (
     value: ChildDeploymentValueRecipe, seen = new WeakSet<object>(),
   ): boolean => {
@@ -787,6 +970,9 @@ export function analyzeFixedBchEffectRecipes(
     // Only declarations visible before the branch can escape its lexical join. A missing recipe in either arm
     // remains unknown; differing pure values use the typed conditional recipe shared with the SDK.
     const definitions = new Set<object>(environment.definitions.values());
+    for (const definition of [...definitions]) {
+      for (const token of projectionTokens.get(definition)?.values() ?? []) definitions.add(token);
+    }
     // State declarations are contract-scoped, so a value assigned independently in every reachable arm may
     // join even when no replayable pre-branch value existed. Locals declared inside an arm remain excluded.
     for (const definition of whenTrue.aliases.keys()) if (stateKeys.has(definition)) definitions.add(definition);
@@ -867,19 +1053,23 @@ export function analyzeFixedBchEffectRecipes(
     seen.add(value);
     if (value instanceof AssignNode) {
       const definition = resolvedDefinition(value.identifier, environment);
-      if (definition) environment.aliases.delete(definition);
+      if (definition) invalidateDefinition(definition, environment);
     } else if (value instanceof StateAssignNode) {
       environment.aliases.delete(stateDefinition(value.name));
     } else if (value instanceof DeleteLocalNode) {
       const definition = resolvedDefinition(value.identifier, environment);
-      if (definition) environment.aliases.delete(definition);
+      if (definition) invalidateDefinition(definition, environment);
     } else if (value instanceof DeleteStateNode) {
       environment.aliases.delete(stateDefinition(value.name));
+    } else if (value instanceof ArrayAssignNode || value instanceof ArrayDeleteNode
+      || value instanceof ArrayPushNode || value instanceof ArrayPopNode) {
+      const definition = environment.definitions.get(value.name);
+      if (definition) invalidateDefinition(definition, environment);
     } else if (value instanceof TupleAssignmentNode) {
       for (const element of value.elements) {
         if (element.skip || !element.name) continue;
         const definition = environment.definitions.get(element.name);
-        if (definition) environment.aliases.delete(definition);
+        if (definition) invalidateDefinition(definition, environment);
       }
     }
     for (const [key, child] of Object.entries(value)) {
@@ -889,6 +1079,7 @@ export function analyzeFixedBchEffectRecipes(
   };
   const invalidateStatefulCalls = (
     value: unknown, environment: Environment, seen = new WeakSet<object>(),
+    expectedType?: Type,
   ): void => {
     if (Array.isArray(value)) {
       value.forEach((item) => invalidateStatefulCalls(item, environment, seen));
@@ -896,6 +1087,24 @@ export function analyzeFixedBchEffectRecipes(
     }
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
+    const constructorType = value instanceof FunctionCallNode
+      ? value.type instanceof StructType ? value.type : expectedType : undefined;
+    if (value instanceof FunctionCallNode && constructorType instanceof StructType
+      && value.identifier.name === constructorType.name && !value.resolvedFunction) {
+      value.parameters.forEach((argument, index) => invalidateStatefulCalls(
+        argument, environment, seen, constructorType.fields[index]?.type,
+      ));
+      return;
+    }
+    if (value instanceof FunctionCallNode) {
+      for (const argument of value.parameters) {
+        const reference = aggregateReference(argument, environment);
+        if (reference && (reference.type instanceof StructType || reference.type instanceof ArrayType)) {
+          escapedAggregates.add(reference.definition);
+          invalidateDefinition(reference.definition, environment);
+        }
+      }
+    }
     if (value instanceof FunctionCallNode && value.resolvedFunction
       && containsStatefulOperation(value.resolvedFunction.body?.statements)) {
       // Scalar-journal helpers deliberately remain behind OP_INVOKE. Their post-call state is authenticated by
@@ -967,7 +1176,9 @@ export function analyzeFixedBchEffectRecipes(
     let continuationSupported = activationSupported;
     for (const statement of block.statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
-        if (statement.expression) invalidateStatefulCalls(statement.expression, environment);
+        if (statement.expression) invalidateStatefulCalls(
+          statement.expression, environment, new WeakSet(), statement.type,
+        );
         if (statement.expression) snapshotEffects(
           statement.expression, environment, continuationActivation, continuationSupported, unsafe,
         );
@@ -977,20 +1188,24 @@ export function analyzeFixedBchEffectRecipes(
             statement.expression, abiTypeString(statement.type), handlerInputs, handlerInputTypes,
             environment.aliases, environment.definitions, helperFunctions, statement.type,
           ) : undefined;
+        bindProjections(key, statement.type, !unsafe ? statement.expression : undefined, environment);
         if (bound) environment.aliases.set(key, bound); else environment.aliases.delete(key);
         environment.definitions.set(statement.name, key);
         continue;
       }
       if (statement instanceof AssignNode) {
-        invalidateStatefulCalls(statement.expression, environment);
-        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const key = resolvedDefinition(statement.identifier, environment);
         const targetType = key && (key as { type?: { toString(): string } }).type;
+        invalidateStatefulCalls(statement.expression, environment, new WeakSet(), targetType as Type | undefined);
+        snapshotEffects(statement.expression, environment, continuationActivation, continuationSupported, unsafe);
         const bound = !unsafe && key && targetType
           ? bindRecipe(
             statement.expression, abiTypeString(targetType as never), handlerInputs, handlerInputTypes,
             environment.aliases, environment.definitions, helperFunctions, targetType as Type,
           ) : undefined;
+        if (key && targetType) bindProjections(
+          key, targetType as Type, !unsafe ? statement.expression : undefined, environment,
+        );
         if (key && bound) environment.aliases.set(key, bound);
         else if (key) environment.aliases.delete(key);
         continue;

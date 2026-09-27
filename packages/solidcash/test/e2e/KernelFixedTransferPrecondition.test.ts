@@ -11,15 +11,19 @@ import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 describe('kernel fixed transfer preconditions', () => {
-  it('executes the transfer after a valid require and rejects false preconditions or changed payments', async () => {
+  it.each([false, true])('authenticates preconditions and payments with struct capture=%s', async (capture) => {
     const provider = createMessageBusCapstoneTestProvider();
     const artifacts = compileStringMulti(`interface IPayer {
         function pay(address recipient, int amount, int requiredLocktime, bool enabled);
       }
       contract Payer() {
+        struct Payment { address recipient; int amount; int marker; }
         function pay(address recipient, int amount, int requiredLocktime, bool enabled) public {
           require(tx.locktime >= requiredLocktime);
-          if (enabled) this.transfer(recipient, amount);
+          ${capture ? `Payment memory payment = Payment(recipient, amount, 0);
+            payment.marker = tx.locktime;
+            if (enabled) this.transfer(payment.recipient, payment.amount);`
+    : 'if (enabled) this.transfer(recipient, amount);'}
           require(true);
         }
       }

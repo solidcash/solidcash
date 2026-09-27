@@ -1187,6 +1187,21 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | c44994de8 | per-call | the multi-record settlement | 114 + 277 + 343 | A segment can now settle every record it declares, which is what a mapping write needs: an insert declares the predecessor it relinks and the node it creates. The chain's identity is the record's index, so the walk sweeps one index at a time over the block carrying three values and no table, and the pass count is a run-time value the body need not be unrolled for. Every rule the single-record walk established is preserved (the spent commitment starts the chain, each declaration carries on, the last is what the transaction writes, the value floor, the census with its validator exception), and a chain may now also begin at an output — a record created by one declaration and read back by a later one chains through the same registers. The tests drive the emitted walk over real transactions: two records chained across two segments, two in one segment each chaining independently, a kept record beside a created one, three declarations of one record, a deletion beside a chain that carries on, and each control refused. Two bugs found in the way are worth recording: `OP_UNTIL` exits when its condition is *true*, so all three loops were initially inverted, and `OP_BEGIN` is a do-while, so a segment declaring no record ran its declaration body once. |
 ## Deviations
 
+- **Two of the program's sixty reasons are unreachable in the model's order, and no hostile case can produce them.**
+  Every name in `VALIDATOR_PROGRAM_REASONS` is enforced by the shipped program, and the harness's criterion asks each
+  to have a hostile case. Counting the names against mentions in the focused tests leaves two without one -
+  `V6_MASTER_VISITED_TWICE` and `V9_NO_ROOT` - and probing the reachable tampers says why. A discriminator, measured:
+  the reference composition with the transcript's root list emptied (`encodeTranscript({...transcript, roots: []})`)
+  is decided `V4_ROOT_MISSING`, not `V9_NO_ROOT`, because V4 asks the transaction's own user inputs first and they
+  still carry their frames; `V9_NO_ROOT` needs a composition with no user-entered master at all, which the plan layer
+  does not lay out. `V6_MASTER_VISITED_TWICE` needs the derived walk to reach one master through two callers while
+  the callee is not itself called twice, and a call counted twice is `V5_MASTER_CALLED_TWICE`, which runs before V6;
+  a master listed twice is `V3_DUPLICATE_MASTER` and a root listed twice `V4_DUPLICATE_ROOT`, both earlier still. So
+  each of the two is a redundancy the program keeps and the model's order already implies, which is the honest form
+  of the criterion's answer for them: not a missing test but an unreachable reason, recorded here rather than
+  fabricated as a case.
+
+
 - **The connectivity walk is greedy: it closes the detached-cycle hole and can refuse a branching chain.** The walk
   follows views and takes what it follows, which is what makes a fabricated pair refusable, but it never backtracks:
   when two advancing declarations start at one view it takes whichever the blob holds first and follows that one, so

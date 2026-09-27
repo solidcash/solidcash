@@ -49,6 +49,7 @@ export type OrchestrateCreateBuilderNestedComposeCallsiteHost = {
   buildRepeatedExternalBatch: (...args: any[]) => any;
   replaceRepeatedExternalBatchRow: (...args: any[]) => any;
   encodeStoredElementSource: (...args: any[]) => any;
+  encodeStoredValueSource: (...args: any[]) => any;
   nestedIdentity: (address: string) => Promise<any>;
   nestedFullState: (contract: any) => Promise<any>;
   nestedMasterState: (contract: any) => Promise<any>;
@@ -470,6 +471,7 @@ let refreshChunkableRouteWitnesses: ((
   rowArguments: readonly any[] | undefined,
   finalVisibleArgs: readonly FunctionArgument[],
   stagingSession?: any,
+  resultUpdate?: { producerPath: any; results: ReadonlyMap<number, FunctionArgument> },
 ) => { internalArgs: Record<string, FunctionArgument>; payloadBytes: number }) | undefined;
 if (timingEnabled) console.error('nested-callsite-layout', {
   callsiteId: nested.callsiteId, sharedGroupIndex, childWritesState,
@@ -483,6 +485,7 @@ const assembledSlots = await assembleCreateBuilderNestedComposeSlotsImpl(
     signer: host.signer,
     logicalNonceSigner: host.logicalNonceSigner,
     encodeStoredElementSource: (...a: any[]) => host.encodeStoredElementSource(...a),
+    encodeStoredValueSource: (...a: any[]) => host.encodeStoredValueSource(...a),
     shiftSharedFunder: () => host.shiftSharedFunder(),
     markSharedFunder: (utxo: UnlockableUtxo) => host.markSharedFunder(utxo),
     nextNestedFunderIndex: () => host.nextNestedFunderIndex(),

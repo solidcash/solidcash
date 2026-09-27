@@ -196,6 +196,22 @@ export function finishCreateBuilderNestedCompose(
       }
       for (const { row, producerPath } of runtimeRowsWithProducerPaths) {
         const rowValueChunkProductions = valueChunkProductionsForPath(producerPath);
+        // Each closure deliberately shares the route's argument epoch, while its path identifies one row.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        const refreshValueProductions = (
+          nextArgs: readonly FunctionArgument[], results?: ReadonlyMap<number, FunctionArgument>,
+        ): any => {
+          routeArgumentEpoch = advanceValueChunkProducerArgumentEpoch(routeArgumentEpoch, producerPath, nextArgs);
+          const refreshedRows = runtimeRowsWithProducerPaths.map((candidate: any) => ({
+            ...candidate.row,
+            args: valueChunkProducerArgumentsInEpoch(routeArgumentEpoch, candidate.producerPath) ?? candidate.row.args,
+          }));
+          refreshChunkableRouteWitnesses!(
+            refreshedRows, refreshedRows[refreshedRows.length - 1]!.args, undefined,
+            results && { producerPath, results },
+          );
+          return valueChunkProductionsForPath(producerPath);
+        };
         preparedAtomicNodes.push({
           contract: callee,
           functionName: row.handler.name,
@@ -219,21 +235,8 @@ export function finishCreateBuilderNestedCompose(
             valueChunkProductions: rowValueChunkProductions,
           }),
           ...(refreshChunkableRouteWitnesses && producerPath.status === 'complete' && {
-            resolveValueChunkProductionsFromArgs: (nextArgs: any) => {
-              routeArgumentEpoch = advanceValueChunkProducerArgumentEpoch(
-                routeArgumentEpoch, producerPath, nextArgs,
-              );
-              const refreshedRows = runtimeRowsWithProducerPaths.map((candidate: any) => ({
-                ...candidate.row,
-                args: valueChunkProducerArgumentsInEpoch(
-                  routeArgumentEpoch, candidate.producerPath,
-                ) ?? candidate.row.args,
-              }));
-              refreshChunkableRouteWitnesses!(
-                refreshedRows, refreshedRows[refreshedRows.length - 1]!.args,
-              );
-              return valueChunkProductionsForPath(producerPath);
-            },
+            resolveValueChunkProductionsFromArgs: refreshValueProductions,
+            resolveValueChunkProductionsFromResults: refreshValueProductions,
           }),
           ...(refreshChunkableRouteWitnesses && {
             deriveRouteValueChunkProductions: (routeRows: any) => {
@@ -307,6 +310,10 @@ export function finishCreateBuilderNestedCompose(
           valueChunkProductions: nodeValueChunkProductions,
         }),
         ...(refreshChunkableRouteWitnesses && {
+          resolveValueChunkProductionsFromResults: (nextArgs: any, results: ReadonlyMap<number, FunctionArgument>) => {
+            refreshChunkableRouteWitnesses!(undefined, nextArgs, undefined, { producerPath, results });
+            return valueChunkProductionsForPath(producerPath);
+          },
           resolveValueChunkProductionsFromArgs: (nextArgs: any) => {
             refreshChunkableRouteWitnesses!(undefined, nextArgs);
             return valueChunkProductionsForPath(producerPath);

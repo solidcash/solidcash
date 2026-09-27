@@ -398,7 +398,8 @@ strictFieldAccess = false,
     return undefined;
   }
   if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
-    return evaluate(expression.condition) ? evaluate(expression.ifTrue) : evaluate(expression.ifFalse);
+    const condition = evaluate(expression.condition);
+    return condition === undefined ? undefined : evaluate(condition ? expression.ifTrue : expression.ifFalse);
   }
   if (expression.kind === 'cast' && expression.expression) {
     const value = evaluate(expression.expression);

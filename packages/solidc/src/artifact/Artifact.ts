@@ -2331,6 +2331,12 @@ function buildFunctionAbiMetadata(
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
         ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
+        ...(ea.storedValueSource !== undefined && {
+          storedValueSource: {
+            ...ea.storedValueSource,
+            expression: cloneExternalCallExpression(ea.storedValueSource.expression),
+          },
+        }),
         ...(ea.storedElementSource !== undefined && {
           storedElementSource: {
             ...ea.storedElementSource,

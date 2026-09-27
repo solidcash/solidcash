@@ -173,6 +173,11 @@ export interface ValueChunkProducerMutationRow {
       readonly collection: string;
       readonly operations: readonly string[];
       readonly mutationEffectOrdinals?: readonly number[];
+      readonly storedValueSource?: {
+        readonly version: 1;
+        readonly execution: 'unconditional-once';
+        readonly mutationEffectOrdinal: number;
+      };
     }[];
   };
 }
@@ -336,7 +341,11 @@ export function terminalValueChunkProducerClaim(options: {
     && terminal.accesses.length === 1 && mutationOrdinals.length === 1
     && (options.fixedChunkableWriteSelectors ?? [])
       .some((candidate) => canonicalHex(candidate, 4) === canonicalSelector);
-  if ((terminal.row.handler.sourceEffectOrder !== 'linear' && !fixedChunkableOccurrence)
+  const exactWholeValueOccurrence = terminal.accesses.length === 1 && mutationOrdinals.length === 1
+    && terminal.accesses[0].storedValueSource?.version === 1
+    && terminal.accesses[0].storedValueSource.execution === 'unconditional-once'
+    && terminal.accesses[0].storedValueSource.mutationEffectOrdinal === mutationOrdinals[0];
+  if ((terminal.row.handler.sourceEffectOrder !== 'linear' && !fixedChunkableOccurrence && !exactWholeValueOccurrence)
     || terminal.row.producerPath?.status !== 'complete') return undefined;
   const mutationEffectDomainId = selector === undefined ? undefined
     : valueChunkEffectDomainId(options.executionLockingBytecode, selector);

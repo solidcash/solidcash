@@ -107,8 +107,18 @@ export function propagateResultDependentArguments(
   // A changed row can alter a terminal collection value produced by a later sibling even when that later
   // sibling's own public arguments are unchanged. Refresh all capable rows against the now-complete shared
   // producer-path argument epoch, in source order, after argument propagation has been decided.
-  const calls = ctx.descriptors.map((descriptor, index) => rebuildPreparedInvocation(
-    descriptor, resolvedArguments[index], results[index], { refreshValueProductions: propagated },
-  ));
+  const refreshValueProductions = propagated;
+  const calls = ctx.descriptors.map((descriptor, index) => {
+    const call = rebuildPreparedInvocation(
+      descriptor, resolvedArguments[index], results[index], { refreshValueProductions },
+    );
+    const childResults = resultsByParent.get(index);
+    if (childResults && descriptor.resolveValueChunkProductionsFromResults) {
+      const productions = descriptor.resolveValueChunkProductionsFromResults(resolvedArguments[index], childResults);
+      if (semanticJson(productions) !== semanticJson(descriptor.valueChunkProductions ?? [])) propagated = true;
+      call.valueChunkProductions = productions;
+    }
+    return call;
+  });
   return { propagated, calls };
 }

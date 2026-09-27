@@ -193,6 +193,22 @@ export async function runComposeSemanticClaimLoop(
       }
     }
     const provisional = assembled.builder;
+    // A fresh local assembly can contain resource placeholders even when the preceding semantic pass already
+    // established their exact commitments. Restore those claims before probing returns: an earlier entry or
+    // chunk check can otherwise hide the completed return forever, including on an apparently stable pass.
+    const {
+      valueChunkConvergence,
+      dynamicChunkConvergence,
+    } = seedComposeComputedClaims({
+      provisional,
+      finalized,
+      plan,
+      provider,
+      resourceSlots,
+      claimedResourceEffects,
+      claimedComputedValueChunks,
+      rebalanceFeeTail,
+    });
     // Return values are upstream of state/resource derivation. If a pass discovers a new return vector,
     // rebuild immediately before validating outputs which may still contain unresolved chunk placeholders.
     const incompleteParticipants = new Set(
@@ -218,19 +234,6 @@ export async function runComposeSemanticClaimLoop(
       claimedResults = derivedResults;
       continue;
     }
-    const {
-      valueChunkConvergence,
-      dynamicChunkConvergence,
-    } = seedComposeComputedClaims({
-      provisional,
-      finalized,
-      plan,
-      provider,
-      resourceSlots,
-      claimedResourceEffects,
-      claimedComputedValueChunks,
-      rebalanceFeeTail,
-    });
     // Independent semantic effects share one complete-graph observation pass. Record mutations monotonically,
     // but do not restart until fixed resource/value/token/sidecar/event observations have also been collected;
     // otherwise an earlier provisional class can permanently starve a later class which it needs to pass.

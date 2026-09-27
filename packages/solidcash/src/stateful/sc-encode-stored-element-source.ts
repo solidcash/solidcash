@@ -9,6 +9,7 @@ import {
   type ExternalCallExpression,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
 
 export interface EncodeStoredElementSourceHost {
@@ -37,7 +38,35 @@ export function encodeStoredElementSource(
   artifact: Artifact,
   state?: Record<string, unknown>,
 ): Uint8Array | undefined {
-  const recipe = access.storedElementSource;
+  return encodeStoredSource(host, access, elementType, functionArgs, handler, artifact, state);
+}
+
+/** Evaluate one exact whole-value write, using only supplied authenticated producer results. */
+export function encodeStoredValueSource(
+  host: EncodeStoredElementSourceHost,
+  access: EntryAccessAbi,
+  valueType: string,
+  functionArgs: FunctionArgument[],
+  handler: AbiFunction,
+  artifact: Artifact,
+  state?: Record<string, unknown>,
+  externalReturns?: ReadonlyMap<string, FunctionArgument>,
+): Uint8Array | undefined {
+  return encodeStoredSource(host, access, valueType, functionArgs, handler, artifact, state, true, externalReturns);
+}
+
+function encodeStoredSource(
+  host: EncodeStoredElementSourceHost,
+  access: EntryAccessAbi,
+  storedType: string,
+  functionArgs: FunctionArgument[],
+  handler: AbiFunction,
+  artifact: Artifact,
+  state?: Record<string, unknown>,
+  wholeValue = false,
+  externalReturns?: ReadonlyMap<string, FunctionArgument>,
+): Uint8Array | undefined {
+  const recipe = wholeValue ? access.storedValueSource : access.storedElementSource;
   const visibleInputs = visibleHandlerInputs(handler.inputs);
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const normalizeType = (type: string | undefined): string | undefined => (
@@ -58,6 +87,7 @@ export function encodeStoredElementSource(
       const index = expression.source?.paramIndex;
       return expression.source?.kind === 'forward' && Number.isSafeInteger(index)
         && index! >= 0 && index! < visibleInputs.length
+        && (!wholeValue || functionArgs[index!] !== undefined)
         && typeMatches(expression.type, visibleInputs[index!].type);
     }
     if (expression.kind === 'literal') {
@@ -72,7 +102,22 @@ export function encodeStoredElementSource(
       return false;
     }
     if (expression.kind === 'state') {
-      return expression.name === '__block_timestamp' && numericType(expression.type);
+      if (expression.name === '__block_timestamp') return numericType(expression.type);
+      const variable = wholeValue && artifact.stateLayout?.variables
+        .find((candidate) => candidate.name === expression.name);
+      return !!variable && typeMatches(expression.type, variable.type);
+    }
+    if (wholeValue && expression.kind === 'producerResult') {
+      const producers = handler.externalCalls?.filter((call) => call.callsiteId === expression.callsiteId);
+      const resultIndex = expression.resultIndex;
+      return producers?.length === 1 && Number.isSafeInteger(resultIndex) && resultIndex! >= 0
+        && resultIndex! < (producers[0].returnTypes?.length ?? 0)
+        && (expression.sourceCallsiteId === undefined || expression.sourceCallsiteId === expression.callsiteId)
+        && typeMatches(expression.type, producers[0].returnTypes![resultIndex!]);
+    }
+    if (wholeValue && expression.kind === 'unary') {
+      return ['-', '!', '~'].includes(expression.operator ?? '')
+        && expression.expression !== undefined && validate(expression.expression);
     }
     if (expression.kind === 'cast') {
       return expression.expression !== undefined && expression.type !== undefined
@@ -117,18 +162,26 @@ export function encodeStoredElementSource(
     }
     return false;
   };
-  if (access.arrayMutation !== 'push' || recipe?.version !== 1 || recipe.elementType !== elementType
-    || recipe.expression.type !== elementType
+  const validShape = wholeValue
+    ? !access.arrayMutation && access.operations.includes('write')
+      && access.storedValueSource?.execution === 'unconditional-once'
+      && access.storedValueSource.valueType === storedType
+    : access.arrayMutation === 'push' && access.storedElementSource?.elementType === storedType;
+  if (!validShape || recipe?.version !== 1 || recipe.expression.type !== storedType
     || access.mutationEffectOrdinals?.length !== 1
     || recipe.mutationEffectOrdinal !== access.mutationEffectOrdinals[0]
-    || !validate(recipe.expression, recipe.elementType)) return undefined;
+    || !validate(recipe.expression, storedType)) return undefined;
+  // Recipes execute in the decoded handler's value domain, not the SDK's public argument domain.
+  // In Solidity-compatible kernel rows, nested value addresses are ABI words while call targets stay native.
+  const executionArgs = wholeValue
+    ? projectMessageBusHandlerArguments(artifact, handler.name, handler.selector, functionArgs) : functionArgs;
   const value = host.evaluateExternalExpression(
-    recipe.expression, functionArgs, artifact, state, visibleInputs,
-    undefined, 0, false, undefined, undefined, undefined, true,
+    recipe.expression, executionArgs, artifact, state, visibleInputs,
+    externalReturns, 0, false, undefined, undefined, undefined, true,
   );
   if (value === undefined) return undefined;
   try {
-    const encoded = encodeFunctionArgument(value, elementType, structs);
+    const encoded = encodeFunctionArgument(value, storedType, structs);
     return encoded instanceof Uint8Array ? encoded : undefined;
   } catch {
     return undefined;

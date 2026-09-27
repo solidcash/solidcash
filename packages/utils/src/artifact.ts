@@ -1000,6 +1000,14 @@ export interface EntryAccessAbi {
   valueParam?: string;
   /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
   valueSource?: string;
+  /** Exact whole-value recipe for a unique, unconditional collection mutation in this handler. */
+  storedValueSource?: {
+    version: 1;
+    execution: 'unconditional-once';
+    mutationEffectOrdinal: number;
+    valueType: string;
+    expression: ExternalCallExpression;
+  };
   /** Compiler-authenticated, typed source of the element appended by one exact chunkable-array mutation. */
   storedElementSource?: {
     version: 1;

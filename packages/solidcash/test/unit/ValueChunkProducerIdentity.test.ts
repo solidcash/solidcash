@@ -177,7 +177,9 @@ describe('hierarchical value-chunk producer identity', () => {
   });
 
   it('selects the terminal linear mutation using the exact reached producer path', () => {
-    const row = (occurrenceIndex: number, mutationEffectOrdinals: number[]) => ({
+    const row = (
+      occurrenceIndex: number, mutationEffectOrdinals: number[],
+    ): Parameters<typeof terminalValueChunkProducerClaim>[0]['rows'][number] => ({
       selector: '01020304',
       producerPath: {
         status: 'complete' as const,
@@ -248,6 +250,36 @@ describe('hierarchical value-chunk producer identity', () => {
       stateOwnerCategoryId: categoryId,
       stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
       resourceIdentity,
+    })).toBeUndefined();
+  });
+
+  it('accepts an exact whole-value occurrence without treating its handler as linear', () => {
+    const access = {
+      collection: collectionSignature, operations: ['write'], mutationEffectOrdinals: [7],
+      storedValueSource: { version: 1 as const, execution: 'unconditional-once' as const, mutationEffectOrdinal: 7 },
+    };
+    const row = {
+      selector: '01020304',
+      producerPath: { status: 'complete' as const, context: { version: 1 as const, sourcePath: producer().sourcePath } },
+      handler: { sourceEffectOrder: 'unsupported-flow' as const, entryAccesses: [access] },
+    };
+    const options = {
+      rows: [row], collectionIdentities: [collectionSignature], executionLockingBytecode: '51',
+      stateOwnerCategoryId: categoryId, stateOwnerLockingBytecode: producer().stateOwner.lockingBytecode,
+      resourceIdentity,
+    };
+    expect(terminalValueChunkProducerClaim(options)?.producer.mutationSourceEffectOrdinal).toBe(7);
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [{ ...access, storedValueSource: undefined }] } }],
+    })).toBeUndefined();
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [{ ...access, mutationEffectOrdinals: [8] }] } }],
+    })).toBeUndefined();
+    expect(terminalValueChunkProducerClaim({
+      ...options,
+      rows: [{ ...row, handler: { ...row.handler, entryAccesses: [access, access] } }],
     })).toBeUndefined();
   });
 

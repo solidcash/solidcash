@@ -22,6 +22,8 @@ import type { OnChainState } from './StateReader.js';
 import { providerUnixLocktime } from './soft-state-overlays.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { pinExactSortedBatchEntry } from './writer-event-delegate-layout.js';
+import { chunksFromValue } from './early-value-chunk-helpers.js';
+import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 
@@ -58,6 +60,7 @@ export function registerCreateBuilderBuilderState(
     entryArgs: readonly any[];
     pendingEntryValueTails: readonly any[];
     transportedProductions: readonly any[];
+    ordinaryTransportedRoute?: boolean;
     valueChunkMints: readonly {
       collection: string; slotIndex: number; slot: Uint8Array; value: Uint8Array;
       digest: Uint8Array; chunks: readonly Uint8Array[];
@@ -306,7 +309,24 @@ export function registerCreateBuilderBuilderState(
   // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
   // pins them but the SDK has no value param to build them). The auto-derivation reads nNew from the entry's len4
   // and progressively extracts the pinned chunk commitments (like dynamicChunkVars).
+  const ordinaryProductions = params.ordinaryTransportedRoute ? transportedProductions : [];
+  for (const production of ordinaryProductions) {
+    const chunks = chunksFromValue(production.value, { write: production.write });
+    const localBase = production.write.outputBase - (overrides?.blockBase ?? 0);
+    if (chunks.length !== production.write.outputCount || chunks.length === 0 || localBase < 0) {
+      throw new Error('Ordinary routed value production has no exact continuation band.');
+    }
+    for (const [index, chunk] of chunks.entries()) {
+      if (!builder.setDerivedChunkOutput(localBase + index, {
+        ...chunk, fixedIndex: true, semanticKind: 'valueChunk',
+        resourceIdentity: valueChunkWriteResourceIdentity(production.write), resourcePart: `chunk:${index}`,
+      })) throw new Error('Ordinary routed value production could not bind its continuation slot.');
+    }
+  }
   for (const run of computedValueChunkRuns) {
+    if (run.slot && ordinaryProductions.some((production: any) => (
+      production.write.collection === run.collection && production.write.keySlot === binToHex(run.slot)
+    ))) continue;
     builder.registerValueChunkVar(run.collection, DUMMY_FUNDER_LOCKING_BYTECODE, run.id, run.slot);
   }
   for (const collectionName of computedValueUpdateCollections) {

@@ -701,6 +701,7 @@ import {
 } from './sc-split-merge-builders.js';
 import {
   encodeStoredElementSource as encodeStoredElementSourceImpl,
+  encodeStoredValueSource as encodeStoredValueSourceImpl,
 } from './sc-encode-stored-element-source.js';
 import {
   replaceRepeatedExternalBatchRow as replaceRepeatedExternalBatchRowImpl,
@@ -12702,6 +12703,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     this as any
                   )._replaceRepeatedExternalBatchRow(...a),
                   encodeStoredElementSource: (...a: any[]) => (this as any)._encodeStoredElementSource(...a),
+                  encodeStoredValueSource: (...a: any[]) => (this as any)._encodeStoredValueSource(...a),
                   nestedIdentity,
                   nestedFullState,
                   nestedMasterState,
@@ -13558,6 +13560,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       activeDelegateGroupIndex,
       lowLevelCallUtxoGroups,
       overrides,
+      ...((abiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusGraphExecution === true && {
+        ordinaryRoute: {
+          categoryId: this.categoryId,
+          lockingBytecode: this.inner.lockingBytecode,
+          artifact: this.inner.artifact,
+          rows: (abiFunction as MessageBusRuntimeAbiFunction).messageBusRowArguments ?? [],
+        },
+      }),
     });
     const constructed = constructCreateBuilderTransactionBuilderImpl(
       {
@@ -13673,6 +13683,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryArgs,
         pendingEntryValueTails,
         transportedProductions,
+        ordinaryTransportedRoute: activeDelegateGroupIndex === undefined
+          && (abiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusGraphExecution === true,
         valueChunkMints,
         maxBhLocktime,
         functionName,
@@ -14198,6 +14210,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a),
       },
       access, elementType, functionArgs, handler, artifact, state,
+    );
+  }
+
+  private _encodeStoredValueSource(
+    access: EntryAccessAbi,
+    valueType: string,
+    functionArgs: FunctionArgument[],
+    handler: AbiFunction,
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+    externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  ): Uint8Array | undefined {
+    return encodeStoredValueSourceImpl(
+      { evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a) },
+      access, valueType, functionArgs, handler, artifact, state, externalReturns,
     );
   }
 

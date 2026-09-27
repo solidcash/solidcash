@@ -196,6 +196,11 @@ export interface PreparedAtomicMessageBusCall {
   resolveValueChunkProductionsFromArgs?: (
     args: readonly FunctionArgument[],
   ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
+  /** @internal Refresh a write computed from this invocation's own authenticated child results. */
+  resolveValueChunkProductionsFromResults?: (
+    args: readonly FunctionArgument[],
+    results: ReadonlyMap<number, FunctionArgument>,
+  ) => NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>;
   /** @internal Source-template identity for one runtime row of a collapsed repeated-call batch. */
   batchLogicalIndex?: number;
   /** @internal Source loop occurrence represented by this runtime batch row. */

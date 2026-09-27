@@ -278,6 +278,14 @@ export interface EntryAccessInfo {
   valueParam?: string;
   // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
   valueSource?: string;
+  /** Whole-value replay and per-mutation reachability proof; does not imply linear handler control flow. */
+  storedValueSource?: {
+    version: 1;
+    execution: 'unconditional-once';
+    mutationEffectOrdinal: number;
+    valueType: string;
+    expression: ExternalCallExpression;
+  };
   /**
    * Exact off-chain replay recipe for the element consumed by one chunkable sorted-array push. The recipe is
    * attached to the mutation's compiler-owned source-effect ordinal; omission means the push must not be

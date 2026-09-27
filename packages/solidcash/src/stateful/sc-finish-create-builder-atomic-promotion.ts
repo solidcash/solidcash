@@ -274,6 +274,9 @@ if (preparedAtomicNodes?.length) {
       ...(node.resolveValueChunkProductionsFromArgs && {
         resolveValueChunkProductionsFromArgs: node.resolveValueChunkProductionsFromArgs,
       }),
+      ...(node.resolveValueChunkProductionsFromResults && {
+        resolveValueChunkProductionsFromResults: node.resolveValueChunkProductionsFromResults,
+      }),
       ...(node.batchLogicalIndex !== undefined && { batchLogicalIndex: node.batchLogicalIndex }),
       ...(node.batchOccurrenceIndex !== undefined && {
         batchOccurrenceIndex: node.batchOccurrenceIndex,

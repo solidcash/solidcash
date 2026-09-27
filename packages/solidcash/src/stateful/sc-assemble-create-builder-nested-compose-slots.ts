@@ -17,6 +17,7 @@ import {
   splitValueIntoValueChunks,
   VALUE_CHUNK_SIZE,
   VALUE_HEAD_SIZE,
+  VALUE_INLINE_LIMIT,
   type AbiFunction,
   type Artifact,
   type ExternalCallAbi,
@@ -63,6 +64,7 @@ import {
   SortedList, getCachedSortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
 import { isMsgSenderKeySource, providerUnixLocktime } from './soft-state-overlays.js';
+import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
 import type { OnChainState } from './StateReader.js';
 import {
   stageJobEventsValue,
@@ -86,6 +88,7 @@ export type AssembleCreateBuilderNestedComposeSlotsHost = {
   readonly signer: { getAddress(): string } | undefined;
   readonly logicalNonceSigner: { getAddress(): string } | undefined;
   encodeStoredElementSource: (...args: any[]) => any;
+  encodeStoredValueSource: (...args: any[]) => any;
   shiftSharedFunder: () => UnlockableUtxo | undefined;
   markSharedFunder: (utxo: UnlockableUtxo) => void;
   nextNestedFunderIndex: () => number;
@@ -760,10 +763,16 @@ export async function assembleCreateBuilderNestedComposeSlots(
       // exists. The selector resolver and producer path both fail closed for overloaded or
       // incompletely-coordinated edges, so this cannot turn a name-derived SDK guess into authority.
       const discoveredProducerRows = sequentialRows ?? directInvocationRows;
+      const valueResultsByPath = new Map<string, ReadonlyMap<number, FunctionArgument>>();
       refreshChunkableRouteWitnesses = (
         rowArguments, finalVisibleArgs,
         refreshStagingSession = new ValueChunkWriteStagingSession(),
+        resultUpdate?: { producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument> },
       ) => {
+        if (resultUpdate?.producerPath.status === 'complete') {
+          const key = canonicalValueChunkProducerPathContext(resultUpdate.producerPath.context);
+          if (key) valueResultsByPath.set(key, resultUpdate.results);
+        }
         const internalArgs: Record<string, FunctionArgument> = {};
         const producerClaims: ValueChunkProducerResourceClaim[] = [];
         const productions: Array<NonNullable<
@@ -798,6 +807,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
             candidate.name === access.collection || candidate.signature === access.collection);
           if (!collection?.chunkableValue) continue;
           let payloadBytes = fallbackPayloadBytes;
+          let nextValue: Uint8Array | undefined;
           if (collection.valueType.endsWith('[]')) {
             const legacyCompatibility = usesLegacyJobEventCompatibility(
               sharedLogicalArtifact, collection.valueType, structs,
@@ -874,7 +884,7 @@ export async function assembleCreateBuilderNestedComposeSlots(
               leadingMutation: leadingPush,
               currentElement,
             });
-            const nextValue = channels.postValue;
+            nextValue = channels.postValue;
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
               console.error('value-chunk-derive', JSON.stringify({
@@ -900,108 +910,145 @@ export async function assembleCreateBuilderNestedComposeSlots(
             payloadBytes = currentElement
               ? nextValue.length
               : nextValue.length + fallbackPayloadBytes + VALUE_CHUNK_SIZE;
-            // Keep the three authenticated channels distinct. The proof-entry
-            // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
-            // `leadingPushValue_N` carries prior selected-row mutations, and this
-            // derived `nextValue` owns only continuation output/persistence data.
-            if (nextValue.length > VALUE_HEAD_SIZE) {
-              const physicalRouteSlot = access.slotIndex ?? routeSlot;
-              const blockSlot = selectedLayout.slots.find((slot) =>
-                slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
-              const insert = blockSlot === undefined ? undefined
-                : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
-              const commitment = insert?.newCommitment
-                ?? (blockSlot === undefined ? undefined
-                  : childBlockInputs?.[blockSlot]?.token?.nft?.commitment);
-              const commitmentBytes = typeof commitment === 'string'
-                ? hexToBin(commitment) : commitment;
-              const exactWrite: ValueChunkWriteDescriptor | undefined = commitmentBytes
-                && commitmentBytes.length >= 32 ? {
-                  categoryId: callee.categoryId,
-                  collection: collection.name,
-                  collectionSignature: collection.signature,
-                  collectionHash: binToHex(computeCollectionHash(collection.signature)),
-                  keySlot: binToHex(decodeEntryCommitment(commitmentBytes).slot),
-                  entryAccessSlot: routeSlot,
-                  routeSlot: physicalRouteSlot,
-                  operation: insert ? 'insert' : 'update',
-                  outputBase: -1,
-                  outputCount: 0,
-              } : undefined;
-              if (exactWrite) {
-                const stateOwner = {
-                  categoryId: callee.categoryId,
-                  lockingBytecode: callee.inner.lockingBytecode,
-                };
-                const producerClaim = terminalValueChunkProducerClaim({
-                  rows: effectiveRowArguments ?? [],
-                  collectionIdentities: [
-                    access.collection, collection.name, collection.signature,
-                  ],
-                  fixedChunkableWriteSelectors: (proxyCallee?.implementation.inner.artifact
-                    ?? callee.inner.artifact).messageBus?.fixedChunkableWritePolicy?.selectors,
-                  executionLockingBytecode: proxyCallee?.implementation.inner.lockingBytecode
-                    ?? callee.inner.lockingBytecode,
-                  stateOwnerCategoryId: stateOwner.categoryId,
-                  stateOwnerLockingBytecode: stateOwner.lockingBytecode,
+          } else {
+            const writes = (effectiveRowArguments ?? []).flatMap((row: any) => (
+              (row.handler.entryAccesses ?? []).filter((candidate: any) => (
+                candidate.collection === access.collection && candidate.operations.includes('write')
+              )).map((candidate: any) => ({ row, access: candidate }))
+            ));
+            const terminal = writes.at(-1);
+            const recipe = terminal?.access.storedValueSource;
+            if (recipe) {
+              const path = terminal.row.producerPath;
+              const key = path?.status === 'complete' ? canonicalValueChunkProducerPathContext(path.context) : undefined;
+              const externalReturns = externalReturnsForCallsites(
+                [{ kind: 'expression', expression: recipe.expression }],
+                key ? valueResultsByPath.get(key) ?? new Map() : new Map(),
+                terminal.row.handler.externalCalls ?? [],
+              );
+              nextValue = host.encodeStoredValueSource(
+                terminal.access, collection.valueType, [...terminal.row.args], terminal.row.handler,
+                sharedLogicalArtifact, childState.state, externalReturns,
+              );
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
+                console.error('value-chunk-whole-recipe', JSON.stringify({
+                  collection: collection.name, handler: terminal.row.handler.name,
+                  mutationEffectOrdinal: recipe.mutationEffectOrdinal,
+                  resultCount: externalReturns.size, valueBytes: nextValue?.length,
+                  hasProducerPath: key !== undefined,
+                }));
+              }
+              if (nextValue) payloadBytes = nextValue.length;
+            }
+          }
+          // Keep the three authenticated channels distinct. The proof-entry
+          // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),
+          // `leadingPushValue_N` carries prior selected-row mutations, and this
+          // derived `nextValue` owns only continuation output/persistence data.
+          if (nextValue && nextValue.length > VALUE_INLINE_LIMIT) {
+            const physicalRouteSlot = access.slotIndex ?? routeSlot;
+            const blockSlot = selectedLayout.slots.find((slot) =>
+              slot.kind === 'entry' && slot.slotIndex === physicalRouteSlot)?.offset;
+            const insert = blockSlot === undefined ? undefined
+              : childPlannedEntryInserts.find((planned) => planned.blockSlot === blockSlot);
+            const commitment = insert?.newCommitment
+              ?? (blockSlot === undefined ? undefined
+                : childBlockInputs?.[blockSlot]?.token?.nft?.commitment);
+            const commitmentBytes = typeof commitment === 'string'
+              ? hexToBin(commitment) : commitment;
+            // A missing entry's input is its predecessor, not the target key. Fixed route geometry
+            // may already have consumed the insertion plan; retain the authenticated key selection.
+            const targetKey = childBatchTargets.get(physicalRouteSlot)
+              ?? (commitmentBytes && commitmentBytes.length >= 32
+                ? decodeEntryCommitment(commitmentBytes).slot : undefined);
+            const inserting = targetKey && childBatchLists.get(access.collection)
+              ? !childBatchLists.get(access.collection)!.has(targetKey) : insert !== undefined;
+            const exactWrite: ValueChunkWriteDescriptor | undefined = targetKey ? {
+                categoryId: callee.categoryId,
+                collection: collection.name,
+                collectionSignature: collection.signature,
+                collectionHash: binToHex(computeCollectionHash(collection.signature)),
+                keySlot: binToHex(targetKey),
+                entryAccessSlot: routeSlot,
+                routeSlot: physicalRouteSlot,
+                operation: inserting ? 'insert' : 'update',
+                outputBase: -1,
+                outputCount: 0,
+            } : undefined;
+            if (exactWrite) {
+              const stateOwner = {
+                categoryId: callee.categoryId,
+                lockingBytecode: callee.inner.lockingBytecode,
+              };
+              const producerClaim = terminalValueChunkProducerClaim({
+                rows: effectiveRowArguments ?? [],
+                collectionIdentities: [
+                  access.collection, collection.name, collection.signature,
+                ],
+                fixedChunkableWriteSelectors: (proxyCallee?.implementation.inner.artifact
+                  ?? callee.inner.artifact).messageBus?.fixedChunkableWritePolicy?.selectors,
+                executionLockingBytecode: proxyCallee?.implementation.inner.lockingBytecode
+                  ?? callee.inner.lockingBytecode,
+                stateOwnerCategoryId: stateOwner.categoryId,
+                stateOwnerLockingBytecode: stateOwner.lockingBytecode,
+                resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
+              });
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
+                console.error('value-chunk-producer-stage', JSON.stringify({
                   resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
-                });
+                  valueBytes: nextValue.length,
+                  claim: producerClaim?.producer,
+                  rows: (effectiveRowArguments ?? []).map((row: any) => ({
+                    selector: row.selector ?? row.handler.selector,
+                    sourceEffectOrder: row.handler.sourceEffectOrder,
+                    mutationEffectOrdinals: row.handler.entryAccesses?.flatMap(
+                      (candidate: any) => candidate.mutationEffectOrdinals ?? [],
+                    ),
+                    producerPath: row.producerPath,
+                  })),
+                }));
+              }
+              if (producerClaim) {
+                const stagedOwned = refreshStagingSession.stageOwned(
+                  exactWrite, producerClaim, stateOwner, nextValue,
+                  { supersedeUnowned: true },
+                );
                 if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                   ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                  console.error('value-chunk-producer-stage', JSON.stringify({
+                  console.error('value-chunk-producer-stage-result', JSON.stringify({
                     resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
                     valueBytes: nextValue.length,
-                    claim: producerClaim?.producer,
-                    rows: (effectiveRowArguments ?? []).map((row: any) => ({
-                      selector: row.selector ?? row.handler.selector,
-                      sourceEffectOrder: row.handler.sourceEffectOrder,
-                      mutationEffectOrdinals: row.handler.entryAccesses?.flatMap(
-                        (candidate: any) => candidate.mutationEffectOrdinals ?? [],
-                      ),
-                      producerPath: row.producerPath,
-                    })),
+                    stagedOwned,
                   }));
                 }
-                if (producerClaim) {
-                  const stagedOwned = refreshStagingSession.stageOwned(
-                    exactWrite, producerClaim, stateOwner, nextValue,
-                    { supersedeUnowned: true },
-                  );
-                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                    ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                    console.error('value-chunk-producer-stage-result', JSON.stringify({
-                      resourceIdentity: valueChunkWriteResourceIdentity(exactWrite),
-                      valueBytes: nextValue.length,
-                      stagedOwned,
-                    }));
-                  }
-                  if (!stagedOwned) {
-                    throw new Error(
-                      'Compiler-authenticated value production conflicts with its staged resource.',
-                    );
-                  }
-                  producerClaims.push(producerClaim);
-                  producerStateOwner = stateOwner;
-                  productions.push({
-                    write: exactWrite,
-                    claim: producerClaim,
-                    stateOwner,
-                    value: nextValue.slice(),
-                  });
-                } else {
-                  stageValueChunkWrite(
-                    exactWrite, nextValue, refreshStagingSession,
+                if (!stagedOwned) {
+                  throw new Error(
+                    'Compiler-authenticated value production conflicts with its staged resource.',
                   );
                 }
-              } else if (permitsLegacyNamedValueChunkFallback(
-                [{
-                  logicalArtifact: sharedLogicalArtifact,
-                  externalContract: { inner: { artifact: sharedLogicalArtifact } },
-                }],
-                (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
-              )) {
-                stageJobEventsValue(callee.categoryId, nextValue);
+                producerClaims.push(producerClaim);
+                producerStateOwner = stateOwner;
+                productions.push({
+                  write: exactWrite,
+                  claim: producerClaim,
+                  stateOwner,
+                  value: nextValue.slice(),
+                });
+              } else {
+                stageValueChunkWrite(
+                  exactWrite, nextValue, refreshStagingSession,
+                );
               }
+            } else if (permitsLegacyNamedValueChunkFallback(
+              [{
+                logicalArtifact: sharedLogicalArtifact,
+                externalContract: { inner: { artifact: sharedLogicalArtifact } },
+              }],
+              (selectedFn as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
+            )) {
+              stageJobEventsValue(callee.categoryId, nextValue);
             }
           }
           encodedPayloadBytes = Math.max(encodedPayloadBytes, payloadBytes);

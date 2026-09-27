@@ -101,6 +101,7 @@ import SymbolTableTraversal, {
   getMaxPushdataEncodedSizeForType,
 } from './semantic/SymbolTableTraversal.js';
 import TypeCheckTraversal from './semantic/TypeCheckTraversal.js';
+import { publishStoredValueSources } from './semantic/stored-value-source.js';
 import EnsureFinalRequireTraversal, {
   rejectFreeFunctionMissingReturns,
 } from './semantic/EnsureFinalRequireTraversal.js';
@@ -13805,6 +13806,7 @@ function compileResolvedAst(
     true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
   )) as Ast;
   profileLog('resolved:typecheck', typeCheckStarted, { contract: contractName });
+  publishStoredValueSources(ast.contract, ast.structDefinitions);
   const finalRequireStarted = Date.now();
   ast = ast.accept(new EnsureFinalRequireTraversal(
     mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,

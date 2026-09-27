@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 306 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 308 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -31,11 +31,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 37 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | 22 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 21 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 864 tests (114 + 344 + 406), all passing. The two package totals are full-config runs of
+Total: 865 tests (114 + 346 + 405), all passing. The two package totals are full-config runs of
 `vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
 (`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
 table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,
@@ -195,11 +195,11 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
   (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `d9d41484e` it is `unicrow/UnicrowClaim.sol` and
-  an entry whose return type is composite: "the entry point 'claim' returns an array, but a frame's `retval` is
-  compared with one scalar value the entry computed, which a composite value is not yet" — the same unit reported
-  the round before with its inline assembly, so the assembly question is asked of the code each master carries and
-  a composite return is what the project reports first. The
+  harness compiles the built compiler rather than the sources. At `362cb13eb` it is `unicrow/UnicrowClaim.sol` and a
+  hidden operand: "the entry point 'claimMultiple' carries the hidden parameter
+  '__internal__externalReturnOutputIdx0', which the master head does not supply" — the same unit reported the round
+  before with an entry whose return type was composite, so a fixed-size array return is admitted and the operand the
+  direct path threads in for its return-event output is what the project reports first. The
   ladder stands at "blocked at compile" and no title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state

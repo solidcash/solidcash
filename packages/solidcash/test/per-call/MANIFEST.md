@@ -3,13 +3,17 @@
 One directory per stream, plus the shared interface vectors. A stream's directory is the only suite it runs while
 it is being written; the whole-repo suite runs at milestones.
 
-Run one directory:
+Run a package's focused suites, or one directory of them, with its per-call config:
 
-    yarn workspace <package> vitest run <directory>
+    yarn workspace solidc vitest run --config vitest.per-call.config.ts [<directory>]
+    yarn workspace solidcash vitest run --config vitest.per-call.config.ts [<directory>]
+    yarn workspace @solidcash/utils vitest run test/per-call
 
-For `solidcash` directories add `--no-isolate`, as the package's own `test:fast` does: modules then load once per
-worker instead of once per file, which took `test/per-call` from 28 s to 17 s with the same 343 passing. The `solidc`
-directories gain nothing from it; their time is compiling contracts, so a test file compiles each source once.
+The per-call configs keep transpiled modules on disk between runs (`test.experimental.fsModuleCache`), skip
+per-file isolation and turn on the compiler's deterministic compile cache. Measured at `6f8d4b5ec`: `solidc`
+16.8 s with the package config, 13.3 s on a first run and 7.5 s on a repeat; `solidcash` 56.6 s, 22.1 s and
+10.5 s. An edited file is transpiled again on the next run; if a run ever looks stale, `npx vitest --clearCache`
+empties the cache. New tests should still compile each source once per file.
 
 The generated program-versus-derivation check in `validator/script.test.ts` runs three cases per mutation by
 default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at milestones.

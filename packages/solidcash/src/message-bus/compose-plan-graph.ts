@@ -17,6 +17,7 @@ import {
   type CallDescriptor,
 } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
+import { canonicalValueChunkProducerPathContext } from '../stateful/ValueChunkProducerIdentity.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 
@@ -151,6 +152,29 @@ export function deriveComposeInvocationPlan(
   ));
 
   let next = 1;
+  const preparedChildIndices = (parentInvocation: number): number[] => {
+    const contiguous = (): number[] => descriptors.slice(next).map((_descriptor, offset) => next + offset);
+    const parentPath = descriptors[parentInvocation]?.producerPath;
+    if (parentPath?.status !== 'complete') return contiguous();
+    const parentKey = canonicalValueChunkProducerPathContext(parentPath.context);
+    if (parentKey === undefined) return contiguous();
+    const depth = parentPath.context.sourcePath.length;
+    const children: number[] = [];
+    for (let cursor = next; cursor < descriptors.length; cursor += 1) {
+      const path = descriptors[cursor].producerPath;
+      // Legacy/manual descriptors have no source path. Preserve their structural matching;
+      // transported paths are independently checked against the completed compiler graph below.
+      if (path?.status !== 'complete') return contiguous();
+      if (path.context.sourcePath.length <= depth) break;
+      const prefix = canonicalValueChunkProducerPathContext({
+        version: 1, sourcePath: path.context.sourcePath.slice(0, depth),
+      });
+      if (prefix !== parentKey) break;
+      // Descriptors are depth-first: a sibling's descendants are not additional occurrences of this edge.
+      if (path.context.sourcePath.length === depth + 1) children.push(cursor);
+    }
+    return children;
+  };
   const plan = deriveCompiledGraphPlan({
     root: workParticipants[0],
     function: descriptors[0].functionName,
@@ -179,9 +203,9 @@ export function deriveComposeInvocationPlan(
         }),
       };
     },
-    batchOccurrences: ({ callsiteId, batchLogicalIndex }) => {
+    batchOccurrences: ({ invocation, callsiteId, batchLogicalIndex }) => {
       const reached: number[] = [];
-      for (let cursor = next; cursor < descriptors.length; cursor += 1) {
+      for (const cursor of preparedChildIndices(invocation)) {
         const descriptor = descriptors[cursor];
         const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
         const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
@@ -202,7 +226,7 @@ export function deriveComposeInvocationPlan(
       }
       return reached.length > 0 || hasPreparedCalls ? reached : undefined;
     },
-    occurrence: ({ participant, function: ownerFunction, selector, callsiteId, kind }) => {
+    occurrence: ({ participant, function: ownerFunction, selector, invocation, callsiteId, kind }) => {
       const abiFunction = resolveMessageBusAbiFunction(participant.artifact, ownerFunction, selector);
       const callsite = abiFunction?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
       if (!callsite) {
@@ -212,9 +236,9 @@ export function deriveComposeInvocationPlan(
       // Compiler-authored raw edges retain `functionName: __raw__` and publish the decoded concrete selector
       // separately. Prepared calls use that concrete function name, so occurrence matching must do the same.
       let count = 0;
-      while (count < maximum) {
-        const reached = descriptors[next + count];
-        if (!reached) break;
+      for (const cursor of preparedChildIndices(invocation)) {
+        if (count >= maximum) break;
+        const reached = descriptors[cursor];
         // Several conditional branches may call the same target method. Method/selector matching alone makes
         // an untaken sibling indistinguishable from the reached branch. Transparent promotion preserves the
         // compiler's parent-local identity, so it is authoritative when present; manually composed calls retain

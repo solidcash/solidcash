@@ -4,7 +4,6 @@
 
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
-  attachDecodedAccessors,
   decodePushdataValue,
   encodePushdataValue,
   type AbiFunction,
@@ -33,6 +32,7 @@ import {
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+import { decorateFunctionResult } from './public-result.js';
 import {
   selectReturnAbiPlan,
   type ReturnAbiCandidate,
@@ -188,7 +188,9 @@ callerContract?: StatefulContract<Artifact>,
         entry.name === directMappingRead.collection || entry.signature === directMappingRead.collection
       ));
       const match = selectMappingEntryByKeys(entries, candidate, directMappingRead.keyTypes, collection);
-      if (match) return attachDecodedAccessors(match.value) as StateValue;
+      if (match) return decorateFunctionResult(
+        match.value, exactAbiFunction ?? host.resolveCallAbi(functionName, args), host.inner.artifact,
+      );
     }
     return 0n;
   }
@@ -570,7 +572,7 @@ callerContract?: StatefulContract<Artifact>,
         decoded,
       });
     }
-    return attachDecodedAccessors(decoded);
+    return decorateFunctionResult(decoded, resultFunction, returnArtifact);
   }
   // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
   // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather

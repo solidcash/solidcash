@@ -7,6 +7,7 @@
  */
 import 'solidcash/vitest';
 import { cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
+import { decodedAddressEncoding, decodedSolidityAddressIdentity } from '@solidcash/utils';
 import { getActiveProvider } from './network-helpers.js';
 
 // A BCH `address` value is a full locking bytecode (Uint8Array), returned verbatim (never a pubkey-hash or a
@@ -59,6 +60,15 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   };
   const actualBytes = addressBytes(actual);
   const expectedBytes = addressBytes(expected);
+  // Only ABI-typed Solidity address results permit identity projection. Untyped bytes32, digests, and native
+  // locking bytecodes still compare exactly, even if they happen to resemble a padded address word.
+  if (decodedAddressEncoding(actual) === 'evm-abi-v1' || decodedAddressEncoding(expected) === 'evm-abi-v1') {
+    const left = actualBytes ?? (isCashAddr(actual) ? decode(actual) : undefined);
+    const right = expectedBytes ?? (isCashAddr(expected) ? decode(expected) : undefined);
+    const leftIdentity = left && decodedSolidityAddressIdentity(left);
+    const rightIdentity = right && decodedSolidityAddressIdentity(right);
+    if (leftIdentity && rightIdentity) return [binToHex(leftIdentity), binToHex(rightIdentity)];
+  }
   if (actualBytes && isCashAddr(expected)) {
     const lockingBytecode = decode(expected);
     if (lockingBytecode) {

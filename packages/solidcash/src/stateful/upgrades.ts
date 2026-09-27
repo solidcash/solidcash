@@ -22,6 +22,7 @@ import {
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
+import { decorateFunctionResult } from './public-result.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -487,7 +488,9 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               string, ((...values: FunctionArgument[]) => Promise<unknown>) | undefined
             >)[directRead.collection];
             if (keyArgs.every((value) => value !== undefined) && stateAccessor) {
-              return stateAccessor(...keyArgs as FunctionArgument[]);
+              return stateAccessor(...keyArgs as FunctionArgument[]).then((value) => (
+                decorateFunctionResult(value as import('@solidcash/utils').StateValue, fn, implArtifact)
+              ));
             }
           }
           const call = target.forward(prop, args);

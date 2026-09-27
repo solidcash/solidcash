@@ -6,8 +6,10 @@
  * driver the callee, which the driver derives fully before the caller resumes, so a callee always completes first.
  *
  * The driver never restarts an execution: its cursor only moves forward, so the number of program runs is bounded
- * by the number of published stop sites. Progress is filling a witness — a read's record commitment, a call
- * result, or a segment's records. A step that fills none is refused, not retried.
+ * by the number of published stop sites. A site marked as one the source does not fix is the exception: it is
+ * reached a number of times the source does not fix, so it is resumed until a visit fills no witness, which is the
+ * program having moved past it. Progress is filling a witness — a read's record commitment, a call result, or a
+ * segment's records. A step that fills none is refused, not retried.
  */
 
 import {
@@ -89,29 +91,36 @@ function deriveExecution(
   for (;;) {
     const site = nextStopSite(metadata, ordinal);
     if (site === undefined) break;
-
-    // One run per site. The step must fill this site's witness; a step that fills nothing is the stall refusal.
-    runs.push({ frame: request, site });
-    const outcome = host.step(request, site);
-    if (outcome.filled !== witnessKindOf(site)) {
-      // A site whose call the source does not fix may have nothing to fill on this path: the arm that ran names
-      // another call at the same position, and this site's own record is one the execution never made. The program
-      // is what answered that — the step ran it and it did not advance — so the site is stepped over rather than
-      // read as a stall. Every other unfilled site is still a stall.
-      if (site.kind === 'call' && site.conditional === true) {
-        ordinal = site.site;
-        continue;
-      }
-      throw derivationStalled(request, site);
-    }
-
-    if (site.kind === 'call') {
-      // The call result is the callee's return value, so the callee is derived before this execution resumes.
-      if (outcome.callee === undefined) throw derivationStalled(request, site);
-      deriveExecution(outcome.callee, host, runs, completed);
-    }
-
     ordinal = site.site;
+
+    // A site the execution reaches a number of times the source does not fix is resumed on each visit rather than
+    // enumerated once: the table names such a site once while one execution reaches it as often as the loop turns,
+    // and the witness each visit fills is the record that visit binds. The first visit must fill a witness, as any
+    // site must; a later visit that fills none is the program having moved past the site, so the walk goes on to
+    // the site after it.
+    let visit = 0;
+    for (;;) {
+      runs.push({ frame: request, site });
+      const outcome = host.step(request, site);
+      if (outcome.filled !== witnessKindOf(site)) {
+        if (visit > 0) break;
+        // A site whose call the source does not fix may have nothing to fill on this path: the arm that ran names
+        // another call at the same position, and this site's own record is one the execution never made. The program
+        // is what answered that — the step ran it and it did not advance — so the site is stepped over rather than
+        // read as a stall. Every other unfilled site is still a stall.
+        if (site.kind === 'call' && site.conditional === true) break;
+        throw derivationStalled(request, site);
+      }
+
+      if (site.kind === 'call') {
+        // The call result is the callee's return value, so the callee is derived before this execution resumes.
+        if (outcome.callee === undefined) throw derivationStalled(request, site);
+        deriveExecution(outcome.callee, host, runs, completed);
+      }
+
+      visit += 1;
+      if (site.kind !== 'call' || site.repeated !== true) break;
+    }
   }
 
   completed.push(request);

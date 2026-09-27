@@ -31,7 +31,7 @@
  * that owns the edge.
  */
 
-import { createVirtualMachineBch2026 } from '@bitauth/libauth';
+import { binToHex, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
   validateStopSiteMetadata,
@@ -144,6 +144,14 @@ export interface ExecutionStop {
   /** Where the run stopped, as the instruction pointer; absent when it accepted. */
   readonly ip?: number;
   readonly error?: string;
+  /**
+   * The main and alternate stacks the run stopped with, as one opaque fingerprint.
+   *
+   * A site one execution reaches several times is a single instruction every visit stops on, so the instruction
+   * pointer cannot tell one visit from the next: what differs is how much of the block the walk had consumed. The
+   * fingerprint is what the host compares for those visits.
+   */
+  readonly stack?: string;
 }
 
 export interface ShippedHostOptions {
@@ -157,21 +165,41 @@ export interface ShippedHostOptions {
   readonly onRun?: (master: string, site: StopSite, stop: ExecutionStop) => void;
 }
 
-/** True when `after` reached further than `before`: the run accepted, or stopped further along the program. */
-function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
+/**
+ * True when `after` reached further than `before`: the run accepted, or stopped further along the program.
+ *
+ * A site a loop reaches is the one place where "further along the program" is not a higher instruction pointer: the
+ * same instruction is where every visit stops, and what moved is the block the walk had consumed. A stop at the
+ * same instruction with a different stack is that move, so it counts as well. A fill that changes nothing the
+ * program read leaves both the pointer and the stack as they were, which is still not progress.
+ */
+function reachedFurther(before: ExecutionStop, after: ExecutionStop, repeated: boolean): boolean {
   if (after.accepted) return true;
-  return (after.ip ?? 0) > (before.ip ?? 0);
+  if ((after.ip ?? 0) > (before.ip ?? 0)) return true;
+  return repeated && after.ip !== undefined && after.ip === before.ip
+    && after.stack !== undefined && after.stack !== before.stack;
 }
 
 /** The VM's verdict for one program, as the host reads it. */
 function runOnce(vm: VirtualMachine, program: ShippedVmProgram): ExecutionStop {
   const state = vm.evaluate(program);
   if (vm.stateSuccess(state) === true) return { accepted: true };
-  const typed = state as { readonly ip?: number; readonly error?: string };
+  const typed = state as {
+    readonly ip?: number;
+    readonly error?: string;
+    readonly stack?: readonly Uint8Array[];
+    readonly altStack?: readonly Uint8Array[];
+  };
+  const fingerprintOf = (items: readonly Uint8Array[] | undefined): string | undefined =>
+    items?.map((item) => binToHex(item)).join('|');
+  const stack = typed.stack === undefined
+    ? undefined
+    : [fingerprintOf(typed.stack), fingerprintOf(typed.altStack)].join('#');
   return {
     accepted: false,
     ...(typed.ip === undefined ? {} : { ip: typed.ip }),
     ...(typed.error === undefined ? {} : { error: String(typed.error) }),
+    ...(stack === undefined ? {} : { stack }),
   };
 }
 
@@ -273,7 +301,7 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       lastStop.set(run.master, after);
       options.onRun?.(run.master, site, after);
 
-      if (!reachedFurther(before, after)) return {};
+      if (!reachedFurther(before, after, site.kind === 'call' && site.repeated === true)) return {};
       if (site.kind === 'call') {
         // A call's witness is the callee, so the draft must have been missing it: a run that already accepted
         // before the fill means the site was not what the program stopped at, and the step reports nothing.

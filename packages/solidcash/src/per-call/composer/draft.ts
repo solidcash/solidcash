@@ -369,6 +369,15 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   const runs = plan.masters.map((master): ShippedMasterRun => {
     const index = requireIndex(indices, master.master, 'master');
     const block = blocks.get(master.master)!;
+    /**
+     * How many times each repeated site has been resumed for this execution.
+     *
+     * A site the source repeats is published once while one execution reaches it as often as the loop turns, so
+     * which record a visit binds is the visit's business: the plan states one call per record the execution makes,
+     * and the n-th visit fills the n-th of them. The count also bounds the resumption: past the plan's calls no
+     * record is left to fill and the fill reports nothing.
+     */
+    const visits = new Map<number, number>();
     return {
       master: master.master,
       functionName: master.functionName,
@@ -381,15 +390,21 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
       }),
       fill: (site, current) => {
         if (site.kind !== 'call') return {};
-        const call = master.calls[site.callIndex];
+        const visit = site.repeated === true ? visits.get(site.site) ?? 0 : 0;
+        const callIndex = site.repeated === true ? visit : site.callIndex;
+        const call = master.calls[callIndex];
+        // A repeated site's execution may have moved past every record the plan declares, which is what ends the
+        // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.
         if (call === undefined) {
+          if (site.repeated === true) return {};
           throw new CompositionDraftError(`"${master.master}" publishes no call ${site.callIndex}`);
         }
         const callee = mastersById.get(call.callee);
         if (callee === undefined) {
           throw new CompositionDraftError(`"${master.master}" calls "${call.callee}", which the plan does not run`);
         }
-        current.calls[site.callIndex]!.calleeRef = requireIndex(indices, call.callee, 'callee');
+        if (site.repeated === true) visits.set(site.site, visit + 1);
+        current.calls[callIndex]!.calleeRef = requireIndex(indices, call.callee, 'callee');
         const frame: FrameRequest = {
           contract: callee.contract,
           functionName: callee.functionName,

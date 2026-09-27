@@ -281,7 +281,10 @@ describe('a plan whose entry emits after its call returns', () => {
   it('leaves an own-category NFT no frame lists to the validator when the category is shared', () => {
     // `A` runs on two masters, so the union of the events their frames list is the validator's census to make
     // (5.2 puts the event census on the validator input, 7.2 V7 states the union), and a master cannot express a
-    // union it does not hold. This pins that gap: the shape is accepted until the validator's census is emitted.
+    // union it does not hold. This case reads the master's own verdict, which stays what it is: what the union
+    // census changes is the validator input's verdict, so the case belongs to the validator suite, not here.
+    // Measured: with a census emitted in the program this master still accepts, because this harness never
+    // evaluates the validator input.
     const { plan, artifacts } = buildRoundTrip();
     const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
     const bEvent = draft.blockOf(B_MASTER).events[0]!;

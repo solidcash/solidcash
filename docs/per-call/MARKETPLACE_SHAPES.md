@@ -34,13 +34,13 @@ a `CALL` to the proxy plus a `DELEGATE` into its implementation. M, D and T are 
 
 ## 2. Primitives the flows are made of
 
-Each primitive either settles in its own focused test or inside a flow replica. Status at `fbf2776d5`.
+Each primitive either settles in its own focused test or inside a flow replica. Status re-read at `a8df9de6d` for the rows below that changed; the rest is as of `fbf2776d5`.
 
 | # | Primitive | In | Status |
 | --- | --- | --- | --- |
 | P1 | Proxy entry: `CALL` to the proxy, `DELEGATE` into the implementation (toy Y4, plan F5) | MS1-MS8 | none; per-call delegate shapes are refused at compile |
 | P2 | Proxy-to-proxy call: the callee sees `msg.sender` = the calling proxy's address and gates on it | MS2-MS7 | none |
-| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | refused today |
+| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | settles for k = 2 through the shipped composer: the published site is resumed once per turn, the callee's record chains across the turns, and the machine accepts every participant (`edges/repeated-callee.test.ts`). k = 3 turns the caller's own input past its operation-cost budget (800 units per byte of its unlocking bytecode), which is the wire form's limit rather than the derivation's |
 | P4 | Calls in data-dependent loops with k > 1, a `STATIC` read per iteration, a revert mid-loop | MS2, MS4, MS7 | settles for k = 1 (`edges/reads-and-loops`) |
 | P5 | One call's result as another call's argument (toy Y3) | MS3 | refused today |
 | P6 | Fan-in: a second caller's frame reads the record the first caller's frame wrote (toy Y6) | MS3 | compiles; refused by the derivation (V7 / R2) |

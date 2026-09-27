@@ -1559,27 +1559,6 @@ function emitRequireRecordValues(e: Emitter): void {
  */
 function emitCheckMasterRecordValues(e: Emitter): void {
   const O = Opcodes;
-  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
-  emitSoftFirstPayload(e);
-  e.op(O.OP_VERIFY);
-  dropFront(e, 10);
-  dropLengthPrefixed(e, 2);
-  dropLengthPrefixed(e, 2);
-  dropFront(e, 8);
-  dropLengthPrefixed(e, 4);
-  takeUnsignedCount(e, 2);
-  loopCounted(e, dropCall);
-  // `[.., rest, index, afterCalls]`.
-  takeUnsignedCount(e, 2);
-  loopCounted(e, dropSegment);
-  e.op(O.OP_0, O.OP_TOALTSTACK);
-  dropIndexList(e);
-  takeUnsignedCount(e, 2);
-  loopCounted(e, emitSumSendValue);
-  e.op(O.OP_DROP);
-  e.op(O.OP_FROMALTSTACK);
-  // `[.., rest, index, paid]`.
-  e.op(O.OP_TOALTSTACK);
   e.op(O.OP_INPUTBYTECODE);
   emitSoftFirstPayload(e);
   e.op(O.OP_VERIFY);
@@ -1590,10 +1569,27 @@ function emitCheckMasterRecordValues(e: Emitter): void {
   dropLengthPrefixed(e, 4);
   takeUnsignedCount(e, 2);
   loopCounted(e, dropCall);
+  // `[.., rest, afterCalls]`: the record indices are gathered, then the frame's sends are summed.
+  e.op(O.OP_0, O.OP_TOALTSTACK);
   takeUnsignedCount(e, 2);
-  loopCounted(e, emitCheckSegmentValues);
+  loopCounted(e, emitGatherSegmentIndices);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  dropIndexList(e);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitSumSendValue);
   e.op(O.OP_DROP);
-  e.op(O.OP_FROMALTSTACK, O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_FROMALTSTACK);
+  e.op(O.OP_SWAP, O.OP_TOALTSTACK);
+  // `[.., rest, indices]`, with the frame's sends parked for the checks.
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  emitCheckGatheredIndices(e);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  // The walk's copy, the gathered list itself, and then the parked total.
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
 }
 
 /** One listed send: its output's value added to the frame's running total, which lives on the alternate stack. */
@@ -1605,26 +1601,40 @@ function emitSumSendValue(e: Emitter): void {
   e.op(O.OP_FROMALTSTACK, O.OP_ADD, O.OP_TOALTSTACK);
 }
 
-/** One segment: a counted list of record entries, each one weighed. */
-function emitCheckSegmentValues(e: Emitter): void {
+/** One segment's record indices, appended to the accumulator. */
+function emitGatherSegmentIndices(e: Emitter): void {
   const O = Opcodes;
   takeUnsignedCount(e, 2);
-  loopCounted(e, emitCheckRecordValue);
+  loopCounted(e, emitGatherEntryIndices);
 }
 
 /**
- * One entry's record keeps its value, the frame's sends included.
+ * One record entry's two indices, appended to the accumulator, the commitments stepped over.
  *
- * Entry `[.., rest]`, exit `[.., rest]`. The entry's two indices are read and the commitments dropped; an index that
- * names no input or no output leaves the check alone.
+ * Entry `[.., rest]`, exit `[.., rest]`. The two indices are the entry's first four bytes, which is what the value
+ * floor weighs; the commitment at each end is only stepped over.
  */
-function emitCheckRecordValue(e: Emitter): void {
+function emitGatherEntryIndices(e: Emitter): void {
   const O = Opcodes;
-  takeUnsignedCount(e, 2);
-  takeUnsignedCount(e, 2);
+  e.count(4).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
   dropLengthPrefixed(e, 4);
   dropLengthPrefixed(e, 4);
-  e.op(O.OP_ROT, O.OP_ROT);
+}
+
+/**
+ * One gathered entry: a record a frame writes keeps its value, the frame's sends included.
+ *
+ * Entry `[.., rest]`, exit `[.., rest]`. The first four bytes are the two indices; an index that names no input or
+ * no output leaves the check alone, since another rule owns those.
+ */
+function emitCheckGatheredIndices(e: Emitter): void {
+  const O = Opcodes;
+  e.count(4).op(O.OP_SPLIT, O.OP_SWAP);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_SWAP);
+  e.unsignedByteOnTop();
   // `[.., rest, in, out]`.
   e.op(O.OP_OVER, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN);
   e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN);
@@ -1637,6 +1647,7 @@ function emitCheckRecordValue(e: Emitter): void {
   e.op(O.OP_DROP);
   e.op(O.OP_ELSE, O.OP_2DROP, O.OP_ENDIF);
 }
+
 
 /**
  * The records the frames on the contract read are exactly the state UTXOs it spends.

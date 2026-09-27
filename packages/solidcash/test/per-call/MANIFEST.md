@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 54 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 65 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
@@ -31,7 +31,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 867 tests, all passing at `5c2f5a0be` (114 + 314 + 439).
+Total: 879 tests, all passing at `3fdbe9879` (114 + 315 + 450).
 
 ## What each directory covers
 
@@ -62,7 +62,7 @@ Total: 867 tests, all passing at `5c2f5a0be` (114 + 314 + 439).
   capability rather than by locking bytecode.
 - **`solidcash/test/per-call/composer/`** — the resumable derivation (one program run per published site, no
   fixpoint), a re-entrant chain derived callee-first, witness and transcript assembly, block layout for the shapes
-  the design lists, and both refusals.
+  the design lists — including the trailing outputs a plan states that no input recreates — and both refusals.
 - **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
@@ -73,8 +73,12 @@ Total: 867 tests, all passing at `5c2f5a0be` (114 + 314 + 439).
   first (`A.k`, then `B.g`, then `A.f`); the machine accepts all four contract inputs of the assembled transaction,
   twice with the same verdict; and the validator's own derivation walks all eleven checks and derives the order the
   spec states for the shape. Controls refused: a re-entered master presenting another contract's address, and a
-  block that declares a call its entry's source does not make. The round trip carries no records yet, so it is not
-  the spec's worked example's output set.
+  block that declares a call its entry's source does not make. `round-trip-stateful.test.ts` carries the same shape
+  with records on both contracts and measures the wall its writes meet: a record written by more than one frame
+  cannot be spent, because each writing master's own code requires the transaction to carry the commitment it
+  computed, while the validator accepts the identical declarations. `round-trip-events.test.ts` states a trailing
+  event output and pins the second wall: a master whose block carries a call section and an event list stalls the
+  derivation at its call site.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -171,7 +175,12 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   and the shipped program both carry. What the round trip does not carry is the spec's output set: its two contracts
   keep no records and emit no events, so an event output and a value send have no supplier in the composer, and a
   contract that emits inside one of two entries is still refused with "the contract emits an event that is not
-  attributed to a body". Delegatecall, mapping records and value sends are refused by name as before.
+  attributed to a body" when a sibling contract emits; the event region is sized by the contract's own bodies. A
+  record written by more than one frame in one transaction is the wall that remains between the round trip and the
+  spec's output set: each writing master's own code reconstructs its record and requires the transaction to carry
+  that commitment, so only a record's last write can satisfy it, while the settlement chain the validator decides is
+  right for the same transaction. A master whose witness block carries both a call section and an event list stalls
+  the derivation at its call site. Delegatecall, mapping records and value sends are refused by name as before.
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.

@@ -1014,9 +1014,15 @@ export function analyzeFixedBchEffectRecipes(
         snapshotEffects(
           statement.expression, environment, continuationActivation, continuationSupported, unsafe,
         );
+        // A require has no successful false continuation: the VM rejects the entire transaction. It is not
+        // an optional transfer-selection branch and need not be replayed by the SDK (e.g. a signature check
+        // or authenticated external result). Still snapshot effects in its expression and invalidate any
+        // stateful helper calls above. Retain the existing narrowing optimization for replayable guards, but
+        // an opaque precondition cannot make a previously known success-path activation opaque.
         const condition = !unsafe ? recipe(statement.expression, environment) : undefined;
-        continuationSupported = continuationSupported && condition?.resultType === 'bool';
-        continuationActivation = condition ? conjunction(continuationActivation, condition) : undefined;
+        if (condition?.resultType === 'bool') {
+          continuationActivation = conjunction(continuationActivation, condition);
+        }
         continue;
       }
       if (statement instanceof BranchNode) {

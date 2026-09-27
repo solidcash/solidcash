@@ -354,30 +354,42 @@ function keyOperandUnavailable(node: ExpressionNode, constants: ReadonlySet<stri
 /**
  * The batch a body can settle from its own frame, or undefined for a shape the derivation does not cover.
  *
- * One collection is written, every one of its entry accesses is one write to a distinct target with at most the
- * read of that same target beside it, each target's key is one value the body holds where the derivation runs (a
- * bare parameter, the frame's sender, or a compile-time expression), and no target aliases another at run time.
- * Under those conditions the segment declares one record group per target in write order, so the master can read
- * the group back and derive each target's operands — and a read in the same access resolves from the same group.
+ * Every one of a body's entry accesses is one write to a distinct target with at most the read of that same
+ * target beside it, each target's key is one value the body holds where the derivation runs (a bare parameter, the
+ * frame's sender, or a compile-time expression), and no target aliases another at run time. Under those conditions
+ * the segment declares one record group per target, in the order the batches and their targets are listed here, so
+ * the master can read each group back and derive that target's operands — and a read in the same access resolves
+ * from the same group.
+ *
+ * A body may write several collections: `balances[to] += amount; allowances[owner][spender] -= amount` is one
+ * execution over two of them, and the union of their created records is the trailing region the body declares. The
+ * groups are read in the order this returns, so a plan that lays them out in another order is refused by the slot
+ * each group is matched against rather than settled against the wrong node.
  */
-function derivableTargetBatch(
+function derivableTargetBatches(
   entry: FunctionDefinitionNode,
   constants: ReadonlySet<string>,
-): DerivableTargetBatch | undefined {
+): readonly DerivableTargetBatch[] | undefined {
   const batches = entry.sortedBatchInfo ?? [];
-  if (batches.length !== 1) return undefined;
-  const batch = batches[0]!;
+  if (batches.length === 0) return undefined;
   const accesses = entry.entryAccesses ?? [];
-  if (accesses.length !== batch.slotIndices.length) return undefined;
-  for (const slot of batch.slotIndices) {
-    const access = accesses.find((candidate) => candidate.slotIndex === slot);
-    if (access === undefined) return undefined;
-    if (!isOneWrite(access.operations)) return undefined;
-    if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
-      || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
-    if (resolveBatchKeys(entry, slot, constants).kind !== 'keys') return undefined;
+  const written = batches.reduce((total, batch) => total + batch.slotIndices.length, 0);
+  if (accesses.length !== written) return undefined;
+  const derivable: DerivableTargetBatch[] = [];
+  for (const batch of batches) {
+    for (const slot of batch.slotIndices) {
+      const access = accesses.find((candidate) => candidate.slotIndex === slot);
+      if (access === undefined) return undefined;
+      if (!isOneWrite(access.operations)) return undefined;
+      if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
+        || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
+      if (resolveBatchKeys(entry, slot, constants).kind !== 'keys') return undefined;
+    }
+    derivable.push({
+      slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true,
+    });
   }
-  return { slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true };
+  return derivable;
 }
 
 /**
@@ -425,17 +437,20 @@ export function derivableBatchWitnessNames(
   entry: FunctionDefinitionNode,
   constants: ReadonlySet<string>,
 ): Set<string> | undefined {
-  const batch = derivableTargetBatch(entry, constants);
-  if (batch === undefined) return undefined;
+  const batches = derivableTargetBatches(entry, constants);
+  if (batches === undefined) return undefined;
   const names = new Set<string>();
-  for (const slot of batch.slots) {
-    for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
-      if (kind === 'Trailing') continue;
-      names.add(batchDerivationSlotName(kind, slot));
+  for (const batch of batches) {
+    for (const slot of batch.slots) {
+      for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+        if (kind === 'Trailing') continue;
+        names.add(batchDerivationSlotName(kind, slot));
+      }
+      if (batch.wasLinear) names.add(`__internal__vmapBatchRank_${slot}`);
     }
-    if (batch.wasLinear) names.add(`__internal__vmapBatchRank_${slot}`);
+    if (batch.wasLinear) names.add(`__internal__vmapBatchRows_${batch.collection}`);
   }
-  if (batch.wasLinear) names.add(`__internal__vmapBatchRows_${batch.collection}`);
+  // The trailing region is the body's, so the created-record count it declares is one value over every collection.
   names.add(batchDerivationSlotName('Trailing', 0));
   return names;
 }
@@ -444,11 +459,11 @@ export function derivableBatchWitnessNames(
  * Why a body's sorted-batch writes cannot be settled from its own frame, or undefined when they can.
  *
  * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
- * from the records its own frame declares, which it can do for one collection whose every entry is one write to a
- * distinct target whose key the body holds where the derivation runs, with at most the read of that same target
- * beside it. Anything wider — several collections, a batched or aliased write, a read of an entry the execution
- * does not write, a key the body computes rather than holds — makes the record a segment declares, or the value it
- * carries, a fact the frame does not fix. Each refusal names the access and the fact that stops it.
+ * from the records its own frame declares, which it can do for every collection the body writes when each entry is
+ * one write to a distinct target whose key the body holds where the derivation runs, with at most the read of that
+ * same target beside it. Anything wider — a batched or aliased write, a read of an entry the execution does not
+ * write, a key the body computes rather than holds — makes the record a segment declares, or the value it carries,
+ * a fact the frame does not fix. Each refusal names the access and the fact that stops it.
  */
 function unsupportedBatchWriteShape(
   entry: FunctionDefinitionNode,
@@ -457,13 +472,9 @@ function unsupportedBatchWriteShape(
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length === 0) return undefined;
   if (derivableBatchWitnessNames(entry, constants) !== undefined) return undefined;
-  if (batches.length !== 1) {
-    return `the body writes ${batches.length} mapping collections in one execution, and a master derives the `
-      + 'sorted-batch operands one collection at a time';
-  }
-  const batch = batches[0]!;
   const accesses = entry.entryAccesses ?? [];
-  for (const slot of batch.slotIndices) {
+  const slots = batches.flatMap((batch) => batch.slotIndices);
+  for (const slot of slots) {
     const access = accesses.find((candidate) => candidate.slotIndex === slot);
     if (access === undefined) return `the body writes a mapping at slot ${slot} with no entry access to read`;
     if (!isOneWrite(access.operations)) {
@@ -481,8 +492,8 @@ function unsupportedBatchWriteShape(
     const resolved = resolveBatchKeys(entry, slot, constants);
     if (resolved.kind === 'refusal') return resolved.reason;
   }
-  if (accesses.length !== batch.slotIndices.length) {
-    return `the body touches ${accesses.length} mapping entries and writes ${batch.slotIndices.length} of them, `
+  if (accesses.length !== slots.length) {
+    return `the body touches ${accesses.length} mapping entries and writes ${slots.length} of them, `
       + 'and a master derives the operands only when every entry is one of the batch targets';
   }
   return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '

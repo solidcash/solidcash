@@ -3188,7 +3188,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The direct convention receives these per logical target from its SDK; a per-call master has no such argument
    * list, but its frame declares the records the write touches. Each target's operands are derived from the
    * target's runtime key and the block, registered as tracked slots the existing verification then consumes
-   * unchanged. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
+   * unchanged. A body that writes several collections derives them in one walk, in the order the frame declares
+   * their records, because the trailing region the record count describes belongs to the body rather than to one
+   * collection. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
    * witnesses, because a key the body computes is a value only the running code holds.
    *
    * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or a compile-time
@@ -3210,73 +3212,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    for (const batch of batches) {
-      const slots = batch.slotIndices;
-      // One list of keys per target: a nested `m[a][b]` write carries two, and the slot hashes both.
-      const keys = slots.map((slot) => perCallBatchKeys(node, slot, constants) ?? []);
-      // A pushed key's name carries its target and its position, so a key two targets share is pushed once and
-      // found twice.
-      const pushedName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
-      // Push every compile-time expression key first: each pushed value sits above the frame, so a depth read
-      // before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
-      const pushedKeys: { name: string }[] = [];
-      for (const [index, slot] of slots.entries()) {
-        for (const [keyIndex, key] of keys[index]!.entries()) {
-          if (key.expression === undefined) continue;
-          const before = this.stack.length;
-          this.visit(key.expression);
-          if (this.stack.length !== before + 1) {
-            throw new SolidcDiagnosticError(
-              'PER_CALL_CODEGEN_UNAVAILABLE',
-              `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
-              + 'leave one value on the stack',
-              { function: node.name, slot },
-            );
-          }
-          // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
-          const name = pushedName(slot, keyIndex);
-          this.stack[0] = name;
-          pushedKeys.push({ name });
+    // Every collection's targets, in the order the frame declares their records: a body that writes two of them
+    // is one walk, because the created-record count is the body's region rather than one collection's.
+    const slots = batches.flatMap((batch) => batch.slotIndices);
+    // One list of keys per target: a nested `m[a][b]` write carries two, and the slot hashes both.
+    const keys = slots.map((slot) => perCallBatchKeys(node, slot, constants) ?? []);
+    // A pushed key's name carries its target and its position, so a key two targets share is pushed once and
+    // found twice.
+    const pushedName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
+    // Push every compile-time expression key first: each pushed value sits above the frame, so a depth read
+    // before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
+    const pushedKeys: { name: string }[] = [];
+    for (const [index, slot] of slots.entries()) {
+      for (const [keyIndex, key] of keys[index]!.entries()) {
+        if (key.expression === undefined) continue;
+        const before = this.stack.length;
+        this.visit(key.expression);
+        if (this.stack.length !== before + 1) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
+            + 'leave one value on the stack',
+            { function: node.name, slot },
+          );
         }
+        // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
+        const name = pushedName(slot, keyIndex);
+        this.stack[0] = name;
+        pushedKeys.push({ name });
       }
-      const keyDepths = keys.map((targetKeys, index) => {
-        const slot = slots[index]!;
-        return targetKeys.map((key, keyIndex) => {
-          const name = key.expression !== undefined ? pushedName(slot, keyIndex)
-            : key.frameSlot !== undefined ? key.frameSlot : key.paramName;
-          const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
-          if (keyDepth < 0) {
-            throw new SolidcDiagnosticError(
-              'PER_CALL_CODEGEN_UNAVAILABLE',
-              `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
-              + `'${node.name}': its key ${keyIndex} is not on the stack where the derivation runs`,
-              { function: node.name, slot },
-            );
-          }
-          return keyDepth;
-        });
+    }
+    const keyDepths = keys.map((targetKeys, index) => {
+      const slot = slots[index]!;
+      return targetKeys.map((key, keyIndex) => {
+        const name = key.expression !== undefined ? pushedName(slot, keyIndex)
+          : key.frameSlot !== undefined ? key.frameSlot : key.paramName;
+        const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
+        if (keyDepth < 0) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
+            + `'${node.name}': its key ${keyIndex} is not on the stack where the derivation runs`,
+            { function: node.name, slot },
+          );
+        }
+        return keyDepth;
       });
-      const script = slots.length === 1
-        ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, callCount: this.perCallCallCount })
-        : buildBatchTargetsDerivationScript({ keyDepths, callCount: this.perCallCallCount });
-      this.emit([...script], loc);
-      // Deepest first, so the tracked names line up with the values the script left above the frame.
-      for (const slot of slots) {
-        for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
-          if (kind === 'Trailing') continue;
-          this.pushToStack(batchDerivationSlotName(kind, slot));
-        }
+    });
+    const script = slots.length === 1
+      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, callCount: this.perCallCallCount })
+      : buildBatchTargetsDerivationScript({ keyDepths, callCount: this.perCallCallCount });
+    this.emit([...script], loc);
+    // Deepest first, so the tracked names line up with the values the script left above the frame.
+    for (const slot of slots) {
+      for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
+        if (kind === 'Trailing') continue;
+        this.pushToStack(batchDerivationSlotName(kind, slot));
       }
-      this.pushToStack(batchDerivationSlotName('Trailing', 0));
-      // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
-      // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
-      for (const { name } of pushedKeys) {
-        const depth = this.getStackIndex(name);
-        this.emit(encodeInt(BigInt(depth)), loc);
-        this.emit(Op.OP_ROLL, loc);
-        this.emit(Op.OP_DROP, loc);
-        this.removeFromStack(depth);
-      }
+    }
+    this.pushToStack(batchDerivationSlotName('Trailing', 0));
+    // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
+    // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
+    for (const { name } of pushedKeys) {
+      const depth = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(depth)), loc);
+      this.emit(Op.OP_ROLL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(depth);
     }
   }
 

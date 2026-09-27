@@ -312,11 +312,11 @@ function keyOperandUnavailable(node: ExpressionNode, constants: ReadonlySet<stri
 /**
  * The batch a body can settle from its own frame, or undefined for a shape the derivation does not cover.
  *
- * One collection is written, every one of its entry accesses is the same lone unconditional write to a distinct
- * target, each target's key is one value the body holds where the derivation runs (a bare parameter, the frame's
- * sender, or a compile-time expression), and no target aliases another at run time. Under those conditions the
- * segment declares one record group per target in write order, so the master can read the group back and derive
- * each target's operands.
+ * One collection is written, every one of its entry accesses is one write to a distinct target with at most the
+ * read of that same target beside it, each target's key is one value the body holds where the derivation runs (a
+ * bare parameter, the frame's sender, or a compile-time expression), and no target aliases another at run time.
+ * Under those conditions the segment declares one record group per target in write order, so the master can read
+ * the group back and derive each target's operands — and a read in the same access resolves from the same group.
  */
 function derivableTargetBatch(
   entry: FunctionDefinitionNode,
@@ -330,13 +330,27 @@ function derivableTargetBatch(
   for (const slot of batch.slotIndices) {
     const access = accesses.find((candidate) => candidate.slotIndex === slot);
     if (access === undefined) return undefined;
-    if (access.operations.length !== 1 || access.operations[0] !== 'write') return undefined;
+    if (!isOneWrite(access.operations)) return undefined;
     if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
       || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
     if (access.keyParams.length !== 1) return undefined;
     if (resolveBatchKey(entry, slot, constants).kind !== 'key') return undefined;
   }
   return { slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true };
+}
+
+/**
+ * Whether an access is one write, optionally beside the read the write's own expression performs.
+ *
+ * A read of a sorted entry and the write of that same entry are one transition on one node: the frame declares one
+ * record group for the target, which fixes both the value the write started from and the node it produces. A read
+ * of an entry the execution does not write is a different matter — nothing in the frame fixes the value it saw —
+ * and stays refused.
+ */
+function isOneWrite(operations: readonly string[]): boolean {
+  const reads = operations.filter((operation) => operation === 'read').length;
+  const writes = operations.filter((operation) => operation === 'write').length;
+  return writes === 1 && reads <= 1 && reads + writes === operations.length;
 }
 
 /**
@@ -358,11 +372,12 @@ export function perCallBatchKey(
  * The sorted-batch operands a per-call master derives from its own frame, or undefined for a shape it cannot.
  *
  * The derivation reads the master's witness block back and leaves, per target, the four operands the sorted-batch
- * verification consumes and, once, the trailing count. It covers one collection whose every entry is one
- * unconditional write to a distinct target whose key the body holds where the derivation runs, in place or spliced
- * in: the target's record group is then the group the segment declares for it, so the frame fixes which transition
- * ran. A dense linear batch's own rank and row operands are not part of that derivation, so the master drops them
- * and settles the batch through the general arm instead. Anything wider is left refused rather than derived
+ * verification consumes and, once, the trailing count. It covers one collection whose every entry is one write to a
+ * distinct target whose key the body holds where the derivation runs, in place or spliced in, together with the
+ * read of that same target when the write's own expression performs one: the target's record group is then the
+ * group the segment declares for it, so the frame fixes which transition ran and the value it started from. A
+ * dense linear batch's own rank and row operands are not part of that derivation, so the master drops them and
+ * settles the batch through the general arm instead. Anything wider is left refused rather than derived
  * approximately.
  */
 export function derivableBatchWitnessNames(
@@ -388,11 +403,11 @@ export function derivableBatchWitnessNames(
  * Why a body's sorted-batch writes cannot be settled from its own frame, or undefined when they can.
  *
  * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
- * from the records its own frame declares, which it can do for one collection whose every entry is one
- * unconditional write to a distinct target whose key the body holds where the derivation runs. Anything wider —
- * several collections, a batched or aliased write, a key the body computes rather than holds — makes the record a
- * segment declares, or the transition it proves, a fact the frame does not fix. Each refusal names the access and
- * the fact that stops it.
+ * from the records its own frame declares, which it can do for one collection whose every entry is one write to a
+ * distinct target whose key the body holds where the derivation runs, with at most the read of that same target
+ * beside it. Anything wider — several collections, a batched or aliased write, a read of an entry the execution
+ * does not write, a key the body computes rather than holds — makes the record a segment declares, or the value it
+ * carries, a fact the frame does not fix. Each refusal names the access and the fact that stops it.
  */
 function unsupportedBatchWriteShape(
   entry: FunctionDefinitionNode,
@@ -410,9 +425,10 @@ function unsupportedBatchWriteShape(
   for (const slot of batch.slotIndices) {
     const access = accesses.find((candidate) => candidate.slotIndex === slot);
     if (access === undefined) return `the body writes a mapping at slot ${slot} with no entry access to read`;
-    if (access.operations.length !== 1 || access.operations[0] !== 'write') {
+    if (!isOneWrite(access.operations)) {
       return `the body writes a mapping at slot ${slot} as a ${access.operations.join('/')}, and a master derives `
-        + 'the sorted-batch operands only for one unconditional write per target';
+        + 'the sorted-batch operands only for one write per target, with at most the read of that same target '
+        + 'beside it';
     }
     if (access.inLoop === true) {
       return `the body writes a mapping at slot ${slot} in a loop, so the records it declares are not a fixed set`;

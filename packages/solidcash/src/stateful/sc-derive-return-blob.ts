@@ -19,6 +19,7 @@ import {
   probeRequireStatement,
 } from './external-return-encoding.js';
 import { evaluateProbeTrace } from './faithful-probe-trace.js';
+import { extractHashedReturnCommitmentAtOutput } from './hashed-return-probe.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   decodeScriptNumber,
@@ -310,6 +311,8 @@ export function deriveReturnBlob(
     });
   }
   const pending = extractPendingReturnCommitmentAtOutput(trace, returnOutputIndex);
+  const hashed = extractHashedReturnCommitmentAtOutput(trace, returnOutputIndex);
+  if (hashed !== undefined) return hashed;
   const commitment = commitments?.[0] ?? pending;
   return commitment === undefined ? undefined : hexToBin(commitment);
 }

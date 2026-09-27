@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 310 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 312 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 867 tests (114 + 348 + 405), all passing. The two package totals are full-config runs of
+Total: 869 tests (114 + 350 + 405), all passing. The two package totals are full-config runs of
 `vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
 (`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
 table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,
@@ -195,11 +195,10 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
   (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `6e134d6a7` it is `unicrow/UnicrowClaim.sol` and a
-  call whose occurrence is not fixed: "the call to 'governanceAddress' runs conditionally, repeatedly or through a
-  run-time target or selector, so its call records are not a fixed set the head can check" — the same unit reported
-  the round before with the return-event output operand, so that operand is admitted and stripped and a call the
-  head cannot count is what the project reports first. The
+  harness compiles the built compiler rather than the sources. At `1e61569b4` it is `unicrow/UnicrowClaim.sol` and a
+  call whose occurrence is not fixed: "the call to 'arbitrationCalculation' runs conditionally or repeatedly, so its
+  call records are not a fixed set the head can check" — a call inside a branch of an internal view function, which
+  the head cannot bind until a body indexes its records by a run-time count. The
   ladder stands at "blocked at compile" and no title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state

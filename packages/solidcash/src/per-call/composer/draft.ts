@@ -130,6 +130,14 @@ export interface DraftMaster {
   readonly sends: readonly number[];
   readonly argumentPushes: readonly Uint8Array[];
   readonly redeemScript: Uint8Array;
+  /**
+   * True when this program dispatches over several entries, so the call data is the selector its own dispatcher
+   * consumes rather than something a caller recorded.
+   *
+   * A master nobody calls was entered by a user, and a user's entry carries no call data unless the program has a
+   * dispatcher to select an entry with.
+   */
+  readonly dispatches?: boolean;
 }
 
 /** The whole plan the composer lays out, assembles and hands to the derivation. */
@@ -186,6 +194,7 @@ function toCompositionPlan(plan: CompositionDraftPlan): CompositionPlan {
       sends: master.sends,
       argumentPushes: master.argumentPushes,
       redeemScript: master.redeemScript,
+      ...(master.dispatches === undefined ? {} : { dispatches: master.dispatches }),
     })),
     ...(plan.validator === undefined ? {} : { validator: plan.validator }),
   };

@@ -74,6 +74,8 @@ export interface PlannedMaster {
   readonly argumentPushes: readonly Uint8Array[];
   /** The master's redeem script: the category pin followed by the contract code. */
   readonly redeemScript: Uint8Array;
+  /** True when the program dispatches over several entries, so a user's call data selects one. */
+  readonly dispatches?: boolean;
 }
 
 /** An input that is not a master: the users that entered the composition. */
@@ -247,7 +249,9 @@ function assertCallDataAgrees(plan: CompositionPlan): void {
   for (const master of plan.masters) {
     const committed = recorded.get(master.master);
     if (committed === undefined) {
-      if (master.argumentPushes.length > 0) {
+      // A user's entry carries no call data unless the program dispatches over several entries, in which case the
+      // selector the user's call data leads with is what picks the entry the user asked for.
+      if (master.argumentPushes.length > 0 && master.dispatches !== true) {
         throw new PerCallEncodingError(
           `"${master.master}" is entered by a user, so it carries no call data`,
         );

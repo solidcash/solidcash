@@ -473,7 +473,7 @@ export interface PerCallMasterShapeAssessment {
   readonly entryCalls?: readonly PerCallEntryCallSites[];
   /** How many call records every entry's tail holds, which is the count the master head's walk is fixed to. */
   readonly callCount?: number;
-  /** The event and send counts every entry fixes, which the master head checks. */
+  /** The event-region size and send count the master's tail fixes, which the master head checks. */
   readonly tail?: MasterTailShape;
 }
 
@@ -488,8 +488,8 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (contract.constructorDef) {
     // The constructor runs as one more selector-dispatched body behind the same head, so it is admitted exactly when
     // its body asks the head for nothing the head does not already carry: it makes no external call (the head's call
-    // records are the entries'), it emits no event and makes no send (the head checks one tail for every body), and
-    // it needs no side-car input the head does not locate.
+    // records are the entries'), it makes no send (the head fixes one send list for every body), and it needs no
+    // side-car input the head does not locate. Its event count is pinned by its own body against the head's region.
     const refusal = unsupportedConstructorShape(contract.constructorDef, constants);
     if (refusal !== undefined) return refuse(refusal);
   }
@@ -552,7 +552,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     return refuse('a verified-mapping write is derived from the segment the entry runs, but the master makes '
       + 'external calls, which split the execution into later segments');
   }
-  const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
+  const tail = derivePerCallTailShape(entryPoints, contract.constructorDef, input.emitsEvent);
   if (tail.reason !== undefined) return refuse(tail.reason);
   return { supported: true, entryCalls: calls.entryCalls, callCount: calls.callCount, tail: tail.tail };
 }
@@ -561,10 +561,12 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
  * Why a constructor body cannot share the master head, or undefined when it can.
  *
  * The constructor is dispatched like an entry point behind the one head, so it must ask the head for nothing the
- * head fixes for the entries instead: the call records are bound where each entry makes its own call, the event and
- * send counts are the tail the entries fix, and a side-car input is located by a hidden operand the head does not
- * supply. A body that only reads its arguments and the contract's own state, and writes that state, shares the head
- * unchanged; a constructor that only establishes the contract's immutable references is exactly that shape.
+ * head fixes for the entries instead: the call records are bound where each entry makes its own call, the send
+ * count is the tail the entries fix, and a side-car input is located by a hidden operand the head does not supply.
+ * Its own event count is pinned by its own body against the head's event region, so a constructor may emit events
+ * like any other body. A body that only reads its arguments and the contract's own state, and writes that state,
+ * shares the head unchanged; a constructor that only establishes the contract's immutable references is exactly
+ * that shape.
  */
 function unsupportedConstructorShape(
   constructorDef: FunctionDefinitionNode,
@@ -580,9 +582,6 @@ function unsupportedConstructorShape(
   if ((constructorDef.externalCalls?.length ?? 0) > 0 || (constructorDef.lowLevelCalls?.length ?? 0) > 0) {
     return 'the constructor makes an external call, but the master head fixes one set of call records for the '
       + 'entries and binds each record where that entry makes it';
-  }
-  if ((constructorDef.emitInfos?.length ?? 0) > 0 || (constructorDef.runtimeLoopEvents?.length ?? 0) > 0) {
-    return 'the constructor emits an event, but the master head fixes one tail for every body it runs';
   }
   if ((constructorDef.transferInfos?.length ?? 0) > 0 || (constructorDef.runtimeLoopTransfers?.length ?? 0) > 0) {
     return 'the constructor makes a value send, but the master head fixes one tail for every body it runs';
@@ -626,51 +625,50 @@ function compositeTypeName(type: Type): string {
   return 'a composite value';
 }
 
-/** The event and send counts a master's tail carries, or why a compiled entry cannot fix them. */
+/** The event-region size and send count a master's tail carries, or why a compiled body cannot fix them. */
 export interface PerCallTailDerivation {
   readonly tail?: MasterTailShape;
   readonly reason?: string;
 }
 
 /**
- * Derives the event and send counts a master's tail has to declare, from the entries the master runs.
+ * Derives the event-region size and send count a master's tail has to declare, from the bodies the master runs.
  *
- * A master has one head that checks one tail, so every entry must emit the same number of events; an entry that
- * emits from a loop leaves the count to the loop, which the head cannot fix. A value send is a listed send only
- * when its recipient is a user address and a call when it is a contract, and the recipient's lock type is a
- * run-time value, so the send list is not fixed by the source and a transfer is refused rather than guessed.
+ * A master has one head that parks a fixed-size event region, so the region is as large as the largest number of
+ * events any body emits; each body pins its own emit count against the block's declared count, so two bodies may
+ * emit different numbers. The constructor runs as one more body behind the head and counts here with the entries.
+ * A body that emits from a loop leaves its count to the loop, which the head cannot fix. A value send is a listed
+ * send only when its recipient is a user address and a call when it is a contract, and the recipient's lock type
+ * is a run-time value, so the send list is not fixed by the source and a transfer is refused rather than guessed.
  * Segments are not fixed here: the records a segment touches are decided by settlement, so the head walks each
  * segment's declared count.
  */
 export function derivePerCallTailShape(
   entryPoints: readonly FunctionDefinitionNode[],
+  constructorDef: FunctionDefinitionNode | undefined,
   emitsEvent: boolean,
 ): PerCallTailDerivation {
-  let eventCount = 0;
-  for (const [index, entry] of entryPoints.entries()) {
-    if ((entry.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(entry)) {
+  const bodies = constructorDef === undefined ? entryPoints : [...entryPoints, constructorDef];
+  let maxEventCount = 0;
+  for (const body of bodies) {
+    if ((body.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(body)) {
       return { reason: 'an event emitted from a loop makes the event count depend on the loop, so the master '
         + 'cannot fix how many events the tail holds' };
     }
-    const entryEventCount = entry.emitInfos?.length ?? 0;
-    if (index === 0) eventCount = entryEventCount;
-    else if (entryEventCount !== eventCount) {
-      return { reason: 'the entries emit different numbers of events, but a master has one head that checks one '
-        + 'event list' };
-    }
+    maxEventCount = Math.max(maxEventCount, body.emitInfos?.length ?? 0);
   }
-  if (emitsEvent && eventCount === 0) {
-    return { reason: 'the contract emits an event that is not attributed to an entry, so the master cannot fix '
+  if (emitsEvent && maxEventCount === 0) {
+    return { reason: 'the contract emits an event that is not attributed to a body, so the master cannot fix '
       + 'how many events the tail holds' };
   }
-  for (const entry of entryPoints) {
-    if ((entry.transferInfos?.length ?? 0) > 0 || (entry.runtimeLoopTransfers?.length ?? 0) > 0) {
+  for (const body of bodies) {
+    if ((body.transferInfos?.length ?? 0) > 0 || (body.runtimeLoopTransfers?.length ?? 0) > 0) {
       return { reason: 'a value send is a listed send only when its recipient is a user address and a call when '
         + 'it is a contract, and the recipient lock is a run-time value, so the master cannot fix how many sends '
         + 'the tail holds' };
     }
   }
-  return { tail: { eventCount, sendCount: 0 } };
+  return { tail: { maxEventCount, sendCount: 0 } };
 }
 
 /**

@@ -69,8 +69,10 @@ function masterProgram(options: MasterHeadOptions): { program: Uint8Array; lock:
       ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
     },
   );
-  // The head leaves the four frame values plus one output index per listed event for the body to consume.
-  const leaves = 4 + (options.tail?.eventCount ?? 0);
+  // The head leaves the four frame values plus the event region: the declared count above one slot per position,
+  // when the region holds any.
+  const eventRegionSize = options.tail?.maxEventCount ?? 0;
+  const leaves = 4 + (eventRegionSize > 0 ? eventRegionSize + 1 : 0);
   const program = new Uint8Array([
     ...filled,
     ...new Array<number>(leaves).fill(Opcodes.OP_DROP), Opcodes.OP_1,
@@ -186,12 +188,12 @@ function eventOutput(commitment: Uint8Array = new Uint8Array([1, 2, 3])): VmOutp
   return { lockingBytecode: EVENT_LOCK, valueSatoshis: PAYMENT, token: token(CATEGORY, 'none', commitment) };
 }
 
-const NO_EVENTS: MasterTailShape = { eventCount: 0, sendCount: 0 };
+const NO_EVENTS: MasterTailShape = { maxEventCount: 0, sendCount: 0 };
 
 describe('a master whose tail carries an event', () => {
   it('is accepted when the event sits at its listed output', () => {
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
+      tail: { maxEventCount: 1, sendCount: 0 },
       block: baseBlock({ events: [1] }),
       outputs: [eventOutput()],
     })).toStrictEqual({ accepted: true });
@@ -201,7 +203,7 @@ describe('a master whose tail carries an event', () => {
     const output = eventOutput();
     output.token = token(OTHER_CATEGORY, 'none', new Uint8Array([1, 2, 3]));
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
+      tail: { maxEventCount: 1, sendCount: 0 },
       block: baseBlock({ events: [1] }),
       outputs: [output],
     }).accepted).toBe(false);
@@ -210,7 +212,7 @@ describe('a master whose tail carries an event', () => {
   it('is refused when the listed output carries no token at all', () => {
     const output: VmOutput = { lockingBytecode: EVENT_LOCK, valueSatoshis: PAYMENT };
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
+      tail: { maxEventCount: 1, sendCount: 0 },
       block: baseBlock({ events: [1] }),
       outputs: [output],
     }).accepted).toBe(false);
@@ -220,7 +222,7 @@ describe('a master whose tail carries an event', () => {
     const output = eventOutput();
     output.token = token(CATEGORY, 'mutable', new Uint8Array([1, 2, 3]));
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
+      tail: { maxEventCount: 1, sendCount: 0 },
       block: baseBlock({ events: [1] }),
       outputs: [output],
     }).accepted).toBe(false);
@@ -229,7 +231,7 @@ describe('a master whose tail carries an event', () => {
   it('is refused when the listed output is not where the event sits', () => {
     // The NFT is at output 2 but the record names output 1, so the walk reads a lock with no token.
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
+      tail: { maxEventCount: 1, sendCount: 0 },
       block: baseBlock({ events: [1] }),
       outputs: [{ lockingBytecode: EVENT_LOCK, valueSatoshis: PAYMENT }, eventOutput()],
     }).accepted).toBe(false);
@@ -237,7 +239,7 @@ describe('a master whose tail carries an event', () => {
 
   it('is accepted when two events sit at two increasing outputs', () => {
     expect(verdict({
-      tail: { eventCount: 2, sendCount: 0 },
+      tail: { maxEventCount: 2, sendCount: 0 },
       block: baseBlock({ events: [1, 2] }),
       outputs: [eventOutput(new Uint8Array([1])), eventOutput(new Uint8Array([2]))],
     })).toStrictEqual({ accepted: true });
@@ -245,7 +247,7 @@ describe('a master whose tail carries an event', () => {
 
   it('is refused when two events name the same output', () => {
     expect(verdict({
-      tail: { eventCount: 2, sendCount: 0 },
+      tail: { maxEventCount: 2, sendCount: 0 },
       block: baseBlock({ events: [1, 1] }),
       outputs: [eventOutput(new Uint8Array([1])), eventOutput(new Uint8Array([2]))],
     }).accepted).toBe(false);
@@ -253,26 +255,36 @@ describe('a master whose tail carries an event', () => {
 
   it('is refused when the listed outputs are out of order', () => {
     expect(verdict({
-      tail: { eventCount: 2, sendCount: 0 },
+      tail: { maxEventCount: 2, sendCount: 0 },
       block: baseBlock({ events: [2, 1] }),
       outputs: [eventOutput(new Uint8Array([1])), eventOutput(new Uint8Array([2]))],
     }).accepted).toBe(false);
   });
 
-  it('is refused when the event count is not the one the entry fixes', () => {
-    // The head fixes one event, but the block lists none.
+  it('is refused when the block lists more events than the region holds', () => {
+    // The region holds one position, but the block declares two events; the count check refuses before the walk.
     expect(verdict({
-      tail: { eventCount: 1, sendCount: 0 },
-      block: baseBlock(),
-      outputs: [eventOutput()],
+      tail: { maxEventCount: 1, sendCount: 0 },
+      block: baseBlock({ events: [1, 2] }),
+      outputs: [eventOutput(new Uint8Array([1])), eventOutput(new Uint8Array([2]))],
     }).accepted).toBe(false);
+  });
+
+  it('is accepted when the block lists fewer events than the region holds', () => {
+    // The region holds two positions and the block declares one: the second position parks the sentinel, and the
+    // body behind the head pins its own count. The head itself leaves the region and accepts.
+    expect(verdict({
+      tail: { maxEventCount: 2, sendCount: 0 },
+      block: baseBlock({ events: [1] }),
+      outputs: [eventOutput()],
+    })).toStrictEqual({ accepted: true });
   });
 });
 
 describe('a master whose tail carries a value send', () => {
   it('is accepted when the send sits at a P2PKH output', () => {
     expect(verdict({
-      tail: { eventCount: 0, sendCount: 1 },
+      tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock({ sends: [1] }),
       outputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: PAYMENT }],
     })).toStrictEqual({ accepted: true });
@@ -280,7 +292,7 @@ describe('a master whose tail carries a value send', () => {
 
   it('is refused when the listed output is not a P2PKH lock', () => {
     expect(verdict({
-      tail: { eventCount: 0, sendCount: 1 },
+      tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock({ sends: [1] }),
       outputs: [{ lockingBytecode: OTHER_LOCK, valueSatoshis: PAYMENT }],
     }).accepted).toBe(false);
@@ -288,7 +300,7 @@ describe('a master whose tail carries a value send', () => {
 
   it('is refused when the send count is not the one the entry fixes', () => {
     expect(verdict({
-      tail: { eventCount: 0, sendCount: 1 },
+      tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock(),
       outputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: PAYMENT }],
     }).accepted).toBe(false);
@@ -305,7 +317,7 @@ describe('a master whose tail carries a segment section', () => {
       segments: [[{ in: MASTER_INDEX, out: MASTER_INDEX, viewIn: new Uint8Array([1]), viewOut: new Uint8Array([2]) }]],
     });
     expect(verdict({
-      tail: { segmentRecordCounts: [1], eventCount: 0, sendCount: 0 },
+      tail: { segmentRecordCounts: [1], maxEventCount: 0, sendCount: 0 },
       block,
       outputs: [],
     }).accepted).toBe(true);
@@ -330,7 +342,7 @@ describe('a master whose tail carries a segment section', () => {
       segments: [[{ in: MASTER_INDEX, out: USER_INDEX, viewIn: new Uint8Array(0), viewOut: new Uint8Array(0) }]],
     });
     expect(verdict({
-      tail: { segmentRecordCounts: [1], eventCount: 0, sendCount: 0 },
+      tail: { segmentRecordCounts: [1], maxEventCount: 0, sendCount: 0 },
       block,
       blockBytes: encodeBlockWithSegmentCount(block, 1),
       outputs: [],

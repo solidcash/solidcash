@@ -18,8 +18,10 @@
  * and a composed one walks past the call records, whose own checks the sites that made them emit into the body.
  * The walk consumes everything but
  * `[origin, sender, value, self]`, which the caller registers as tracked slots. `origin` is the locking bytecode
- * of `originRef`, i.e. `tx.origin`. Each listed event's output index is left as its own tracked slot above those
- * frame values, so the body checks the payload it computed against the output the witness listed.
+ * of `originRef`, i.e. `tx.origin`. Above those frame values the walk leaves the fixed-size event region: the
+ * declared event count and, below it, one slot per position up to the region size, each holding the listed output
+ * index or the no-index sentinel. A body reads the count it must pin and the output index of the event its emit
+ * names, so it checks the payload it computed against the output the witness listed.
  *
  * A master admits the standalone shape by default. A master that reserves the validator hash slot admits the
  * composed shape: it recognises the validator its `validatorRef` names, admits the frame kinds a callee runs, and
@@ -60,6 +62,17 @@ const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by t
  */
 export function eventOutputSlotName(emitIndex: number): string {
   return `__internal__frameEventOutput_${emitIndex}`;
+}
+
+/**
+ * The tracked slot the body reads the number of events the witness block declares.
+ *
+ * The head parks the block's declared event count above the event output slots it leaves. A body pins the number
+ * of events it emits against this slot, so a block may not declare events no body computed and a body may not
+ * emit one the block does not list.
+ */
+export function eventCountSlotName(): string {
+  return '__internal__frameEventCount';
 }
 
 /**
@@ -314,14 +327,19 @@ class HeadEmitter {
   }
 
   /**
-   * Moves the listed event output indices off the alt stack, where the tail walk parked them, so the body can read
-   * the one its emit names.
+   * Moves the event region off the alt stack, where the tail walk parked it, so a body can read the count it must
+   * pin and the output index of the one event its emit names.
    *
-   * Popping in reverse leaves the first event's index topmost, above the frame values the checks left, which is the
-   * order the body's tracked slots are registered in.
+   * The region is the declared count on top of exactly `maxEventCount` positions below it. The count is popped
+   * first and left deepest in the region, so the positions come back in reverse and the first event's index ends
+   * up topmost, above the frame values the checks left; that is the order the body's tracked slots are registered
+   * in.
    */
   private leaveEventSlots(): void {
-    const count = this.tailShape.eventCount;
+    const count = this.tailShape.maxEventCount;
+    if (count === 0) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(eventCountSlotName());
     for (let popped = 1; popped <= count; popped += 1) {
       this.emitOp(Opcodes.OP_FROMALTSTACK);
       this.push(eventOutputSlotName(count - popped));

@@ -21,8 +21,10 @@
  * checked: an event output carries the contract's category with no capability, and a send output is a user's
  * P2PKH lock. The last check is that nothing follows the final field, which is what makes the walk exact.
  *
- * The event walk leaves each listed output index parked on the alt stack, in list order, so the head can hand
- * them to the body as tracked slots instead of dropping them with the rest of the tail.
+ * The event walk leaves a fixed-size region parked on the alt stack: one slot per position up to `maxEventCount`,
+ * holding the listed output index where the block lists one and the no-index sentinel past its declared count,
+ * with the declared count itself above them. The head hands those to the body as tracked slots, so a body reads
+ * the index of its own `emitIndex`-th listed event and pins the number of events it emitted against the count.
  *
  * The first segment's walk can park its declared record indices the same way, so a body reads the data-NFT block
  * where the frame's own block declared it rather than at a fixed offset from the input the frame runs on. The
@@ -91,18 +93,20 @@ export type SiteArgument =
  *
  * `segmentRecordCounts`, when present, is the record count every segment must declare, in segment order. It is
  * absent when the records a segment touches are decided by settlement rather than by the entry, and the walk then
- * consumes each segment's declared count. `eventCount` and `sendCount` are the event and send lists an entry
- * fixes; a master with no call, event or send carries none of both.
+ * consumes each segment's declared count. `maxEventCount` is the size of the event region the head parks: the
+ * largest number of events any body the master runs emits. The block's own declared count is checked against it
+ * and each body pins the count it emits, so bodies may emit different numbers. `sendCount` is the send list an
+ * entry fixes; a master with no call, event or send carries none of them.
  */
 export interface MasterTailShape {
   readonly segmentRecordCounts?: readonly number[];
-  readonly eventCount: number;
+  readonly maxEventCount: number;
   readonly sendCount: number;
 }
 
 /** A tail carrying no events and no sends, with every segment declaring no record. */
 export function zeroTailShape(callCount: number): MasterTailShape {
-  return { segmentRecordCounts: new Array<number>(callCount + 1).fill(0), eventCount: 0, sendCount: 0 };
+  return { segmentRecordCounts: new Array<number>(callCount + 1).fill(0), maxEventCount: 0, sendCount: 0 };
 }
 
 /** The `u16` sentinel a record entry uses for an input or output index it does not have. */
@@ -141,9 +145,10 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * value, in which case the recorded value is parked on the alt stack for the body to compare against what its
  * own code computed. The call count must equal `callCount` (a loop that varies it is not emitted), and each
  * record is walked past — the site that made the call binds it in the caller's own body. The segment count
- * must be the call count plus one, and every segment's records are walked. The event and send counts must equal
- * the shape's, and each listed output is checked. The remaining tail must be empty, so nothing follows the last
- * field.
+ * must be the call count plus one, and every segment's records are walked. The block's declared event count must
+ * be at most `maxEventCount`, that many listed outputs are checked and the region is padded with the no-index
+ * sentinel to `maxEventCount` slots, and the send count must equal the shape's. The remaining tail must be empty,
+ * so nothing follows the last field.
  *
  * With `keepsRecordIndices` the first segment's declared record indices are parked on the alt stack, input index
  * first, beneath the event walk's own parkings; a segment that declares no record parks the no-index sentinel
@@ -171,8 +176,7 @@ export function verifyTailScript(
   for (let segment = 0; segment < callCount + 1; segment += 1) {
     bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment], keepsRecordIndices && segment === 0));
   }
-  bytes.push(...requireU16Equals(tail.eventCount));
-  if (tail.eventCount > 0) bytes.push(...eventOutputSection(tail.eventCount));
+  bytes.push(...eventSection(tail.maxEventCount));
   bytes.push(...requireU16Equals(tail.sendCount));
   if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
   bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
@@ -307,29 +311,58 @@ function requireRecordShape(sentinel: Uint8Array = INDEX_NONE_BYTES): number[] {
 }
 
 /**
- * Consumes the event list, requiring each output to carry the contract's category with no capability.
+ * Consumes the event list into a fixed-size region, requiring each listed output to carry the contract's category
+ * with no capability.
  *
- * The category comes from the active input's own token, which the prologue already proved is the contract's
- * category with minting capability; dropping that capability byte leaves the pin an immutable token carries. The
- * listed outputs must strictly increase, so no two events share one and their order is fixed.
+ * The block declares how many events it lists, which may be any number up to `maxEventCount` because two bodies
+ * behind the head may emit different numbers. The count is read, required to be at most `maxEventCount`, and then
+ * `maxEventCount` positions are filled: a position the block declares an output for is read from the tail and
+ * checked, and a position past the declared count parks the no-index sentinel, so a slot a body reads never hands
+ * back another output's index. The category comes from the active input's own token, which the prologue already
+ * proved is the contract's category with minting capability; dropping that capability byte leaves the pin an
+ * immutable token carries. The listed outputs must strictly increase, so no two events share one and their order
+ * is fixed.
  *
- * Each listed index is left parked on the alt stack, deepest first, so the caller can move them to the main stack
- * as tracked slots. The running previous index used for the ordering check is a second copy of the same value, so
- * it is popped and dropped once the list is consumed and only the parked copies remain.
+ * The running previous index used for the ordering check sits on the alt stack and is refreshed by both arms, so
+ * it is always on top and is popped once the region is consumed. Each position's value is parked below it, deepest
+ * first, and the declared count is parked last, above them all; the caller moves them to the main stack as tracked
+ * slots in the order the bodies read them.
  */
-function eventOutputSection(count: number): number[] {
-  const bytes: number[] = [Opcodes.OP_1NEGATE, Opcodes.OP_TOALTSTACK];
-  for (let event = 0; event < count; event += 1) {
+function eventSection(maxEventCount: number): number[] {
+  if (maxEventCount === 0) return requireU16Equals(0);
+  const bytes: number[] = [
+    // Read the declared count as a VM number, leaving `[declared, tail]`.
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+    // Require it not to exceed the region: `declared <= maxEventCount`.
+    Opcodes.OP_DUP,
+    ...encodeDataPush(scriptNumber(maxEventCount)), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY,
+    // Put the tail on top, leaving `[tail, declared]`: the walk reads entries from the front of the tail and the
+    // running previous index sits on the alt stack.
+    Opcodes.OP_SWAP,
+    Opcodes.OP_1NEGATE, Opcodes.OP_TOALTSTACK,
+  ];
+  for (let position = 0; position < maxEventCount; position += 1) {
+    // `declared > position ?`: read and check the listed output, else park the sentinel.
     bytes.push(
+      Opcodes.OP_1, Opcodes.OP_PICK,
+      ...encodeDataPush(scriptNumber(position)), Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
       ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
       Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
       ...immutableCategoryScript(), Opcodes.OP_EQUALVERIFY,
       Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY,
       // Keep the index for the walker, then hand the value back as the running previous index.
       Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_ELSE,
+      // Park the no-index sentinel and put the running previous index back on top.
+      Opcodes.OP_FROMALTSTACK,
+      ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_ENDIF,
     );
   }
+  // Drop the running previous index, then park the declared count above the positions.
   bytes.push(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP);
+  bytes.push(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
   return bytes;
 }
 

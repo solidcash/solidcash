@@ -274,7 +274,8 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
-  buildMasterHeadScript, eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName,
+  buildMasterHeadScript, eventCountSlotName, eventOutputSlotName, recordInputIndexSlotName,
+  recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
@@ -984,6 +985,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallReservesValidatorHash = false;
   /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
   private perCallReturnsValue = false;
+  /** The size of the head's parked event region: the largest event count any body behind the head emits. */
+  private perCallMaxEventCount = 0;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -2932,9 +2935,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC];
     const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
     const callDataSelectorUnconsumed = dispatchBodyCount === 1;
-    // The head checks the whole tail, so the entry has to fix the event and send counts it holds. The shape is
-    // derived from the entries themselves; a shape whose counts the entries do not fix refuses by name here.
-    const tail = derivePerCallTailShape(entries, node.emitsEvent);
+    // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
+    // dispatcher can run, the constructor included, fixes them; a shape whose counts the bodies do not fix refuses
+    // by name here.
+    const tail = derivePerCallTailShape(entries, node.constructorDef, node.emitsEvent);
     if (tail.tail === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
@@ -2951,6 +2955,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // empty.
     const returnsValue = entries.some((candidate) => candidate.returnTypes.length > 0);
     this.perCallReturnsValue = returnsValue;
+    this.perCallMaxEventCount = tail.tail.maxEventCount;
     this.emit([...buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -2969,10 +2974,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('__internal__frameValue');
     this.pushToStack('__internal__frameSender');
     this.pushToStack('__internal__frameOrigin');
-    // The head leaves each listed event's output index above the frame values, first event topmost. Registering
-    // them in reverse lets an inlined body read the index the witness listed instead of a block-layout offset.
-    for (let index = tail.tail.eventCount - 1; index >= 0; index -= 1) {
-      this.pushToStack(eventOutputSlotName(index));
+    // Above the frame values the head leaves the event region: the declared count, then one output slot per
+    // position up to the region size, first position topmost. Registering the count first and the positions in
+    // reverse lets an inlined body read the count it pins and each emit's listed output index at a fixed depth.
+    if (tail.tail.maxEventCount > 0) {
+      this.pushToStack(eventCountSlotName());
+      for (let index = tail.tail.maxEventCount - 1; index >= 0; index -= 1) {
+        this.pushToStack(eventOutputSlotName(index));
+      }
     }
     // The declared record indices sit above the event slots, output side registered first so the input side is
     // the outer of the two, which is the one a read reaches for.
@@ -3055,6 +3064,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     return sites;
+  }
+
+  /**
+   * Requires the witness block's declared event count to equal the number of events this body emits.
+   *
+   * The head parks the block's declared count as a tracked slot, and a body that emits `n` events must see exactly
+   * `n`: a block cannot list events no body computed, and a body cannot emit an event the block does not list. The
+   * check is skipped for a body that carries no such slot, which is a master whose bodies all emit nothing: its
+   * head already fixes the declared count as zero.
+   */
+  private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
+    const slot = eventCountSlotName();
+    if (!this.stack.includes(slot)) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    this.emit(encodeInt(BigInt(node.emitInfos?.length ?? 0)), loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
   }
 
   /**
@@ -5395,6 +5425,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Copy necessary context
       subTraversal.perCallReturnsValue = this.perCallReturnsValue;
+      subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
@@ -5473,9 +5504,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           subTraversal.stack.push(recordInputIndexSlotName());
           subTraversal.stack.push(recordOutputIndexSlotName());
         }
-        for (let index = 0; index < (func.emitInfos?.length ?? 0); index += 1) {
+        // The head parks one slot per event the region holds, so the body sees the whole region. The usage probe
+        // compiles these bodies without a head, so `perCallMaxEventCount` is unset there; falling back to the
+        // body's own count keeps the probe's stack deep enough for the body to read its own emit slots.
+        const eventRegion = Math.max(this.perCallMaxEventCount, func.emitInfos?.length ?? 0);
+        for (let index = 0; index < eventRegion; index += 1) {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
+        if (eventRegion > 0) subTraversal.stack.push(eventCountSlotName());
         subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
       }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
@@ -6998,9 +7034,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
-    // A per-call master derives the sorted-batch operands its own body verification reads, from the witness block
-    // the head already walked. They must exist before the aliasing preflight snapshots them, so the derivation
-    // runs here, where the write's runtime key is live, rather than in the head.
+    // A per-call body pins the number of events it emits against the block's declared count, which the head left
+    // as a slot, before any emit is checked. A per-call master then derives the sorted-batch operands its own body
+    // verification reads, from the witness block the head already walked. Those must exist before the aliasing
+    // preflight snapshots them, so the derivation runs here, where the write's runtime key is live, rather than in
+    // the head.
+    if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {

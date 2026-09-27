@@ -91,6 +91,13 @@ export interface DraftSourceOutput {
 export interface DraftInput {
   readonly source: DraftSourceOutput;
   readonly unlockingBytecode?: Uint8Array;
+  /**
+   * The output this input recreates, when that output is not the input unchanged.
+   *
+   * A master and the validator are recreated as they were, so their output defaults to their source. A record an
+   * execution wrote carries the commitment that execution computed, which no input describes, so the plan states it.
+   */
+  readonly output?: DraftSourceOutput;
 }
 
 /** One external call as the plan records it; the callee's index is the layout's to assign. */
@@ -281,7 +288,10 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
     if (input === undefined) throw new CompositionDraftError(`input "${id}" has no source output`);
     return input.source;
   };
+  /** The output an input recreates: the plan's, or the input unchanged. */
+  const outputOf = (id: string): DraftSourceOutput => plan.inputs[id]?.output ?? sourceOf(id);
   const sourceOutputs = orderedIds.map(sourceOf) as unknown as ShippedVmProgram['sourceOutputs'];
+  const outputs = orderedIds.map(outputOf) as unknown as ShippedVmProgram['transaction']['outputs'];
 
   /** The unlocking bytecode of an input, with a master's block overridable by the one under evaluation. */
   const unlockingFor = (id: string, block?: WitnessBlock): Uint8Array => {
@@ -308,7 +318,7 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
         sequenceNumber: 0xffffffff,
         unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
       })),
-      outputs: sourceOutputs,
+      outputs,
       locktime: 0,
     });
 

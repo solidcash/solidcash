@@ -15,6 +15,7 @@ import {
 import type { FunctionArgument } from '../Argument.js';
 import {
   decodeEvmInvocationResult,
+  decodeEvmInvocationResultPrefix,
   encodeEvmInvocationResult,
 } from './evm-abi-result.js';
 
@@ -141,50 +142,30 @@ const decodeEvmReturnWord = (value: Uint8Array, offset: number): number | undefi
 /** Length of one canonical Solidity ABI result tuple within a concatenated return vector. */
 export function canonicalEvmReturnVectorLength(
   value: Uint8Array, cursor: number, expectedTypes: readonly string[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): number | undefined {
-  if (!Number.isSafeInteger(cursor) || cursor < 0 || expectedTypes.length === 0) return undefined;
-  const headLength = expectedTypes.length * 32;
-  if (cursor + headLength > value.length) return undefined;
-  let expectedTailOffset = headLength;
-  for (let index = 0; index < expectedTypes.length; index += 1) {
-    const type = expectedTypes[index];
-    const wordOffset = cursor + index * 32;
-    if (!EVM_DYNAMIC_RETURN_TYPES.has(type)) {
-      if (!isCanonicalEvmScalarReturnVector(value.slice(wordOffset, wordOffset + 32), [type])) {
-        return undefined;
-      }
-      continue;
-    }
-    const relativeOffset = decodeEvmReturnWord(value, wordOffset);
-    // Solidity ABI tuples lay dynamic tails out contiguously in declaration order. Requiring that canonical
-    // form rejects framed state blobs which merely contain plausible offset/length words.
-    if (relativeOffset !== expectedTailOffset || relativeOffset % 32 !== 0) return undefined;
-    const length = decodeEvmReturnWord(value, cursor + relativeOffset);
-    if (length === undefined) return undefined;
-    const paddedLength = Math.ceil(length / 32) * 32;
-    const tailEnd = cursor + relativeOffset + 32 + paddedLength;
-    if (tailEnd > value.length) return undefined;
-    const paddingStart = cursor + relativeOffset + 32 + length;
-    if (!value.slice(paddingStart, tailEnd).every((byte) => byte === 0)) return undefined;
-    expectedTailOffset = relativeOffset + 32 + paddedLength;
-  }
-  return expectedTailOffset;
+  if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > value.length) return undefined;
+  // Use the same schema-aware canonical decoder as authenticated producer-result propagation. A named
+  // aggregate is not a single ABI word: its static head and nested dynamic offsets come from its schema.
+  return decodeEvmInvocationResultPrefix(value.subarray(cursor), expectedTypes, structs, enums)?.bytesConsumed;
 }
 
 /** Validate one complete mixed static/dynamic Solidity ABI invocation result. */
 export function isCanonicalEvmReturnVector(
   value: Uint8Array, expectedTypes: readonly string[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
-  return canonicalEvmReturnVectorLength(value, 0, expectedTypes) === value.length;
+  return canonicalEvmReturnVectorLength(value, 0, expectedTypes, structs, enums) === value.length;
 }
 
 /** Validate concatenated Solidity ABI invocation results without flattening their independent tuple offsets. */
 export function isCanonicalEvmReturnSequence(
   value: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
   let cursor = 0;
   for (const expectedTypes of expectedTypeGroups) {
-    const length = canonicalEvmReturnVectorLength(value, cursor, expectedTypes);
+    const length = canonicalEvmReturnVectorLength(value, cursor, expectedTypes, structs, enums);
     if (length === undefined) return false;
     cursor += length;
   }
@@ -194,12 +175,13 @@ export function isCanonicalEvmReturnSequence(
 /** Validate the compiler-authored one-push wrapper around concatenated Solidity ABI invocation results. */
 export function isCanonicalEvmReturnBlob(
   candidate: Uint8Array, expectedTypeGroups: readonly (readonly string[])[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): boolean {
   try {
     const outer = decodePushdataValue(candidate, 0, 'bytes');
     return outer.value instanceof Uint8Array
       && outer.bytesConsumed === candidate.length
-      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups);
+      && isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums);
   } catch {
     return false;
   }
@@ -208,13 +190,14 @@ export function isCanonicalEvmReturnBlob(
 /** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */
 export function selectEvmReturnCommitment(
   candidates: readonly Uint8Array[], expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): string | undefined {
   for (const candidate of candidates) {
     if (peekPushdataEncodedLength(candidate) !== candidate.length) continue;
     try {
       const outer = decodePushdataValue(candidate, 0, 'bytes');
       if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) continue;
-      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups)) return binToHex(outer.value);
+      if (isCanonicalEvmReturnSequence(outer.value, expectedTypeGroups, structs, enums)) return binToHex(outer.value);
     } catch {
       // Ordinary route-frame items are not canonical outer bytes fields.
     }
@@ -228,6 +211,7 @@ export function selectEvmReturnCommitment(
 export function extractEvmReturnCommitment(
   fullTrace: AuthenticationProgramStateCommon[],
   expectedTypeGroups: readonly (readonly string[])[], allowRaw = true,
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
 ): string | undefined {
   if (expectedTypeGroups.length === 0) return undefined;
   const candidates: Uint8Array[] = [];
@@ -237,7 +221,7 @@ export function extractEvmReturnCommitment(
       candidates.push(stack[stackIndex]);
     }
   }
-  return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw);
+  return selectEvmReturnCommitment(candidates, expectedTypeGroups, allowRaw, structs, enums);
 }
 
 /** Recover a Solidity ABI value which is live immediately before a return-output comparison. */

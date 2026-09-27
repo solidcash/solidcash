@@ -16052,10 +16052,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitEvmWordFromUint(loc);
     } else if (type instanceof AddressType) {
       // EVM ABI addresses are right-aligned (12 zero bytes followed by the 20-byte address), unlike bytes20.
+      // Stored Solidity-compatible aggregates already carry this word. Validate its zero extension and retain
+      // it; decoding it as a native P2PKH script would silently extract bytes 3..23 instead of the payload.
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(12n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(new Uint8Array(12), loc);
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_ELSE, loc);
       for (const operation of compileAddressToEvmIdentity()) this.emit(operation, loc);
       this.emit(new Uint8Array(12), loc);
       this.emit(Op.OP_SWAP, loc);
       this.emit(Op.OP_CAT, loc);
+      this.emit(Op.OP_ENDIF, loc);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       const pad = 32 - type.bound;
       if (pad > 0) {

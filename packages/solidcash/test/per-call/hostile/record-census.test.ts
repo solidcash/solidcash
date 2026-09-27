@@ -15,11 +15,12 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from '../..
  * The census a standalone master runs over the transaction's own state UTXOs.
  *
  * A master that stands alone settles the record its segment declares. It compares each input's own token against
- * the index the segment declared, so a record the frame declares but the transaction does not spend, and a state
- * UTXO the transaction spends but no frame declares, both fail the same walk.
+ * the index the segment declared, so a record the frame declares but the transaction does not spend fails the walk.
+ * The other census refusals on the same contract (an undeclared state UTXO, and a declaration that does not start
+ * at the spent commitment or end at the written one) are in `solidc/test/per-call/master/record-settlement.test.ts`.
  *
  * The source is compiled per-call, the reserved slots are filled the way a deployment fills them, and the verdict
- * is the BCH-2026 machine's on a real transaction. Each refusal is shown beside the spend it mutates.
+ * is the BCH-2026 machine's on a real transaction. The refusal is shown beside the spend it mutates.
  */
 
 const CATEGORY = seededCategory('hostile record census');
@@ -69,26 +70,17 @@ const token = (
   ({ category: CATEGORY, amount: 0n, nft: { capability, commitment: commitmentBytes } });
 
 interface SpendOptions {
-  /** The commitment the segment declares the record starts at. */
-  readonly viewIn?: Uint8Array;
-  /** The commitment the segment declares the record ends at. */
-  readonly viewOut?: Uint8Array;
   /** Give the record's input no token, so the transaction does not actually spend a state UTXO there. */
   readonly inputIsNotARecord?: boolean;
-  /** Also write the record's output with no token. */
-  readonly outputIsNotARecord?: boolean;
-  /** Spend a second state UTXO at the user's position that no segment declares. */
-  readonly undeclaredState?: boolean;
 }
 
 /** Builds the standalone master, its declared record and the user, and evaluates the master's own input. */
 function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: string } {
   const recordInputHasToken = options.inputIsNotARecord !== true;
-  const userIndex = USER_INDEX;
   const block: WitnessBlock = {
     kind: 0,
-    callerRef: userIndex,
-    originRef: userIndex,
+    callerRef: USER_INDEX,
+    originRef: USER_INDEX,
     validatorRef: 0xffff,
     sender: USER_LOCK,
     self: ADDRESS,
@@ -98,8 +90,8 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     segments: [[{
       in: STATE_INDEX,
       out: STATE_INDEX,
-      viewIn: options.viewIn ?? (recordInputHasToken ? BEFORE : EMPTY),
-      viewOut: options.viewOut ?? (options.outputIsNotARecord === true ? EMPTY : AFTER),
+      viewIn: recordInputHasToken ? BEFORE : EMPTY,
+      viewOut: AFTER,
     }]],
     events: [],
     sends: [],
@@ -117,12 +109,6 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     sequenceNumber: 0xffffffff,
     unlockingBytecode: encodeDataPush(new Uint8Array([1])),
   };
-  const extraStateInput = {
-    outpointIndex: 0,
-    outpointTransactionHash: new Uint8Array(32).fill(5),
-    sequenceNumber: 0xffffffff,
-    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
-  };
   const userInput = {
     outpointIndex: 0,
     outpointTransactionHash: new Uint8Array(32).fill(4),
@@ -131,14 +117,10 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
   };
 
   const masterOutput = { lockingBytecode: masterLock, valueSatoshis: MASTER_VALUE, token: token('minting') };
-  const recordOutput = {
-    lockingBytecode: STATE_LOCK,
-    valueSatoshis: MASTER_VALUE,
-    ...(options.outputIsNotARecord === true ? {} : { token: token('mutable', AFTER) }),
-  };
+  const recordOutput = { lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token('mutable', AFTER) };
   const userOutput = { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE };
 
-  const inputs = [masterInput, recordInput, ...(options.undeclaredState === true ? [extraStateInput] : []), userInput];
+  const inputs = [masterInput, recordInput, userInput];
   const outputs = [masterOutput, recordOutput, userOutput];
 
   const masterSource = { lockingBytecode: masterLock, valueSatoshis: MASTER_VALUE, token: token('minting') };
@@ -147,9 +129,8 @@ function evaluate(options: SpendOptions = {}): { accepted: boolean; objection?: 
     valueSatoshis: MASTER_VALUE,
     ...(recordInputHasToken ? { token: token('mutable', BEFORE) } : {}),
   };
-  const extraSource = { lockingBytecode: STATE_LOCK, valueSatoshis: MASTER_VALUE, token: token('mutable', EMPTY) };
   const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: USER_VALUE };
-  const sourceOutputs = [masterSource, recordSource, ...(options.undeclaredState === true ? [extraSource] : []), userSource];
+  const sourceOutputs = [masterSource, recordSource, userSource];
 
   const transaction = { version: 2, inputs, outputs, locktime: 0 };
   const vm = createVirtualMachineBch2026(false);
@@ -169,23 +150,5 @@ describe('a standalone master settles exactly the record its segment declares', 
     expect(declared.accepted).toBe(false);
     expect(declared.objection).toBeDefined();
     expect(evaluate()).toStrictEqual({ accepted: true });
-  });
-
-  it('refuses a state UTXO the transaction spends that no segment declares', () => {
-    const extra = evaluate({ undeclaredState: true });
-    expect(extra.accepted).toBe(false);
-    expect(extra.objection).toBeDefined();
-    // The same transaction without the extra state UTXO is accepted.
-    expect(evaluate({ undeclaredState: false }).accepted).toBe(true);
-  });
-
-  it('refuses a declaration whose starting commitment is not the one the transaction spends', () => {
-    expect(evaluate({ viewIn: AFTER }).accepted).toBe(false);
-    expect(evaluate({ viewIn: BEFORE }).accepted).toBe(true);
-  });
-
-  it('refuses a declaration whose ending commitment is not the one the transaction writes', () => {
-    expect(evaluate({ viewOut: BEFORE }).accepted).toBe(false);
-    expect(evaluate({ viewOut: AFTER }).accepted).toBe(true);
   });
 });

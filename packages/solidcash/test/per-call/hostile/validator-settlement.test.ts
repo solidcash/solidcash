@@ -1,34 +1,17 @@
 import { describe, expect, test } from 'vitest';
-import { encodeTranscript } from '@solidcash/utils';
-import { accepted, expectRefusal, laidOut, reference, withTranscript } from './validator-machine.js';
+import { accepted, expectRefusal, laidOut } from './validator-machine.js';
 import { materialise, seedBytes } from '../validator/fixture.js';
-import { abbaPlan, singleContractPlan } from '../validator/plans.js';
+import { singleContractPlan } from '../validator/plans.js';
 
 /**
- * The shipped validator program refusing a transcript that settles one category twice, and a read-only frame that
- * changes a record, emits an event or pays an output, at the machine.
+ * The shipped validator program refusing a read-only frame that changes a record or emits an event, at the machine.
+ * A transcript that settles one category twice and a read-only frame that pays an output are refused in
+ * `validator/script.test.ts`.
  */
-describe('the shipped validator program holds settlement and read-only frames to their rules', () => {
-  test('accepts the reference composition, so every refusal below is the program refusing real bytes', () => {
-    const { transaction, index } = reference();
-    expect(accepted(transaction, index)).toBe(true);
-  });
-
+describe('the shipped validator program holds read-only frames to their rules', () => {
   test('accepts the composition with a read-only frame its refusals below are built on', () => {
     const composition = laidOut(singleContractPlan());
     expect(accepted(materialise(composition), composition.validatorIndex)).toBe(true);
-  });
-
-  test('refuses a transcript that settles the same category twice', () => {
-    const composition = laidOut(abbaPlan());
-    const index = composition.validatorIndex;
-    const transcript = composition.transcript;
-    const first = transcript.settles[0]!;
-    const tampered = withTranscript(composition, encodeTranscript({
-      ...transcript,
-      settles: [...transcript.settles, first],
-    }));
-    expectRefusal(tampered, index, 'V7_SETTLE_CATEGORY_DUPLICATE');
   });
 
   test('refuses a read-only frame that changes a record it reads', () => {
@@ -51,12 +34,5 @@ describe('the shipped validator program holds settlement and read-only frames to
     const index = composition.validatorIndex;
     composition.blocks.get('A.more')!.events = [composition.outputs.length - 1];
     expectRefusal(materialise(composition), index, 'V10_STATIC_EVENT');
-  });
-
-  test('refuses a read-only frame that pays an output', () => {
-    const composition = laidOut(singleContractPlan());
-    const index = composition.validatorIndex;
-    composition.blocks.get('A.more')!.sends = [composition.outputs.length - 1];
-    expectRefusal(materialise(composition), index, 'V10_STATIC_SEND');
   });
 });

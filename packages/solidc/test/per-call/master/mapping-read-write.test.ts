@@ -200,12 +200,7 @@ describe('a per-call master whose entry reads and rewrites one mapping entry', (
       .toBe(false);
   });
 
-  it('refuses a segment that declares no record for the target', () => {
-    // Nothing declares the node, so the read has no value to start from and the derivation has no group to hand
-    // the verification.
-    expect(evaluate({ records: [] }).accepted).toBe(false);
-  });
-
+  // A segment that declares no record is refused in `mapping-write.test.ts`; the read does not reach that check.
   it('refuses a read of one entry beside a write of another', () => {
     // The read's entry is not a target of the batch, so the frame does not fix the value it saw.
     const source = 'pragma solidcash ^0.13.0;'

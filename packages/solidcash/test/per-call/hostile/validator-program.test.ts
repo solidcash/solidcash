@@ -6,7 +6,6 @@ import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/i
 import { buildValidatorProgram, decideValidator } from '../../../../solidc/src/per-call/validator/index.js';
 import {
   emptyToken,
-  masterTokenShape,
   materialise,
   mutableTokenShape,
   planComposition,
@@ -108,15 +107,7 @@ describe('the shipped validator program refuses a UTXO that is not the mutable N
     expect(accepted(modelled, composition.validatorIndex)).toBe(true);
   });
 
-  test('refuses a validator UTXO carrying a minting token instead of the mutable one', () => {
-    const composition = laidOut();
-    const index = composition.validatorIndex;
-    const category = composition.inputs[index]!.token.category;
-    composition.inputs[index]!.token = masterTokenShape(category);
-    const modelled = materialise(composition);
-    expect(accepted(modelled, index)).toBe(false);
-  });
-
+  // A validator UTXO carrying a minting token is refused, with its reason, in `validator/script.test.ts`.
   test('refuses a validator UTXO carrying no token at all', () => {
     const composition = laidOut();
     const index = composition.validatorIndex;

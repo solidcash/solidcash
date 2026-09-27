@@ -37,17 +37,6 @@ const AMOUNT = 42;
 const VALUE_TAIL = new Uint8Array([AMOUNT]);
 const EMPTY = new Uint8Array(0);
 
-/** A key the body reads from state, which is not a value the derivation holds where it runs. */
-const COMPUTED_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract ComputedKey {'
-  + '   address owner;'
-  + '   mapping(address => uint) balances;'
-  + '   function set(address b, uint amount) {'
-  + '     balances[this.owner] = amount;'
-  + '     balances[b] = amount;'
-  + '   }'
-  + ' }';
-
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Balances {'
   + '   mapping(address => uint) balances;'
@@ -221,14 +210,7 @@ describe('a per-call master whose entry writes two verified-mapping targets', ()
     // The second target has no record to read, so the derivation cannot hand the verification its operands.
     expect(evaluate({ records: [updateRecords()[0]!] }).accepted).toBe(false);
   });
-
-  it('refuses a target whose key the body does not hold where the derivation runs', () => {
-    // The state read is neither a bare parameter, the frame's sender, nor a compile-time value, so one target of
-    // the batch has no key the master can hash. `key-forms-write.test.ts` runs the admitted sender and expression
-    // keys through the machine.
-    expect(() => compileString(COMPUTED_KEY_SOURCE, { composition: 'per-call' }))
-      .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
-  });
+  // A key the body does not hold where the derivation runs is refused in `mapping-write.test.ts`.
 });
 
 /** A 32-byte little-endian slot value, for a middle node the test fabricates between two key slots. */

@@ -368,12 +368,7 @@ describe('a standalone master and how many masters its contract has', () => {
     // inputs is what refuses the second one.
     expect(standaloneVerdicts(2).every((result) => !result.accepted)).toBe(true);
   });
-
-  it('is refused when its caller\'s signature does not commit as SIGHASH_ALL', () => {
-    // The standalone arm checks the same hash type the composed root arm does; only the hash type changes here.
-    expect(standaloneVerdicts(1, 0x01)[0]!.accepted).toBe(false);
-    expect(standaloneVerdicts(1, SIGHASH_ALL)[0]!.accepted).toBe(true);
-  });
+  // The standalone arm's hash-type refusal is `master-program.test.ts`'s, on a compiled master.
 });
 
 describe('a master that calls another master, covered by one validator', () => {

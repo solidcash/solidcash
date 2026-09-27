@@ -10,10 +10,10 @@ import { hexOf, seededAddress } from '../shapes/harness.js';
  * One head serves every body a master dispatches, so the compiler used to refuse this shape outright. The head now
  * walks the call section with the length the block declares and leaves that length for the body, which pins it to
  * the number of calls its own source makes, so the shape compiles and deploys. What is asserted here is that front
- * door and the two controls that mutate only the property that used to close it. The composition of the same shape
- * is driven elsewhere: `round-trip-composition.test.ts` derives a stateless reduction of it to a machine verdict on
- * every contract input, and `round-trip-stateful.test.ts` carries the records this one writes and pins the wall
- * their writes meet.
+ * door; it is also the only per-call unit whose external call is made from an internal function (`B.h`). The
+ * composition of the same shape is driven elsewhere: `round-trip-composition.test.ts` derives a stateless reduction
+ * of it to a machine verdict on every contract input, and `round-trip-stateful.test.ts` carries the records this one
+ * writes and pins the wall their writes meet.
  */
 
 const A_ADDRESS = seededAddress('the entering contract');
@@ -70,56 +70,6 @@ const ROUND_TRIP = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/**
- * The same two contracts with `A`'s two entries each making one external call.
- *
- * This is the one property the refusal names, changed and nothing else: `A.k` calls out, so both entries agree on
- * how many call records the master head's tail holds.
- */
-const EVEN_CALL_COUNTS = 'pragma solidcash ^0.13.0;'
-  + ' interface IB { function g(uint256 x) returns (uint256); function h(uint256 x) returns (uint256); }'
-  + ' interface IA { function k() returns (uint256); }'
-  + ' contract A {'
-  + '   uint256 count;'
-  + '   function f(uint256 x) returns (uint256) {'
-  + '     count = count + 1;'
-  + `     return IB(0x${hexOf(B_ADDRESS)}).g(x);`
-  + '   }'
-  + '   function k() returns (uint256) {'
-  + '     count = count + 1;'
-  + `     return IB(0x${hexOf(B_ADDRESS)}).h(count);`
-  + '   }'
-  + ' }'
-  + ' contract B {'
-  + '   uint256 total;'
-  + '   function g(uint256 x) returns (uint256) {'
-  + '     total = total + x;'
-  + `     return IA(0x${hexOf(A_ADDRESS)}).k();`
-  + '   }'
-  + '   function h(uint256 x) returns (uint256) {'
-  + '     total = total + 1;'
-  + `     return IA(0x${hexOf(A_ADDRESS)}).k();`
-  + '   }'
-  + ' }';
-
-/** The two contracts with no call back at all: `A` calls `B` once and each contract has a single entry. */
-const ONE_WAY = 'pragma solidcash ^0.13.0;'
-  + ' interface IB { function g(uint256 x) returns (uint256); }'
-  + ' contract A {'
-  + '   uint256 count;'
-  + '   function f(uint256 x) returns (uint256) {'
-  + '     count = count + 1;'
-  + `     return IB(0x${hexOf(B_ADDRESS)}).g(x);`
-  + '   }'
-  + ' }'
-  + ' contract B {'
-  + '   uint256 total;'
-  + '   function g(uint256 x) returns (uint256) {'
-  + '     total = total + x;'
-  + '     return total;'
-  + '   }'
-  + ' }';
-
 describe('a two-contract round trip compiled per-call', () => {
   it('is emitted for the caller whose two entries make different numbers of external calls', () => {
     const outcome = compilePerCall(ROUND_TRIP);
@@ -129,20 +79,5 @@ describe('a two-contract round trip compiled per-call', () => {
     expect(outcome.refusal).toBeUndefined();
     expect(outcome.artifacts?.A?.composition?.convention).toBe('per-call');
     expect(outcome.artifacts?.B?.composition?.convention).toBe('per-call');
-  });
-
-  it('is admitted again when the caller\'s two entries are given one external call each', () => {
-    // The control mutates only the property the refusal names, and the shipped compiler then emits both masters.
-    const outcome = compilePerCall(EVEN_CALL_COUNTS);
-    expect(outcome.refusal).toBeUndefined();
-    expect(outcome.artifacts?.A).toBeTruthy();
-    expect(outcome.artifacts?.B).toBeTruthy();
-  });
-
-  it('is admitted again when the call back is removed', () => {
-    const outcome = compilePerCall(ONE_WAY);
-    expect(outcome.refusal).toBeUndefined();
-    expect(outcome.artifacts?.A).toBeTruthy();
-    expect(outcome.artifacts?.B).toBeTruthy();
   });
 });

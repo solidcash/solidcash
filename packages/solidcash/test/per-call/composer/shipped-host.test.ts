@@ -29,7 +29,9 @@ import {
  * the way a deployment fills them, and the host is handed the resulting artifacts. Its `sitesFor` reads the table
  * the compiler published; its `step` runs the compiled caller in the BCH-2026 machine against a draft transaction
  * whose call record has no callee yet, then fills the callee's index in and runs again. The derivation's own
- * result — which sites it stopped at, and that the callee completed before the caller — is the assertion.
+ * result (which sites it stopped at, and that the callee completed before the caller) is the assertion. The full
+ * run order and the call site's two verdicts, on the same source, are asserted through the composed host in
+ * `draft.test.ts`, which drives this host.
  *
  * The draft geometry (which input a master or its callee sits at) is the host's one remaining seam; it is built
  * here the same way the compiled-composition tests build it, because the composer's layout and assembly are not
@@ -259,22 +261,6 @@ describe('a host driving the derivation from a real compile', () => {
     }]);
   });
 
-  it('derives the caller, its callee completing first, stopping at the published sites', () => {
-    const { host } = buildHost();
-    const root = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: 'caller-1' };
-
-    const result = deriveDepthFirst(root, host);
-
-    expect(result.runs.map((run) => [run.frame.functionName, run.site.site])).toStrictEqual([
-      [CALLER_ENTRY, 0], // the call site: the callee is derived here
-      [CALLEE_ENTRY, 0], // the callee's one segment close, completed inside the caller's run
-      [CALLER_ENTRY, 1],
-      [CALLER_ENTRY, 2],
-    ]);
-    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual([CALLEE_ENTRY, CALLER_ENTRY]);
-    expect(result.completed.map((frame) => frame.master)).toStrictEqual([CALLEE_MASTER, 'caller-1']);
-  });
-
   it('names the callee of the call site from the published table', () => {
     const { host } = buildHost();
     const root = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: 'caller-1' };
@@ -286,21 +272,6 @@ describe('a host driving the derivation from a real compile', () => {
       kind: FrameKind.CALL,
       master: CALLEE_MASTER,
     });
-  });
-
-  it('stops the real caller at the call site, and the run accepting only once the callee is recorded', () => {
-    const verdicts: { master: string; kind: string; site: number; accepted: boolean }[] = [];
-    const { host } = buildHost((master, site, stop) => {
-      verdicts.push({ master, kind: site.kind, site: site.site, accepted: stop.accepted });
-    });
-    const root = { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: 'caller-1' };
-    deriveDepthFirst(root, host);
-
-    // The call site's two runs: the draft stops the real program, and filling the callee's index lets it accept.
-    expect(verdicts[0]).toStrictEqual({ master: 'caller-1', kind: 'call', site: 0, accepted: false });
-    expect(verdicts[1]).toStrictEqual({ master: 'caller-1', kind: 'call', site: 0, accepted: true });
-    // The callee's segment close: the compiled callee accepts with its empty record list.
-    expect(verdicts[2]).toStrictEqual({ master: CALLEE_MASTER, kind: 'segmentClose', site: 0, accepted: true });
   });
 
   it('refuses a site whose fill does not move the real program', () => {

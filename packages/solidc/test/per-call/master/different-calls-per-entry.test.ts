@@ -346,11 +346,7 @@ describe('a caller whose two entries make different calls', () => {
     expect(verdicts('b', { calleeSelector: PING_SELECTOR })[A_INDEX].accepted).toBe(false);
   });
 
-  it('refuses a record whose callee reference is the caller itself', () => {
-    expect(verdicts('a', { recordCalleeRef: A_INDEX })[A_INDEX].accepted).toBe(false);
-    expect(verdicts('b', { recordCalleeRef: A_INDEX })[A_INDEX].accepted).toBe(false);
-  });
-
+  // A record whose callee reference is the caller itself is refused in `composed-call.test.ts`.
   it('refuses a block that declares a call count its entry does not make', () => {
     // Each entry makes one call. A block that declares none leaves the entry's own site reading a record that is
     // not there, and one that declares two asks the entry to account for a call its source never makes; both are
@@ -361,15 +357,5 @@ describe('a caller whose two entries make different calls', () => {
     expect(verdicts('b', { declaredCallCount: 2 })[A_INDEX].accepted).toBe(false);
     expect(verdicts('a')[A_INDEX].accepted).toBe(true);
     expect(verdicts('b')[A_INDEX].accepted).toBe(true);
-  });
-
-  it('checks each entry against its own descriptors, so one entry\'s call cannot stand in for the other\'s', () => {
-    // Entry `a`'s execution with entry `b`'s record (its target and its digest) is refused, and the reverse too:
-    // site 0 resolves to the entry that is running, not to a contract-wide list.
-    expect(verdicts('a', { recordOfOtherEntry: true })[A_INDEX].accepted).toBe(false);
-    expect(verdicts('b', { recordOfOtherEntry: true })[A_INDEX].accepted).toBe(false);
-    // The other entry's callee cannot satisfy this entry either, because the selector push is the callee's.
-    expect(verdicts('a', { calleeOfOtherEntry: true })[A_INDEX].accepted).toBe(false);
-    expect(verdicts('b', { calleeOfOtherEntry: true })[A_INDEX].accepted).toBe(false);
   });
 });

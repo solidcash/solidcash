@@ -189,10 +189,7 @@ describe('a per-call master keyed by the frame sender', () => {
     expect(evaluateInsert(env, [VALUE_TAIL], USER_LOCK)).toStrictEqual({ accepted: true });
   });
 
-  it('is refused when the segment declares no record at all', () => {
-    expect(evaluateInsert(env, [VALUE_TAIL], USER_LOCK, { records: [] }).accepted).toBe(false);
-  });
-
+  // A segment that declares no record is refused in `mapping-write.test.ts`; the key form does not reach that check.
   it('is refused when the created node carries a value the code did not compute', () => {
     const slot = keyToSlot(USER_LOCK);
     const tampered = encodeEntryCommitment(slot, new Uint8Array(32), new Uint8Array([AMOUNT + 1]));
@@ -212,10 +209,6 @@ describe('a per-call master keyed by a compile-time expression', () => {
 
   it('derives the key from the compile-time expression and is accepted by the machine', () => {
     expect(evaluateInsert(env, [VALUE_TAIL], ZERO_KEY)).toStrictEqual({ accepted: true });
-  });
-
-  it('is refused when the segment declares no record at all', () => {
-    expect(evaluateInsert(env, [VALUE_TAIL], ZERO_KEY, { records: [] }).accepted).toBe(false);
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {

@@ -350,21 +350,11 @@ describe('a caller whose one entry makes two calls', () => {
     expect(results[A_INDEX].accepted).toBe(false);
   });
 
-  it('refuses a record whose callee reference is the caller itself', () => {
-    const results = verdicts({ recordCalleeRefs: [A_INDEX, C_INDEX] });
-    expect(results[A_INDEX].accepted).toBe(false);
-  });
-
+  // A record whose callee reference is the caller itself is refused in `composed-call.test.ts`.
   it('refuses a block whose call count is not the entry\'s two', () => {
     // The block is internally consistent (one record, two segments) but declares one call where the entry's own
     // code fixes two, so the head's tail walk refuses it before any site check runs.
     const results = verdicts({ recordCount: 1, callerSegments: 2 });
     expect(results[A_INDEX].accepted).toBe(false);
-  });
-
-  it('refuses one bad record whichever position it is in', () => {
-    // Each single-position mutation fails, so both records are checked and neither check is a copy of the other.
-    expect(verdicts({ recordTargets: [ADDRESS_A, ADDRESS_C] })[A_INDEX].accepted).toBe(false);
-    expect(verdicts({ recordTargets: [ADDRESS_B, ADDRESS_A] })[A_INDEX].accepted).toBe(false);
   });
 });

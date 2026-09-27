@@ -50,12 +50,6 @@ const LOOP_EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function ping(int n) { for (int i = 0; i < n; i = i + 1) { emit Ping(i); } }'
   + ' }';
 
-/** An entry that sends value: whether the send is a listed send depends on the recipient's lock type. */
-const SEND_CONTRACT = 'pragma solidcash ^0.13.0;'
-  + ' contract Payer {'
-  + '   function pay(address to) { this.transfer(to, 1000); }'
-  + ' }';
-
 /** One entry that makes two calls: the tail's count is fixed at two, one record per call in execution order. */
 const TWO_CALLS_IN_ONE_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); function pong(); }'
@@ -158,11 +152,7 @@ describe('composition convention selection', () => {
     expect(code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
   });
 
-  it('names the shape that was refused', () => {
-    expect(messageOf(() => compileString(COMPOSITE_RETURN_CONTRACT, { composition: 'per-call' })))
-      .toContain('retval');
-  });
-
+  // The refusal's message for this source is asserted in `return-value.test.ts`.
   it('still compiles a refused shape under the direct convention', () => {
     expect(() => compileString(COMPOSITE_RETURN_CONTRACT)).not.toThrow();
   });
@@ -200,13 +190,7 @@ describe('the tail sections a compiled master fixes', () => {
     expect(artifacts.Pinged?.composition?.convention).toBe('per-call');
     expect(artifacts.Quiet?.composition?.convention).toBe('per-call');
   });
-
-  it('refuses a value send, whose list membership the recipient lock type decides, by name', () => {
-    expect(codeOf(() => compileString(SEND_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(SEND_CONTRACT, { composition: 'per-call' })))
-      .toContain('recipient');
-  });
+  // A value send is refused by name in `solidcash/test/per-call/edges/refused-contract-shapes.test.ts`.
 });
 
 describe('the call set a compiled master fixes', () => {

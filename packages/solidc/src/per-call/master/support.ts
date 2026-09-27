@@ -29,20 +29,32 @@ import {
 import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
+  AssignNode,
+  BinaryOpNode,
   BoolLiteralNode,
+  CastNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode,
   ExpressionNode,
   ExternalCallMode,
   ExternalCallSlot,
+  FunctionCallNode,
   FunctionDefinitionNode,
   HexLiteralNode,
+  IdentifierNode,
   InterfaceNode,
   IntLiteralNode,
+  LiteralNode,
+  MappingAssignNode,
+  NullaryOpNode,
+  StateAccessNode,
   StringLiteralNode,
+  UnaryOpNode,
+  VariableDefinitionNode,
   WhileNode,
 } from '../../ast/AST.js';
+import { NullaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
@@ -76,6 +88,7 @@ const EXTERNAL_CALL_PARAMETERS = new Set([
 
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
 export function stripFrameParameters(contract: ContractNode): void {
+  const constants = contractConstantNames(contract);
   const functions = [
     contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions,
   ];
@@ -83,7 +96,7 @@ export function stripFrameParameters(contract: ContractNode): void {
     if (!fn) continue;
     // The sorted-batch operands are derived from the master's own frame, so they are not supplied as arguments
     // any more than the frame values are; publishing them would ask a caller for values it cannot know.
-    const derived = derivableBatchWitnessNames(fn);
+    const derived = derivableBatchWitnessNames(fn, constants);
     fn.parameters = fn.parameters.filter((parameter) =>
       !(derived?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
@@ -120,15 +133,193 @@ interface DerivableTargetBatch {
   readonly wasLinear: boolean;
 }
 
+/** The frame slot a `msg.sender` key reads: the caller's locking bytecode, which the head leaves tracked. */
+export const SENDER_FRAME_SLOT = '__internal__frameSender';
+/** The frame slot a `tx.origin` key reads: the origin reference's lock, which the head computes for every frame. */
+export const ORIGIN_FRAME_SLOT = '__internal__frameOrigin';
+
+/**
+ * How a derivable target's key is held where the master derives the target slot.
+ *
+ * One of the three fields is set. A parameter the body holds and a frame value the head left are already on the
+ * stack at their own depths. A compile-time expression is a value the body only computes at its start, so the
+ * master emits it there and hashes it, which is why the shape admits nothing that reads a local computed later.
+ */
+export interface PerCallBatchKey {
+  /** A parameter the body holds, read at its own stack depth. */
+  readonly paramName?: string;
+  /** A tracked frame value the head left: the frame's sender for `msg.sender`, the origin for `tx.origin`. */
+  readonly frameSlot?: string;
+  /** A compile-time expression the body holds at its start, which the master emits for the derivation. */
+  readonly expression?: ExpressionNode;
+}
+
+/** The contract-level and inherited constant names a key expression may read at compile time. */
+function contractConstantNames(contract: ContractNode): ReadonlySet<string> {
+  return new Set(contract.constantDefinitions.map((definition) => definition.name));
+}
+
+/** A target key the master can hold where it derives the slot, or the fact that stops it from holding one. */
+type BatchKeyResolution =
+  | { readonly kind: 'key'; readonly key: PerCallBatchKey }
+  | { readonly kind: 'refusal'; readonly reason: string };
+
+/**
+ * The key a body's one write to `slot` reads, or why the master cannot hold it where it derives the slot.
+ *
+ * A bare parameter is the body's own argument, and `msg.sender`/`tx.origin` are frame values the head leaves
+ * tracked, so both are already on the stack. Any other key is derivable only when the body's own write carries an
+ * expression whose every operand is a literal or a compile-time constant: such a value exists at the top of the
+ * body, where the derivation runs, whereas a value the body computes later does not.
+ */
+function resolveBatchKey(
+  entry: FunctionDefinitionNode,
+  slot: number,
+  constants: ReadonlySet<string>,
+): BatchKeyResolution {
+  const access = (entry.entryAccesses ?? []).find((candidate) => candidate.slotIndex === slot);
+  const source = access?.keySources?.[0];
+  if (source === undefined) {
+    return { kind: 'refusal', reason: `the body writes a mapping at slot ${slot} with no key source to read` };
+  }
+  if (source.kind === 'msgSender') {
+    // The head leaves the caller's lock as the frame `sender` — the user's lock for a root frame, and the value a
+    // validator binds for a callee's — and the origin reference's lock as `origin`. Those are exactly the values
+    // the direct path's `msg.sender` and `tx.origin` reads resolve to.
+    return {
+      kind: 'key',
+      key: { frameSlot: source.senderOp === 'tx.origin' ? ORIGIN_FRAME_SLOT : SENDER_FRAME_SLOT },
+    };
+  }
+  if (source.kind === 'param') {
+    if (source.paramName === undefined
+      || !entry.parameters.some((parameter) => parameter.name === source.paramName)) {
+      return {
+        kind: 'refusal',
+        reason: `the body writes a mapping at slot ${slot} whose key names the parameter `
+          + `'${source.paramName ?? 'unnamed'}' it does not declare`,
+      };
+    }
+    return { kind: 'key', key: { paramName: source.paramName } };
+  }
+  const keyNode = mappingWriteKey(entry, slot);
+  if (keyNode === undefined) {
+    return {
+      kind: 'refusal',
+      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' has no expression to read`,
+    };
+  }
+  const identifier = keyNode instanceof IdentifierNode ? keyNode : undefined;
+  const expression = identifier === undefined
+    ? keyNode : resolveKeyIdentifier(identifier.name, entry, new Set());
+  if (expression === undefined) {
+    return {
+      kind: 'refusal',
+      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' is the local `
+        + `'${identifier?.name ?? '?'}', which is not bound to a single compile-time value`,
+    };
+  }
+  const unavailable = keyOperandUnavailable(expression, constants);
+  if (unavailable !== undefined) {
+    return {
+      kind: 'refusal',
+      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' reads ${unavailable}, and `
+        + 'a master derives a target slot only from a bare parameter, the frame\'s sender, or a compile-time value '
+        + 'the body holds at its start',
+    };
+  }
+  return { kind: 'key', key: { expression } };
+}
+
+/**
+ * The key expression of the body's own write to `slot`, or undefined when no such write is reachable in the AST.
+ *
+ * A single-key write carries one key; the entry access it belongs to is the same physical slot the batch named, so
+ * its expression is the value the direct path would hash for that slot.
+ */
+function mappingWriteKey(entry: FunctionDefinitionNode, slot: number): ExpressionNode | undefined {
+  let key: ExpressionNode | undefined;
+  walkInvocationAst(entry.body, (node) => {
+    if (key !== undefined) return;
+    if (node instanceof MappingAssignNode && node.entrySlotIndex === slot && node.keys.length === 1) {
+      key = node.keys[0];
+    }
+  });
+  return key;
+}
+
+/**
+ * The expression a key identifier stands for, following the one local declaration that binds it, or undefined when
+ * no such declaration exists.
+ *
+ * Lowering rewrites a source key to a synthetic local in one documented place: an inlined call with a storage
+ * pointer copies its value arguments into `__spN_<name>` locals before the substituted write, so the write's own
+ * key is a read of that copy. Following the declaration recovers the argument the copy was made from, which the
+ * master can emit at the top of the body when it is itself compile-time. A name bound more than once, or one bound
+ * to a value the walk cannot follow to a single expression, is left unresolved so the caller refuses it.
+ */
+function resolveKeyIdentifier(
+  name: string,
+  entry: FunctionDefinitionNode,
+  seen: Set<string>,
+): ExpressionNode | undefined {
+  if (seen.has(name)) return undefined;
+  seen.add(name);
+  let definition: ExpressionNode | undefined;
+  let reassigned = false;
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof VariableDefinitionNode && node.name === name && node.expression !== undefined) {
+      definition = definition ?? node.expression;
+    }
+    if (node instanceof AssignNode && node.identifier.name === name) reassigned = true;
+  });
+  if (definition === undefined || reassigned) return undefined;
+  return definition instanceof IdentifierNode
+    ? resolveKeyIdentifier(definition.name, entry, seen)
+    : definition;
+}
+
+/**
+ * The operand of a key expression that is not one the shape admits, or undefined when the expression is one.
+ *
+ * A literal and a compile-time constant exist at compile time. A cast, a unary operator and a binary operator are
+ * pure, so they are admitted exactly when their operands are. A `msg.sender`/`tx.origin` read is a frame value the
+ * head left. Every other node — a local, a state read, a call — is a value the shape does not derive from, and the
+ * returned phrase names it so the refusal says which operand stopped it.
+ */
+function keyOperandUnavailable(node: ExpressionNode, constants: ReadonlySet<string>): string | undefined {
+  if (node instanceof LiteralNode) return undefined;
+  if (node instanceof CastNode) return keyOperandUnavailable(node.expression, constants);
+  if (node instanceof UnaryOpNode) return keyOperandUnavailable(node.expression, constants);
+  if (node instanceof BinaryOpNode) {
+    return keyOperandUnavailable(node.left, constants) ?? keyOperandUnavailable(node.right, constants);
+  }
+  if (node instanceof NullaryOpNode) {
+    return node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN
+      ? undefined
+      : `the ${node.operator} value`;
+  }
+  if (node instanceof IdentifierNode) {
+    return constants.has(node.name) ? undefined : `the value '${node.name}'`;
+  }
+  if (node instanceof StateAccessNode) return `the state value '${node.name}'`;
+  if (node instanceof FunctionCallNode) return `the value computed by '${node.identifier.name}'`;
+  return `an ${node.constructor.name}`;
+}
+
 /**
  * The batch a body can settle from its own frame, or undefined for a shape the derivation does not cover.
  *
  * One collection is written, every one of its entry accesses is the same lone unconditional write to a distinct
- * target, each target's key is one bare parameter the body holds, and no target aliases another at run time. Under
- * those conditions the segment declares one record group per target in write order, so the master can read the
- * group back and derive each target's operands.
+ * target, each target's key is one value the body holds where the derivation runs (a bare parameter, the frame's
+ * sender, or a compile-time expression), and no target aliases another at run time. Under those conditions the
+ * segment declares one record group per target in write order, so the master can read the group back and derive
+ * each target's operands.
  */
-function derivableTargetBatch(entry: FunctionDefinitionNode): DerivableTargetBatch | undefined {
+function derivableTargetBatch(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): DerivableTargetBatch | undefined {
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length !== 1) return undefined;
   const batch = batches[0]!;
@@ -141,11 +332,24 @@ function derivableTargetBatch(entry: FunctionDefinitionNode): DerivableTargetBat
     if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
       || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
     if (access.keyParams.length !== 1) return undefined;
-    const source = access.keySources?.[0];
-    if (source === undefined || source.kind !== 'param' || source.paramName === undefined) return undefined;
-    if (!entry.parameters.some((parameter) => parameter.name === source.paramName)) return undefined;
+    if (resolveBatchKey(entry, slot, constants).kind !== 'key') return undefined;
   }
   return { slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true };
+}
+
+/**
+ * The key one derivable target reads, or undefined for a target the admission leaves refused.
+ *
+ * The emission uses the same resolution the admission does, so the value it emits and the emittability decision
+ * cannot drift apart.
+ */
+export function perCallBatchKey(
+  entry: FunctionDefinitionNode,
+  slot: number,
+  constants: ReadonlySet<string>,
+): PerCallBatchKey | undefined {
+  const resolved = resolveBatchKey(entry, slot, constants);
+  return resolved.kind === 'key' ? resolved.key : undefined;
 }
 
 /**
@@ -153,13 +357,17 @@ function derivableTargetBatch(entry: FunctionDefinitionNode): DerivableTargetBat
  *
  * The derivation reads the master's witness block back and leaves, per target, the four operands the sorted-batch
  * verification consumes and, once, the trailing count. It covers one collection whose every entry is one
- * unconditional write to a distinct target with a bare-parameter key, in place or spliced in: the target's record
- * group is then the group the segment declares for it, so the frame fixes which transition ran. A dense linear
- * batch's own rank and row operands are not part of that derivation, so the master drops them and settles the
- * batch through the general arm instead. Anything wider is left refused rather than derived approximately.
+ * unconditional write to a distinct target whose key the body holds where the derivation runs, in place or spliced
+ * in: the target's record group is then the group the segment declares for it, so the frame fixes which transition
+ * ran. A dense linear batch's own rank and row operands are not part of that derivation, so the master drops them
+ * and settles the batch through the general arm instead. Anything wider is left refused rather than derived
+ * approximately.
  */
-export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<string> | undefined {
-  const batch = derivableTargetBatch(entry);
+export function derivableBatchWitnessNames(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): Set<string> | undefined {
+  const batch = derivableTargetBatch(entry, constants);
   if (batch === undefined) return undefined;
   const names = new Set<string>();
   for (const slot of batch.slots) {
@@ -179,14 +387,18 @@ export function derivableBatchWitnessNames(entry: FunctionDefinitionNode): Set<s
  *
  * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
  * from the records its own frame declares, which it can do for one collection whose every entry is one
- * unconditional write to a distinct target with a bare-parameter key. Anything wider — several collections, a
- * batched or aliased write, a key the body computes rather than holds — makes the record a segment declares, or the
- * transition it proves, a fact the frame does not fix. Each refusal names the access and the fact that stops it.
+ * unconditional write to a distinct target whose key the body holds where the derivation runs. Anything wider —
+ * several collections, a batched or aliased write, a key the body computes rather than holds — makes the record a
+ * segment declares, or the transition it proves, a fact the frame does not fix. Each refusal names the access and
+ * the fact that stops it.
  */
-function unsupportedBatchWriteShape(entry: FunctionDefinitionNode): string | undefined {
+function unsupportedBatchWriteShape(
+  entry: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): string | undefined {
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length === 0) return undefined;
-  if (derivableBatchWitnessNames(entry) !== undefined) return undefined;
+  if (derivableBatchWitnessNames(entry, constants) !== undefined) return undefined;
   if (batches.length !== 1) {
     return `the body writes ${batches.length} mapping collections in one execution, and a master derives the `
       + 'sorted-batch operands one collection at a time';
@@ -211,15 +423,8 @@ function unsupportedBatchWriteShape(entry: FunctionDefinitionNode): string | und
       return `the body writes a mapping at slot ${slot} keyed by ${access.keyParams.length} values, and a master `
         + 'derives a target slot only for a single-key write';
     }
-    const source = access.keySources?.[0];
-    const bare = source !== undefined && source.kind === 'param' && source.paramName !== undefined
-      && entry.parameters.some((parameter) => parameter.name === source.paramName);
-    if (!bare) {
-      const described = source === undefined ? 'a value the frame does not carry'
-        : `the ${source.kind} value '${source.canonical}'`;
-      return `the body writes a mapping at slot ${slot} whose key is ${described}, and a master derives a target `
-        + 'slot only from a bare parameter the body holds';
-    }
+    const resolved = resolveBatchKey(entry, slot, constants);
+    if (resolved.kind === 'refusal') return resolved.reason;
   }
   if (accesses.length !== batch.slotIndices.length) {
     return `the body touches ${accesses.length} mapping entries and writes ${batch.slotIndices.length} of them, `
@@ -230,12 +435,16 @@ function unsupportedBatchWriteShape(entry: FunctionDefinitionNode): string | und
 }
 
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
-function isUndeclaredHiddenParameter(entry: FunctionDefinitionNode, name: string): boolean {
+function isUndeclaredHiddenParameter(
+  entry: FunctionDefinitionNode,
+  name: string,
+  constants: ReadonlySet<string>,
+): boolean {
   return name.startsWith('__internal__')
     && !FRAME_PARAMETERS.has(name)
     && !RETURN_EVENT_PARAMETERS.has(name)
     && !isExternalCallParameter(name)
-    && !(derivableBatchWitnessNames(entry)?.has(name) ?? false);
+    && !(derivableBatchWitnessNames(entry, constants)?.has(name) ?? false);
 }
 
 export interface PerCallMasterShapeInput {
@@ -271,6 +480,7 @@ export interface PerCallMasterShapeAssessment {
 /** Assesses whether the contract can be emitted as a per-call master program. */
 export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCallMasterShapeAssessment {
   const { contract } = input;
+  const constants = contractConstantNames(contract);
   const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
   if (input.freeFunctionCount > 0) {
     return refuse('a per-call master is one program, so free functions that would be emitted before it are not supported');
@@ -280,7 +490,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     // its body asks the head for nothing the head does not already carry: it makes no external call (the head's call
     // records are the entries'), it emits no event and makes no send (the head checks one tail for every body), and
     // it needs no side-car input the head does not locate.
-    const refusal = unsupportedConstructorShape(contract.constructorDef);
+    const refusal = unsupportedConstructorShape(contract.constructorDef, constants);
     if (refusal !== undefined) return refuse(refusal);
   }
   if (contract.fallbackDef || contract.receiveDef) {
@@ -314,9 +524,10 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself and derives the batch operands it can, so any other hidden operand would be
     // read from the wrong stack position.
-    const batchShape = unsupportedBatchWriteShape(entry);
+    const batchShape = unsupportedBatchWriteShape(entry, constants);
     if (batchShape !== undefined) return refuse(batchShape);
-    const hidden = entry.parameters.filter((parameter) => isUndeclaredHiddenParameter(entry, parameter.name));
+    const hidden = entry.parameters.filter((parameter) =>
+      isUndeclaredHiddenParameter(entry, parameter.name, constants));
     if (hidden.length > 0) {
       return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
         + 'which the master head does not supply');
@@ -336,7 +547,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const derivedBatches = [
     ...(contract.constructorDef ? [contract.constructorDef] : []),
     ...entryPoints,
-  ].some((fn) => derivableBatchWitnessNames(fn) !== undefined);
+  ].some((fn) => derivableBatchWitnessNames(fn, constants) !== undefined);
   if (derivedBatches && calls.callCount > 0) {
     return refuse('a verified-mapping write is derived from the segment the entry runs, but the master makes '
       + 'external calls, which split the execution into later segments');
@@ -355,11 +566,14 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
  * supply. A body that only reads its arguments and the contract's own state, and writes that state, shares the head
  * unchanged; a constructor that only establishes the contract's immutable references is exactly that shape.
  */
-function unsupportedConstructorShape(constructorDef: FunctionDefinitionNode): string | undefined {
-  const batchShape = unsupportedBatchWriteShape(constructorDef);
+function unsupportedConstructorShape(
+  constructorDef: FunctionDefinitionNode,
+  constants: ReadonlySet<string>,
+): string | undefined {
+  const batchShape = unsupportedBatchWriteShape(constructorDef, constants);
   if (batchShape !== undefined) return `the constructor ${batchShape.replace(/^the body /, '')}`;
   const hidden = constructorDef.parameters.filter((parameter) =>
-    isUndeclaredHiddenParameter(constructorDef, parameter.name));
+    isUndeclaredHiddenParameter(constructorDef, parameter.name, constants));
   if (hidden.length > 0) {
     return `the constructor carries the hidden parameter '${hidden[0].name}', which the master head does not supply`;
   }

@@ -278,7 +278,9 @@ import {
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
-import { derivePerCallTailShape, derivableBatchWitnessNames } from '../per-call/master/support.js';
+import {
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKey,
+} from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
   buildBatchWitnessDerivationScript,
@@ -3062,15 +3064,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * list, but its frame declares the records the write touches. Each target's operands are derived from the
    * target's runtime key and the block, registered as tracked slots the existing verification then consumes
    * unchanged. The derivation is emitted at the top of the body, before the aliasing preflight snapshots the
-   * witnesses, because the key is a function parameter that only the running code holds.
+   * witnesses, because a key the body computes is a value only the running code holds.
+   *
+   * A key is a parameter the body holds, a frame value the head left (the sender or the origin), or a compile-time
+   * expression the body only computes at its start. The last is emitted here and removed after the operands are
+   * derived: it is not part of the body's frame, and leaving it would shift every depth the body reads afterwards.
    */
   private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
     if (batches.length === 0) return;
+    const constants = new Set(this.constantExpressions.keys());
     // The admission rule admits a contract only when every one of its bodies writes the derivable shape. An
     // internal body the advisory check does not cover would otherwise be compiled with a derivation its record
     // declarations do not fit, so refuse by name instead of emitting one that does not describe it.
-    if (derivableBatchWitnessNames(node) === undefined) {
+    if (derivableBatchWitnessNames(node, constants) === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
         `the per-call master has no derivation for the verified-mapping writes of '${node.name}'`,
@@ -3080,16 +3087,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     for (const batch of batches) {
       const slots = batch.slotIndices;
-      // Every target's key is one bare parameter, so all of their depths are read before the first value is pushed.
-      const keyDepths = slots.map((slot) => {
-        const keyParam = (node.entryAccesses ?? [])
-          .find((access) => access.slotIndex === slot)?.keySources?.[0]?.paramName;
-        const keyDepth = keyParam === undefined ? -1 : this.getStackIndex(keyParam, true);
+      const keys = slots.map((slot) => perCallBatchKey(node, slot, constants));
+      // Push every compile-time expression key first: each pushed value sits above the frame, so a depth read
+      // before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
+      const pushedKeys: { name: string }[] = [];
+      for (const [index, slot] of slots.entries()) {
+        const expression = keys[index]?.expression;
+        if (expression === undefined) continue;
+        const before = this.stack.length;
+        this.visit(expression);
+        if (this.stack.length !== before + 1) {
+          throw new SolidcDiagnosticError(
+            'PER_CALL_CODEGEN_UNAVAILABLE',
+            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
+            + 'leave one value on the stack',
+            { function: node.name, slot },
+          );
+        }
+        // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
+        const name = `(per_call_batch_key_${slot})`;
+        this.stack[0] = name;
+        pushedKeys.push({ name });
+      }
+      const keyDepths = keys.map((key, index) => {
+        const slot = slots[index]!;
+        const name = key?.expression !== undefined ? `(per_call_batch_key_${slot})`
+          : key?.frameSlot !== undefined ? key.frameSlot : key?.paramName;
+        const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
         if (keyDepth < 0) {
           throw new SolidcDiagnosticError(
             'PER_CALL_CODEGEN_UNAVAILABLE',
             `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
-            + `'${node.name}': its key is not a bare parameter the body holds`,
+            + `'${node.name}': its key is not on the stack where the derivation runs`,
             { function: node.name, slot },
           );
         }
@@ -3107,6 +3136,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.pushToStack(batchDerivationSlotName('Trailing', 0));
+      // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
+      // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
+      for (const { name } of pushedKeys) {
+        const depth = this.getStackIndex(name);
+        this.emit(encodeInt(BigInt(depth)), loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+        this.removeFromStack(depth);
+      }
     }
   }
 

@@ -292,21 +292,21 @@ describe('a per-call master whose entry writes a verified mapping', () => {
     expect(evaluateUpdate({ nodeOutputCommitment: NODE_UPDATE }).accepted).toBe(true);
   });
 
-  it('refuses an entry whose mapping writes the derivation does not cover', () => {
-    // A target whose key is a value the frame does not hold as a bare parameter (here `msg.sender`) has no slot the
-    // derivation can compute in script, so the shape is left refused rather than derived approximately. The
-    // two-bare-key form is derived instead; `batch-write.test.ts` runs it through the machine.
-    const computedKey = 'pragma solidcash ^0.13.0;'
+  it('refuses an entry whose mapping key the body does not hold where the derivation runs', () => {
+    // A key read from state is not a bare parameter, the frame's sender, or a compile-time value the body holds at
+    // its start, so the derivation has no value to hash there. The shape is left refused rather than derived
+    // approximately; `key-forms-write.test.ts` runs the admitted sender and expression keys through the machine.
+    const stateKey = 'pragma solidcash ^0.13.0;'
       + ' contract ComputedKey {'
+      + '   address owner;'
       + '   mapping(address => uint) balances;'
-      + '   function set(address b, uint amount) {'
-      + '     balances[msg.sender] = amount;'
-      + '     balances[b] = amount;'
+      + '   function set(uint amount) {'
+      + '     balances[this.owner] = amount;'
       + '   }'
       + ' }';
-    expect(() => compileString(computedKey, { composition: 'per-call' }))
+    expect(() => compileString(stateKey, { composition: 'per-call' }))
       .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
-    // The one-target shape compiles, so the refusal is the computed key and nothing else.
+    // The one-target shape compiles, so the refusal is the state key and nothing else.
     expect(artifact.composition?.convention).toBe('per-call');
   });
 });

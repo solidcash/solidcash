@@ -40,6 +40,7 @@ import {
 } from '../../../../solidc/src/per-call/validator/index.js';
 import {
   categoryOf,
+  emptyToken,
   masterTokenShape,
   seedBytes,
   materialise,
@@ -954,6 +955,45 @@ describe('the validator program refuses each rule it enforces', () => {
         : output)),
     };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_OWN_FUNGIBLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses an own-category bare output that no frame lists', () => {
+    // The reference single-contract composition has one event output the frame lists. Moving that token one index
+    // further in leaves the same bare 32-byte answer at an index no frame lists, which is what the census refuses.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const event = modelled.outputs.findIndex((output) =>
+      output.token.hasNft && output.token.capability === TokenCapability.NONE);
+    expect(event).toBeGreaterThanOrEqual(0);
+    const moved = modelled.outputs[event]!.token;
+    const next = event + 1;
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === event
+        ? { ...output, token: emptyToken() }
+        : output.index === next
+          ? { ...output, token: moved }
+          : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_UNEXPECTED_IMMUTABLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a listed event index beyond the transaction outputs', () => {
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    composition.blocks.get('A.go')!.events = [modelled.outputs.length + 3];
+    const tampered = materialise(composition);
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_EVENT_OUTPUT_OUT_OF_RANGE');
     expect(accepted(tampered, index)).toBe(false);
   });
 

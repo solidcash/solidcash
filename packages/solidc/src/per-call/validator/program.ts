@@ -102,6 +102,8 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_SETTLE_CATEGORY_DUPLICATE',
   'V7_STATE_INPUTS_MISMATCH',
   'V7_CENSUS_OWN_FUNGIBLE',
+  'V7_CENSUS_UNEXPECTED_IMMUTABLE',
+  'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -136,7 +138,9 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  *    calls only read-only frames;
  * 10. settles on `[M]`: no category is settled twice, and every category the covered masters need settled — one that
  *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles;
- * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount.
+ * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
+ *     bare 32-byte own-category output is an event a frame on that contract lists, and every listed event names an
+ *     output of the transaction.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -180,6 +184,7 @@ export function buildValidatorProgram(): Uint8Array {
   emitSettlementMembership(e);
   emitSettlementStateInputs(e);
   emitSettlementFungibleAmounts(e);
+  emitSettlementCensus(e);
   emitFrameAddresses(e);
 
   // The padding block: pushed and dropped where the program ends, so the stack a caller sees is the one the checks
@@ -1244,6 +1249,173 @@ function emitOwnCategoryAmounts(
   e.op(O.OP_DROP);
 }
 
+/**
+ * V7's census, the half an own-category output's class decides.
+ *
+ * A bare 32-byte value of a settled contract's category is an immutable NFT with no fungible amount, and it has to
+ * be an event listed by a frame that runs on that contract. Every event such a frame lists has to name an output of
+ * the transaction. Both are decided per settled contract.
+ *
+ * Entry `[M]`, exit `[M]`.
+ */
+function emitSettlementCensus(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  dropFront(e, 4);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  takeCount(e);
+  // `[M, settleCount, settles]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
+  emitOneSettleCensus(e);
+  e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
+  e.op(O.OP_NIP, O.OP_DROP);
+}
+
+/**
+ * The events and the own-category outputs of one settled contract.
+ *
+ * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`. The category is reversed to the order the
+ * machine reports a spent token's and kept on the stack for the two walks; the entry's state-input list is skipped,
+ * because the settlement rule already decided it.
+ */
+function emitOneSettleCensus(e: Emitter): void {
+  const O = Opcodes;
+  e.count(32).op(O.OP_SPLIT);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
+  e.op(O.OP_SWAP, O.OP_REVERSEBYTES);
+  // `[M, settleCount, after, X]`.
+  emitCollectOwnEvents(e);
+  emitRequireOwnOutputsListed(e);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * Every event a frame on the contract under inspection lists, as raw two-byte indices, each required to name an
+ * output.
+ *
+ * Entry `[M, settleCount, after, X]`, exit `[M, settleCount, after, X, events]`. A frame's context category is its
+ * own unless it borrows its caller's records, and the events are gathered in the accumulator on the alternate stack
+ * so the walk's own items are untouched as it reads each block.
+ */
+function emitCollectOwnEvents(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  // `[M, settleCount, after, X, masters]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitAppendMasterEvents(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/**
+ * The events of the master under inspection, appended to the accumulator.
+ *
+ * Entry `[.., rest, index]`, exit `[.., rest]`. The block is walked to its event list, every event index is required
+ * to name an output, and the list is concatenated onto the accumulator on the alternate stack.
+ */
+function emitAppendMasterEvents(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropSegment);
+  takeUnsignedCount(e, 2);
+  // `[.., rest, index, eventCount, eventsAndSends]`: the events are the first two bytes of each listed index.
+  e.op(O.OP_OVER, O.OP_DUP, O.OP_ADD, O.OP_SPLIT, O.OP_DROP);
+  e.op(O.OP_NIP);
+  // `[.., rest, index, events]`.
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY, O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  e.op(O.OP_DROP);
+}
+
+/**
+ * Every output the machine reports as a bare 32-byte value of the contract's category is one of the events.
+ *
+ * Entry `[.., X, events]`, exit the same. The amount rule has already refused any own-category token that carries a
+ * fungible amount, so a bare answer is an immutable NFT; an output with no token, another category or a capability
+ * byte is not this rule's.
+ */
+function emitRequireOwnOutputsListed(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_TXOUTPUTCOUNT);
+  e.count(0);
+  // `[.., X, events, count, index]`.
+  loopCounted(e, (em) => {
+    em.op(O.OP_DUP);
+    em.op(O.OP_OUTPUTTOKENCATEGORY);
+    em.op(O.OP_SIZE);
+    em.count(32).op(O.OP_NUMEQUAL, O.OP_IF);
+    em.count(4).op(O.OP_PICK, O.OP_EQUAL);
+    em.op(O.OP_ELSE);
+    em.op(O.OP_DROP, O.OP_0);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_IF);
+    emitRequireOutputIsAnEvent(em);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_1ADD);
+  });
+  // The walk leaves the last index, not an empty tail.
+  e.op(O.OP_DROP);
+}
+
+/**
+ * The output index on top is one of the events under it.
+ *
+ * Entry `[.., X, events, count, index]`, exit the same. The index is encoded as the two little-endian bytes a
+ * witness block writes an event with, and searched for among them; an index too wide to be an event is refused,
+ * because no listed event could name it.
+ */
+function emitRequireOutputIsAnEvent(e: Emitter): void {
+  const O = Opcodes;
+  // Two copies: one is range-checked and encoded into the needle, the other stays as the loop's index.
+  e.op(O.OP_DUP, O.OP_DUP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
+  e.push(new Uint8Array(2)).op(O.OP_CAT);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  // `[.., events, count, index, needle]`.
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWidth(e, 2);
+  e.op(O.OP_VERIFY);
+}
+
 /** Entry `[.., list]`, exit `[.., list, count]`. How many inputs are state UTXOs of the settled contract. */
 function emitCountStateInputs(e: Emitter): void {
   const O = Opcodes;
@@ -1424,11 +1596,16 @@ export function contextCategoryScript(): Uint8Array {
 
 /** Entry `[haystack, needle]`, exit `[found]`. `needle` is 32 bytes; `haystack` is a run of them. */
 function emitFound32(e: Emitter): void {
+  emitFoundWidth(e, 32);
+}
+
+/** Entry `[haystack, needle]`, exit `[found]`. `needle` is `width` bytes; `haystack` is a run of them. */
+function emitFoundWidth(e: Emitter, width: number): void {
   const O = Opcodes;
   e.op(O.OP_0, O.OP_ROT);
   e.op(O.OP_BEGIN);
   e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
-  e.count(32).op(O.OP_SPLIT, O.OP_SWAP);
+  e.count(width).op(O.OP_SPLIT, O.OP_SWAP);
   e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
   e.op(O.OP_SWAP, O.OP_1ADD, O.OP_SWAP);
   e.op(O.OP_ENDIF);

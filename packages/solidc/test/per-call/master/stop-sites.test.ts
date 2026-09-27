@@ -23,7 +23,9 @@ import {
 
 const toHex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const TARGET = new Uint8Array(35).fill(0x11);
+const OTHER_TARGET = new Uint8Array(35).fill(0x22);
 const SELECTOR = computeFunctionSelector(computeFunctionSignature('ping', []));
+const PONG_SELECTOR = computeFunctionSelector(computeFunctionSignature('pong', []));
 
 const callingSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
@@ -35,13 +37,21 @@ const callingSource = (): string => 'pragma solidcash ^0.13.0;'
 const silentSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' contract Solo { function ping() { require(true); } }';
 
-/** An entry that calls twice, which the convention does not admit yet. */
-const twoCallSource = (): string => 'pragma solidcash ^0.13.0;'
+/** An entry that calls the same method at the same target twice: the lowering coalesces the two into one batch. */
+const repeatedCallSource = (): string => 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Callee { function ping() { require(true); } }'
   + ' contract Caller {'
   + `   function callIt() { ICallee(0x${toHex(TARGET)}).ping.call(); ICallee(0x${toHex(TARGET)}).ping.call(); `
   + 'require(true); } }';
+
+/** Two entries that make different calls, so the table must name each entry's own callee. */
+const twoEntrySource = (): string => 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); function pong(); }'
+  + ' contract Caller {'
+  + `   function a() { ICallee(0x${toHex(TARGET)}).ping.call(); require(true); }`
+  + `   function b() { ICallee(0x${toHex(OTHER_TARGET)}).pong.call(); require(true); }`
+  + ' }';
 
 /** The composition publication, which carries the stop-site table beside the placeholder descriptor. */
 const publicationOf = (artifact: { composition?: unknown }): PublishedPerCallStopSites => {
@@ -106,11 +116,57 @@ describe('the stop-site table published from a real compile', () => {
     expect(sites.some((site) => site.kind === 'read')).toBe(false);
   });
 
-  it('refuses to compile an entry whose execution makes two calls', () => {
-    // The table above describes two calls, so the shape is expressible; no real compile reaches it yet, because
-    // the call's selector arrives in the entry's own parameter list and the head supplies one. Pinning the refusal
-    // keeps the table's shape and the compiler's limit from being read as each other.
-    expect(() => compileStringMulti(twoCallSource(), { composition: 'per-call' }))
+  it('publishes one entry for each entry point, each naming its own callee', () => {
+    // Two entries make different calls; each entry's table has to name the callee its own site binds, so entry
+    // `a` publishes `ping` at `TARGET` and entry `b` publishes `pong` at `OTHER_TARGET`.
+    const artifacts = compileStringMulti(twoEntrySource(), { composition: 'per-call' });
+    expect(publicationOf(artifacts.Caller!).entries).toStrictEqual([
+      {
+        functionName: 'Caller.a()',
+        calls: [{
+          callIndex: 0,
+          interfaceName: 'ICallee',
+          functionName: 'ping',
+          target: toHex(TARGET),
+          selector: toHex(SELECTOR),
+        }],
+        sites: {
+          version: 1,
+          functionName: 'Caller.a()',
+          sites: [
+            { kind: 'call', site: 0, callIndex: 0 },
+            { kind: 'segmentClose', site: 1, segmentIndex: 0 },
+            { kind: 'segmentClose', site: 2, segmentIndex: 1 },
+          ],
+        },
+      },
+      {
+        functionName: 'Caller.b()',
+        calls: [{
+          callIndex: 0,
+          interfaceName: 'ICallee',
+          functionName: 'pong',
+          target: toHex(OTHER_TARGET),
+          selector: toHex(PONG_SELECTOR),
+        }],
+        sites: {
+          version: 1,
+          functionName: 'Caller.b()',
+          sites: [
+            { kind: 'call', site: 0, callIndex: 0 },
+            { kind: 'segmentClose', site: 1, segmentIndex: 0 },
+            { kind: 'segmentClose', site: 2, segmentIndex: 1 },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('refuses to compile an entry that calls the same method at the same target twice', () => {
+    // The lowering coalesces the two identical calls into one batch, so the records are not a fixed set the head
+    // can check. Pinning the refusal keeps the table's shape and the compiler's limit from being read as each
+    // other.
+    expect(() => compileStringMulti(repeatedCallSource(), { composition: 'per-call' }))
       .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
   });
 
@@ -126,6 +182,6 @@ describe('the stop-site table published from a real compile', () => {
     ]);
     expect(metadata.sites.map((site) => site.site)).toStrictEqual([0, 1, 2, 3, 4]);
     expect(() => validateStopSiteMetadata(metadata)).not.toThrow();
-    expect(publishPerCallStopSites('X', ['f'], []).entries[0]!.sites.sites).toHaveLength(1);
+    expect(publishPerCallStopSites('X', [{ entryName: 'f', calls: [] }]).entries[0]!.sites.sites).toHaveLength(1);
   });
 });

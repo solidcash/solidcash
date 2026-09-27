@@ -511,8 +511,10 @@ type InternalCompilerOptions = CompilerOptions & {
   __kernelReadCarrierAuthorizationBox?: KernelReadCarrierAuthorizationBox;
   /** Set once the parsed contract is admitted as a shape this compiler can emit a per-call master for. */
   __perCallMaster?: boolean;
-  /** The calls every entry makes, in execution order, as the master head checks them. */
-  __perCallCallSites?: readonly MasterCallSite[];
+  /** Each entry's own external calls, in execution order, keyed by entry name, as that entry's sites bind them. */
+  __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
+  /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
+  __perCallCallCount?: number;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
   __perCallStopSites?: PublishedPerCallStopSites;
   /** Set when the master reserves a slot for the validator program's hash, i.e. it can be reached through a call. */
@@ -14031,18 +14033,22 @@ function compileResolvedAst(
     stripFrameParameters(ast.contract);
     // A master admits a user's frame and a callee's. A callee's frame is covered by a validator that binds the
     // facts a master cannot see, so the master has to recognise the validator it names however its entry runs:
-    // every master reserves the validator program's hash slot. A master that also makes a call records those
-    // call sites for the head to check.
-    const callSites = assessment.calls ?? [];
-    (mergedCompilerOptions as InternalCompilerOptions).__perCallCallSites = callSites;
+    // every master reserves the validator program's hash slot. A master that also makes calls keeps one
+    // descriptor list per entry, because the records are bound where each entry's own source makes the call; only
+    // the count the head fixes is shared, so the entries must declare the same number of calls.
+    const entryCalls = assessment.entryCalls ?? [];
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallEntryCallSites = new Map(
+      entryCalls.map((entry) => [entry.entryName, entry.calls]),
+    );
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallCallCount = assessment.callCount ?? 0;
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
     // The stop sites a builder resumes from, published per entry so a driver can look one up by the identity its
-    // `FrameRequest.functionName` carries. No `read` site is published: the compiler does not hold the record
-    // identity a read resolves to.
+    // `FrameRequest.functionName` carries. Each entry publishes its own calls, so a driver names the callees that
+    // entry's sites bind. No `read` site is published: the compiler does not hold the record identity a read
+    // resolves to.
     (mergedCompilerOptions as InternalCompilerOptions).__perCallStopSites = publishPerCallStopSites(
       ast.contract.name,
-      ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name),
-      callSites,
+      entryCalls,
     );
     setPerCallMaster(mergedCompilerOptions as InternalCompilerOptions);
   }

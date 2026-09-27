@@ -4,6 +4,7 @@ import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
+  bytecodeToScript,
   MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
   encodeArgumentPayload,
@@ -969,8 +970,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   finalStackUsage: Record<string, StackItem> = {};
   /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
   private perCallMaster = false;
-  /** The external calls the compiled master's entries make, in execution order, one per record the body binds. */
-  private perCallCallSites: readonly MasterCallSite[] = [];
+  /** Each entry's own external calls, in execution order, keyed by entry name, one per record its body binds. */
+  private perCallEntryCallSites: ReadonlyMap<string, readonly MasterCallSite[]> = new Map();
+  /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
+  private perCallCallCount = 0;
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
   private perCallReservesValidatorHash = false;
   /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
@@ -1804,8 +1807,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     super();
     this.resolvedLibraries = resolveLibraries(compilerOptions.userLibraries);
     this.perCallMaster = (compilerOptions as { __perCallMaster?: boolean }).__perCallMaster === true;
-    this.perCallCallSites = (compilerOptions as { __perCallCallSites?: readonly MasterCallSite[] })
-      .__perCallCallSites ?? [];
+    this.perCallEntryCallSites = (compilerOptions as {
+      __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
+    }).__perCallEntryCallSites ?? new Map();
+    this.perCallCallCount = (compilerOptions as { __perCallCallCount?: number }).__perCallCallCount ?? 0;
     this.perCallReservesValidatorHash = (compilerOptions as {
       __perCallReservesValidatorHash?: boolean;
     }).__perCallReservesValidatorHash === true;
@@ -2907,7 +2912,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
     // an argument; otherwise it sits below them as the unlocking bytecode's first push.
     const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
-    const calls = this.perCallCallSites;
+    // The head is one prefix, so it fixes one call count: the count every entry declared. The call records
+    // themselves are bound where each entry's own source makes the call, so the sites of all entries are handed
+    // to the head only for the kinds it has to recognise; the count it walks is the shared one.
+    const calls = [...this.perCallEntryCallSites.values()].flat();
+    const callCount = this.perCallCallCount;
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
     // A master is entered by a user or by another master as a callee; the three frame kinds are what the head
     // branches on. A message callee and a read-only callee are both entered by another master; a user's frame is
@@ -2941,6 +2950,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A master that stands alone settles its own records: its segment's declarations are compared with the
       // commitments the transaction spends and writes, and the state UTXOs spent are the records it declared.
       settlesOwnRecords: true,
+      callCount,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(returnsValue ? { returnsValue: true } : {}),
       ...(calls.length > 0 ? { calls } : {}),
@@ -2976,15 +2986,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitPerCallCallSite(node: ExternalFunctionCallNode, locationData: SingleLocationData): void {
     const index = node.callInfo?.externalCallSlotIndex;
-    if (index === undefined || this.perCallCallSites[index] === undefined) {
+    const sites = this.perCallSitesForCurrentFunction();
+    if (index === undefined || sites[index] === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
         `the per-call call site '${node.interfaceName}.${node.functionName}' has no record to bind `
-        + `(slot ${index === undefined ? 'unset' : String(index)}, ${this.perCallCallSites.length} site(s))`,
+        + `(slot ${index === undefined ? 'unset' : String(index)}, ${sites.length} site(s) for `
+        + `'${this.currentFunction.name}')`,
         { interface: node.interfaceName, function: node.functionName, slot: index },
       );
     }
-    const site = this.perCallCallSites[index]!;
+    const site = sites[index]!;
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
     // A target the caller's own code computes is emitted first, so the digest (when it too is computed) is left
@@ -2999,9 +3011,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // frame here even though the check itself is emitted as raw bytes.
     if (computesDigest) this.popFromStack();
     if (computesTarget) this.popFromStack();
-    this.emit([...callSiteCheckScript(site, index, usesResult, {
+    // The site's raw script is emitted as script elements rather than a flat byte array, so its pushes stay whole:
+    // a body that carries a bare push opcode as a number element reads the next opcode as that push's payload, and
+    // the shared-span outliner that rewrites entry bodies would cut inside a push.
+    this.emit(bytecodeToScript(callSiteCheckScript(site, index, usesResult, {
       digestFromStack: computesDigest, targetFromStack: computesTarget,
-    })], locationData);
+    })), locationData);
     if (!usesResult) return;
     // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
     // the direct path decodes a return event's commitment.
@@ -3011,6 +3026,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitPushdataDecode(returnTypes[field]!, locationData);
     }
     for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+  }
+
+  /**
+   * The call descriptors of the entry whose body is being emitted.
+   *
+   * Each record is bound where the entry's own source makes the call, so the sites are looked up by the function
+   * being emitted rather than by a contract-wide list: two entries may call different methods, and entry b's site
+   * 0 must resolve to entry b's own first call, not entry a's.
+   */
+  private perCallSitesForCurrentFunction(): readonly MasterCallSite[] {
+    const func = this.currentFunction;
+    const sites = func === undefined ? undefined : this.perCallEntryCallSites.get(func.name);
+    if (sites === undefined) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master has no call descriptors for the function '${func?.name ?? 'unknown'}' whose body `
+        + 'makes an external call',
+        { function: func?.name },
+      );
+    }
+    return sites;
   }
 
   /**
@@ -3040,7 +3076,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     site: MasterCallSite,
     loc: SingleLocationData,
   ): void {
-    this.emit([...encodeDataPush(site.selector)], loc);
+    this.emit(bytecodeToScript(encodeDataPush(site.selector)), loc);
     this.pushToStack('(value)');
     // The arguments are folded in from the deepest one, so they are visited in wire order and each value's push
     // is appended to what is already there. Evaluating a shorter-lived value first leaves the same frame behind.
@@ -3048,7 +3084,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let index = siteArguments.length - 1; index >= 0; index -= 1) {
       const argument = siteArguments[index]!;
       if (argument.kind === 'constant') {
-        this.emit([...encodeArgumentPayload(argument.bytes)], loc);
+        this.emit(bytecodeToScript(encodeArgumentPayload(argument.bytes)), loc);
         this.pushToStack('(value)');
       } else {
         const parameter = node.parameters[index];
@@ -3062,7 +3098,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
         // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
         this.visit(parameter);
-        this.emit([...canonicalPushScript(argument.numeric)], loc);
+        this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
       }
       this.emit(Op.OP_CAT, loc);
       this.popFromStack(2);

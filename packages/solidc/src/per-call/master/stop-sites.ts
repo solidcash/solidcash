@@ -86,15 +86,20 @@ export function entryStopSites(functionName: string, calls: readonly MasterCallS
   return metadata;
 }
 
-/** Builds one contract's published table, one entry per name, each validated before it is returned. */
+/**
+ * Builds one contract's published table, one entry per name, each validated before it is returned.
+ *
+ * Each entry publishes the calls its own source makes, so a driver that resumes an entry names the callees that
+ * entry's sites bind rather than another entry's. The entries share the call count the head fixes, but not the
+ * calls themselves.
+ */
 export function publishPerCallStopSites(
   contractName: string,
-  entryNames: readonly string[],
-  calls: readonly MasterCallSite[],
+  entries: readonly { readonly entryName: string; readonly calls: readonly MasterCallSite[] }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entryNames.map((entryName) => {
+    entries: entries.map(({ entryName, calls }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,

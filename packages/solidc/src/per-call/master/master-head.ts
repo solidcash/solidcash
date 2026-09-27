@@ -135,11 +135,19 @@ export interface MasterHeadOptions {
    */
   readonly callDataSelectorUnconsumed?: boolean;
   /**
-   * The external calls the entry makes, in execution order. The head fixes how many records the tail holds and
-   * walks past each of them; the site that made the call binds its record in the caller's own body, and the head
-   * keeps the checks on the sections after the calls.
+   * The external calls the master's entries make, in execution order. The head fixes how many records the tail
+   * holds and walks past each of them; the site that made the call binds its record in the caller's own body, and
+   * the head keeps the checks on the sections after the calls. Only each site's kind is read here; the records
+   * themselves are bound at the sites, so two entries may name different calls.
    */
   readonly calls?: readonly MasterCallSite[];
+  /**
+   * How many call records the tail holds, when it is not one per element of `calls`.
+   *
+   * With several entries the head admits, each entry makes its own calls, so `calls` may hold every entry's sites
+   * while the shared count is what one execution declares. When absent the count is `calls.length`.
+   */
+  readonly callCount?: number;
   /**
    * The event and send counts, and any per-segment record counts, the entry fixes. Without one the walk requires
    * no event, no send and no record in any segment.
@@ -208,6 +216,7 @@ class HeadEmitter {
   private addressSlot = -1;
   private validatorHashSlot = -1;
   private readonly callSites: readonly MasterCallSite[];
+  private readonly callCount: number;
   private readonly tailShape: MasterTailShape;
   private readonly reservesValidatorHashSlot: boolean;
   private readonly admittedKinds: readonly number[];
@@ -219,7 +228,8 @@ class HeadEmitter {
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
-    this.tailShape = options.tail ?? zeroTailShape(this.callSites.length);
+    this.callCount = options.callCount ?? this.callSites.length;
+    this.tailShape = options.tail ?? zeroTailShape(this.callCount);
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
@@ -229,7 +239,7 @@ class HeadEmitter {
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
-      || this.callSites.length > 0
+      || this.callCount > 0
       || this.admittedKinds.some((kind) => kind !== FRAME_KIND_ROOT);
   }
 
@@ -352,7 +362,7 @@ class HeadEmitter {
    * count must be zero, which is N1's second half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
+    this.emitBytes(verifyTailScript(this.callCount, this.tailShape,
       { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertSelfSettlement();
@@ -379,7 +389,7 @@ class HeadEmitter {
    * constant, and its tail holds as many call records as its sites number.
    */
   private composedFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
+    this.emitBytes(verifyTailScript(this.callCount, this.tailShape,
       { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertCallerIsNotSelf();
@@ -519,11 +529,11 @@ class HeadEmitter {
 
   /** N1's second half: the frame is a user's, it makes no call, and it is its category's only master. */
   private assertStandalone(): void {
-    if (this.callSites.length > 0) {
+    if (this.callCount > 0) {
       this.emitRefusal();
     }
     if (this.admittedKinds.some((kind) => kind !== FRAME_KIND_ROOT)) this.assertFrameKindRoot();
-    if (this.callSites.length === 0) this.assertSelfSettlement();
+    if (this.callCount === 0) this.assertSelfSettlement();
     this.emitSingleMasterCheck();
   }
 
@@ -532,8 +542,8 @@ class HeadEmitter {
     if (!this.settlesOwnRecords) return;
     const addressPayload = this.addressSlot + placeholderPrefixLength(ADDRESS_SLOT_LENGTH);
     this.emitBytes(selfSettlementScript({
-      callCount: this.callSites.length,
-      segmentCount: this.callSites.length + 1,
+      callCount: this.callCount,
+      segmentCount: this.callCount + 1,
       sendCount: this.tailShape.sendCount,
       addressPayloadOffset: addressPayload,
     }));

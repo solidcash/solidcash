@@ -110,12 +110,20 @@ export interface PerCallMasterShapeInput {
   readonly emitsEvent: boolean;
 }
 
+/** One entry's external calls, in execution order, which that entry's own sites bind. */
+export interface PerCallEntryCallSites {
+  readonly entryName: string;
+  readonly calls: readonly MasterCallSite[];
+}
+
 export interface PerCallMasterShapeAssessment {
   readonly supported: boolean;
   /** Why the shape is refused, phrased as a fact about the contract. */
   readonly reason?: string;
-  /** The calls every entry makes, in execution order, which the master head checks. */
-  readonly calls?: readonly MasterCallSite[];
+  /** One descriptor list per entry, in entry order; each entry's sites resolve against its own list. */
+  readonly entryCalls?: readonly PerCallEntryCallSites[];
+  /** How many call records every entry's tail holds, which is the count the master head's walk is fixed to. */
+  readonly callCount?: number;
   /** The event and send counts every entry fixes, which the master head checks. */
   readonly tail?: MasterTailShape;
 }
@@ -183,7 +191,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (!calls.supported) return refuse(calls.reason);
   const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
   if (tail.reason !== undefined) return refuse(tail.reason);
-  return { supported: true, calls: calls.calls, tail: tail.tail };
+  return { supported: true, entryCalls: calls.entryCalls, callCount: calls.callCount, tail: tail.tail };
 }
 
 /**
@@ -280,39 +288,46 @@ function emitsFromLoop(entry: FunctionDefinitionNode): boolean {
   return found;
 }
 
-/** The call sites every entry makes, or why the head cannot check them. */
+/** The call sites each entry makes, or why the head cannot check them. */
 type CallSitesDerivation =
-  | { readonly supported: true; readonly calls: readonly MasterCallSite[] }
-  | { readonly supported: false; readonly calls: readonly MasterCallSite[]; readonly reason: string };
+  | {
+    readonly supported: true;
+    readonly entryCalls: readonly PerCallEntryCallSites[];
+    readonly callCount: number;
+  }
+  | { readonly supported: false; readonly reason: string };
 
 /**
- * Derives the call sites every entry of the contract makes, which the master head has to check.
+ * Derives the call sites each entry of the contract makes, which that entry's own body has to check.
  *
- * The head is one prefix, so it checks the same calls[] records whichever entry runs: every entry must make the
- * same calls, and only calls whose shape the head's checks describe are admitted — a call to a compile-time
- * address whose argument values the caller's own code can hash, and whose frame kind is one the head admits: a
- * message call or a read-only call. Anything else is refused by name, because the head would have to check a
- * shape it cannot describe.
+ * A master's head is one prefix that fixes how many `calls[]` records the tail holds; the records themselves are
+ * bound where each entry's source makes the call, so two entries may call different methods, targets and
+ * arguments. Only the count is shared: the head walks one record per call without reading it, and a segment
+ * follows each call, so the entries must declare the same number of calls or the head cannot fix the tail. Each
+ * entry's list is kept apart so its sites resolve to its own descriptors, and every call is admitted only when
+ * the shape the site checks describes it — a call to a compile-time address whose argument values the caller's own
+ * code can hash, and whose frame kind is one the head admits: a message call or a read-only call. Anything else is
+ * refused by name, because the site would have to check a shape it cannot describe.
  */
 function derivePerCallMasterCallSites(
   interfaces: readonly InterfaceNode[],
   entryPoints: readonly FunctionDefinitionNode[],
 ): CallSitesDerivation {
-  const perEntry: MasterCallSite[][] = [];
+  const entryCalls: PerCallEntryCallSites[] = [];
   for (const entry of entryPoints) {
     const derived = deriveEntryCallSites(interfaces, entry);
-    if (derived.reason !== undefined) return { supported: false, calls: [], reason: derived.reason };
-    perEntry.push(derived.calls);
+    if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
+    entryCalls.push({ entryName: entry.name, calls: derived.calls });
   }
-  const first = perEntry[0] ?? [];
-  if (perEntry.some((calls) => !sameCallSites(calls, first))) {
+  const callCount = entryCalls[0]?.calls.length ?? 0;
+  if (entryCalls.some((entry) => entry.calls.length !== callCount)) {
     return {
       supported: false,
-      calls: [],
-      reason: 'the entries make different external calls, but a master has one head that checks one calls[] set',
+      reason: 'the entries make different numbers of external calls, but a master has one head that fixes how '
+        + 'many call records the tail holds',
     };
   }
-  return { supported: true, calls: first };
+  return { supported: true, entryCalls, callCount };
 }
 
 /** The call sites one entry makes, or why the head cannot check them. */
@@ -500,32 +515,4 @@ function resolveInterfaceSelector(
   );
 }
 
-/** True when two call-site lists describe the same calls, which is what lets one head check them all. */
-function sameCallSites(left: readonly MasterCallSite[], right: readonly MasterCallSite[]): boolean {
-  return left.length === right.length && left.every((site, index) => {
-    const other = right[index];
-    return other !== undefined
-      && site.kind === other.kind
-      && bytesEqual(site.selector, other.selector)
-      && bytesEqual(site.target, other.target)
-      && (site.targetFromStack === true) === (other.targetFromStack === true)
-      && sameSiteArguments(site.arguments ?? [], other.arguments ?? []);
-  });
-}
 
-/** True when two argument lists ask for the same pushes: the same constant bytes, or the same run-time form. */
-function sameSiteArguments(left: readonly SiteArgument[], right: readonly SiteArgument[]): boolean {
-  return left.length === right.length && left.every((argument, index) => {
-    const other = right[index];
-    if (other === undefined || argument.kind !== other.kind) return false;
-    if (argument.kind === 'constant') {
-      return other.kind === 'constant' && bytesEqual(argument.bytes, other.bytes);
-    }
-    return other.kind === 'runtime' && argument.numeric === other.numeric;
-  });
-}
-
-/** Byte-wise equality, small enough not to pull in a dependency for it. */
-function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length && left.every((byte, index) => byte === right[index]);
-}

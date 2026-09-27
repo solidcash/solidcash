@@ -65,7 +65,7 @@ const TWO_CALLS_SINGLE_METHOD_CONTRACT = 'pragma solidcash ^0.13.0;'
   + `   function callIt() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
   + ' }';
 
-/** Entries that make different calls: one head checks one `calls[]` set, which cannot describe both. */
+/** Entries that make different calls but the same number: one head fixes the count, each site binds its record. */
 const DIFFERENT_CALLS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); function pong(); }'
   + ' contract Caller {'
@@ -73,7 +73,7 @@ const DIFFERENT_CALLS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + `   function b() { ICallee(0x${'22'.repeat(35)}).pong.call(); }`
   + ' }';
 
-/** Entries that make different numbers of calls, which one fixed tail count cannot describe either. */
+/** Entries that make different numbers of calls, which one fixed tail count cannot describe. */
 const DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Caller {'
@@ -186,19 +186,18 @@ describe('the call set a compiled master fixes', () => {
     expect(artifact.composition?.convention).toBe('per-call');
   });
 
-  it('refuses entries that make different calls, by name', () => {
-    // Each site binds its own record in the body, but the site descriptors are one list indexed by the call's
-    // position, and the head walks one count, so one entry's calls cannot describe another's.
-    expect(codeOf(() => compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toContain('different external calls');
+  it('compiles entries that make different calls but the same number of them', () => {
+    // The head fixes one count and walks one record per call; each site binds its own entry's record in the body,
+    // so two entries may call different methods at different targets.
+    const artifact = compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['a', 'b']);
   });
 
   it('refuses entries that make different numbers of calls, by name', () => {
     expect(codeOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
       .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(messageOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toContain('different external calls');
+      .toContain('different numbers of external calls');
   });
 });

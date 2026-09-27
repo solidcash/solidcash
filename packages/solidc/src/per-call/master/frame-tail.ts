@@ -139,8 +139,8 @@ export function assertP2pkhShapeScript(): Uint8Array {
  *
  * Entry `[..., tail]`, exit `[...]`. `retval` must be empty unless `returnsValue` says the entry returns one
  * value, in which case the recorded value is parked on the alt stack for the body to compare against what its
- * own code computed. The call count must equal the number of sites (a loop that varies it is not emitted), and
- * each record is walked past — the site that made the call binds it in the caller's own body. The segment count
+ * own code computed. The call count must equal `callCount` (a loop that varies it is not emitted), and each
+ * record is walked past — the site that made the call binds it in the caller's own body. The segment count
  * must be the call count plus one, and every segment's records are walked. The event and send counts must equal
  * the shape's, and each listed output is checked. The remaining tail must be empty, so nothing follows the last
  * field.
@@ -151,8 +151,8 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * deepest, below both, because it is read before either.
  */
 export function verifyTailScript(
-  callSites: readonly MasterCallSite[],
-  tail: MasterTailShape = zeroTailShape(callSites.length),
+  callCount: number,
+  tail: MasterTailShape = zeroTailShape(callCount),
   options: { readonly keepsRecordIndices?: boolean; readonly returnsValue?: boolean } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
@@ -165,10 +165,10 @@ export function verifyTailScript(
   } else {
     bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   }
-  bytes.push(...requireU16Equals(callSites.length));
-  for (let site = 0; site < callSites.length; site += 1) bytes.push(...callRecordSkip());
-  bytes.push(...requireU16Equals(callSites.length + 1));
-  for (let segment = 0; segment < callSites.length + 1; segment += 1) {
+  bytes.push(...requireU16Equals(callCount));
+  for (let site = 0; site < callCount; site += 1) bytes.push(...callRecordSkip());
+  bytes.push(...requireU16Equals(callCount + 1));
+  for (let segment = 0; segment < callCount + 1; segment += 1) {
     bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment], keepsRecordIndices && segment === 0));
   }
   bytes.push(...requireU16Equals(tail.eventCount));

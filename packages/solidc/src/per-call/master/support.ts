@@ -166,8 +166,13 @@ type BatchKeyResolution =
   | { readonly kind: 'key'; readonly key: PerCallBatchKey }
   | { readonly kind: 'refusal'; readonly reason: string };
 
+/** Every key of one target's write, in source order, or the fact that stops the master from holding one. */
+type BatchKeysResolution =
+  | { readonly kind: 'keys'; readonly keys: readonly PerCallBatchKey[] }
+  | { readonly kind: 'refusal'; readonly reason: string };
+
 /**
- * The key a body's one write to `slot` reads, or why the master cannot hold it where it derives the slot.
+ * One key of a body's write to `slot`, or why the master cannot hold it where it derives the slot.
  *
  * A bare parameter is the body's own argument, and `msg.sender`/`tx.origin` are frame values the head leaves
  * tracked, so both are already on the stack. Any other key is derivable only when the body's own write carries an
@@ -177,12 +182,17 @@ type BatchKeyResolution =
 function resolveBatchKey(
   entry: FunctionDefinitionNode,
   slot: number,
+  keyIndex: number,
+  keyCount: number,
   constants: ReadonlySet<string>,
 ): BatchKeyResolution {
   const access = (entry.entryAccesses ?? []).find((candidate) => candidate.slotIndex === slot);
-  const source = access?.keySources?.[0];
+  const source = access?.keySources?.[keyIndex];
   if (source === undefined) {
-    return { kind: 'refusal', reason: `the body writes a mapping at slot ${slot} with no key source to read` };
+    return {
+      kind: 'refusal',
+      reason: `the body writes a mapping at slot ${slot} with no key ${keyIndex} source to read`,
+    };
   }
   if (source.kind === 'msgSender') {
     // The head leaves the caller's lock as the frame `sender` — the user's lock for a root frame, and the value a
@@ -198,17 +208,18 @@ function resolveBatchKey(
       || !entry.parameters.some((parameter) => parameter.name === source.paramName)) {
       return {
         kind: 'refusal',
-        reason: `the body writes a mapping at slot ${slot} whose key names the parameter `
+        reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} names the parameter `
           + `'${source.paramName ?? 'unnamed'}' it does not declare`,
       };
     }
     return { kind: 'key', key: { paramName: source.paramName } };
   }
-  const keyNode = mappingWriteKey(entry, slot);
+  const keyNode = mappingWriteKey(entry, slot, keyIndex, keyCount);
   if (keyNode === undefined) {
     return {
       kind: 'refusal',
-      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' has no expression to read`,
+      reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' has no `
+        + 'expression to read',
     };
   }
   const identifier = keyNode instanceof IdentifierNode ? keyNode : undefined;
@@ -217,7 +228,7 @@ function resolveBatchKey(
   if (expression === undefined) {
     return {
       kind: 'refusal',
-      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' is the local `
+      reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' is the local `
         + `'${identifier?.name ?? '?'}', which is not bound to a single compile-time value`,
     };
   }
@@ -225,12 +236,38 @@ function resolveBatchKey(
   if (unavailable !== undefined) {
     return {
       kind: 'refusal',
-      reason: `the body writes a mapping at slot ${slot} whose key '${source.canonical}' reads ${unavailable}, and `
-        + 'a master derives a target slot only from a bare parameter, the frame\'s sender, or a compile-time value '
-        + 'the body holds at its start',
+      reason: `the body writes a mapping at slot ${slot} whose key ${keyIndex} '${source.canonical}' reads `
+        + `${unavailable}, and a master derives a target slot only from a bare parameter, the frame's sender, or a `
+        + 'compile-time value the body holds at its start',
     };
   }
   return { kind: 'key', key: { expression } };
+}
+
+/**
+ * Every key of a body's write to `slot`, in source order.
+ *
+ * A nested `m[a][b]` write carries two of them, and the slot is the masked hash of their per-key hashes
+ * concatenated — the same value the body's own key hash computes and the SDK's `keyToSlotMulti` derives — so each
+ * key has to be a value the master holds where it derives the slot.
+ */
+function resolveBatchKeys(
+  entry: FunctionDefinitionNode,
+  slot: number,
+  constants: ReadonlySet<string>,
+): BatchKeysResolution {
+  const access = (entry.entryAccesses ?? []).find((candidate) => candidate.slotIndex === slot);
+  const keyCount = access?.keyParams.length ?? 0;
+  if (keyCount === 0) {
+    return { kind: 'refusal', reason: `the body writes a mapping at slot ${slot} with no key source to read` };
+  }
+  const keys: PerCallBatchKey[] = [];
+  for (let keyIndex = 0; keyIndex < keyCount; keyIndex += 1) {
+    const resolved = resolveBatchKey(entry, slot, keyIndex, keyCount, constants);
+    if (resolved.kind === 'refusal') return resolved;
+    keys.push(resolved.key);
+  }
+  return { kind: 'keys', keys };
 }
 
 /**
@@ -239,12 +276,17 @@ function resolveBatchKey(
  * A single-key write carries one key; the entry access it belongs to is the same physical slot the batch named, so
  * its expression is the value the direct path would hash for that slot.
  */
-function mappingWriteKey(entry: FunctionDefinitionNode, slot: number): ExpressionNode | undefined {
+function mappingWriteKey(
+  entry: FunctionDefinitionNode,
+  slot: number,
+  keyIndex: number,
+  keyCount: number,
+): ExpressionNode | undefined {
   let key: ExpressionNode | undefined;
   walkInvocationAst(entry.body, (node) => {
     if (key !== undefined) return;
-    if (node instanceof MappingAssignNode && node.entrySlotIndex === slot && node.keys.length === 1) {
-      key = node.keys[0];
+    if (node instanceof MappingAssignNode && node.entrySlotIndex === slot && node.keys.length === keyCount) {
+      key = node.keys[keyIndex];
     }
   });
   return key;
@@ -333,8 +375,7 @@ function derivableTargetBatch(
     if (!isOneWrite(access.operations)) return undefined;
     if (access.inLoop === true || access.aliasCondDeleteSlot !== undefined
       || (access.runtimeAliasPriorSlots?.length ?? 0) > 0) return undefined;
-    if (access.keyParams.length !== 1) return undefined;
-    if (resolveBatchKey(entry, slot, constants).kind !== 'key') return undefined;
+    if (resolveBatchKeys(entry, slot, constants).kind !== 'keys') return undefined;
   }
   return { slots: [...batch.slotIndices], collection: batch.collection, wasLinear: batch.linear === true };
 }
@@ -354,18 +395,18 @@ function isOneWrite(operations: readonly string[]): boolean {
 }
 
 /**
- * The key one derivable target reads, or undefined for a target the admission leaves refused.
+ * The keys one derivable target reads, in source order, or undefined for a target the admission leaves refused.
  *
- * The emission uses the same resolution the admission does, so the value it emits and the emittability decision
+ * The emission uses the same resolution the admission does, so the values it emits and the emittability decision
  * cannot drift apart.
  */
-export function perCallBatchKey(
+export function perCallBatchKeys(
   entry: FunctionDefinitionNode,
   slot: number,
   constants: ReadonlySet<string>,
-): PerCallBatchKey | undefined {
-  const resolved = resolveBatchKey(entry, slot, constants);
-  return resolved.kind === 'key' ? resolved.key : undefined;
+): readonly PerCallBatchKey[] | undefined {
+  const resolved = resolveBatchKeys(entry, slot, constants);
+  return resolved.kind === 'keys' ? resolved.keys : undefined;
 }
 
 /**
@@ -437,11 +478,7 @@ function unsupportedBatchWriteShape(
       return `the body writes a mapping at slot ${slot} that can alias another target at run time, so its record `
         + 'is not fixed';
     }
-    if (access.keyParams.length !== 1) {
-      return `the body writes a mapping at slot ${slot} keyed by ${access.keyParams.length} values, and a master `
-        + 'derives a target slot only for a single-key write';
-    }
-    const resolved = resolveBatchKey(entry, slot, constants);
+    const resolved = resolveBatchKeys(entry, slot, constants);
     if (resolved.kind === 'refusal') return resolved.reason;
   }
   if (accesses.length !== batch.slotIndices.length) {

@@ -41,8 +41,8 @@ import {
 } from './witness-reader.js';
 
 export interface BatchWitnessDerivationOptions {
-  /** Top-relative depth of the target key's value on the runtime stack when the script begins. */
-  readonly keyDepth: number;
+  /** Top-relative depths of the one target's keys, in source order, when the script begins. */
+  readonly keyDepths: readonly number[];
   /** How many call records the master's tail holds, which the walk steps over before the segments. */
   readonly callCount: number;
 }
@@ -100,9 +100,15 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
     takeAndDropLp32(); // result
   };
 
-  // Slot = the masked sha256 of the target key, exactly as the write path's own key hash computes it.
-  pick(options.keyDepth); // [key]
-  op(Opcodes.OP_SHA256); // [H]
+  // Slot = the masked key hash the write path computes: each key hashed, the hashes concatenated, hashed again
+  // when there is more than one, and the high bit of the last byte cleared. A key's depth is taken from the frame
+  // as the script found it, so only the hashes already concatenated sit above it.
+  options.keyDepths.forEach((depth, index) => {
+    pick(depth + (index === 0 ? 0 : 1)); // [key]
+    op(Opcodes.OP_SHA256); // [H]
+    if (index > 0) op(Opcodes.OP_CAT); // [H(k0) ++ ... ++ H(ki)]
+  });
+  if (options.keyDepths.length > 1) op(Opcodes.OP_SHA256); // [composite hash]
   num(31); op(Opcodes.OP_SPLIT); // [tail, head31]
   bytes.push(...encodeDataPush(new Uint8Array([0x7f])));
   op(Opcodes.OP_AND); // [masked, head31]
@@ -185,8 +191,8 @@ function minimalNumber(value: number): Uint8Array {
 }
 
 export interface BatchTargetsDerivationOptions {
-  /** Top-relative depth of each target's key value on the runtime stack when the script begins, in target order. */
-  readonly keyDepths: readonly number[];
+  /** Top-relative depths of each target's keys, in target order and, inside a target, in source order. */
+  readonly keyDepths: readonly (readonly number[])[];
   /** How many call records the master's tail holds, which the walk steps over before the segments. */
   readonly callCount: number;
 }
@@ -225,11 +231,26 @@ class BatchTargetsDerivationBuilder {
   private alt: string[] = [];
   private fresh = 0;
 
+  /** How many items the modelled stack held before the script pushed anything: the frame, and nothing else. */
+  private readonly frameLength: number;
+
   constructor(private readonly options: BatchTargetsDerivationOptions) {
-    const depths = options.keyDepths;
+    const depths = options.keyDepths.flat();
     const deepest = depths.reduce((max, depth) => Math.max(max, depth), 0);
     for (let depth = 0; depth <= deepest; depth += 1) this.main.push(`frame_${depth}`);
-    depths.forEach((depth, index) => { this.main[depth] = `key_${index}`; });
+    this.frameLength = this.main.length;
+  }
+
+  /** The number of items the script has pushed above the frame, which shifts every depth it reads from it. */
+  private pushedAboveFrame(): number {
+    return this.main.length - this.frameLength;
+  }
+
+  /** Picks the frame value a key sits at, by the depth it had when the script began. */
+  private pickKey(depth: number, name: string): void {
+    this.num(depth + this.pushedAboveFrame());
+    this.op(Opcodes.OP_PICK);
+    this.main.unshift(`${name}~${this.fresh++}`);
   }
 
   build(): Uint8Array {
@@ -243,11 +264,16 @@ class BatchTargetsDerivationBuilder {
 
   // --- The three phases ---------------------------------------------------------------------------------------
 
-  /** Computes each target's masked slot from its key and leaves all of them above the frame. */
+  /** Computes each target's masked slot from its keys and leaves all of them above the frame. */
   private pushSlots(count: number): void {
     for (let target = 0; target < count; target += 1) {
-      this.pick(`key_${target}`);
-      this.unary(Opcodes.OP_SHA256, 'hash');
+      const keys = this.options.keyDepths[target]!;
+      keys.forEach((depth, index) => {
+        this.pickKey(depth, `key_${target}_${index}`);
+        this.unary(Opcodes.OP_SHA256, 'hash');
+        if (index > 0) this.binary(Opcodes.OP_CAT, `key_hashes_${target}`);
+      });
+      if (keys.length > 1) this.unary(Opcodes.OP_SHA256, `key_hashes_${target}`);
       this.splitConst(31, 'slot_head', 'slot_low');
       this.pushBytes('low', new Uint8Array([0x7f]));
       this.binary(Opcodes.OP_AND, 'slot_low_masked');

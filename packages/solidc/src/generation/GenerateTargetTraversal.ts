@@ -282,7 +282,7 @@ import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKey, DYNAMIC_CHUNK_BASE_PARAMETER,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -3212,45 +3212,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     for (const batch of batches) {
       const slots = batch.slotIndices;
-      const keys = slots.map((slot) => perCallBatchKey(node, slot, constants));
+      // One list of keys per target: a nested `m[a][b]` write carries two, and the slot hashes both.
+      const keys = slots.map((slot) => perCallBatchKeys(node, slot, constants) ?? []);
+      // A pushed key's name carries its target and its position, so a key two targets share is pushed once and
+      // found twice.
+      const pushedName = (slot: number, keyIndex: number): string => `(per_call_batch_key_${slot}_${keyIndex})`;
       // Push every compile-time expression key first: each pushed value sits above the frame, so a depth read
       // before a later push would be wrong. A parameter or frame key is already on the stack at its own depth.
       const pushedKeys: { name: string }[] = [];
       for (const [index, slot] of slots.entries()) {
-        const expression = keys[index]?.expression;
-        if (expression === undefined) continue;
-        const before = this.stack.length;
-        this.visit(expression);
-        if (this.stack.length !== before + 1) {
-          throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
-            + 'leave one value on the stack',
-            { function: node.name, slot },
-          );
+        for (const [keyIndex, key] of keys[index]!.entries()) {
+          if (key.expression === undefined) continue;
+          const before = this.stack.length;
+          this.visit(key.expression);
+          if (this.stack.length !== before + 1) {
+            throw new SolidcDiagnosticError(
+              'PER_CALL_CODEGEN_UNAVAILABLE',
+              `the per-call master cannot emit the key expression for slot ${slot} of '${node.name}': it does not `
+              + 'leave one value on the stack',
+              { function: node.name, slot },
+            );
+          }
+          // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
+          const name = pushedName(slot, keyIndex);
+          this.stack[0] = name;
+          pushedKeys.push({ name });
         }
-        // The visit tracks the value as a plain '(value)'; name it so its removal below can find it again.
-        const name = `(per_call_batch_key_${slot})`;
-        this.stack[0] = name;
-        pushedKeys.push({ name });
       }
-      const keyDepths = keys.map((key, index) => {
+      const keyDepths = keys.map((targetKeys, index) => {
         const slot = slots[index]!;
-        const name = key?.expression !== undefined ? `(per_call_batch_key_${slot})`
-          : key?.frameSlot !== undefined ? key.frameSlot : key?.paramName;
-        const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
-        if (keyDepth < 0) {
-          throw new SolidcDiagnosticError(
-            'PER_CALL_CODEGEN_UNAVAILABLE',
-            `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
-            + `'${node.name}': its key is not on the stack where the derivation runs`,
-            { function: node.name, slot },
-          );
-        }
-        return keyDepth;
+        return targetKeys.map((key, keyIndex) => {
+          const name = key.expression !== undefined ? pushedName(slot, keyIndex)
+            : key.frameSlot !== undefined ? key.frameSlot : key.paramName;
+          const keyDepth = name === undefined ? -1 : this.getStackIndex(name, true);
+          if (keyDepth < 0) {
+            throw new SolidcDiagnosticError(
+              'PER_CALL_CODEGEN_UNAVAILABLE',
+              `the per-call master cannot derive the sorted-batch witness for slot ${slot} of `
+              + `'${node.name}': its key ${keyIndex} is not on the stack where the derivation runs`,
+              { function: node.name, slot },
+            );
+          }
+          return keyDepth;
+        });
       });
       const script = slots.length === 1
-        ? buildBatchWitnessDerivationScript({ keyDepth: keyDepths[0]!, callCount: this.perCallCallCount })
+        ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, callCount: this.perCallCallCount })
         : buildBatchTargetsDerivationScript({ keyDepths, callCount: this.perCallCallCount });
       this.emit([...script], loc);
       // Deepest first, so the tracked names line up with the values the script left above the frame.

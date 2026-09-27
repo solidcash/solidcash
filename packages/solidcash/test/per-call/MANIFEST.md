@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 303 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 306 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 861 tests (114 + 341 + 406), all passing. The two package totals are full-config runs of
+Total: 864 tests (114 + 344 + 406), all passing. The two package totals are full-config runs of
 `vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
 (`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
 table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,
@@ -181,7 +181,8 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 ## What is not covered
 
 - The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
-  path: a compiled unit whose definitions reach inline assembly is refused by name, and so is a body
+  path: a compiled unit whose own bodies, or whose reached definitions, carry inline assembly is refused by name,
+  and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
   in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
   collections in one body, and the sender and compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
@@ -194,10 +195,11 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
   (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `7c76dcef4` it is `unicrow/UnicrowClaim.sol` and
-  its inline assembly: "inline assembly is not composed per-call" — the unit that reported first the round before,
-  `unicrow/UnicrowClaim.sol` with its free-function clause, no longer reports, so the definition prefix is admitted
-  and the assembly question is what the project reports first. The
+  harness compiles the built compiler rather than the sources. At `d9d41484e` it is `unicrow/UnicrowClaim.sol` and
+  an entry whose return type is composite: "the entry point 'claim' returns an array, but a frame's `retval` is
+  compared with one scalar value the entry computed, which a composite value is not yet" — the same unit reported
+  the round before with its inline assembly, so the assembly question is asked of the code each master carries and
+  a composite return is what the project reports first. The
   ladder stands at "blocked at compile" and no title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state

@@ -160,8 +160,19 @@ describe('late transitive call preparation', () => {
     const iteration: ExternalCallExpression = {
       kind: 'source', source: { kind: 'loopIndex', initialValue: '0', stepValue: '1' },
     };
-    const amount: ExternalCallExpression = { kind: 'arrayAccess', left: selected, right: iteration };
     const literal = (value: number): ExternalCallExpression => ({ kind: 'literal', type: 'bigint', value: String(value) });
+    const helper: ExternalCallExpression = {
+      kind: 'call', name: 'activeAmounts', args: [selected], parameters: ['parts'], statements: [
+        { kind: 'variable', name: 'amounts', type: 'int[5]' },
+        ...[1, 3].map((index) => ({
+          kind: 'arrayAssign' as const, name: 'amounts', index: literal(index),
+          expression: { kind: 'arrayAccess' as const, left: { kind: 'identifier' as const, name: 'parts' },
+            right: literal(index) },
+        })),
+        { kind: 'return', expression: { kind: 'identifier', name: 'amounts' } },
+      ],
+    };
+    const amount: ExternalCallExpression = { kind: 'arrayAccess', left: helper, right: iteration };
     const reads: ExternalCallAbi[] = [
       { ...edge('Choice', 'read'), hasReturnValues: true, returnTypes: ['bool'] },
       { ...edge('Left', 'read'), callsiteId: 1, sourceEffectOrdinal: 1,

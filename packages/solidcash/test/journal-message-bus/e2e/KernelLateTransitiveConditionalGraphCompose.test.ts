@@ -233,13 +233,19 @@ describe('kernel late transitive conditional graph planning', () => {
       }
       interface ILateResultSink { function record(uint16 value) external; }
       contract LateCoordinator(address producer, address left, address right, address sink) {
+        function values(uint16 first, uint16 second) internal pure returns (uint16[2] memory) {
+          uint16[2] memory result;
+          result[0] = first;
+          result[1] = second;
+          return result;
+        }
         function run(bool choose) public {
           Decision memory decision = ILateDecisionProducer(producer).decide(choose);
           uint16 selected;
           if (decision.choose) {
-            selected = ILateLeftBranch(left).select([decision.left, decision.right]);
+            selected = ILateLeftBranch(left).select(values(decision.left, decision.right));
           } else {
-            selected = ILateRightBranch(right).select([decision.right, decision.left]);
+            selected = ILateRightBranch(right).select(values(decision.right, decision.left));
           }
           ILateResultSink(sink).record(selected);
           require(selected == (choose ? 79 : 97));

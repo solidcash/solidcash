@@ -469,7 +469,19 @@ strictFieldAccess = false,
     if (expression.parameters && expression.statements
       && expression.parameters.length === values.length) {
       const bindings = new Map(localBindings);
-      expression.parameters.forEach((name, index) => bindings.set(name, values[index]!));
+      // A helper owns its evaluation frame, not the shared producer-result cache. Clone array arguments
+      // once while preserving aliases within the frame, so local memory assignments retain their semantics.
+      const arrayCopies = new Map<FunctionArgument, FunctionArgument>();
+      const localValue = (value: FunctionArgument): FunctionArgument => {
+        if (!Array.isArray(value)) return value;
+        const existing = arrayCopies.get(value);
+        if (existing !== undefined) return existing;
+        const copy: FunctionArgument[] = [];
+        arrayCopies.set(value, copy as FunctionArgument);
+        for (const element of value) copy.push(localValue(element));
+        return copy as FunctionArgument;
+      };
+      expression.parameters.forEach((name, index) => bindings.set(name, localValue(values[index]!)));
       let remainingIterations = 10_000;
       let invalid = false;
       type Execution = { returned: boolean; value?: FunctionArgument };
@@ -479,7 +491,22 @@ strictFieldAccess = false,
           stateIncludesPriorWrites, executionSelfAddress, bindings,
         )
       );
-      const defaultValue = (type: string | undefined): FunctionArgument => {
+      let remainingDefaultElements = 10_000;
+      const defaultValue = (type: string | undefined): FunctionArgument | undefined => {
+        if (remainingDefaultElements <= 0) return undefined;
+        remainingDefaultElements -= 1;
+        const fixedArray = type?.match(/^(.*)\[(\d+)\]$/u);
+        if (fixedArray) {
+          const length = Number(fixedArray[2]);
+          if (!Number.isSafeInteger(length) || length > remainingDefaultElements) return undefined;
+          const elements: FunctionArgument[] = [];
+          for (let index = 0; index < length; index += 1) {
+            const element = defaultValue(fixedArray[1]);
+            if (element === undefined) return undefined;
+            elements.push(element);
+          }
+          return elements as FunctionArgument;
+        }
         if (type === 'bool') return false;
         if (type === 'string') return '';
         if (type?.endsWith('[]')) return [];
@@ -497,6 +524,16 @@ strictFieldAccess = false,
             const value = evaluateWith(statement.expression);
             if (value === undefined) { invalid = true; return { returned: false }; }
             bindings.set(statement.name, value);
+          } else if (statement.kind === 'arrayAssign' && statement.name && statement.index && statement.expression) {
+            const array = bindings.get(statement.name);
+            const index = evaluateWith(statement.index);
+            const value = evaluateWith(statement.expression);
+            if (!Array.isArray(array) || typeof index !== 'bigint' || index < 0n
+              || index >= BigInt(array.length) || value === undefined) {
+              invalid = true;
+              return { returned: false };
+            }
+            array[Number(index)] = value;
           } else if (statement.kind === 'while' && statement.condition && statement.statements) {
             while (true) {
               const condition = evaluateWith(statement.condition);

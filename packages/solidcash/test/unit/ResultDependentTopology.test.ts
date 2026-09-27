@@ -119,4 +119,21 @@ describe('result-dependent topology propagation', () => {
     const changed = await propagateResultDependentCallTopology(ctx, args.calls, results);
     expect(changed.calls.map((call) => call.callsiteId)).toEqual([undefined, 0, 1, 3]);
   });
+
+  it('refreshes descendants when their parent arguments change without changing reachability', async () => {
+    const ctx = fixture();
+    ctx.descriptors[2].args = [1n];
+    ctx.descriptors[3].args = [2n];
+    ctx.descriptors[3].resolveArgsFromResults = (_results, frame) => [2n * (frame![0] as bigint)];
+    Object.assign(ctx.descriptors[2].artifact.abi[0], {
+      inputs: [{ name: 'value', type: 'uint256' }],
+      externalCalls: [{ callsiteId: 0, interfaceName: 'ILeaf', functionName: 'run',
+        requiredDataNftIndices: [], argSources: [{ kind: 'forward', paramIndex: 0 }] }],
+    });
+    const prepared = ctx.descriptors.map((call, index) => ({ ...call, args: index === 2 ? [3n] : call.args }));
+    const changed = await propagateResultDependentCallTopology(ctx, prepared, {});
+    expect(changed.propagated).toBe(true);
+    expect(changed.calls[3].args).toEqual([6n]);
+    expect(changed.calls.map((call) => call.contract)).toEqual(ctx.descriptors.map((call) => call.contract));
+  });
 });

@@ -82,6 +82,18 @@ export async function propagateResultDependentCallTopology(
     ) ? addressToLockScript(call.contract.target) : hexToBin(call.contract.inner.lockingBytecode);
     const argsChanged = previous !== undefined
       && semanticJson(call.args) !== semanticJson(ctx.descriptors[previous].args);
+    if (argsChanged) {
+      // Filtering a loop can reuse a reached occurrence for a different source iteration. Its arguments
+      // change here, after the ordinary argument-propagation pass, so refresh the retained children before
+      // visiting them. Their own guards may be unchanged even though their forwarded arguments are not.
+      // Recursion repeats this step for every affected descendant without reinterpreting unrelated domains.
+      children = children.map((child) => {
+        const resolved = child.call.resolveArgsFromResults?.(childResults, call.args);
+        if (!resolved || semanticJson(resolved) === semanticJson(child.call.args)) return child;
+        propagated = true;
+        return { ...child, call: rebuildPreparedInvocation(child.call, resolved, undefined) };
+      });
+    }
     if (fn?.externalCalls?.length && (childResults.size > 0 || argsChanged || previous === undefined)) {
       const sources = fn.externalCalls;
       const args = projectMessageBusHandlerArguments(artifact, fn.name, fn.selector, call.args);

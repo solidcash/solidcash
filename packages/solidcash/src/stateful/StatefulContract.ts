@@ -3332,12 +3332,9 @@ export function evalComputedKey(
       if (!Array.isArray(values) || !Number.isSafeInteger(n) || n < 0 || n >= values.length) {
         return undefined;
       }
-      const element = values[n];
-      if (element instanceof Uint8Array) return element;
-      if (typeof element === 'bigint') return bigIntToVmNumber(element);
-      if (typeof element === 'boolean') return bigIntToVmNumber(element ? 1n : 0n);
-      if (typeof element === 'string' && element.includes(':')) return addressToLockScript(element);
-      return undefined;
+      // Keep decoded values through nested field/arithmetic expressions. Only the final key (or a hash
+      // operand) is encoded; encoding here loses struct fields and changes numeric/boolean semantics.
+      return values[n];
     }
     m = s.match(/^binop:([^()]+)\((.*)\)$/);
     if (m) {
@@ -3345,10 +3342,22 @@ export function evalComputedKey(
       if (!pair) return undefined;
       const left = evalValue(pair[0]);
       const right = evalValue(pair[1]);
+      if (left === undefined || right === undefined) return undefined;
+      if (m[1] === '==' || m[1] === '!=') {
+        const equal = left instanceof Uint8Array && right instanceof Uint8Array
+          ? binsAreEqual(left, right)
+          : typeof left === typeof right && ['bigint', 'number', 'boolean', 'string'].includes(typeof left)
+            ? left === right : undefined;
+        return equal === undefined ? undefined : m[1] === '==' ? equal : !equal;
+      }
       if (typeof left !== 'bigint' || typeof right !== 'bigint') return undefined;
       if (m[1] === '+') return left + right;
       if (m[1] === '-') return left - right;
       if (m[1] === '*') return left * right;
+      if (m[1] === '<') return left < right;
+      if (m[1] === '<=') return left <= right;
+      if (m[1] === '>') return left > right;
+      if (m[1] === '>=') return left >= right;
       return undefined;
     }
     m = s.match(/^ternary\((.*)\)$/);
@@ -3357,7 +3366,9 @@ export function evalComputedKey(
       const rest = head ? splitTopLevel(head[1]) : undefined;
       if (!head || !rest) return undefined;
       const cond = evalValue(head[0]);
-      const taken = cond === true || cond === 1n || cond === 1;
+      const taken = typeof cond === 'boolean' ? cond
+        : typeof cond === 'bigint' ? cond !== 0n : typeof cond === 'number' ? cond !== 0 : undefined;
+      if (taken === undefined) return undefined;
       return evalValue(taken ? rest[0] : rest[1]);
     }
     m = s.match(/^call:(\w+)\((.*)\)$/);

@@ -918,7 +918,13 @@ export async function assembleCreateBuilderNestedComposeSlots(
             ));
             const terminal = writes.at(-1);
             const recipe = terminal?.access.storedValueSource;
-            if (recipe) {
+            // A pre-entry recipe describes one handler's incoming value. Multiple writer rows need
+            // a source-ordered transition fold; never replay the last row against transaction pre-state.
+            const readsIncomingEntry = (expression: unknown): boolean => !!expression
+              && typeof expression === 'object'
+              && ((expression as { kind?: string }).kind === 'entryPreValue'
+                || Object.values(expression).some(readsIncomingEntry));
+            if (recipe && (writes.length === 1 || !readsIncomingEntry(recipe.expression))) {
               const path = terminal.row.producerPath;
               const key = path?.status === 'complete' ? canonicalValueChunkProducerPathContext(path.context) : undefined;
               const externalReturns = externalReturnsForCallsites(
@@ -929,6 +935,17 @@ export async function assembleCreateBuilderNestedComposeSlots(
               nextValue = host.encodeStoredValueSource(
                 terminal.access, collection.valueType, [...terminal.row.args], terminal.row.handler,
                 sharedLogicalArtifact, childState.state, externalReturns,
+                [...childStoredValues].flatMap(([slotIndex, value]) => {
+                  const sourceAccess = selectedFn?.entryAccesses?.find((candidate, index) => (
+                    (candidate.slotIndex ?? index) === slotIndex
+                  ));
+                  const sourceCollection = childLayout.collections?.find((candidate) => (
+                    candidate.name === sourceAccess?.collection || candidate.signature === sourceAccess?.collection
+                  ));
+                  const slot = childBatchTargets.get(slotIndex);
+                  return sourceCollection && slot
+                    ? [{ collection: sourceCollection.signature, slot, value }] : [];
+                }),
               );
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {

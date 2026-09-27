@@ -111,4 +111,18 @@ describe('materialized value-chunk coordinate frames', () => {
     expect(() => bindMaterializedValueChunkWitnesses(host, builder, 40))
       .toThrow(/value-chunk-capacity/);
   });
+
+  it('binds the matched resource width instead of another write\'s aggregate estimate', () => {
+    const { host, builder, group, refreshInternalArgs } = fixture(40, 16, 22);
+    const actual = group.valueChunkWrites![0];
+    group.valueChunkWrites = [{ ...actual, collection: 'profiles', collectionHash: '99'.repeat(20),
+      collectionSignature: 'profiles:mapping(int => Profile)', outputCount: 3 }, actual];
+    expect(bindMaterializedValueChunkWitnesses(host, builder, 40)).toBe(true);
+    expect(refreshInternalArgs).toHaveBeenCalledWith(
+      { __internal__valueChunkOutputBase: 62n },
+      expect.objectContaining({ resolveAuthority: expect.objectContaining({
+        valueChunkCollection: 'records', valueChunkCount: 2,
+      }) }),
+    );
+  });
 });

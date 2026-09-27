@@ -1,17 +1,17 @@
 import { binToHex } from '@bitauth/libauth';
 import { ArrayType, StructType } from '@solidcash/utils';
 import {
-  ArrayAccessNode, ArrayNode, AssemblyStatementNode, AssertNode, AssignNode, AssignmentExpressionNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayNode, AssemblyStatementNode, AssertNode, AssignNode, AssignmentExpressionNode,
   BinaryOpNode, BlockNode, BoolLiteralNode,
   BranchNode, CastNode, ConsoleStatementNode, ConstantDefinitionNode, ContractNode, DeleteLocalNode, DeleteStateNode,
   EmitStatementNode, ExpressionNode, ExpressionStatementNode, ExternalCallExpression,
   ExternalFunctionCallNode, FieldAccessNode, FunctionCallNode, FunctionDefinitionNode, FunctionModifier,
   HexLiteralNode,
   IdentifierNode, IndirectCallNode, InstantiationNode, IntLiteralNode, LowLevelCallNode,
-  MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode,
+  MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode, MethodCallNode, MethodCallStatementNode,
   Node, NullaryOpNode,
-  RequireNode, StateAccessNode, StateAssignNode,
-  StringLiteralNode, StructDefinitionNode, TernaryOpNode, TimeOpNode, TupleAssignmentNode,
+  RequireNode, ReturnNode, StateAccessNode, StateAssignNode,
+  StringLiteralNode, StructDefinitionNode, TernaryOpNode, TimeOpNode, TupleAssignmentNode, TupleIndexOpNode,
   UnaryOpNode, VariableDefinitionNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
@@ -121,6 +121,7 @@ function publishFunctionSources(
     const typed = (expression: ExternalCallExpression, type: string): ExternalCallExpression => (
       expression.type === type ? expression : { kind: 'cast', type, expression }
     );
+    const activeHelpers = new Set<FunctionDefinitionNode>();
     const serialize = (node: ExpressionNode, env: Environment): ExternalCallExpression | undefined => {
       const type = node.type?.toString();
       if (node instanceof IdentifierNode) {
@@ -138,6 +139,14 @@ function publishFunctionSources(
       if (node instanceof StateAccessNode) {
         return env.state.has(node.name) ? env.state.get(node.name) : { kind: 'state', name: node.name, type };
       }
+      // This collection has exactly one mutation in the entire handler. Its reads before that
+      // mutation therefore refer to incoming entries, with keys captured at the read's source point.
+      // Other collections may already have been changed and cannot use this pre-state proof.
+      if (node instanceof MappingAccessNode && node.name === target.name && !node.arrayIndex) {
+        const args = node.keys.map((key) => serialize(key, env));
+        return args.every((arg): arg is ExternalCallExpression => arg !== undefined)
+          ? { kind: 'entryPreValue', name: node.name, type, args } : undefined;
+      }
       if (node instanceof NullaryOpNode && node.operator === NullaryOperator.BLOCK_TIMESTAMP) {
         return { kind: 'state', name: '__block_timestamp', type: type ?? 'uint256' };
       }
@@ -145,7 +154,12 @@ function publishFunctionSources(
         const expression = serialize(node.expression, env);
         if (!expression) return undefined;
         if (node instanceof CastNode) return { kind: 'cast', type, expression };
-        if (node instanceof FieldAccessNode) return { kind: 'field', name: node.name, type, expression };
+        if (node instanceof FieldAccessNode) {
+          const struct = expression.kind === 'call' && expression.name ? structs.get(expression.name) : undefined;
+          const fieldIndex = struct?.fields.findIndex((field) => field.name === node.name) ?? -1;
+          if (fieldIndex >= 0 && expression.args?.[fieldIndex]) return expression.args[fieldIndex];
+          return { kind: 'field', name: node.name, type, expression };
+        }
         return { kind: 'unary', operator: node.operator, type, expression };
       }
       if (node instanceof BinaryOpNode || node instanceof ArrayAccessNode) {
@@ -154,6 +168,11 @@ function publishFunctionSources(
         return left && right && (node instanceof BinaryOpNode
           ? { kind: 'binary', operator: node.operator, type, left, right }
           : { kind: 'arrayAccess', type, left, right });
+      }
+      if (node instanceof TupleIndexOpNode && node.tuple.type instanceof ArrayType) {
+        const left = serialize(node.tuple, env);
+        return left && { kind: 'arrayAccess', type, left,
+          right: { kind: 'literal', type: 'int', value: String(node.index) } };
       }
       if (node instanceof TernaryOpNode) {
         const condition = serialize(node.condition, env);
@@ -172,6 +191,24 @@ function publishFunctionSources(
       }
       if (node instanceof FunctionCallNode || node instanceof InstantiationNode) {
         const struct = structs.get(node.identifier.name);
+        const helper = node instanceof FunctionCallNode ? node.resolvedFunction : undefined;
+        const statement = helper?.body.statements?.length === 1 ? helper.body.statements[0] : undefined;
+        if (!struct && helper?.modifiers.includes(FunctionModifier.PURE)
+          && statement instanceof ReturnNode && statement.expressions.length === 1
+          && helper.parameters.length === node.parameters.length && !activeHelpers.has(helper)
+          && helper.parameters.every((parameter) => !(parameter.type instanceof ArrayType)
+            && !(parameter.type instanceof StructType)
+            && !['bytes', 'string'].includes(parameter.type.toString()))) {
+          const args = node.parameters.map((parameter) => serialize(parameter, env));
+          if (!args.every((arg): arg is ExternalCallExpression => arg !== undefined)) return undefined;
+          const locals = new Map(helper.parameters.map((parameter, index) => (
+            [parameter, typed(args[index], parameter.type.toString())] as const
+          )));
+          activeHelpers.add(helper);
+          const result = serialize(statement.expressions[0], { locals, state: env.state });
+          activeHelpers.delete(helper);
+          return result && type ? typed(result, type) : result;
+        }
         if (!struct || node.parameters.length !== struct.fields.length) return undefined;
         const args = node.parameters.map((parameter, index) => {
           const value = serialize(parameter, env);
@@ -247,6 +284,37 @@ function publishFunctionSources(
           const expression = serialize(statement.expression, env);
           if (expression) env.locals.set(definition, expression);
           else env.locals.delete(definition);
+        } else if (statement instanceof ArrayAssignNode) {
+          // At this post-lowering boundary an ArrayAssign replaces one blob-valued local. Reference
+          // alias propagation has already been made explicit by the memory lowering; don't infer aliases.
+          const definition = (block.symbolTable ?? fn.symbolTable)?.get(statement.name)?.definition;
+          const array = definition && env.locals.get(definition);
+          const arrayType = statement.arrayType;
+          const index = serialize(statement.index, env);
+          const replacement = serialize(statement.value, env);
+          if (!definition || !array || !arrayType?.bound || !index || !replacement) return false;
+          const elementType = arrayType.elementType.toString();
+          let constantIndex = index;
+          while (constantIndex.kind === 'cast' && constantIndex.expression) constantIndex = constantIndex.expression;
+          const literalIndex = constantIndex.kind === 'literal' && typeof constantIndex.value === 'string'
+            && /^\d+$/u.test(constantIndex.value) ? BigInt(constantIndex.value) : undefined;
+          if (literalIndex !== undefined && literalIndex >= BigInt(arrayType.bound)) return false;
+          env.locals.set(definition, {
+            kind: 'array', type: arrayType.toString(),
+            args: Array.from({ length: arrayType.bound }, (_, position) => {
+              const at: ExternalCallExpression = { kind: 'literal', type: index.type, value: String(position) };
+              const previous: ExternalCallExpression = array.kind === 'array' && array.args?.[position]
+                ? array.args[position] : { kind: 'arrayAccess', type: elementType, left: array, right: at };
+              if (literalIndex !== undefined) return literalIndex === BigInt(position)
+                ? typed(replacement, elementType) : previous;
+              return {
+                kind: 'ternary', type: elementType,
+                condition: { kind: 'binary', operator: '==', type: 'bool', left: index, right: at },
+                ifTrue: typed(replacement, elementType),
+                ifFalse: previous,
+              };
+            }),
+          });
         } else if (statement instanceof DeleteLocalNode) {
           const definition = statement.identifier.definition?.definition;
           if (definition) env.locals.delete(definition);

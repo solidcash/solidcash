@@ -2,13 +2,23 @@ import { binToHex } from '@bitauth/libauth';
 import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import { addressToLockScript } from '../utils.js';
-import { canOwnTransportedContinuationSlot } from './compose-recipes.js';
+import { canOwnTransportedContinuationSlot, type ComputedValueChunkSpanClaim } from './compose-recipes.js';
 
 export interface TransportedContinuationOutput {
   offset: number;
   categoryId: string;
   commitment: string;
   lockingBytecode: Uint8Array;
+}
+
+/** Graph-authorized transport replaces provisional geometry only for the exact resources it materializes. */
+export function transportedContinuationSpanClaims(
+  provisional: readonly ComputedValueChunkSpanClaim[],
+  transported: readonly ComputedValueChunkSpanClaim[],
+): ComputedValueChunkSpanClaim[] {
+  const resources = new Set(transported.map((claim) => claim.resourceIdentity));
+  resources.delete(undefined);
+  return [...provisional.filter((claim) => !resources.has(claim.resourceIdentity)), ...transported];
 }
 
 /** Materialize authenticated graph productions in their compiler-reserved local trailing slots. */

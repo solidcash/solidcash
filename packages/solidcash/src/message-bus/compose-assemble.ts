@@ -64,7 +64,9 @@ import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
-import { materializeTransportedContinuations } from './materialize-transported-continuations.js';
+import {
+  materializeTransportedContinuations, transportedContinuationSpanClaims,
+} from './materialize-transported-continuations.js';
 import {
   convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
@@ -1195,10 +1197,16 @@ export async function assembleAtomicComposition(
         __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
         __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
       };
-      const computedValueChunkClaims = [
-        ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
-        ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
-      ];
+    const computedValueChunkClaims = transportedContinuationSpanClaims([
+      ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
+      ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
+    ], (orderedContinuationClaims ?? []).flatMap((claim) => Array.from(
+      { length: claim.chunkCount }, (_, chunkIndex) => ({
+        offset: participantInputBase + claim.bandOffset + chunkIndex,
+        resourceIdentity: claim.producerClaim.resourceIdentity,
+        resourcePart: `chunk:${chunkIndex}`,
+      }),
+    )));
       const computedMinimumActualSize = minimumActualSizeForComputedValueChunkClaims(
         participant.participant,
         graph.layout.participantInputs[participant.participant],

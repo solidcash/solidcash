@@ -19,6 +19,42 @@ const compileWriter = (body: string): AbiFunction => compileString(`pragma solid
 `, options).abi.find((fn) => fn.name === 'store')!;
 
 describe('computed whole-value mutation recipes', () => {
+  it('publishes an exact incoming-entry read for a partial struct update', () => {
+    const handler = compileWriter('records[key].amount = amount;');
+    const recipe = handler.entryAccesses?.[0].storedValueSource;
+    expect(recipe).toMatchObject({
+      version: 1, execution: 'unconditional-once', valueType: 'Record',
+      expression: { kind: 'call', name: 'Record', args: [
+        { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        { kind: 'field', name: 'payload', expression: {
+          kind: 'entryPreValue', name: 'records', type: 'Record',
+          args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }],
+        } },
+        { kind: 'field', name: 'writtenAt', expression: { kind: 'entryPreValue', name: 'records' } },
+      ] },
+    });
+  });
+
+  it('tracks lowered fixed-array updates and scalar pure helper results', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { bytes payload; int16[2] marks; }
+      function magnitude(int16 value) pure returns (int16) { return value >= 0 ? value : -value; }
+      contract Archive {
+        mapping(uint256 => Record) records;
+        function update(uint256 key) public {
+          Record memory record = records[key];
+          record.marks[0] = magnitude(record.marks[0]) + 1;
+          record.marks[1] = magnitude(record.marks[1]);
+          records[key].marks = record.marks;
+          require(true);
+        }
+      }`, options);
+    const recipe = artifact.abi.find((fn) => fn.name === 'update')?.entryAccesses?.[0].storedValueSource;
+    expect(recipe).toBeDefined();
+    expect(JSON.stringify(recipe)).toContain('entryPreValue');
+    expect(JSON.stringify(recipe)).toContain('ternary');
+  });
+
   it('does not treat a read-only helper as memory-pure', () => {
     const artifact = compileString(`pragma solidity ^0.8.0;
       struct Record { uint256 amount; bytes payload; }

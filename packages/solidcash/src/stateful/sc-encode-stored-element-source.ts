@@ -3,6 +3,7 @@
  */
 
 import {
+  decodePushdataValue,
   type AbiFunction,
   type Artifact,
   type EntryAccessAbi,
@@ -11,6 +12,14 @@ import {
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import { visibleHandlerInputs } from './route-expression-key.js';
+import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
+
+/** Complete incoming bytes, selected by an authenticated collection proof and key slot. */
+export type StoredValueIncomingEntry = {
+  collection: string;
+  slot: Uint8Array;
+  value: Uint8Array;
+};
 
 export interface EncodeStoredElementSourceHost {
   evaluateExternalExpression(
@@ -51,8 +60,11 @@ export function encodeStoredValueSource(
   artifact: Artifact,
   state?: Record<string, unknown>,
   externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  incomingEntries?: readonly StoredValueIncomingEntry[],
 ): Uint8Array | undefined {
-  return encodeStoredSource(host, access, valueType, functionArgs, handler, artifact, state, true, externalReturns);
+  return encodeStoredSource(
+    host, access, valueType, functionArgs, handler, artifact, state, true, externalReturns, incomingEntries,
+  );
 }
 
 function encodeStoredSource(
@@ -65,6 +77,7 @@ function encodeStoredSource(
   state?: Record<string, unknown>,
   wholeValue = false,
   externalReturns?: ReadonlyMap<string, FunctionArgument>,
+  incomingEntries?: readonly StoredValueIncomingEntry[],
 ): Uint8Array | undefined {
   const recipe = wholeValue ? access.storedValueSource : access.storedElementSource;
   const visibleInputs = visibleHandlerInputs(handler.inputs);
@@ -106,6 +119,15 @@ function encodeStoredSource(
       const variable = wholeValue && artifact.stateLayout?.variables
         .find((candidate) => candidate.name === expression.name);
       return !!variable && typeMatches(expression.type, variable.type);
+    }
+    if (wholeValue && expression.kind === 'entryPreValue') {
+      const collection = artifact.stateLayout?.collections?.find((candidate) => (
+        candidate.name === expression.name && candidate.name === access.collection
+      ));
+      const keyTypes = collection && (collection.keyTypes ?? [collection.keyType]);
+      return !!collection && !!keyTypes && typeMatches(expression.type, collection.valueType)
+        && expression.args?.length === keyTypes.length
+        && expression.args.every((key, index) => validate(key, keyTypes[index]));
     }
     if (wholeValue && expression.kind === 'producerResult') {
       const producers = handler.externalCalls?.filter((call) => call.callsiteId === expression.callsiteId);
@@ -175,10 +197,50 @@ function encodeStoredSource(
   // In Solidity-compatible kernel rows, nested value addresses are ABI words while call targets stay native.
   const executionArgs = wholeValue
     ? projectMessageBusHandlerArguments(artifact, handler.name, handler.selector, functionArgs) : functionArgs;
-  const value = host.evaluateExternalExpression(
-    recipe.expression, executionArgs, artifact, state, visibleInputs,
-    externalReturns, 0, false, undefined, undefined, undefined, true,
+  // Only this entry-aware boundary may bind entryPreValue. The general expression evaluator must
+  // leave it unknown: scalar state objects and pending SDK overlays are not authenticated entries.
+  const bindings = new Map<string, FunctionArgument>();
+  const evaluate = (expression: ExternalCallExpression): FunctionArgument | undefined => host.evaluateExternalExpression(
+    expression, executionArgs, artifact, state, visibleInputs,
+    externalReturns, 0, false, undefined, bindings, undefined, true,
   );
+  const bindEntries = (expression: ExternalCallExpression): ExternalCallExpression | undefined => {
+    const bound = { ...expression };
+    for (const key of ['expression', 'left', 'right', 'condition', 'ifTrue', 'ifFalse'] as const) {
+      if (expression[key]) {
+        bound[key] = bindEntries(expression[key]!);
+        if (!bound[key]) return undefined;
+      }
+    }
+    if (expression.args) {
+      const args = expression.args.map(bindEntries);
+      if (!args.every((arg): arg is ExternalCallExpression => arg !== undefined)) return undefined;
+      bound.args = args;
+    }
+    if (bound.kind !== 'entryPreValue') return bound;
+    const collection = artifact.stateLayout!.collections!.find((candidate) => candidate.name === bound.name)!;
+    const keys = (bound.args ?? []).map(evaluate);
+    if (!keys.every((key): key is bigint | boolean | string | Uint8Array => (
+      typeof key === 'bigint' || typeof key === 'boolean' || typeof key === 'string' || key instanceof Uint8Array
+    ))) return undefined;
+    const entry = selectMappingEntryByKeys(
+      (incomingEntries ?? []).filter((candidate) => candidate.collection === collection.signature),
+      keys, collection.keyTypes ?? [collection.keyType], collection,
+    );
+    if (!entry) return undefined;
+    try {
+      const decoded = decodePushdataValue(entry.value, 0, collection.valueType, structs);
+      if (decoded.bytesConsumed !== entry.value.length) return undefined;
+      const name = `entry:${bindings.size}`;
+      bindings.set(name, decoded.value as FunctionArgument);
+      return { kind: 'identifier', name, type: bound.type };
+    } catch {
+      return undefined;
+    }
+  };
+  const expression = bindEntries(recipe.expression);
+  if (!expression) return undefined;
+  const value = evaluate(expression);
   if (value === undefined) return undefined;
   try {
     const encoded = encodeFunctionArgument(value, storedType, structs);

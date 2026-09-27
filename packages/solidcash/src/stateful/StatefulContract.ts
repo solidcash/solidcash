@@ -14145,10 +14145,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     artifact: Artifact,
     state?: Record<string, unknown>,
     externalReturns?: ReadonlyMap<string, FunctionArgument>,
+    incomingEntries?: Parameters<typeof encodeStoredValueSourceImpl>[8],
   ): Uint8Array | undefined {
     return encodeStoredValueSourceImpl(
       { evaluateExternalExpression: (...a: any[]) => (this as any)._evaluateExternalExpression(...a) },
-      access, valueType, functionArgs, handler, artifact, state, externalReturns,
+      access, valueType, functionArgs, handler, artifact, state, externalReturns, incomingEntries,
     );
   }
 

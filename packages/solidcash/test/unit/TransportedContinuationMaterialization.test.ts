@@ -3,8 +3,9 @@ import { BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { Output, UnlockableUtxo } from '../../src/interfaces.js';
 import {
-  materializeTransportedContinuations, type TransportedContinuationOutput,
+  materializeTransportedContinuations, transportedContinuationSpanClaims, type TransportedContinuationOutput,
 } from '../../src/message-bus/materialize-transported-continuations.js';
+import { minimumActualSizeForComputedValueChunkClaims } from '../../src/message-bus/compose-recipes.js';
 
 const categoryId = '71'.repeat(32);
 const lock = (byte: number): Uint8Array => Uint8Array.from([0xaa, 0x20, ...new Uint8Array(32).fill(byte), 0x87]);
@@ -31,6 +32,27 @@ function fixture(): { inputs: UnlockableUtxo[]; outputs: Output[] } {
 }
 
 describe('transported continuation materialization', () => {
+  it('replaces stale transported-resource spans while retaining all unrelated collision checks', () => {
+    const resourceA = `${categoryId}:${'12'.repeat(20)}:${'34'.repeat(32)}`;
+    const resourceB = `${categoryId}:${'56'.repeat(20)}:${'78'.repeat(32)}`;
+    const part = (resourceIdentity: string, offset: number, index = 0): {
+      resourceIdentity: string; offset: number; resourcePart: string;
+    } => ({
+      resourceIdentity, offset, resourcePart: `chunk:${index}`,
+    });
+    const final = [part(resourceA, 46), part(resourceB, 47), part(resourceB, 48, 1)];
+    const stale = [part(resourceA, 46), part(resourceA, 47, 1), part(resourceB, 46)];
+    const reconciled = transportedContinuationSpanClaims(stale, final);
+    expect(reconciled).toEqual(final);
+    expect(minimumActualSizeForComputedValueChunkClaims(0, 40, 2, 9, reconciled)).toBe(9);
+    const unrelated = part(`${categoryId}:${'90'.repeat(20)}:${'ab'.repeat(32)}`, 47);
+    expect(() => minimumActualSizeForComputedValueChunkClaims(0, 40, 2, 9,
+      transportedContinuationSpanClaims([...stale, unrelated], final))).toThrow(/claimed by both/);
+    expect(() => minimumActualSizeForComputedValueChunkClaims(0, 40, 2, 9,
+      transportedContinuationSpanClaims(stale, [part(resourceA, 46), part(resourceB, 46)])))
+      .toThrow(/claimed by both/);
+  });
+
   it('moves an already materialized run into its reserved band exactly once', () => {
     const builder = fixture();
     materializeTransportedContinuations(builder, [2, 3, 4, 5, 6, 7], chunks);

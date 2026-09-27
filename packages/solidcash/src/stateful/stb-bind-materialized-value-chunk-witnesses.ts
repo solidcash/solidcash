@@ -99,6 +99,8 @@ export function bindMaterializedValueChunkWitnesses(
       group?.valueChunkWrites ?? []
     )).map(valueChunkWriteResourceIdentity));
     let selectedStart = -1;
+    let selectedWidth = 0;
+    let selectedResourceIdentity: string | undefined;
     const provisionalBase = carrier.valueChunkOutputBase;
     let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
       ? undefined
@@ -215,7 +217,11 @@ export function bindMaterializedValueChunkWitnesses(
       // A resource identity authenticates ownership; it does not make a local output index absolute.
       const absoluteStart = materializedValueChunkAbsoluteStart(start, coordinateBase);
       const owner = occupiedBases.get(absoluteStart);
-      if (owner === undefined || owner === physicalOwnerId) selectedStart = start;
+      if (owner === undefined || owner === physicalOwnerId) {
+        selectedStart = start;
+        selectedWidth = width;
+        selectedResourceIdentity = runResourceIdentity;
+      }
     }
     if (selectedStart < 0) continue;
     const absoluteStart = materializedValueChunkAbsoluteStart(selectedStart, coordinateBase);
@@ -235,7 +241,10 @@ export function bindMaterializedValueChunkWitnesses(
         ?? carrier.blockLayout?.trailingBase;
       const blockSize = alias.blockLayout?.blockSize
         ?? carrier.blockLayout?.blockSize;
-      const write = alias.valueChunkWrites?.[0] ?? carrier.valueChunkWrites?.[0];
+      const writes = alias.valueChunkWrites ?? carrier.valueChunkWrites ?? [];
+      const write = selectedResourceIdentity === undefined
+        ? writes.length === 1 ? writes[0] : undefined
+        : writes.find((candidate) => valueChunkWriteResourceIdentity(candidate) === selectedResourceIdentity);
       if (trailingBase !== undefined && blockSize !== undefined
         && host.messageBusConvention === 'kernel-row-loop') {
         // Descriptors may already carry aggregate coordinates. Resolve the observed builder-local run,
@@ -243,13 +252,15 @@ export function bindMaterializedValueChunkWitnesses(
         const bandOffset = selectedStart - trailingBase;
         const resolveAuthority = {
           publishedBase: coordinateBase,
-          blockSize: Math.max(blockSize, trailingBase + (write?.outputCount ?? 1)),
+          blockSize: Math.max(blockSize, trailingBase + selectedWidth),
           trailingBase,
           trailingCapacity: alias.blockLayout?.trailingCapacity
             ?? carrier.blockLayout?.trailingCapacity,
           valueChunkBandOffset: bandOffset,
           valueChunkCollection: write?.collection,
-          valueChunkCount: write?.outputCount,
+          // The complete coherent run is known here. A descriptor can still carry a conservative
+          // planning estimate or the aggregate width of multiple resources in this carrier.
+          valueChunkCount: selectedWidth,
         };
         refreshCapturedValueChunkOutputBase(alias, absoluteStart, {
           shiftPredOut: false,

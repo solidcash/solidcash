@@ -3203,6 +3203,11 @@ export function classifyMessageBusRejection(reason: string): MessageBusStaticRej
   return 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT';
 }
 const MAX_MESSAGE_BUS_ROWS = 8;
+// SCB1/SCB2 carry a one-byte row count. Within the unchanged 520-byte envelope, even an empty-argument
+// row needs 12 framing bytes plus its call-options byte, after the seven-byte batch header. Runtime kernel
+// dispatch has no unroll-size reason to impose the smaller legacy ceiling. Use the envelope-derived bound
+// consistently for the executable guard, per-row effect frames, and published resource budgets.
+const MAX_KERNEL_MESSAGE_BUS_ROWS = Math.min(0xff, Math.floor((MAX_MESSAGE_BUS_BLOB_BYTES - 7) / 13));
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 const MB_ROW_PLACEHOLDER = '__MB_ROW__';
 const MB_DISPATCH_SENTINEL = '__MB_DISPATCH__';
@@ -8250,11 +8255,13 @@ function synthesizeMessageBusRoute(
   }
 
   const selector = sourceFunctionSelectorHex;
-  const defaultRouteMaximumRows = resourceShapedHandler
-    ? (compilerOptions.maximumInputBytes !== undefined
-      && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
-      ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
-    : MAX_MESSAGE_BUS_ROWS;
+  const defaultRouteMaximumRows = compilerOptions.messageBusKernel === true
+    ? MAX_KERNEL_MESSAGE_BUS_ROWS
+    : resourceShapedHandler
+      ? (compilerOptions.maximumInputBytes !== undefined
+        && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE
+        ? MAX_MESSAGE_BUS_ROWS : RESOURCE_SHAPED_BATCH_ROWS)
+      : MAX_MESSAGE_BUS_ROWS;
   const requestedRouteMaximumRows = (compilerOptions as InternalCompilerOptions).__messageBusMaximumRows;
   if (requestedRouteMaximumRows !== undefined
     && (!Number.isSafeInteger(requestedRouteMaximumRows)

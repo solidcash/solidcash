@@ -45,7 +45,9 @@ describe('published resource budgets/published semantic-derivation ceiling resou
       maximumRows: artifact.messageBus!.maximumRows,
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
       maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
-      maximumSemanticDerivationPasses: 256,
+      maximumSemanticDerivationPasses: buildMessageBusResourceBudgets({
+        maximumRows: artifact.messageBus!.maximumRows,
+      }).maximumSemanticDerivationPasses,
     });
   });
 

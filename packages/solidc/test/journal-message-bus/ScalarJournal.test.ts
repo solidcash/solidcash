@@ -313,10 +313,9 @@ describe('Release 1 scalar journal lowering', () => {
       .filter((handler) => handler.eligible).map((handler) => handler.name) ?? [];
     expect(eligible(fast)).toEqual(eligible(normal));
     expect(eligible(fast)).toEqual(['balanceOf', 'approve']);
-    // Resource-shaped routes remain compact under production consensus, while an explicitly permissive input
-    // budget admits the full unrolled band needed by deeper application call DAGs.
-    expect(normal.messageBus?.maximumRows).toBe(8);
-    expect(fast.messageBus?.maximumRows).toBe(8);
+    // Both compilation profiles reserve the kernel's complete envelope-derived row band.
+    expect(normal.messageBus?.maximumRows).toBe(39);
+    expect(fast.messageBus?.maximumRows).toBe(39);
   });
 
   it('composes independent cross-row aliases for an ERC-20 approve and transferFrom route', () => {
@@ -348,7 +347,7 @@ describe('Release 1 scalar journal lowering', () => {
       suppressWarnings: true,
     });
 
-    expect(artifact.messageBus?.maximumRows).toBe(8);
+    expect(artifact.messageBus?.maximumRows).toBe(39);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'approve', eligible: true }),
       expect.objectContaining({ name: 'transferFrom', eligible: true }),

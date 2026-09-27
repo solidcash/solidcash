@@ -185,8 +185,11 @@ Execution order:
    the contract is a graph participant).
 2. Prefetch authenticated state for the published footprint (the journal wrapper already does this for
    parameter-keyed mapping helpers and scalar internals).
-3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact (8 for ordinary kernel
-   routes; the legacy resource batch of 2 is not a kernel shape).
+3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact. The default kernel ceiling is
+   39: a 520-byte batch has a seven-byte header and each row consumes at least thirteen bytes, including
+   its call-options byte. Effect frames and resource budgets reserve the same row ceiling; actual arguments,
+   modes, and values can reach the blob-size limit sooner. Explicit smaller compiler ceilings remain valid.
+   Legacy unrolled routes retain their eight-row ceiling (two for compact resource batches).
 4. For each `row` in `[0, rowCount)`:
    - bind logical `msg.sender` / `msg.sig` / `msg.data` / `msg.value` from the row;
    - dispatch `rowSelector` to a handler `OP_INVOKE` (unknown selector → `revert("unknown batch selector")`);
@@ -194,6 +197,10 @@ Execution order:
    - append events / BCH transfers / token effects to the wrapper's effect table.
 5. Flush each dirty journal location once; emit the existing state and effect covenants.
 6. Bind the participant verifier (compact binder + `artifact.messageBus.verifierProgram`).
+
+SDK participant auto-derivation uses the compiler-published `maximumSemanticDerivationPasses` budget,
+as graph settlement does. The legacy default of twenty probes must not truncate larger kernel effect frames.
+Unchanged-program and cycle checks still stop probes early; final VM validation is unchanged.
 
 Generated locals inside the loop are **reused across iterations**. Codegen must not bake `rowIndex`
 into names such as `__message_bus_value_${rowIndex}_${handlerIndex}_${field}`. That naming is why

@@ -5376,10 +5376,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   _logicalNonceSigner?: Signer;
 
   /**
-   * Maximum number of VM probe iterations for auto-derivation.
+   * Legacy default number of VM probe iterations for auto-derivation.
    * Each iteration captures commitments up to the first mismatch; convergence
    * typically occurs within 3-5 iterations. Default: 20.
    * Increase only if your contract has many interdependent state variables.
+   * Kernel artifacts instead use their compiler-published maximumSemanticDerivationPasses ceiling.
    */
   maxDerivationIterations: number = 20;
 

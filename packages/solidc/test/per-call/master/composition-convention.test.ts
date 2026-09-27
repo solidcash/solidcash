@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { refusalMessageOf, refusalOf } from './refused-entry.js';
 
 const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Counter(pubkey admin) {'
@@ -148,8 +149,10 @@ describe('composition convention selection', () => {
   });
 
   it('refuses a composite return shape a master cannot emit for, by name', () => {
-    const code = codeOf(() => compileString(COMPOSITE_RETURN_CONTRACT, { composition: 'per-call' }));
-    expect(code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    // The contract compiles and the body that returns a composite shape is refused by name, which is what a builder
+    // reports instead of the whole unit failing.
+    const refusal = refusalOf(COMPOSITE_RETURN_CONTRACT);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
   });
 
   // The refusal's message for this source is asserted in `return-value.test.ts`.
@@ -176,10 +179,9 @@ describe('the tail sections a compiled master fixes', () => {
   });
 
   it('refuses an entry whose event count is a loop trip count, by name', () => {
-    expect(codeOf(() => compileString(LOOP_EVENT_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(LOOP_EVENT_CONTRACT, { composition: 'per-call' })))
-      .toContain('loop');
+    // The entry is refused on its own and published with the reason; the contract's other bodies still compile.
+    expect(refusalOf(LOOP_EVENT_CONTRACT).code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusalMessageOf(LOOP_EVENT_CONTRACT)).toContain('loop');
   });
 
   it('sizes a contract\'s event region by its own bodies, not a sibling\'s emits', () => {

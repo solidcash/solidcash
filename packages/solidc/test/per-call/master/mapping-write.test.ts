@@ -8,6 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import {
   encodeEntryCommitment, keyToSlot,
@@ -304,8 +305,7 @@ describe('a per-call master whose entry writes a verified mapping', () => {
       + '     balances[this.owner] = amount;'
       + '   }'
       + ' }';
-    expect(() => compileString(stateKey, { composition: 'per-call' }))
-      .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
+    expect(refusalMessageOf(stateKey)).toContain("reads the state value 'owner'");
     // The one-target shape compiles, so the refusal is the state key and nothing else.
     expect(artifact.composition?.convention).toBe('per-call');
   });

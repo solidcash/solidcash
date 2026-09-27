@@ -8,6 +8,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { refusalOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
@@ -129,13 +130,10 @@ describe('an entry that returns a fixed-size array', () => {
 
 describe('an entry whose return type is still composite', () => {
   it('is refused by name for a struct, which the frame has no encoding to compare', () => {
-    let refusal: { code?: string; message: string } | undefined;
-    try {
-      compiling(STRUCT_SOURCE);
-    } catch (error) {
-      refusal = error as { code?: string; message: string };
-    }
-    expect(refusal?.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal?.message).toContain("the entry point 'claim' returns a struct");
+    // The body is refused where it is compiled, and the reason is published on the artifact: the entries the
+    // master can serve still compile beside it.
+    const refusal = refusalOf(STRUCT_SOURCE, undefined, { solidityImportCompat: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('returns a struct');
   });
 });

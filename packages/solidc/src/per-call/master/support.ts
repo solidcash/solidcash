@@ -567,7 +567,7 @@ export interface PerCallEntryCallSites {
 
 export interface PerCallMasterShapeAssessment {
   readonly supported: boolean;
-  /** Why the shape is refused, phrased as a fact about the contract. */
+  /** Why the whole contract is refused, phrased as a fact about the master rather than about one body. */
   readonly reason?: string;
   /** One descriptor list per entry, in entry order; each entry's sites resolve against its own list. */
   readonly entryCalls?: readonly PerCallEntryCallSites[];
@@ -575,6 +575,14 @@ export interface PerCallMasterShapeAssessment {
   readonly callCount?: number;
   /** The event-region size and send count the master's tail fixes, which the master head checks. */
   readonly tail?: MasterTailShape;
+  /**
+   * The bodies the master cannot serve, by name, each with the fact that refuses it.
+   *
+   * A master is one program, but a body it cannot emit is not the contract's problem: the entry stays in the ABI
+   * and the dispatcher, its body is emitted as a refusal that fails whenever it is reached, and the reason is
+   * published so a builder reports which function is unsupported instead of the whole contract.
+   */
+  readonly refusedEntries?: readonly { readonly entryName: string; readonly reason: string }[];
 }
 
 /** Assesses whether the contract can be emitted as a per-call master program. */
@@ -597,9 +605,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (entryPoints.length === 0) {
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
-  if (entryPoints.some((entry) => (entry.lowLevelCalls?.length ?? 0) > 0)) {
-    return refuse('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
-  }
   if (input.hasContractInstantiation) {
     return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }
@@ -609,49 +614,197 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (input.needsInlineAssembly) {
     return refuse('inline assembly is not composed per-call');
   }
-  // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value
-  // its own code computed against it, and a void entry requires it empty. Each returning entry's shape is checked
-  // one by one.
-  const returningEntries = entryPoints.filter((entry) => entry.returnTypes.length > 0);
-  for (const entry of returningEntries) {
-    const shape = unsupportedReturnShape(entry);
-    if (shape !== undefined) return refuse(shape);
-  }
-  for (const entry of entryPoints) {
+  // A body the master cannot serve is refused on its own, so the functions it can serve keep compiling: the
+  // reasons are collected per function here and published beside the artifact, and each refused entry is emitted
+  // as a body that fails whenever it is reached.
+  const refusals = new Map<string, string>();
+  const refuseBody = (fn: FunctionDefinitionNode, reason: string): void => {
+    if (!refusals.has(fn.name)) refusals.set(fn.name, reason);
+  };
+  const invokes = new Map<string, Set<string>>();
+  for (const fn of contract.functions) invokes.set(fn.name, invokedFunctionNames(fn.body));
+  // A body that is still invoked survives as its own subroutine definition, and a definition has no entry to bind
+  // the call sites it makes: the records belong to the entry that runs the call, so a definition that makes one is
+  // refused. A body the lowering folded into its call sites is not invoked and is not refused here; the entries
+  // that invoke a refused one are refused with it by the closure below.
+  const invoked = new Set<string>();
+  for (const names of invokes.values()) for (const name of names) invoked.add(name);
+  for (const fn of contract.functions) {
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself and derives the batch operands it can, so any other hidden operand would be
     // read from the wrong stack position.
-    const batchShape = unsupportedBatchWriteShape(entry, constants);
-    if (batchShape !== undefined) return refuse(batchShape);
-    const hidden = entry.parameters.filter((parameter) =>
-      isUndeclaredHiddenParameter(entry, parameter.name, constants));
+    // The reasons are asked in the order the whole-contract refusal used to ask them, so the one a reader sees
+    // names the shape that decides the body rather than an operand that shape injects.
+    if ((fn.lowLevelCalls?.length ?? 0) > 0) {
+      refuseBody(fn, 'a low-level call needs the witness `calls[]` checks, which are not emitted yet');
+    }
+    const batchShape = unsupportedBatchWriteShape(fn, constants);
+    if (batchShape !== undefined) refuseBody(fn, batchShape);
+    const hidden = fn.parameters.filter((parameter) =>
+      isUndeclaredHiddenParameter(fn, parameter.name, constants));
     if (hidden.length > 0) {
-      return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
-        + 'which the master head does not supply');
+      refuseBody(fn, `the body carries the hidden parameter '${hidden[0].name}', which the master head does not `
+        + 'supply');
     }
-    if (entry.usesBlockhash || contract.usesBlockhash) {
-      return refuse('a blockhash read needs a co-spent oracle input the master head does not locate');
+    // The head sizes its event region and its send list by the bodies it serves, so a body whose own counts are
+    // not values the source fixes is refused on its own rather than refusing the contract's other bodies.
+    if ((fn.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(fn)) {
+      refuseBody(fn, 'an event emitted from a loop makes the event count depend on the loop, so the master cannot '
+        + 'fix how many events the tail holds');
     }
-    if (entry.keccakCompute || entry.ecrecoverCompute) {
-      return refuse('a compute side-car needs co-spent inputs the master head does not locate');
+    if ((fn.transferInfos?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
+      refuseBody(fn, 'a value send is a listed send only when its recipient is a user address and a call when it '
+        + 'is a contract, and the recipient lock is a run-time value, so the master cannot fix how many sends the '
+        + 'tail holds');
+    }
+    if (fn.usesBlockhash || contract.usesBlockhash) {
+      refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
+    }
+    if (fn.keccakCompute || fn.ecrecoverCompute) {
+      refuseBody(fn, 'a compute side-car needs co-spent inputs the master head does not locate');
+    }
+    if ((fn.externalCalls?.length ?? 0) > 0 && invoked.has(fn.name)) {
+      refuseBody(fn, 'the body makes an external call and is invoked as its own subroutine, so the call sites it '
+        + 'makes have no entry to bind their records to');
     }
   }
-  const calls = derivePerCallMasterCallSites(input.interfaces, entryPoints);
-  if (!calls.supported) return refuse(calls.reason);
+  // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value
+  // its own code computed against it, and a void entry requires it empty. Each returning entry's shape is checked
+  // one by one.
+  for (const entry of entryPoints) {
+    if (entry.returnTypes.length === 0) continue;
+    const shape = unsupportedReturnShape(entry);
+    if (shape !== undefined) refuseBody(entry, shape);
+  }
+  // An entry that reaches a body the master cannot serve is refused itself: the body it would run is a refusal, so
+  // the entry could never settle. The reach is what makes this a closure rather than a list.
+  const refusedClosure = closeRefusalsOverInvocations(invokes, refusals);
+  for (const entry of entryPoints) {
+    const reached = refusedClosure.get(entry.name);
+    if (reached !== undefined) {
+      refuseBody(entry, `it runs '${reached.name}', which the master cannot serve: ${reached.reason}`);
+    }
+  }
+  const served = entryPoints.filter((entry) => !refusals.has(entry.name));
+
+  const calls = derivePerCallMasterCallSites(input.interfaces, served);
+  for (const [entryName, reason] of calls.refusals) refuseBody(
+    entryPoints.find((entry) => entry.name === entryName)!, reason,
+  );
+  const servedWithCalls = served.filter((entry) => !refusals.has(entry.name));
   // A derived mapping write is settled in the segment its own code runs, which the derivation reads as the first
   // segment. A master that makes a call splits the execution, so which segment the write lands in is a fact the
   // frame does not fix and the derivation will not guess.
-  const derivedBatches = [
-    ...(contract.constructorDef ? [contract.constructorDef] : []),
-    ...entryPoints,
-  ].some((fn) => derivableBatchWitnessNames(fn, constants) !== undefined);
-  if (derivedBatches && calls.callCount > 0) {
-    return refuse('a verified-mapping write is derived from the segment the entry runs, but the master makes '
-      + 'external calls, which split the execution into later segments');
+  if (calls.callCount > 0) {
+    for (const fn of [...servedWithCalls, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
+      if (derivableBatchWitnessNames(fn, constants) !== undefined) {
+        refuseBody(fn, 'a verified-mapping write is derived from the segment the entry runs, but the master makes '
+          + 'external calls, which split the execution into later segments');
+      }
+    }
   }
-  const tail = derivePerCallTailShape(entryPoints, contract.constructorDef, input.emitsEvent);
+  const bodies = [
+    ...entryPoints.filter((entry) => !refusals.has(entry.name)),
+    ...(contract.constructorDef ? [contract.constructorDef] : []),
+  ];
+  // The bodies the master serves still have to agree on one tail shape: the head fixes the event region's size and
+  // one send count for every body behind its dispatcher. A body whose own counts vary is refused above, so what
+  // remains here is the count the served bodies share.
+  const tail = derivePerCallTailShape(
+    bodies,
+    undefined,
+    // An emit the survey found belongs to a body; the bodies the master serves are the ones whose emits it has to
+    // account for, since a refused body's emit is part of what refuses it.
+    bodies.some((body) => (body.emitInfos?.length ?? 0) > 0),
+  );
   if (tail.reason !== undefined) return refuse(tail.reason);
-  return { supported: true, entryCalls: calls.entryCalls, callCount: calls.callCount, tail: tail.tail };
+  const entryCalls = calls.entryCalls.filter((entry) => !refusals.has(entry.entryName));
+  if (entryCalls.length === 0 && contract.constructorDef === undefined) {
+    // Every body is refused, so the master would dispatch only to refusals. That is still a contract whose
+    // functions are each reported by name, which is what a builder needs to say which shape is missing.
+    return {
+      supported: true,
+      entryCalls,
+      callCount: 0,
+      tail: tail.tail,
+      ...(refusals.size > 0 ? { refusedEntries: renderRefusals(entryPoints, refusals) } : {}),
+    };
+  }
+  return {
+    supported: true,
+    entryCalls,
+    callCount: calls.callCount,
+    tail: tail.tail,
+    ...(refusals.size > 0 ? { refusedEntries: renderRefusals(entryPoints, refusals) } : {}),
+  };
+}
+
+/** The refusals as the entry list the assessment publishes, in entry order. */
+function renderRefusals(
+  entryPoints: readonly FunctionDefinitionNode[],
+  refusals: ReadonlyMap<string, string>,
+): readonly { readonly entryName: string; readonly reason: string }[] {
+  return entryPoints
+    .filter((entry) => refusals.has(entry.name))
+    .map((entry) => ({ entryName: entry.name, reason: refusals.get(entry.name)! }));
+}
+
+interface RefusedBody {
+  readonly name: string;
+  readonly reason: string;
+}
+
+/**
+ * The bodies an entry reaches that the master cannot serve, one per entry, or nothing when it is self-contained.
+ *
+ * A body the master cannot emit is emitted as a refusal instead, so an entry that invokes it can never settle: the
+ * relation is transitive, which is what makes the closure a walk over the invocations rather than a list.
+ */
+function closeRefusalsOverInvocations(
+  invokes: ReadonlyMap<string, ReadonlySet<string>>,
+  refusals: ReadonlyMap<string, string>,
+): Map<string, RefusedBody> {
+  const reached = new Map<string, RefusedBody>();
+  for (const entry of invokes.keys()) {
+    const seen = new Set<string>();
+    const pending = [...(invokes.get(entry) ?? [])];
+    let found: RefusedBody | undefined;
+    while (pending.length > 0 && found === undefined) {
+      const name = pending.pop()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const reason = refusals.get(name);
+      if (reason !== undefined) {
+        found = { name, reason };
+        break;
+      }
+      for (const next of invokes.get(name) ?? []) pending.push(next);
+    }
+    if (found !== undefined) reached.set(entry, found);
+  }
+  return reached;
+}
+
+/**
+ * The names of the contract's own functions a body invokes, as code generation reaches them.
+ *
+ * Lowering turns an internal call into an indirect invocation, so the callee a call reaches is named either on the
+ * call itself or by the reference the call's identifier carries; reading both is what keeps this walk to the edges
+ * code generation actually emits, so a body the master emits as its own subroutine is recognised as invoked.
+ */
+function invokedFunctionNames(body: BlockNode | undefined): Set<string> {
+  const names = new Set<string>();
+  walkInvocationAst(body, (node) => {
+    if (node instanceof FunctionCallNode) {
+      const target = node.resolvedFunction;
+      if (target?.name !== undefined) names.add(target.name);
+    }
+    if (node instanceof IdentifierNode) {
+      const target = node.functionReference;
+      if (target?.name !== undefined) names.add(target.name);
+    }
+  });
+  return names;
 }
 
 /**
@@ -799,13 +952,13 @@ function emitsFromLoop(entry: FunctionDefinitionNode): boolean {
 }
 
 /** The call sites each entry makes, or why the head cannot check them. */
-type CallSitesDerivation =
-  | {
-    readonly supported: true;
-    readonly entryCalls: readonly PerCallEntryCallSites[];
-    readonly callCount: number;
-  }
-  | { readonly supported: false; readonly reason: string };
+type CallSitesDerivation = {
+  readonly supported: true;
+  readonly entryCalls: readonly PerCallEntryCallSites[];
+  readonly callCount: number;
+  /** The entries whose calls the head cannot check, by name, each with the reason. */
+  readonly refusals: ReadonlyMap<string, string>;
+};
 
 /**
  * Derives the call sites each entry of the contract makes, which that entry's own body has to check.
@@ -824,9 +977,13 @@ function derivePerCallMasterCallSites(
   entryPoints: readonly FunctionDefinitionNode[],
 ): CallSitesDerivation {
   const entryCalls: PerCallEntryCallSites[] = [];
+  const refusals = new Map<string, string>();
   for (const entry of entryPoints) {
     const derived = deriveEntryCallSites(interfaces, entry);
-    if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
+    if (derived.reason !== undefined) {
+      refusals.set(entry.name, derived.reason);
+      continue;
+    }
     entryCalls.push({
       entryName: entry.name,
       calls: derived.calls,
@@ -839,7 +996,7 @@ function derivePerCallMasterCallSites(
   // makes one call. The head reads the count each block declares and every body pins it to its own, so bodies may
   // make different numbers of calls; the bound is what says whether the master can make a call at all.
   const callCount = Math.max(0, ...entryCalls.map((entry) => entry.pathCount ?? entry.calls.length));
-  return { supported: true, entryCalls, callCount };
+  return { supported: true, entryCalls, callCount, refusals };
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import {
   ValidatorReason, decideValidator, tokenShape,
@@ -570,14 +571,8 @@ describe('a stateful caller that makes a static read', () => {
 });
 
 /** Compiles a source that must be refused, and reports the refusal text. */
-function refusalOf(source: string): string {
-  try {
-    compileString(source, { composition: 'per-call' });
-    return '';
-  } catch (error) {
-    return (error as Error).message;
-  }
-}
+/** The refusal the compile publishes for the one body these sources have, or '' when it serves it. */
+const refusalOf = (source: string): string => refusalMessageOf(source);
 
 describe('the reads a master still cannot compile', () => {
   it('refuses a delegatecall, because the callee would run on its caller\'s records', () => {

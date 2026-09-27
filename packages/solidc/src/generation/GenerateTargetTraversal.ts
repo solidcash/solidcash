@@ -987,6 +987,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   private perCallCallCount = 0;
   /**
+   * The bodies this master cannot serve, by name, each with the fact that refuses it.
+   *
+   * A body the master cannot emit is not the contract's problem: its selector still reaches it, its program fails
+   * whenever it is run, and which function that is is published beside the artifact rather than only in a thrown
+   * message.
+   */
+  private perCallRefusedEntries: ReadonlyMap<string, string> = new Map();
+  /**
    * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
    *
    * A frame's storage reads and writes resolve against the segment's declared views, and for a resumable body the
@@ -1869,6 +1877,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
     }).__perCallEntryCallSites ?? new Map();
     this.perCallCallCount = (compilerOptions as { __perCallCallCount?: number }).__perCallCallCount ?? 0;
+    this.perCallRefusedEntries = (compilerOptions as {
+      __perCallRefusedEntries?: ReadonlyMap<string, string>;
+    }).__perCallRefusedEntries ?? new Map();
     this.perCallReservesValidatorHash = (compilerOptions as {
       __perCallReservesValidatorHash?: boolean;
     }).__perCallReservesValidatorHash === true;
@@ -2981,7 +2992,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     const entries = node.functions.filter((fn) => fn.isEntryPoint);
-    const entry = entries.length === 1 ? entries[0] : undefined;
+    // The head's own numbers are the ones the bodies it serves fix: a body it refuses is a stub that makes no
+    // call, emits nothing and returns nothing, so it must not size the tail the head walks.
+    const served = entries.filter((fn) => !this.perCallRefusedEntries.has(fn.name));
+    // The body whose frame the head opens on is the served entry when there is exactly one; with none, or with
+    // several, the head opens on the shape that takes arguments, which is the one whose frame drops the block at
+    // the bottom, because a dispatcher consumes the selector above it either way.
+    const entry = served.length === 1 ? served[0] : undefined;
     // The unlocking bytecode's own copy of the block is on top only when neither the contract nor the entry takes
     // an argument; otherwise it sits below them as the unlocking bytecode's first push.
     const blockOnTop = node.parameters.length === 0 && (entry?.parameters.length ?? 1) === 0;
@@ -3003,7 +3020,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
     // dispatcher can run, the constructor included, fixes them; a shape whose counts the bodies do not fix refuses
     // by name here.
-    const tail = derivePerCallTailShape(entries, node.constructorDef, node.emitsEvent);
+    const tail = derivePerCallTailShape(
+      served,
+      node.constructorDef,
+      // The emits the head has to account for are the ones its own bodies make: a refused body's emit is part of
+      // what refuses it, and its body is emitted as a refusal rather than as one that emits.
+      served.some((body) => (body.emitInfos?.length ?? 0) > 0)
+      || (node.constructorDef?.emitInfos?.length ?? 0) > 0,
+    );
     if (tail.tail === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
@@ -3018,7 +3042,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The head parks the frame's `retval` when any entry returns a value, so every entry body can settle what it
     // returns: a returning one compares the value its own code computed against the slot, a void one requires it
     // empty.
-    const returnsValue = entries.some((candidate) => candidate.returnTypes.length > 0);
+    const returnsValue = served.some((candidate) => candidate.returnTypes.length > 0);
     this.perCallReturnsValue = returnsValue;
     this.perCallMaxEventCount = tail.tail.maxEventCount;
     this.emit([...buildMasterHeadScript({
@@ -4707,6 +4731,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Cheap admission is throwaway: skip user/clone bodies that are not the verifier/route closure. The
       // binder pass still compiles every body for diagnostics and the shipped artifact.
       if (cheapAdmission && !keepAdmissionBody(f)) continue;
+      // A per-call master holds the definitions its own program can reach. A body the lowering already folded into
+      // its call sites has no invocation left, and a definition of it would be compiled with no entry whose call
+      // descriptors its own calls could be bound to, so it is left out rather than compiled against a frame this
+      // program never assembles.
+      if (this.perCallMaster && !f.isEntryPoint && !isInvoked) continue;
       if (!f.isEntryPoint || isInvoked) this.emitFunctionDefine(f, isInvoked);
     }
 
@@ -6488,6 +6517,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     this.currentFunction = node;
+    // A body the master cannot serve is emitted as a refusal: the selector still reaches it and the program fails
+    // there, so a caller of an unsupported function is refused at run time while the bodies it can serve compile
+    // and settle. The reason is published on the artifact, which is what a builder reports.
+    if (this.perCallMaster && this.perCallRefusedEntries.has(node.name)) {
+      const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_VERIFY, loc);
+      return node;
+    }
     // The anchor flag is per EMISSION, not per node: the same function is emitted as an entry body, as its
     // OP_DEFINE body and as a subroutine-use probe, and only a stream that actually captured the owner may read it.
     node.messageBusOwnerAltAnchor = false;

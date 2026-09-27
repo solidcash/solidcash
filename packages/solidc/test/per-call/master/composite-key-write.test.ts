@@ -8,6 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
@@ -220,7 +221,7 @@ describe('a per-call master whose entry writes a two-key mapping target', () => 
       + '     allowances[this.owner][spender] = amount;'
       + '   }'
       + ' }';
-    expect(() => compileString(computed, { composition: 'per-call' })).toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
+    expect(refusalMessageOf(computed)).toContain("reads the state value 'owner'");
   });
 });
 

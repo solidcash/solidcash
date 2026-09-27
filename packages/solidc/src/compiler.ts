@@ -515,6 +515,7 @@ type InternalCompilerOptions = CompilerOptions & {
   __perCallEntryCallSites?: ReadonlyMap<string, readonly MasterCallSite[]>;
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __perCallCallCount?: number;
+  __perCallRefusedEntries?: Map<string, string>;
   __perCallEntryCallRepeats?: Map<string, boolean>;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
   __perCallStopSites?: PublishedPerCallStopSites;
@@ -14063,6 +14064,9 @@ function compileResolvedAst(
       entryCalls.map((entry) => [entry.entryName, entry.repeats === true]),
     );
     (mergedCompilerOptions as InternalCompilerOptions).__perCallCallCount = assessment.callCount ?? 0;
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries = new Map(
+      (assessment.refusedEntries ?? []).map((entry) => [entry.entryName, entry.reason]),
+    );
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
     // The stop sites a builder resumes from, published per entry so a driver can look one up by the identity its
     // `FrameRequest.functionName` carries. Each entry publishes its own calls, so a driver names the callees that
@@ -14176,6 +14180,17 @@ function compileResolvedAst(
       const publication = artifact.composition as NonNullable<typeof artifact.composition>
         & { stopSites: PublishedPerCallStopSites };
       publication.stopSites = stopSites;
+    }
+    // The bodies the master cannot serve are published beside the table: the entry stays callable by selector, its
+    // program refuses every frame, and a builder reads why here rather than guessing from a failed spend.
+    const refused = (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries;
+    if (refused !== undefined && refused.size > 0) {
+      const publication = artifact.composition as NonNullable<typeof artifact.composition>
+        & { refusedEntries: { functionName: string; reason: string }[] };
+      publication.refusedEntries = [...refused].map(([name, reason]) => ({
+        functionName: `${ast.contract.name}.${name}()`,
+        reason,
+      }));
     }
   }
   let verifiedKernelEntryJournal:

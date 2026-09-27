@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StopSite } from '@solidcash/utils';
+import { refusalOf as publishedRefusalOf } from './refused-entry.js';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
 
@@ -69,14 +70,8 @@ const PLAIN_CALL = HEAD + INTERFACES
   + ' }';
 
 /** The refusal the shipped compile raises for a source, or a failure when it accepts it. */
-function refusalOf(source: string): { code?: string; message: string } {
-  try {
-    compileStringMulti(source, { composition: 'per-call' });
-  } catch (error) {
-    return error as { code?: string; message: string };
-  }
-  throw new Error('the shipped per-call compiler accepted the source, so there is no refusal to record');
-}
+/** The refusal the compile publishes for the one body these sources have, as the old throw used to carry it. */
+const refusalOf = (source: string): { code?: string; message: string } => publishedRefusalOf(source);
 
 describe('a call whose occurrence the source fixes', () => {
   it('is admitted, one record per call, which is the control beside the refusal below', () => {

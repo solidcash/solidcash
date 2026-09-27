@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { hexOf, seededAddress } from '../shapes/harness.js';
 
 /**
@@ -28,13 +29,23 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 
 /** The code and message the shipped compile raises, or a failure when it accepts the source. */
 function compileRefusal(source: string): { readonly code?: string; readonly message: string } {
+  // The refusal a compile publishes for a body it cannot serve, or the one it throws when the master itself is a
+  // shape the convention does not have.
   try {
-    compileStringMulti(source, { composition: 'per-call' });
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
+      Record<string, { composition?: unknown }>);
+    if (refusals.length === 0) {
+      throw new Error('the shipped per-call compiler served the source, so there is no refusal to record');
+    }
+    return {
+      code: 'PER_CALL_CODEGEN_UNAVAILABLE',
+      message: refusals.map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | '),
+    };
   } catch (error) {
     const refusal = error as { code?: string; message: string };
-    return { code: refusal.code, message: refusal.message };
+    if (refusal.code !== undefined) return { code: refusal.code, message: refusal.message };
+    throw error;
   }
-  throw new Error('the shipped per-call compiler accepted the source, so there is no refusal to record');
 }
 
 describe('one entry appending to one log three times', () => {

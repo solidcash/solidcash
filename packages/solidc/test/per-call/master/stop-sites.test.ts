@@ -6,6 +6,7 @@ import {
   type StopSite,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import {
   entryStopSites,
   publishPerCallStopSites,
@@ -193,8 +194,7 @@ describe('the stop-site table published from a real compile', () => {
     // The lowering coalesces the two identical calls into one batch, so the records are not a fixed set the head
     // can check. Pinning the refusal keeps the table's shape and the compiler's limit from being read as each
     // other.
-    expect(() => compileStringMulti(repeatedCallSource(), { composition: 'per-call' }))
-      .toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
+    expect(refusalMessageOf(repeatedCallSource())).toContain('runs repeatedly');
   });
 
   it('derives the sites from the calls alone, refusing a table the schema would reject', () => {

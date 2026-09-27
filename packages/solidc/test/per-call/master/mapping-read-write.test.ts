@@ -8,6 +8,7 @@ import {
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
@@ -211,7 +212,7 @@ describe('a per-call master whose entry reads and rewrites one mapping entry', (
       + '     balances[to] = mine + amount;'
       + '   }'
       + ' }';
-    expect(() => compileString(source, { composition: 'per-call' })).toThrow(/PER_CALL_CODEGEN_UNAVAILABLE/);
+    expect(refusalMessageOf(source)).toContain('touches 2 mapping entries and writes 1 of them');
   });
 
   it('admits the read/write entry beside other entry points of the same master', () => {

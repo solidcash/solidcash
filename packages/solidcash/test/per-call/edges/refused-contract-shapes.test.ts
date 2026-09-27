@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { seededAddress, hexOf } from '../shapes/harness.js';
 
 /**
@@ -15,8 +16,11 @@ const CALLEE = seededAddress('refused shapes callee');
 /** The message the compiler raises for a per-call shape it will not emit. */
 function refusal(source: string, options: Record<string, unknown> = {}): string {
   try {
-    compileStringMulti(source, { composition: 'per-call', ...options });
-    return '';
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call', ...options }) as
+      Record<string, { composition?: unknown }>);
+    if (refusals.length === 0) return '';
+    return `PER_CALL_CODEGEN_UNAVAILABLE: ${refusals.map((refused) => `${refused.functionName}: `
+      + `${refused.reason}`).join(' | ')}`;
   } catch (error) {
     return (error as Error).message;
   }

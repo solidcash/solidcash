@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, encodeIntegerValue } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import {
   compileAndDeploy, composeAndDerive, entryName, hexOf, rootOf, seededAddress, token, userInput, USER_LOCK,
   selectorOf, validatorFor,
@@ -94,8 +95,10 @@ describe('a call whose execution depends on state', () => {
       + ' contract Cal { function ping() { require(true); } }'
       + ' contract Chooser { int public mode; function go(int n) {'
       + `   if (n > 0) { ICal(0x${hexOf(CAL)}).ping.call(); } require(true); } }`;
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/runs conditionally, and the paths through/);
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
+      Record<string, { composition?: unknown }>);
+    expect(refusals.map((refused) => refused.reason).join(' | '))
+      .toMatch(/runs conditionally, and the paths through/);
   });
 });
 

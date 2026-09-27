@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { composeDraft, participant, type CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
 import {
   USER_LOCK, composeAndDerive, compileAndDeploy, entryName, hexOf, master, masterInput,
@@ -222,8 +223,9 @@ describe('one contract entering another of its own entries', () => {
       + '   function start() { IOwn(address(this)).inner.call(); require(true); }'
       + '   function inner() { require(true); }'
       + ' }';
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/does not hold as one value/);
+    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
+      Record<string, { composition?: unknown }>);
+    expect(refusals.map((refused) => refused.reason).join(' | ')).toMatch(/does not hold as one value/);
   });
 });
 

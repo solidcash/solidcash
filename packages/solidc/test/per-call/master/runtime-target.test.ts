@@ -10,6 +10,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -266,14 +267,8 @@ describe('a call to an address the caller read from its own state', () => {
 });
 
 /** Compiles a source that must be refused, and reports the refusal text. */
-function refusalOf(source: string): string {
-  try {
-    compileStringMulti(source, { composition: 'per-call' });
-    return '';
-  } catch (error) {
-    return (error as Error).message;
-  }
-}
+/** The refusal the compile publishes for the one body these sources have, or '' when it serves it. */
+const refusalOf = (source: string): string => refusalMessageOf(source);
 
 describe('the target shapes a site admits and refuses', () => {
   it('compiles a call to an address the caller holds in a parameter', () => {

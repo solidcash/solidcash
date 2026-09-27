@@ -192,6 +192,15 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
   for (const table of published) {
     for (const entry of table.entries) entries.set(entry.functionName, entry);
   }
+  // The bodies the compiler refused are published beside the table. They are not derivable: their program fails
+  // whenever the dispatcher reaches it, so a driver that asked for one has an answer here rather than a spend that
+  // fails for a reason it cannot name.
+  const refused = new Map<string, string>();
+  for (const artifact of options.artifacts) {
+    const listed = (artifact.composition as { refusedEntries?: { functionName: string; reason: string }[] })
+      ?.refusedEntries ?? [];
+    for (const entry of listed) refused.set(entry.functionName, entry.reason);
+  }
   const runs = new Map<string, ShippedMasterRun>();
   for (const run of options.runs) {
     if (runs.has(run.master)) {
@@ -221,6 +230,13 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
 
   return {
     sitesFor(functionName: string): StopSiteMetadata {
+      const refusal = refused.get(functionName);
+      if (refusal !== undefined) {
+        throw new ShippedHostError(
+          'PER_CALL_HOST_ENTRY_REFUSED',
+          `${functionName} is refused by the compiler: ${refusal}`,
+        );
+      }
       const entry = entries.get(functionName);
       if (entry === undefined) {
         throw new ShippedHostError(

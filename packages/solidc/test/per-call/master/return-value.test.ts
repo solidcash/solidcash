@@ -9,6 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { callerUnlockingBytecode } from './caller-input.js';
 import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend } from './validator-input.js';
@@ -217,14 +218,8 @@ describe('an entry that returns one scalar value', () => {
   });
 });
 
-const refusalOf = (source: string): string => {
-  try {
-    compileString(source, { composition: 'per-call' });
-    return '';
-  } catch (error) {
-    return (error as Error).message;
-  }
-};
+/** The refusal the compile publishes for the one body these sources have, or '' when it serves it. */
+const refusalOf = (source: string): string => refusalMessageOf(source);
 
 describe('the return shapes a master can settle', () => {
   it('compiles an entry that returns one scalar', () => {

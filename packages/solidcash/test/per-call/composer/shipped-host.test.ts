@@ -481,6 +481,23 @@ const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + `     else { INear(0x${toHex(ADDRESS_NEAR)}).pong.call(); } require(true); }`
   + ' }';
 
+/** A contract one of whose bodies is a shape the per-call convention cannot emit. */
+const REFUSED_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Only {'
+  + '   function bad() returns (int, int) { return (1, 2); }'
+  + ' }';
+
+describe('an entry the compiler refused', () => {
+  it('is refused by name, with the reason, when a derivation asks for its sites', () => {
+    // The refused body is not in the published table, and the composition metadata says why: a driver reports the
+    // unsupported function instead of a spend that fails for a reason it cannot name.
+    const artifacts = compileStringMulti(REFUSED_ENTRY_SOURCE, { composition: 'per-call' });
+    const host = createShippedDerivationHost({ artifacts: [artifacts.Only!], runs: [] });
+    expect(() => host.sitesFor('Only.bad()')).toThrow(/PER_CALL_HOST_ENTRY_REFUSED/);
+    expect(() => host.sitesFor('Only.bad()')).toThrow(/returns 2 values/);
+  });
+});
+
 describe('a caller whose arms each call a different contract', () => {
   it('publishes both arms at one record, each marked conditional, over the path\'s own closes', () => {
     const artifacts = compileStringMulti(CONDITIONAL_SOURCE, { composition: 'per-call' });

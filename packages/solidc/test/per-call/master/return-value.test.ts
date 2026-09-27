@@ -414,3 +414,90 @@ describe('a stateful view whose entry returns the value it read', () => {
     expect(acceptedView(OTHER_RETVAL)).toBe(false);
   });
 });
+
+/**
+ * The entry writes state and returns the value it wrote.
+ *
+ * The read-only case above keeps the record in place; this one moves it, so the same frame that has to settle the
+ * value it computed also has to settle the record it wrote. The commitment the record holds at the end is the one
+ * the write produced, and the value the frame records is the new one.
+ */
+const WRITE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Counter {'
+  + '   int public counter;'
+  + '   function bump() returns (int) { this.counter = this.counter + 1; return this.counter; }'
+  + ' }';
+
+const WRITE_CATEGORY = seededCategory('stateful write return');
+const WRITE_ADDRESS = validatorAddress(WRITE_CATEGORY, VALIDATOR_PROGRAM);
+const writeArtifact = compileString(WRITE_SOURCE, { composition: 'per-call' });
+const writeProgram = fillPlaceholders(scriptBytes(writeArtifact), writeArtifact.composition!.placeholders, {
+  category: categorySlotValue(WRITE_CATEGORY), contractAddress: WRITE_ADDRESS, templateHash: TEMPLATE_HASH,
+});
+const writeLock = encodeLockingBytecodeP2sh32(hash256(writeProgram));
+/** The record as the write leaves it: the counter one higher, and the value the frame records is that one. */
+const WRITTEN = ANSWER + 1n;
+const WRITE_IN_COMMITMENT = hexToBin(buildPushdataCommitment(writeArtifact.stateLayout!, { counter: ANSWER }, 0));
+const WRITE_OUT_COMMITMENT = hexToBin(buildPushdataCommitment(writeArtifact.stateLayout!, { counter: WRITTEN }, 0));
+const WRITE_RETVAL = encodeArgumentList([encodeIntegerValue(WRITTEN)]);
+
+/** Spends the compiled writer with `retval` and the record's two commitments given. */
+function acceptedWrite(retval: Uint8Array, outCommitment: Uint8Array = WRITE_OUT_COMMITMENT): boolean {
+  const block: WitnessBlock = {
+    kind: 0, callerRef: 2, originRef: 2, validatorRef: 0xffff, sender: USER_LOCK, self: WRITE_ADDRESS, value: 0n,
+    retval,
+    calls: [],
+    segments: [[{ in: 1, out: 1, viewIn: WRITE_IN_COMMITMENT, viewOut: outCommitment }]],
+    events: [],
+    sends: [],
+  };
+  const masterValue = 20_000n;
+  const sourceOutputs = [
+    { lockingBytecode: writeLock, valueSatoshis: masterValue, token: token(WRITE_CATEGORY, 'minting') },
+    {
+      lockingBytecode: STATE_LOCK, valueSatoshis: masterValue,
+      token: token(WRITE_CATEGORY, 'mutable', WRITE_IN_COMMITMENT),
+    },
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+  ];
+  const transaction = {
+    version: 2,
+    inputs: [
+      {
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array([
+          ...encodeDataPush(encodeWitnessBlock(block)), ...encodeDataPush(writeProgram),
+        ]),
+      },
+      {
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(2), sequenceNumber: 0xffffffff,
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+      {
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
+        unlockingBytecode: callerUnlockingBytecode(),
+      },
+    ],
+    outputs: [
+      { lockingBytecode: writeLock, valueSatoshis: masterValue, token: token(WRITE_CATEGORY, 'minting') },
+      {
+        lockingBytecode: STATE_LOCK, valueSatoshis: masterValue,
+        token: token(WRITE_CATEGORY, 'mutable', outCommitment),
+      },
+      { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+    ],
+    locktime: 0,
+  };
+  const vm = createVirtualMachineBch2026(false);
+  return vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction })) === true;
+}
+
+describe('a stateful entry that writes the value it returns', () => {
+  it('is accepted when the frame records the written value and the record carries the write', () => {
+    expect(acceptedWrite(WRITE_RETVAL)).toBe(true);
+  });
+
+  it('is refused when the frame records another value', () => {
+    expect(acceptedWrite(encodeArgumentList([encodeIntegerValue(ANSWER)]))).toBe(false);
+  });
+});

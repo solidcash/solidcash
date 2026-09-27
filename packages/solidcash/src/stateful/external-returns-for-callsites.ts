@@ -18,6 +18,7 @@ export function externalReturnsForCallsites(
   consumer?: {
     callsiteId: number;
     resultConsumers?: readonly ExternalResultConsumerAbi[];
+    lane?: 'condition';
   },
 ): Map<string, FunctionArgument> {
   const resolved = new Map<string, FunctionArgument>();
@@ -75,7 +76,8 @@ export function externalReturnsForCallsites(
       }
       if (consumer?.resultConsumers) {
         const lanes = consumer.resultConsumers.filter((lane) =>
-          lane.consumerCallsiteId === consumer.callsiteId && lane.argument === argument
+          lane.consumerCallsiteId === consumer.callsiteId
+          && (consumer.lane === 'condition' ? lane.condition === true : lane.argument === argument)
           && lane.producerCallsiteId === expression.callsiteId
           && (lane.resultIndex === undefined || lane.resultIndex === resultIndex));
         if (lanes.length !== 1) {

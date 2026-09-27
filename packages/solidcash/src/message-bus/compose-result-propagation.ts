@@ -35,10 +35,10 @@ export function hasResultDependentAncestor(
   return false;
 }
 
-export function propagateResultDependentArguments(
+export function decodeResultsByParent(
   ctx: ResultPropagationContext,
   results: Readonly<Record<number, string>>,
-): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } {
+): Map<number, Map<number, FunctionArgument>> {
   const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
   for (const invocation of ctx.returning) {
     if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
@@ -63,6 +63,14 @@ export function propagateResultDependentArguments(
     siblings.set(invocation.consumerCallsiteId, value);
     resultsByParent.set(invocation.parent, siblings);
   }
+  return resultsByParent;
+}
+
+export function propagateResultDependentArguments(
+  ctx: ResultPropagationContext,
+  results: Readonly<Record<number, string>>,
+): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } {
+  const resultsByParent = decodeResultsByParent(ctx, results);
   let propagated = false;
   const resolvedArguments: Array<readonly FunctionArgument[]> = [];
   ctx.descriptors.forEach((descriptor, index) => {

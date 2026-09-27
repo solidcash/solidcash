@@ -53,6 +53,7 @@ export {
 import {
   propagateResultDependentArguments as propagateComposeResultDependentArguments,
 } from './compose-result-propagation.js';
+import { propagateResultDependentCallTopology } from './compose-result-topology.js';
 import {
   runComposeSemanticClaimLoop,
 } from './compose-semantic-claim-loop.js';
@@ -111,21 +112,26 @@ export class AtomicMessageBusComposition {
     } = await resolveComposeValidatedIndexes(
       plan, descriptors, descriptorWitnesses, rootCaller, upgradeOutputs, provider, this.options,
     );
-    const propagateResultDependentArguments = (
+    const propagateResultDependentArguments = async (
       results: Readonly<Record<number, string>>,
-    ): { propagated: boolean; calls: PreparedAtomicMessageBusCall[] } => (
-      propagateComposeResultDependentArguments(
+    ): Promise<{ propagated: boolean; calls: PreparedAtomicMessageBusCall[] }> => {
+      const argumentsResult = propagateComposeResultDependentArguments(
         { plan, descriptors, returning },
         results,
-      )
-    );
+      );
+      if (!this.options.requirePreparedIdentity) return argumentsResult;
+      const topology = await propagateResultDependentCallTopology(
+        { plan, descriptors, returning, rootCaller, stateOf }, argumentsResult.calls, results,
+      );
+      return { propagated: argumentsResult.propagated || topology.propagated, calls: topology.calls };
+    };
     // A graph-discovery seed is already semantically available on the first atomic pass. Rebuild expressions
     // which consume it before assembling the call manifest; waiting for the VM to discover a *different* result
     // leaves an unchanged seed permanently paired with the stale pre-discovery argument bytes.
     // Only explicit/precomputed results are available before the first VM discovery pass. Synthetic empty/true
     // seeds exist solely to let the route advance; feeding them into sibling arguments changes source semantics
     // before any covenant has authenticated the value.
-    const initialPropagation = propagateResultDependentArguments(preparedResults);
+    const initialPropagation = await propagateResultDependentArguments(preparedResults);
     if (initialPropagation.propagated) {
       if (this.resultPropagationDepth >= descriptors.length) {
         throw new Error('messageBus: authenticated result arguments did not converge');

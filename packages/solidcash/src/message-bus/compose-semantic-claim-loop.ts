@@ -106,7 +106,8 @@ export interface RunComposeSemanticClaimLoopContext {
   >;
   propagateResultDependentArguments: (
     results: Readonly<Record<number, string>>,
-  ) => { propagated: boolean; calls: PreparedAtomicMessageBusCall[] };
+  ) => { propagated: boolean; calls: PreparedAtomicMessageBusCall[] }
+  | Promise<{ propagated: boolean; calls: PreparedAtomicMessageBusCall[] }>;
 }
 
 /**
@@ -224,7 +225,7 @@ export async function runComposeSemanticClaimLoop(
       // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
       // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
       // batches, and the call manifest all depend on the argument bytes and must change atomically.
-      const propagation = propagateResultDependentArguments(derivedResults);
+      const propagation = await propagateResultDependentArguments(derivedResults);
       if (propagation.propagated) {
         if (resultPropagationDepth >= descriptorsLength) {
           throw new Error('messageBus: authenticated result arguments did not converge');

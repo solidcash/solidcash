@@ -190,11 +190,23 @@ describe('the stop-site table published from a real compile', () => {
     expect(plain.sites.sites[0]).toStrictEqual({ kind: 'call', site: 0, callIndex: 0, descriptor: 0 });
   });
 
-  it('refuses to compile an entry that calls the same method at the same target twice', () => {
-    // The lowering coalesces the two identical calls into one batch, so the records are not a fixed set the head
-    // can check. Pinning the refusal keeps the table's shape and the compiler's limit from being read as each
-    // other.
-    expect(refusalMessageOf(repeatedCallSource())).toContain('runs repeatedly');
+  it('gives an entry that calls the same method at the same target twice one site per call', () => {
+    // A per-call master carries one call record per call and gives each call its own frame, so the two identical
+    // calls are two sites rather than one coalesced batch: the head checks two records and each site binds its own
+    // descriptor.
+    const artifacts = compileStringMulti(repeatedCallSource(), { composition: 'per-call' });
+    const entry = publicationOf(artifacts.Caller!).entries[0]!;
+    // Neither site carries the marker the loop case's single site does, which is what tells turns of one site from
+    // two sites.
+    expect(entry.sites.sites).toStrictEqual([
+      { kind: 'call', site: 0, callIndex: 0, descriptor: 0 },
+      { kind: 'call', site: 1, callIndex: 1, descriptor: 1 },
+      { kind: 'segmentClose', site: 2, segmentIndex: 0 },
+      { kind: 'segmentClose', site: 3, segmentIndex: 1 },
+      { kind: 'segmentClose', site: 4, segmentIndex: 2 },
+    ]);
+    expect(entry.calls.map((call) => `${call.callIndex}:${call.functionName}`))
+      .toStrictEqual(['0:ping', '1:ping']);
   });
 
   it('derives the sites from the calls alone, refusing a table the schema would reject', () => {

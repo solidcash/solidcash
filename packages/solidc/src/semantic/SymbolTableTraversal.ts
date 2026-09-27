@@ -3719,8 +3719,10 @@ export default class SymbolTableTraversal extends AstTraversal {
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
-          // V1 permits exactly one repeated callee group in a root invocation.
-          if (repeated.length === 1) {
+          // V1 permits exactly one repeated callee group in a root invocation. A per-call master carries one call
+          // record per call and gives each call its own frame, so it has nothing to collapse: its sites are the
+          // calls themselves and each binds its own descriptor.
+          if (repeated.length === 1 && this.compilerOptions.composition !== 'per-call') {
             const group = repeated[0];
             const hasCompleteSourceEffectOrder = group.every(
               (slot) => slot.sourceEffectOrdinal !== undefined,

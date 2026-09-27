@@ -81,6 +81,26 @@ const DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + `   function b() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
   + ' }';
 
+/** Dynamic state stores its bytes in a run of chunk NFTs whose base a per-call frame cannot name. */
+const DYNAMIC_READ_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Named {'
+  + '   string name;'
+  + '   function getName() returns (string) { return this.name; }'
+  + ' }';
+
+const DYNAMIC_WRITE_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Named {'
+  + '   string name;'
+  + '   function setName(string value) { this.name = value; }'
+  + ' }';
+
+const DYNAMIC_CONSTRUCTOR_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Named {'
+  + '   string name;'
+  + '   constructor(string initial) { this.name = initial; }'
+  + '   function getName() returns (string) { return this.name; }'
+  + ' }';
+
 const codeOf = (run: () => unknown): string | undefined => {
   try {
     run();
@@ -199,5 +219,39 @@ describe('the call set a compiled master fixes', () => {
       .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(messageOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
       .toContain('different numbers of external calls');
+  });
+});
+
+describe('dynamic state the per-call frame cannot locate', () => {
+  it('refuses an entry that reads a dynamic state variable and names the chunk run', () => {
+    // The entry reads its chunks from a run of inputs whose base the direct convention's SDK computes from the
+    // entry's block layout. A per-call master derives its operands from the frame's record declarations, and no
+    // declaration names that base, so the refusal says so rather than reporting a bare hidden operand.
+    expect(codeOf(() => compileString(DYNAMIC_READ_CONTRACT, { composition: 'per-call' })))
+      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    const message = messageOf(() => compileString(DYNAMIC_READ_CONTRACT, { composition: 'per-call' }));
+    expect(message).toContain('dynamic state');
+    expect(message).toContain('chunk');
+  });
+
+  it('refuses an entry that writes a dynamic state variable, by the same reason', () => {
+    expect(codeOf(() => compileString(DYNAMIC_WRITE_CONTRACT, { composition: 'per-call' })))
+      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(messageOf(() => compileString(DYNAMIC_WRITE_CONTRACT, { composition: 'per-call' })))
+      .toContain('dynamic state');
+  });
+
+  it('refuses a constructor that stores a dynamic argument, by the same reason', () => {
+    expect(codeOf(() => compileString(DYNAMIC_CONSTRUCTOR_CONTRACT, { composition: 'per-call' })))
+      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(messageOf(() => compileString(DYNAMIC_CONSTRUCTOR_CONTRACT, { composition: 'per-call' })))
+      .toContain('dynamic state');
+  });
+
+  it('compiles each of those shapes under the direct convention', () => {
+    // The refusal is the per-call frame's, not the contract's: the direct convention's SDK supplies the band.
+    for (const source of [DYNAMIC_READ_CONTRACT, DYNAMIC_WRITE_CONTRACT, DYNAMIC_CONSTRUCTOR_CONTRACT]) {
+      expect(() => compileString(source)).not.toThrow();
+    }
   });
 });

@@ -143,7 +143,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
  *     mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
  *     own-category output is an event a frame on that contract lists, every listed event names an output of the
- *     transaction, and no two frames list the same one.
+ *     transaction, no two frames list the same one, and every master of the contract is recreated by a master output
+ *     at its own index.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -1301,7 +1302,9 @@ function emitOneSettleCensus(e: Emitter): void {
   e.op(O.OP_FROMALTSTACK);
   emitRequireEventsDistinct(e);
   emitRequireOwnOutputsListed(e);
-  e.op(O.OP_DROP, O.OP_DROP);
+  e.op(O.OP_DROP);
+  emitRequireMastersRecreated(e);
+  e.op(O.OP_DROP);
 }
 
 /**
@@ -1511,6 +1514,87 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
   e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP);
+}
+
+/**
+ * Every master of the settled contract is recreated in place, at the same index, and nothing else is.
+ *
+ * Entry `[.., X]`, exit the same. A master is identified by its category with the minting capability and by nothing
+ * else, so the program compares the machine's answer with the pin the contract's category builds rather than with a
+ * lock. A master that leaves the transaction, one that appears at an index where the input was not a master, and a
+ * recreation that changes the lock or the commitment are all refused.
+ */
+function emitRequireMastersRecreated(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.push(Uint8Array.from([TokenCapability.MINTING])).op(O.OP_CAT, O.OP_TOALTSTACK);
+  // A master input is recreated by a master output at the same index.
+  e.op(O.OP_TXINPUTCOUNT);
+  e.count(0);
+  loopCounted(e, (em) => {
+    emitMasterPinFlag(em, O.OP_UTXOTOKENCATEGORY);
+    em.op(O.OP_IF);
+    em.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
+    emitRequireMasterPinFlag(em, O.OP_OUTPUTTOKENCATEGORY);
+    emitRequireMasterRecreated(em);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_1ADD);
+  });
+  e.op(O.OP_DROP);
+  // An output that is a master has a master under it: nothing mints one into the transaction.
+  e.op(O.OP_TXINPUTCOUNT);
+  e.count(0);
+  loopCounted(e, (em) => {
+    emitMasterPinFlag(em, O.OP_OUTPUTTOKENCATEGORY);
+    em.op(O.OP_IF);
+    emitRequireMasterPinFlag(em, O.OP_UTXOTOKENCATEGORY);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_1ADD);
+  });
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * The input or output the index on top names holds a master of the pinned category, and nothing else does.
+ *
+ * Entry `[.., index]`, exit the same. A master's category answer is the category and the capability byte, which is
+ * exactly the pin; an answer of another width or another value fails the script.
+ */
+function emitRequireMasterPinFlag(e: Emitter, categoryOpcode: number): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.op(categoryOpcode);
+  e.op(O.OP_SIZE);
+  e.count(33).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_EQUALVERIFY);
+}
+
+/**
+ * Whether the input or output index on top holds a master of the pinned category.
+ *
+ * Entry `[.., index]`, exit `[.., index, flag]`. The pin sits on the top of the alternate stack and is left there; a
+ * minting token's category answer carries the category and the capability byte, which is exactly the pin.
+ */
+function emitMasterPinFlag(e: Emitter, categoryOpcode: number): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.op(categoryOpcode);
+  e.op(O.OP_SIZE);
+  e.count(33).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_EQUAL);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_0, O.OP_ENDIF);
+}
+
+/**
+ * The recreation of the master at the index on top preserves its lock and its commitment.
+ *
+ * Entry `[.., index]`, exit the same. The index stays for the walk's counter; the token's category already matched,
+ * so the capability and the category need no second look.
+ */
+function emitRequireMasterRecreated(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_UTXOBYTECODE, O.OP_OVER, O.OP_OUTPUTBYTECODE, O.OP_EQUALVERIFY);
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCOMMITMENT, O.OP_OVER, O.OP_OUTPUTTOKENCOMMITMENT, O.OP_EQUALVERIFY);
 }
 
 /**

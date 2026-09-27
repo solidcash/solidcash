@@ -40,6 +40,7 @@ import {
 } from '../../../../solidc/src/per-call/validator/index.js';
 import {
   categoryOf,
+  contractLockOf,
   emptyToken,
   masterTokenShape,
   seedBytes,
@@ -1016,6 +1017,29 @@ describe('the validator program refuses each rule it enforces', () => {
     };
     const tampered: ModelledTransaction = { ...modelled, outputs: [...modelled.outputs, extra] };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a master whose recreation changes its lock', () => {
+    // A master is identified by its category and its minting capability, so the settlement never pins a lock; what it
+    // does require is that the master's own output recreates it where it was. A master output that moves to another
+    // lock is not a recreation.
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const master = modelled.inputs.findIndex((input) =>
+      input.token.hasNft && input.token.capability === TokenCapability.MINTING);
+    expect(master).toBeGreaterThanOrEqual(0);
+    const tampered: ModelledTransaction = {
+      ...modelled,
+      outputs: modelled.outputs.map((output) => (output.index === master
+        ? { ...output, lockingBytecode: contractLockOf(seedBytes('master-lock-elsewhere', 8)) }
+        : output)),
+    };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_MINTING_NOT_RECREATED');
     expect(accepted(tampered, index)).toBe(false);
   });
 

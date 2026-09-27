@@ -21853,7 +21853,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitVerifySortedValueOutput(loc, 5, 4, 1, 7, 7);           // addr5, coSlot32 d4, effNext d1, v d7
       this.emit(Op.OP_DROP, loc);                                     // drop effNext -> [.., coValue] (6 raw, matches INSERT)
     } else {
-      this.emitEntryOutputIndex(slotIndex, loc, 6);                    // [.., coValue, outIdx]
+      // v is already tracked. Only Hk, entryAddr, coSlot, coNext and coValue are raw cells above the frame;
+      // counting v again picks the adjacent witness instead of the owner when calculating the output index.
+      this.emitEntryOutputIndex(slotIndex, loc, 5);                    // [.., coValue, outIdx]
       this.emitVerifySortedValueOutput(loc, 4, 3, 2, 6, 6);          // addr4, coSlot32 d3, coNext32 d2, v d6
     }
     // One recreated node, plus one per co-spent read slot, is the whole collection footprint of an update.

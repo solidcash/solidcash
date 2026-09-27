@@ -5,6 +5,7 @@ import {
   INDEX_NONE,
   buildChunkCommitment,
   buildPushdataCommitment,
+  encodeEventCommitment,
   encodeIntegerValue,
   packFixedWidthElement,
   splitValueIntoChunks,
@@ -12,6 +13,7 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
   EMPTY, USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOf,
@@ -36,11 +38,11 @@ import {
  * write that changes the run's width creates or removes chunks, and the composer lays those records out: a chunk
  * only the later stage holds is created as a trailing output, and one only the earlier stage holds is spent as a
  * funder input. Because the frame addresses the run through its own declaration, a run that exists when the
- * transaction starts is carried from one frame to the next, which is what the accept cases below settle. A run
- * the transaction itself creates is not: the later frames declare it kept at an index the transaction spends
- * nothing at, the masters still close against their declarations, and the shipped validator refuses the
- * composition because the only state a settlement transcript names is the inputs the transaction spends. That
- * last limit is pinned rather than papered over.
+ * transaction starts is carried from one frame to the next, and so is a run the transaction itself creates: a
+ * created record has no input, so it is named by the trailing output it appears at and the settlement transcript
+ * carries that output as a created record, which is what tells the validator the index is a created record rather
+ * than a spent state UTXO. Both are settled below, with the run's chunks and header read back through the shipped
+ * encoders.
  */
 
 const HUB_LABEL = 'same entry appends hub';
@@ -121,13 +123,16 @@ function chunkOf(index: number, bytes: Uint8Array): Uint8Array {
  * spent as funder inputs. The plan places the caller, the validator, one callee master per append, then the log's
  * records, then the funder inputs.
  */
-function build(initial: readonly bigint[], appends: readonly bigint[]): {
+function build(initial: readonly bigint[], appends: readonly bigint[], withEvents = false): {
   readonly plan: CompositionDraftPlan;
   readonly artifacts: ReturnType<typeof compileAndDeploy>['artifacts'];
   readonly contracts: ReturnType<typeof compileAndDeploy>['contracts'];
   readonly chunkIds: readonly string[];
 } {
-  const { artifacts, contracts } = compileAndDeploy(runSource(appends), { Hub: HUB_LABEL, Log: LOG_LABEL });
+  const source = withEvents
+    ? toySource(appends.map((item, index) => ({ id: BigInt(index + 1), item })))
+    : runSource(appends);
+  const { artifacts, contracts } = compileAndDeploy(source, { Hub: HUB_LABEL, Log: LOG_LABEL });
   const hub = contracts.Hub!;
   const log = contracts.Log!;
   const layout = artifacts.Log!.stateLayout!;
@@ -135,6 +140,8 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
 
   const frames = appends.length;
   const headerIndex = frames + 2;
+  // The run band sits one layout width past the frame's declared record block, so it does not move with the event
+  // region, which is a trailing output the layout places after the participants.
   const base = headerIndex + layout.dataNftCount;
 
   // The element stream at each frame boundary, and the chunk commitments each stage holds.
@@ -145,7 +152,10 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
     splitValueIntoChunks(stages[stage]!).map((piece, index) => chunkOf(index, piece));
 
   const selector = selectorOf(artifacts, 'Log', 'append');
-  const pushFor = (index: number): readonly Uint8Array[] => [selector, encodeIntegerValue(appends[index]!)];
+  // `append`'s parameters are (id, item), so the callee's argument pushes carry the last parameter first.
+  const pushFor = (index: number): readonly Uint8Array[] => (withEvents
+    ? [selector, encodeIntegerValue(appends[index]!), encodeIntegerValue(BigInt(index + 1))]
+    : [selector, encodeIntegerValue(appends[index]!)]);
 
   const hubMaster = master({
     master: 'hub-1',
@@ -182,25 +192,35 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
         entries.push({ in: index, out: INDEX_NONE, viewIn: before[offset]!, viewOut: EMPTY });
       }
     }
-    return master({
-      master: `log-${frame + 1}`,
-      contract: 'Log',
-      entry: 'append',
-      program: log.program,
-      frame: { kind: FrameKind.CALL, sender: hub.address, self: log.address, value: 0n },
-      facts: {
-        contract: 'Log', functionName: 'append', kind: FrameKind.CALL, callerIsUser: false,
-        originEqualsCaller: false, makesExternalCall: false, mastersOfContract: frames,
-      },
-      enteredBy: 'hub-1',
-      origin: USER_ID,
-      argumentPushes: pushFor(frame),
-      segments: [[
-        { in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame + 1]! },
-        ...entries,
-      ]],
-    });
+    return {
+      ...master({
+        master: `log-${frame + 1}`,
+        contract: 'Log',
+        entry: 'append',
+        program: log.program,
+        frame: { kind: FrameKind.CALL, sender: hub.address, self: log.address, value: 0n },
+        facts: {
+          contract: 'Log', functionName: 'append', kind: FrameKind.CALL, callerIsUser: false,
+          originEqualsCaller: false, makesExternalCall: false, mastersOfContract: frames,
+        },
+        enteredBy: 'hub-1',
+        origin: USER_ID,
+        argumentPushes: pushFor(frame),
+        segments: [[
+          { in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame + 1]! },
+          ...entries,
+        ]],
+      }),
+      events: [],
+    };
   };
+
+  // The events the appends emit, at the trailing outputs the layout allocates for them.
+  const emitted = withEvents
+    ? artifacts.Log!.events!.slice(0, 1).flatMap((event) =>
+      appends.map((item, index) =>
+        eventOutput(LOG_CATEGORY, event.signature, encodeEventCommitment(event.parameters, [BigInt(index + 1), item]))))
+    : [];
 
   const run = layOutChunkRun({
     plan: planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[frames]! }),
@@ -213,6 +233,7 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
   const kept = run.records.filter((record) => record.role === 'kept');
   const created = run.records.filter((record) => record.role === 'created');
   const removed = run.records.filter((record) => record.role === 'removed');
+  const trailing = [...emitted, ...created.map((record) => record.output!)];
   const logState = [HEADER_ID, ...kept.map((record) => record.id)];
   const funderInputBase = layoutTransaction([
     { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
@@ -236,7 +257,14 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
       ...removed.map((record) => ({ id: record.id, index: record.index })),
       { id: USER_ID, index: funderInputBase + removed.length },
     ],
-    masters: [hubMaster, ...Array.from({ length: frames }, (_unused, index) => logMaster(index))],
+    masters: [
+      hubMaster,
+      ...Array.from({ length: frames }, (_unused, index) => ({
+        ...logMaster(index),
+        // One event per append, at the trailing output the layout gives it.
+        events: withEvents ? [funderInputBase + index] : [],
+      })),
+    ],
     inputs: {
       'hub-1': { source: masterInput(hub) },
       ...Object.fromEntries(Array.from({ length: frames },
@@ -261,13 +289,16 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
         .map((record) => [record.id, record.input!])),
       [USER_ID]: userInput(),
     },
-    ...(created.length === 0 ? {} : { trailingOutputs: created.map((record) => record.output!) }),
+    ...(trailing.length === 0 ? {} : { trailingOutputs: trailing }),
     validator: {
       id: VALIDATOR_ID,
       covers: ['Log'],
       settles: [{
         category: LOG_CATEGORY,
         stateInputs: [HEADER_ID, ...kept.map((record) => record.id), ...removed.map((record) => record.id)],
+        // A chunk the transaction creates has no input to name, so it is declared by the trailing output it
+        // appears at: the frames' later declarations address it by that index.
+        createdOutputs: created.map((record) => record.index),
       }],
       redeemScript: validator.redeem,
     },
@@ -430,12 +461,14 @@ describe('one entry appending to one log three times', () => {
       .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
   });
 
-  it('refuses a run the transaction creates, because a later frame reads a record it spends nothing at', () => {
-    // The run does not exist when the transaction starts, so the first append creates its chunk and the later
-    // appends declare it kept at an index the transaction spends nothing at. Each frame closes against its own
-    // declaration, so every master input settles; the shipped validator refuses the composition, because the
-    // only state a settlement transcript names is the inputs the transaction spends and a created record is not
-    // one of them. The refusal is the machine's, and it is what stands between this shape and a spend.
+  it('settles a run the transaction creates: the first append creates the chunk, the later appends keep it', () => {
+    // The run does not exist when the transaction starts, so the first append declares a chunk the transaction
+    // creates and each later append declares the record it wrote. A created record has no input, so it is named by
+    // the trailing output it appears at, and the transcript carries that output as a created record of the
+    // settlement: the validator accepts the index as a created record rather than requiring it to be a spent
+    // state UTXO, starts its chain from the creation, and does not weigh its output against the input that happens
+    // to sit at the same index. Every contract input and the validator are accepted, and the created chunk and the
+    // log's header carry the whole element stream, read back through the encoders the composer shipped.
     const three = build([], APPENDS.map((append) => append.item));
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
@@ -448,7 +481,64 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-2')).toBe('accepted');
     expect(verdictAt(draft, 'log-3')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
-    expect(verdictAt(draft, VALIDATOR_ID)).toBe('refused: Program failed an OP_VERIFY operation.');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+
+    const values = APPENDS.map((append) => append.item);
+    const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));
+    expect(chunks).toHaveLength(1);
+    // A created record is not a participant, so the settlement names the trailing output the plan places it at.
+    const program = draft.programFor('hub-1');
+    expect(draft.trailingOutputs).toHaveLength(1);
+    const createdIndex = draft.trailingOutputs[0]!.index;
+    expect(program.transaction.outputs[createdIndex]!.token?.nft?.commitment).toStrictEqual(chunks[0]);
+    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
+  });
+
+  it('settles the event each append emits beside the run it writes', () => {
+    // The full shape: `append` pushes onto the run and emits, so the transaction carries one event per append at a
+    // trailing output. Each frame lists its own event, and the validator's census takes their union. The run holds
+    // one chunk across both appends, so no chunk is created and the trailing region holds only the events.
+    const appends = APPENDS.slice(0, 2);
+    const three = build([7n], appends.map((append) => append.item), true);
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(),
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
+    });
+    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'hub-1']);
+    expect(verdictAt(draft, 'log-1')).toBe('accepted');
+    expect(verdictAt(draft, 'log-2')).toBe('accepted');
+    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+
+    // One event per append, each at the trailing output the plan placed it at, carrying the payload the body
+    // computed.
+    const event = three.artifacts.Log!.events![0]!;
+    const program = draft.programFor('hub-1');
+    const eventIndices = draft.assembly.outputs.eventIndices;
+    expect(eventIndices).toHaveLength(appends.length);
+    appends.forEach((append, index) => {
+      const payload = encodeEventCommitment(event.parameters, [BigInt(index + 1), append.item]);
+      expect(program.transaction.outputs[eventIndices[index]!]!.token?.nft).toStrictEqual({
+        capability: 'none', commitment: payload,
+      });
+    });
+  });
+
+  it('refuses the per-append events beside a run the transaction creates', () => {
+    // The run band sits at the frame's fixed coordinate — one layout width past the frame's declared record block —
+    // and the trailing region begins there, holding the events first. So a transaction that both creates the run's
+    // first chunk and carries one event per append has no layout that satisfies both: the created chunk's band
+    // index and the first event output are the same index. The composer refuses it at the plan layer, before any
+    // script runs.
+    const three = build([], [10n, 20n], true);
+    expect(() => createComposedDerivationHost({
+      vm: compositionMachine(),
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
+    })).toThrow(/creates records at .*trailing region/);
   });
 
   it('refuses a run whose declared close is not the one the frame computed', () => {

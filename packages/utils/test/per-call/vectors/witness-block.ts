@@ -251,12 +251,12 @@ export const MALFORMED_WITNESS_BLOCKS: Record<string, MalformedVector> = {
   ) },
 };
 
-/** The transcript `M` for `ABBA`: roots `[0]`, masters `[0, 1, 4]`, settling `catA` over state input 3. */
+/** The transcript `M` for `ABBA`: roots `[0]`, masters `[0, 1, 4]`, settling `catA` over state input 3, creating none. */
 export const TRANSCRIPT_ABBA = {
-  hex: '50433701010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f200103',
+  hex: '50433702010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20010300',
   roots: [0],
   masters: [0, 1, 4],
-  settles: [{ category: CATEGORY_A, stateInputs: [3] }],
+  settles: [{ category: CATEGORY_A, stateInputs: [3], createdOutputs: [] }],
 };
 
 export interface UnlockingVector {
@@ -300,7 +300,7 @@ export const MASTER_UNLOCKING: Record<string, UnlockingVector> = {
 export const VALIDATOR_UNLOCKING = {
   redeemScript: VALIDATOR_REDEEM_SCRIPT_A,
   hex: h(
-    '2d50433701010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2001032621201f',
-    '1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010176a988ac',
+    '2e50433702010003000104010102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2001030026',
+    '21201f1e1d1c1b1a191817161514131211100f0e0d0c0b0a0908070605040302010176a988ac',
   ),
 };

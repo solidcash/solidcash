@@ -7,13 +7,16 @@
  *
  * Wire layout (little-endian):
  *
- *     "PC7" 01
+ *     "PC7" 02
  *     rootCount:u8 root:u8[]
  *     masterCount:u8 master:u8[]
- *     settleCount:u8 { category:32 stateInputCount:u8 stateInput:u8[] }
+ *     settleCount:u8 { category:32 stateInputCount:u8 stateInput:u8[] createdCount:u8 created:u8[] }
  *
- * The transcript does not list segments: the order is derived from the call tree, so a builder cannot choose an
- * order the execution semantics could not produce.
+ * A settled contract names the state UTXOs the transaction spends and the records the transaction creates. A
+ * created record has no input to name, so its commitment lives at a trailing output index, and the frames that
+ * write it address it by that index; the list is what tells the validator that such an index is a created record
+ * rather than an input. The transcript does not list segments: the order is derived from the call tree, so a
+ * builder cannot choose an order the execution semantics could not produce.
  */
 
 import {
@@ -27,7 +30,7 @@ import {
 
 /** Magic and version of the transcript, frozen with the validator program. */
 export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37]); // "PC7"
-export const TRANSCRIPT_VERSION = 0x01;
+export const TRANSCRIPT_VERSION = 0x02;
 
 /** Length of a state category. */
 export const CATEGORY_LENGTH = 32;
@@ -38,6 +41,13 @@ export interface SettledContract {
   category: Uint8Array;
   /** Input indices of the contract's state UTXOs that this transaction spends. */
   stateInputs: number[];
+  /**
+   * Output indices of the records this transaction creates for the contract.
+   *
+   * A created record has no input, so the frames that write it name it by the trailing output it appears at. The
+   * list is empty for a contract whose transaction creates no record.
+   */
+  createdOutputs?: readonly number[];
 }
 
 /** The structure a validator authenticates before it checks any fact. */
@@ -79,8 +89,13 @@ export function encodeTranscript(transcript: Transcript): Uint8Array {
   for (const master of transcript.masters) writer.pushByte(master);
   writer.pushByte(transcript.settles.length);
   for (const settled of transcript.settles) {
+    const created = settled.createdOutputs ?? [];
+    if (settled.stateInputs.length > 0xff) throw new PerCallEncodingError('too many state inputs');
+    if (created.length > 0xff) throw new PerCallEncodingError('too many created records');
     writer.pushBytes(settled.category).pushByte(settled.stateInputs.length);
     for (const input of settled.stateInputs) writer.pushByte(input);
+    writer.pushByte(created.length);
+    for (const output of created) writer.pushByte(output);
   }
   return writer.finish();
 }
@@ -113,7 +128,10 @@ export function decodeTranscript(payload: Uint8Array): Transcript {
     const stateInputCount = reader.readByte();
     const stateInputs: number[] = [];
     for (let inner = 0; inner < stateInputCount; inner += 1) stateInputs.push(reader.readByte());
-    settles.push({ category, stateInputs });
+    const createdCount = reader.readByte();
+    const createdOutputs: number[] = [];
+    for (let inner = 0; inner < createdCount; inner += 1) createdOutputs.push(reader.readByte());
+    settles.push({ category, stateInputs, createdOutputs });
   }
   reader.assertEnd();
   return { roots, masters, settles };

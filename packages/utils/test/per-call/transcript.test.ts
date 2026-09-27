@@ -17,13 +17,14 @@ const abbaTranscript = (): Parameters<typeof encodeTranscript>[0] => ({
   settles: TRANSCRIPT_ABBA.settles.map((settled) => ({
     category: hexToBytes(settled.category),
     stateInputs: [...settled.stateInputs],
+    createdOutputs: [...settled.createdOutputs],
   })),
 });
 
 describe('transcript constants', () => {
   it('carries the frozen magic, version and category length', () => {
     expect(toHex(TRANSCRIPT_MAGIC)).toBe('504337');
-    expect(TRANSCRIPT_VERSION).toBe(1);
+    expect(TRANSCRIPT_VERSION).toBe(2);
     expect(CATEGORY_LENGTH).toBe(32);
   });
 });
@@ -52,7 +53,7 @@ describe('transcript rejection', () => {
 
   it('rejects an unknown version', () => {
     const bytes = toBytes(TRANSCRIPT_ABBA.hex);
-    bytes[3] = 0x02;
+    bytes[3] = 0x03;
     expectPerCallRejection(() => decodeTranscript(bytes), /unsupported transcript version/);
   });
 
@@ -77,8 +78,23 @@ describe('transcript rejection', () => {
     // A contract can be settled while the transaction spends none of its state: several of its masters are
     // covered, and it has no records of its own. The empty list is what V7 compares the transaction against.
     const transcript = {
-      roots: [], masters: [], settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [] }],
+      roots: [], masters: [], settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [], createdOutputs: [] }],
     };
     expect(decodeTranscript(encodeTranscript(transcript))).toEqual(transcript);
+  });
+
+  it('carries a settled contract whose transaction creates a record', () => {
+    // A created record has no input, so it is named by the trailing output it appears at. The list is what tells
+    // the validator that such an index is a created record rather than a spent input.
+    const transcript = {
+      roots: [], masters: [], settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [3], createdOutputs: [6, 7] }],
+    };
+    const encoded = encodeTranscript(transcript);
+    expect(toHex(encoded)).toBe(
+      '50433702000001'
+      + CATEGORY_A
+      + '0103020607',
+    );
+    expect(decodeTranscript(encoded)).toEqual(transcript);
   });
 });

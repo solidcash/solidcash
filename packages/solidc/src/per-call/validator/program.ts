@@ -32,7 +32,7 @@ import { addressCheckScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
 /** The transcript's first four bytes: the wire name and the version the program understands. */
-export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37, 0x01]);
+export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37, 0x02]);
 
 /** The largest value a one-byte count field can carry: the program reads these fields unsigned. */
 export const MAX_TRANSCRIPT_COUNT = 255;
@@ -416,13 +416,22 @@ function takeCount(e: Emitter): void {
  * guard is that count: a cursor that still holds later fields must not be read once the count is exhausted.
  */
 function emitIndicesAreInputs(e: Emitter): void {
+  emitIndicesAreIndexed(e, Opcodes.OP_TXINPUTCOUNT);
+}
+
+/** As {@link emitIndicesAreInputs}, for a list that names outputs: every index is below the output count. */
+function emitIndicesAreOutputs(e: Emitter): void {
+  emitIndicesAreIndexed(e, Opcodes.OP_TXOUTPUTCOUNT);
+}
+
+function emitIndicesAreIndexed(e: Emitter, countOpcode: number): void {
   const O = Opcodes;
   e.op(O.OP_BEGIN);
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
   e.op(O.OP_DUP).count(1).op(O.OP_SPLIT, O.OP_ROT, O.OP_DROP);
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.op(O.OP_DUP, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY, O.OP_DROP);
+  e.op(O.OP_DUP, countOpcode, O.OP_LESSTHAN, O.OP_VERIFY, O.OP_DROP);
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
   e.op(O.OP_OVER, O.OP_NOT, O.OP_UNTIL);
@@ -455,10 +464,12 @@ function emitMasterIndices(e: Emitter): void {
 }
 
 /**
- * V2, the state inputs each settled contract lists.
+ * V2, the state inputs and created records each settled contract lists.
  *
  * Entry `[M, 0, suffix]`, where `suffix` begins at the settle count. A settled contract is a 32-byte category, a
- * count, and that many input indices. The category is not decided here.
+ * count with that many input indices, then a count with that many output indices. The category is not decided
+ * here, and neither is what each list means: only that a state input names a real input and a created record a
+ * real output.
  */
 function emitSettledStateInputs(e: Emitter): void {
   const O = Opcodes;
@@ -469,6 +480,9 @@ function emitSettledStateInputs(e: Emitter): void {
   e.count(32).op(O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   emitIndicesAreInputs(e);
+  e.op(O.OP_NIP);
+  takeCount(e);
+  emitIndicesAreOutputs(e);
   e.op(O.OP_NIP);
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
   e.op(O.OP_ENDIF);
@@ -1218,6 +1232,10 @@ function emitOneSettleStateInputs(e: Emitter): void {
   emitListedAreStateInputs(e);
   emitCountStateInputs(e);
   e.op(O.OP_SWAP, O.OP_SIZE, O.OP_NIP, O.OP_NUMEQUALVERIFY);
+  // The created records of this contract are the settlement census's, not this rule's, so their list is stepped
+  // over here.
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   e.op(O.OP_FROMALTSTACK, O.OP_DROP);
 }
 
@@ -1256,12 +1274,14 @@ function emitSettlementFungibleAmounts(e: Emitter): void {
  *
  * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`. The category is reversed to the order the
  * machine reports a spent token's and parked on the alternate stack for the two walks, and the entry's state-input
- * list is the settlement rule's, so only its bytes are skipped here.
+ * and created-record lists are the settlement rule's, so only their bytes are skipped here.
  */
 function emitOneSettleFungibleAmounts(e: Emitter): void {
   const O = Opcodes;
   e.count(32).op(O.OP_SPLIT);
   e.op(O.OP_SWAP, O.OP_REVERSEBYTES, O.OP_TOALTSTACK);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   // `[M, settleCount, after]`.
@@ -1341,16 +1361,20 @@ function emitSettlementCensus(e: Emitter): void {
  * The events, the record outputs and the own-category outputs of one settled contract.
  *
  * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`. The category is reversed to the order the
- * machine reports a spent token's and kept on the stack for the walks; the entry's state-input list is skipped,
- * because the settlement rule already decided it.
+ * machine reports a spent token's, and the entry's created-record list is kept: a created record has no input, so
+ * the rules below have to tell such an index from a state UTXO. The stack the checks run on is
+ * `[M, settleCount, after, created, X]`, with the created list below the category so a check that only reads the
+ * category is unaffected by it.
  */
 function emitOneSettleCensus(e: Emitter): void {
   const O = Opcodes;
   e.count(32).op(O.OP_SPLIT);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
-  e.op(O.OP_SWAP, O.OP_REVERSEBYTES);
-  // `[M, settleCount, after, X]`.
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT);
+  e.op(O.OP_SWAP, O.OP_ROT, O.OP_REVERSEBYTES);
+  // `[M, settleCount, after, created, X]`.
   emitCollectOwnEvents(e);
   e.op(O.OP_TOALTSTACK);
   emitCollectOwnRecordOutputs(e);
@@ -1363,7 +1387,7 @@ function emitOneSettleCensus(e: Emitter): void {
   emitRequireTouchedRecords(e);
   emitRequireRecordChains(e);
   emitRequireRecordValues(e);
-  e.op(O.OP_DROP);
+  e.op(O.OP_DROP, O.OP_DROP);
 }
 
 /**
@@ -1376,7 +1400,7 @@ function emitOneSettleCensus(e: Emitter): void {
  */
 function emitCollectOwnEvents(e: Emitter): void {
   const O = Opcodes;
-  e.count(3).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitMasterByteString(e);
   e.op(O.OP_NIP);
   e.op(O.OP_0, O.OP_TOALTSTACK);
@@ -1444,7 +1468,7 @@ function emitAppendMasterEvents(e: Emitter): void {
  */
 function emitCollectOwnRecordOutputs(e: Emitter): void {
   const O = Opcodes;
-  e.count(3).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitMasterByteString(e);
   e.op(O.OP_NIP);
   e.op(O.OP_0, O.OP_TOALTSTACK);
@@ -1584,7 +1608,7 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
  */
 function emitRequireRecordValues(e: Emitter): void {
   const O = Opcodes;
-  e.count(3).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitMasterByteString(e);
   e.op(O.OP_NIP);
   e.op(O.OP_BEGIN);
@@ -1676,8 +1700,10 @@ function emitGatherEntryIndices(e: Emitter): void {
 /**
  * One gathered entry: a record a frame writes keeps its value, the frame's sends included.
  *
- * Entry `[.., rest]`, exit `[.., rest]`. The first four bytes are the two indices; an index that names no input or
- * no output leaves the check alone, since another rule owns those.
+ * Entry `[.., created, rest]`, exit `[.., created, rest]`. The first four bytes are the two indices; an index that
+ * names no input or no output leaves the check alone, since another rule owns those — and so does an index the
+ * transcript lists as a created record, whose output the transaction creates from nothing rather than recreates
+ * from the input that happens to sit at the same index.
  */
 function emitCheckGatheredIndices(e: Emitter): void {
   const O = Opcodes;
@@ -1686,10 +1712,17 @@ function emitCheckGatheredIndices(e: Emitter): void {
   e.unsignedByteOnTop();
   e.op(O.OP_SWAP);
   e.unsignedByteOnTop();
-  // `[.., rest, in, out]`.
-  e.op(O.OP_OVER, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN);
-  e.op(O.OP_OVER, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN);
-  e.op(O.OP_BOOLAND, O.OP_IF);
+  // `[.., created, rest, in, out]`. A record the transaction creates starts from nothing, so its output is not
+  // weighed against the input that happens to sit at the same index.
+  e.op(O.OP_OVER);
+  e.count(7).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL, O.OP_NOT);
+  // `[.., created, rest, in, out, kept]`.
+  e.count(2).op(O.OP_PICK, O.OP_TXINPUTCOUNT, O.OP_LESSTHAN);
+  e.count(2).op(O.OP_PICK, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN);
+  e.op(O.OP_BOOLAND, O.OP_BOOLAND, O.OP_IF);
   e.op(O.OP_DUP, O.OP_OUTPUTVALUE);
   e.op(O.OP_FROMALTSTACK, O.OP_DUP, O.OP_TOALTSTACK, O.OP_ADD);
   e.op(O.OP_ROT);
@@ -1736,7 +1769,7 @@ function emitRequireRecordChains(e: Emitter): void {
  */
 function emitCollectRecordEntries(e: Emitter): void {
   const O = Opcodes;
-  e.count(3).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitMasterByteString(e);
   e.op(O.OP_NIP);
   e.op(O.OP_0, O.OP_TOALTSTACK);
@@ -1922,12 +1955,20 @@ function emitCheckRecordEntryChain(e: Emitter): void {
   e.op(O.OP_DROP, O.OP_DROP, O.OP_DROP);
 
   // The walk's start view: nothing for a record the transaction creates, otherwise the commitment the transaction
-  // spends at the record's input, padded as every declared view is. An input the transaction does not have is a
-  // start this entry cannot claim.
-  // `[.., blob, count, rest, key, in]`. The input index is on top. `OP_PICK` counts after its own index is
-  // consumed, so the top item is copied with `OP_DUP`.
+  // spends at the record's input, padded as every declared view is. A created record has no input, and its later
+  // frames name it by the trailing output it appears at, so an index the transcript lists as created starts from
+  // nothing just as the create sentinel does. An input the transaction does not have is a start no entry can claim.
+  // `[.., created, blob, count, rest, key, in]`. The input index is on top.
   e.op(O.OP_DUP);
-  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.op(O.OP_DUP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_NUMEQUAL);
+  e.op(O.OP_TOALTSTACK);
+  e.count(7).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL);
+  e.op(O.OP_FROMALTSTACK);
+  e.op(O.OP_BOOLOR, O.OP_IF);
   e.push(new Uint8Array(VIEW_PADDING_BYTES));
   e.op(O.OP_ELSE);
   e.op(O.OP_DUP);
@@ -2036,24 +2077,39 @@ function emitWalkAdvance(e: Emitter): void {
 }
 
 /**
- * The records the frames on the contract read are exactly the state UTXOs it spends.
+ * The records the frames on the contract read are exactly the state UTXOs it spends, or the records the
+ * transaction creates for it.
  *
- * Entry `[.., X]`, exit the same. Every index a frame's segment reads has to be a state UTXO of the contract, and
- * every state UTXO the transaction spends has to be one a frame reads: a record nobody touches would never be
- * rebuilt, and a read of anything else is not a record of this contract.
+ * Entry `[.., created, X]`, exit the same. Every index a frame's segment reads has to be a state UTXO of the
+ * contract or one of the created records the transcript lists for it, and every state UTXO the transaction spends
+ * has to be one a frame reads: a record nobody touches would never be rebuilt, and a read of anything else is not
+ * a record of this contract. A created record has no input, so it is named by the trailing output it appears at.
  */
 function emitRequireTouchedRecords(e: Emitter): void {
   const O = Opcodes;
   emitCollectOwnRecordInputs(e);
   e.op(O.OP_SWAP, O.OP_TOALTSTACK);
-  // `[.., ins]`, with the contract's category on the alternate stack for the state-input test.
+  // `[.., created, ins]`, with the contract's category on the alternate stack for the state-input test.
   e.op(O.OP_DUP);
   e.op(O.OP_BEGIN);
   e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
   e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
+  // The state test is guarded: an index past every input names no UTXO, which is exactly a created record.
+  e.op(O.OP_DUP);
+  e.op(O.OP_TXINPUTCOUNT, O.OP_LESSTHAN, O.OP_IF);
+  e.op(O.OP_DUP);
   emitIsStateInput(e);
-  e.op(O.OP_VERIFY);
+  e.op(O.OP_ELSE, O.OP_0);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_TOALTSTACK);
+  // `[.., created, ins', index]`: the index is a state UTXO or a listed created record.
+  e.count(2).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitCountItem(e, 1);
+  e.op(O.OP_0NOTEQUAL);
+  e.op(O.OP_FROMALTSTACK);
+  e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_ENDIF);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
@@ -2097,7 +2153,7 @@ function emitRequireInputIsRead(e: Emitter): void {
  */
 function emitCollectOwnRecordInputs(e: Emitter): void {
   const O = Opcodes;
-  e.count(3).op(O.OP_PICK);
+  e.count(4).op(O.OP_PICK);
   emitMasterByteString(e);
   e.op(O.OP_NIP);
   e.op(O.OP_0, O.OP_TOALTSTACK);
@@ -2438,6 +2494,8 @@ function emitDeclaredCategories(e: Emitter): void {
   e.op(O.OP_OVER, O.OP_0NOTEQUAL, O.OP_IF);
   e.count(32).op(O.OP_SPLIT, O.OP_SWAP, O.OP_REVERSEBYTES);
   e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  takeCount(e);
+  e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   e.op(O.OP_SWAP, O.OP_1SUB, O.OP_SWAP);
@@ -2860,16 +2918,19 @@ function emitAppendAccumulated(e: Emitter): void {
 /**
  * Entry `[.., in, out]`, exit `[.., key]`: the four bytes naming the record an entry belongs to.
  *
- * A record the segment already holds is named by the input it sits at; one the segment creates is named by the
- * output it appears at. Two entries belong to the same record exactly when their keys are equal, which is what the
- * chain searches compare.
+ * A record the segment already holds is named by the input it sits at; one the transaction creates is named by the
+ * trailing output it appears at. A created record's first declaration carries the create sentinel in its input
+ * field while a later frame that writes it names the same output, so a created declaration is keyed by its output
+ * index alone — the same key a later frame's `in == out` builds. A created output index is at or past the
+ * participant count while a kept record's input index is below it, so the two key spaces do not meet.
  */
 function emitBuildKey(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_OVER);
   e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
   e.op(O.OP_NIP);
-  e.push(INDEX_NONE_RAW).op(O.OP_SWAP, O.OP_CAT);
+  e.op(O.OP_DUP);
+  e.op(O.OP_CAT);
   e.op(O.OP_ELSE);
   e.op(O.OP_DROP, O.OP_DUP, O.OP_CAT);
   e.op(O.OP_ENDIF);

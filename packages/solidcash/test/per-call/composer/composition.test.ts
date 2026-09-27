@@ -148,7 +148,7 @@ describe('ABBA composition', () => {
     expect(decodeTranscript(splitFirstPush(assembled.unlockingBytecode).payload)).toEqual({
       roots: [0],
       masters: [0, 1, 4],
-      settles: [{ category, stateInputs: [3] }],
+      settles: [{ category, stateInputs: [3], createdOutputs: [] }],
     });
     expect(participant(layout, validator).index).toBe(2);
   });

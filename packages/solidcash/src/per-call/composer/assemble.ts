@@ -88,6 +88,14 @@ export interface PlannedUserInput {
 export interface PlannedSettlement {
   readonly category: Uint8Array;
   readonly stateInputs: readonly string[];
+  /**
+   * The output indices of the records this settlement creates.
+   *
+   * A created record has no input to name, so it is named by the trailing output the plan places it at. The
+   * assembly holds the indices, not identities: a created record is not a participant, and the plan states its
+   * index where it states the trailing output.
+   */
+  readonly createdOutputs?: readonly number[];
 }
 
 /** One validator the composition spends: the contracts it covers, what it settles, and its program. */
@@ -279,6 +287,20 @@ function resolveOutputRegions(
   return regions;
 }
 
+/** A settlement's created outputs, requiring each to be one the plan's trailing region creates. */
+function requireCreatedOutputs(settled: PlannedSettlement, outputs: OutputRegions): readonly number[] {
+  const declared = settled.createdOutputs ?? [];
+  const created = new Set(outputs.createdIndices);
+  for (const index of declared) {
+    if (!created.has(index)) {
+      throw new PerCallEncodingError(
+        `a settlement lists created output ${index}, which the plan's trailing region does not create`,
+      );
+    }
+  }
+  return [...declared];
+}
+
 /** Raised when a plan names an identity that has no place in the layout. */
 export class UnresolvedReferenceError extends Error {
   constructor(reference: string, what: string) {
@@ -436,6 +458,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       settles: validator.settles.map((settled) => ({
         category: settled.category,
         stateInputs: settled.stateInputs.map((state) => resolve(state, 'state input')),
+        createdOutputs: requireCreatedOutputs(settled, outputs),
       })),
     };
     const validatorWitness = assembleValidatorWitness({

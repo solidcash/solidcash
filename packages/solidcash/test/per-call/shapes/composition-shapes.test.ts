@@ -199,10 +199,10 @@ describe('two independent roots of two different contracts', () => {
 });
 
 describe('one contract entering another of its own entries', () => {
-  it('is refused by the compiler: the root entry and the self-called entry must make the same number of external calls', () => {
-    // The user enters `start`, which calls `inner` on the same contract, so the contract runs on two masters. The
-    // first entry makes a call and the second makes none, and the compiled master has one head that fixes one call
-    // count for every entry, so the shape cannot be emitted.
+  it('is emitted although the root entry calls and the self-called entry does not', () => {
+    // The user enters `start`, which calls `inner` on the same contract, so the contract runs on two masters. One
+    // master head serves both: it walks the call section with the length the block declares, and each entry pins
+    // that length to the calls its own source makes.
     const ownAddress = seededAddress('the self-calling contract');
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface IOwn { function inner(); }'
@@ -210,8 +210,9 @@ describe('one contract entering another of its own entries', () => {
       + `   function start() { IOwn(0x${hexOf(ownAddress)}).inner.call(); require(true); }`
       + '   function inner() { require(true); }'
       + ' }';
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/entries make different numbers of external calls/);
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.Own?.composition?.convention).toBe('per-call');
+    expect(artifacts.Own?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'start']);
   });
 
   it('is refused by the compiler when the self-call target is address(this): the site holds no single value to check', () => {
@@ -227,9 +228,10 @@ describe('one contract entering another of its own entries', () => {
 });
 
 describe('a call and a return call between two contracts', () => {
-  it('is refused by the compiler: the re-entered contract has entries with different external-call counts', () => {
+  it('is emitted although the re-entered contract\'s entries make different numbers of calls', () => {
     // The first contract's `begin` calls the second's `respond`; `respond` calls the first's `finish`, so the first
-    // contract is entered twice. Its two entries make different numbers of calls, which one master head cannot fix.
+    // contract is entered twice. Its two entries make different numbers of calls, and one head serves both because
+    // the body that runs pins the block's declared length to its own.
     const firstAddress = seededAddress('the returning contract');
     const secondAddress = seededAddress('the called-back contract');
     const source = 'pragma solidcash ^0.13.0;'
@@ -242,15 +244,16 @@ describe('a call and a return call between two contracts', () => {
       + ' contract Second {'
       + `   function respond() { IFirst(0x${hexOf(firstAddress)}).finish.call(); require(true); }`
       + ' }';
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/entries make different numbers of external calls/);
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.First?.abi.map((entry) => entry.name).sort()).toEqual(['begin', 'finish']);
+    expect(artifacts.Second?.abi.map((entry) => entry.name)).toEqual(['respond']);
   });
 });
 
 describe('a three-contract chain that calls back to the first', () => {
-  it('is refused by the compiler: the two contracts it re-enters have entries with different external-call counts', () => {
+  it('is emitted although two contracts in the chain are re-entered', () => {
     // First.begin -> Second.middle -> Third.end -> Second.back -> First.finish. Both First and Second are entered
-    // twice, each through a second entry that makes no call, so neither contract's master can be emitted.
+    // twice, each through a second entry that makes no call; each contract's master serves both of its entries.
     const firstAddress = seededAddress('the chain head');
     const secondAddress = seededAddress('the chain middle');
     const thirdAddress = seededAddress('the chain tail');
@@ -269,8 +272,10 @@ describe('a three-contract chain that calls back to the first', () => {
       + ' contract Third {'
       + `   function end() { ISecond(0x${hexOf(secondAddress)}).back.call(); require(true); }`
       + ' }';
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/entries make different numbers of external calls/);
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.First?.abi.map((entry) => entry.name).sort()).toEqual(['begin', 'finish']);
+    expect(artifacts.Second?.abi.length).toBe(2);
+    expect(artifacts.Third?.abi.length).toBe(1);
   });
 });
 

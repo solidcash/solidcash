@@ -78,7 +78,7 @@ const DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' interface ICallee { function ping(); }'
   + ' contract Caller {'
   + `   function a() { ICallee(0x${'11'.repeat(35)}).ping.call(); }`
-  + `   function b() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
+  + '   function b() { require(true); }'
   + ' }';
 
 /** Dynamic state stores its bytes in a run of chunk NFTs whose base a per-call frame cannot name. */
@@ -214,11 +214,12 @@ describe('the call set a compiled master fixes', () => {
     expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['a', 'b']);
   });
 
-  it('refuses entries that make different numbers of calls, by name', () => {
-    expect(codeOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
-      .toContain('different numbers of external calls');
+  it('admits one entry that calls beside one that makes no call, since each body pins its own count', () => {
+    // The walk reads the count the block declares and the body that runs holds the block to its own, so one head
+    // can serve a contract entered twice: once as a caller and once as a plain state write.
+    const artifact = compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['a', 'b']);
   });
 });
 

@@ -150,14 +150,19 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * sentinel to `maxEventCount` slots, and the send count must equal the shape's. The remaining tail must be empty,
  * so nothing follows the last field.
  *
+ * The block declares how many call records and segments it holds, and the walk reads those counts rather than
+ * fixing them: one head serves every body the master dispatches, and two bodies may make different numbers of
+ * calls. The declared call count is parked on the alt stack for the body that runs to pin to its own count, so a
+ * block declaring a count no body has is refused by the body rather than by the walk. The segment count must be
+ * the call count plus one, which the walk checks against the declared call count it just read.
+ *
  * With `keepsRecordIndices` the first segment's declared record indices are parked on the alt stack, input index
  * first, beneath the event walk's own parkings; a segment that declares no record parks the no-index sentinel
  * under the same convention, so the pair is always there and always means the same thing. A parked `retval` is
- * deepest, below both, because it is read before either.
+ * deepest and a parked call count sits above it, below both, because `retval` is read after them.
  */
 export function verifyTailScript(
-  callCount: number,
-  tail: MasterTailShape = zeroTailShape(callCount),
+  tail: MasterTailShape,
   options: { readonly keepsRecordIndices?: boolean; readonly returnsValue?: boolean } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
@@ -170,12 +175,9 @@ export function verifyTailScript(
   } else {
     bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   }
-  bytes.push(...requireU16Equals(callCount));
-  for (let site = 0; site < callCount; site += 1) bytes.push(...callRecordSkip());
-  bytes.push(...requireU16Equals(callCount + 1));
-  for (let segment = 0; segment < callCount + 1; segment += 1) {
-    bytes.push(...segmentRecordSection(tail.segmentRecordCounts?.[segment], keepsRecordIndices && segment === 0));
-  }
+  bytes.push(...callWalkScript());
+  bytes.push(...segmentCountCheckScript());
+  bytes.push(...segmentLoopScript(keepsRecordIndices));
   bytes.push(...eventSection(tail.maxEventCount));
   bytes.push(...requireU16Equals(tail.sendCount));
   if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
@@ -192,19 +194,76 @@ function requireU16Equals(expected: number): number[] {
 }
 
 /**
- * Consumes one segment's record list and checks each entry's shape.
+ * Consumes the call section, whose length the block declares, and parks the declared count for the body.
  *
- * When the entry fixes the count the list is required to hold exactly that many records and is unrolled; without
- * one the declared count is walked, because the records a segment touches are decided by settlement.
+ * Entry `[..., tail]`, exit `[...]`. The record's own checks belong to the site that made the call, so the walk
+ * only steps over each record; the count is what the body pins, because the body is what knows how many calls its
+ * own source makes. A count of zero consumes nothing.
  */
-function segmentRecordSection(expected: number | undefined, keepIndices = false): number[] {
-  if (expected === undefined) return recordWalkScript(keepIndices);
-  const bytes: number[] = [...requireU16Equals(expected)];
-  if (keepIndices && expected === 0) bytes.push(...parkAbsentRecordBase());
-  for (let entry = 0; entry < expected; entry += 1) {
-    bytes.push(...recordEntryCheck(keepIndices && entry === 0));
-  }
-  return bytes;
+function callWalkScript(): number[] {
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP,
+    // Park a copy for the body; the copy below the cursor is dropped with it once the walk is done.
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_TOALTSTACK,
+    Opcodes.OP_0, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(2)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_ELSE,
+    Opcodes.OP_BEGIN,
+    ...callRecordSkip(),
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK,
+    Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+  ];
+}
+
+/**
+ * Requires the declared segment count to be the declared call count plus one, leaving the count parked.
+ *
+ * Entry `[..., tail]`, exit `[...]`. Each call closes a segment and the execution opens with one, so the block's
+ * two counts are not independent; the call count stays on the alt stack for the segments loop and for the body.
+ */
+function segmentCountCheckScript(): number[] {
+  return [
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ADD,
+    Opcodes.OP_NUMEQUALVERIFY,
+  ];
+}
+
+/**
+ * Walks every segment the block declares, each with the record list it declares.
+ *
+ * Entry `[..., tail]`, exit `[...]`. Only the first segment parks the record base a body reads its state through,
+ * so the loop branches on the cursor; every later segment only checks its records' shapes.
+ */
+function segmentLoopScript(keepIndices: boolean): number[] {
+  return [
+    Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ADD,
+    Opcodes.OP_SWAP,
+    Opcodes.OP_0, Opcodes.OP_SWAP,
+    Opcodes.OP_BEGIN,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL,
+    Opcodes.OP_IF,
+    ...recordWalkScript(keepIndices),
+    Opcodes.OP_ELSE,
+    ...recordWalkScript(false),
+    Opcodes.OP_ENDIF,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_1ADD, Opcodes.OP_SWAP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_PICK,
+    ...encodeDataPush(scriptNumber(3)), Opcodes.OP_PICK,
+    Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+    ...encodeDataPush(scriptNumber(1)), Opcodes.OP_ROLL, Opcodes.OP_DROP,
+  ];
 }
 
 /**
@@ -267,19 +326,13 @@ function parkFirstRecordBase(): number[] {
 }
 
 /** Consumes one record entry and requires its shape: kept in place, created, or deleted. */
-function recordEntryCheck(keepBase = false): number[] {
+function recordEntryCheck(): number[] {
   return [
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK,
     ...skipLengthPrefixed32(),
     ...skipLengthPrefixed32(),
     Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK,
-    ...(keepBase
-      ? [
-        Opcodes.OP_2DUP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
-        Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK,
-      ]
-      : []),
     ...requireRecordShape(),
   ];
 }

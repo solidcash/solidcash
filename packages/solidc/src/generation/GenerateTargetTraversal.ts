@@ -275,7 +275,7 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
-  buildMasterHeadScript, eventCountSlotName, eventOutputSlotName, recordInputIndexSlotName,
+  buildMasterHeadScript, callCountSlotName, eventCountSlotName, eventOutputSlotName, recordInputIndexSlotName,
   recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
@@ -2990,6 +2990,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(recordOutputIndexSlotName());
       this.pushToStack(recordInputIndexSlotName());
     }
+    // The block's declared call count sits above the record indices, below `retval`, where each body pins it to
+    // the number of calls its own source makes.
+    this.pushToStack(callCountSlotName());
     // A body that reads or writes a dynamic value addresses its chunk run from the frame's declared record block,
     // one layout width past it, exactly as the direct convention addresses the run from the input its frame runs
     // on. Derived here rather than taken as an argument, and registered above the record indices the derivation
@@ -3116,6 +3119,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * check is skipped for a body that carries no such slot, which is a master whose bodies all emit nothing: its
    * head already fixes the declared count as zero.
    */
+  /**
+   * Pins the number of calls this body's own source makes to the count the block declares.
+   *
+   * One head serves every body behind the dispatcher, and two bodies may make different numbers of calls, so the
+   * walk reads the count rather than fixing it and the body that runs is what holds the block to its own code: a
+   * block may not declare call records the body does not make, and the body may not run with fewer declared than
+   * it makes.
+   */
+  private emitPerCallCallCountCheck(node: FunctionDefinitionNode): void {
+    const slot = callCountSlotName();
+    if (!this.stack.includes(slot)) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    // A body the master runs but for which the compiler published no calls — the constructor, or an internal
+    // body reached from one — makes none, so its count is zero.
+    const own = this.perCallEntryCallSites.get(this.currentFunction?.name ?? '')?.length ?? 0;
+    this.emit(encodeInt(BigInt(own)), loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
   private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
     const slot = eventCountSlotName();
     if (!this.stack.includes(slot)) return;
@@ -5542,6 +5569,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.perCallMaster) {
         // The seeded array is the frame top-first, so the list below runs topmost to deepest.
         if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
+        if (this.stack.includes(callCountSlotName())) subTraversal.stack.push(callCountSlotName());
         if (this.stack.includes(DYNAMIC_CHUNK_BASE_PARAMETER)) {
           subTraversal.stack.push(DYNAMIC_CHUNK_BASE_PARAMETER);
         }
@@ -7079,11 +7107,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
-    // A per-call body pins the number of events it emits against the block's declared count, which the head left
-    // as a slot, before any emit is checked. A per-call master then derives the sorted-batch operands its own body
-    // verification reads, from the witness block the head already walked. Those must exist before the aliasing
-    // preflight snapshots them, so the derivation runs here, where the write's runtime key is live, rather than in
-    // the head.
+    // A per-call body pins the number of calls its own source makes against the count the block declares, and the
+    // number of events it emits against the block's, before either is checked. A per-call master then derives the
+    // sorted-batch operands its own body verification reads, from the witness block the head already walked. Those
+    // must exist before the aliasing preflight snapshots them, so the derivation runs here, where the write's
+    // runtime key is live, rather than in the head.
+    if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
     if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);

@@ -742,14 +742,10 @@ function derivePerCallMasterCallSites(
     if (derived.reason !== undefined) return { supported: false, reason: derived.reason };
     entryCalls.push({ entryName: entry.name, calls: derived.calls });
   }
-  const callCount = entryCalls[0]?.calls.length ?? 0;
-  if (entryCalls.some((entry) => entry.calls.length !== callCount)) {
-    return {
-      supported: false,
-      reason: 'the entries make different numbers of external calls, but a master has one head that fixes how '
-        + 'many call records the tail holds',
-    };
-  }
+  // The bodies may declare different numbers of calls: the walk reads the count the block declares and each body
+  // pins it to its own, so only the master-level shape needs one number. A master that makes any call at all is a
+  // composed one, so the largest count is what decides whether it can also be entered as a standalone root.
+  const callCount = Math.max(0, ...entryCalls.map((entry) => entry.calls.length));
   return { supported: true, entryCalls, callCount };
 }
 

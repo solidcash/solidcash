@@ -65,6 +65,18 @@ export function eventOutputSlotName(emitIndex: number): string {
 }
 
 /**
+ * The tracked slot the body reads the number of call records the witness block declares.
+ *
+ * The head walks the call section without fixing its length, because one head serves every body the master
+ * dispatches and two bodies may make different numbers of calls. The declared count is parked here, and a body
+ * pins it to the number of calls its own source makes, so a block declaring a count no body has is refused by the
+ * body that runs.
+ */
+export function callCountSlotName(): string {
+  return '__internal__frameCallCount';
+}
+
+/**
  * The tracked slot the body reads the number of events the witness block declares.
  *
  * The head parks the block's declared event count above the event output slots it leaves. A body pins the number
@@ -323,7 +335,19 @@ class HeadEmitter {
     else this.standaloneFrameChecks();
     this.leaveEventSlots();
     this.leaveRecordSlots();
+    this.leaveCallCountSlot();
     this.leaveRetvalSlot();
+  }
+
+  /**
+   * Moves the block's declared call count off the alt stack, where the tail walk parked it beneath the record and
+   * event parkings, so the body that runs can pin it to the number of calls its own source makes.
+   *
+   * Popped after the record indices, which were parked later than it, and before `retval`, which was parked first.
+   */
+  private leaveCallCountSlot(): void {
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(callCountSlotName());
   }
 
   /**
@@ -380,7 +404,7 @@ class HeadEmitter {
    * count must be zero, which is N1's second half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callCount, this.tailShape,
+    this.emitBytes(verifyTailScript(this.tailShape,
       { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertSelfSettlement();
@@ -407,7 +431,7 @@ class HeadEmitter {
    * constant, and its tail holds as many call records as its sites number.
    */
   private composedFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.callCount, this.tailShape,
+    this.emitBytes(verifyTailScript(this.tailShape,
       { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertCallerIsNotSelf();

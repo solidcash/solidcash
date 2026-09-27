@@ -203,7 +203,8 @@ function buildComposition(options: CompositionOptions = {}): Composition {
 
   const caller = { program: COMPILED_CALLER_PROGRAM, lock: encodeLockingBytecodeP2sh32(hash256(COMPILED_CALLER_PROGRAM)) };
   const dropFrameAndSelector = new Uint8Array([
-    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,
+    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+    Opcodes.OP_1,
   ]);
   const calleeB = masterProgram({
     category: CATEGORY_B,

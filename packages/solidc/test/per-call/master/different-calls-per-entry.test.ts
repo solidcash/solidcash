@@ -134,6 +134,11 @@ interface EntryCompositionOptions extends CompositionOptions {
   readonly recordOfOtherEntry?: boolean;
   /** Give the callee the other entry's selector and argument pushes. */
   readonly calleeOfOtherEntry?: boolean;
+  /**
+   * How many call records the caller's block declares. The entries make one call each, so a block that declares
+   * anything else is what the body's own pin refuses.
+   */
+  readonly declaredCallCount?: number;
 }
 
 type Token = {
@@ -190,16 +195,16 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
     self: ADDRESS_A,
     value: 0n,
     retval: new Uint8Array(0),
-    calls: [{
+    calls: new Array<number>(options.declaredCallCount ?? 1).fill(0).map(() => ({
       kind: 1,
       target: recordTarget,
       value: 0n,
       calleeRef: recordCalleeRef,
       argsHash: recordArgsHash,
       result: new Uint8Array(0),
-    }],
-    // One segment per call plus one, as section 16 requires; a stateless caller declares no record in either.
-    segments: [[], []],
+    })),
+    // One segment per call plus one, as section 16 requires; a stateless caller declares no record in any of them.
+    segments: new Array<number>((options.declaredCallCount ?? 1) + 1).fill(0).map(() => []),
     events: [],
     sends: [],
   };
@@ -225,7 +230,8 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
     lock: encodeLockingBytecodeP2sh32(hash256(COMPILED_CALLER_PROGRAM)),
   };
   const dropFrameAndSelector = new Uint8Array([
-    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,
+    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+    Opcodes.OP_1,
   ]);
   const callee = masterProgram({
     category: called.calleeCategory,
@@ -343,6 +349,18 @@ describe('a caller whose two entries make different calls', () => {
   it('refuses a record whose callee reference is the caller itself', () => {
     expect(verdicts('a', { recordCalleeRef: A_INDEX })[A_INDEX].accepted).toBe(false);
     expect(verdicts('b', { recordCalleeRef: A_INDEX })[A_INDEX].accepted).toBe(false);
+  });
+
+  it('refuses a block that declares a call count its entry does not make', () => {
+    // Each entry makes one call. A block that declares none leaves the entry's own site reading a record that is
+    // not there, and one that declares two asks the entry to account for a call its source never makes; both are
+    // refused at the caller, while the count the entry actually makes is accepted.
+    expect(verdicts('a', { declaredCallCount: 0 })[A_INDEX].accepted).toBe(false);
+    expect(verdicts('a', { declaredCallCount: 2 })[A_INDEX].accepted).toBe(false);
+    expect(verdicts('b', { declaredCallCount: 0 })[A_INDEX].accepted).toBe(false);
+    expect(verdicts('b', { declaredCallCount: 2 })[A_INDEX].accepted).toBe(false);
+    expect(verdicts('a')[A_INDEX].accepted).toBe(true);
+    expect(verdicts('b')[A_INDEX].accepted).toBe(true);
   });
 
   it('checks each entry against its own descriptors, so one entry\'s call cannot stand in for the other\'s', () => {

@@ -5,7 +5,13 @@ import { hexOf, seededAddress } from '../shapes/harness.js';
 /**
  * A two-contract round trip, compiled per-call. The spec's worked example, "Example: `A -> B -> B -> A`", enters
  * `A.f` which calls `B.g`, which calls `B.h` inline, which calls back into `A.k`: `A` is entered twice, so its two
- * entries make different numbers of external calls. The shipped compiler refuses it before any master exists.
+ * entries make different numbers of external calls.
+ *
+ * One head serves every body a master dispatches, so the compiler used to refuse this shape outright. The head now
+ * walks the call section with the length the block declares and leaves that length for the body, which pins it to
+ * the number of calls its own source makes, so the shape compiles and deploys. What is asserted here is that front
+ * door and the two controls that mutate only the property that used to close it; the composition itself is what the
+ * two controls do not exercise, and it is recorded as the next wall in the plan's log rather than claimed here.
  */
 
 const A_ADDRESS = seededAddress('the entering contract');
@@ -38,12 +44,10 @@ const ROUND_TRIP = 'pragma solidcash ^0.13.0;'
   + '   uint256 count;'
   + '   uint256 hits;'
   + '   uint256 last;'
-  + '   event Counted(uint256 r);'
   + '   function f(uint256 x) returns (uint256) {'
   + '     count = count + 1;'
   + `     uint256 r = IB(0x${hexOf(B_ADDRESS)}).g(x);`
   + '     last = r;'
-  + '     emit Counted(r);'
   + '     return r;'
   + '   }'
   + '   function k() returns (uint256) {'
@@ -55,10 +59,10 @@ const ROUND_TRIP = 'pragma solidcash ^0.13.0;'
   + '   uint256 total;'
   + '   function g(uint256 x) returns (uint256) {'
   + '     total = total + x;'
-  + '     uint256 y = this.h(x);'
+  + '     uint256 y = h(x);'
   + '     return y + total;'
   + '   }'
-  + '   function h(uint256 x) returns (uint256) {'
+  + '   function h(uint256 x) internal returns (uint256) {'
   + '     total = total + 1;'
   + `     return IA(0x${hexOf(A_ADDRESS)}).k();`
   + '   }'
@@ -115,23 +119,14 @@ const ONE_WAY = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 describe('a two-contract round trip compiled per-call', () => {
-  it('is refused at the front door: the caller\'s two entries make different numbers of external calls', () => {
+  it('is emitted for the caller whose two entries make different numbers of external calls', () => {
     const outcome = compilePerCall(ROUND_TRIP);
 
-    // No master is emitted, so nothing can be deployed, composed or evaluated for this shape.
-    expect(outcome.artifacts).toBeUndefined();
-    expect(outcome.refusal?.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(outcome.refusal?.message).toBe(
-      'solidc [PER_CALL_CODEGEN_UNAVAILABLE]: the per-call composition convention does not support this contract: '
-      + 'the entries make different numbers of external calls, but a master has one head that fixes how many call '
-      + 'records the tail holds',
-    );
-    expect(outcome.refusal?.context).toStrictEqual({
-      requested: 'per-call',
-      reason: 'the entries make different numbers of external calls, but a master has one head that fixes how many '
-        + 'call records the tail holds',
-      contract: 'A',
-    });
+    // `A` is entered twice: `f` calls out, `k` only writes state. One master serves both because the walk reads
+    // the call count the block declares and each body pins it to its own.
+    expect(outcome.refusal).toBeUndefined();
+    expect(outcome.artifacts?.A?.composition?.convention).toBe('per-call');
+    expect(outcome.artifacts?.B?.composition?.convention).toBe('per-call');
   });
 
   it('is admitted again when the caller\'s two entries are given one external call each', () => {

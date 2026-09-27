@@ -132,9 +132,11 @@ describe('a guard field carried across the call split', () => {
 });
 
 describe('a guard a callee re-enters', () => {
-  it('is refused by name: the two entries make different numbers of external calls', () => {
+  it('compiles both entries although only one of them calls out', () => {
     // `outer` sets the guard and calls the callee while `inner` reads the guard, so a callee that calls `inner`
-    // re-enters the contract mid-guard. Both entries share one master head, which fixes one call count for both.
+    // re-enters the contract mid-guard. Both entries share one master head; the head walks the call section with
+    // the length the block declares and each body pins it to the calls its own source makes, so the two entries
+    // may declare different lengths.
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface ICallee { function hop(); }'
       + ' contract Callee { function hop() { require(true); } }'
@@ -143,7 +145,8 @@ describe('a guard a callee re-enters', () => {
       + `   function outer() { this.locked = 1; ICallee(0x${hexOf(CALLEE)}).hop.call(); this.locked = 0; require(true); }`
       + '   function inner() { require(this.locked == 0); }'
       + ' }';
-    expect(() => compileStringMulti(source, { composition: 'per-call' }))
-      .toThrow(/entries make different numbers of external calls/);
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.Guarded?.composition?.convention).toBe('per-call');
+    expect(artifacts.Guarded?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'outer']);
   });
 });

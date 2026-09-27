@@ -111,10 +111,12 @@ function cachedFaithfulTraceVm(provider: NetworkProvider): CachedFaithfulTraceVm
     const state = unknownState as AuthenticationProgramStateCommon;
     // Match `emitPreferLockingBytecode`'s exact body (`DUP SIZE NIP…` ending in `EQUALVERIFY`): other out-lined
     // subprograms share the same instruction count.
-    const opcodes = state.instructions.map((instruction) => instruction.opcode);
-    const guardShape = opcodes.length === 15 && opcodes[0] === 118 && opcodes[1] === 130 && opcodes[2] === 119
-      && opcodes[14] === 136;
-    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions && guardShape) {
+    // Never scan the whole program at every step for an optional diagnostic. A large route executes
+    // thousands of instructions, so even a disabled opcode projection otherwise makes tracing quadratic.
+    if (Number.isFinite(spanInstructions) && state.instructions.length === spanInstructions
+      && state.instructions.length === 15
+      && state.instructions[0].opcode === 118 && state.instructions[1].opcode === 130
+      && state.instructions[2].opcode === 119 && state.instructions[14].opcode === 136) {
       console.error('derive-span-faithful', JSON.stringify({
         ordinal: cached.trace.length - 1,
         inputIndex: state.program.inputIndex,

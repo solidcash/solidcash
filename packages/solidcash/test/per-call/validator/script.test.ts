@@ -22,7 +22,10 @@ import { encodeDataPush, encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/l
 import {
   FrameKind,
   TokenCapability,
+  concatBytes,
   encodeTranscript,
+  encodeWitnessBlock,
+  splitFirstPush,
   validatorRedeemScript,
   type PerCallTransaction as ModelledTransaction,
   type TokenShape,
@@ -226,6 +229,31 @@ describe('the validator program as a script', () => {
 });
 
 /**
+ * The reference composition with one covered master's first push replaced, its argument pushes and redeem script
+ * untouched.
+ *
+ * A master's witness block is what the codec encodes from the block value, so a payload the codec would refuse —
+ * trailing bytes, a truncated field — can only be built by writing the unlocking bytecode directly. Everything the
+ * program reads after the first push is left as the fixture laid it out, so only the block's own bytes differ.
+ */
+function withMasterBlockPayload(
+  composition: Composition,
+  masterIndex: number,
+  payload: Uint8Array,
+): ModelledTransaction {
+  const modelled = materialise(composition);
+  const original = modelled.inputs[masterIndex]!.unlockingBytecode;
+  const { rest } = splitFirstPush(original);
+  const unlockingBytecode = concatBytes([encodeDataPush(payload), rest]);
+  return {
+    ...modelled,
+    inputs: modelled.inputs.map((input) => (input.index === masterIndex
+      ? { ...input, unlockingBytecode }
+      : input)),
+  };
+}
+
+/**
  * Cases in the generated run. They cycle through the mutation catalogue, so three rounds apply every mutation to
  * three different plans; `PER_CALL_FULL=1` restores the 400-case sample for milestone runs.
  */
@@ -424,6 +452,27 @@ describe('the validator program refuses each rule it enforces', () => {
     };
     expect(derivationOf(tampered, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
     expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses a covered master whose witness block carries more than the frame it states', () => {
+    const { composition, index } = reference();
+    const master = composition.transcript.masters[0]!;
+    const block = composition.inputs[master]!.master!.block;
+    const encoded = encodeWitnessBlock(block);
+
+    // The faithful spend both sides accept, so the two refusals below are the block's own bytes and nothing else.
+    expect(derivationOf(materialise(composition), index).accepted).toBe(true);
+    expect(accepted(materialise(composition), index)).toBe(true);
+
+    // A block the codec would not encode: the frame decodes, but one byte follows the fields it declares.
+    const trailing = withMasterBlockPayload(composition, master, new Uint8Array([...encoded, 0x00]));
+    expect(derivationOf(trailing, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
+    expect(accepted(trailing, index)).toBe(false);
+
+    // A block whose last field is cut short: the fields before it are intact, so only exact-length parsing objects.
+    const truncated = withMasterBlockPayload(composition, master, encoded.subarray(0, encoded.length - 1));
+    expect(derivationOf(truncated, index).rejection?.reason).toBe('V2_MASTER_WITNESS_BLOCK_MALFORMED');
+    expect(accepted(truncated, index)).toBe(false);
   });
 
   test('refuses a settled state input that names no input', () => {

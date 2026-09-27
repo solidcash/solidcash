@@ -18,10 +18,17 @@ const TWO_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function dec() { this.counter = this.counter - 1; }'
   + ' }';
 
-/** A returning entry point: the computed value is not yet settled against the witness `retval`. */
+/** A returning entry point: one scalar value, settled against the frame's witness `retval`. */
 const RETURNING_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Answer {'
   + '   function answer() returns (int) { return 42; }'
+  + ' }';
+
+/** A composite return: the encoding is not a blob the entry's own code compares against `retval`. */
+const COMPOSITE_RETURN_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' contract Holder {'
+  + '   struct Point { int x; int y; }'
+  + '   function point() returns (Point) { return Point(1, 2); }'
   + ' }';
 
 /** An entry that emits one event: the head checks the event list, whose count the entry fixes. */
@@ -86,18 +93,23 @@ describe('composition convention selection', () => {
     expect(artifact.abi.map((entry) => entry.name).sort()).toEqual(['dec', 'inc']);
   });
 
-  it('refuses a shape a master cannot be emitted for, by name', () => {
-    const code = codeOf(() => compileString(RETURNING_CONTRACT, { composition: 'per-call' }));
+  it('compiles an entry point that returns one scalar value', () => {
+    const artifact = compileString(RETURNING_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+  });
+
+  it('refuses a composite return shape a master cannot emit for, by name', () => {
+    const code = codeOf(() => compileString(COMPOSITE_RETURN_CONTRACT, { composition: 'per-call' }));
     expect(code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
   });
 
   it('names the shape that was refused', () => {
-    expect(messageOf(() => compileString(RETURNING_CONTRACT, { composition: 'per-call' })))
+    expect(messageOf(() => compileString(COMPOSITE_RETURN_CONTRACT, { composition: 'per-call' })))
       .toContain('retval');
   });
 
   it('still compiles a refused shape under the direct convention', () => {
-    expect(() => compileString(RETURNING_CONTRACT)).not.toThrow();
+    expect(() => compileString(COMPOSITE_RETURN_CONTRACT)).not.toThrow();
   });
 
   it('refuses an unknown convention by name instead of falling back', () => {

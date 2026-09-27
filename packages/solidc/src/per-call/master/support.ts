@@ -55,6 +55,14 @@ import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail
 const FRAME_PARAMETERS = new Set(['__internal__msgSenderCategory', '__internal__msgSenderAnchorIdx']);
 
 /**
+ * The direct path's return-event output index.
+ *
+ * A per-call master settles the value its entry computed against the witness `retval` field, not against a
+ * return-event output, so this operand is not part of its frame and must not be expected on the stack.
+ */
+const RETURN_EVENT_PARAMETERS = new Set(['__internal__returnOutputIdx']);
+
+/**
  * Synthetic parameters the direct path reads a call's co-spent input through.
  *
  * A master checks a call against the witness block's call records instead of a co-spent input, so these operands
@@ -73,7 +81,8 @@ export function stripFrameParameters(contract: ContractNode): void {
   for (const fn of functions) {
     if (!fn) continue;
     fn.parameters = fn.parameters.filter((parameter) =>
-      !FRAME_PARAMETERS.has(parameter.name) && !isExternalCallParameter(parameter.name));
+      !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
+      && !isExternalCallParameter(parameter.name));
   }
 }
 
@@ -140,16 +149,21 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (input.needsInlineAssembly) {
     return refuse('inline assembly is not composed per-call');
   }
+  // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value
+  // its own code computed against it, and a void entry requires it empty. Each returning entry's shape is checked
+  // one by one.
+  const returningEntries = entryPoints.filter((entry) => entry.returnTypes.length > 0);
+  for (const entry of returningEntries) {
+    const shape = unsupportedReturnShape(entry);
+    if (shape !== undefined) return refuse(shape);
+  }
   for (const entry of entryPoints) {
-    if (entry.returnTypes.length > 0) {
-      return refuse(`the entry point '${entry.name}' returns a value, which is settled against the witness `
-        + '`retval` field, which the master head reads but does not compare a computed value with yet');
-    }
     // A hidden parameter is an operand the direct path expects from the SDK or from a co-spent input. The head
     // supplies the frame values itself, so any other hidden operand would be read from the wrong stack position.
     const hidden = entry.parameters.filter((parameter) =>
       parameter.name.startsWith('__internal__')
       && !FRAME_PARAMETERS.has(parameter.name)
+      && !RETURN_EVENT_PARAMETERS.has(parameter.name)
       && !isExternalCallParameter(parameter.name));
     if (hidden.length > 0) {
       return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
@@ -167,6 +181,36 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
   if (tail.reason !== undefined) return refuse(tail.reason);
   return { supported: true, calls: calls.calls, tail: tail.tail };
+}
+
+/**
+ * Why an entry's return shape cannot be settled against the witness `retval`, or undefined for the admitted one.
+ *
+ * A frame's `retval` holds the bytes the execution returned, and the entry's own code compares them against the
+ * blob its `return` built. One scalar value is a blob the code computes and compares; several values are a
+ * concatenation whose parts are not told apart here, and a composite's encoding is likewise not decoded back.
+ */
+function unsupportedReturnShape(entry: FunctionDefinitionNode): string | undefined {
+  if (entry.returnTypes.length > 1) {
+    return `the entry point '${entry.name}' returns ${entry.returnTypes.length} values, but a frame's \`retval\` `
+      + 'is compared with one value the entry computed, which a tuple of several values is not yet';
+  }
+  const type = entry.returnTypes[0];
+  if (type === undefined || isScalarArgumentType(type)) return undefined;
+  return `the entry point '${entry.name}' returns ${compositeTypeName(type)}, but a frame's \`retval\` is `
+    + 'compared with one scalar value the entry computed, which a composite value is not yet';
+}
+
+/** The name a return shape is refused by, when its encoding is not a blob the entry's own code compares. */
+function compositeTypeName(type: Type): string {
+  const resolved = type instanceof ValueType ? type.underlyingType : type;
+  if (resolved instanceof StructType) return 'a struct';
+  if (resolved instanceof ArrayType) return 'an array';
+  if (resolved instanceof MappingType) return 'a mapping';
+  if (resolved instanceof TupleType) return 'a tuple';
+  if (resolved instanceof FunctionType) return 'a function pointer';
+  if (resolved instanceof TokenContainerType) return 'a token container';
+  return 'a composite value';
 }
 
 /** The event and send counts a master's tail carries, or why a compiled entry cannot fix them. */

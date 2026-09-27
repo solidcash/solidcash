@@ -19,12 +19,12 @@
  * its witness is consumed (or the program to push a site ordinal before consuming one); until then a step can
  * confirm that filling a named site is what moved the program, but cannot discover the site from the VM alone.
  *
- * The one seam that is not yet shipped is the draft itself. How a master's input, its callees and its outputs are
- * laid out in a transaction is the composer's layout and assembly, which are not wired to this host yet, so each
- * execution supplies a `ShippedMasterRun`: the compiled program, the witness block it starts from, and the
- * function that turns a block into the VM program for that input. Everything the host derives from that run —
+ * How a master's input, its callees and its outputs are laid out is the composer's layout and assembly, wired to
+ * this host by `draft.ts`: `createComposedDerivationHost` takes the artifacts and a plan, and produces the
+ * `ShippedMasterRun`s, including each execution's starting witness block and the VM program it runs. The host
+ * itself still consumes runs, which keeps it usable with a hand-built fixture; everything it derives from a run —
  * which stop site was filled, and which callee a call reaches — comes from the real compiler output and the real
- * VM, not from a stand-in.
+ * VM, not a stand-in.
  *
  * The published `CallStopSite` holds only the call's index, so the host names a callee through the source-side
  * facts the compiler publishes beside it (interface, method, target address), resolved to a contract by the run
@@ -111,10 +111,11 @@ export function readPublishedStopSites(
 /**
  * One execution: the compiled program, and how to run it against a growing draft.
  *
- * This is the composer's layout/assembly seam, not a test stub. `initialBlock` returns the block the execution
- * starts from — the frame fields the source fixes, with the witness slots the driver will fill still unset.
- * `programFor` places a block on the execution's input and returns the VM program. `fill` writes one site's
- * witness into the block and reports the callee a call site reaches.
+ * `draft.ts` builds these from a plan, laying the participants out and assembling their references; a low-level
+ * fixture may still hand one in directly. `initialBlock` returns the block the execution starts from — the frame
+ * fields the source fixes, with the witness slots the driver will fill still unset. `programFor` places a block on
+ * the execution's input and returns the VM program. `fill` writes one site's witness into the block and reports
+ * the callee a call site reaches.
  */
 export interface ShippedMasterRun {
   /** The master identity the driver compares; matches `FrameRequest.master`. */

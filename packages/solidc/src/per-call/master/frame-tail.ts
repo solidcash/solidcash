@@ -126,24 +126,34 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * Consumes the tail of a witness block, requiring it to describe exactly the calls, segments, events and sends
  * the entry's code fixes.
  *
- * Entry `[..., tail]`, exit `[...]`. `retval` must be empty (a supported entry returns nothing), the call count
- * must equal the number of sites (a loop that varies it is not emitted), and each record is walked past — the
- * site that made the call binds it in the caller's own body. The segment count must be the call count plus one,
- * and every segment's records are walked. The event and send counts must equal the shape's, and each listed
- * output is checked. The remaining tail must be empty, so nothing follows the last field.
+ * Entry `[..., tail]`, exit `[...]`. `retval` must be empty unless `returnsValue` says the entry returns one
+ * value, in which case the recorded value is parked on the alt stack for the body to compare against what its
+ * own code computed. The call count must equal the number of sites (a loop that varies it is not emitted), and
+ * each record is walked past — the site that made the call binds it in the caller's own body. The segment count
+ * must be the call count plus one, and every segment's records are walked. The event and send counts must equal
+ * the shape's, and each listed output is checked. The remaining tail must be empty, so nothing follows the last
+ * field.
  *
  * With `keepsRecordIndices` the first segment's declared record indices are parked on the alt stack, input index
  * first, beneath the event walk's own parkings; a segment that declares no record parks the no-index sentinel
- * under the same convention, so the pair is always there and always means the same thing.
+ * under the same convention, so the pair is always there and always means the same thing. A parked `retval` is
+ * deepest, below both, because it is read before either.
  */
 export function verifyTailScript(
   callSites: readonly MasterCallSite[],
   tail: MasterTailShape = zeroTailShape(callSites.length),
-  options: { readonly keepsRecordIndices?: boolean } = {},
+  options: { readonly keepsRecordIndices?: boolean; readonly returnsValue?: boolean } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
   const bytes: number[] = [];
-  bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
+  bytes.push(...takeLengthPrefixedField32(), Opcodes.OP_SWAP);
+  if (options.returnsValue === true) {
+    // The value the entry's own code computes is compared against this one, so the recorded bytes are kept
+    // rather than required to be empty.
+    bytes.push(Opcodes.OP_TOALTSTACK);
+  } else {
+    bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
+  }
   bytes.push(...requireU16Equals(callSites.length));
   for (let site = 0; site < callSites.length; site += 1) bytes.push(...callRecordSkip());
   bytes.push(...requireU16Equals(callSites.length + 1));

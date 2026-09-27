@@ -273,7 +273,7 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
-  buildMasterHeadScript, eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName,
+  buildMasterHeadScript, eventOutputSlotName, recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
@@ -973,6 +973,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallCallSites: readonly MasterCallSite[] = [];
   /** Set when the master reserves the validator program hash slot, i.e. it can be reached through a call. */
   private perCallReservesValidatorHash = false;
+  /** Set when some entry of the compiled master returns a value, so the head parks the frame's `retval`. */
+  private perCallReturnsValue = false;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -2926,6 +2928,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A stateful master reads its state from the record block its own frame declares, so the head has to keep
     // that declaration: without it the body could only read a fixed offset from its own input.
     const keepsRecordIndices = node.stateVariables.length > 0;
+    // The head parks the frame's `retval` when any entry returns a value, so every entry body can settle what it
+    // returns: a returning one compares the value its own code computed against the slot, a void one requires it
+    // empty.
+    const returnsValue = entries.some((candidate) => candidate.returnTypes.length > 0);
+    this.perCallReturnsValue = returnsValue;
     this.emit([...buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -2934,6 +2941,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // commitments the transaction spends and writes, and the state UTXOs spent are the records it declared.
       settlesOwnRecords: true,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
+      ...(returnsValue ? { returnsValue: true } : {}),
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
@@ -2953,6 +2961,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(recordOutputIndexSlotName());
       this.pushToStack(recordInputIndexSlotName());
     }
+    // The frame's `retval` is left above everything else, so its slot is registered last.
+    if (returnsValue) this.pushToStack(retvalSlotName());
   }
 
   /**
@@ -5230,6 +5240,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const subTraversal = new GenerateTargetTraversalWithLocation(this.compilerOptions);
 
       // Copy necessary context
+      subTraversal.perCallReturnsValue = this.perCallReturnsValue;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
@@ -5303,6 +5314,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
         // The seeded array is the frame top-first, so the outermost item is pushed first.
+        if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
         if (this.stack.includes(recordInputIndexSlotName())) {
           subTraversal.stack.push(recordInputIndexSlotName());
           subTraversal.stack.push(recordOutputIndexSlotName());
@@ -7342,10 +7354,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && hasDeploys) {
         this.emitDeployCovenantVerification(node);
       }
-      // B-side: return event covenant verification for entry-point functions with return types
-      if (!this.functionHasDelegatecall && node.returnTypes.length > 0 && node.isEntryPoint
-        && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
-        this.emitReturnEventCovenantVerification(node);
+      // B-side: return event covenant verification for entry-point functions with return types. A per-call master
+      // settles its entry's return against the witness `retval`, not against a return-event output, and a void
+      // entry settles that the frame recorded nothing.
+      if (!this.functionHasDelegatecall && node.isEntryPoint && !node.graphEmissionHandler
+        && !this.blockEndsWithRevert(node.body)) {
+        if (this.perCallMaster) {
+          if (this.perCallReturnsValue) this.emitPerCallReturnCheck(node);
+        } else if (node.returnTypes.length > 0) {
+          this.emitReturnEventCovenantVerification(node);
+        }
       }
       // A-side: verify return event UTXO from external function calls with return values. A per-call master takes
       // the result from its own witness record, not from a return-event output, so it has no return event to pin.
@@ -33305,6 +33323,47 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);  // [idx, input_commitment, output_commitment]
       this.emit(Op.OP_EQUALVERIFY, locationData);            // [idx]
     }
+  }
+
+  /**
+   * Settles the entry's return against the frame's witness `retval`.
+   *
+   * A per-call master does not write a return-event output: the head read the frame's `retval` and left it as a
+   * tracked slot, so an entry that returns a value compares the blob its own `return` built against that slot,
+   * and a void entry requires the frame to have recorded nothing. Either way a frame that recorded the wrong
+   * bytes is refused, which keeps the caller's record of the call and the callee's own computation the same value.
+   */
+  private emitPerCallReturnCheck(node: FunctionDefinitionNode): void {
+    const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.END };
+    const retvalIndex = this.getStackIndex(retvalSlotName(), true);
+    if (retvalIndex < 0) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master left no \`retval\` slot while compiling '${node.name}'`,
+        { function: node.name },
+      );
+    }
+    if (node.returnTypes.length === 0) {
+      // The frame must record nothing for an execution that returns nothing.
+      this.emit(encodeInt(BigInt(retvalIndex)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_SIZE, locationData);
+      this.emit(Op.OP_NIP, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+      return;
+    }
+    // Copy the recorded value and the computed blob to the top, compare the copies, then drop the blob itself.
+    const blobIndex = this.getStackIndex('__internal__returnBlob');
+    this.emit(encodeInt(BigInt(retvalIndex)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(encodeInt(BigInt(blobIndex + 1)), locationData); // +1: the recorded value's copy sits above the blob
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(encodeInt(BigInt(blobIndex)), locationData);
+    this.emit(Op.OP_ROLL, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.removeFromStack(blobIndex);
   }
 
   private emitReturnEventCovenantVerification(node: FunctionDefinitionNode): void {

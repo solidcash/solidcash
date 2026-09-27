@@ -78,6 +78,17 @@ export function recordOutputIndexSlotName(): string {
   return '__internal__frameRecordOutput';
 }
 
+/**
+ * The tracked slot holding the frame's witness `retval`, the value the execution returned.
+ *
+ * A per-call master does not write a return-event output: the head parks the recorded value and the entry's body
+ * compares the blob its own `return` computed against it, so the record of the call and the callee's own
+ * computation agree about one value.
+ */
+export function retvalSlotName(): string {
+  return '__internal__frameRetval';
+}
+
 /** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
 const HASH_TYPE_ALL = 0x41;
 /** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
@@ -145,6 +156,12 @@ export interface MasterHeadOptions {
    * its state block where the frame's own block declared it instead of at a fixed offset from its input.
    */
   readonly keepsRecordIndices?: boolean;
+  /**
+   * True when some entry of the master returns a value. The head then parks the frame's `retval` as a tracked
+   * slot instead of requiring it empty: a returning body compares the value its own code computed against it, and
+   * a void body requires it empty.
+   */
+  readonly returnsValue?: boolean;
 }
 
 /** The frame kind of a user's call. */
@@ -196,6 +213,7 @@ class HeadEmitter {
   private readonly callDataSelectorUnconsumed: boolean;
   private readonly settlesOwnRecords: boolean;
   private readonly keepsRecordIndices: boolean;
+  private readonly returnsValue: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -205,6 +223,7 @@ class HeadEmitter {
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
     this.settlesOwnRecords = options.settlesOwnRecords === true;
     this.keepsRecordIndices = options.keepsRecordIndices === true;
+    this.returnsValue = options.returnsValue === true;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -279,6 +298,7 @@ class HeadEmitter {
     else this.standaloneFrameChecks();
     this.leaveEventSlots();
     this.leaveRecordSlots();
+    this.leaveRetvalSlot();
   }
 
   /**
@@ -312,14 +332,26 @@ class HeadEmitter {
   }
 
   /**
+   * Moves the frame's `retval` payload off the alt stack, where the tail walk parked it deepest, so the entry's
+   * body can compare the value its own code computed against it.
+   *
+   * Popped last because it was parked first, before the record and event indices the two calls above recover.
+   */
+  private leaveRetvalSlot(): void {
+    if (!this.returnsValue) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(retvalSlotName());
+  }
+
+  /**
    * The standalone shape: a user entered the execution, no validator covers it, and it makes no external call.
    *
-   * The tail is walked rather than dropped: `retval` must be empty and the call count zero, which is N1's second
-   * half together with the single-master scan.
+   * The tail is walked rather than dropped: `retval` must be empty unless the entry returns a value, and the call
+   * count must be zero, which is N1's second half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
     this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
-      { keepsRecordIndices: this.keepsRecordIndices }));
+      { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertSelfSettlement();
     this.assertFrameKindRoot();
@@ -346,7 +378,7 @@ class HeadEmitter {
    */
   private composedFrameChecks(): void {
     this.emitBytes(verifyTailScript(this.callSites, this.tailShape,
-      { keepsRecordIndices: this.keepsRecordIndices }));
+      { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
     this.forget('rest');
     this.assertCallerIsNotSelf();
     this.assertSelfEqualsReservedAddress();

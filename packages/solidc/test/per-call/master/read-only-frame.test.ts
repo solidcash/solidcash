@@ -590,13 +590,15 @@ describe('the reads a master still cannot compile', () => {
     expect(refusal).toContain("runs on its caller's own records");
   });
 
-  it('refuses a read whose target is only known at run time', () => {
+  it('refuses a read whose target is the transaction\'s own sender', () => {
+    // A parameter or a value the caller's own state carries is admitted, but the transaction's sender is not: the
+    // site's own target check would have to bind the callee to a category of its own, which it does not.
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface ICallee { function peek() returns (int); }'
-      + ' contract Caller { function readIt(address target) {'
-      + '   int r = ICallee(target).peek.staticcall(); require(r == 1); } }';
+      + ' contract Caller { function readIt() {'
+      + '   int r = ICallee(msg.sender).peek.staticcall(); require(r == 1); } }';
     const refusal = refusalOf(source);
-    expect(refusal).toContain("the call to 'peek' targets an address only known at run time");
+    expect(refusal).toContain("the call to 'peek' targets the transaction's own sender");
   });
 });
 

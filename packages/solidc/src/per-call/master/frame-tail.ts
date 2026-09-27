@@ -50,8 +50,19 @@ export interface MasterCallSite {
   readonly kind: number;
   /** The callee's four-byte dispatcher selector, the first push of its call data. */
   readonly selector: Uint8Array;
-  /** The address called, which `calls[k].target` must name. */
+  /**
+   * The address called, which `calls[k].target` must name.
+   *
+   * When the target is a compile-time address these are the bytes the site folds in. When it is a value the
+   * caller's own code holds — a state read or a parameter/local — the site supplies it to the check on the stack
+   * instead and this is empty.
+   */
   readonly target: Uint8Array;
+  /**
+   * True when the target is a value the caller's own code computes, so the site's check compares the record
+   * against the value on the stack rather than a folded constant.
+   */
+  readonly targetFromStack?: boolean;
   /**
    * The interface the call goes through, when the source names one. Kept for the published stop-site table, which
    * a driver uses to name the callee; the head's own checks never read it.

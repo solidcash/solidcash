@@ -51,6 +51,36 @@ const SEND_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function pay(address to) { this.transfer(to, 1000); }'
   + ' }';
 
+/** One entry that makes two calls: the tail's count is fixed at two, one record per call in execution order. */
+const TWO_CALLS_IN_ONE_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); function pong(); }'
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).pong.call(); }`
+  + ' }';
+
+/** One entry that makes two calls through a single-method interface, so no selector operand is involved. */
+const TWO_CALLS_SINGLE_METHOD_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Caller {'
+  + `   function callIt() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
+  + ' }';
+
+/** Entries that make different calls: one head checks one `calls[]` set, which cannot describe both. */
+const DIFFERENT_CALLS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); function pong(); }'
+  + ' contract Caller {'
+  + `   function a() { ICallee(0x${'11'.repeat(35)}).ping.call(); }`
+  + `   function b() { ICallee(0x${'22'.repeat(35)}).pong.call(); }`
+  + ' }';
+
+/** Entries that make different numbers of calls, which one fixed tail count cannot describe either. */
+const DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ' contract Caller {'
+  + `   function a() { ICallee(0x${'11'.repeat(35)}).ping.call(); }`
+  + `   function b() { ICallee(0x${'11'.repeat(35)}).ping.call(); ICallee(0x${'22'.repeat(35)}).ping.call(); }`
+  + ' }';
+
 const codeOf = (run: () => unknown): string | undefined => {
   try {
     run();
@@ -142,5 +172,33 @@ describe('the tail sections a compiled master fixes', () => {
       .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(messageOf(() => compileString(SEND_CONTRACT, { composition: 'per-call' })))
       .toContain('recipient');
+  });
+});
+
+describe('the call set a compiled master fixes', () => {
+  it('compiles an entry that makes two calls, through one interface with two methods', () => {
+    const artifact = compileString(TWO_CALLS_IN_ONE_ENTRY_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+  });
+
+  it('compiles an entry that makes two calls through a single-method interface', () => {
+    const artifact = compileString(TWO_CALLS_SINGLE_METHOD_CONTRACT, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+  });
+
+  it('refuses entries that make different calls, by name', () => {
+    // Each site binds its own record in the body, but the site descriptors are one list indexed by the call's
+    // position, and the head walks one count, so one entry's calls cannot describe another's.
+    expect(codeOf(() => compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
+      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(messageOf(() => compileString(DIFFERENT_CALLS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
+      .toContain('different external calls');
+  });
+
+  it('refuses entries that make different numbers of calls, by name', () => {
+    expect(codeOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
+      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(messageOf(() => compileString(DIFFERENT_CALL_COUNTS_PER_ENTRY_CONTRACT, { composition: 'per-call' })))
+      .toContain('different external calls');
   });
 });

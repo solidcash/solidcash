@@ -2987,16 +2987,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const site = this.perCallCallSites[index]!;
     const returnTypes = node.callInfo?.returnTypes ?? [];
     const usesResult = returnTypes.length > 0;
+    // A target the caller's own code computes is emitted first, so the digest (when it too is computed) is left
+    // on top: the check parks them in that order and reaches the target at its field before the digest.
+    const computesTarget = site.targetFromStack === true;
     // A call whose arguments are all compile-time values carries the digest the compiler folded from them. One
     // with a run-time argument computes the digest here, from the values the code holds when it calls.
     const computesDigest = (site.arguments ?? []).some((argument) => argument.kind === 'runtime');
-    if (computesDigest) {
-      this.emitPerCallArgumentDigest(node, site, locationData);
-      // The check parks the digest on the alternate stack and consumes it at the record's `argsHash`, so the
-      // value leaves the frame here even though the check itself is emitted as raw bytes.
-      this.popFromStack();
-    }
-    this.emit([...callSiteCheckScript(site, index, usesResult, { digestFromStack: computesDigest })], locationData);
+    if (computesTarget) this.emitPerCallComputedTarget(node);
+    if (computesDigest) this.emitPerCallArgumentDigest(node, site, locationData);
+    // The check parks both on the alternate stack and consumes them where their fields are, so they leave the
+    // frame here even though the check itself is emitted as raw bytes.
+    if (computesDigest) this.popFromStack();
+    if (computesTarget) this.popFromStack();
+    this.emit([...callSiteCheckScript(site, index, usesResult, {
+      digestFromStack: computesDigest, targetFromStack: computesTarget,
+    })], locationData);
     if (!usesResult) return;
     // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as
     // the direct path decodes a return event's commitment.
@@ -3006,6 +3011,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       else this.emitPushdataDecode(returnTypes[field]!, locationData);
     }
     for (let field = 0; field < returnTypes.length; field += 1) this.pushToStack('(value)');
+  }
+
+  /**
+   * Leaves the target address the caller's own code holds, for the site's check to hold the record to.
+   *
+   * The source's own target expression is the value: a state read of the caller's own record, or a parameter or
+   * local the body carries. The bytes the caller's code produced are what the record is bound to, so a builder
+   * cannot pair the record with any other callee.
+   */
+  private emitPerCallComputedTarget(node: ExternalFunctionCallNode): void {
+    // The visit emits the value and registers it on the stack model; the site drops that registration when its
+    // check parks the value on the alternate stack.
+    this.visit(node.addressExpression);
   }
 
   /**

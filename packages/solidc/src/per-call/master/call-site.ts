@@ -10,7 +10,8 @@
  * `retval`, then the records before this one are stepped over by their own widths, and only the `k`-th is read.
  * The checks are:
  *
- *   - the record's `kind` is the site's frame kind, and its `target` is the address the site calls;
+ *   - the record's `kind` is the site's frame kind, and its `target` is the address the site calls — a
+ *     compile-time address, or a value the caller's own code computed and left for the check;
  *   - its `argsHash` is the digest the caller's own code computes from the source's argument values,
  *     `SHA256(selector || argument pushes)`, the pushes being those values in the canonical encoding. The record
  *     is not the authority for the digest, the code's operands are, so a builder cannot forge an argument by
@@ -49,19 +50,25 @@ import {
  * `digestFromStack` says the caller's own code computed the argument digest where it calls, from values only the
  * running execution holds, and left it on top of the stack. The constant form the compiler folds from compile-time
  * arguments is the other, smaller case.
+ *
+ * `targetFromStack` says the same for the record's `target`: the address is a value the caller's own code computed
+ * — read from its own state, or held in a parameter or local — and parked on the alternate stack for the check.
+ * When both are supplied the caller leaves the target beneath the digest, so each is reached at the field it binds.
  */
 export function callSiteCheckScript(
   site: MasterCallSite,
   index: number,
   usesResult: boolean,
-  options: { readonly digestFromStack?: boolean } = {},
+  options: { readonly digestFromStack?: boolean; readonly targetFromStack?: boolean } = {},
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
+  const targetFromStack = options.targetFromStack === true;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
-  // The digest the caller computed goes where the walk can reach it: beneath the walk's own scratch, on the
-  // alternate stack.
+  // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
+  // alternate stack. The target is retrieved before the digest, so it is parked last and comes up first.
   if (digestFromStack) emit(Opcodes.OP_TOALTSTACK);
+  if (targetFromStack) emit(Opcodes.OP_TOALTSTACK);
   // The caller's own block, read from the first push of its own unlocking bytecode.
   emit(...readOwnWitnessBlockScript());
   // The magic and version are required; the four fixed header fields are only walked past.
@@ -77,7 +84,7 @@ export function callSiteCheckScript(
   emit(...takeFixedWidthField(2), Opcodes.OP_NIP);
   // The records before this site's, stepped over by their own widths.
   for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
-  emit(...bindCallRecord(site, usesResult, digestFromStack));
+  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack }));
   return new Uint8Array(bytes);
 }
 
@@ -94,16 +101,23 @@ function skipCallRecord(): number[] {
 }
 
 /** The checks one `calls[k]` record must satisfy, consuming the record and binding the result. */
-function bindCallRecord(site: MasterCallSite, usesResult: boolean, digestFromStack: boolean): number[] {
+function bindCallRecord(
+  site: MasterCallSite,
+  usesResult: boolean,
+  options: { readonly digestFromStack: boolean; readonly targetFromStack: boolean },
+): number[] {
+  const { digestFromStack, targetFromStack } = options;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
 
   // kind: the frame the callee runs is the one the site records.
   emit(...takeFixedWidthField(1), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
     ...encodeDataPush(scriptNumber(site.kind)), Opcodes.OP_NUMEQUALVERIFY);
-  // target: the address called is the one the source names.
-  emit(...takeLengthPrefixedField(), Opcodes.OP_SWAP,
-    ...encodeDataPush(site.target), Opcodes.OP_EQUALVERIFY);
+  // target: the address called is the one the caller's own code holds — the value it computed, or the constant.
+  emit(...takeLengthPrefixedField(), Opcodes.OP_SWAP);
+  if (targetFromStack) emit(Opcodes.OP_FROMALTSTACK);
+  else emit(...encodeDataPush(site.target));
+  emit(Opcodes.OP_EQUALVERIFY);
   // value: the validator binds the callee's value to this one; the caller does not check it here.
   emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
   // calleeRef: a master never calls itself. Parked while the arguments hash is read, so it is on hand for the

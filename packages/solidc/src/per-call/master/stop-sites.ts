@@ -34,7 +34,8 @@ export interface PublishedCallSite {
   readonly interfaceName: string;
   /** The method called, whose entry the callee runs. */
   readonly functionName: string;
-  /** The address called, as hex. */
+  /** The address called, as hex; empty when the caller's own code computes the target, which a driver reads at
+   * the call site rather than from this table. */
   readonly target: string;
   /** The callee's four-byte dispatcher selector, as hex. */
   readonly selector: string;

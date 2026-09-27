@@ -86,12 +86,15 @@ export function stripFrameParameters(contract: ContractNode): void {
   }
 }
 
-/** True for a call-index operand the master does not take: the base, a fixed anchor, or a per-slot master index. */
+/** True for an operand the master does not take: a call index, an anchor, a per-slot master index or a selector. */
 function isExternalCallParameter(name: string): boolean {
   return EXTERNAL_CALL_PARAMETERS.has(name)
     || /^__internal__extcallAnchorIdx\d+$/.test(name)
     || /^__internal__extcallMasterIdx\d+$/.test(name)
-    || /^__internal__loopTargets\d+$/.test(name);
+    || /^__internal__loopTargets\d+$/.test(name)
+    // The direct path checks the co-spent callee's selector through this operand. A site checks its record's
+    // selector against the compile-time value it folds, so a composed body neither supplies nor reads it.
+    || /^__internal__externalCallSelector\d*$/.test(name);
 }
 
 export interface PerCallMasterShapeInput {
@@ -331,17 +334,15 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
-    if (slot.addressLiteral === undefined) {
-      return { calls: [], reason: `the call to '${slot.functionName}' targets an address only known at run time, `
-        + 'which the master head cannot check against the witness record yet' };
-    }
     if (slot.condition !== undefined || slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined
       || slot.inlineLoopDispatch === true || slot.runtimeSelector !== undefined || slot.fnPtrCall === true
       || slot.opaqueReturn === true || slot.callValueEffect === true
       || (slot.requiredDataNftIndices?.length ?? 0) > 0 || (slot.batchInvocations?.length ?? 0) > 1) {
       return { calls: [], reason: `the call to '${slot.functionName}' runs conditionally, repeatedly or through a `
-        + 'runtime target, so its call records are not a fixed set the head can check' };
+        + 'run-time target or selector, so its call records are not a fixed set the head can check' };
     }
+    const target = siteTarget(slot);
+    if ('reason' in target) return { calls: [], reason: target.reason };
     const selector = slot.compileTimeSelector
       ?? resolveInterfaceSelector(interfaces, slot.interfaceName, slot.functionName);
     if (selector === undefined) {
@@ -353,13 +354,37 @@ function deriveEntryCallSites(
     calls.push({
       kind: isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL,
       selector,
-      target: hexToBin(slot.addressLiteral),
+      target: target.bytes,
+      ...(target.fromStack === true ? { targetFromStack: true } : {}),
       interfaceName: slot.interfaceName,
       functionName: slot.functionName,
       arguments: args.arguments,
     });
   }
   return { calls };
+}
+
+/**
+ * The target a site's own code can hold its record to, or why it cannot.
+ *
+ * A compile-time address literal is folded in as a constant. A value the caller's own code computes — a read of
+ * its own state, or a parameter or local — is supplied to the check on the stack, the way a run-time argument's
+ * digest is, so the record is bound to the bytes the code produced. Any other target is refused by name rather
+ * than bound to a value the site would have to guess.
+ */
+function siteTarget(
+  slot: ExternalCallSlot,
+): { bytes: Uint8Array; fromStack?: boolean } | { reason: string } {
+  if (slot.addressLiteral !== undefined) return { bytes: hexToBin(slot.addressLiteral) };
+  if (slot.addressIsMsgSender === true) {
+    return { reason: `the call to '${slot.functionName}' targets the transaction's own sender, whose category the `
+      + 'site would have to bind to a callee of the same category, which its target check cannot do' };
+  }
+  if (slot.addressStateVar !== undefined || slot.addressParam !== undefined) {
+    return { bytes: new Uint8Array(0), fromStack: true };
+  }
+  return { reason: `the call to '${slot.functionName}' targets an address the caller's own code does not hold as `
+    + 'one value, which the site cannot check its record against' };
 }
 
 /**
@@ -483,6 +508,7 @@ function sameCallSites(left: readonly MasterCallSite[], right: readonly MasterCa
       && site.kind === other.kind
       && bytesEqual(site.selector, other.selector)
       && bytesEqual(site.target, other.target)
+      && (site.targetFromStack === true) === (other.targetFromStack === true)
       && sameSiteArguments(site.arguments ?? [], other.arguments ?? []);
   });
 }

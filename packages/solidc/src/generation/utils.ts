@@ -54,6 +54,16 @@ export function compileAddressToEvmIdentity(): Script {
   ];
 }
 
+/** Strip Solidity ABI-word framing while preserving native locks in the packed address-as-integer extension. */
+export function compilePackedAddressAsInteger(): Script {
+  return [
+    Op.OP_SIZE, encodeInt(32n), Op.OP_EQUAL,
+    Op.OP_IF,
+    encodeInt(12n), Op.OP_SPLIT, Op.OP_NIP,
+    Op.OP_ENDIF,
+  ];
+}
+
 export function compileTimeOp(op: TimeOp): Script {
   const mapping = {
     [TimeOp.CHECK_LOCKTIME]: [Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP],

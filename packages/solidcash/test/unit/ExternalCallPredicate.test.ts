@@ -496,6 +496,29 @@ describe('compiler-published external-call predicate evaluation', () => {
       expression, [`0x${'00'.repeat(20)}`], artifact, undefined, [{ type: 'address' }],
     )).toEqual(new Uint8Array());
   });
+
+  it.each([0, 0x47])('strips ABI framing from a packed uint160 address word (byte %s)', (byte) => {
+    const identity = new Uint8Array(20).fill(byte);
+    const word = Uint8Array.of(...new Uint8Array(12), ...identity);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160', 'bool'],
+      args: [source(0), { kind: 'literal', type: 'bool', value: true }],
+    };
+
+    expect(evaluator._evaluateExternalExpression(
+      expression, [word], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(Uint8Array.of(...identity, 1));
+  });
+
+  it('preserves Solidity-compatible BCH locks in packed uint160 expressions', () => {
+    const lock = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x53), 0x87);
+    const expression: ExternalCallExpression = {
+      kind: 'abiEncodePacked', fields: ['uint160'], args: [source(0)],
+    };
+    expect(evaluator._evaluateExternalExpression(
+      expression, [lock], artifact, undefined, [{ type: 'address' }],
+    )).toEqual(lock);
+  });
 });
 
 describe('conditional external-call topology', () => {

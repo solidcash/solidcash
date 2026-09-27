@@ -212,6 +212,10 @@ strictFieldAccess = false,
       return utf8ToBin(value);
     }
     if (value instanceof Uint8Array) {
+      // Match the compiler's packed address-as-integer extension: native locks remain intact, but a
+      // Solidity ABI word contributes only its address identity, not its twelve framing bytes. Check this
+      // before zero-address handling because a zero ABI word still packs twenty bytes.
+      if (solidityImportCompat && typeHint === 'uint160' && value.length === 32) return value.slice(12);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
       if (typeHint === 'uint160') {
         if (isStandardLockingBytecode(value)) return value;

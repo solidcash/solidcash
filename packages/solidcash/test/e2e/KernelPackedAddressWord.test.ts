@@ -6,16 +6,16 @@ import { createBareP2pkhFeeFunder } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 describe('kernel packed ABI-word addresses', () => {
-  it('packs an address from a constructed array before passing it to another contract', async () => {
+  it.each(['address', 'uint160'])('packs %s from a constructed array before passing it to another contract', async (type) => {
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       interface IReceiver { function store(bytes memory value) external; }
       contract Receiver {
-        bytes20 public last;
-        bytes20 public expected;
-        function initialize(bytes20 value) public { this.expected = value; }
+        bytes21 public last;
+        bytes21 public expected;
+        function initialize(bytes21 value) public { this.expected = value; }
         function store(bytes memory value) public {
           require(value == this.expected);
-          this.last = bytes20(value);
+          this.last = bytes21(value);
         }
       }
       contract Sender {
@@ -32,7 +32,7 @@ describe('kernel packed ABI-word addresses', () => {
           this.count += 1;
         }
         function relay(address[] memory selected) internal {
-          IReceiver(this.receiver).store(abi.encodePacked(selected[0]));
+          IReceiver(this.receiver).store(abi.encodePacked(${type === 'uint160' ? 'uint160(selected[0])' : 'selected[0]'}, true));
         }
       }`, { forceStateful: true, solidityImportCompat: true, messageBus: true,
       messageBusKernel: true, messageBusGraphContext: true, maximumInputBytes: 1_000_000,
@@ -42,8 +42,9 @@ describe('kernel packed ABI-word addresses', () => {
     for (let index = 0; index < 12; index += 1) await provider.addUtxo(signer.getAddress(), {
       txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
     });
-    const expected = Uint8Array.from({ length: 20 }, (_, index) => index + 1);
-    const addressWord = Uint8Array.of(...new Uint8Array(12), ...expected);
+    const identity = Uint8Array.from({ length: 20 }, (_, index) => index + 1);
+    const expected = Uint8Array.of(...identity, 1);
+    const addressWord = Uint8Array.of(...new Uint8Array(12), ...identity);
     const receiver = await upgrades.deployProxy(getContractFactory(artifacts.Receiver, signer), [expected]);
     const sender = await upgrades.deployProxy(getContractFactory(artifacts.Sender, signer), [
       addressWord, await receiver.proxy.getAddress(),

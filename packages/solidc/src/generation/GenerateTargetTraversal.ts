@@ -223,6 +223,7 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import {
   compileBinaryOp,
   compileAddressToEvmIdentity,
+  compilePackedAddressAsInteger,
   compileCast,
   compileGlobalFunction,
   compileNullaryOp,
@@ -17221,6 +17222,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && param.type instanceof IntType;
       if (packedAddressAsUint && param instanceof CastNode) {
         this.visit(param.expression);
+        // A graph/array address can be a right-aligned ABI word rather than a native locking bytecode.
+        // Its twelve framing bytes are not part of the packed address and would shift every following field.
+        if (evmPacked) this.emit(compilePackedAddressAsInteger(), locationData);
         node.parameters[i] = param;
       } else {
         param = this.visit(param);

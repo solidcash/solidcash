@@ -103,7 +103,6 @@ export interface PerCallMasterShapeInput {
   readonly interfaces: readonly InterfaceNode[];
   /** File-level (free/library) functions in the compiled unit; a head must be the first thing emitted. */
   readonly freeFunctionCount: number;
-  readonly importCount: number;
   readonly hasContractInstantiation: boolean;
   readonly hasFunctionPointers: boolean;
   readonly needsInlineAssembly: boolean;
@@ -134,9 +133,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
   if (input.freeFunctionCount > 0) {
     return refuse('a per-call master is one program, so free functions that would be emitted before it are not supported');
-  }
-  if (input.importCount > 0) {
-    return refuse('imported definitions are emitted before the master head, so imports are not supported');
   }
   if (contract.constructorDef) {
     return refuse('a constructor body makes the contract dispatch by selector, which the master head cannot precede');

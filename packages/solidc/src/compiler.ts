@@ -14017,7 +14017,6 @@ function compileResolvedAst(
       contract: ast.contract,
       interfaces: ast.interfaceDefinitions,
       freeFunctionCount: ast.freeFunctions.length,
-      importCount: ast.imports.length,
       hasContractInstantiation,
       hasFunctionPointers,
       needsInlineAssembly,

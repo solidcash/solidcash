@@ -62,6 +62,9 @@ const addressPayload = (value: StateValue): Uint8Array => {
   // SolidCash VM values use the minimal empty vector for numeric/address zero. Solidity ABI requires the same
   // value to occupy the canonical right-aligned 20-byte address payload.
   if (bytes.length === 0) return new Uint8Array(20);
+  // Solidity-compatible stored aggregates already contain ABI-word addresses. Accept that typed return
+  // representation only with canonical zero extension; arbitrary 32-byte identities must not be truncated.
+  if (bytes.length === 32 && bytes.subarray(0, 12).every((byte) => byte === 0)) return bytes.slice(12);
   const payload = lockingBytecodeToSolidityAddressPayload(bytes);
   if (payload !== undefined) return payload;
   throw new Error(`EVM ABI address requires exactly 20 payload bytes, got ${bytes.length}`);

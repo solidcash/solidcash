@@ -12,6 +12,7 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
 import { tryCashAddressToLockScript } from '../utils.js';
 import {
@@ -47,6 +48,8 @@ import {
 } from './ValueChunkProducerIdentity.js';
 const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]);
+// The deployed graph envelope supports root depth zero through descendant depth seven.
+const MAX_LATE_TRANSITIVE_DEPTH = 7;
 
 export type ExpandCreateBuilderLateTransitiveHost = {
   readonly categoryId: string;
@@ -73,8 +76,8 @@ export type ExpandCreateBuilderLateTransitiveBags = {
 };
 
 /**
- * After nested compose completes, expand one additional concrete layer of
- * callee-of-callee external calls (A→B→C) onto the physical group graph.
+ * Close the concrete callee graph after nested compose. Keep logical invocation frames separate from
+ * mutable physical carriers: a later writer can take ownership of an earlier call's master input.
  */
 export async function expandCreateBuilderLateTransitive(
   host: ExpandCreateBuilderLateTransitiveHost,
@@ -101,9 +104,25 @@ export async function expandCreateBuilderLateTransitive(
   const markSharedFunder = host.markSharedFunder;
   const selectProxyForwardInput = host.selectProxyForwardInput;
   const preparedChildProducerPath = host.preparedChildProducerPath;
-  const delegateComposedGroupCount = externalCallUtxoGroups.length;
-  for (let parentGroupIndex = 0; parentGroupIndex < delegateComposedGroupCount; parentGroupIndex++) {
-    const parent = externalCallUtxoGroups[parentGroupIndex];
+  const expansionGroups = externalCallUtxoGroups.map((group) => ({ ...group }));
+  const expansionDepths = expansionGroups.map((_, groupIndex) => {
+    const atomicIndex = preparedAtomicNodeByExternalGroup.get(groupIndex);
+    const seen = new Set<number>();
+    let index: number | null | undefined = atomicIndex ?? groupIndex;
+    let depth = atomicIndex === undefined ? 1 : 0;
+    while (index !== undefined && index !== null && index >= 0) {
+      if (seen.has(index)) throw new MessageBusDiagnosticError(
+        'L3_RECURSIVE_CLOSURE', 'late call preparation contains a cyclic parent chain', {},
+      );
+      seen.add(index);
+      index = atomicIndex === undefined
+        ? allGroupParentIndices[index] : preparedAtomicNodes?.[index]?.parent;
+      if (index !== undefined && index !== null && index >= 0) depth += 1;
+    }
+    return depth;
+  });
+  for (let parentGroupIndex = 0; parentGroupIndex < expansionGroups.length; parentGroupIndex++) {
+    const parent = expansionGroups[parentGroupIndex];
     const parentContract = parent.externalContract as any;
     const logicalParentContract = (parent.logicalContract ?? parentContract) as any;
     // This layer expands an outgoing CALL made by `parent`. A delegate executor authenticates the code and
@@ -214,6 +233,13 @@ export async function expandCreateBuilderLateTransitive(
       const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
       if (!selectedFn) continue;
+      const childDepth = expansionDepths[parentGroupIndex] + 1;
+      if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new MessageBusDiagnosticError(
+        'L3_GRAPH_DEPTH_LIMIT',
+        `late call preparation would append depth ${childDepth}, exceeding the deployed `
+          + `${MAX_LATE_TRANSITIVE_DEPTH}-depth bound`,
+        { measured: childDepth, limit: MAX_LATE_TRANSITIVE_DEPTH, callsiteId: nested.callsiteId },
+      );
       // As in direct expansion: the name match above drives layout, while producer identity is taken only
       // from the compiler-published selector for this edge, or from a name that resolves to one selector.
       // A late transitive edge publishes no selector of its own, so an overloaded name fails closed here.
@@ -664,6 +690,9 @@ export async function expandCreateBuilderLateTransitive(
         externalContract: callee,
         callerIdentity: parentCallerIdentity,
         logicalFunctionName: rawFunctionName ?? nested.functionName,
+        logicalFunctionArgs: childArgs,
+        logicalContract: selectedContract,
+        logicalArtifact: selectedContract.inner.artifact,
         ...(Object.keys(lateInternalArgs).length > 0 && { internalArgs: lateInternalArgs }),
         ...(lateRelativeOutputInternalArgs.size > 0 && {
           relativeOutputInternalArgs: [...lateRelativeOutputInternalArgs],
@@ -686,6 +715,8 @@ export async function expandCreateBuilderLateTransitive(
         }),
         ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
       });
+      expansionGroups.push({ ...externalCallUtxoGroups[childGroupIndex] });
+      expansionDepths.push(childDepth);
       if (preparedAtomicNodes) {
         if (parentAtomicNode !== undefined) {
           const atomicNodeIndex = preparedAtomicNodes.length;

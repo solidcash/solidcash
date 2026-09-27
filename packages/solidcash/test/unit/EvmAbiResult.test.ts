@@ -38,6 +38,38 @@ const branch = {
 };
 
 describe('canonical EVM ABI invocation result decoding', () => {
+  it('re-encodes canonical address words returned from typed stored structs and arrays', () => {
+    const payload = Uint8Array.from({ length: 20 }, (_value, index) => index + 1);
+    const addressWord = new Uint8Array(32);
+    addressWord.set(payload, 12);
+    const recordSchema: readonly StructDefinitionInfo[] = [{
+      name: 'Record', fields: [
+        { name: 'owner', type: 'address' }, { name: 'peers', type: 'address payable[]' },
+      ],
+    }];
+    const encoded = encodeEvmInvocationResult(
+      [{ owner: addressWord, peers: [addressWord, new Uint8Array(32)] }], ['Record'], recordSchema,
+    );
+    expect(encoded).toEqual(encodeEvmInvocationResult(
+      [{ owner: payload, peers: [payload, new Uint8Array(20)] }], ['Record'], recordSchema,
+    ));
+    expect(decodeEvmInvocationResult(encoded, ['Record'], recordSchema)).toEqual([
+      { owner: payload, peers: [payload, new Uint8Array(20)] },
+    ]);
+    expect(encodeEvmInvocationResult(
+      [`0x${Array.from(addressWord, (byte) => byte.toString(16).padStart(2, '0')).join('')}`], ['address'],
+    )).toEqual(addressWord);
+  });
+
+  it('rejects noncanonical address words rather than truncating them to a payload', () => {
+    for (const length of [21, 31, 32, 33]) {
+      const malformed = new Uint8Array(length);
+      malformed[0] = 1;
+      expect(() => encodeEvmInvocationResult([malformed], ['address']))
+        .toThrow('EVM ABI address requires exactly 20 payload bytes');
+    }
+  });
+
   it('round-trips nested structs, fixed and dynamic arrays, bytes, strings, enums, and scalars', () => {
     const types = ['Branch', 'Mode', 'bytes', 'address', 'bytes4', 'bool', 'uint8'];
     const address = Uint8Array.from({ length: 20 }, (_value, index) => index + 1);

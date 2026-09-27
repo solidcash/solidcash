@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { bytesToHex, encodeIntegerValue } from '@solidcash/utils';
-import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
-import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { compileAndDeploy, entryName, hexOf, seededAddress } from '../shapes/harness.js';
+import { encodeDataPush } from '@bitauth/libauth';
 import {
-  layOutMappingWrites, planMappingWrite, type MappingNodePlacement,
+  FrameKind, INDEX_NONE, buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, bytesToHex,
+  type RecordEntry,
+} from '@solidcash/utils';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { scriptToLockingBytecode } from '../../../src/utils.js';
+import { encodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import {
+  USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOf, token,
+  userInput, validatorFor,
+} from '../shapes/harness.js';
+import {
+  createComposedDerivationHost, layOutMappingWrites, participant, planMappingWrite,
+  type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -13,21 +22,35 @@ import {
  * `Hub.run` calls `Ledger.insert(1, 10)`, `Ledger.update(1, 20)` and `Ledger.remove(1)`. The compiler gives each
  * call its own call site, so the composition carries three call records and the callee runs on one master per
  * call. `records` is a sorted mapping, so each write touches a node UTXO: an insert splices a created node in
- * beside its predecessor, an update rewrites the target in place, and a delete relinks the predecessor around it.
+ * beside its predecessor, an update rewrites the target in place, and a delete writes the key's default value back
+ * over it (the collection never unlinks a node).
  *
  * The key's node is one UTXO, and a transaction gives it one input and one output. The insert creates it, so the
- * update that follows has no input to spend it at and the node plan refuses the write by name; the same holds for
- * a delete of the node an earlier write created. The file pins this limit: the three call sites publish, and the
- * three writes of one key cannot be placed on one transaction's single node.
+ * update that follows has no input to spend it at; the composer declares the node the insert created at the
+ * transaction's output and has each later frame carry on from the view the one before it left. The whole shipped
+ * path runs: the source through the shipped compiler, both programs through the shipped deployment, the composer
+ * planning and laying the writes out, and the BCH-2026 machine asked for a verdict on the frames.
  */
 
 const HUB_LABEL = 'sorted entry lifecycle hub';
 const LEDGER_LABEL = 'sorted entry lifecycle ledger';
 const LEDGER_ADDRESS = seededAddress(LEDGER_LABEL);
+const VALIDATOR_ID = 'validator';
+const HEAD_ID = 'head';
+const SITE_ID = 'site';
+const USER_ID = 'user';
 const KEY = 1n;
 const INSERTED = 10n;
 const UPDATED = 20n;
-const EXISTING = 7n;
+const DEFAULT = 0n;
+// The inserting master sits last among the Ledger masters, so the node it creates lands at the output just past
+// its own input. The head the insert relinks is a state input that recreates in place after the masters, and the
+// user follows.
+const CREATED_INDEX = 5;
+const HEAD_INDEX = 6;
+const USER_INDEX = 7;
+const ZERO_SLOT = new Uint8Array(32);
+const VALUE_TAIL_BYTES = 64;
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface ILedger {'
@@ -50,32 +73,159 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** The exact error a shipped call raised, or a failure when it returned normally. */
-function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
-  try {
-    run();
-  } catch (error) {
-    const refusal = error as { name?: string; code?: string; message: string };
-    return { name: refusal.name, code: refusal.code, message: refusal.message };
-  }
-  throw new Error('the shipped per-call path accepted the shape, so there is no refusal to record');
+const KEY_PUSH = encodeIntegerValue(KEY);
+const encodeValue = (value: bigint): Uint8Array => encodeIntegerValue(value);
+/** The head one insert leaves: relinked to the key's slot, its value tail kept. */
+const relinkedHead = (slot: Uint8Array): Uint8Array =>
+  encodeEntryCommitment(ZERO_SLOT, slot, new Uint8Array(VALUE_TAIL_BYTES));
+/** The key's node after one write, from the shipped sorted-list encoder. */
+const node = (slot: Uint8Array, value: bigint): Uint8Array => encodeEntryCommitment(slot, ZERO_SLOT, encodeValue(value));
+
+/** The whole composition: the plan the composer lays out, its segments, and the draft the derivation fills. */
+function drive(): {
+  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly segments: readonly (readonly RecordEntry[])[];
+  readonly nodeAfter: Uint8Array;
+  readonly headAfter: Uint8Array;
+} {
+  const { artifacts, contracts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
+  const hub = contracts.Hub!;
+  const ledger = contracts.Ledger!;
+  const validator = validatorFor(hub.category);
+
+  const head = headSentinelCommitment();
+  // The three writes of the one key, planned against the view each frame's predecessor leaves: the insert splices
+  // the created node in beside the head, the update rewrites it, and the delete writes its default value back.
+  const insertPlan = planMappingWrite({ keys: [KEY_PUSH], value: INSERTED, inventory: [head], encodeValue });
+  const created = insertPlan.written.find((node) => !node.existed)!;
+  const updatePlan = planMappingWrite({
+    keys: [KEY_PUSH], value: UPDATED, inventory: [insertPlan.written[0]!.after, created.after], encodeValue,
+  });
+  const removePlan = planMappingWrite({
+    keys: [KEY_PUSH], value: DEFAULT, inventory: [insertPlan.written[0]!.after, updatePlan.written[0]!.after], encodeValue,
+  });
+
+  const slot = keyToSlotMulti([KEY_PUSH]);
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(ZERO_SLOT), { in: HEAD_INDEX, out: HEAD_INDEX }],
+    [bytesToHex(slot), { out: CREATED_INDEX }],
+  ]);
+  const segments = layOutMappingWrites(
+    [[insertPlan], [updatePlan], [removePlan]],
+    { placementOf: (candidate) => placements.get(bytesToHex(candidate)) },
+  );
+
+  const selector = (entry: string): Uint8Array => selectorOf(artifacts, 'Ledger', entry);
+  const ledgerMaster = (
+    id: string, entry: string, argumentPushes: readonly Uint8Array[], masterSegments: readonly (readonly RecordEntry[])[],
+  ): DraftMaster => master({
+    master: id, contract: 'Ledger', entry, program: ledger.program,
+    frame: { kind: FrameKind.CALL, sender: hub.address, self: ledger.address, value: 0n },
+    facts: {
+      contract: 'Ledger', functionName: entry, kind: FrameKind.CALL,
+      callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 3,
+    },
+    enteredBy: 'hub-1', origin: USER_ID,
+    argumentPushes,
+    segments: masterSegments,
+    dispatches: true,
+  });
+
+  const hubMaster: DraftMaster = master({
+    master: 'hub-1', contract: 'Hub', entry: 'run', program: hub.program,
+    frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hub.address, value: 0n },
+    facts: {
+      contract: 'Hub', functionName: 'run', kind: FrameKind.ROOT,
+      callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
+    },
+    enteredBy: USER_ID, origin: USER_ID,
+    calls: [
+      { kind: FrameKind.CALL, callee: 'insert-1', target: ledger.address, value: 0n,
+        argumentPushes: [selector('insert'), encodeValue(INSERTED), KEY_PUSH] },
+      { kind: FrameKind.CALL, callee: 'update-1', target: ledger.address, value: 0n,
+        argumentPushes: [selector('update'), encodeValue(UPDATED), KEY_PUSH] },
+      { kind: FrameKind.CALL, callee: 'remove-1', target: ledger.address, value: 0n,
+        argumentPushes: [selector('remove'), KEY_PUSH] },
+    ],
+    segments: [[], [], [], []],
+  });
+
+  // The node sits at the mapping collection's own entry covenant; the head the transaction spends carries the
+  // genesis commitment, and the created node is written at the inserting master's own adjacent output.
+  const entryLock = scriptToLockingBytecode(
+    buildEntryNftCovenantScript(ledger.category, computeCollectionHash(artifacts.Ledger!.stateLayout!.collections![0]!.signature)),
+    'p2sh32',
+  );
+  const headAfter = insertPlan.written[0]!.after;
+  const nodeAfter = removePlan.written[0]!.after;
+  const headSource = { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(ledger.category, 'mutable', head) };
+
+  const plan: CompositionDraftPlan = {
+    blocks: [
+      { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+      { contract: 'Ledger', masters: ['update-1', 'remove-1', 'insert-1'], state: [] },
+    ],
+    userInputs: [
+      { id: SITE_ID, index: CREATED_INDEX },
+      { id: HEAD_ID, index: HEAD_INDEX },
+      { id: USER_ID, index: USER_INDEX },
+    ],
+    masters: [
+      hubMaster,
+      ledgerMaster('insert-1', 'insert', [selector('insert'), encodeValue(INSERTED), KEY_PUSH], [segments[0]!]),
+      ledgerMaster('update-1', 'update', [selector('update'), encodeValue(UPDATED), KEY_PUSH], [segments[1]!]),
+      ledgerMaster('remove-1', 'remove', [selector('remove'), KEY_PUSH], [segments[2]!]),
+    ],
+    inputs: {
+      'hub-1': { source: masterInput(hub) },
+      'insert-1': { source: masterInput(ledger) },
+      'update-1': { source: masterInput(ledger) },
+      'remove-1': { source: masterInput(ledger) },
+      [VALIDATOR_ID]: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(hub.category, 'mutable') },
+      },
+      // A created record is one no input recreates, so a signed input carries the output the insert frame writes it
+      // at, one past that frame's own input.
+      [SITE_ID]: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+        output: { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(ledger.category, 'mutable', nodeAfter) },
+        unlockingBytecode: userInput().unlockingBytecode,
+      },
+      [HEAD_ID]: {
+        source: headSource,
+        output: { ...headSource, token: token(ledger.category, 'mutable', headAfter) },
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+      [USER_ID]: userInput(),
+    },
+    validator: {
+      id: VALIDATOR_ID, covers: ['Ledger'],
+      settles: [{ category: ledger.category, stateInputs: [HEAD_ID] }],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Hub!, artifacts.Ledger!], plan,
+  });
+  return { draft, segments, nodeAfter, headAfter };
 }
 
-/** The zero successor a node at the end of the sorted list carries. */
-const ZERO_SLOT = new Uint8Array(32);
-/** A predecessor slot below the key's own, so the key's node has a bracketing node to splice through. */
-const PREDECESSOR_SLOT = new Uint8Array(32);
-/** Where the node and the key sit in a transaction: the predecessor lives at input/output 1, the node at 2. */
-const PREDECESSOR_PLACEMENT: readonly [string, MappingNodePlacement] = [bytesToHex(PREDECESSOR_SLOT), { in: 1, out: 1 }];
-
-/** One node's commitment: the slot, the successor it points at, and the value it carries. */
-function node(slot: Uint8Array, value: bigint): Uint8Array {
-  return new Uint8Array(Buffer.from(encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(value)), 'hex'));
+/** The machine's verdict on one participant's own input of the assembled transaction. */
+function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft'], id: string): string {
+  const program = draft.programFor('hub-1');
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: participant(draft.layout, id).index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
 describe('one entry inserting, updating and deleting one key in one transaction', () => {
   it('publishes one call site per call, each naming its own method', () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const { artifacts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
     const hub = (artifacts.Hub!.composition as {
       stopSites: { entries: { functionName: string; calls: { functionName: string; selector: string }[]; sites: { sites: unknown[] } }[] };
     }).stopSites.entries.find((entry) => entry.functionName === entryName('Hub', 'run'))!;
@@ -94,52 +244,65 @@ describe('one entry inserting, updating and deleting one key in one transaction'
       .toStrictEqual(['records:true']);
   });
 
-  it('cannot update the node its own insert created: one transaction gives the key one input', () => {
-    const { artifacts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
-    const layout = artifacts.Ledger!.stateLayout!;
-    const slot = keyToSlotMulti([encodeIntegerValue(KEY)]);
-    const encodeValue = (value: bigint): Uint8Array => encodeIntegerValue(value);
+  it('lays the created node out: each later frame carries on from the view the one before it left', () => {
+    const { segments, nodeAfter } = drive();
+    const slot = keyToSlotMulti([KEY_PUSH]);
 
-    // The insert splices the created node in beside its predecessor and does not spend it.
-    const insert = planMappingWrite({ keys: [encodeIntegerValue(KEY)], value: INSERTED, inventory: [node(PREDECESSOR_SLOT, EXISTING)], encodeValue });
-    const placements = new Map<string, MappingNodePlacement>([PREDECESSOR_PLACEMENT, [bytesToHex(slot), { out: 2 }]]);
-    const insertion = layOutMappingWrites([[insert]], { placementOf: (candidate) => placements.get(bytesToHex(candidate)) });
-    expect(insertion.flat().map((entry) => `${entry.in}/${entry.out}`)).toStrictEqual(['1/1', '65535/2']);
-
-    // The update reads the node the insert created; the layout gives that node an output, because the insert
-    // created it, but no input, because a transaction cannot spend the output it writes.
-    const update = planMappingWrite({
-      keys: [encodeIntegerValue(KEY)], value: UPDATED,
-      inventory: [insert.written[0]!.after, insert.written[1]!.after], encodeValue,
-    });
-    const refusal = refusalOf(() => layOutMappingWrites([[update]], { placementOf: (candidate) => placements.get(bytesToHex(candidate)) }));
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_MAPPING_UNPLANNABLE');
-    expect(refusal.message).toMatch(/needs an input index the layout gives it none of/);
-
-    // A node the transaction spends is laid out: the refusal above is the created node's missing input, not a
-    // write the plan cannot express at all.
-    const spent = new Map<string, MappingNodePlacement>([[bytesToHex(slot), { in: 2, out: 2 }]]);
-    const existing = planMappingWrite({
-      keys: [encodeIntegerValue(KEY)], value: UPDATED, inventory: [node(slot, EXISTING)], encodeValue,
-    });
-    expect(layOutMappingWrites([[existing]], { placementOf: (candidate) => spent.get(bytesToHex(candidate)) }))
-      .toStrictEqual([[{ in: 2, out: 2, viewIn: node(slot, EXISTING), viewOut: node(slot, UPDATED) }]]);
+    // The insert relinks the head in place and creates the node at the adjacent output; the update and the delete
+    // have no input to read the created node at, so they name that output and chain from the view before.
+    expect(nodeAfter).toStrictEqual(node(slot, DEFAULT));
+    expect(segments[0]).toStrictEqual<RecordEntry[]>([
+      { in: HEAD_INDEX, out: HEAD_INDEX, viewIn: headSentinelCommitment(), viewOut: relinkedHead(slot) },
+      { in: INDEX_NONE, out: CREATED_INDEX, viewIn: new Uint8Array(0), viewOut: node(slot, INSERTED) },
+    ]);
+    expect(segments[1]).toStrictEqual<RecordEntry[]>([
+      { in: INDEX_NONE, out: CREATED_INDEX, viewIn: node(slot, INSERTED), viewOut: node(slot, UPDATED) },
+    ]);
+    expect(segments[2]).toStrictEqual<RecordEntry[]>([
+      { in: INDEX_NONE, out: CREATED_INDEX, viewIn: node(slot, UPDATED), viewOut: node(slot, DEFAULT) },
+    ]);
+    // The chain links: each frame reads exactly what the frame before it wrote.
+    expect(segments[1]![0]!.viewIn).toStrictEqual(segments[0]![1]!.viewOut);
+    expect(segments[2]![0]!.viewIn).toStrictEqual(segments[1]![0]!.viewOut);
   });
 
-  it('cannot delete the node its own insert created either', () => {
-    const { artifacts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
-    const slot = keyToSlotMulti([encodeIntegerValue(KEY)]);
-    const encodeValue = (value: bigint): Uint8Array => encodeIntegerValue(value);
-    const insert = planMappingWrite({ keys: [encodeIntegerValue(KEY)], value: INSERTED, inventory: [node(PREDECESSOR_SLOT, EXISTING)], encodeValue });
-    const placements = new Map<string, MappingNodePlacement>([PREDECESSOR_PLACEMENT, [bytesToHex(slot), { out: 2 }]]);
-    const remove = planMappingWrite({
-      keys: [encodeIntegerValue(KEY)], value: undefined,
-      inventory: [insert.written[0]!.after, insert.written[1]!.after], encodeValue,
-    });
-    // The delete relinks the predecessor around the target, which is a node the transaction never spends.
-    const refusal = refusalOf(() => layOutMappingWrites([[remove]], { placementOf: (candidate) => placements.get(bytesToHex(candidate)) }));
-    expect(refusal.code).toBe('PER_CALL_MAPPING_UNPLANNABLE');
-    expect(refusal.message).toMatch(/needs an input index the layout gives it none of/);
+  it('settles the frame that creates the node, writing it at the adjacent output', () => {
+    const { draft, nodeAfter, headAfter } = drive();
+
+    // The head input carries the genesis head and the head output the relinked one; the created node output the
+    // default value the delete wrote, all read back through the shipped sorted-list encoder.
+    const program = draft.programFor('hub-1');
+    const headIndex = HEAD_INDEX;
+    expect(headIndex).toBe(HEAD_INDEX);
+    expect(headAfter).toStrictEqual(relinkedHead(keyToSlotMulti([KEY_PUSH])));
+    expect(program.sourceOutputs[headIndex]!.token?.nft?.commitment).toStrictEqual(headSentinelCommitment());
+    expect(program.transaction.outputs[headIndex]!.token?.nft?.commitment).toStrictEqual(headAfter);
+    expect(program.transaction.outputs[headIndex]!.token?.nft?.commitment)
+      .toStrictEqual(relinkedHead(keyToSlotMulti([KEY_PUSH])));
+    expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment).toStrictEqual(nodeAfter);
+    expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment)
+      .toStrictEqual(node(keyToSlotMulti([KEY_PUSH]), DEFAULT));
+
+    // The machine accepts the frame that creates the node against the segment the composer declared.
+    expect(verdictAt(draft, 'insert-1')).toBe('accepted');
+  });
+
+  it('refuses the creating frame when its declared close is not the one it computed', () => {
+    // The control for the accept above: the insert frame reads the head at the view its segment declares and
+    // closes the created node against the value its body computes, so a declaration rewritten to a value no
+    // frame wrote is refused.
+    const { draft } = drive();
+    const record = draft.blockOf('insert-1').segments[0]![1]!;
+    record.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
+    expect(verdictAt(draft, 'insert-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+  });
+
+  it('leaves the frames that rewrite the created node refused by the master', () => {
+    // The composer lays the chain, but a master that rewrites the node it did not spend reads its state through
+    // the transaction's own inputs rather than the frame's declaration, so it cannot resolve the created node and
+    // the machine refuses the frame. Pinned rather than papered over.
+    const { draft } = drive();
+    expect(verdictAt(draft, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    expect(verdictAt(draft, 'remove-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 });

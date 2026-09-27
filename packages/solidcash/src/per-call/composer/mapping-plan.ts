@@ -14,7 +14,7 @@
  * because that depends on the collection's declared value type.
  */
 
-import { INDEX_NONE, bytesEqual, type RecordEntry } from '@solidcash/utils';
+import { INDEX_NONE, bytesEqual, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,
@@ -189,18 +189,39 @@ function requireWrittenOutput(placements: MappingNodePlacements, slot: Uint8Arra
   return out;
 }
 
-/** The record entries one plan contributes: every node it writes, then the target it removes. */
-function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements): RecordEntry[] {
+/**
+ * The record entries one plan contributes: every node it writes, then the target it removes.
+ *
+ * A node the segment spends names its input index and the output it recreates it at. A node it creates names only
+ * its output, and the slots the earlier segments created are recorded so a later segment that rewrites one
+ * carries on from the view the one before it left with no input to read it at. A node neither spent nor created
+ * earlier has no coordinate to declare it with, which is refused by name.
+ */
+function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements, created: Set<string>): RecordEntry[] {
   const entries: RecordEntry[] = [];
   for (const node of plan.written) {
+    const key = bytesToHex(node.slot);
     if (node.existed) {
-      const index = requireSpentInput(placements, node.slot);
-      entries.push({
-        in: index,
-        out: requireWrittenOutput(placements, node.slot, index),
-        viewIn: node.before,
-        viewOut: node.after,
-      });
+      const placed = placements.placementOf(node.slot);
+      if (placed?.in !== undefined && placed.in !== INDEX_NONE) {
+        entries.push({
+          in: placed.in,
+          out: requireWrittenOutput(placements, node.slot, placed.in),
+          viewIn: node.before,
+          viewOut: node.after,
+        });
+      } else if (created.has(key)) {
+        // An earlier segment created this node, so the transaction writes it rather than spends it: the
+        // declaration continues the created chain from the view that segment left.
+        entries.push({
+          in: INDEX_NONE,
+          out: requireWrittenOutput(placements, node.slot, INDEX_NONE),
+          viewIn: node.before,
+          viewOut: node.after,
+        });
+      } else {
+        throw mappingIndexUnavailable(node.slot, 'input');
+      }
     } else {
       entries.push({
         in: INDEX_NONE,
@@ -208,6 +229,7 @@ function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements): 
         viewIn: CREATE_VIEW_IN,
         viewOut: node.after,
       });
+      created.add(key);
     }
   }
   if (plan.removed && plan.target !== undefined) {
@@ -222,11 +244,13 @@ function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements): 
  *
  * A segment's entries are its plans' written nodes in the order they were written, plus a removed target's
  * declaration. A node the execution spends names its input index and the output it recreates it at; a node it
- * creates names only its output, and a node it removes names only its input.
+ * creates names only its output, and later segments that rewrite it name that output and carry on from the view
+ * the segment before left; a node it removes names only its input.
  */
 export function layOutMappingWrites(
   segments: readonly (readonly MappingWritePlan[])[],
   placements: MappingNodePlacements,
 ): readonly (readonly RecordEntry[])[] {
-  return segments.map((writes) => writes.flatMap((plan) => entriesFor(plan, placements)));
+  const created = new Set<string>();
+  return segments.map((writes) => writes.flatMap((plan) => entriesFor(plan, placements, created)));
 }

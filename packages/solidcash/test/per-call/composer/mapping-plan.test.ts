@@ -204,6 +204,39 @@ describe('laying the plans out as the record entries each segment declares', () 
       outputCommitments: new Map([[1, expected.predNewCommitment], [5, expected.newNodeCommitment]]),
     })).not.toThrow();
   });
+
+  it('continues a node an earlier segment created, from the view the earlier segment left', () => {
+    const { lower, upper, inventory } = twoNodeList();
+    const insertPlan = planMappingWrite({ keys: [lower.key], value: 300n, inventory, encodeValue });
+    const created = insertPlan.written.find((node) => !node.existed)!;
+    // The list one insert leaves: HEAD relinked to the new node, which points at the successor it displaced.
+    const afterInsert = new SortedList([
+      { slot: ZERO_SLOT, nextKey: lower.slot, value: EMPTY_TAIL, utxo: entryUtxo('00'.repeat(32), insertPlan.written[0]!.after) },
+      { slot: lower.slot, nextKey: upper.slot, value: value(300n), utxo: entryUtxo('dd'.repeat(32), created.after) },
+    ]);
+    const expectedUpdate = afterInsert.planUpdate(lower.slot, value(400n));
+    const updatePlan = planMappingWrite({
+      keys: [lower.key], value: 400n,
+      inventory: [insertPlan.written[0]!.after, created.after], encodeValue,
+    });
+
+    const placements = placementsOf(new Map([
+      [bytesToHex(ZERO_SLOT), { in: 1, out: 1 }],
+      [bytesToHex(lower.slot), { out: 5 }],
+    ]));
+    const segments = layOutMappingWrites([[insertPlan], [updatePlan]], placements);
+
+    // The insert creates the node at the trailing output; the update has no input to spend it at, so it names
+    // that output and continues the created chain from the view the insert left.
+    expect(segments[1]).toStrictEqual<RecordEntry[]>([
+      { in: INDEX_NONE, out: 5, viewIn: created.after, viewOut: expectedUpdate.newCommitment },
+    ]);
+    expect(segments[0]![1]!.viewOut).toStrictEqual(segments[1]![0]!.viewIn);
+
+    // A segment that rewrites the node without an earlier segment's creation has no input either, and is refused.
+    expect(() => layOutMappingWrites([[updatePlan]], placements))
+      .toThrow(/PER_CALL_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
+  });
 });
 
 describe('what the mapping plan refuses', () => {

@@ -1154,6 +1154,9 @@ Titles marked NEVER have not passed on any real compile to date.
   also carries amount 1, a mutable record output carrying an amount, and a fungible-only own-category output. What
   the program still does not carry is the other half of the census: a bare 32-byte own-category output must be an
   event some frame in the contract's context lists, and no two frames may list the same output.
+- The master's own census — the one a master runs when it is its category's only master — does not require a zero
+  fungible amount on its own-category outputs yet. The validator's rule (above) is what a shared category relies on;
+  the single-master case is still the master's, so the amount rule belongs there too (user follow-up, not blocking).
 - A refusal the emitter raises on its own is still contract-wide: the per-body rule of C15 is what the assessment
   owns, and a shape the head or the tail fixes — no entry point, a constructor the head cannot share, a fallback,
   contract creation, function pointers, inline assembly — is reported for the unit rather than for a body. Where such

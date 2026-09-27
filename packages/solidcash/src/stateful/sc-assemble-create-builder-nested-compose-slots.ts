@@ -115,7 +115,6 @@ export type AssembleCreateBuilderNestedComposeSlotsBags = {
   routeValueChunkProducerAliases: ExternalCallUtxoGroup[];
   routeValueChunkProducerPhysicalGroup: ExternalCallUtxoGroup | undefined;
   routeValueChunkProducerEpoch: number | undefined;
-  latestRouteValueChunkProducerBinding: any;
   refreshChunkableRouteWitnesses: ((...args: any[]) => any) | undefined;
 };
 
@@ -207,7 +206,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
   let routeValueChunkProducerAliases = bags.routeValueChunkProducerAliases;
   let routeValueChunkProducerPhysicalGroup = bags.routeValueChunkProducerPhysicalGroup;
   let routeValueChunkProducerEpoch = bags.routeValueChunkProducerEpoch;
-  let latestRouteValueChunkProducerBinding = bags.latestRouteValueChunkProducerBinding;
   let refreshChunkableRouteWitnesses = bags.refreshChunkableRouteWitnesses;
 
   // Host aliases used by the body after host. → host. rewrite
@@ -775,10 +773,24 @@ export async function assembleCreateBuilderNestedComposeSlots(
         const effectiveRowArguments = rowArguments ?? discoveredProducerRows?.map((row, index, rows) => (
           index === rows.length - 1 ? { ...row, args: finalVisibleArgs } : row
         ));
-        const fallbackPayloadBytes = visibleInputs.reduce((largest, input, index) => {
-          const encoded = encodeFunctionArgument(finalVisibleArgs[index], input.type, structs);
-          return encoded instanceof Uint8Array ? Math.max(largest, encoded.length) : largest;
-        }, 0);
+        // A whole-route refresh supplies handler arguments, not the physical route's packed
+        // argument vector. Estimate each reached row in its own ABI frame.
+        const payloadRows: Array<{
+          inputs: readonly { type: string }[];
+          args: readonly FunctionArgument[];
+        }> = effectiveRowArguments?.length
+          ? effectiveRowArguments.map((row: { handler: AbiFunction; args: FunctionArgument[] }) => ({
+            inputs: row.handler.inputs.filter((input: { name: string }) =>
+              !input.name.startsWith('__internal__')),
+            args: row.args,
+          }))
+          : [{ inputs: visibleInputs, args: finalVisibleArgs }];
+        const fallbackPayloadBytes = payloadRows.reduce((largest, row) => row.inputs.reduce(
+          (rowLargest: number, input: { type: string }, index: number) => {
+            const encoded = encodeFunctionArgument(row.args[index], input.type, structs);
+            return encoded instanceof Uint8Array ? Math.max(rowLargest, encoded.length) : rowLargest;
+          }, largest,
+        ), 0);
         let encodedPayloadBytes = 0;
         for (const [routeSlot, access] of (selectedFn?.entryAccesses ?? []).entries()) {
           if (!access.operations.includes('write')) continue;
@@ -1369,7 +1381,6 @@ export async function assembleCreateBuilderNestedComposeSlots(
   bags.routeValueChunkProducerAliases = routeValueChunkProducerAliases;
   bags.routeValueChunkProducerPhysicalGroup = routeValueChunkProducerPhysicalGroup;
   bags.routeValueChunkProducerEpoch = routeValueChunkProducerEpoch;
-  bags.latestRouteValueChunkProducerBinding = latestRouteValueChunkProducerBinding;
   bags.refreshChunkableRouteWitnesses = refreshChunkableRouteWitnesses;
 
   return { bags, childRelativeOutputInternalArgs };

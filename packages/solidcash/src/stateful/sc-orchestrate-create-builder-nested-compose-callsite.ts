@@ -528,7 +528,6 @@ const assembledSlots = await assembleCreateBuilderNestedComposeSlotsImpl(
       routeValueChunkProducerAliases,
       routeValueChunkProducerPhysicalGroup,
       routeValueChunkProducerEpoch,
-      latestRouteValueChunkProducerBinding,
       refreshChunkableRouteWitnesses,
     },
     publishRouteValueChunkProducerBinding,
@@ -552,7 +551,8 @@ childValueChunkSlots = assembledSlots.bags.childValueChunkSlots;
 routeValueChunkProducerAliases = assembledSlots.bags.routeValueChunkProducerAliases;
 routeValueChunkProducerPhysicalGroup = assembledSlots.bags.routeValueChunkProducerPhysicalGroup;
 routeValueChunkProducerEpoch = assembledSlots.bags.routeValueChunkProducerEpoch;
-latestRouteValueChunkProducerBinding = assembledSlots.bags.latestRouteValueChunkProducerBinding;
+    // Slot assembly publishes through the callback above. That closure owns the latest binding;
+    // copying a pre-assembly bag snapshot back here would discard the freshly derived productions.
 refreshChunkableRouteWitnesses = assembledSlots.bags.refreshChunkableRouteWitnesses;
 const childRelativeOutputInternalArgs = assembledSlots.childRelativeOutputInternalArgs;
 publishCreateBuilderNestedComposeGroupImpl({

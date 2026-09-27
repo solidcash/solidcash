@@ -440,14 +440,13 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(at(B_MASTER).objection ?? 'accepted').toBe('accepted');
   });
 
-  it('is accepted at the validator input at the operation-cost density its own script sets', () => {
-    // The validator's budget is 800 operation-cost units per byte of its own unlocking bytecode: 4,763 bytes on
-    // this shape, so 3,810,400. Its walk over the covered masters costs a large multiple of their own sizes, and
-    // the emitting entry's program and event output took it to 3,810,464 — 64 over — while the same shape with no
-    // event is spent at 3,772,568. That is why the program carries a padding block it drops where it ends: a byte
-    // of it buys 800 units, so the walk fits and a rule added next has room too. Measured, not assumed: it is the
-    // plan's open item on validator size and density, and the derivation is not the cause, since the validator's
-    // own decision on this transaction accepts above.
+  it('is accepted at the validator input on the composition profile', () => {
+    // The validator input carries the program and the transcript in one unlocking bytecode, so this asserts what
+    // the shipped program decides about the shape rather than what a real chain's size budget allows: the suites
+    // run on the profile the plan's gate is stated against, and the real-chain numbers are recorded by the
+    // validator suite's published-density measurement. The padding block the program carries exists for that
+    // density - a byte of the input's own unlocking bytecode buys 800 operation-cost units, and the block is what
+    // pays for the walk over the covered masters on the emitting shape.
     const { draft } = deriveRoundTrip();
     const verdictAt = verdict(machine(), draft.programFor(A_FIRST), participant(draft.layout, VALIDATOR_ID).index);
     expect(verdictAt.objection ?? '').toBe('');

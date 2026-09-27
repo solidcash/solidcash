@@ -780,8 +780,11 @@ risk. Take the slices in order, each with its own tests.
     The validator input's own spendability closed at `7c76dcef4`: it used to spend its operation-cost budget to
     within 1% on this shape and 64 units over it once the entry emits, and the program's padding block now pays for
     the walk it runs, 3,201,534 of 5,452,000 with 41% of headroom (the Log row and the real-chain limits item below
-    carry the numbers). What is open on I1 is V7's chain end, which the derived order decides rather than the
-    program's order-free half (B7), and the union census across the masters that run on a contract's records.
+    carry the numbers). The union census across the masters that run on a contract's records is emitted with the
+    rest of the census (`d8eb0bd16`, `106d7ab48`, `d055ac85f`): the walk is over every frame of the settled
+    contract, and the multi-master controls that a master waives and the validator makes are in the validator
+    suite. What is open on I1 is V7's chain end, which the derived order decides rather than the program's
+    order-free half (B7).
 - [ ] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate:
   - [ ] **GO** requires:
     - 0 per-shape rules added;

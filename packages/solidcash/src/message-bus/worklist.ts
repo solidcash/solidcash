@@ -14,6 +14,15 @@ import { MessageBusDiagnosticError, type MessageBusDiagnosticContext } from './d
 
 const MAX_WORKLIST_DEPTH = 7;
 
+function solidityAddressArgumentIdentity(bytes: Uint8Array): string | undefined {
+  if (bytes.length === 0) return '00'.repeat(20);
+  if (bytes.length === 32) {
+    return bytes.subarray(0, 12).every((byte) => byte === 0) ? binToHex(bytes.subarray(12)) : undefined;
+  }
+  const identity = lockingBytecodeToSolidityAddressPayload(bytes);
+  return identity && binToHex(identity);
+}
+
 const artifactExecutionIdentities = new WeakMap<object, string>();
 
 /**
@@ -566,7 +575,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument,
             );
-            const sourceUsesSolidityAddresses = participant.artifact.compiler.options?.solidityImportCompat === true;
+            const sourceUsesSolidityAddresses = participant.artifact.compiler.options?.solidityImportCompat === true
+              || participant.artifact.compiler.options?.evmCompat === true;
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
             if (expectedEncoded.length !== encoded.length
@@ -575,14 +585,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
                 if (!(argument instanceof Uint8Array) || !(actual instanceof Uint8Array)) return true;
                 if (binToHex(argument) === binToHex(actual)) return false;
                 const type = targetFunction.inputs[index].type;
-                // Solidity-compatible expression recovery represents an address by its 20-byte account payload,
-                // while a low-level call may transport the same value as canonical P2PKH locking bytecode. Accept
-                // exactly that compiler-owned conversion in addition to byte identity. Native SolidCash retains
-                // arbitrary locking bytecode addresses and therefore must not apply this lossy convention.
-                return !sourceUsesSolidityAddresses
-                  || (type !== 'address' && type !== 'address payable')
-                  || argument.length !== 20
-                  || binToHex(encodeLockingBytecodeP2pkh(argument)) !== binToHex(actual);
+                // Struct/return value lanes carry ABI words, while source expressions such as address(this)
+                // retain native locks. Compare only typed Solidity addresses by their canonical identity;
+                // leave the authenticated argument transcript untouched and keep native/bytes equality exact.
+                if (!sourceUsesSolidityAddresses || (type !== 'address' && type !== 'address payable')) return true;
+                const expectedIdentity = solidityAddressArgumentIdentity(argument);
+                const actualIdentity = solidityAddressArgumentIdentity(actual);
+                return expectedIdentity === undefined || actualIdentity === undefined
+                  || expectedIdentity !== actualIdentity;
               })) {
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {

@@ -1,0 +1,52 @@
+import { hexToBin } from '@bitauth/libauth';
+import { addressToGraphEmissionBytes } from '@solidcash/utils';
+import { compileString } from 'solidc';
+import { describe, expect, it } from 'vitest';
+import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
+import { messageBusVmAccepts } from './vm-accepts.js';
+
+const OPTIONS = {
+  forceStateful: true, messageBus: true, messageBusKernel: true, messageBusGraphContext: true,
+  solidityImportCompat: true, maximumInputBytes: 1_000_000, suppressWarnings: true,
+} as const;
+
+describe('kernel raw address argument composition', () => {
+  it('authenticates native address(this) against a decoded ABI-word argument', async () => {
+    const provider = createMessageBusCapstoneTestProvider();
+    const seed = async (source: string, args: string[] = []): Promise<StatefulContract> => {
+      const artifact = compileString(source, OPTIONS);
+      const base = new Contract(artifact, args, { provider });
+      const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const target = await seed(`pragma solidity ^0.8.0;
+      contract Receiver {
+        uint public hits;
+        function accept(address who) public returns (bool) {
+          require(who != address(0)); hits = hits + 1; return true;
+        }
+      }`);
+    const caller = await seed(`pragma solidity ^0.8.0;
+      interface IReceiver { function accept(address who) external returns (bool); }
+      contract Sender(address target) {
+        function invoke() public {
+          target.call(abi.encodeCall(IReceiver.accept, (address(this)))); require(true);
+        }
+      }`, [target.inner.lockingBytecode]);
+    const word = addressToGraphEmissionBytes(hexToBin(caller.inner.lockingBytecode));
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const compose = (argument: Uint8Array): ReturnType<typeof messageBus.compose> => messageBus.compose({
+      calls: [caller.call.invoke(), target.call.accept(argument)],
+      funder, changeAddress: funder.unlocker.generateLockingBytecode(),
+    });
+    const different = word.slice();
+    different[31] ^= 1;
+    await expect(compose(different).build()).rejects.toThrow(/decoded arguments disagree/);
+    const call = compose(word);
+    expect(messageBusVmAccepts(await call.build())).toBe(true);
+    await expect(call.send()).resolves.toHaveProperty('txid');
+    expect((await target.getState()).hits).toBe(1n);
+  }, 180_000);
+});

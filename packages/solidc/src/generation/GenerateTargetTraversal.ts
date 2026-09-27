@@ -2920,10 +2920,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const reservesValidatorHashSlot = this.perCallReservesValidatorHash;
     // A master is entered by a user or by another master as a callee; the three frame kinds are what the head
     // branches on. A message callee and a read-only callee are both entered by another master; a user's frame is
-    // the root. A callee's unlocking bytecode carries the call data's selector, which only a dispatcher over
-    // several entries consumes, so a single-entry master has the callee arms drop it.
+    // the root. A callee's unlocking bytecode carries the call data's selector, which a dispatcher consumes, so the
+    // callee arms drop it only when the program holds no dispatcher: a single body and no constructor to dispatch
+    // too.
     const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC];
-    const callDataSelectorUnconsumed = entries.length === 1;
+    const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
+    const callDataSelectorUnconsumed = dispatchBodyCount === 1;
     // The head checks the whole tail, so the entry has to fix the event and send counts it holds. The shape is
     // derived from the entries themselves; a shape whose counts the entries do not fix refuses by name here.
     const tail = derivePerCallTailShape(entries, node.emitsEvent);

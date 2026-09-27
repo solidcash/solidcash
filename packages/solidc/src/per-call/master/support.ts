@@ -135,7 +135,12 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     return refuse('a per-call master is one program, so free functions that would be emitted before it are not supported');
   }
   if (contract.constructorDef) {
-    return refuse('a constructor body makes the contract dispatch by selector, which the master head cannot precede');
+    // The constructor runs as one more selector-dispatched body behind the same head, so it is admitted exactly when
+    // its body asks the head for nothing the head does not already carry: it makes no external call (the head's call
+    // records are the entries'), it emits no event and makes no send (the head checks one tail for every body), and
+    // it needs no side-car input the head does not locate.
+    const refusal = unsupportedConstructorShape(contract.constructorDef);
+    if (refusal !== undefined) return refuse(refusal);
   }
   if (contract.fallbackDef || contract.receiveDef) {
     return refuse('fallback and receive make the contract dispatch by selector, which the master head cannot precede');
@@ -188,6 +193,43 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const tail = derivePerCallTailShape(entryPoints, input.emitsEvent);
   if (tail.reason !== undefined) return refuse(tail.reason);
   return { supported: true, entryCalls: calls.entryCalls, callCount: calls.callCount, tail: tail.tail };
+}
+
+/**
+ * Why a constructor body cannot share the master head, or undefined when it can.
+ *
+ * The constructor is dispatched like an entry point behind the one head, so it must ask the head for nothing the
+ * head fixes for the entries instead: the call records are bound where each entry makes its own call, the event and
+ * send counts are the tail the entries fix, and a side-car input is located by a hidden operand the head does not
+ * supply. A body that only reads its arguments and the contract's own state, and writes that state, shares the head
+ * unchanged; a constructor that only establishes the contract's immutable references is exactly that shape.
+ */
+function unsupportedConstructorShape(constructorDef: FunctionDefinitionNode): string | undefined {
+  const hidden = constructorDef.parameters.filter((parameter) =>
+    parameter.name.startsWith('__internal__')
+    && !FRAME_PARAMETERS.has(parameter.name)
+    && !RETURN_EVENT_PARAMETERS.has(parameter.name)
+    && !isExternalCallParameter(parameter.name));
+  if (hidden.length > 0) {
+    return `the constructor carries the hidden parameter '${hidden[0].name}', which the master head does not supply`;
+  }
+  if ((constructorDef.externalCalls?.length ?? 0) > 0 || (constructorDef.lowLevelCalls?.length ?? 0) > 0) {
+    return 'the constructor makes an external call, but the master head fixes one set of call records for the '
+      + 'entries and binds each record where that entry makes it';
+  }
+  if ((constructorDef.emitInfos?.length ?? 0) > 0 || (constructorDef.runtimeLoopEvents?.length ?? 0) > 0) {
+    return 'the constructor emits an event, but the master head fixes one tail for every body it runs';
+  }
+  if ((constructorDef.transferInfos?.length ?? 0) > 0 || (constructorDef.runtimeLoopTransfers?.length ?? 0) > 0) {
+    return 'the constructor makes a value send, but the master head fixes one tail for every body it runs';
+  }
+  if (constructorDef.usesBlockhash) {
+    return 'the constructor reads a blockhash, which needs a co-spent oracle input the master head does not locate';
+  }
+  if (constructorDef.keccakCompute || constructorDef.ecrecoverCompute) {
+    return 'the constructor runs a compute side-car, which needs co-spent inputs the master head does not locate';
+  }
+  return undefined;
 }
 
 /**

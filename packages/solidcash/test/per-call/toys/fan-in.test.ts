@@ -1,22 +1,50 @@
 import { describe, expect, it } from 'vitest';
-import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { hexOf, seededAddress } from '../shapes/harness.js';
+import { FrameKind, encodeIntegerValue, bytesToHex } from '@solidcash/utils';
+import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import {
+  USER_LOCK, compileAndDeploy, entryName, master, masterInput, seededAddress, selectorOf, token, userInput,
+  userInputs, validatorFor, hexOf,
+} from '../shapes/harness.js';
+import {
+  createComposedDerivationHost, deriveComposition, layOutMappingWrites, planMappingWrite,
+  type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
+} from '../../../src/per-call/composer/index.js';
 
 /**
- * Fan-in: `Hub.go` approves `Vault` on `Token`, then calls `Vault.pull`, which calls `Token.transferFrom`. The
- * shipped per-call compiler refuses `Token.transferFrom`, whose allowance check reads the mapping before writing it.
+ * Fan-in: `Hub.go` approves `Vault` on `Token`, then calls `Vault.pull`, which calls `Token.transferFrom`.
+ * `Token.transferFrom` reads `allowance[VAULT]` and writes it back, so `Token` is entered twice and its second
+ * frame works on the entry its first frame wrote.
+ *
+ * The read-modify-write of one entry is admitted by the compiler, so the source compiles. The composition does not
+ * settle: a mapping node's record group closes against the commitment the transaction spends and the one it writes,
+ * and one transaction has one of each for that node. The earlier frame's declaration cannot be both the node its
+ * body computed from `7` and the node the later frame leaves, so the derivation stalls on the first mapping frame.
+ *
+ * The plan supplies only identities and the allowed record declarations; the layout, the callee indices and the
+ * derivation order come from the shipped composer and derivation.
  */
 
-const TOKEN = hexOf(seededAddress('fan in token'));
-const VAULT = hexOf(seededAddress('fan in vault'));
-const HUB = hexOf(seededAddress('fan in hub'));
+const TOKEN_LABEL = 'fan in token';
+const VAULT_LABEL = 'fan in vault';
+const HUB_LABEL = 'fan in hub';
+const TOKEN = hexOf(seededAddress(TOKEN_LABEL));
+const VAULT = hexOf(seededAddress(VAULT_LABEL));
+const HUB = hexOf(seededAddress(HUB_LABEL));
+const SPENDER = seededAddress(VAULT_LABEL);
+const HOLDER = seededAddress(HUB_LABEL);
+
+/** The composer gives a user-entered master no call data, so the root takes no argument and the amount is fixed. */
+const AMOUNT = 40n;
+const PREVIOUS = 7n;
+const NODE_INDEX = 5;
+const ZERO_SLOT = new Uint8Array(32);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IToken {'
   + '   function approve(address spender, int amount);'
   + '   function transferFrom(address holder, address recipient, int amount);'
   + ' }'
-  + ' interface IPull { function pull(int amount); }'
+  + ' interface IPull { function pull(); }'
   + ' contract Token {'
   + '   mapping(address => int) allowance;'
   + '   function approve(address spender, int amount) { this.allowance[spender] = amount; require(true); }'
@@ -27,28 +55,173 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }'
   + ' contract Vault {'
-  + `   function pull(int amount) { IToken(0x${TOKEN}).transferFrom(0x${HUB}, 0x${VAULT}, amount); require(true); }`
+  + `   function pull() { IToken(0x${TOKEN}).transferFrom(0x${HUB}, 0x${VAULT}, 40); require(true); }`
   + ' }'
   + ' contract Hub {'
-  + `   function go(int amount) { IToken(0x${TOKEN}).approve(0x${VAULT}, amount);`
-  + `     IPull(0x${VAULT}).pull(amount); require(true); }`
+  + `   function go() { IToken(0x${TOKEN}).approve(0x${VAULT}, 40); IPull(0x${VAULT}).pull(); require(true); }`
   + ' }';
 
-/** The code and message the shipped compile raises, or a failure when it accepts the source. */
-function compileRefusal(source: string): { readonly code?: string; readonly message: string } {
+/** One node of the allowance list, carrying a value as its tail. */
+function node(slot: Uint8Array, value: bigint): Uint8Array {
+  return encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(value));
+}
+
+/**
+ * Lays out, assembles and derives the fan-in composition.
+ *
+ * The plan declares the two writes of the one allowance node: the approval from `7` to `40` and the pull from `40`
+ * to `0`, each in its own frame's segment. The transaction spends `7` and writes `0`, which is the only pair of
+ * commitments one node can have in one transaction.
+ */
+function drive(): void {
+  const { artifacts, contracts } = compileAndDeploy(SOURCE, {
+    Token: TOKEN_LABEL, Vault: VAULT_LABEL, Hub: HUB_LABEL,
+  });
+  const tokenContract = contracts.Token!;
+  const vaultContract = contracts.Vault!;
+  const hubContract = contracts.Hub!;
+  const validator = validatorFor(hubContract.category);
+
+  const slot = keyToSlotMulti([SPENDER]);
+  const approveWrite = planMappingWrite({
+    keys: [SPENDER], value: AMOUNT, inventory: [node(slot, PREVIOUS)], encodeValue: (n) => encodeIntegerValue(n),
+  });
+  const transferWrite = planMappingWrite({
+    keys: [SPENDER], value: 0n, inventory: [approveWrite.written[0]!.after], encodeValue: (n) => encodeIntegerValue(n),
+  });
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(slot), { in: NODE_INDEX, out: NODE_INDEX }],
+  ]);
+  const approveSegments = layOutMappingWrites([[approveWrite]], { placementOf: (s) => placements.get(bytesToHex(s)) });
+  const transferSegments = layOutMappingWrites([[transferWrite]], { placementOf: (s) => placements.get(bytesToHex(s)) });
+
+  const approveSelector = selectorOf(artifacts, 'Token', 'approve');
+  const transferSelector = selectorOf(artifacts, 'Token', 'transferFrom');
+  const pullSelector = selectorOf(artifacts, 'Vault', 'pull');
+  const amountPush = encodeIntegerValue(AMOUNT);
+
+  const facts = (
+    contract: string, functionName: string, kind: number, mastersOfContract: number, makesExternalCall: boolean,
+  ): DraftMaster['facts'] => ({
+    contract, functionName, kind, callerIsUser: kind === FrameKind.ROOT, originEqualsCaller: kind === FrameKind.ROOT,
+    makesExternalCall, mastersOfContract,
+  });
+
+  const hub: DraftMaster = master({
+    master: 'hub-1', contract: 'Hub', entry: 'go', program: hubContract.program,
+    facts: facts('Hub', 'go', FrameKind.ROOT, 1, true),
+    frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hubContract.address, value: 0n },
+    enteredBy: 'user', origin: 'user',
+    calls: [
+      { kind: FrameKind.CALL, callee: 'approve-1', target: tokenContract.address, value: 0n,
+        argumentPushes: [approveSelector, amountPush, SPENDER] },
+      { kind: FrameKind.CALL, callee: 'vault-1', target: vaultContract.address, value: 0n,
+        argumentPushes: [pullSelector] },
+    ],
+    segments: [[], [], []],
+  });
+  const vault: DraftMaster = master({
+    master: 'vault-1', contract: 'Vault', entry: 'pull', program: vaultContract.program,
+    facts: facts('Vault', 'pull', FrameKind.CALL, 1, true),
+    frame: { kind: FrameKind.CALL, sender: hubContract.address, self: vaultContract.address, value: 0n },
+    enteredBy: 'hub-1', origin: 'user',
+    calls: [{ kind: FrameKind.CALL, callee: 'transferFrom-1', target: tokenContract.address, value: 0n,
+      argumentPushes: [transferSelector, amountPush, SPENDER, HOLDER] }],
+    argumentPushes: [pullSelector], segments: [[], []],
+  });
+  const approve: DraftMaster = {
+    ...master({
+      master: 'approve-1', contract: 'Token', entry: 'approve', program: tokenContract.program,
+      facts: facts('Token', 'approve', FrameKind.CALL, 2, false),
+      frame: { kind: FrameKind.CALL, sender: hubContract.address, self: tokenContract.address, value: 0n },
+      enteredBy: 'hub-1', origin: 'user',
+      segments: approveSegments, argumentPushes: [approveSelector, amountPush, SPENDER],
+    }),
+    dispatches: true,
+  };
+  const transfer: DraftMaster = {
+    ...master({
+      master: 'transferFrom-1', contract: 'Token', entry: 'transferFrom', program: tokenContract.program,
+      facts: facts('Token', 'transferFrom', FrameKind.CALL, 2, false),
+      frame: { kind: FrameKind.CALL, sender: vaultContract.address, self: tokenContract.address, value: 0n },
+      enteredBy: 'vault-1', origin: 'user',
+      segments: transferSegments, argumentPushes: [transferSelector, amountPush, SPENDER, HOLDER],
+    }),
+    dispatches: true,
+  };
+
+  const nodeSource = {
+    lockingBytecode: USER_LOCK, valueSatoshis: 20_000n,
+    token: token(tokenContract.category, 'mutable', node(slot, PREVIOUS)),
+  };
+  const plan: CompositionDraftPlan = {
+    blocks: [
+      { contract: 'Hub', masters: ['hub-1'], validator: { id: 'validator', settles: [] }, state: [] },
+      { contract: 'Vault', masters: ['vault-1'], state: [] },
+      { contract: 'Token', masters: ['approve-1', 'transferFrom-1'], state: ['node'] },
+    ],
+    userInputs: userInputs(['user'], NODE_INDEX + 1),
+    masters: [hub, vault, approve, transfer],
+    inputs: {
+      'hub-1': { source: masterInput(hubContract) },
+      'vault-1': { source: masterInput(vaultContract) },
+      'approve-1': { source: masterInput(tokenContract) },
+      'transferFrom-1': { source: masterInput(tokenContract) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n,
+          token: token(hubContract.category, 'mutable') },
+      },
+      node: {
+        source: nodeSource,
+        output: { ...nodeSource, token: token(tokenContract.category, 'mutable', transferWrite.written[0]!.after) },
+        unlockingBytecode: new Uint8Array([0x01, 0x01]),
+      },
+      user: userInput(),
+    },
+    validator: {
+      id: 'validator', covers: ['Vault', 'Token'],
+      settles: [{ category: tokenContract.category, stateInputs: ['node'] }],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { host } = createComposedDerivationHost({
+    artifacts: [artifacts.Hub!, artifacts.Vault!, artifacts.Token!], plan,
+  });
+  deriveComposition(
+    [{ contract: 'Hub', functionName: entryName('Hub', 'go'), kind: FrameKind.ROOT, master: 'hub-1' }],
+    host,
+  );
+}
+
+/** The error a shipped call raised, or a failure when it returned normally. */
+function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
   try {
-    compileStringMulti(source, { composition: 'per-call' });
+    run();
   } catch (error) {
-    const refusal = error as { code?: string; message: string };
-    return { code: refusal.code, message: refusal.message };
+    const refusal = error as { name?: string; code?: string; message: string };
+    return { name: refusal.name, code: refusal.code, message: refusal.message };
   }
-  throw new Error('the shipped per-call compiler accepted the source, so there is no refusal to record');
+  throw new Error('the shipped per-call derivation accepted the composition, so there is no refusal to record');
 }
 
 describe('a caller approving a vault that pulls through the token', () => {
-  it('is refused today: the pull reads and writes the allowance mapping, which one master cannot derive', () => {
-    const refusal = compileRefusal(SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toMatch(/the body writes a mapping at slot 0 as a read\/write/);
+  it('compiles: the read-modify-write of one allowance entry is admitted', () => {
+    const { artifacts } = compileAndDeploy(SOURCE, {
+      Token: TOKEN_LABEL, Vault: VAULT_LABEL, Hub: HUB_LABEL,
+    });
+    expect(artifacts.Token?.composition?.convention).toBe('per-call');
+    expect(artifacts.Token?.stateLayout?.mappings?.map((mapping) => mapping.name)).toStrictEqual(['allowance']);
+  });
+
+  it('is refused by the derivation: the second frame touches an allowance node the first frame declared', () => {
+    // One transaction has one commitment for the allowance node: the `7` it spends and the `0` it writes. The
+    // approval frame computes `40`, which is neither, so its own record group does not close and the derivation
+    // stalls rather than filling the site.
+    const refusal = refusalOf(() => drive());
+    expect(refusal.name).toBe('PerCallComposerError');
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.message)
+      .toMatch(/master "approve-1" of Token\.approve\(\) filled no witness at site 0 \(close of segment 0\)/);
   });
 });

@@ -104,8 +104,10 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_CENSUS_OWN_FUNGIBLE',
   'V7_CENSUS_UNEXPECTED_IMMUTABLE',
   'V7_CENSUS_UNEXPECTED_MUTABLE',
+  'V7_CENSUS_MINTING_NOT_RECREATED',
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V7_EVENT_OUTPUT_SHARED',
+  'V7_TOUCHED_RECORDS_MISMATCH',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -143,8 +145,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
  *     mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
  *     own-category output is an event a frame on that contract lists, every listed event names an output of the
- *     transaction, no two frames list the same one, and every master of the contract is recreated by a master output
- *     at its own index.
+ *     transaction, no two frames list the same one, every master of the contract is recreated by a master output at
+ *     its own index, and the record indices the frames read are exactly the state UTXOs the contract spends.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -1304,6 +1306,7 @@ function emitOneSettleCensus(e: Emitter): void {
   emitRequireOwnOutputsListed(e);
   e.op(O.OP_DROP);
   emitRequireMastersRecreated(e);
+  emitRequireTouchedRecords(e);
   e.op(O.OP_DROP);
 }
 
@@ -1514,6 +1517,132 @@ function emitRequireOutputIsDeclared(e: Emitter): void {
   e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
   e.op(O.OP_BOOLOR, O.OP_VERIFY);
   e.op(O.OP_DROP);
+}
+
+/**
+ * The records the frames on the contract read are exactly the state UTXOs it spends.
+ *
+ * Entry `[.., X]`, exit the same. Every index a frame's segment reads has to be a state UTXO of the contract, and
+ * every state UTXO the transaction spends has to be one a frame reads: a record nobody touches would never be
+ * rebuilt, and a read of anything else is not a record of this contract.
+ */
+function emitRequireTouchedRecords(e: Emitter): void {
+  const O = Opcodes;
+  emitCollectOwnRecordInputs(e);
+  e.op(O.OP_SWAP, O.OP_TOALTSTACK);
+  // `[.., ins]`, with the contract's category on the alternate stack for the state-input test.
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  emitIsStateInput(e);
+  e.op(O.OP_VERIFY);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+  e.op(O.OP_TXINPUTCOUNT);
+  e.count(0);
+  // `[.., ins, count, index]`.
+  loopCounted(e, (em) => {
+    em.op(O.OP_DUP);
+    emitIsStateInput(em);
+    em.op(O.OP_IF);
+    emitRequireInputIsRead(em);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_1ADD);
+  });
+  e.op(O.OP_DROP, O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/**
+ * The input or output index on top appears among the record indices the frames read.
+ *
+ * Entry `[.., ins, count, index]`, exit the same. The index is encoded as the two little-endian bytes a witness block
+ * writes it with and searched for among them.
+ */
+function emitRequireInputIsRead(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.push(new Uint8Array(2)).op(O.OP_CAT);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWidth(e, 2);
+  e.op(O.OP_VERIFY);
+}
+
+/**
+ * Every record index a frame on the contract reads, as raw two-byte indices.
+ *
+ * Entry `[.., X]`, exit `[.., X, ins]`. The walk is the one the declared record outputs use; it reads each entry's
+ * first index, which is the record the segment found, and leaves the ones that found no record out of the list.
+ */
+function emitCollectOwnRecordInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitAppendMasterRecordInputs(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/** One master's record indices, appended to the accumulator. */
+function emitAppendMasterRecordInputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectSegmentRecordInputs);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/** One segment: a counted list of record entries, each one's read index collected. */
+function emitCollectSegmentRecordInputs(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectRecordInput);
+}
+
+/**
+ * One record entry's read index, appended to the accumulator when the segment found a record.
+ *
+ * Entry `[.., rest]`, exit `[.., rest]`. The entry's output index and the commitment at each end are dropped; an
+ * entry that found no record leaves the accumulator alone.
+ */
+function emitCollectRecordInput(e: Emitter): void {
+  const O = Opcodes;
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_DUP);
+  e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  e.op(O.OP_ENDIF);
+  dropFront(e, 2);
+  dropLengthPrefixed(e, 4);
+  dropLengthPrefixed(e, 4);
 }
 
 /**

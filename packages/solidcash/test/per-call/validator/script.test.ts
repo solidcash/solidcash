@@ -1020,6 +1020,41 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a spent record that no frame reads', () => {
+    // A second state UTXO of the same contract, listed by the transcript as one to settle, that no frame ever reads:
+    // nothing rebuilds it, so the settlement would drop a record the contract holds. The accepted control is the
+    // same composition without it.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const record = composition.inputs.find((input) => input.state !== undefined)!;
+    const extraIndex = composition.inputs.length;
+    const transcript = {
+      ...composition.transcript,
+      settles: composition.transcript.settles.map((settled) => ({
+        ...settled,
+        stateInputs: [...settled.stateInputs, extraIndex],
+      })),
+    };
+    const inputs = composition.inputs.map((input) => (input.validator === undefined
+      ? input
+      : { ...input, validator: { ...input.validator, transcript } }));
+    const tampered = materialise({
+      ...composition,
+      inputs: [...inputs, {
+        value: 1_000n,
+        lockingBytecode: record.lockingBytecode,
+        token: mutableTokenShape(categoryOf('solo-A'), seedBytes('untouched-record', 4)),
+        state: { redeemScript: record.state!.redeemScript },
+      }],
+    });
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_TOUCHED_RECORDS_MISMATCH');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('refuses a master whose recreation changes its lock', () => {
     // A master is identified by its category and its minting capability, so the settlement never pins a lock; what it
     // does require is that the master's own output recreates it where it was. A master output that moves to another

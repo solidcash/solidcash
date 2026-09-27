@@ -21,12 +21,12 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 281 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 282 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 66 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 74 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 887 tests, all passing at `4ee6f81d5` (114 + 320 + 453).
+Total: 893 tests, all passing at `abe0de286` (114 + 320 + 459).
 
 ## What each directory covers
 
@@ -81,12 +81,16 @@ Total: 887 tests, all passing at `4ee6f81d5` (114 + 320 + 453).
   block that declares a call its entry's source does not make. `round-trip-stateful.test.ts` carries the same shape
   with records on both contracts, and it is the evidence the plan's first milestone asks for: `A`'s one record is
   written by the entry twice and by the re-entered entry between them, every frame reads and closes against its own
-  segment's declaration, the derivation completes callee-first, every contract input and the validator are
-  accepted, the validator's derivation accepts all eleven checks in the spec's order, each record's output carries
-  the commitment its last declaration wrote, and four controls are refused. `round-trip-events.test.ts` states a
-  trailing event output and pins what remains of that shape: with each entry named by the selector its program
-  dispatches on, the entry's call site fills and the derivation reaches the re-entered entry, whose own program
-  fails an `OP_VERIFY` before its first segment close.
+  segment's declaration, the derivation completes callee-first, every contract input is accepted, the validator's
+  derivation accepts all eleven checks in the spec's order, each record's output carries the commitment its last
+  declaration wrote, and four controls are refused. `round-trip-stateful.test.ts` also emits from the entry, so its
+  transaction is spec 5.2's output set complete (the event at 6, the change at 7); what the machine refuses there is
+  the validator input, at the operation-cost density its own script sets - the plan's open item, with the numbers.
+  `round-trip-events.test.ts` states the same shape without records on both contracts: the derivation completes, every
+  master accepts the transaction as derived, an event payload its listing entry did not compute is refused, an
+  own-category NFT no frame lists is refused at a single-master contract and accepted at a shared one (the union
+  census is the validator's, and is not emitted yet), and a plan that leaves an emitting entry's event unstated cannot
+  be derived.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -181,9 +185,12 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   validator decides all eleven checks. A contract the transaction settles while spending none of its state — several
   covered masters, no records of its own — is stated by an empty state-input list in the transcript, which the codec
   and the shipped program both carry. What the round trip does not carry is the spec's output set: its two contracts
-  keep no records and emit no events, so an event output and a value send have no supplier in the composer, and a
-  contract that emits inside one of two entries is still refused with "the contract emits an event that is not
-  attributed to a body" when a sibling contract emits; the event region is sized by the contract's own bodies. A
+  keep no records and emit no events, so an event output and a value send have no supplier in the composer. A
+  contract that emits inside one of two entries is admitted (the event region is sized by the contract's own bodies),
+  and the round trip that emits derives: the census a body makes over its contract's own-category immutable NFTs
+  admits only what its own block lists, so it stands down while another master of the same category is in the
+  transaction, which is the same run-time test the record settlement uses. What that leaves is V7's union census: for
+  a shared category nothing refuses an own-category NFT at an unlisted output, and a test pins that. A
   record written by more than one frame in a transaction is no longer a wall: a body reads its own segment's
   declared `viewIn`, closes against the commitment its segment declared, and resolves a field written before an
   external call from the declaration rather than its own stale value, so the worked shape settles end to end. What
@@ -197,5 +204,14 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.
-- Every VM acceptance in these directories runs under the relaxed operation-cost profile; the published density is
-  what a real chain would apply (see `GATE_REPORT.md`).
+- Every VM acceptance in these directories runs with the standardness flags relaxed; the operation-cost density is a
+  consensus rule and applies there too (see `GATE_REPORT.md`). Measured at `abe0de286` on the stateful round trip's
+  shape: the budget is `800` per byte of the validator input's own unlocking bytecode (4,722 bytes, so 4,763 with the
+  base, a maximum of 3,810,400) and the shipped program spends 3,772,568 of it on the same shape without an event -
+  37,832 units, 1%, of headroom - and 3,810,464 with one, 64 over, where the machine refuses the input by that limit
+  while the validator's derivation accepts the same transaction. The cost terms, measured on the emitting shape:
+  28,668 evaluated instructions at 100 each (2,866,800), 919,364 bytes pushed (919,364), 377 hash iterations at 64
+  (24,128) and 172 of arithmetic. So the next validator rule has 37,832 units to fit in, and the bytes pushed - a
+  quarter of the cost - are a lever as large as the instruction count: a leaner walk over the covered masters (each
+  of whose unlocking bytecodes carries that master's whole program), a smaller program, or validator input padding
+  (open point 7) comes first.

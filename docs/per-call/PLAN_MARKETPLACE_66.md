@@ -467,7 +467,10 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   half — a callee running between its caller's segments, so roots never interleave (T30) — needs the record chains
   and is open until B7 lands.
 - [ ] B7 V7 (partial): no category settled twice. Open: the input rule, per-record chains across every frame on the
-  contract's records, the census (containers, distinct event outputs), and values (spec S4).
+  contract's records, the census (containers, distinct event outputs), and values (spec S4). The census is now
+  load-bearing rather than redundant: a master of a shared category stands its own down (`abe0de286`, the Log row),
+  so until this check lands, an own-category immutable NFT at an output no frame lists is accepted for such a
+  contract.
 - [x] B8 V8: the settles set (two or more masters, or a `DELEGATE` or `INTERNAL` frame on the records). Both halves
   are emitted and each has its own refusal; the branch for the borrowed half was written but not called until
   `b52b7ec5b`, which an end-to-end refusal test caught.
@@ -718,6 +721,11 @@ risk. Take the slices in order, each with its own tests.
 
 - [ ] **I1 `ABBA` end to end:** compiled masters (C, R1-R2), the composer (E) and the real validator (B). The outputs
   are exactly those of spec 5.2.
+  - The outputs are 5.2's set complete as of `abe0de286` - six participants at 0-5, the event at 6, the user's change
+    at 7 - the derivation completes callee first, and every contract input the machine is asked about is accepted.
+    What is still open is the validator input's own spendability: the shipped program spends its operation-cost
+    budget to within 1% on this shape and is 64 units over it once the entry emits (the Log row and the real-chain
+    limits item below carry the numbers).
 - [ ] **I2: toys G4 and shapes G5 settle, and G3 passes.** Gate:
   - [ ] **GO** requires:
     - 0 per-shape rules added;
@@ -796,6 +804,13 @@ These are tracked here so nothing drops silently. Each needs its own decision be
 - [ ] Users other than P2PKH as callers (spec open point 8).
 - [ ] Real-chain limits: validator size and density (open point 7), 10,000-byte masters (11), events above 128 bytes
   (16), and the 100,000 B relay limit with one code copy per entry (spec 12, A9).
+  - Measured on the round trip's shape: the validator input's budget is 800 operation-cost units per byte of its own
+    unlocking bytecode (4,722 bytes, so a maximum of 3,810,400) and the shipped program spends 3,772,568 of it on the
+    same shape without an event - 1% of headroom - and 3,810,464 with one, 64 over. The terms on the emitting shape:
+    28,668 evaluated instructions at 100 each, 919,364 bytes pushed, 377 hash iterations at 64, and 172 of arithmetic.
+    So the next rule this stream adds has 37,832 units to fit in, and the bytes pushed are a lever as large as the
+    instruction count. A leaner walk over the covered masters (whose unlocking bytecodes carry their whole programs),
+    a smaller program or validator input padding (open point 7) comes before a larger shape is spendable.
 - [ ] External audit of `V_TEMPLATE`, with B14's reference model, before the v1 freeze binds at the first real-chain
   deployment (D3, D9). Owner: the project owner, who engages the auditor; scheduled in Phase R.
 - [x] The address form, decided before the freeze binds: `addrV(cat)`, final for v1, no dispatcher (user decision
@@ -1174,3 +1189,4 @@ Titles marked NEVER have not passed on any real compile to date.
 - The tail design, before it is implemented: keep the parked region at a compile-time size (the largest emit count over every body the master can run, the constructor included), make the head's event walk count-driven up to that size with the unused slots holding the no-index sentinel, and have **each body pin the declared count to its own emit count** — the body is what knows how many events it emits, and that check is what the old fixed count carried: a block must not declare events nobody computed, and a body must not emit one the block does not list. The tracked slot depths the bodies read stay fixed, which is why the region is padded rather than sized per body; the refusal stays until the walk and the bodies both hold that contract.
 
 - The wall after the event region is dynamic state. The marketplace's first root stops with `the entry point 'name' carries the hidden parameter '__internal__dynamicChunkInputBase', which the master head does not supply` — the ERC20 stores its `name`/`symbol` as `string` state set from `string` constructor arguments, and a dynamic type is lowered into a band of chunk inputs whose base the direct convention's SDK computes (`packages/solidcash/src/message-bus/*`, `compose-admit.ts`'s dynamic-chunk convergence). The per-call path has no supplier for that band at all, so this is plan item R5 (dynamic `string`/`bytes`/`T[]`: consume every old chunk and create every new one) plus the composer work that declares the chunks as records and the frame work that locates their base — a workstream rather than a shape.
+| 2026-09-27 | abe0de286 | per-call | the event census | 114 + 320 + 459 | The two-contract round trip that emits derives, and its transaction is spec 5.2's output set complete: the six participants recreated at 0-5, the event at 6, the user's change at 7. The wall was the body's census over the transaction's own-category immutable NFTs, which admitted only the outputs its own block lists - so the second master of a contract refused the event the first master's frame had listed, and nothing could be derived past it. The census is the contract's, and the spec leaves it to the validator once several masters run that contract (7.2 V7/V8, whose listed set is the union over the frames that run on the contract's records), so the body now runs it only while it is its category's only master in the transaction - the same run-time test the record settlement already uses. The first attempt at that gate embedded the counter as one data push (`this.emit` reads a `Uint8Array` argument as a push, not as opcodes), which produced a 22-byte literal and a wall that looked unrelated to the census; with the loop emitted as opcodes the counter runs. Two findings the round trip now carries. **The gap the waiver opens**: for a shared category nothing emits the union census, so an own-category immutable NFT at an output no frame lists is accepted there - pinned by a test so it flips when V7's census lands. **The validator's density, quantified**: the budget is 800 operation-cost units per byte of the validator input's own unlocking bytecode (3,810,400 on this shape) and the shipped program's walk over the covered masters spends 3,772,568 of it - within 1% - before the entry emits; with the emitting entry's larger program and its event output it reaches 3,810,464, 64 over, and the machine refuses that input by the limit while the validator's own derivation on the same transaction accepts all eleven checks. `GATE_REPORT.md`'s "the validator suite evaluates under the relaxed cost profile" is therefore only half right: the relaxed profile relaxes the standardness flags, and the operation-cost density is a consensus rule that applies there too - the existing validator acceptances fit because the reference composition spends 99% of its budget, not because the budget is relaxed. I1's remaining clause is that budget rather than the shape. No section-4 box is complete this round: C9 bundles the events clause, which this lands at the composition level, with `sends[]`, and the census gap above is part of S2/T41 that V7's census owes. The event lock and the output a plan states are built once now, in `solidc/test/per-call/master/event-input.ts`, and both round trips use it. |

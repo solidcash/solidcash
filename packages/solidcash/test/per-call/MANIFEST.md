@@ -130,8 +130,9 @@ check whether `validator/script.test.ts`, `master-program.test.ts` or the file o
   returns, `ecrecover`, dynamic mapping values).
 - **`solidcash/test/per-call/toys/`** — the small compositions the design lists. Each is driven to the machine
   where the shipped path supports it and otherwise refused by name: a repeated call to one target, the sorted-entry
-  insert/update/delete lifecycle, a result fed into a later call, and a fan-in through an allowance, each currently
-  refused before composition with the rule named.
+  insert/update/delete lifecycle, a read's result fed into a later call (settled when the value is one the running
+  code holds; a root that takes its own argument and a later call mixing a compile-time argument are refused with
+  the rule named), and a fan-in through an allowance, still refused before composition.
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name.

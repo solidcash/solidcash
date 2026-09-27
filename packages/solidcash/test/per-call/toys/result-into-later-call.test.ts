@@ -1,28 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { FrameKind, encodeArgumentList, encodeIntegerValue } from '@solidcash/utils';
+import {
+  FrameKind, argsHash, decodeWitnessBlock, encodeArgumentList, encodeIntegerValue, encodeResultList,
+  splitFirstPush,
+} from '@solidcash/utils';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, masterInput, rootOf, seededAddress, selectorOf,
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import type { CompositionDraftPlan, DraftMaster } from '../../../src/per-call/composer/index.js';
+import {
+  createComposedDerivationHost, deriveDepthFirst, type CompositionDraft, type CompositionDraftPlan,
+  type DraftMaster,
+} from '../../../src/per-call/composer/index.js';
 
 /**
- * A read's result feeding a later call: `Claimer.f` reads a fee from `Fee.fee` (a view read, so a static frame) and
- * passes it to `Pay.pay`. The compiler compiles both entries, but the composer never fills a call record's `result`
- * field, so the caller recomputes the second call's digest from an empty result and stops.
+ * A read's result feeding a later call: `Claimer.f` reads a fee from `Fee.fee` and passes it to `Pay.pay`.
+ *
+ * The composer now fills a call record's `result` from its callee's declared `retval`, so the caller reads the fee
+ * out of the first record and recomputes the second call's digest from it. The plan's own `Y3` shape — `A.f(id)`
+ * computes `fee = B.fee(id)` then calls `C.pay(id, fee)` — settles when `id` is a value the running code holds,
+ * which is `tx.inputs.length` below (a user-entered root carries no call data, so it cannot take the parameter the
+ * plan writes). Two walls remain and are pinned by name:
+ *
+ *   - a root entry that takes its own argument is refused by the composer (a user-entered master carries no call
+ *     data), so `id` cannot arrive as a parameter;
+ *   - a later call that also passes a compile-time argument still stalls: the caller's run-time digest appends the
+ *     compile-time value's bytes rather than its wire push (the fold for `7` is the value `0x07`; the wire push is
+ *     `0x57`), so no callee call data can hash to the record the caller checks.
  */
 
 const CLAIMER_LABEL = 'later call claimer';
 const FEE_LABEL = 'later call fee';
 const PAY_LABEL = 'later call pay';
-const CLAIMER = hexOf(seededAddress(CLAIMER_LABEL));
 const FEE = hexOf(seededAddress(FEE_LABEL));
 const PAY = hexOf(seededAddress(PAY_LABEL));
 
-/** The source with `id` taken from the user when `withId`, and from a constant otherwise. */
-function source(withId: boolean): string {
-  const parameter = withId ? 'int id' : '';
-  const id = withId ? 'id' : '7';
+/** Where the later call's second argument comes from. */
+type IdMode = 'parameter' | 'literal' | 'runtime';
+const LITERAL_ID = 7n;
+/** The composed transaction's input count: the three masters, the validator and the user. */
+const RUNTIME_ID = 5n;
+
+/** The source, with `id` taken from the root's parameter, a literal, or the running transaction's input count. */
+function source(mode: IdMode): string {
+  const parameter = mode === 'parameter' ? 'int id' : '';
+  const id = mode === 'literal' ? LITERAL_ID.toString() : 'id';
+  const declare = mode === 'runtime' ? '     int id = tx.inputs.length;\n' : '';
   return 'pragma solidcash ^0.13.0;'
     + ' interface IFee { function fee(int id) view returns (int); }'
     + ' interface IPay { function pay(int id, int amount); }'
@@ -30,6 +53,7 @@ function source(withId: boolean): string {
     + ' contract Pay { function pay(int id, int amount) { require(amount > 0); } }'
     + ' contract Claimer {'
     + `   function f(${parameter}) {`
+    + declare
     + `     int fee = IFee(0x${FEE}).fee(${id});`
     + `     IPay(0x${PAY}).pay(${id}, fee);`
     + '     require(true);'
@@ -48,15 +72,28 @@ function draftMaster(spec: Partial<DraftMaster> & MasterIdentity): DraftMaster {
   };
 }
 
-/** Compiles, deploys and plans the composition, then runs the shipped composer and derivation over it. */
-function compose(withId: boolean): ReturnType<typeof composeAndDerive> {
-  const { artifacts, contracts } = compileAndDeploy(source(withId), {
+/** The plan every case drives, with `id` supplied however the source under test takes it. */
+interface Built {
+  readonly plan: CompositionDraftPlan;
+  readonly artifacts: readonly { readonly composition?: unknown }[];
+  readonly id: bigint;
+  readonly idPush: Uint8Array;
+  readonly feePush: Uint8Array;
+  readonly feeRetval: Uint8Array;
+  readonly paySelector: Uint8Array;
+}
+
+function build(mode: IdMode): Built {
+  const { artifacts, contracts } = compileAndDeploy(source(mode), {
     Claimer: CLAIMER_LABEL, Fee: FEE_LABEL, Pay: PAY_LABEL,
   });
   const claimer = contracts.Claimer!;
   const validator = validatorFor(claimer.category);
-  const idPush = encodeIntegerValue(7n);
-  const feePush = encodeIntegerValue(14n);
+  // A user-entered root carries no call data, so the parameter case states a push only to make the refusal about
+  // the root's entry rather than about a missing argument.
+  const id = mode === 'literal' ? LITERAL_ID : RUNTIME_ID;
+  const idPush = encodeIntegerValue(id);
+  const feePush = encodeIntegerValue(id * 2n);
   const feeSelector = selectorOf(artifacts, 'Fee', 'fee');
   const paySelector = selectorOf(artifacts, 'Pay', 'pay');
   const plan: CompositionDraftPlan = {
@@ -75,15 +112,16 @@ function compose(withId: boolean): ReturnType<typeof composeAndDerive> {
         },
         frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: claimer.address, value: 0n },
         enteredBy: 'user', origin: 'user', segments: [[], [], []],
-        argumentPushes: withId ? [idPush] : [],
+        argumentPushes: mode === 'parameter' ? [idPush] : [],
         calls: [
           {
             kind: FrameKind.STATIC, callee: 'fee-1', target: seededAddress(FEE_LABEL), value: 0n,
             argumentPushes: [feeSelector, idPush],
           },
           {
+            // The call data carries the last parameter's push first, so `amount` (the fee) leads `id`.
             kind: FrameKind.CALL, callee: 'pay-1', target: seededAddress(PAY_LABEL), value: 0n,
-            argumentPushes: [paySelector, idPush, feePush],
+            argumentPushes: [paySelector, feePush, idPush],
           },
         ],
       }),
@@ -95,7 +133,8 @@ function compose(withId: boolean): ReturnType<typeof composeAndDerive> {
         },
         frame: { kind: FrameKind.STATIC, sender: claimer.address, self: seededAddress(FEE_LABEL), value: 0n },
         enteredBy: 'claimer-1', origin: 'user', argumentPushes: [feeSelector, idPush],
-        retval: encodeArgumentList([encodeIntegerValue(14n)]),
+        // The read's return value, which the caller's record must carry for the digest it recomputes to match.
+        retval: encodeResultList([feePush]),
       }),
       draftMaster({
         master: 'pay-1', contract: 'Pay', functionName: 'Pay.pay()', program: contracts.Pay!.program,
@@ -104,7 +143,7 @@ function compose(withId: boolean): ReturnType<typeof composeAndDerive> {
           callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
         },
         frame: { kind: FrameKind.CALL, sender: claimer.address, self: seededAddress(PAY_LABEL), value: 0n },
-        enteredBy: 'claimer-1', origin: 'user', argumentPushes: [paySelector, idPush, feePush],
+        enteredBy: 'claimer-1', origin: 'user', argumentPushes: [paySelector, feePush, idPush],
       }),
     ],
     inputs: {
@@ -118,8 +157,26 @@ function compose(withId: boolean): ReturnType<typeof composeAndDerive> {
     },
     validator: { id: 'validator', covers: ['Fee', 'Pay'], settles: [], redeemScript: validator.redeem },
   };
-  return composeAndDerive(plan, [artifacts.Claimer!, artifacts.Fee!, artifacts.Pay!], [rootOf('Claimer', 'f', 'claimer-1')]);
+  return {
+    plan,
+    artifacts: [artifacts.Claimer!, artifacts.Fee!, artifacts.Pay!],
+    id,
+    idPush,
+    feePush,
+    feeRetval: encodeResultList([feePush]),
+    paySelector,
+  };
 }
+
+/** The composed host for one case: the draft the composer built, before the derivation runs. */
+function hostFor(built: Built): {
+  readonly host: ReturnType<typeof createComposedDerivationHost>['host'];
+  readonly draft: CompositionDraft;
+} {
+  return createComposedDerivationHost({ vm: compositionMachine(), artifacts: built.artifacts, plan: built.plan });
+}
+
+const ROOT = rootOf('Claimer', 'f', 'claimer-1');
 
 /** The error a shipped call raised, or a failure when it returned normally. */
 function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
@@ -132,18 +189,72 @@ function refusalOf(run: () => unknown): { readonly name?: string; readonly code?
   throw new Error('the shipped per-call composer accepted the composition, so there is no refusal to record');
 }
 
+/** One master's witness block, read back from the unlocking bytecode the composer built, through the shipped codec. */
+function blockOf(unlocking: Uint8Array): ReturnType<typeof decodeWitnessBlock> {
+  return decodeWitnessBlock(splitFirstPush(unlocking).payload);
+}
+
 describe('a read whose result a later call consumes', () => {
-  it('is refused today when the root entry takes its argument: a user-entered master carries no call data', () => {
-    const refusal = refusalOf(() => compose(true));
+  it('refuses a root entry that takes its own argument: a user-entered master carries no call data', () => {
+    const refusal = refusalOf(() => hostFor(build('parameter')));
     expect(refusal.name).toBe('PerCallEncodingError');
     expect(refusal.message).toMatch(/is entered by a user, so it carries no call data/);
   });
 
-  it('is refused today when the result is carried: the derivation stalls on the second call', () => {
-    // Held with a constant id, the first call fills and its static callee settles; the second call never advances
-    // because the caller's digest is computed from the call result the composer left empty.
-    const refusal = refusalOf(() => compose(false));
+  it('threads the read result into the later call, but a compile-time second argument still stalls', () => {
+    // The composer now fills the read's record with the callee's `retval`; what stops the derivation is the caller's
+    // run-time digest for the later call. It appends the literal `7` as the value `0x07`, while the wire push (the
+    // bytes the callee's call data carries and the record's digest is over) is `0x57`. No call data hashes to the
+    // record the caller checks, so the second call's site cannot advance.
+    const built = build('literal');
+    const { host, draft } = hostFor(built);
+
+    const claimer = blockOf(draft.unlockingBytecodeOf('claimer-1'));
+    expect(claimer.calls[0]!.result).toStrictEqual(built.feeRetval);
+
+    const refusal = refusalOf(() => deriveDepthFirst(ROOT, host));
+    expect(refusal.name).toBe('PerCallComposerError');
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message).toMatch(/filled no witness at site 1 \(call 1\)/);
+    expect(refusal.message).toMatch(/master "claimer-1" of Claimer\.f\(\) filled no witness at site 1 \(call 1\)/);
+  });
+
+  it('settles the plan\'s Y3 shape when the id is a run-time value, accepted at every contract input', () => {
+    const built = build('runtime');
+    const outcome = composeAndDerive(built.plan, built.artifacts, [ROOT]);
+
+    // The source's `tx.inputs.length` is the input count the composed transaction actually has, so the argument
+    // the plan stated is the one the body computed.
+    expect(outcome.transaction.inputs.length).toBe(Number(built.id));
+
+    // The read is derived before the call it feeds, and that call before the root that resumes past both.
+    expect(outcome.completed.map((frame) => frame.master)).toStrictEqual(['fee-1', 'pay-1', 'claimer-1']);
+
+    // Every contract input of the assembled transaction passes the BCH-2026 machine.
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+
+    // The claimer's own block, read back from the bytes the machine evaluates: the static read's record carries its
+    // callee's return value, and the later void call carries no result.
+    const claimer = blockOf(outcome.draft.unlockingBytecodeOf('claimer-1'));
+    expect(claimer.calls).toHaveLength(2);
+    expect(claimer.calls[0]!.result).toStrictEqual(built.feeRetval);
+    expect(claimer.calls[1]!.result).toStrictEqual(new Uint8Array(0));
+    expect(blockOf(outcome.draft.unlockingBytecodeOf('fee-1')).retval).toStrictEqual(built.feeRetval);
+
+    // The later call's recorded digest is the one the shipped encoders produce from the call data the callee carries
+    // (`fee` then `id`), which is what the caller's body recomputes from the read's value; the machine accepting the
+    // caller's input is the proof the two agree.
+    expect(claimer.calls[1]!.argsHash)
+      .toStrictEqual(argsHash(built.paySelector, encodeArgumentList([built.feePush, built.idPush])));
+
+    // The masters are recreated in place, so each contract's post-state is its own lock and its own category.
+    const byMaster = new Map(outcome.contractInputs.map((input) => [input.id, input.index]));
+    for (const master of ['claimer-1', 'fee-1', 'pay-1']) {
+      const source = built.plan.inputs[master]!.source;
+      const output = outcome.transaction.outputs[byMaster.get(master)!]!;
+      expect(output.lockingBytecode).toStrictEqual(source.lockingBytecode);
+      expect(output.token!.category).toStrictEqual(source.token!.category);
+    }
   });
 });

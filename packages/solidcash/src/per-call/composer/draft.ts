@@ -192,8 +192,26 @@ export interface CompositionDraft {
   programFor(master: string): ShippedVmProgram;
 }
 
+/** The declared return value of every master the plan runs, keyed by identity. */
+function retvalsByMaster(plan: CompositionDraftPlan): Map<string, Uint8Array> {
+  return new Map(plan.masters.map((master) => [master.master, master.retval]));
+}
+
+/**
+ * The result a caller records for a call: its callee's return value.
+ *
+ * A call's `result` is the value the caller's own body reads when the source uses the call's value, and the
+ * validator checks it against the callee's own `retval`. So it is neither the caller's nor the composer's to
+ * choose: it is exactly what the plan declared the callee returns. A call whose callee the plan does not run
+ * carries no result, which a body that makes such a call would refuse when it read the record.
+ */
+function callResultOf(call: DraftCall, retvals: Map<string, Uint8Array>): Uint8Array {
+  return retvals.get(call.callee) ?? new Uint8Array(0);
+}
+
 /** Turns the draft plan into the plan assembly consumes: the calls' results are what the derivation still owes. */
 function toCompositionPlan(plan: CompositionDraftPlan): CompositionPlan {
+  const retvals = retvalsByMaster(plan);
   return {
     blocks: plan.blocks,
     userInputs: plan.userInputs,
@@ -210,7 +228,7 @@ function toCompositionPlan(plan: CompositionDraftPlan): CompositionPlan {
         target: call.target,
         value: call.value,
         argumentPushes: call.argumentPushes,
-        result: new Uint8Array(0),
+        result: callResultOf(call, retvals),
       })),
       retval: master.retval,
       segments: master.segments,
@@ -259,6 +277,7 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   }
 
   const mastersById = new Map(plan.masters.map((master) => [master.master, master]));
+  const retvals = retvalsByMaster(plan);
 
   // The validator covers the contract whose block hosts it, plus every contract the plan says it covers.
   const validatorByContract = new Map<string, string>();
@@ -278,7 +297,7 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
       value: call.value,
       calleeRef: UNFILLED_CALLEE_REF,
       argsHash: callArgsHash(call),
-      result: new Uint8Array(0),
+      result: callResultOf(call, retvals),
     }));
     blocks.set(master.master, {
       kind: master.frame.kind,

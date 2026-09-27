@@ -94,6 +94,7 @@ import {
 } from './runtime-loop-event-domain.js';
 import { assertConstructedKeyVectorRouteBinding } from './ConstructedKeyVector.js';
 import { nextBuildId, peekBuildId } from './buildSequence.js';
+import { appendComputedValueChunkRun } from './computed-value-chunk-runs.js';
 import {
   decodeEvmInvocationResult, decodeEvmInvocationResultPrefix, encodeEvmInvocationResult,
 } from './evm-abi-result.js';
@@ -8290,9 +8291,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
     const computedValueChunkRuns: Array<{ id: string; collection: string; slot?: Uint8Array }> = [];
-    const addComputedValueChunkRun = (collection: string, slot?: Uint8Array): void => {
-      computedValueChunkRuns.push({ id: `${collection}#${computedValueChunkRuns.length}`, collection, slot });
-    };
+    const addComputedValueChunkRun = (collection: string, slot?: Uint8Array): void =>
+      appendComputedValueChunkRun(computedValueChunkRuns, collection, slot);
     // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
     const computedValueUpdateCollections = new Set<string>();
     const runtimeLoopDerivedCounts = new Map<string, number>();

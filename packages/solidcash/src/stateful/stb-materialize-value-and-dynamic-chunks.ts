@@ -6,7 +6,7 @@ import { binToHex } from '@bitauth/libauth';
 import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import { calculateDust } from '../utils.js';
+import { addressToLockScript, calculateDust } from '../utils.js';
 import type { DerivedChunkOutputObservation } from './value-chunk-persist.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 
@@ -51,11 +51,22 @@ export function appendValueChunks(
       && chunk.commitment !== '00'
     ))
     : [];
-  // Append-at-current-width is wrong only when the builder is still shorter than the
-  // trailing band (chunks land on publishJobEvent dataNft slots, e.g. out14). A
-  // full-width layout must keep legacy append so post-job-with-whitelist stays green.
+  const isFixedContinuation = (lockingBytecode: Uint8Array, category: string, commitment: string): boolean => (
+    fixedBandPins.some(([, chunk]) => (chunk.categoryId ?? host.categoryId).toLowerCase() === category.toLowerCase()
+      && binToHex(chunk.lockingBytecode) === binToHex(lockingBytecode) && chunk.commitment === commitment)
+  );
+  const unpinnedOutputs = host.valueChunkOutputs.filter((output) => !(
+    output.token?.nft?.capability === 'mutable'
+      && isFixedContinuation(
+        output.to instanceof Uint8Array ? output.to : addressToLockScript(output.to),
+        output.token.category, output.token.nft.commitment,
+      )
+  ));
+  // Only place a staged run into an unoccupied selected band. A fixed pin can own a different
+  // resource: suppress its exact duplicate, not every other staged or trace-derived continuation.
   const wouldAppendBeforeBand = !!band
-    && host.valueChunkOutputs.length > 0
+    && fixedBandPins.length === 0
+    && unpinnedOutputs.length > 0
     && builder.outputs.length < band.start;
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' && host.valueChunkOutputs.length > 0) {
@@ -71,12 +82,8 @@ export function appendValueChunks(
       }),
     }));
   }
-  if (fixedBandPins.length > 0) {
-    // Absolute fixedIndex pins are applied by _applyDerivedValueChunks.
-    // Do not also append staged/raw copies — surplus same-lock NFTs make
-    // matches>nNew and break OUTPUTTOKENCOMMITMENT at the band indices.
-  } else if (wouldAppendBeforeBand && band) {
-    for (const [offset, vco] of host.valueChunkOutputs.entries()) {
+  if (wouldAppendBeforeBand && band) {
+    for (const [offset, vco] of unpinnedOutputs.entries()) {
       if (offset >= band.nNew) break;
       const outputIndex = band.start + offset;
       host.padOutputsToIndex(builder, outputIndex);
@@ -86,15 +93,15 @@ export function appendValueChunks(
       else builder.outputs[outputIndex] = chunkOutput;
     }
   } else {
-    for (const vco of host.valueChunkOutputs) {
+    for (const vco of unpinnedOutputs) {
       const chunkOutput = { ...vco };
       chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
       builder.addOutput(chunkOutput);
     }
   }
-  if (fixedBandPins.length === 0) {
-    for (const { id, lockingBytecode } of host.getValueChunkVars()) {
-      for (const commitment of host.valueChunkRawCommitments.get(id) ?? []) {
+  for (const { id, lockingBytecode } of host.getValueChunkVars()) {
+    for (const commitment of host.valueChunkRawCommitments.get(id) ?? []) {
+      if (!isFixedContinuation(lockingBytecode, host.categoryId, commitment)) {
         const chunkOutput = {
           to: lockingBytecode, amount: 1200n,
           token: { amount: 0n, category: host.categoryId,

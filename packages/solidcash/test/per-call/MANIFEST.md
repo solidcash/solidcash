@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 306 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 309 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -32,10 +32,11 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 22 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 929 tests, all passing at `aaddcb5fc` (114 + 344 + 471).
+Total: 933 tests, all passing at `7c76dcef4` (114 + 347 + 472). The counts are the per-directory runs above, and
+the two package totals are full-config runs of `vitest.per-call.config.ts` in `solidc` and `solidcash`.
 
 ## What each directory covers
 
@@ -54,8 +55,10 @@ Total: 929 tests, all passing at `aaddcb5fc` (114 + 344 + 471).
   dynamic value's
   chunk run addressed from the frame's declared record block rather than from the master's own input
   (`dynamic-state-record.test.ts`, which lays the block away from the master so a fixed offset would fail), and the
-  shapes the generator refuses by name (including imports that contribute emitted definitions, which a
-  declaration-only import does not).
+  shapes the generator refuses by name, and the file-level definitions a unit contributes, which the master opens
+  after: a declaration-only import leaves the program byte-identical, an unused definition emits nothing, an entry
+  that calls an imported definition runs it in the machine, and a definition whose body cannot be outlined is inlined
+  at its call sites rather than placed ahead of the head.
 - **`solidc/test/per-call/records/`** — proof that the shipped sorted-list, covenant-helper and state encoders
   implement the record semantics the design assumes: exact read, absence by strict predecessor on the masked slot,
   insert with a relinked predecessor, update in place, delete as the default value, composite keys for nested
@@ -88,8 +91,9 @@ Total: 929 tests, all passing at `aaddcb5fc` (114 + 344 + 471).
   segment's declaration, the derivation completes callee-first, every contract input is accepted, the validator's
   derivation accepts all eleven checks in the spec's order, each record's output carries the commitment its last
   declaration wrote, and four controls are refused. `round-trip-stateful.test.ts` also emits from the entry, so its
-  transaction is spec 5.2's output set complete (the event at 6, the change at 7); what the machine refuses there is
-  the validator input, at the operation-cost density its own script sets - the plan's open item, with the numbers.
+  transaction is spec 5.2's output set complete (the event at 6, the change at 7); its validator input used to be
+  refused at the operation-cost density its own script sets, and the program's padding block is what makes it
+  accepted now, which the case asserts with the numbers beside it.
   `round-trip-events.test.ts` states the same shape without records on both contracts: the derivation completes, every
   master accepts the transaction as derived, an event payload its listing entry did not compute is refused, an
   own-category NFT no frame lists is refused at a single-master contract and accepted at a shared one (the union
@@ -173,22 +177,23 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 ## What is not covered
 
 - The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
-  path: a compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a body
+  path: a compiled unit whose definitions reach inline assembly is refused by name, and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
   in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
   collections in one body, and the sender and compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
-  constructor that emits shares the head. A `string`-valued state variable is no longer a wall by itself, and the composer now supplies the band: the
+  constructor that emits shares the head. A file-level definition is no longer a wall either: the master opens after
+  the definitions its unit contributes, and the shapes a definition could carry that the head cannot serve are the
+  ones the compiler never outlines. A `string`-valued state variable is no longer a wall by itself, and the composer now supplies the band: the
   head derives the chunk run's coordinate from the frame's declared record block, `planChunkRun` derives the header
   and chunk commitments and `layOutChunkRun` places the run one layout width past the block's data NFTs, and a plan
   built that way derives with the machine accepting the master that wrote the value (`frames/chunk-run.test.ts`).
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
   (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `aaddcb5fc` it is `unicrow/UnicrowClaim.sol` and
-  the free-function wall: "a per-call master is one program, so free functions that would be emitted before it are
-  not supported" — the unit that reported first the round before, `unicrow/FakeToken.sol` with its clause for
-  several collections, no longer reports, so the mapping walls ahead of it are cleared and the project's first
-  failure is the free-function one the earlier rows recorded for `EACCToken.sol` and `MockSablierLockup.sol`. The
+  harness compiles the built compiler rather than the sources. At `7c76dcef4` it is `unicrow/UnicrowClaim.sol` and
+  its inline assembly: "inline assembly is not composed per-call" — the unit that reported first the round before,
+  `unicrow/UnicrowClaim.sol` with its free-function clause, no longer reports, so the definition prefix is admitted
+  and the assembly question is what the project reports first. The
   ladder stands at "blocked at compile" and no title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state
@@ -218,13 +223,13 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.
 - Every VM acceptance in these directories runs with the standardness flags relaxed; the operation-cost density is a
-  consensus rule and applies there too (see `GATE_REPORT.md`). Measured at `abe0de286` on the stateful round trip's
-  shape: the budget is `800` per byte of the validator input's own unlocking bytecode (4,722 bytes, so 4,763 with the
-  base, a maximum of 3,810,400) and the shipped program spends 3,772,568 of it on the same shape without an event -
-  37,832 units, 1%, of headroom - and 3,810,464 with one, 64 over, where the machine refuses the input by that limit
-  while the validator's derivation accepts the same transaction. The cost terms, measured on the emitting shape:
-  28,668 evaluated instructions at 100 each (2,866,800), 919,364 bytes pushed (919,364), 377 hash iterations at 64
-  (24,128) and 172 of arithmetic. So the next validator rule has 37,832 units to fit in, and the bytes pushed - a
-  quarter of the cost - are a lever as large as the instruction count: a leaner walk over the covered masters (each
-  of whose unlocking bytecodes carries that master's whole program), a smaller program, or validator input padding
-  (open point 7) comes first.
+  consensus rule and applies there too (see `GATE_REPORT.md`). Measured at `7c76dcef4` on the reference composition's
+  shape at the published density: the budget is `800` per byte of the validator input's own unlocking bytecode, which
+  is 4,765 bytes there, and the program spends 3,201,534 of the 5,452,000 those bytes buy. Before the program carried
+  its padding block the same measurement was 3,142,116 of 3,812,000 — 17% of headroom, and 64 units over on the
+  emitting round trip's shape — so a rule added next had 37,832 units to fit in. The headroom is now 41%, the
+  padding test asserts it is more than half of what the padding itself buys, and the emitting round trip's validator
+  input is accepted rather than refused. What is still open is marketplace size: the padding is a fixed block, so a
+  composition whose own program and transcript approach the ten-thousand-byte limit on an unlocking bytecode needs
+  the walk itself to read each covered master's unlocking bytecode once rather than once per check, and it does not
+  yet.

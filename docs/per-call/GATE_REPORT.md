@@ -87,9 +87,16 @@ values are VM-proven (`C4`, `C5`; `packages/solidcash/test/per-call/frames/`).
   still TypeScript checks with hostile tests and a reference model: the machine accepts their invalid transactions.
   The master-side tests outside the validator suite still spend a stand-in program whose hash the master recognises
   and whose rules it never runs.
-- **The validator program's runtime budget.** The reference composition already sits at the published operation-cost
-  density (800 per byte) before any program runs, so the program's own cost cannot fit inside it. A smaller program or
-  unlocking padding is required on a real chain; the validator suite evaluates under the relaxed cost profile.
+- **The validator program's runtime budget.** The reference composition sits at the published operation-cost density
+  (800 per byte) before any program runs, and the shipped program's walk over the covered masters cost more than the
+  reference composition's own bytes bought — 3,810,464 of 3,810,400 on the emitting round trip's shape, 64 over,
+  where the machine refused the input while the validator's own derivation accepted all eleven checks. The program now
+  carries a block of inert bytes it pushes and drops where it ends (`7c76dcef4`), so the budget scales with the
+  program: 3,201,534 of 5,452,000 on the same shape, 41% of headroom, and a rule added next has room. The padding is
+  a fixed block, so marketplace size still wants a leaner walk (each covered master's unlocking bytecode read once
+  rather than once per check). The validator suite's other acceptances evaluate under the relaxed cost profile, which
+  relaxes standardness and not the consensus density; the density case in `validator/script.test.ts` is the one that
+  measures it, and it asserts the headroom rather than only the acceptance.
 - **Records view mode.** A compiled master reads its records from the direct covenant rather than from its segment
   views, so no record chain is settled on chain, and state is still a single-contract matter.
 - **Call-site compilation.** Calls are checked once in the head, from a descriptor derived at compile time, rather than

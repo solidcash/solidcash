@@ -1,4 +1,5 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import type { Artifact } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../utils.js';
 
@@ -117,10 +118,9 @@ export function findDeploymentByAddress(
 /**
  * Resolve a registered Solidity-facing address to the physical locking bytecode held by the deployment.
  *
- * Stateful contracts expose a stable logical CREATE address, while covenant comparisons (`address(this)` and
- * `msg.sender`) observe the exact locking bytecode of the executing input. Callers which persist an address after
- * its deployment exists must therefore store this physical form. An unresolved address is deliberately left to
- * the caller: it may be an EOA or a forward reference in a cyclic deployment graph.
+ * This explicitly selects the execution identity, including for routes which expose an authenticated public
+ * SCID as `address(this)` / `msg.sender`. Use registeredValueAddressLockingBytecode when persisting a peer's
+ * language-level address. Unresolved EOAs and forward references remain the caller's responsibility.
  */
 export function registeredPhysicalLockingBytecode(
   provider: NetworkProvider,
@@ -128,6 +128,26 @@ export function registeredPhysicalLockingBytecode(
 ): Uint8Array | undefined {
   const physical = findDeploymentByAddress(provider, address)?.lockingBytecode;
   return physical ? hexToBin(physical) : undefined;
+}
+
+/** Address value observed when a registered contract identifies itself or calls another contract. */
+export function registeredValueAddressLockingBytecode(
+  provider: NetworkProvider,
+  address: string,
+): Uint8Array | undefined {
+  const deployment = findDeploymentByAddress(provider, address);
+  if (!deployment) return undefined;
+  const contract = deployment.contract as {
+    inner?: { artifact?: Artifact };
+    implementation?: { inner?: { artifact?: Artifact } };
+  };
+  const artifact = contract.implementation?.inner?.artifact ?? contract.inner?.artifact;
+  const authenticatesPublicSelf = artifact?.messageBus?.route?.inputs
+    .some((input) => input.name === '__internal__graphSelfIdentityInput') === true;
+  // New kernel routes prove their public SCID on-chain. Persisting the physical execution address instead
+  // would make an otherwise identical CREATE reference depend on whether its deployment was already known.
+  if (authenticatesPublicSelf) return addressToLockScript(deployment.address);
+  return deployment.lockingBytecode ? hexToBin(deployment.lockingBytecode) : undefined;
 }
 
 /** All deployments for a provider (most recent last). */

@@ -18,7 +18,7 @@ import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
 import {
-  findDeploymentByAddress, registerDeployment, registeredPhysicalLockingBytecode,
+  findDeploymentByAddress, registerDeployment, registeredValueAddressLockingBytecode,
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
@@ -155,7 +155,7 @@ export function deriveLargeMockInitializerState(
     if (variable && index < initialState.length) {
       const value = initialState[index];
       seeded[stateName] = variable.type === 'address' && typeof value === 'string'
-        ? (registeredPhysicalLockingBytecode(provider, value)
+        ? (registeredValueAddressLockingBytecode(provider, value)
           ?? (value.includes(':') ? addressToLockScript(value) : hexToBin(value.replace(/^0x/, ''))))
         : value;
     }

@@ -26,19 +26,20 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 142 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 77 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 69 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 74 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 37 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 22 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 906 tests (114 + 341 + 451), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`, the directory counts are per-directory runs of the same config, and both were taken
-after the pass that dropped cases repeating another file's case, which is why a few files hold fewer cases than
-the refusal table above attributes to them.
+Total: 861 tests (114 + 341 + 406), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`, and both were taken after the pass that dropped cases repeating another file's case
+(`392fbcf82` and the commit after it, which removes five files whose every case another suite makes); the refusal
+table below cites each attack where its case now lives. A new case belongs in one place: before adding a refusal,
+check whether `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
 
 ## What each directory covers
 
@@ -110,16 +111,16 @@ the refusal table above attributes to them.
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
   input. The control removes the declarations, and the same transaction is refused by the body's read and by the
   derivation.
-- **`solidcash/test/per-call/hostile/`** — spends that must be refused, each beside the faithful spend it mutates
+- **`solidcash/test/per-call/hostile/`** - spends that must be refused, each beside the faithful spend it mutates
   and each decided by the machine: loose funds at a master's lock, a master not recreated in place, a covered
-  master presenting an address its category does not derive, a validator UTXO that is not the mutable NFT its
-  script pins, a call record naming the wrong input or carrying the wrong argument digest, an event output the body
-  did not compute, a declared record the transaction does not spend, a state UTXO no segment declares, a second
-  signed user offered as the origin, a root whose sender is rewritten while a validator covers the edge, a
-  composition that leaves part of a covered contract unsettled, and — over the shipped validator program's own
-  bytes — one rejection per rule it emits: its transcript and the witness blocks it reads, which masters and roots
-  a transcript must list, every call edge, settlement, read-only frames and address binding, each with the
-  accepted composition beside it.
+  master presenting an address its category does not derive, a validator UTXO carrying no token or another
+  category's, a call record naming the wrong input or carrying the wrong argument digest, a declared record the
+  transaction does not spend, a second signed user offered as the origin, a root whose sender is rewritten while a
+  validator covers the edge, and the validator-program cases `validator/script.test.ts` does not make: a missing
+  or non-recreated validator output, a covered witness block with a trailing byte or cut short, and a read-only
+  frame that changes a record, emits, or calls with value or into a frame that is not read-only. The validator
+  program's per-rule refusals are `validator/script.test.ts`'s, one per rule it emits; the table below maps each
+  attack to the file that refuses it.
 - **`solidcash/test/per-call/edges/`** — one dedicated test per row of the spec's edge-case table (section 23) that
   the shipped language subset can express: a record written on both sides of a call, a reentrancy guard crossed by
   re-entry, `tx.origin` and `msg.sender` authority on a callee, events above the commitment size emitted by a
@@ -137,26 +138,27 @@ the refusal table above attributes to them.
 
 ## Which refusals cover which attack
 
-Every row below is a case in `hostile/` that the BCH-2026 machine refuses, beside the faithful spend it mutates.
-Rows the directory does not yet cover are listed under them, and none of those is claimed anywhere else.
+Every row below is a case the BCH-2026 machine refuses, beside the faithful spend it mutates. A bare file name is in
+`hostile/`; a case another suite already makes is cited there instead of repeated. Attacks no suite covers yet are
+listed under the table, and none of those is claimed anywhere else.
 
 | Attack (the plan's threat list) | Case |
 | --- | --- |
 | Execute on a non-master UTXO: loose funds at the lock, a foreign category, or the right category without the minting capability | `master-recreation.test.ts` (three cases) |
 | A master drained, duplicated or not recreated in place: output token, category, capability, commitment, lock or value | `master-recreation.test.ts` (six cases) |
 | A forged call edge: a recorded callee that is not the covered callee the call ran, or an argument digest that is not the callee's call data | `call-record.test.ts` (two cases) |
-| A forged or missing event: payload, lock, token presence, capability, output position, or a body that emits a value the output does not carry | `event-output.test.ts` (six cases) |
-| A state UTXO spent outside settlement, a declared record the transaction does not spend, or a declaration that does not chain from the spent commitment to the written one | `record-census.test.ts` (four cases) |
-| A validator UTXO that is not the mutable NFT its own script pins (minting token, no token, another category) | `validator-program.test.ts` (three cases) |
+| A forged or missing event: payload, lock, token presence, capability, output position, or a body that emits a value the output does not carry | `solidc/test/per-call/master/event-output.test.ts` (the compiled entry's refusals) |
+| A state UTXO spent outside settlement, a declared record the transaction does not spend, or a declaration that does not chain from the spent commitment to the written one | `record-census.test.ts` (the undeclared spend) and `solidc/test/per-call/master/record-settlement.test.ts` (three cases) |
+| A validator UTXO that is not the mutable NFT its own script pins (minting token, no token, another category) | `validator/script.test.ts` (minting token) and `validator-program.test.ts` (two cases) |
 | A covered master presenting an address its category does not derive | `validator-program.test.ts` (one case, isolated through a delegate composition so the address rule and not an earlier edge rule is what refuses) |
 | A second signed user offered as the origin reference | `origin-reference.test.ts` (two cases) |
 | A root frame whose `sender` is rewritten while a validator covers the edge | `caller-lock-binding.test.ts` (one case, refused on the caller's own input while the validator and callee still accept) |
-| Part of a covered contract left unsettled | `settlement-coverage.test.ts` (one case) |
-| A validator transcript or a covered witness block the shipped program cannot read | `validator-transcript.test.ts` (ten cases) |
-| A validator output missing, not recreated, or carrying less value, or no master of its own category | `validator-recreation.test.ts` (five cases) |
-| A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator-coverage.test.ts` (fourteen cases) |
-| A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator-call-edges.test.ts` (fourteen cases) |
-| A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator-settlement.test.ts` (six cases) |
+| Part of a covered contract left unsettled | `validator/script.test.ts` (one case) |
+| A validator transcript or a covered witness block the shipped program cannot read | `validator/script.test.ts` (nine cases) and `validator-transcript.test.ts` (a block with a trailing byte or cut short) |
+| A validator output missing, not recreated, or carrying less value, or no master of its own category | `validator-recreation.test.ts` (missing, not recreated) and `validator/script.test.ts` (two cases) |
+| A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator/script.test.ts` (twelve cases, the two-root composition accepted beside them) |
+| A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator/script.test.ts` (thirteen cases) |
+| A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator/script.test.ts` (settled twice, paying) and `validator-settlement.test.ts` (changing a record, emitting) |
 | A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |
 
 Not covered by `hostile/`, and not claimed by any other directory: a standalone master whose reserved address slot is

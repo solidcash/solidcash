@@ -207,10 +207,7 @@ function deriveComposition(): {
   });
   deriveDepthFirst(ROOT, host);
   const program = draft.programFor(CALLER_MASTER);
-  const vm = createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  const vm = createVirtualMachineBch2026(false);
   return { vm, transaction: program.transaction, sourceOutputs: program.sourceOutputs, draft };
 }
 

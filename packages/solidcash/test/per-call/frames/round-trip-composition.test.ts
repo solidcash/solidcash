@@ -320,10 +320,7 @@ describe('a contract entered twice, composed on the machine', () => {
 
     // One program carries the whole transaction, so the same view decides every input.
     const program = draft.programFor(A_FIRST);
-    const vm = createVirtualMachineBch2026({
-      operationCostBudgetPerByte: 10_000_000,
-      hashDigestIterationsPerByte: 10_000_000,
-    });
+    const vm = createVirtualMachineBch2026(false);
     const at = (index: number): string => verdict(vm, program.transaction, program.sourceOutputs, index)
       .objection ?? 'accepted';
 
@@ -376,10 +373,7 @@ function fillRootCall(): {
   const filled = host.step(ROOT, site!);
   expect(filled.callee?.master).toBe(B_MASTER);
   const program = draft.programFor(A_FIRST);
-  const vm = createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  const vm = createVirtualMachineBch2026(false);
   return { vm, draft, transaction: program.transaction, sourceOutputs: program.sourceOutputs };
 }
 

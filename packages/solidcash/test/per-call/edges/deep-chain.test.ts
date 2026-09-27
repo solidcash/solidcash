@@ -131,10 +131,7 @@ describe('a chain of four contracts, each calling the next', () => {
     expect(LINKS.map((link) => participant(draft.layout, `${link.name.toLowerCase()}-1`).index))
       .toStrictEqual([0, 2, 3, 4]);
 
-    const vm = createVirtualMachineBch2026({
-      operationCostBudgetPerByte: 10_000_000,
-      hashDigestIterationsPerByte: 10_000_000,
-    });
+    const vm = createVirtualMachineBch2026(false);
     const rejected = LINK_IDS.map((id) => {
       const program = draft.programFor(id);
       const state = vm.evaluate({

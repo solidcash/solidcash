@@ -194,10 +194,7 @@ export function composeAndDerive(
   const { host, draft } = createComposedDerivationHost({ artifacts, plan });
   const derived = deriveComposition(roots, host);
   const program = draft.programFor(plan.masters[0]!.master);
-  const vm: VirtualMachine = createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  const vm: VirtualMachine = createVirtualMachineBch2026(false);
   const contractInputs = draft.layout.participants.map((placed) => ({ id: placed.id, index: placed.index }));
   const verdicts = contractInputs.map((input) => {
     const state = vm.evaluate({

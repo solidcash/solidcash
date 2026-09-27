@@ -219,10 +219,7 @@ function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['d
   objection?: string;
 } {
   const program = draft.programFor(LEDGER_MASTER);
-  const vm = createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  const vm = createVirtualMachineBch2026(false);
   const state = vm.evaluate({
     inputIndex: program.inputIndex,
     sourceOutputs: program.sourceOutputs,

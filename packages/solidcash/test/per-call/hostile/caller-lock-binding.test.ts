@@ -32,10 +32,7 @@ type VmProgram = ReturnType<ReturnType<typeof machine>['evaluate']>[0];
 
 /** The BCH-2026 machine with the relaxed budget a verdict needs, not a cost profile. */
 function machine(): ReturnType<typeof createVirtualMachineBch2026> {
-  return createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  return createVirtualMachineBch2026(false);
 }
 
 interface Built {

@@ -113,10 +113,7 @@ describe('a mapping entry that creates a record', () => {
       .toStrictEqual([[[HEAD_INDEX, HEAD_INDEX], [0xffff, CREATED_INDEX]]]);
 
     const program = draft.programFor('registry-1');
-    const vm = createVirtualMachineBch2026({
-      operationCostBudgetPerByte: 10_000_000,
-      hashDigestIterationsPerByte: 10_000_000,
-    });
+    const vm = createVirtualMachineBch2026(false);
     const state = vm.evaluate({
       inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });

@@ -331,7 +331,7 @@ describe('an entry that emits and makes no call', () => {
     expect(draft.assembly.outputs.eventIndices).toStrictEqual(placed.map((entry) => entry.index));
 
     const program = draft.programFor(LOG_MASTER);
-    const vm = createVirtualMachineBch2026({ operationCostBudgetPerByte: 10_000_000, hashDigestIterationsPerByte: 10_000_000 });
+    const vm = createVirtualMachineBch2026(false);
     const state = vm.evaluate({ inputIndex: 0, sourceOutputs: program.sourceOutputs, transaction: program.transaction });
     expect(vm.stateSuccess(state)).toBe(true);
   });

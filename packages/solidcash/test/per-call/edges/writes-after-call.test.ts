@@ -121,10 +121,7 @@ const ROOT = { contract: 'Ledger', functionName: entryName('Ledger', 'bump'), ki
 /** The ledger master's own input, asked of the machine in the currently composed draft. */
 function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['draft']): { accepted: boolean; objection?: string } {
   const program = draft.programFor('ledger-1');
-  const vm = createVirtualMachineBch2026({
-    operationCostBudgetPerByte: 10_000_000,
-    hashDigestIterationsPerByte: 10_000_000,
-  });
+  const vm = createVirtualMachineBch2026(false);
   const state = vm.evaluate({
     inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
   });

@@ -119,10 +119,7 @@ describe('a guard field carried across the call split', () => {
     expect(draft.blockOf('guarded-1').segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_INDEX], [RECORD_INDEX]]);
     const program = draft.programFor('guarded-1');
-    const vm = createVirtualMachineBch2026({
-      operationCostBudgetPerByte: 10_000_000,
-      hashDigestIterationsPerByte: 10_000_000,
-    });
+    const vm = createVirtualMachineBch2026(false);
     const state = vm.evaluate({
       inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
     });

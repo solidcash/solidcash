@@ -9899,12 +9899,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
         const list = SortedList.fromUtxos(collectionEntries);
+        // A physical route lane can be writable in the union ABI but read-only in this envelope. Its logical
+        // key still authenticates membership/absence in the read opcode; topology settlement must preserve the
+        // actual proof node instead of inserting the absent queried key as a new empty entry.
+        const readOnlyBatchSlots = new Set(batch.slotIndices.filter((slotIndex) => {
+          const operations = entryOperations(slotIndex);
+          return operations.includes('read') && !operations.includes('write') && !operations.includes('delete');
+        }));
+        const settlementSlots = new Map(batch.slotIndices.map((slotIndex) => {
+          const target = batchTargetSlots.get(slotIndex)!;
+          const proof = readOnlyBatchSlots.has(slotIndex) ? list.find(target) ?? list.predecessorOf(target) : undefined;
+          return [slotIndex, proof?.slot ?? target];
+        }));
         const writes = batch.slotIndices
-          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
-          .map((slotIndex) => ({ slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array() }));
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex)
+            && !readOnlyBatchSlots.has(slotIndex))
+          .map((slotIndex) => ({ slot: settlementSlots.get(slotIndex)!, value: new Uint8Array() }));
         if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
+        for (const slotIndex of readOnlyBatchSlots) {
+          if (batchAliasSkips.has(slotIndex) || inactiveBatchSlots.has(slotIndex)) continue;
+          const slot = settlementSlots.get(slotIndex)!;
+          const identity = bytesToSlotValue(slot).toString();
+          targetValues.add(identity);
+          if (plan.outputs.some((output) => bytesToSlotValue(output.slot).toString() === identity)) continue;
+          const proof = list.find(slot)!;
+          plan.outputs.push({ slot, commitment: encodeEntryCommitment(slot, proof.nextKey, proof.value), existed: true });
+        }
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
         // An all-update batch has no rewritten predecessor suffix. Do not publish an empty
         // collection family: a routed counter loop may independently own non-empty rewritten
@@ -9984,11 +10006,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             )?.offset;
             if (ownerOffset === undefined) throw new Error(`vmap alias owner has no block slot ${ownerSlot}`);
             const raw = this._rawVMapBatchWitness?.get(slotIndex);
-            batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
+            batchWitnesses.push(raw?.slot ?? settlementSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
               raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
             continue;
           }
-          const slot = batchTargetSlots.get(slotIndex)!;
+          const slot = settlementSlots.get(slotIndex)!;
           const proof = list.find(slot) ?? list.predecessorOf(slot);
           const uid = `${proof.utxo.txid}:${proof.utxo.vout}`;
           let owner = ownerByUtxo.get(uid);
@@ -10004,6 +10026,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (offset === undefined) throw new Error(`vmap batch '${batch.collection}' has no block slot ${owner}`);
           const out = plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(slot));
           if (!out) throw new Error(`vmap batch '${batch.collection}' has no planned output for slot ${slotIndex}`);
+          if (readOnlyBatchSlots.has(slotIndex)) {
+            batchTargetPlaceholders.set(slotIndex, binToHex(out.commitment));
+            exactBatchTargetSlots.add(slotIndex);
+            const raw = this._rawVMapBatchWitness?.get(slotIndex);
+            batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
+              raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? -1n,
+              ...(batch.linear ? [raw?.rank ?? BigInt(linearRank.get(slotIndex)!)] : []));
+            continue;
+          }
           // Seed the fixed target output in native vmap form (slot || next || empty value). Do not pin it: the
           // derivation probe replaces the empty value with the covenant-computed value. Without this seed, a fresh
           // target falls through StatefulTransactionBuilder's generic default encoder, which is intentionally the

@@ -1174,6 +1174,21 @@ Titles marked NEVER have not passed on any real compile to date.
   entries by key, and the ladder should expect to pay there rather than in bytes. The byte budget is not the
   binding one — the validator input sits at 9,968 of the standard ten-thousand-byte unlocking bytecode — and the
   plan's D3 defers that budget to Phase R.
+- **The key-first gather, specified, so the next round emits it against a plan rather than a search.** One record is
+  `[key:4][marker:1][in:2][out:2][key:4][viewIn pad:128][viewOut pad:128]`, stride 269. The marker is `1` when the
+  declaration's write lands at the transaction's own output (`out != NONE`, `out < txOutputCount`, and
+  `pad(viewOut)` equals `OP_OUTPUTTOKENCOMMITMENT(out)`) or when it deletes the record (`out == NONE`), and `0`
+  otherwise; it is computed where the entry is appended, so the gather pays for it once per entry rather than the
+  check paying per entry per key. The two windows a search reads are then both at the second key: the window that
+  pairs a key with a start view is `offset 9, width 132`, the one that pairs a key with an end view
+  `offset 141, width 132` — the producer needle (`key || pad(viewIn)`) matches the second, the consumer needle
+  (`key || pad(viewOut)`) the first, exactly as today. The added rule per entry is one search for `key || 0x01` at
+  `offset 0, width 5`: an entry whose key has an anchored or deleting declaration anywhere in the blob satisfies it,
+  and the derivation's chain end requires that of every key (the last declaration of a chain writes at the output, or
+  the chain ends with a deletion), so it is a necessary condition with no order. Cost: the two existing searches keep
+  their stride but compare 132-byte needles as before, and the new one compares five bytes; the entry walk gains one
+  search per entry, which is the price of the rule and the reason it waits for the key-first layout rather than
+  riding on the current one.
 - The emitted state-inputs rule is stricter than the oracle in one degenerate place: the oracle keeps the transcript's
   list as a `Set`, so it would accept a transcript naming the same state input twice, while the machine requires each
   listed index to occur exactly once (duplicates could otherwise pad the count). No fixture or generated case carries

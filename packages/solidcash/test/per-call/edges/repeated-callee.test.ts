@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
+  asmToScript,
   buildPushdataCommitment,
   encodeIntegerValue,
+  scriptToBytecode,
   type RecordEntry,
 } from '@solidcash/utils';
 import {
@@ -16,6 +18,7 @@ import {
   EMPTY, compileAndDeploy, composeAndDerive, hexOf, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, validatorFor, USER_LOCK,
 } from '../shapes/harness.js';
+import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
 import {
   createComposedDerivationHost, deriveDepthFirst, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
@@ -347,35 +350,24 @@ describe('one entry that calls one callee from a loop', () => {
     expect(decision.rejection?.reason).toBe('V7_CHAIN_BROKEN');
   });
 
-  it('refuses three turns at the caller\'s own operation-cost density', () => {
-    // The machine grants an input's execution 800 operation-cost units per byte of its unlocking bytecode. The
-    // caller's program makes one site check per turn, and the third turn's work takes it past what its own bytes
-    // pay for, so the machine refuses the caller's own input and the derivation cannot fill the site any further.
+  it('settles three turns: the caller\'s own input pays for its own execution', () => {
+    // The machine grants an input's execution 800 operation-cost units per byte of its unlocking bytecode, and the
+    // caller's program makes one site check per turn — so the third turn's work costs more than the bytes its
+    // program alone pays for. The master program carries a trailing padding block for exactly that: it lengthens
+    // the bytecode the budget is measured over, so the same three turns settle where they previously ran out. The
+    // measured margin is asserted from the run rather than from a constant.
     const run = build(3);
-    const stops: Stop[] = [];
-    const { host } = createComposedDerivationHost({
-      artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
-      plan: run.plan,
-      onRun: (master: string, _site: unknown, stop: { accepted: boolean; error?: string }) => {
-        stops.push({ master, accepted: stop.accepted, ...(stop.error === undefined ? {} : { error: stop.error }) });
-      },
-    });
-    expect(() => deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host))
-      .toThrowError(/PER_CALL_DERIVATION_STALLED/);
+    const { draft, completed } = derive(run);
 
-    const density = [...new Set(stops.map((stop) => stop.error)
-      .filter((error): error is string => error !== undefined && /operation cost density/.test(error)))];
-    expect(density.length).toBeGreaterThan(0);
-    // The caller is what went over: every frame below it is a callee whose own program fits.
-    expect([...new Set(stops.filter((stop) => stop.error !== undefined && /operation cost density/.test(stop.error))
-      .map((stop) => stop.master))]).toStrictEqual(['hub-1']);
-    const match = /Maximum operation cost: (\d+) \(density control length: (\d+)\); operation cost following operation: (\d+)/.exec(density[0]!)!;
-    const budget = Number(match[1]);
-    const densityLength = Number(match[2]);
-    const cost = Number(match[3]);
-    // The budget is the machine's own density rule read off the run, and the third turn is what went past it.
-    expect(budget).toBe(800 * densityLength);
-    expect(cost).toBeGreaterThan(budget);
+    expect(completed).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
+    for (const master of ['log-1', 'log-2', 'log-3', 'hub-1']) {
+      expect(verdictAt(draft, master), master).toStrictEqual({ accepted: true });
+    }
+    expect(verdictAt(draft, VALIDATOR_ID)).toStrictEqual({ accepted: true });
+    // The caller's own program is longer than one that carries no padding by the block its input is paid for.
+    const hubArtifact = run.artifacts.Hub!;
+    const program = scriptToBytecode(asmToScript(hubArtifact.bytecode));
+    expect(program.length).toBeGreaterThan(PER_CALL_MASTER_PADDING_BYTES);
   });
 });
 

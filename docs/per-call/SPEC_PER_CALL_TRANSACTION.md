@@ -658,7 +658,17 @@ master made no `DELEGATE` or `INTERNAL` call; R4):
   - minting NFTs are recreated in place;
   - mutable NFTs appear only at state outputs, at created records and containers, and at the recreation of `catX`
     validators;
-  - immutable NFTs appear only at the listed event outputs, and no two events share an output (T41).
+  - immutable NFTs appear only at the listed event outputs, and no two events share an output (T41);
+  - **every `catX` input and output carries a fungible amount of 0, a semi-fungible NFT included.** A CashToken may
+    hold an NFT and a fungible amount together, so the rule is about the amount and not about whether an NFT is
+    present: an event NFT that also carries freshly minted fungible tokens of the contract's category is refused
+    just as a fungible-only output is. This is what makes an own-category output's class decidable in script:
+    `OP_OUTPUTTOKENCATEGORY` appends a capability byte for a mutable or minting token and nothing for any other, so
+    without the rule an immutable NFT and a fungible amount of the same category are the same 32 bytes to the
+    program. With the amount at zero, such a bare answer *is* an immutable NFT, and the census can require it to be
+    a listed event output. The commitment decides nothing: an immutable NFT may carry an empty commitment, so
+    emptiness is not what distinguishes it. The deployment mints NFTs of `catX` only (section 12: masters carry
+    minting NFTs, validators mutable ones), so the rule costs the convention nothing.
 - **S3.** The `catX` state UTXOs spent in the transaction are exactly the records the master touched.
 - **S4. Values.**
   - Every record keeps at least its input value unless a listed send pays from it. In v1 a listed send pays from the
@@ -719,7 +729,13 @@ Conversely, every covered master that is not a root appears in exactly one calle
 - **chains:** X's records' views chain in the V6 order, across every frame that runs on X's records, from the real
   input commitments to the real output commitments at the same indices. A record is left without an output only if
   the last view deletes it, and created records follow open point 4;
-- **census** as in S2. Events are those listed by every frame that runs in X's context, and no two share an output;
+- **census** as in S2. Events are those listed by every frame that runs in X's context, and no two share an output.
+  The program first requires every own-category input's and output's fungible amount to be zero
+  (`OP_UTXOTOKENAMOUNT` and `OP_OUTPUTTOKENAMOUNT`), and only then reads an own-category output's class from
+  `OP_OUTPUTTOKENCATEGORY`: a capability byte of mutable means
+  the index must be one a segment's declaration writes (or a recreated `catX` validator's), a capability byte of
+  minting means recreated in place, and a bare 32-byte value is an immutable NFT under S2's exclusion of fungible
+  amounts, so its index must be one a frame in X's context lists as an event;
 - **values** as in S4.
 
 **V8.** A contract is in `M.settles` if it has two or more covered masters, or if a covered `DELEGATE` or `INTERNAL`

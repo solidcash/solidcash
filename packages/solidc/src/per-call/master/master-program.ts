@@ -95,6 +95,30 @@ export function alignCensusAddressOffset(script: Script, declaresTemplateHash: b
   );
 }
 
+/**
+ * The trailing room a master's own input needs to pay for its own execution.
+ *
+ * An input's operation-cost budget is a density over the bytecode that spends it — `800` units per byte of the
+ * input's unlocking bytecode, which carries the master's program. A body's cost grows with the number of calls its
+ * execution makes, because every call binds a record, closes a segment and walks to the next, while those calls add
+ * only a few bytes of records and segments to the program. A master that makes one call therefore fits its own
+ * budget and a master that makes several runs out of it. The padding block is a data push per chunk, dropped where
+ * the program ends: it lengthens the bytecode the budget is measured over, costs about a byte's worth of budget to
+ * execute, and leaves the stack as it found it, so it changes nothing except the room an input has. Each chunk
+ * stays under the push size limit, so a path that reaches the block pays for it rather than failing on it.
+ */
+export const PER_CALL_MASTER_PADDING_BYTES = 1024;
+const PADDING_CHUNK_BYTES = 512;
+
+/** Appends the padding block to a finished master script. */
+export function padPerCallMasterScript(script: Script): Script {
+  const padding: Script = [];
+  for (let written = 0; written < PER_CALL_MASTER_PADDING_BYTES; written += PADDING_CHUNK_BYTES) {
+    padding.push(new Uint8Array(PADDING_CHUNK_BYTES), Op.OP_DROP);
+  }
+  return [...script, ...padding];
+}
+
 /** One encoded push: `start` is its first byte and `end` is the byte after its payload. */
 interface EncodedPush {
   readonly start: number;

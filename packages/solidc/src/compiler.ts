@@ -65,6 +65,7 @@ import {
 } from './per-call/master/stop-sites.js';
 import {
   alignCensusAddressOffset,
+  padPerCallMasterScript,
   findPlaceholderOffsets,
   isPerCallMaster,
   setPerCallMaster,
@@ -14135,7 +14136,11 @@ function compileResolvedAst(
   if (isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)) {
     const reservesValidatorHash = (mergedCompilerOptions as InternalCompilerOptions)
       .__perCallReservesValidatorHash === true;
-    optimisationResult.script = alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash);
+    // The padding comes after the census retarget: it is appended, so no earlier offset moves, and the artefact,
+    // the published slots and the fingerprint are all built from the padded script.
+    optimisationResult.script = padPerCallMasterScript(
+      alignCensusAddressOffset(optimisationResult.script, reservesValidatorHash),
+    );
   }
 
   // Attach debug information

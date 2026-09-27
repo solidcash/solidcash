@@ -515,8 +515,20 @@ function checkCensus(state: DerivationState, category: Uint8Array, eventOutputs:
     }
   }
 
+  // A settled contract carries no fungible amount of its own category, and a CashToken may be semi-fungible: an NFT
+  // and a fungible amount together. The rule is therefore about the amount, whatever the capability, and it is what
+  // makes an own-category output's class decidable in script (spec S2): with the amount at zero, a bare 32-byte
+  // answer is an immutable NFT, and an immutable NFT may carry an empty commitment, so the commitment decides
+  // nothing.
+  for (const input of state.transaction.inputs) {
+    if (sameCategory(input.token.category, category) && input.token.amount > 0n) {
+      check('V7', 'V7_CENSUS_OWN_FUNGIBLE', input.index);
+    }
+  }
+
   for (const output of state.transaction.outputs) {
     if (!sameCategory(output.token.category, category)) continue;
+    if (output.token.amount > 0n) check('V7', 'V7_CENSUS_OWN_FUNGIBLE', output.index);
     if (isMutableNft(output.token) && !allowedMutable.has(output.index)) {
       check('V7', 'V7_CENSUS_UNEXPECTED_MUTABLE', output.index);
     }

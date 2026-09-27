@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { buildPushdataCommitment, sha256, validatorAddress } from '@solidcash/utils';
+import { encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
+import {
+  buildAnonymousEventNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, bytesEqual,
+  computeEventNameHash, encodeEventCommitment, hash256, scriptToBytecode, sha256, validatorAddress,
+} from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
 import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/per-call/machine.js';
@@ -146,5 +149,98 @@ describe('a per-call genesis derived by running the constructor frame', () => {
     // The genesis transaction was built and broadcast: the funding outpoint was spent.
     const remaining = await provider.getUtxos(funding.address);
     expect(remaining.some((utxo) => utxo.txid === fundingUtxo.txid && utxo.vout === 0)).toBe(false);
+  });
+});
+
+/**
+ * A constructor that emits. The event's payload is what the body computes and cannot be declared in advance, so the
+ * derivation learns it from the body's own comparison against the output the block lists. The control mutates that
+ * payload off the computed value and the machine refuses the transaction.
+ */
+const EMITTING_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Registry {'
+  + '   int public count;'
+  + '   event Registered(int id, string name);'
+  + '   constructor(int id) { this.count = id + 1; emit Registered(id, "alpha"); }'
+  + '   function check(int v) { require(this.count == v); }'
+  + ' }';
+
+const emittingArtifact = compileString(EMITTING_SOURCE, { composition: 'per-call' });
+const emittingLayout = emittingArtifact.stateLayout!;
+
+/** The lock an event output carries: the P2SH32 of the covenant the body rebuilds from the category and signature. */
+function eventCovenantLock(signature: string): Uint8Array {
+  const covenant = scriptToBytecode(buildEventNftCovenantScript(CATEGORY, computeEventNameHash(signature)));
+  return encodeLockingBytecodeP2sh32(hash256(covenant));
+}
+
+/** The program with the event output's commitment replaced, so the body's payload comparison no longer matches. */
+function withMutatedEventPayload(program: VmProgram, index: number, commitment: Uint8Array): VmProgram {
+  const outputs = program.transaction.outputs.map((output, at) => (
+    at === index && output.token !== undefined
+      ? { ...output, token: { ...output.token, nft: { ...output.token.nft!, commitment } } }
+      : output
+  ));
+  return { ...program, transaction: { ...program.transaction, outputs } };
+}
+
+describe('a per-call genesis whose constructor emits an event', () => {
+  const emittingGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+    artifact: emittingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
+  });
+  const registered = emittingArtifact.events!.find((definition) => definition.name === 'Registered')!;
+  const eventOutputIndex = (program: VmProgram): number => program.transaction.outputs.findIndex((output) => (
+    bytesEqual(output.lockingBytecode, eventCovenantLock(registered.signature))
+  ));
+
+  it('carries the payload the constructor body computed at the output the block lists', () => {
+    const program = emittingGenesis().program!;
+    const index = eventOutputIndex(program);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const expected = encodeEventCommitment(registered.parameters, [5n, 'alpha']);
+    expect(Array.from(program.transaction.outputs[index]!.token!.nft!.commitment)).toStrictEqual(Array.from(expected));
+  });
+
+  it('accepts the derivation and refuses an event payload off the computed value', () => {
+    const genesis = emittingGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+
+    const index = eventOutputIndex(genesis.program!);
+    const offValue = encodeEventCommitment(registered.parameters, [6n, 'alpha']);
+    expect(accepted(withMutatedEventPayload(genesis.program!, index, offValue))).toBe(false);
+  });
+
+  it('derives the state the constructor wrote beside the event', () => {
+    const genesis = emittingGenesis();
+    const expected = new Uint8Array(Buffer.from(buildPushdataCommitment(emittingLayout, { count: 6n }, 0), 'hex'));
+    expect(genesis.commitments[0]).toBe(Buffer.from(expected).toString('hex'));
+  });
+
+  it('serves an anonymous event, whose covenant embeds no signature hash', () => {
+    const anonymousArtifact = compileString(
+      'pragma solidcash ^0.13.0;'
+      + ' contract Beacon {'
+      + '   int public count;'
+      + '   event Ping(int value) anonymous;'
+      + '   constructor(int id) { this.count = id; emit Ping(id); }'
+      + '   function check(int v) { require(this.count == v); }'
+      + ' }',
+      { composition: 'per-call' },
+    );
+    const definition = anonymousArtifact.events!.find((event) => event.name === 'Ping')!;
+    const genesis = derivePerCallGenesis({
+      artifact: anonymousArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [7n], senderLockingBytecode: OWNER_LOCK,
+    });
+    expect(accepted(genesis.program)).toBe(true);
+
+    const covenant = scriptToBytecode(buildAnonymousEventNftCovenantScript(CATEGORY));
+    const lock = encodeLockingBytecodeP2sh32(hash256(covenant));
+    const index = genesis.program!.transaction.outputs.findIndex((output) => bytesEqual(output.lockingBytecode, lock));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const output = genesis.program!.transaction.outputs[index]!;
+    const expected = encodeEventCommitment(definition.parameters, [7n]);
+    expect(Array.from(output.token!.nft!.commitment)).toStrictEqual(Array.from(expected));
   });
 });

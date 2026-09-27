@@ -85,11 +85,14 @@ interface DynamicJournalEntry {
   state: string;
   journalName: string;
   valueType: ArrayType;
+  mutates: boolean;
 }
 
 interface ActiveDynamicCache {
   entry: DynamicJournalEntry;
   name: string;
+  index: number;
+  mutates: boolean;
 }
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
@@ -128,6 +131,7 @@ interface ActiveMultiCache {
 
 const COLLECTION_CACHE_LOADED_MASK = '__cj_cache_loaded_mask';
 const COLLECTION_CACHE_DIRTY_MASK = '__cj_cache_dirty_mask';
+const DYNAMIC_CACHE_DIRTY_MASK = '__dcj_cache_dirty_mask';
 
 /** A lowered counter-loop entry is settled by its dedicated trailing journal, not this fixed-entry cache. */
 const isRuntimeCounterEntry = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode): boolean =>
@@ -447,10 +451,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // the array alone and keeps those accesses physical.
       if (unsupported || !stableKeys) distinct.clear();
       if ((unsupported || distinct.size === 0) && !dynamicOnlyAdmission) continue;
+      const dynamicWrites = this.dynamicWriteFootprint(fn);
       const dynamicEntries: DynamicJournalEntry[] = [...dynamicNames].map((state, index) => ({
         state,
         journalName: `__dcj_${fn.name}_${index}`,
         valueType: dynamicArrays.get(state)!,
+        mutates: dynamicWrites.has(state),
       }));
       // Every journalled entry value leaves through the single exit this pass appends below. A bare early
       // `return;` in the helper leaves before that exit, so it cannot carry the pending values back. The
@@ -527,8 +533,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         : this.prepareDynamicCaches(fn.body);
       this.lazyMultiCaches = !(fn.graphEmissionHandler || fn.forceCollectionJournalPool);
       fn.body = this.rewriteBlock(fn.body);
-      if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
+      // Dynamic chunks precede newly inserted entry outputs. Publish their selected pending values before the
+      // entry flush computes that prefix, including when an untouched sibling's dirty guard is false.
       if (this.activeDynamicCaches.size > 0) this.installDynamicCaches(fn.body);
+      if (this.activeMultiCaches.size > 0) this.installMultiCaches(fn.body);
     };
     // Callers first. A candidate's OWN body is rewritten in the same shape - its writes and reads are moved onto
     // the journal locals its unshifted parameter carries - but whether it is journaled at all is only known once
@@ -1245,6 +1253,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return this.at(new BlockNode([
       ...runtimeDeclarations, ...loads, ...runtimeSelections, capture,
       ...ordinaryDirties, ...runtimeDirties,
+      ...target.dynamicEntries.filter(({ mutates }) => mutates).map(({ state }) =>
+        this.setCacheMaskBit(DYNAMIC_CACHE_DIRTY_MASK, this.activeDynamicCaches.get(state)!.index, call)),
     ]), call);
   }
 
@@ -1392,9 +1402,13 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (!target) return;
       for (const entry of target.dynamicEntries) {
         if (this.rewriteBlockedStates?.has(entry.state)) continue;
-        if (!caches.has(entry.state)) caches.set(entry.state, {
+        const existing = caches.get(entry.state);
+        if (existing) existing.mutates ||= entry.mutates;
+        else caches.set(entry.state, {
           entry,
           name: `__dcj_cache_${entry.state}`,
+          index: caches.size,
+          mutates: entry.mutates,
         });
       }
     });
@@ -1459,8 +1473,22 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const declarations = caches.map(({ entry, name }) => this.at(new VariableDefinitionNode(
       entry.valueType, [], name, this.at(new StateAccessNode(entry.state), body),
     ), body));
-    const writes = caches.map(({ entry, name }) => this.at(new StateAssignNode(
-      entry.state, this.at(new IdentifierNode(name), body),
+    const writable = caches.filter(({ mutates }) => mutates);
+    const dirtyWords = Math.ceil((Math.max(-1, ...writable.map(({ index }) => index)) + 1) / 256);
+    for (let word = 0; word < dirtyWords; word += 1) {
+      declarations.push(this.at(new VariableDefinitionNode(
+        new IntType(false, 256), [], `${DYNAMIC_CACHE_DIRTY_MASK}_${word}`,
+        this.at(new IntLiteralNode(0n), body),
+      ), body));
+    }
+    // Decoding an uninitialized variable-width array canonicalizes its zero-byte storage to a one-byte empty
+    // array. An unselected sibling must not flush that representation as a write. Like entry caches, dynamic
+    // caches become dirty only when a mutating helper actually runs; read-only helpers never authorize a flush.
+    const writes = writable.map(({ entry, name, index }) => this.at(new BranchNode(
+      this.cacheMaskIsSet(DYNAMIC_CACHE_DIRTY_MASK, index, body),
+      this.at(new BlockNode([this.at(new StateAssignNode(
+        entry.state, this.at(new IdentifierNode(name), body),
+      ), body)]), body),
     ), body));
     const statements = body.statements ?? [];
     // A compiler-owned caller ends with a terminal `return` (a route hands its results blob back). Appending the

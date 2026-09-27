@@ -757,6 +757,7 @@ import {
 import {
   deriveReturnValue as deriveReturnValueImpl,
 } from './sc-derive-return-value.js';
+import { resolveSelectedDynamicWrites } from './selected-dynamic-writes.js';
 import {
   applyOverrides as applyOverridesImpl,
   reApplyOverrides as reApplyOverridesImpl,
@@ -13349,12 +13350,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         });
       }
       const routeWrites = [...(gFn?.dynamicWrites ?? [])];
-      const selectedWrites = g.compilerRoute?.rowArguments
-        ? [...new Set(g.compilerRoute.rowArguments.flatMap((row) => row.handler.dynamicWrites ?? []))]
-        : routeWrites;
-      // Row-handler metadata may omit dynamicWrites (message-bus handlers historically do). Fall back to the
-      // route-authenticated write set so proxy-callee empty first-writes still receive speculative ChunkNft pads.
-      const effectiveSelectedWrites = selectedWrites.length > 0 ? selectedWrites : routeWrites;
+      const effectiveSelectedWrites = resolveSelectedDynamicWrites(
+        routeWrites, g.compilerRoute?.rowArguments?.map((row) => row.handler),
+      );
       for (const name of effectiveSelectedWrites) activeDynamicWrites.add(name);
       for (const name of routeWrites) {
         delegateDynamicWrites.add(name);

@@ -562,6 +562,38 @@ const PER_CALL_FRAME_SLOT_NAMES = [
   '__internal__frameSelf',
 ] as const;
 
+/**
+ * Hidden invocation operand carrying the caller's contract address into a per-call subroutine.
+ *
+ * `address(this)` is a frame value in an entry body, but a subroutine runs in its own OP_INVOKE frame and cannot
+ * read that slot. A body that reads its own address - or that makes an external self-call, whose `msg.sender` is
+ * the contract - receives the value as this operand, exactly as a body that reads `msg.sender` receives it as a
+ * hidden context. The name is internal and never reaches the ABI.
+ */
+const PER_CALL_SELF_CONTEXT = '__internal__handlerSelf';
+
+/** True when a body reads the contract's own locking bytecode, `address(this)`. */
+function functionReadsOwnAddress(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    if (node instanceof UnaryOpNode && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX) found = true;
+  });
+  return found;
+}
+
+/** True when a body makes an external self-call, `this.g()` or `Base(this).g()`. */
+function functionMakesExternalSelfCall(fn: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(fn.body, (node) => {
+    const call = node instanceof FunctionCallStatementNode ? node.call
+      : node instanceof FunctionCallNode ? node : undefined;
+    if (call?.fromThisCall === true) found = true;
+  });
+  return found;
+}
+
 export class ForwardedWitnessError extends SolidCashError {
   constructor(node: Node, public readonly reason: string, detail: string) {
     super(node, `${reason}: ${detail}`);
@@ -994,6 +1026,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * message.
    */
   private perCallRefusedEntries: ReadonlyMap<string, string> = new Map();
+  /**
+   * The functions whose body carries the contract's own address as a hidden invocation operand.
+   *
+   * A body carries it when it reads `address(this)`, makes an external self-call, or calls a body that does
+   * either. Memoized: the set depends only on the lowered AST, which code generation does not reshape.
+   */
+  private perCallSelfContextCarriers?: Set<string>;
   /**
    * Which segment of its execution the body being emitted is in, counted by the external calls already emitted.
    *
@@ -3037,8 +3076,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // The head is a script, not a single data item: emit its bytes as opcodes.
     // A stateful master reads its state from the record block its own frame declares, so the head has to keep
-    // that declaration: without it the body could only read a fixed offset from its own input.
-    const keepsRecordIndices = node.stateVariables.length > 0;
+    // that declaration: without it the body could only read a fixed offset from its own input. A contract whose
+    // records are mapping entries carries its declaration the same way, so a collection counts too.
+    const keepsRecordIndices = node.stateVariables.length > 0 || node.collections.length > 0;
     // The head parks the frame's `retval` when any entry returns a value, so every entry body can settle what it
     // returns: a returning one compares the value its own code computed against the slot, a void one requires it
     // empty.
@@ -7016,6 +7056,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.pushToStack(this.graphResultName(slot, field), true);
         }
       }
+    }
+    // A per-call subroutine that reaches the contract's own address receives it as a hidden operand, placed
+    // above the caller's other hidden contexts because the caller pushes it last (see visitUserFunctionCall).
+    if (this.isDefineSubTraversal && this.perCallMaster && this.perCallSelfContextCarrierNames().has(node.name)) {
+      this.pushToStack(PER_CALL_SELF_CONTEXT, true);
     }
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.usesMsgSender) {
       this.pushToStack('__internal__handlerMsgSender', true);
@@ -12438,6 +12483,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (!this.stack.includes('__message_bus_graph_caller')) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
+      } else if (this.perCallMaster && node.fromThisCall) {
+        // An external self-call is a message call to the contract, so the callee's `msg.sender` is the
+        // contract's own address, not the sender this frame carries.
+        this.emitCallerSelfContext(contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgSender')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
@@ -12445,6 +12494,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitMsgSender(contextLoc);
       }
       this.pushToStack(`(__handler_msg_sender_${targetFunc.functionId})`);
+      hiddenContextCount += 1;
+    }
+    if (this.perCallMaster && this.perCallSelfContextCarrierNames().has(targetFunc.name)) {
+      // The callee reaches its own address, so forward the caller's. A subroutine caller already holds one; an
+      // entry body reads the frame's `self`.
+      const contextLoc = { location: node.location, positionHint: PositionHint.START };
+      this.emitCallerSelfContext(contextLoc);
+      this.pushToStack(`(__handler_self_${targetFunc.functionId})`);
       hiddenContextCount += 1;
     }
     if (targetFunc.graphEmissionHandler && !targetFunc.graphRuntimeEmissionHandler) {
@@ -13728,6 +13785,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A per-call root frame's `address(this)` is its witness `self`, which the head checked against the reserved
       // `addrX` constant. The input's own locking bytecode is the master lock, not the contract address.
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__frameSelf'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+    if (this.perCallMaster && this.stack.includes(PER_CALL_SELF_CONTEXT)
+      && node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.expression instanceof NullaryOpNode
+      && node.expression.operator === NullaryOperator.INPUT_INDEX) {
+      // A per-call subroutine reads the contract address the caller forwarded; it is the same `self` the frame
+      // would have held inline, because a message call to the contract leaves `address(this)` unchanged.
+      this.emit(encodeInt(BigInt(this.getStackIndex(PER_CALL_SELF_CONTEXT))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
       return node;
@@ -21936,10 +22004,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
     }
     this.emit(Op.OP_2DUP, loc);                       // [Hk32, entryAddr, idx, entryAddr, idx]
-    this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, entryAddr, inbc]
-    this.emit(Op.OP_EQUALVERIFY, loc);                // [Hk32, entryAddr, idx]
-    this.emit(Op.OP_NIP, loc);                        // [Hk32, idx]  (drop entryAddr)
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);        // [Hk32, commit]
+    if (this.readsRecordsFromFrame) {
+      // A per-call frame reads the entry from the record its own segment declares; the transaction's input at the
+      // coordinate may hold the value another frame left or none at all, so the declaration is the source and
+      // settlement ties it to the transaction. Drop the duplicate pair, keep [Hk32, idx], read the declared view.
+      this.emit(Op.OP_2DROP, loc);                    // [Hk32, entryAddr, idx]
+      this.emit(Op.OP_NIP, loc);                      // [Hk32, idx]  (drop entryAddr)
+      this.emitRecordCommitmentRead('in', loc);       // [Hk32, commit]
+    } else {
+      this.emit(Op.OP_UTXOBYTECODE, loc);             // [Hk32, entryAddr, idx, entryAddr, inbc]
+      this.emit(Op.OP_EQUALVERIFY, loc);              // [Hk32, entryAddr, idx]
+      this.emit(Op.OP_NIP, loc);                      // [Hk32, idx]  (drop entryAddr)
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);      // [Hk32, commit]
+    }
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, rest]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);                       // [Hk32, slot32, nextKey32, value]
 
@@ -22182,7 +22259,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // address above that value, so this helper's category check would read the return address as the proxy index.
     // Keep the delegate-sensitive verifier inline; ordinary functions still share the helper.
     if (!this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
-      && this.subroutineDefined.get(id)) {
+      && !this.readsRecordsFromFrame && this.subroutineDefined.get(id)) {
       // Copy the arbitrarily-positioned fields into the helper's canonical frame. Each copy increases the depth of
       // the still-original fields by one. The original output index is copied last, then dropped after the helper
       // consumes the five-item copied frame.
@@ -22204,6 +22281,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
     consumeFrame = false, untrackedItemsAtEntry = 1,
   ): void {
+    if (this.readsRecordsFromFrame) {
+      // A per-call frame closes against the view its own segment declares: the transaction's output at the
+      // coordinate may be another frame's write. Settlement ties the declaration to the transaction.
+      this.emit(encodeInt(BigInt(f1Depth)), loc); this.emit(Op.OP_PICK, loc);      // f1 (baseline)
+      this.emit(encodeInt(BigInt(f2Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f2 (+1: f1 copy)
+      this.emit(Op.OP_CAT, loc);                                           // f1||f2
+      this.emit(encodeInt(BigInt(f3Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f3 (+1: f1||f2 blob)
+      this.emit(Op.OP_CAT, loc);                                           // f1||f2||f3
+      this.emit(Op.OP_SWAP, loc); this.emitRecordCommitmentRead('out', loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      return;
+    }
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
     this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                                    // bytecode == entryAddr
@@ -22506,12 +22594,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack();
 
       // The proof index may alias another logical slot's physical input. Authenticate its address and require it is
-      // either the exact target node or the adjacent predecessor that brackets H(k).
+      // either the exact target node or the adjacent predecessor that brackets H(k). A per-call frame reads the
+      // entry from the record its own segment declares, so the declaration is the source and the transaction's
+      // input at the coordinate need not be authenticated again.
       this.emitMasterInputIndex(loc, 2);
       this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset
       this.emit(Op.OP_ADD, loc);
-      this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      if (this.readsRecordsFromFrame) {
+        this.emitRecordCommitmentRead('in', loc);
+      } else {
+        this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      }
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); // [v,H,addr,coSlot,coNext,coValue]
       if (this.entrySlots[slotIndex]?.aliasCondDeleteSlot !== undefined) {
@@ -22525,7 +22619,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_NOTIF, loc);
+      // The written key's node sits where the frame declares it: an update rewrites the co-spent node in place,
+      // so its output is the record the segment declares at the entry slot; an insert creates a trailing node,
+      // which the direct convention places at the entry slot's own output. A per-call frame reads the first from
+      // its segment's declaration and the second from the input its frame runs on, so the two arms differ.
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
+      if (this.readsRecordsFromFrame) this.emitPerCallEntryIndex('out', slotIndex, loc);
+      else this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      this.emit(Op.OP_ELSE, loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
       this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
@@ -22536,13 +22638,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
       this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
+      this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
       this.emit(Op.OP_ENDIF, loc);
 
       // Proof fields are used again by the function-level transition verifier; this write only pins its target node
       // at the logical fixed output: H(k) || plannedNext || computedValue.
-      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
       this.emit(Op.OP_FROMALTSTACK, loc);
-      this.emitEntryOutputIndex(slotIndex, loc, 4);
+      this.emit(Op.OP_SWAP, loc);                              // [v,H,addr,next,outIdx]
       this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4, 4);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
@@ -22614,8 +22717,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 4. co-spent entry input[slot]: bytecode == entryAddr, read [coSlot|coNext|coValue]
     //    -> [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
     this.emitEntryInputIndex(slotIndex, loc, 2);
-    this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    if (this.readsRecordsFromFrame) {
+      // A per-call frame reads the entry from the record its own segment declares rather than the transaction's
+      // input, which may hold another frame's value.
+      this.emitRecordCommitmentRead('in', loc);
+    } else {
+      this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    }
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc);       // [v, Hk32, entryAddr, coSlot32, coNext32, coValue]
 
@@ -29957,6 +30066,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
   }
 
+  /**
+   * Leaves the coordinate the frame's declaration puts an entry at, on top of whatever working area a site has
+   * built. The frame parks the declared input and output of the record its block opens with, so the entry the
+   * write targets sits one layout offset past that base. The pick addresses the frame by its stable bottom
+   * ordinal rather than a top-relative depth, which would have to be told the size of the working area.
+   */
+  private emitPerCallEntryIndex(side: 'in' | 'out', slotIndex: number, loc: SingleLocationData): void {
+    const name = side === 'in' ? recordInputIndexSlotName() : recordOutputIndexSlotName();
+    this.emitPickTrackedFromBottom(name, loc);
+    const offset = this.getBlockSlotOffset('entry', slotIndex);
+    if (offset > 0) { this.emit(encodeInt(BigInt(offset)), loc); this.emit(Op.OP_ADD, loc); }
+  }
+
   /** Verify a data NFT preserves its locking bytecode and token category. */
   private emitDataNftPreservation(offset: number, loc: SingleLocationData): void {
     // Delegate and message-bus owner-base frames must address the authenticated participant block, not
@@ -36866,6 +36988,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // ===== msg.sender / tx.origin Support =====
+
+  /**
+   * The functions whose body reaches the contract's own address, directly or through a body it calls.
+   *
+   * A per-call subroutine cannot read `address(this)` from the calling frame, so a body that needs it receives
+   * it as a hidden operand. The need propagates through named internal calls: a body that calls such a body has
+   * to forward the value, so it carries one too. The set is derived from the lowered bodies and memoized.
+   */
+  private perCallSelfContextCarrierNames(): Set<string> {
+    if (this.perCallSelfContextCarriers !== undefined) return this.perCallSelfContextCarriers;
+    const byName = new Map<string, FunctionDefinitionNode>();
+    for (const fn of this.userFunctionDefs.values()) byName.set(fn.name, fn);
+    const directCalls = new Map<string, Set<string>>();
+    const seeds = new Set<string>();
+    for (const fn of byName.values()) {
+      if (functionReadsOwnAddress(fn) || functionMakesExternalSelfCall(fn)) seeds.add(fn.name);
+      const calls = new Set<string>();
+      walkInvocationAst(fn.body, (candidate) => {
+        const call = candidate instanceof FunctionCallStatementNode ? candidate.call
+          : candidate instanceof FunctionCallNode ? candidate : undefined;
+        if (call) calls.add(call.identifier.name);
+      });
+      directCalls.set(fn.name, calls);
+    }
+    const carriers = new Set<string>();
+    for (const name of byName.keys()) {
+      const reached = new Set<string>([name]);
+      const pending = [name];
+      let carries = seeds.has(name);
+      while (!carries && pending.length > 0) {
+        for (const callee of directCalls.get(pending.pop()!) ?? []) {
+          if (reached.has(callee) || !byName.has(callee)) continue;
+          reached.add(callee);
+          if (seeds.has(callee)) carries = true;
+          pending.push(callee);
+        }
+      }
+      if (carries) carriers.add(name);
+    }
+    this.perCallSelfContextCarriers = carriers;
+    return carriers;
+  }
+
+  /** Push the caller's contract address as an invocation operand, or refuse when no frame slot holds it. */
+  private emitCallerSelfContext(locationData: SingleLocationData): void {
+    const slot = this.stack.includes('__internal__frameSelf') ? '__internal__frameSelf'
+      : this.stack.includes(PER_CALL_SELF_CONTEXT) ? PER_CALL_SELF_CONTEXT : undefined;
+    if (slot === undefined) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the contract's own address is not in the frame while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
 
   /**
    * Emit bytecode for tx.origin: scan inputs for the first P2PKH non-token non-self input.

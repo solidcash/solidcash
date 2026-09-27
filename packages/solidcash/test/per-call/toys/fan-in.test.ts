@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { FrameKind, encodeIntegerValue, bytesToHex } from '@solidcash/utils';
+import { encodeDataPush } from '@bitauth/libauth';
+import {
+  FrameKind, buildEntryNftCovenantScript, computeCollectionHash, encodeIntegerValue, bytesToHex,
+} from '@solidcash/utils';
+import { scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, master, masterInput, seededAddress, selectorOf, token, userInput,
   userInputs, validatorFor, hexOf,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveComposition, layOutMappingWrites, planMappingWrite,
+  createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
   type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 
@@ -16,13 +20,15 @@ import {
  * `Token.transferFrom` reads `allowance[VAULT]` and writes it back, so `Token` is entered twice and its second
  * frame works on the entry its first frame wrote.
  *
- * The read-modify-write of one entry is admitted by the compiler, so the source compiles. The composition does not
- * settle: a mapping node's record group closes against the commitment the transaction spends and the one it writes,
- * and one transaction has one of each for that node. The earlier frame's declaration cannot be both the node its
- * body computed from `7` and the node the later frame leaves, so the derivation stalls on the first mapping frame.
+ * The read-modify-write of one entry is admitted by the compiler, and the composition settles: a mapping node's
+ * record group is declared per segment, so the approval frame closes against the `40` it computes while the pull
+ * frame reads that same `40` and closes against the `0` it computes. The transaction has one commitment for the
+ * node - the `7` it spends and the `0` it writes - so the two frames only agree because each resolves the node
+ * against its own segment's declaration rather than against the transaction, and the settlement ties the first
+ * declaration to the spent commitment and the last to the written one.
  *
- * The plan supplies only identities and the allowed record declarations; the layout, the callee indices and the
- * derivation order come from the shipped composer and derivation.
+ * The plan supplies only identities, the allowed record declarations and the covenant the node sits at; the
+ * layout, the callee indices and the derivation order come from the shipped composer and derivation.
  */
 
 const TOKEN_LABEL = 'fan in token';
@@ -151,8 +157,14 @@ function drive(): void {
     dispatches: true,
   };
 
+  // The node is locked by the allowance collection's own entry covenant: a body reads and closes an entry against
+  // that covenant's address, so the UTXO the transaction spends is the one the collection mints.
+  const allowanceSignature = artifacts.Token!.stateLayout!.collections![0]!.signature;
+  const entryLock = scriptToLockingBytecode(
+    buildEntryNftCovenantScript(tokenContract.category, computeCollectionHash(allowanceSignature)), 'p2sh32',
+  );
   const nodeSource = {
-    lockingBytecode: USER_LOCK, valueSatoshis: 20_000n,
+    lockingBytecode: entryLock, valueSatoshis: 20_000n,
     token: token(tokenContract.category, 'mutable', node(slot, PREVIOUS)),
   };
   const plan: CompositionDraftPlan = {
@@ -175,7 +187,7 @@ function drive(): void {
       node: {
         source: nodeSource,
         output: { ...nodeSource, token: token(tokenContract.category, 'mutable', transferWrite.written[0]!.after) },
-        unlockingBytecode: new Uint8Array([0x01, 0x01]),
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
       },
       user: userInput(),
     },
@@ -186,25 +198,27 @@ function drive(): void {
     },
   };
 
-  const { host } = createComposedDerivationHost({
+  const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(),
     artifacts: [artifacts.Hub!, artifacts.Vault!, artifacts.Token!], plan,
   });
-  deriveComposition(
+  const derived = deriveComposition(
     [{ contract: 'Hub', functionName: entryName('Hub', 'go'), kind: FrameKind.ROOT, master: 'hub-1' }],
     host,
   );
+  return { draft, derived, slot, transferWrite };
 }
 
-/** The error a shipped call raised, or a failure when it returned normally. */
-function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
-  try {
-    run();
-  } catch (error) {
-    const refusal = error as { name?: string; code?: string; message: string };
-    return { name: refusal.name, code: refusal.code, message: refusal.message };
-  }
-  throw new Error('the shipped per-call derivation accepted the composition, so there is no refusal to record');
+/** The machine's verdict on one participant's own input of the assembled transaction. */
+function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft'], id: string): string {
+  const program = draft.programFor('hub-1');
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: participant(draft.layout, id).index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
 describe('a caller approving a vault that pulls through the token', () => {
@@ -216,14 +230,35 @@ describe('a caller approving a vault that pulls through the token', () => {
     expect(artifacts.Token?.stateLayout?.mappings?.map((mapping) => mapping.name)).toStrictEqual(['allowance']);
   });
 
-  it('is refused by the derivation: the second frame touches an allowance node the first frame declared', () => {
-    // One transaction has one commitment for the allowance node: the `7` it spends and the `0` it writes. The
-    // approval frame computes `40`, which is neither, so its own record group does not close and the derivation
-    // stalls rather than filling the site.
-    const refusal = refusalOf(() => drive());
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message)
-      .toMatch(/master "approve-1" of Token\.approve\(\) filled no witness at site 0 \(close of segment 0\)/);
+  it('settles the pull-through: the second frame reads the allowance the first frame declared', () => {
+    // The approval frame reads the node at the `7` its segment declares and closes it against the `40` it
+    // computes; the pull frame reads `40` and closes against the `0` it computes. The transaction itself has one
+    // commitment for the node - the `7` it spends and the `0` it writes - so the frames can only agree because
+    // each resolves the node against its own segment's declaration rather than against the transaction.
+    const { draft, derived, slot, transferWrite } = drive();
+    expect(derived.completed.map((frame) => frame.master))
+      .toStrictEqual(['approve-1', 'transferFrom-1', 'vault-1', 'hub-1']);
+    for (const id of ['approve-1', 'transferFrom-1', 'vault-1', 'hub-1', 'validator']) {
+      expect(`${id}: ${verdictAt(draft, id)}`).toBe(`${id}: accepted`);
+    }
+
+    // The node input carries the `7` the list held and the node output the `0` the pull left, read back through
+    // the shipped encoder and held to the write the composer planned.
+    const program = draft.programFor('hub-1');
+    const nodeIndex = participant(draft.layout, 'node').index;
+    expect(program.sourceOutputs[nodeIndex]!.token?.nft?.commitment).toStrictEqual(node(slot, PREVIOUS));
+    expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment).toStrictEqual(node(slot, 0n));
+    expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment)
+      .toStrictEqual(transferWrite.written[0]!.after);
+  });
+
+  it('refuses a pull whose declared close is not the one the frame computed', () => {
+    // The control for the settle above: the pull frame closes the node against the `0` it computes from the `40`
+    // its own segment declares, so a declaration rewritten to a value no frame wrote is refused by the machine
+    // rather than served.
+    const { draft, slot } = drive();
+    const record = draft.blockOf('transferFrom-1').segments[0]![0]!;
+    record.viewOut = node(slot, 99n);
+    expect(verdictAt(draft, 'transferFrom-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 });

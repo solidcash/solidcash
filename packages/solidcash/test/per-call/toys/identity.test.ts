@@ -17,9 +17,11 @@ import type { CompositionDraftPlan } from '../../../src/per-call/composer/index.
  * the shipped composer and the shipped derivation, with the machine asked for a verdict where a plan settles. The
  * comment on each case states the EVM result of the same Solidity source and whether the per-call answer agrees.
  *
- * The per-call path lowers `this.f()` to an inlined subroutine and leaves the frame's sender in place, so a
- * self-call keeps the caller rather than resetting it to the contract. The cases pin that behaviour where it is
- * expressible and pin the compile and plan refusals where it is not.
+ * The per-call path lowers `this.f()` to an inlined subroutine. It runs that subroutine with the contract's own
+ * address as `msg.sender` and as `address(this)`, so a self-call agrees with the EVM; a bare internal call keeps
+ * the caller. The cases pin that agreement, and they still pin the divergences the self-call rule does not reach:
+ * a self-called body that writes a mapping is refused at compile time, and a user-entered entry takes no
+ * run-time argument.
  */
 
 const TOK_LABEL = 'identity tok';
@@ -67,6 +69,16 @@ const ADDRESS_THIS_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Tok {'
   + '   function onlySelf() { require(msg.sender == address(this)); }'
   + '   function callOnlySelf() { this.onlySelf(); require(true); }'
+  + ' }';
+
+/** The same self-call spelled through a base cast, which the builder lowers the same way as `this.g()`. */
+const BASE_SELF_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Base {'
+  + '   function onlySelf() virtual { require(msg.sender == address(this)); }'
+  + ' }'
+  + ' contract Tok is Base {'
+  + '   function onlySelf() override { require(msg.sender == address(this)); }'
+  + '   function callOnlySelf() { Base(this).onlySelf(); require(true); }'
   + ' }';
 
 const ADDRESS_THIS_DIRECT_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -184,7 +196,7 @@ function settlePlan(
   return { outcome, rejected };
 }
 
-describe('sweep: the internal transfer debits the frame sender, not the contract', () => {
+describe('sweep: the internal transfer debits the contract, as the EVM does', () => {
   it('is refused by the compiler in the plan\'s exact shape: the self-called transfer writes a mapping', () => {
     // The mapping read/write adds hidden context parameters to `transfer`, so `this.transfer(t, amount)` cannot be
     // resolved with the source's two arguments. The plan's expectation (the transfer debits the contract) therefore
@@ -193,33 +205,34 @@ describe('sweep: the internal transfer debits the frame sender, not the contract
     expect(refusal.message).toMatch(/Found parameters .* call to function 'transfer'/);
   });
 
-  it('accepts the caller-debited commitment: the self-call debits the caller, not the contract', () => {
-    // In the EVM `sweep` runs `this.transfer`, which resets msg.sender to address(this), so `balSelf` falls and
-    // `balUser` is unchanged. The per-call path inlines the self-call and keeps the user as the frame sender, so
-    // the body computes `balUser` falling and `balSelf` unchanged. The accepted plan declares the shipped value.
+  it('accepts the contract-debited commitment: the self-call debits the contract, as the EVM does', () => {
+    // In the EVM `sweep` runs `this.transfer`, so the callee's msg.sender is address(this): the guard debits
+    // `balSelf`, which falls by the swept amount, while `balUser` is unchanged. The plan declares that value and
+    // every contract input is accepted.
     const { artifacts, contracts } = compileAndDeploy(SCALAR_SWEEP_SOURCE, { Tok: TOK_LABEL });
     const tok = contracts.Tok!;
     const committed = (balSelf: bigint, balUser: bigint): Uint8Array =>
       new Uint8Array(Buffer.from(buildPushdataCommitment(artifacts.Tok!.stateLayout!, { balSelf, balUser }, 0), 'hex'));
-    // The swept amount is `balSelf`, so the EVM's contract debit would leave {0, 1000}.
-    const kept: RecordEntry = { in: 1, out: 1, viewIn: committed(100n, 1000n), viewOut: committed(100n, 900n) };
+    // The swept amount is `balSelf`, so the contract debit leaves {0, 1000}.
+    const kept: RecordEntry = { in: 1, out: 1, viewIn: committed(100n, 1000n), viewOut: committed(0n, 1000n) };
     const plan = singlePlan(artifacts, tok, 'sweep', USER_LOCK, [[kept]]);
 
     const { outcome, rejected } = settlePlan(plan, artifacts, 'Tok', 'sweep');
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'sweep')]);
     expect(rejected).toStrictEqual([]);
-    // The written commitment is the body's own computation: balSelf unchanged, balUser debited by the whole balance.
-    expect(new Uint8Array(outcome.transaction.outputs[1]!.token!.nft!.commitment)).toStrictEqual(committed(100n, 900n));
+    // The written commitment is the body's own computation: balSelf debited, balUser unchanged.
+    expect(new Uint8Array(outcome.transaction.outputs[1]!.token!.nft!.commitment)).toStrictEqual(committed(0n, 1000n));
   });
 
-  it('refuses the contract-debited commitment the EVM would produce', () => {
-    // `balSelf` falling to 0 with `balUser` unchanged is the EVM's answer; the shipped body does not compute it, so
-    // the segment's declaration is not the value the frame closed on and the derivation stalls.
+  it('refuses the caller-debited commitment the old inline call produced', () => {
+    // `balSelf` unchanged with `balUser` debited was what the self-call computed when it kept the caller as the
+    // frame sender; the shipped body now debits the contract, so this declaration is not the value the frame
+    // closed on and the derivation stalls.
     const { artifacts, contracts } = compileAndDeploy(SCALAR_SWEEP_SOURCE, { Tok: TOK_LABEL });
     const tok = contracts.Tok!;
     const committed = (balSelf: bigint, balUser: bigint): Uint8Array =>
       new Uint8Array(Buffer.from(buildPushdataCommitment(artifacts.Tok!.stateLayout!, { balSelf, balUser }, 0), 'hex'));
-    const kept: RecordEntry = { in: 1, out: 1, viewIn: committed(100n, 1000n), viewOut: committed(0n, 1000n) };
+    const kept: RecordEntry = { in: 1, out: 1, viewIn: committed(100n, 1000n), viewOut: committed(100n, 900n) };
     const plan = singlePlan(artifacts, tok, 'sweep', USER_LOCK, [[kept]]);
 
     const refusal = refusalOf(() => settlePlan(plan, artifacts, 'Tok', 'sweep'));
@@ -253,14 +266,27 @@ describe('sweep: the internal transfer debits the frame sender, not the contract
   });
 });
 
-describe('onlySelf and ownerOnly: a self-call keeps the caller the frame recorded', () => {
-  it('is refused by the compiler when the self-called guard reads address(this)', () => {
-    // `address(this)` is a frame slot only in the body the head opens on; inside the inlined subroutine the slot is
-    // out of reach, so the compile refuses the shape by name. The EVM passes `this.onlySelf()` (msg.sender is
-    // address(this)); the shipped path cannot express it.
-    const refusal = compileRefusal(ADDRESS_THIS_SELF_SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toMatch(/address\(this\) is read outside the frame's slots while compiling 'onlySelf'/);
+describe('onlySelf and ownerOnly: a self-call runs as the contract, as the EVM does', () => {
+  it('accepts this.onlySelf(): inside the self-call msg.sender is address(this), as the EVM has it', () => {
+    // In the EVM `this.onlySelf()` is a message call, so the guard's msg.sender is the contract and the require
+    // holds. The shipped self-call runs with the caller's contract address as the callee's msg.sender and passes
+    // it as its own address(this), so every contract input is accepted. The direct-call control below shows the
+    // same guard still fails when a user calls it.
+    const { artifacts, contracts } = compileAndDeploy(ADDRESS_THIS_SELF_SOURCE, { Tok: TOK_LABEL });
+    const { outcome, rejected } = settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOnlySelf', USER_LOCK),
+      artifacts, 'Tok', 'callOnlySelf');
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'callOnlySelf')]);
+    expect(rejected).toStrictEqual([]);
+  });
+
+  it('accepts onlySelf() reached through a base cast: the same call form agrees', () => {
+    // `Base(this).onlySelf()` lowers to the same direct self-call as `this.onlySelf()`, so it must present the
+    // same identity: msg.sender and address(this) are both the contract, and the guard holds.
+    const { artifacts, contracts } = compileAndDeploy(BASE_SELF_SOURCE, { Tok: TOK_LABEL });
+    const { outcome, rejected } = settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOnlySelf', USER_LOCK),
+      artifacts, 'Tok', 'callOnlySelf');
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'callOnlySelf')]);
+    expect(rejected).toStrictEqual([]);
   });
 
   it('refuses onlySelf() called directly by a user, as the EVM does', () => {
@@ -273,13 +299,14 @@ describe('onlySelf and ownerOnly: a self-call keeps the caller the frame recorde
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
   });
 
-  it('refuses this.onlySelf() with the self-guard written as the contract address: the self-call sees the caller', () => {
-    // The EVM's `this.onlySelf()` passes because msg.sender is the contract. The shipped self-call keeps the user as
-    // the frame sender, so the guard sees the user and the frame is refused.
+  it('accepts this.onlySelf() with the guard written as the contract address', () => {
+    // The same rule with the self-lock spelled out rather than read: the per-call self-call supplies the
+    // contract's address as the callee's msg.sender, so the literal comparison holds.
     const { artifacts, contracts } = compileAndDeploy(LITERAL_SELF_SOURCE, { Tok: TOK_LABEL });
-    const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOnlySelf', USER_LOCK),
-      artifacts, 'Tok', 'callOnlySelf'));
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    const { outcome, rejected } = settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOnlySelf', USER_LOCK),
+      artifacts, 'Tok', 'callOnlySelf');
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'callOnlySelf')]);
+    expect(rejected).toStrictEqual([]);
   });
 
   it('accepts ownerOnly() called directly by the owner, so the caller-gated accept beside it is not vacuous', () => {
@@ -290,25 +317,26 @@ describe('onlySelf and ownerOnly: a self-call keeps the caller the frame recorde
     expect(rejected).toStrictEqual([]);
   });
 
-  it('refuses ownerOnly() called by a non-owner: the guard reads the frame sender', () => {
+  it('refuses ownerOnly() called by a non-owner: the direct guard reads the frame sender', () => {
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'ownerOnly', NON_OWNER),
       artifacts, 'Tok', 'ownerOnly'));
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
   });
 
-  it('accepts this.ownerOnly() called by the owner, where the EVM reverts', () => {
-    // In the EVM `this.ownerOnly()` starts a message call, so msg.sender is the contract and the owner guard fails.
-    // The shipped inlined self-call keeps the owner as msg.sender, so the guard passes and the entry settles. The
-    // non-owner control below shows the same entry still reads the frame sender.
+  it('refuses this.ownerOnly() called by the owner, as the EVM does', () => {
+    // In the EVM `this.ownerOnly()` starts a message call, so msg.sender is the contract, not the owner, and the
+    // guard fails however the entry was entered. The shipped self-call now supplies the contract's address, so
+    // the same owner-entered plan that used to settle is refused.
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
-    const { outcome, rejected } = settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOwnerOnly', OWNER),
-      artifacts, 'Tok', 'callOwnerOnly');
-    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([entryName('Tok', 'callOwnerOnly')]);
-    expect(rejected).toStrictEqual([]);
+    const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOwnerOnly', OWNER),
+      artifacts, 'Tok', 'callOwnerOnly'));
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
   });
 
-  it('refuses this.ownerOnly() called by a non-owner', () => {
+  it('refuses this.ownerOnly() called by a non-owner, for the same reason', () => {
+    // Both callers now see the contract inside the self-call, so this case no longer discriminates on the
+    // caller; it stays as the second direction of the refusal.
     const { artifacts, contracts } = compileAndDeploy(OWNER_SOURCE, { Tok: TOK_LABEL });
     const refusal = refusalOf(() => settlePlan(singlePlan(artifacts, contracts.Tok!, 'callOwnerOnly', NON_OWNER),
       artifacts, 'Tok', 'callOwnerOnly'));

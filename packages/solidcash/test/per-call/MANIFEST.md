@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 47 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 51 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
@@ -31,7 +31,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 860 tests, all passing at `dfa91f535` (114 + 314 + 432).
+Total: 864 tests, all passing at `bb9411880` (114 + 314 + 436).
 
 ## What each directory covers
 
@@ -68,9 +68,11 @@ Total: 860 tests, all passing at `dfa91f535` (114 + 314 + 432).
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
   machine's acceptance of the caller, its callee and the validator, twice on the same bytes, with two mutated
   controls refused. `two-contract-round-trip.test.ts` drives the two-contract round trip the design's worked
-  example uses and pins the compile-time rule that still refuses it: a contract entered twice has entries that
-  disagree about how many call records the master head's tail holds, so no artifact is published and the machine is
-  never reached.
+  example uses: the compile-time wall that used to refuse it is gone, and `round-trip-composition.test.ts` drives
+  the shape through the shipped deployment and composer — the layout places the two masters of the re-entered
+  contract, the validator and the callee, the root master's call record fills through the shipped host, and the
+  machine accepts that input twice with the same verdict, with a control that presents another contract's address
+  refused. The full derivation still stops, one wall on: `B.g`'s first segment close never advances its program.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own

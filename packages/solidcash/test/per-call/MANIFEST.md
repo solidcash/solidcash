@@ -25,8 +25,8 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 74 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 144 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 79 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
@@ -35,7 +35,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 893 tests, all passing at `abe0de286` (114 + 320 + 459).
+Total: 905 tests, all passing at `48e6b2d2c` (114 + 320 + 471).
 
 ## What each directory covers
 
@@ -67,7 +67,11 @@ Total: 893 tests, all passing at `abe0de286` (114 + 320 + 459).
   capability rather than by locking bytecode.
 - **`solidcash/test/per-call/composer/`** — the resumable derivation (one program run per published site, no
   fixpoint), a re-entrant chain derived callee-first, witness and transcript assembly, block layout for the shapes
-  the design lists — including the trailing outputs a plan states that no input recreates — and both refusals.
+  the design lists — including the trailing outputs a plan states that no input recreates — and the refusals. The
+  record plans a write needs live here too: `mapping-plan.test.ts` derives the nodes a sorted-list write touches,
+  and `chunk-plan.test.ts` derives a dynamic value's length header and chunk commitments and lays the run out at
+  the index the layout gives it, each read back through the shipped codecs (`decodePushdataValue`,
+  `parseChunkCommitment`) and each refused shape named.
 - **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
@@ -90,7 +94,11 @@ Total: 893 tests, all passing at `abe0de286` (114 + 320 + 459).
   master accepts the transaction as derived, an event payload its listing entry did not compute is refused, an
   own-category NFT no frame lists is refused at a single-master contract and accepted at a shared one (the union
   census is the validator's, and is not emitted yet), and a plan that leaves an emitting entry's event unstated cannot
-  be derived.
+  be derived. `chunk-run.test.ts` composes a plan whose value lives in chunks: the run is laid out one layout width
+  past the block's data NFTs, the derivation completes and the machine accepts the master that wrote it, with the
+  header and chunk outputs carrying the commitments the plan computed and the segment declaring both records;
+  moving the run one participant further on is refused, as is a chunk output carrying a commitment or a lock the
+  body did not compute.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -169,13 +177,17 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
   in place, a whole multi-target batch, and the sender and compile-time key forms are now derived, planned and
   settled, and a body now pins its own event count against the head's region, so a constructor that emits shares the
-  head. A `string`-valued state variable is no longer a wall by itself: the head derives the chunk run's coordinate
-  from the frame's declared record block, and a compiled master whose entry appends to such a value consumes the old
-  chunk, writes the new one and updates the length header with the machine accepting. What is missing is the
-  composer: no plan lays a chunk run out, so the marketplace path has no supplier for the band even though the
-  compiler now locates it. The compile's first reported failure is therefore no longer dynamic state but a contract
-  whose unit contributes free functions, which a master emits nothing before
-  (`EACCToken.sol` and `MockSablierLockup.sol` both stop there). The ladder stands at "blocked at compile" and no
+  head. A `string`-valued state variable is no longer a wall by itself, and the composer now supplies the band: the
+  head derives the chunk run's coordinate from the frame's declared record block, `planChunkRun` derives the header
+  and chunk commitments and `layOutChunkRun` places the run one layout width past the block's data NFTs, and a plan
+  built that way derives with the machine accepting the master that wrote the value (`frames/chunk-run.test.ts`).
+  What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
+  (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure, measured again at `48e6b2d2c` with
+  `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, is `unicrow/FakeToken.sol` and the
+  sorted-batch admission's read/write clause: "the body writes a mapping at slot 0 as a read/write, and a master
+  derives the sorted-batch operands only for one unconditional write per target" — the mapping operand derivation
+  the last rows recorded is where the ladder stands, and the composer's chunk plan does not move it, because the
+  wall is the compiler's admission rather than a missing supplier. The ladder stands at "blocked at compile" and no
   title count is claimed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state

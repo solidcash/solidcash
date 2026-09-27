@@ -7,6 +7,10 @@ Run one directory:
 
     yarn workspace <package> vitest run <directory>
 
+For `solidcash` directories add `--no-isolate`, as the package's own `test:fast` does: modules then load once per
+worker instead of once per file, which took `test/per-call` from 28 s to 17 s with the same 343 passing. The `solidc`
+directories gain nothing from it; their time is compiling contracts, so a test file compiles each source once.
+
 The generated program-versus-derivation check in `validator/script.test.ts` runs three cases per mutation by
 default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at milestones.
 

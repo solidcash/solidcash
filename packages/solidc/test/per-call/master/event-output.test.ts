@@ -57,7 +57,16 @@ type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['eval
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmOutput = VmTransaction['outputs'][number];
 
-const compile = (source: string): Artifact => compileString(source, { composition: 'per-call' });
+/** Compiled once per source: the cases deploy the same few contracts, and compiling dominates the file. */
+const compiledBySource = new Map<string, Artifact>();
+const compile = (source: string): Artifact => {
+  let artifact = compiledBySource.get(source);
+  if (artifact === undefined) {
+    artifact = compileString(source, { composition: 'per-call' });
+    compiledBySource.set(source, artifact);
+  }
+  return artifact;
+};
 
 /** The deployed program and lock: the reserved slots filled the way deployment fills them. */
 function deploy(source: string): { artifact: Artifact; program: Uint8Array; lock: Uint8Array } {

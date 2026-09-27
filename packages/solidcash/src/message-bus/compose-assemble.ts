@@ -64,6 +64,7 @@ import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
+import { materializeTransportedContinuations } from './materialize-transported-continuations.js';
 import {
   convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
@@ -104,7 +105,6 @@ import {
 } from '../stateful/ValueChunkProducerIdentity.js';
 import {
   canSeedComputedValueChunkClaim,
-  canOwnTransportedContinuationSlot,
   evaluateChildDeploymentRecipe,
   materializeFixedBchTransfer,
   materializeChildDeploymentEntryScalar,
@@ -778,28 +778,13 @@ export async function assembleAtomicComposition(
         );
       }
       let transportedChunkIndex = 0;
-      for (const candidate of transportedValueChunks) {
-        for (const chunk of candidate.chunks) {
+      materializeTransportedContinuations(local, valueChunkSlots.map((slot) => slot.offset),
+        transportedValueChunks.flatMap((candidate) => candidate.chunks.map((chunk) => {
           const slot = selectedValueChunkSlots[transportedChunkIndex++];
           if (!slot) throw new Error('messageBus: transported continuation slot allocation overflowed');
-          const input = local.inputs[slot.offset];
           const chunkCategoryId = chunk.categoryId ?? candidate.production.stateOwner.categoryId;
-          if (!canOwnTransportedContinuationSlot(input, {
-            categoryId: chunkCategoryId, commitment: chunk.commitment,
-          })) {
-            throw new Error('messageBus: transported continuation output does not own a balanced trailing slot');
-          }
-          local.outputs[slot.offset] = {
-            to: chunk.lockingBytecode,
-            amount: input!.satoshis,
-            token: {
-              category: chunkCategoryId,
-              amount: 0n,
-              nft: { capability: 'mutable', commitment: chunk.commitment },
-            },
-          };
-        }
-      }
+          return { ...chunk, offset: slot.offset, categoryId: chunkCategoryId };
+        })));
       const split = splitByParticipant.get(participant.participant);
       if (split) {
         local.addInputs([...split.funders]);

@@ -124,6 +124,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
+import { serializeLocalArraySnapshot } from './external-call-local-array.js';
 import { cloneNode } from '../ast/clone.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -7699,11 +7700,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       const userVisibleParams = this.currentFunction?.parameters.filter(
         (p) => !p.name.startsWith('__internal__'),
       ) ?? [];
+      let serializedProgramLocals: ReadonlySet<string> | undefined;
       const classifyArg = (
         expression: ExpressionNode, seen = new Set<Node>(),
       ): ExternalCallArgSource | undefined => {
         if (seen.has(expression)) return undefined;
         seen.add(expression);
+        if (expression instanceof IdentifierNode && serializedProgramLocals?.has(expression.name)) return undefined;
         if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
         if (expression instanceof IdentifierNode && expression.name === 'this') {
           return { kind: 'selfAddress' };
@@ -7918,7 +7921,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         };
         return visitBlock(this.currentFunction.body) ? prior : undefined;
       };
-      const priorStatements = dominatingStatements();
+      let priorStatements = dominatingStatements();
       let unresolvedProducerAlias = false;
       const definitionDependsOnProducer = (
         definition: VariableDefinitionNode, seenDefinitions = new Set<VariableDefinitionNode>(),
@@ -8028,7 +8031,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return undefined;
       };
-      let serializedProgramLocals: ReadonlySet<string> | undefined;
       const serializingPureHelpers = new Set<FunctionDefinitionNode>();
       // Shared across recursive serializeExpression calls. Array-cache aliases can form A -> B -> A provenance
       // cycles through prior whole-value rebuilds; a call-local guard would be recreated at every edge.
@@ -8050,6 +8052,22 @@ export default class SymbolTableTraversal extends AstTraversal {
         seen.add(expression);
         const preservedLocal = expression instanceof IdentifierNode
           && serializedProgramLocals?.has(expression.name) === true;
+        if (!serializedProgramLocals && expression instanceof IdentifierNode && priorStatements) {
+          const initializer = resolveInitializer(expression);
+          if (initializer instanceof NewArrayNode || initializer instanceof ArrayNode) {
+            const snapshot = serializeLocalArraySnapshot(expression, priorStatements, (value, locals, before) => {
+              const savedLocals = serializedProgramLocals;
+              const savedPrior = priorStatements;
+              serializedProgramLocals = locals;
+              priorStatements = [...before];
+              try { return serializeExpression(value); } finally {
+                serializedProgramLocals = savedLocals;
+                priorStatements = savedPrior;
+              }
+            });
+            return snapshot ?? { kind: 'unsupported', name: 'localArraySnapshot' };
+          }
+        }
         const source = preservedLocal ? undefined : classifyArg(expression);
         if (source && source.kind !== 'expression') return {
           kind: 'source',
@@ -8455,7 +8473,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof ArrayAccessNode) {
           const array = serializeExpression(expression.array, seen);
           const index = serializeExpression(expression.index, seen);
-          return array && index && { kind: 'arrayAccess', left: array, right: index };
+          const arrayType = expression.array instanceof IdentifierNode
+            ? expression.array.definition?.type : expression.array.type;
+          const elementType = arrayType instanceof ArrayType ? arrayType.elementType.toString()
+            : array?.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
+          return array && index && { kind: 'arrayAccess', left: array, right: index,
+            ...(elementType && { type: elementType }) };
         }
         if (expression instanceof TupleIndexOpNode) {
           // An admitted atomic raw call cannot expose a catchable failure: a failing callee aborts the graph.
@@ -8488,10 +8511,12 @@ export default class SymbolTableTraversal extends AstTraversal {
             };
           }
           const tuple = serializeExpression(expression.tuple, seen);
+          const elementType = tuple?.type?.match(/^(.*)\[(?:\d*)\]$/u)?.[1];
           return tuple && {
             kind: 'arrayAccess',
             left: tuple,
             right: { kind: 'literal', type: 'bigint', value: expression.index.toString() },
+            ...(elementType && { type: elementType }),
           };
         }
         if (expression instanceof ArrayNode) {

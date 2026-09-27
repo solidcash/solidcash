@@ -147,6 +147,9 @@ strictFieldAccess = false,
       return new Uint8Array([value ? 1 : 0]);
     }
     if (typeof value === 'bigint' || typeof value === 'number') {
+      if (solidityImportCompat && (typeHint === 'address' || typeHint === 'address payable')) {
+        return numberBe(BigInt(value), 20);
+      }
       const widthMatch = typeHint.match(/^u?int(\d+)$/);
       // Solidity abi.encodePacked uses the declared natural width, big-endian (and two's-complement for signed
       // values). Native SolidCash keeps its BCH VM-number contract below: little-endian sign-magnitude with one

@@ -767,7 +767,12 @@ risk. Take the slices in order, each with its own tests.
     - `claim` calls `vault.markClaimed(id)`, then `vault.pay(to, amt)` twice.
     - Each `pay` calls `Token.transfer`.
     - (The `release` / `claim` shape.)
-  - [ ] **Y3 result into a later call.** `A.f(id)` computes `fee = B.fee(id)`, then calls `C.pay(id, fee)`.
+  - [x] **Y3 result into a later call.** `A.f(id)` computes `fee = B.fee(id)`, then calls `C.pay(id, fee)`.
+    (Ticked 2026-09-27: the composer fills a call record's `result` from its callee's declared `retval`, and the
+    shape settles - derived, callee-first, accepted at every contract input - when the `id` is a value the
+    running code holds. Two walls are pinned in the toy rather than papered over: a user-entered root cannot
+    take the parameter the shape writes, and a later call that also passes a compile-time argument still stalls
+    on the caller's own digest, which is an emission bug rather than a composer one.)
   - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5).
   - [ ] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
   - [ ] **Y6 fan-in.** `A.go()` calls `Token.approve(U, amt)`, then `U.pull(amt)`; `pull` calls

@@ -1,7 +1,7 @@
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
   Artifact, AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
-  computeEventNameHash,
+  computeEventNameHash, decodedAddressEncoding,
 } from '@solidcash/utils';
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
@@ -22,7 +22,7 @@ import {
 } from './deployment-registry.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { proxySyntheticPaginationCollection } from './proxy-pagination.js';
-import { decorateFunctionResult } from './public-result.js';
+import { decorateFunctionResult, decorateStateAccessorResult } from './public-result.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -461,8 +461,12 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               if (publicKey !== undefined) Object.assign(value as object, { publicKey });
               attachDecodedAccessors(value as any);
             }
+            const result = decorateStateAccessorResult(
+              value as import('@solidcash/utils').StateValue | undefined, storageName, args.length, implArtifact,
+            );
             const getter = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
-            if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array) {
+            if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array
+              && decodedAddressEncoding(result) !== 'evm-abi-v1') {
               const cashaddr = lockingBytecodeToCashAddress({
                 bytecode: value,
                 prefix: getNetworkPrefix(target.proxy.inner.provider.network),
@@ -470,7 +474,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               });
               return typeof cashaddr === 'string' ? `0x${binToHex(value)}` : cashaddr.address;
             }
-            return value;
+            return result;
           };
         }
         // Public state variables also have generated ABI getter entries. State sugar must win that collision;

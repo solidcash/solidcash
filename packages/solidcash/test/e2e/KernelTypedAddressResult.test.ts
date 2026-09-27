@@ -39,6 +39,10 @@ describe('kernel typed address results', () => {
     expect(direct.reviewers).toEqual([identity, new Uint8Array(20)]);
     expect(direct.party.digest).toEqual(digest);
     expect(direct.toObject().party.recipient).toEqual(identity);
+    const mapped = await (registry as any).records(0n);
+    expect(mapped.party.recipient).toEqual(identity);
+    expect(mapped.reviewers).toEqual([identity, new Uint8Array(20)]);
+    expect(mapped.party.digest).toEqual(digest);
     const abiResult = decodeEvmInvocationResult(
       encodeEvmInvocationResult([storedBefore], ['Record'], artifact.structs), ['Record'], artifact.structs,
     );

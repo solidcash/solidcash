@@ -13,6 +13,7 @@ import {
   visibleHandlerInputs,
 } from './route-expression-key.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
+import { decorateStateAccessorResult } from './public-result.js';
 import type { DeployFunctionCall, StatefulFunctionCall, TokenContainerAccessor } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
@@ -52,9 +53,8 @@ export function buildNamespaces<TArtifact extends Artifact>(
   host.state = {} as StateGetterMap<TArtifact>;
   for (const variable of contract.stateLayout!.variables) {
     // @ts-ignore - dynamic property assignment for type-safe getters
-    // An `address` state value is a full locking bytecode (e.g. a P2PKH `76a914..88ac`), returned VERBATIM -
-    // never decoded/wrapped into a CashAddress or pubkey-hash. It equals `signer.getLockingBytecode()` and the
-    // msg.sender / addressToLockScript(arg) forms byte-for-byte, so comparisons work on the raw locking bytecode.
+    // Native addresses retain their locking bytes; Solidity-compatible public getters project only fields
+    // whose declared type is address. The raw getState() snapshot must not acquire public-result metadata.
     host.state[variable.name] = async (...indices: Array<bigint | number | string>): Promise<any> => {
       let value: unknown = (await host.getState())[variable.name];
       for (const rawIndex of indices) {
@@ -69,7 +69,7 @@ export function buildNamespaces<TArtifact extends Artifact>(
         }
         value = value[index];
       }
-      return value;
+      return decorateStateAccessorResult(value as StateValue | undefined, variable.name, indices.length, contract.artifact);
     };
   }
   // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
@@ -81,7 +81,7 @@ export function buildNamespaces<TArtifact extends Artifact>(
     host.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
       const entries = await host.getEntries(coll.name);
       const match = selectMappingEntryByKeys(entries, keys, coll.keyTypes ?? [coll.keyType], coll);
-      if (match) return match.value;
+      if (match) return decorateStateAccessorResult(match.value, coll.name, keys.length, contract.artifact);
       // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
       // rather than an SDK-level missing value. Strings/bytes must be empty sequences so
       // `bytes(meceTags(tag)).length != 0` treats absent tags as non-MECE.

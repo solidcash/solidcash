@@ -1164,6 +1164,16 @@ Titles marked NEVER have not passed on any real compile to date.
   has no order-free counterpart. That reason is therefore not in `VALIDATOR_PROGRAM_REASONS`; the master-side
   settlement — the head's own `OUTPUTTOKENCOMMITMENT(out)` equals the segment's declared `viewOut` — covers a record a
   frame writes, and the differential case is pinned rather than hidden.
+- **The chains rule's cost grows with the square of the entry count, which is the wall the marketplace shapes will
+  meet.** The check searches the whole blob twice per entry, so a composition with `n` record entries runs on the
+  order of `2n²` whole-record splits. Measured on the reference shape: the value-floor program without the rule
+  costs 4,386,854 operation-cost units at the published density and with it 4,750,308, so four entries — sixteen
+  search pairs — cost 363,454, about 22,700 units per entry squared. The input buys 8,007,200 units, so the rule as
+  emitted holds to roughly eighteen entries on a shape this size; MS7's roughly twenty-four masters, whose segments
+  declare more than that, will need the prepared region the measurement section names or a pass that orders the
+  entries by key, and the ladder should expect to pay there rather than in bytes. The byte budget is not the
+  binding one — the validator input sits at 9,968 of the standard ten-thousand-byte unlocking bytecode — and the
+  plan's D3 defers that budget to Phase R.
 - The emitted state-inputs rule is stricter than the oracle in one degenerate place: the oracle keeps the transcript's
   list as a `Set`, so it would accept a transcript naming the same state input twice, while the machine requires each
   listed index to occur exactly once (duplicates could otherwise pad the count). No fixture or generated case carries

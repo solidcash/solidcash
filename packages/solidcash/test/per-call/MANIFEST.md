@@ -13,7 +13,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 246 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 261 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 
-Total: 741 tests, all passing at `a14c8b55b` (114 + 284 + 343).
+Total: 756 tests, all passing at `1df4dc7f1` (114 + 299 + 343).
 
 ## What each directory covers
 
@@ -110,9 +110,10 @@ indices, and is held to its own derivation by a generated differential check.
 
 - The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
   path: a compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a body
-  that writes a mapping in a shape whose records the master cannot read back from its own frame. One logical target
-  written in place is now derived, planned and settled; the marketplace's first root stops because its constructor
-  writes **two** mapping targets in one batch. The ladder stands at "blocked at compile" and no title count is
+  that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
+  in place, a whole multi-target batch, and the sender and compile-time key forms are now derived, planned and
+  settled; the marketplace's first root stops one wall further on — its constructor emits an event, and the master
+  head fixes one tail for every body it runs. The ladder stands at "blocked at compile" and no title count is
   claimed.
 - The composer lays out the shapes whose entries make the same number of external calls: a call-back shape, a
   user-entered multi-entry master, and a two-master contract whose validator has nothing to settle are refused by

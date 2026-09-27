@@ -177,10 +177,15 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   contract that emits inside one of two entries is still refused with "the contract emits an event that is not
   attributed to a body" when a sibling contract emits; the event region is sized by the contract's own bodies. A
   record written by more than one frame in one transaction is the wall that remains between the round trip and the
-  spec's output set: each writing master's own code reconstructs its record and requires the transaction to carry
-  that commitment, so only a record's last write can satisfy it, while the settlement chain the validator decides is
-  right for the same transaction. A master whose witness block carries both a call section and an event list stalls
-  the derivation at its call site. Delegatecall, mapping records and value sends are refused by name as before.
+  spec's output set, and it is three coupled gaps in the emitted body: a state read addresses the record the frame
+  declared but reads the spent UTXO's commitment rather than that segment's declared `viewIn`; the pending state
+  writes are cleared once per body and not at a call site, so a read after a call returns the value written before
+  it; and the write close compares the reconstructed commitment with the transaction's output at the record's
+  index, which a single output cannot carry for both a callee's write and its caller's later write. The head is
+  already right — self-settlement keys on the call kind and chains every segment — so the work is in the body, and
+  it touches the read path every master shares. A master whose witness block carries both a call section and an
+  event list stalls the derivation at its call site. Delegatecall, mapping records and value sends are refused by
+  name as before.
 - The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
   complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
   emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.

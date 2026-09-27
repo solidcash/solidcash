@@ -979,6 +979,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   finalStackUsage: Record<string, StackItem> = {};
   /** Set when this compile emits a per-call master program; the body then answers its frame from tracked slots. */
   private perCallMaster = false;
+  /** Bytes a per-call master's program holds before its head: its unit's free-function definitions, and nothing else. */
+  private perCallHeadPreludeLength = 0;
   /** Each entry's own external calls, in execution order, keyed by entry name, one per record its body binds. */
   private perCallEntryCallSites: ReadonlyMap<string, readonly MasterCallSite[]> = new Map();
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
@@ -2831,8 +2833,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
       if (this.nativeLegacyMathFunctions.has(f) || f.functionId === undefined) continue;
-      this.emitFunctionDefine(f, reachableFreeFunctionIds.has(f.functionId));
+      // A per-call master holds only the definitions its bodies invoke: a body inlined at its call sites emits no
+      // definition here, so compiling it would judge frame facts this program never carries.
+      const reachable = reachableFreeFunctionIds.has(f.functionId);
+      if (this.perCallMaster && !reachable) continue;
+      this.emitFunctionDefine(f, reachable);
     }
+    // A master's head follows the unit's definitions rather than opening the program, and the head is told how many
+    // bytes those are: a definition is a data push of its body, a push of its identifier and OP_DEFINE, which the
+    // machine executes in sequence leaving the stack as it found it, so the head reaches the same stack it would
+    // have reached at offset zero.
+    if (this.perCallMaster) this.perCallHeadPreludeLength = this.output.length;
 
     node.contract = this.visit(node.contract) as ContractNode;
 
@@ -2935,11 +2946,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * body reach each logical `msg.sender`, `msg.value`, `address(this)` and `tx.origin` by picking its slot.
    */
   private emitPerCallMasterHead(node: ContractNode): void {
-    if (this.output.length !== 0) {
+    // The only bytes a master's program may hold before its head are the definitions of the unit's free functions,
+    // emitted above as `body push, identifier push, OP_DEFINE` triples. Each is executed where it stands and leaves
+    // the stack as it found it, so the head opens on the same stack it would have opened on at offset zero, and the
+    // definitions are registered before any body can invoke one. Anything else before the head is a bug rather than
+    // a shape, so it refuses by name.
+    if (this.output.length !== this.perCallHeadPreludeLength) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
-        'a per-call master head must be the first thing emitted, but the program already has bytes',
-        { contract: node.name, emittedBytes: this.output.length },
+        'a per-call master head must open the program apart from the unit\'s free-function definitions, but the '
+        + 'program already has other bytes',
+        { contract: node.name, emittedBytes: this.output.length, definitions: this.perCallHeadPreludeLength },
       );
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };

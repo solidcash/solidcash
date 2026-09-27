@@ -538,8 +538,6 @@ export interface PerCallMasterShapeInput {
   readonly contract: ContractNode;
   /** Interface definitions in the compiled unit, for resolving the selector a call site names. */
   readonly interfaces: readonly InterfaceNode[];
-  /** File-level (free/library) functions in the compiled unit; a head must be the first thing emitted. */
-  readonly freeFunctionCount: number;
   readonly hasContractInstantiation: boolean;
   readonly hasFunctionPointers: boolean;
   readonly needsInlineAssembly: boolean;
@@ -569,9 +567,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const { contract } = input;
   const constants = contractConstantNames(contract);
   const refuse = (reason: string): PerCallMasterShapeAssessment => ({ supported: false, reason });
-  if (input.freeFunctionCount > 0) {
-    return refuse('a per-call master is one program, so free functions that would be emitted before it are not supported');
-  }
   if (contract.constructorDef) {
     // The constructor runs as one more selector-dispatched body behind the same head, so it is admitted exactly when
     // its body asks the head for nothing the head does not already carry: it makes no external call (the head's call

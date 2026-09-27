@@ -14027,7 +14027,6 @@ function compileResolvedAst(
     const assessment = assessPerCallMasterShape({
       contract: ast.contract,
       interfaces: ast.interfaceDefinitions,
-      freeFunctionCount: ast.freeFunctions.length,
       hasContractInstantiation,
       hasFunctionPointers,
       needsInlineAssembly,

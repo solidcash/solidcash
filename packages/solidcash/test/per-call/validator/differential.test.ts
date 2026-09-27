@@ -39,9 +39,8 @@ function runCases(cases: readonly GeneratedCase[]): { failures: string[]; planFa
     try {
       transaction = materialise(composition);
     } catch (error) {
-      // The frozen codec refuses some mutations outright (for example an entry that is created and deleted at once
-      // or a transcript whose settled contract lists no state input). Those bytes cannot exist on chain, so there is
-      // nothing for the two models to decide.
+      // The frozen codec refuses some mutations outright (for example an entry that is created and deleted at
+      // once). Those bytes cannot exist on chain, so there is nothing for the two models to decide.
       tally.refusedByCodec += 1;
       continue;
     }

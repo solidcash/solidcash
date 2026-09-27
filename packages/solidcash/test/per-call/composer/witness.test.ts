@@ -203,13 +203,17 @@ describe('validator witness assembly', () => {
     expect(scriptPush.rest).toHaveLength(0);
   });
 
-  it('refuses a transcript whose settled contract lists no state input', () => {
+  it('carries a transcript whose settled contract lists no state input', () => {
+    // A settled contract that spends none of its own state — several covered masters, no records — is stated by
+    // an empty state-input list, and the assembled witness decodes back to it.
     const transcript: Transcript = {
       roots: [0],
       masters: [0],
       settles: [{ category: new Uint8Array(32), stateInputs: [] }],
     };
 
-    expect(() => assembleValidatorWitness({ transcript, redeemScript })).toThrowError(/no state input/);
+    const assembled = assembleValidatorWitness({ transcript, redeemScript });
+    const transcriptPush = splitFirstPush(assembled.unlockingBytecode);
+    expect(decodeTranscript(transcriptPush.payload)).toEqual(transcript);
   });
 });

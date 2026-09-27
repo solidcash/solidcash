@@ -73,10 +73,12 @@ describe('transcript rejection', () => {
     );
   });
 
-  it('rejects a settled contract that lists no state input', () => {
-    expectPerCallRejection(
-      () => encodeTranscript({ roots: [], masters: [], settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [] }] }),
-      /no state input/,
-    );
+  it('carries a settled contract that lists no state input', () => {
+    // A contract can be settled while the transaction spends none of its state: several of its masters are
+    // covered, and it has no records of its own. The empty list is what V7 compares the transaction against.
+    const transcript = {
+      roots: [], masters: [], settles: [{ category: hexToBytes(CATEGORY_A), stateInputs: [] }],
+    };
+    expect(decodeTranscript(encodeTranscript(transcript))).toEqual(transcript);
   });
 });

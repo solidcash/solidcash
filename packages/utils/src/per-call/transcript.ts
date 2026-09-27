@@ -50,16 +50,20 @@ export interface Transcript {
   settles: SettledContract[];
 }
 
-/** Encodes a transcript. */
+/**
+ * Encodes a transcript.
+ *
+ * A settled contract's state-input list is the set of that contract's state UTXOs the transaction spends, so a
+ * contract the transaction settles while spending none of its state — one with several covered masters and no
+ * records of its own — is encoded with an empty list rather than refused. The list is what V7 compares the
+ * transaction against, and an empty list says exactly that.
+ */
 export function encodeTranscript(transcript: Transcript): Uint8Array {
   for (const [index, settled] of transcript.settles.entries()) {
     if (settled.category.length !== CATEGORY_LENGTH) {
       throw new PerCallEncodingError(
         `settled contract ${index} has a ${settled.category.length}-byte category, expected ${CATEGORY_LENGTH}`,
       );
-    }
-    if (settled.stateInputs.length === 0) {
-      throw new PerCallEncodingError(`settled contract ${index} lists no state input`);
     }
   }
   if (transcript.roots.length > 0xff) throw new PerCallEncodingError('too many roots');

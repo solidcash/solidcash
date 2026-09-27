@@ -11,6 +11,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { decideValidator, type PerCallTransaction, type TokenShape } from '../../../../solidc/src/per-call/validator/index.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
@@ -63,7 +64,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IB { function g(); }'
   + ' interface IA { function k(); }'
   + ' contract B {'
-  + `   function g() { require(true); }`
+  + `   function g() { IA(0x${Buffer.from(ADDRESS_A).toString('hex')}).k.call(); require(true); }`
   + ' }'
   + ' contract A {'
   + `   function f() { IB(0x${Buffer.from(ADDRESS_B).toString('hex')}).g.call(); require(true); }`
@@ -73,6 +74,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
 type VmTransaction = NonNullable<VmProgram['transaction']>;
 type VmSourceOutputs = VmProgram['sourceOutputs'];
+type VmToken = NonNullable<VmSourceOutputs[number]['token']>;
 
 const empty = new Uint8Array(0);
 const token = (
@@ -180,12 +182,55 @@ function buildComposition(): { plan: CompositionDraftPlan; artifacts: ReturnType
     validator: {
       id: VALIDATOR_ID,
       covers: ['B'],
-      settles: [],
+      // `A` runs on two masters, so its validator settles it; `A` has no records yet, so the settlement lists no
+      // state input. `B` runs on one master and settles itself.
+      settles: [{ category: CATEGORY_A, stateInputs: [] }],
       redeemScript: validator.redeem,
     },
+
   };
 
   return { plan, artifacts };
+}
+
+/**
+ * The assembled transaction as the validator's derivation models it.
+ *
+ * The two modules speak about the same transaction in their own shapes: the machine reads a program, the
+ * derivation reads inputs and outputs. Nothing here decides anything; it only re-states what the machine was
+ * handed, so the derivation can be asked about the bytes the machine ran.
+ */
+function toModel(program: VmProgram): PerCallTransaction {
+  const shape = (token: VmToken | undefined): TokenShape => (token === undefined
+    ? { category: empty, capability: 0, hasNft: false, nftCommitment: empty, amount: 0n }
+    : {
+      category: token.category,
+      capability: capabilityOf(token),
+      hasNft: token.nft !== undefined,
+      nftCommitment: token.nft?.commitment ?? empty,
+      amount: token.amount,
+    });
+  return {
+    inputs: program.transaction.inputs.map((input, index) => ({
+      index,
+      value: program.sourceOutputs[index]!.valueSatoshis,
+      lockingBytecode: program.sourceOutputs[index]!.lockingBytecode,
+      unlockingBytecode: input.unlockingBytecode,
+      token: shape(program.sourceOutputs[index]!.token),
+      outpointTransactionHash: input.outpointTransactionHash,
+      outpointIndex: input.outpointIndex,
+    })),
+    outputs: program.transaction.outputs.map((output, index) => ({
+      index, value: output.valueSatoshis, lockingBytecode: output.lockingBytecode, token: shape(output.token),
+    })),
+  };
+}
+
+/** The capability number the derivation uses for the machine's token. */
+function capabilityOf(token: VmToken): number {
+  if (token.nft?.capability === 'minting') return 2;
+  if (token.nft?.capability === 'mutable') return 1;
+  return 0;
 }
 
 const ROOT = { contract: 'A', functionName: ENTRY_F, kind: FrameKind.ROOT, master: A_FIRST };
@@ -250,21 +295,70 @@ describe('a contract entered twice, composed on the machine', () => {
     expect(verdict(vm, mutated, sourceOutputs, 1).accepted).toBe(false);
   });
 
-  it('stalls deriving the callee that calls on, which is the next wall this shape meets', () => {
-    // Deriving `A.f` fills its call record and reaches `B.g`; `B.g`'s own call record is filled, but the site that
-    // closes its first segment never advances the program, so the derivation refuses rather than guessing. The
-    // message names the master and the site, so this test flips when the wall is gone.
+  it('derives the whole round trip depth first, callee before caller', () => {
     const { plan, artifacts } = buildComposition();
     const { host } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
-    let message = '';
-    try {
-      deriveDepthFirst(ROOT, host);
-    } catch (error) {
-      message = String((error as { message?: string }).message ?? error);
-    }
-    expect(message).toContain('PER_CALL_DERIVATION_STALLED');
-    expect(message).toContain('"b-1"');
-    expect(message).toContain('close of segment 0');
+
+    const result = deriveDepthFirst(ROOT, host);
+
+    // `A.f` calls `B.g`, which calls `A.k`, so the innermost execution finishes first and the entry the user
+    // reached finishes last.
+    expect(result.completed.map((frame) => frame.master)).toStrictEqual([A_SECOND, B_MASTER, A_FIRST]);
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual([ENTRY_K, ENTRY_G, ENTRY_F]);
+    // Every published site of every execution was resumed exactly once.
+    expect(result.runs.map((run) => `${run.frame.master}#${run.site.site}`)).toStrictEqual([
+      `${A_FIRST}#0`, `${B_MASTER}#0`, `${A_SECOND}#0`, `${B_MASTER}#1`, `${B_MASTER}#2`,
+      `${A_FIRST}#1`, `${A_FIRST}#2`,
+    ]);
+  });
+
+  it('is accepted at every contract input once the derivation has filled every witness', () => {
+    const { plan, artifacts } = buildComposition();
+    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    deriveDepthFirst(ROOT, host);
+
+    // One program carries the whole transaction, so the same view decides every input.
+    const program = draft.programFor(A_FIRST);
+    const vm = createVirtualMachineBch2026({
+      operationCostBudgetPerByte: 10_000_000,
+      hashDigestIterationsPerByte: 10_000_000,
+    });
+    const at = (index: number): string => verdict(vm, program.transaction, program.sourceOutputs, index)
+      .objection ?? 'accepted';
+
+    // The user's entry, the re-entered entry, the validator that covers both contracts, and the callee that calls
+    // back: every contract input the transaction spends is settled by its own program.
+    expect(at(0)).toBe('accepted');
+    expect(at(1)).toBe('accepted');
+    expect(at(2)).toBe('accepted');
+    expect(at(3)).toBe('accepted');
+  });
+
+  it('refuses the derivation when a block declares a call its entry does not make', () => {
+    // The head walks the call section with the length the block declares and each body pins that length to the
+    // calls its own source makes, so a plan that hands an entry a call record it never makes stops the program.
+    const { plan, artifacts } = buildComposition();
+    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const stray = structuredClone(draft.blockOf(A_SECOND)) as WitnessBlock;
+    stray.calls = [{
+      kind: FrameKind.CALL, target: ADDRESS_B, value: 0n, calleeRef: 3,
+      argsHash: sha256(G_SELECTOR), result: empty,
+    }];
+    stray.segments = [[], []];
+
+    const program = draft.programFor(A_SECOND);
+    const vm = createVirtualMachineBch2026(false);
+    const state = vm.evaluate({
+      ...program,
+      transaction: {
+        ...program.transaction,
+        inputs: program.transaction.inputs.map((input, index) => (index === 1
+          ? { ...input, unlockingBytecode: withSecondBlock({ draft }, () => stray) }
+          : input)),
+      },
+    });
+    expect(vm.stateSuccess(state)).not.toBe(true);
   });
 });
 
@@ -288,3 +382,27 @@ function fillRootCall(): {
   });
   return { vm, draft, transaction: program.transaction, sourceOutputs: program.sourceOutputs };
 }
+
+describe('the validator decides the derived round trip', () => {
+  it('walks every check and derives the order the spec states for this shape', () => {
+    const { plan, artifacts } = buildComposition();
+    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    deriveDepthFirst(ROOT, host);
+
+    const decision = decideValidator(toModel(draft.programFor(A_FIRST)), {
+      validatorTemplate: VALIDATOR_PROGRAM,
+      validatorInputIndex: 2,
+    });
+
+    expect(decision.outcomes.map((outcome) => `${outcome.check}:${outcome.status}`)).toStrictEqual([
+      'V1:accepted', 'V2:accepted', 'V3:accepted', 'V4:accepted', 'V5:accepted', 'V6:accepted',
+      'V7:accepted', 'V8:accepted', 'V9:accepted', 'V10:accepted', 'V11:accepted',
+    ]);
+    // The derived order is the spec's for a caller whose callee calls back: the entry's first segment, the
+    // callee's, the re-entered entry, the callee's second segment, then the entry's.
+    const at = (master: string): number => participant(draft.layout, master).index;
+    expect((decision.order ?? []).map((step) => `(${step.master},${step.segment})`))
+      .toStrictEqual([`(${at(A_FIRST)},0)`, `(${at(B_MASTER)},0)`, `(${at(A_SECOND)},0)`,
+        `(${at(B_MASTER)},1)`, `(${at(A_FIRST)},1)`]);
+  });
+});

@@ -9,6 +9,7 @@ import {
   type AbiFunction,
   type ArgSource,
   type ExternalCallAbi,
+  type ExternalCallExpression,
   type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
@@ -46,6 +47,7 @@ import {
   SortedList, bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti,
 } from './SortedList.js';
 import { isMsgSenderKeySource } from './soft-state-overlays.js';
+import { hydrateExternalPredicateState } from './sc-hydrate-external-predicate-state.js';
 import type { OnChainState } from './StateReader.js';
 import {
   type ValueChunkProducerPathDisposition,
@@ -149,6 +151,19 @@ export async function expandCreateBuilderLateTransitive(
     if (!parentFn?.externalCalls?.length) continue;
     const graphPlanningResults = createGraphPlanningProducerResultContext();
     const parentState = await logicalParentContract.getState() as Record<string, StateValue>;
+    // Collection entries are not part of scalar getState(). Resolve compiler-described reads from the
+    // logical invocation's authenticated collection before choosing a late edge or preparing its arguments.
+    const hydrateState = async (
+      expressions: readonly (ExternalCallExpression | undefined)[],
+      iterationIndex = 0,
+    ): Promise<void> => {
+      const hydrated = await hydrateExternalPredicateState({
+        evaluateExternalExpression: (...args: any[]) => logicalParentContract._evaluateExternalExpression(...args),
+        getEntries: (...args: any[]) => logicalParentContract.getEntries(...args),
+      }, expressions, logicalParentArgs, logicalParentArtifact, parentState, parentFn.inputs,
+      parentOutgoingSelfAddress, [iterationIndex]);
+      Object.assign(parentState, hydrated);
+    };
     const expressionReturns = (
       sources: readonly ArgSource[] | undefined,
       args: FunctionArgument[],
@@ -173,6 +188,7 @@ export async function expandCreateBuilderLateTransitive(
       if (nested.occurrence === 'loop') {
         const domain = nested.iterationDomain;
         if (!domain) throw new Error(`Late external callsite ${nested.callsiteId} has no exact iteration domain`);
+        await hydrateState([domain.initialValue, domain.stepValue, domain.continueCondition]);
         const domainReturns = await expressionReturns(
           [domain.initialValue, domain.stepValue, domain.continueCondition]
             .map((expression) => ({ kind: 'expression', expression })), logicalParentArgs, false,
@@ -186,6 +202,7 @@ export async function expandCreateBuilderLateTransitive(
       let occurrenceIndex = 0;
       for (const iterationIndex of iterationIndices) {
         if (nested.condition) {
+          await hydrateState([nested.condition], iterationIndex);
           const conditionReturns = await expressionReturns(
             [{ kind: 'expression', expression: nested.condition }], logicalParentArgs, false,
             iterationIndex, nested,
@@ -210,6 +227,9 @@ export async function expandCreateBuilderLateTransitive(
       }
     }
     for (const { nested, iterationIndex, occurrenceIndex } of frames) {
+      await hydrateState([
+        ...(nested.addressSource ? [nested.addressSource] : []), ...(nested.argSources ?? []),
+      ].map((source) => ({ kind: 'source', source })), iterationIndex);
       const addressReturns = await expressionReturns(
         nested.addressSource ? [nested.addressSource] : undefined, logicalParentArgs, preparedAtomicNodes !== undefined,
         iterationIndex,

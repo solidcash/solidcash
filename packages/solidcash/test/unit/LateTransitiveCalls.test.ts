@@ -4,6 +4,7 @@ import type { FunctionArgument } from '../../src/Argument.js';
 import type { ExternalCallUtxoGroup } from '../../src/stateful/external-call-utxo-group.js';
 import * as covenants from '../../src/stateful/covenant-helpers.js';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
+import { mappingKeySlotCandidates } from '../../src/stateful/mapping-key-lookup.js';
 import { resolveExternalArgs, type ResolveExternalArgsHost } from '../../src/stateful/sc-resolve-external-args.js';
 import {
   resolveExternalExpressionReturns, type ResolveExternalExpressionReturnsHost,
@@ -131,6 +132,80 @@ function preparation(groups: ExternalCallUtxoGroup[]): {
 }
 
 describe('late transitive call preparation', () => {
+  it.each(['enabled', 'disabled', 'missing'] as const)(
+    'hydrates mapping-backed late predicates and arguments (%s entry)', async (entryState) => {
+      const record: ExternalCallExpression = {
+        kind: 'stateAccess', name: 'records',
+        args: [{ kind: 'source', source: { kind: 'forward', paramIndex: 0 } }],
+      };
+      const call: ExternalCallAbi = {
+        ...edge('Sink'),
+        condition: { kind: 'field', name: 'enabled', expression: record },
+        argSources: [{ kind: 'expression', expression: { kind: 'field', name: 'amount', expression: record } }],
+      };
+      const first = withExpressionResolution(contract(1, [handler('run', [call])]));
+      const collection = {
+        name: 'records', kind: 'mapping' as const, keyType: 'uint256', valueType: 'Record',
+        signature: 'records:mapping(uint256=>Record)',
+      };
+      first.inner.artifact.stateLayout = {
+        variables: [], dataNftCount: 0, commitmentLimit: 128, collections: [collection],
+        structs: [{ name: 'Record', fields: [{ name: 'enabled', type: 'bool' }, { name: 'amount', type: 'uint256' }] }],
+      };
+      const getEntries = vi.fn(async () => entryState === 'missing' ? [] : [{
+        slot: mappingKeySlotCandidates([9n], ['uint256'], collection)[0],
+        value: { enabled: entryState === 'enabled', amount: 37n },
+      }]);
+      Object.assign(first, { getEntries });
+      const sink = contract(2, [handler('run', [], true)]);
+      first._externalRegistry.set('Sink', sink);
+      const fixture = preparation([group(first)]);
+
+      await fixture.expand();
+
+      expect(getEntries).toHaveBeenCalledWith(collection.signature);
+      expect(fixture.nodes.filter((node) => node.contract === sink).map((node) => node.args))
+        .toEqual(entryState === 'enabled' ? [[37n]] : []);
+      expect(await first.getState()).toEqual({});
+    },
+  );
+
+  it('hydrates mapping-backed late loop predicates at each source iteration', async () => {
+    const literal = (value: number): ExternalCallExpression => ({ kind: 'literal', type: 'bigint', value: String(value) });
+    const iteration: ExternalCallExpression = {
+      kind: 'source', source: { kind: 'loopIndex', initialValue: '2', stepValue: '1' },
+    };
+    const loop: ExternalCallAbi = {
+      ...edge('Sink'), occurrence: 'loop', maximumOccurrences: 3,
+      condition: { kind: 'stateAccess', name: 'enabled', args: [iteration] },
+      argSources: [{ kind: 'expression', expression: iteration }],
+      iterationDomain: {
+        counterName: 'i', initialValue: literal(2), stepValue: literal(1), maximumIterations: 3,
+        continueCondition: { kind: 'binary', operator: '<', left: { kind: 'identifier', name: 'i' }, right: literal(5) },
+      },
+    };
+    const first = withExpressionResolution(contract(1, [handler('run', [loop])]));
+    const collection = {
+      name: 'enabled', kind: 'mapping' as const, keyType: 'uint256', valueType: 'bool',
+      signature: 'enabled:mapping(uint256=>bool)',
+    };
+    first.inner.artifact.stateLayout = {
+      variables: [], dataNftCount: 0, commitmentLimit: 128, collections: [collection],
+    };
+    Object.assign(first, { getEntries: async () => [2n, 4n].map((key) => ({
+      slot: mappingKeySlotCandidates([key], ['uint256'], collection)[0], value: true,
+    })) });
+    const sink = contract(2, [handler('run', [], true)]);
+    first._externalRegistry.set('Sink', sink);
+    const fixture = preparation([group(first)]);
+
+    await fixture.expand();
+
+    expect(fixture.nodes.filter((node) => node.contract === sink)).toMatchObject([
+      { args: [2n], occurrenceIndex: 0 }, { args: [4n], occurrenceIndex: 1 },
+    ]);
+  });
+
   it.each([true, false])('materializes a late satoshi-container slot without shifting later resources (funded %s)', async (funded) => {
     const sink = contract(2, [{ ...handler('run', [], true), blockLayout: {
       blockSize: 3, slots: [{ kind: 'master', offset: 0 }, { kind: 'satoshiContainer', offset: 1 },

@@ -17,21 +17,21 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 268 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 275 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 137 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 44 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 47 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 32 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 22 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 5 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 
-Total: 763 tests, all passing at `7d145ab87` (114 + 306 + 343).
+Total: 859 tests, all passing at `8a2c56e99` (114 + 313 + 432).
 
 ## What each directory covers
 
@@ -44,9 +44,11 @@ Total: 763 tests, all passing at `7d145ab87` (114 + 306 + 343).
   offsets, the frame checks the machine enforces on a real spend (ownership, recreation, hash type, `msg.sender`,
   `tx.origin`, `address(this)`), the witness-block reader, dispatch over one master's entry points, state read and
   written through the frame's declared record indices, record settlement across the segments of one execution, the
-  returns an entry settles against the frame's `retval`, call sites and their argument digests, and the shapes the
-  generator refuses by name (including imports that contribute emitted definitions, which a declaration-only import
-  does not).
+  returns an entry settles against the frame's `retval`, call sites and their argument digests, a dynamic value's
+  chunk run addressed from the frame's declared record block rather than from the master's own input
+  (`dynamic-state-record.test.ts`, which lays the block away from the master so a fixed offset would fail), and the
+  shapes the generator refuses by name (including imports that contribute emitted definitions, which a
+  declaration-only import does not).
 - **`solidc/test/per-call/records/`** — proof that the shipped sorted-list, covenant-helper and state encoders
   implement the record semantics the design assumes: exact read, absence by strict predecessor on the masked slot,
   insert with a relinked predecessor, update in place, delete as the default value, composite keys for nested
@@ -63,7 +65,10 @@ Total: 763 tests, all passing at `7d145ab87` (114 + 306 + 343).
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
   machine's acceptance of the caller, its callee and the validator, twice on the same bytes, with two mutated
-  controls refused.
+  controls refused. `two-contract-round-trip.test.ts` drives the two-contract round trip the design's worked
+  example uses and pins the compile-time rule that still refuses it: a contract entered twice has entries that
+  disagree about how many call records the master head's tail holds, so no artifact is published and the machine is
+  never reached.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -73,7 +78,23 @@ Total: 763 tests, all passing at `7d145ab87` (114 + 306 + 343).
   and each decided by the machine: loose funds at a master's lock, a master not recreated in place, a covered
   master presenting an address its category does not derive, a validator UTXO that is not the mutable NFT its
   script pins, a call record naming the wrong input or carrying the wrong argument digest, an event output the body
-  did not compute, a declared record the transaction does not spend, and a state UTXO no segment declares.
+  did not compute, a declared record the transaction does not spend, a state UTXO no segment declares, a second
+  signed user offered as the origin, a root whose sender is rewritten while a validator covers the edge, a
+  composition that leaves part of a covered contract unsettled, and — over the shipped validator program's own
+  bytes — one rejection per rule it emits: its transcript and the witness blocks it reads, which masters and roots
+  a transcript must list, every call edge, settlement, read-only frames and address binding, each with the
+  accepted composition beside it.
+- **`solidcash/test/per-call/edges/`** — one dedicated test per row of the spec's edge-case table (section 23) that
+  the shipped language subset can express: a record written on both sides of a call, a reentrancy guard crossed by
+  re-entry, `tx.origin` and `msg.sender` authority on a callee, events above the commitment size emitted by a
+  nested frame, two events at distinct outputs, a static read of state another frame just wrote, a data-dependent
+  call count, a record growing within one transaction, a four-deep call chain, and a named refusal for every row
+  the compiler or the composer still refuses (inline assembly, low-level calls, value sends, struct and array
+  returns, `ecrecover`, dynamic mapping values).
+- **`solidcash/test/per-call/toys/`** — the small compositions the design lists. Each is driven to the machine
+  where the shipped path supports it and otherwise refused by name: a repeated call to one target, the sorted-entry
+  insert/update/delete lifecycle, a result fed into a later call, and a fan-in through an allowance, each currently
+  refused before composition with the rule named.
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name.
@@ -92,23 +113,32 @@ Rows the directory does not yet cover are listed under them, and none of those i
 | A state UTXO spent outside settlement, a declared record the transaction does not spend, or a declaration that does not chain from the spent commitment to the written one | `record-census.test.ts` (four cases) |
 | A validator UTXO that is not the mutable NFT its own script pins (minting token, no token, another category) | `validator-program.test.ts` (three cases) |
 | A covered master presenting an address its category does not derive | `validator-program.test.ts` (one case, isolated through a delegate composition so the address rule and not an earlier edge rule is what refuses) |
+| A second signed user offered as the origin reference | `origin-reference.test.ts` (two cases) |
+| A root frame whose `sender` is rewritten while a validator covers the edge | `caller-lock-binding.test.ts` (one case, refused on the caller's own input while the validator and callee still accept) |
+| Part of a covered contract left unsettled | `settlement-coverage.test.ts` (one case) |
+| A validator transcript or a covered witness block the shipped program cannot read | `validator-transcript.test.ts` (ten cases) |
+| A validator output missing, not recreated, or carrying less value, or no master of its own category | `validator-recreation.test.ts` (five cases) |
+| A transcript listing masters that point elsewhere, are duplicated or are missing, and roots that are duplicated, missing or extra | `validator-coverage.test.ts` (fourteen cases) |
+| A forged call edge in either direction: callee, caller, frame kind, origin, value, sender, target, self, result, argument digest, an unreached master, or a master called twice | `validator-call-edges.test.ts` (fourteen cases) |
+| A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator-settlement.test.ts` (six cases) |
+| A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |
 
 Not covered by `hostile/`, and not claimed by any other directory: a standalone master whose reserved address slot is
 filled with an address its category does not derive (the on-chain head compares the witness `self` with the reserved
-slot; only the deployment gate recomputes it); a forged caller or call edge where a validator is present but the
-edge rule does not fire first; reordered segments and stale reads; partial settlement of a multi-master contract;
-one view spread over two validators; a second signed user offered as `originRef`; a witness selecting a `catch`
-branch; proxy and implementation binding; a value send made as a plain output; and the receipt form, which the plan
-records as a residual.
+slot; only the deployment gate recomputes it); reordered segments and stale reads; one view spread over two
+validators; a witness selecting a `catch` branch; proxy and implementation binding (per-call delegate shapes are
+refused at compile, so there is no spend to mutate); a value send made as a plain output (the composer refuses value
+sends by name); and the receipt form, which the plan records as a residual.
 
 ## The shape the path currently carries
 
 Both sides of a composition compile and are spent in a test: a caller and the callee it reaches, co-spent with a
 validator, assembled by the composer from a plan the test supplies no geometry for. A compiled stateful master
 reads and writes its record through the indices its own frame declares, chains those declarations across the
-segments of one execution, and settles a record that sits away from it. The validator is an emitted program
-(`packages/solidc/src/per-call/validator/program.ts`) that enforces V1, V9 and the transcript's header and root
-indices, and is held to its own derivation by a generated differential check.
+segments of one execution, and settles a record that sits away from it. A compiled master whose state is a `string`
+addresses its value's chunk run from the same declaration and settles a read-modify-write of it in the machine.
+The validator is an emitted program (`packages/solidc/src/per-call/validator/program.ts`) that emits rules spanning
+all eleven checks, and every rule it emits has a machine-level hostile rejection beside an accepted composition.
 
 ## What is not covered
 
@@ -117,14 +147,21 @@ indices, and is held to its own derivation by a generated differential check.
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
   in place, a whole multi-target batch, and the sender and compile-time key forms are now derived, planned and
   settled, and a body now pins its own event count against the head's region, so a constructor that emits shares the
-  head. The marketplace's first root stops one wall further on: its `string` state, set from `string` constructor
-  arguments, is lowered into a band of chunk inputs whose base the direct convention's SDK computes and the per-call
-  path has no supplier for. The ladder stands at "blocked at compile" and no title count is claimed.
-- The composer lays out the shapes whose entries make the same number of external calls: a call-back shape, a
-  user-entered multi-entry master, and a two-master contract whose validator has nothing to settle are refused by
-  name. Delegatecall, mapping records and value sends are refused by name as well.
-- The validator program enforces V1, V9 and the transcript header; V2-V8, V10 and V11 are pure checks with hostile
-  units, a reference model and a differential harness, and no master-side test yet runs the shipped program instead
-  of a stand-in whose hash the master recognises.
+  head. A `string`-valued state variable is no longer a wall by itself: the head derives the chunk run's coordinate
+  from the frame's declared record block, and a compiled master whose entry appends to such a value consumes the old
+  chunk, writes the new one and updates the length header with the machine accepting. What is missing is the
+  composer: no plan lays a chunk run out, so the marketplace path has no supplier for the band even though the
+  compiler now locates it. The compile's first reported failure is therefore no longer dynamic state but a contract
+  whose unit contributes free functions, which a master emits nothing before
+  (`EACCToken.sol` and `MockSablierLockup.sol` both stop there). The ladder stands at "blocked at compile" and no
+  title count is claimed.
+- The composer lays out the shapes whose entries make the same number of external calls: the two-contract round trip
+  the design's worked example uses is refused before composition, because a contract entered twice has one entry
+  that calls and one that does not, so the entries disagree about how many call records the head's tail holds. A
+  user-entered multi-entry master and a two-master contract whose validator has nothing to settle are refused by
+  name, and so are delegatecall, mapping records and value sends.
+- The validator program emits rules spanning all eleven checks; four of them (`V2`, `V5`, `V6`, `V7`) are not
+  complete — the ordering half of `V6` and most of `V7`'s settlement rules are carried by record chains rather than
+  emitted — and a handful of rules in the derivation's reason list have no counterpart in the program.
 - Every VM acceptance in these directories runs under the relaxed operation-cost profile; the published density is
   what a real chain would apply (see `GATE_REPORT.md`).

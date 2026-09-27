@@ -94,11 +94,13 @@ export function stripFrameParameters(contract: ContractNode): void {
   ];
   for (const fn of functions) {
     if (!fn) continue;
-    // The sorted-batch operands are derived from the master's own frame, so they are not supplied as arguments
-    // any more than the frame values are; publishing them would ask a caller for values it cannot know.
+    // The sorted-batch operands and a dynamic value's chunk-run coordinate are derived from the master's own frame,
+    // so they are not supplied as arguments any more than the frame values are; publishing them would ask a caller
+    // for values it cannot know.
     const derived = derivableBatchWitnessNames(fn, constants);
+    const derivedDynamic = derivableDynamicChunkNames(fn);
     fn.parameters = fn.parameters.filter((parameter) =>
-      !(derived?.has(parameter.name) ?? false)
+      !(derived?.has(parameter.name) ?? false) && !(derivedDynamic?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
       && !isExternalCallParameter(parameter.name));
     // A multi-target batch is classified as a dense linear row batch for the direct convention. The per-call master
@@ -444,7 +446,8 @@ function isUndeclaredHiddenParameter(
     && !FRAME_PARAMETERS.has(name)
     && !RETURN_EVENT_PARAMETERS.has(name)
     && !isExternalCallParameter(name)
-    && !(derivableBatchWitnessNames(entry, constants)?.has(name) ?? false);
+    && !(derivableBatchWitnessNames(entry, constants)?.has(name) ?? false)
+    && !(derivableDynamicChunkNames(entry)?.has(name) ?? false);
 }
 
 /**
@@ -453,22 +456,18 @@ function isUndeclaredHiddenParameter(
  * A `string`, `bytes` or dynamic array is not stored in one commitment: its bytes are split into 120-byte chunk
  * NFTs, and the direct convention co-spends that run as inputs whose first absolute coordinate is this operand.
  */
-const DYNAMIC_CHUNK_INPUT_BASE = '__internal__dynamicChunkInputBase';
+export const DYNAMIC_CHUNK_BASE_PARAMETER = '__internal__dynamicChunkInputBase';
 
 /**
- * Why a body that reads or writes dynamic state cannot share a per-call master, phrased as a fact about the body.
+ * The operand the head derives for a body that reads or writes dynamic state, or undefined for a body that does not.
  *
- * The body needs the coordinate its chunk run starts at. The direct convention receives that coordinate from its
- * SDK, which computes it from the entry's physical block layout. A per-call master instead derives its operands
- * from the record declarations its frame carries, and a declaration holds only the record's own input and output
- * indices and commitments - nothing that names a chunk run's base. So there is no record to derive the coordinate
- * from, and the head cannot supply it.
+ * The direct convention's SDK computes the run's first coordinate from the entry's physical block layout and hands
+ * it to the body as an argument. A per-call master takes no such argument list: its frame declares where the
+ * contract's records are, and the run sits a fixed width past that declaration, so the head derives the coordinate
+ * from the frame and leaves it where the body reads it.
  */
-function dynamicStateRefusal(subject: string): string {
-  return `${subject} reads or writes dynamic state, which is lowered into a run of chunk inputs the direct `
-    + `convention's SDK locates with '${DYNAMIC_CHUNK_INPUT_BASE}'. A per-call master derives its operands from `
-    + 'the record declarations its frame carries, and no declaration names a chunk run\'s base, so the head '
-    + 'cannot supply that coordinate';
+export function derivableDynamicChunkNames(fn: FunctionDefinitionNode): Set<string> | undefined {
+  return fn.usesDynamicChunkInputBase === true ? new Set([DYNAMIC_CHUNK_BASE_PARAMETER]) : undefined;
 }
 
 export interface PerCallMasterShapeInput {
@@ -553,9 +552,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const hidden = entry.parameters.filter((parameter) =>
       isUndeclaredHiddenParameter(entry, parameter.name, constants));
     if (hidden.length > 0) {
-      if (hidden[0].name === DYNAMIC_CHUNK_INPUT_BASE) {
-        return refuse(dynamicStateRefusal(`the entry point '${entry.name}'`));
-      }
       return refuse(`the entry point '${entry.name}' carries the hidden parameter '${hidden[0].name}', `
         + 'which the master head does not supply');
     }
@@ -604,7 +600,6 @@ function unsupportedConstructorShape(
   const hidden = constructorDef.parameters.filter((parameter) =>
     isUndeclaredHiddenParameter(constructorDef, parameter.name, constants));
   if (hidden.length > 0) {
-    if (hidden[0].name === DYNAMIC_CHUNK_INPUT_BASE) return dynamicStateRefusal('the constructor');
     return `the constructor carries the hidden parameter '${hidden[0].name}', which the master head does not supply`;
   }
   if ((constructorDef.externalCalls?.length ?? 0) > 0 || (constructorDef.lowLevelCalls?.length ?? 0) > 0) {

@@ -222,34 +222,23 @@ describe('the call set a compiled master fixes', () => {
   });
 });
 
-describe('dynamic state the per-call frame cannot locate', () => {
-  it('refuses an entry that reads a dynamic state variable and names the chunk run', () => {
-    // The entry reads its chunks from a run of inputs whose base the direct convention's SDK computes from the
-    // entry's block layout. A per-call master derives its operands from the frame's record declarations, and no
-    // declaration names that base, so the refusal says so rather than reporting a bare hidden operand.
-    expect(codeOf(() => compileString(DYNAMIC_READ_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    const message = messageOf(() => compileString(DYNAMIC_READ_CONTRACT, { composition: 'per-call' }));
-    expect(message).toContain('dynamic state');
-    expect(message).toContain('chunk');
+describe('dynamic state a per-call frame locates', () => {
+  it('admits an entry that reads a dynamic state variable', () => {
+    // A dynamic value lives in a run of chunk NFTs. The direct convention's SDK computes the run's first
+    // coordinate from the entry's block layout and passes it as an argument; a per-call master derives the same
+    // coordinate from the frame's declared record block and the layout's own width, so the entry compiles.
+    expect(() => compileString(DYNAMIC_READ_CONTRACT, { composition: 'per-call' })).not.toThrow();
   });
 
-  it('refuses an entry that writes a dynamic state variable, by the same reason', () => {
-    expect(codeOf(() => compileString(DYNAMIC_WRITE_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(DYNAMIC_WRITE_CONTRACT, { composition: 'per-call' })))
-      .toContain('dynamic state');
+  it('admits an entry that writes a dynamic state variable', () => {
+    expect(() => compileString(DYNAMIC_WRITE_CONTRACT, { composition: 'per-call' })).not.toThrow();
   });
 
-  it('refuses a constructor that stores a dynamic argument, by the same reason', () => {
-    expect(codeOf(() => compileString(DYNAMIC_CONSTRUCTOR_CONTRACT, { composition: 'per-call' })))
-      .toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(messageOf(() => compileString(DYNAMIC_CONSTRUCTOR_CONTRACT, { composition: 'per-call' })))
-      .toContain('dynamic state');
+  it('admits a constructor that stores a dynamic argument', () => {
+    expect(() => compileString(DYNAMIC_CONSTRUCTOR_CONTRACT, { composition: 'per-call' })).not.toThrow();
   });
 
-  it('compiles each of those shapes under the direct convention', () => {
-    // The refusal is the per-call frame's, not the contract's: the direct convention's SDK supplies the band.
+  it('compiles each of those shapes under the direct convention too', () => {
     for (const source of [DYNAMIC_READ_CONTRACT, DYNAMIC_WRITE_CONTRACT, DYNAMIC_CONSTRUCTOR_CONTRACT]) {
       expect(() => compileString(source)).not.toThrow();
     }

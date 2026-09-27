@@ -79,6 +79,7 @@ import {
   KERNEL_ENTRY_JOURNAL_RECORDS_PER_SEGMENT,
   KERNEL_JOURNAL_DISPOSITION_COMMITMENT_TAG_HEX,
   kernelJournalDispositionManifestDigest,
+  blockInputSize,
   FrameKind,
   type AbiFunction,
 } from '@solidcash/utils';
@@ -280,7 +281,7 @@ import {
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKey,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKey, DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -2989,8 +2990,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(recordOutputIndexSlotName());
       this.pushToStack(recordInputIndexSlotName());
     }
+    // A body that reads or writes a dynamic value addresses its chunk run from the frame's declared record block,
+    // one layout width past it, exactly as the direct convention addresses the run from the input its frame runs
+    // on. Derived here rather than taken as an argument, and registered above the record indices the derivation
+    // reads, so a body finds the coordinate where it would find the direct path's operand.
+    const dynamicChunkWidth = this.perCallDynamicChunkWidth(node);
+    if (dynamicChunkWidth !== undefined) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(recordInputIndexSlotName()))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(encodeInt(BigInt(dynamicChunkWidth)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.pushToStack(DYNAMIC_CHUNK_BASE_PARAMETER);
+    }
     // The frame's `retval` is left above everything else, so its slot is registered last.
     if (returnsValue) this.pushToStack(retvalSlotName());
+  }
+
+  /**
+   * The layout width from the frame's declared record block to the first dynamic-value chunk, or undefined when no
+   * body behind the head reads or writes dynamic state.
+   *
+   * The width is measured in input-consuming slots, so a coordinate an output-only slot reserves does not shift it:
+   * a body that returns a value and one that does not still agree on where the run sits. The width is a fact about
+   * the contract's layout, so bodies that share the head have to agree on it; a disagreement is refused by name
+   * rather than approximated, because one coordinate cannot address runs whose layouts differ.
+   */
+  private perCallDynamicChunkWidth(node: ContractNode): number | undefined {
+    const bodies = [node.constructorDef, ...node.functions].filter(
+      (fn): fn is FunctionDefinitionNode => fn !== undefined && fn.usesDynamicChunkInputBase === true,
+    );
+    if (bodies.length === 0) return undefined;
+    const widths = new Set(bodies.map((fn) => {
+      const layout = fn.blockLayout;
+      return layout === undefined ? undefined : blockInputSize(layout);
+    }));
+    if (widths.size !== 1 || widths.has(undefined)) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'the per-call master cannot leave one dynamic-state coordinate for bodies whose layouts place the chunk '
+        + 'run at different widths past the frame\'s declared records',
+        { contract: node.name, widths: [...widths].map((width) => width ?? -1) },
+      );
+    }
+    return [...widths][0]!;
   }
 
   /**
@@ -5498,8 +5540,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // constructor names so this body reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
-        // The seeded array is the frame top-first, so the outermost item is pushed first.
+        // The seeded array is the frame top-first, so the list below runs topmost to deepest.
         if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
+        if (this.stack.includes(DYNAMIC_CHUNK_BASE_PARAMETER)) {
+          subTraversal.stack.push(DYNAMIC_CHUNK_BASE_PARAMETER);
+        }
         if (this.stack.includes(recordInputIndexSlotName())) {
           subTraversal.stack.push(recordInputIndexSlotName());
           subTraversal.stack.push(recordOutputIndexSlotName());

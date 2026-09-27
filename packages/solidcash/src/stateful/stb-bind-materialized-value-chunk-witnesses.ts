@@ -6,7 +6,6 @@ import { binToHex } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript, calculateDust } from '../utils.js';
-import { absoluteValueChunkOutputBaseFromResolve } from '../message-bus/layout-resolver.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { findDisposableValueChunkOutputBase } from './early-value-chunk-helpers.js';
 import {
@@ -212,17 +211,14 @@ export function bindMaterializedValueChunkWitnesses(
         width += 1;
       }
       if (expectedWidth === 0 || width !== expectedWidth) continue;
-      const absoluteStart = materializedValueChunkAbsoluteStart(
-        start, coordinateBase, runResourceIdentity,
-      );
+      // Map keys and output indices are in this builder's frame, including compiler-owned resources.
+      // A resource identity authenticates ownership; it does not make a local output index absolute.
+      const absoluteStart = materializedValueChunkAbsoluteStart(start, coordinateBase);
       const owner = occupiedBases.get(absoluteStart);
       if (owner === undefined || owner === physicalOwnerId) selectedStart = start;
     }
     if (selectedStart < 0) continue;
-    const selectedResourceIdentity = host.derivedChunkOutputs.get(selectedStart)?.resourceIdentity;
-    const absoluteStart = materializedValueChunkAbsoluteStart(
-      selectedStart, coordinateBase, selectedResourceIdentity,
-    );
+    const absoluteStart = materializedValueChunkAbsoluteStart(selectedStart, coordinateBase);
     occupiedBases.set(absoluteStart, physicalOwnerId);
     // `delegateCallGroupIndex` is the planner's stable physical-callsite identity. Every proxy record attached
     // to that implementation input encodes the same continuation witness, even when one logical record omits
@@ -242,25 +238,22 @@ export function bindMaterializedValueChunkWitnesses(
       const write = alias.valueChunkWrites?.[0] ?? carrier.valueChunkWrites?.[0];
       if (trailingBase !== undefined && blockSize !== undefined
         && host.messageBusConvention === 'kernel-row-loop') {
-        const bandOffset = write !== undefined && write.outputBase >= trailingBase
-          ? write.outputBase - trailingBase
-          : write?.outputBase ?? 0;
+        // Descriptors may already carry aggregate coordinates. Resolve the observed builder-local run,
+        // not the old descriptor's absolute/provisional base, against the published local trailing band.
+        const bandOffset = selectedStart - trailingBase;
         const resolveAuthority = {
           publishedBase: coordinateBase,
           blockSize: Math.max(blockSize, trailingBase + (write?.outputCount ?? 1)),
           trailingBase,
           trailingCapacity: alias.blockLayout?.trailingCapacity
             ?? carrier.blockLayout?.trailingCapacity,
-          valueChunkBandOffset: Math.max(0, bandOffset),
+          valueChunkBandOffset: bandOffset,
           valueChunkCollection: write?.collection,
           valueChunkCount: write?.outputCount,
         };
-        const resolvedAbsolute = absoluteValueChunkOutputBaseFromResolve(resolveAuthority);
-        // When scan and resolve agree, stamp through resolveAuthority so invent cannot drift.
-        // Exact resource observation may still move placement; then set without resolve gate.
         refreshCapturedValueChunkOutputBase(alias, absoluteStart, {
           shiftPredOut: false,
-          ...(resolvedAbsolute === absoluteStart ? { resolveAuthority } : {}),
+          resolveAuthority,
         });
       } else {
         refreshCapturedValueChunkOutputBase(alias, absoluteStart, { shiftPredOut: false });

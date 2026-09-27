@@ -3197,7 +3197,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // whose paths disagree never reaches here — the admission refuses it before a program is emitted.
     const own = this.currentFunction === undefined
       ? 0
-      : callsOnEveryPath(this.currentFunction.body)
+      : callsOnEveryPath(this.currentFunction.body)?.pathCount
         ?? this.perCallEntryCallSites.get(this.currentFunction.name)?.length ?? 0;
     this.emit(encodeInt(BigInt(own)), loc);
     this.pushToStack('(value)');

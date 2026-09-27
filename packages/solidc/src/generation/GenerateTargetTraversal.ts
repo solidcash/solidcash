@@ -288,7 +288,7 @@ import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
   buildBatchWitnessDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
-import type { MasterCallSite } from '../per-call/master/frame-tail.js';
+import { countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -35787,6 +35787,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_UNTIL, loc);                 // [cat, base, j, allowed, preserved]
       this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']
       this.emit(Op.OP_ENDIF, loc);
+    }
+    if (this.perCallMaster) {
+      // This census over the transaction's own-category outputs is the contract's, and a contract that runs on
+      // several masters has it decided by the validator, whose listed set is the union over the frames that run on
+      // the contract's records — a master's own block names only the events its own entry lists. So the census is
+      // required of a master only when it is its category's only master in the transaction, which is the same test
+      // the record settlement uses. The category goes to the counter and comes back as the count it leaves.
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+      this.emit([...countMastersScript()], loc);
+      this.emit(encodeInt(1n), loc);
+      this.emit(Op.OP_NUMNOTEQUAL, loc);           // [cat, base, j, allowed, notAlone]
+      this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']
     }
     this.emit(Op.OP_VERIFY, loc);                  // [cat, base, j]
     this.emit(Op.OP_ENDIF, loc);

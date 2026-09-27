@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
-  computeEventNameHash,
   computeFunctionSelector,
   computeFunctionSignature,
   encodeEventCommitment,
-  hash256,
   validatorAddress,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -18,8 +16,9 @@ import {
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpend,
+  REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
 } from '../../../../solidc/test/per-call/master/validator-input.js';
 
 /**
@@ -29,15 +28,16 @@ import {
  * the participants, where no input sits. The composer's assembled transaction carries it, a block's `events` list
  * names it by index, and the master's own body checks the payload it computed against the token there.
  *
- * The two-contract round trip whose entry emits after its call returns is where the shipped path stops: the
- * derivation reaches the re-entered entry, whose own program fails an `OP_VERIFY` (`PER_CALL_DERIVATION_STALLED`),
- * which is pinned below. The shape that does run — an entry that emits without making a call — is driven end to
- * end, and a unit whose contracts emit different numbers of events is emitted for every one of them, because an
- * event region is sized by the contract's own bodies.
+ * The two-contract round trip whose entry emits after its call returns derives: the re-entered entry shares its
+ * contract's category with the entry that started the trip, so its own census stands down and the event the other
+ * frame listed is admitted, exactly as the spec's 5.2 output set has it. Each of the composition's masters is
+ * asked for its verdict on the derived transaction, and the controls beside them are the refusals that stay: an
+ * event payload the listing entry did not compute, and an own-category NFT no frame lists at a contract that runs
+ * on a single master. The union census a shared category needs belongs to the validator and is not emitted yet,
+ * which the last case pins.
  */
 
 const CATEGORY_A = seededCategory('round trip events A');
-const VALIDATOR_ID_UNUSED = 0;
 const CATEGORY_B = seededCategory('round trip events B');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
@@ -54,50 +54,20 @@ const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 
 const EMPTY = new Uint8Array(0);
+
+type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
+type VmOutput = NonNullable<NonNullable<VmProgram['transaction']>['outputs'][number]>;
+
+/** The machine every verdict in this file is taken from. */
+const machine = (): ReturnType<typeof createVirtualMachineBch2026> => createVirtualMachineBch2026(false);
 const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
 const K_SELECTOR = computeFunctionSelector(computeFunctionSignature('k', []));
-const EVENT_VALUE = 1_000n;
-
 const token = (
   category: Uint8Array,
   capability: 'minting' | 'mutable',
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } =>
   ({ category, amount: 0n, nft: { capability, commitment: EMPTY } });
-
-/**
- * The lock the emitting body recomputes for an event: the category pin, the event signature hash and the relative
- * timelock, hashed into a P2SH32 lock.
- */
-function eventCovenantLock(category: Uint8Array, signature: string): Uint8Array {
-  const nameHash = computeEventNameHash(signature);
-  const script = new Uint8Array([
-    0xc0, 0xce, 0x01, 0x20, 0x7f, 0x7c, // OP_INPUTINDEX OP_UTXOTOKENCATEGORY <32> OP_SPLIT OP_SWAP
-    0x20, ...categorySlotValue(category), // the category in the order introspection reports it
-    0x88, 0x00,                         // OP_EQUALVERIFY, empty capability
-    0x88, 0x14, ...nameHash,            // OP_EQUALVERIFY, the event signature hash
-    0x75, 0x02, 0x90, 0x00, 0xb2, 0x75, // OP_DROP <144> OP_CHECKSEQUENCEVERIFY OP_DROP
-    0x51,                               // OP_1
-  ]);
-  return new Uint8Array([0xaa, 0x20, ...hash256(script), 0x87]);
-}
-
-/** An event output: an immutable NFT of the contract's category carrying the emitted payload. */
-function eventOutput(
-  category: Uint8Array,
-  signature: string,
-  commitment: Uint8Array,
-): {
-  lockingBytecode: Uint8Array;
-  valueSatoshis: bigint;
-  token: { category: Uint8Array; amount: bigint; nft: { capability: 'none'; commitment: Uint8Array } };
-} {
-  return {
-    lockingBytecode: eventCovenantLock(category, signature),
-    valueSatoshis: EVENT_VALUE,
-    token: { category, amount: 0n, nft: { capability: 'none', commitment } },
-  };
-}
 
 /** Two contracts where every contract emits, so the compiler admits the unit, and `A.f` emits after its call. */
 const ROUND_TRIP_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -225,24 +195,99 @@ describe('a plan whose entry emits after its call returns', () => {
       .toStrictEqual([placed.index, placed.index + 1]);
   });
 
-  it('stops deriving at the re-entered entry, whose own program does not verify', () => {
-    // The entry's call site fills and the derivation reaches the callee and then the entry the callee calls back
-    // into. That last execution's program fails an `OP_VERIFY` before its first segment close, so the derivation
-    // refuses rather than guessing; the message names the master and the site, so this test flips when the wall is
-    // gone. The plan names each entry by the selector its program dispatches on, because a multi-entry master
-    // picks its body from that call data and a made-up selector never resolves to one.
-    const { plan, artifacts } = buildRoundTrip();
-    const { host } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+  /** The verdict of one master's program, with output `at` optionally replaced. */
+  const verdict = (
+    draft: ReturnType<typeof createComposedDerivationHost>['draft'],
+    master: string,
+    mutate: (outputs: readonly VmOutput[]) => readonly VmOutput[] = (outputs) => outputs,
+  ): string => {
+    const program = draft.programFor(master);
+    const vm = machine();
+    const state = vm.evaluate({
+      inputIndex: program.inputIndex,
+      sourceOutputs: program.sourceOutputs,
+      transaction: { ...program.transaction, outputs: mutate(program.transaction.outputs) },
+    });
+    return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
+  };
 
-    let message = '';
-    try {
-      deriveDepthFirst(ROOT, host);
-    } catch (error) {
-      message = String((error as { message?: string }).message ?? error);
-    }
-    expect(message).toContain('PER_CALL_DERIVATION_STALLED');
-    expect(message).toContain(`master "${A_SECOND}" of ${ENTRY_K}`);
-    expect(message).toContain('site 0 (close of segment 0)');
+  /** Its own contract's category, as an immutable NFT carrying `commitment`, at the place of output `at`. */
+  const ownCategoryImmutable = (
+    outputs: readonly VmOutput[], at: number, category: Uint8Array, commitment: Uint8Array,
+  ): readonly VmOutput[] => outputs.map((output, offset) => (offset === at
+    ? { ...output, token: { category, amount: 0n, nft: { capability: 'none' as const, commitment } } }
+    : output));
+
+  it('derives the whole trip, with each event at the output its block lists', () => {
+    // The re-entered entry shares `A`'s category with the entry that started the trip. The census over a
+    // contract's own-category outputs is the contract's, and the spec leaves it to the validator once several
+    // masters run that contract (7.2 V7/V8), so a master runs it only while it is its category's only master: the
+    // shared entry no longer refuses the event the other frame of its own contract listed.
+    const { plan, artifacts, eventIndex } = buildRoundTrip();
+    const { host, draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+
+    const derived = deriveDepthFirst(ROOT, host);
+    expect([...derived.completed.map((frame) => frame.master)].sort())
+      .toStrictEqual([A_FIRST, A_SECOND, B_MASTER].sort());
+
+    // The two events take the layout's trailing outputs, and the blocks name them the way the plan's shape does.
+    expect(draft.blockOf(A_FIRST).events).toStrictEqual([eventIndex]);
+    expect(draft.blockOf(A_SECOND).events).toStrictEqual([]);
+    expect(draft.blockOf(B_MASTER).events).toStrictEqual([eventIndex + 1]);
+    expect(draft.assembly.outputs.eventIndices).toStrictEqual([eventIndex, eventIndex + 1]);
+
+    // Output 6 of the spec's set: `A`'s category, immutable, carrying what `A.f` emitted.
+    const carried = draft.programFor(A_FIRST).transaction.outputs[eventIndex]!;
+    expect(carried).toStrictEqual(plan.trailingOutputs[0]);
+    expect(carried.token?.category).toStrictEqual(CATEGORY_A);
+    expect(carried.token?.nft?.capability).toBe('none');
+    expect(carried.token?.nft?.commitment)
+      .toStrictEqual(encodeEventCommitment(artifacts.A!.events![0]!.parameters, [7n]));
+
+    // Every master of the composition accepts the transaction as derived.
+    expect([A_FIRST, A_SECOND, B_MASTER].map((master) => verdict(draft, master)))
+      .toStrictEqual(['accepted', 'accepted', 'accepted']);
+  });
+
+  it('refuses an event output whose payload the entry that listed it did not compute', () => {
+    // The event at the listed output is bound to the payload its entry emitted: the same lock and token with a
+    // payload the entry did not compute is refused, which is the control that the accept above is not vacuous.
+    const { plan, artifacts, eventIndex } = buildRoundTrip();
+    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+
+    expect(verdict(draft, A_FIRST, (outputs) => ownCategoryImmutable(outputs, eventIndex, CATEGORY_A, new Uint8Array([9]))))
+      .toContain('refused');
+    expect(verdict(draft, A_FIRST, (outputs) => ownCategoryImmutable(outputs, eventIndex + 1, CATEGORY_A, EMPTY)))
+      .toContain('refused');
+  });
+
+  it('refuses an own-category NFT no frame lists at a master that is its category\'s only one', () => {
+    // `B` runs on one master, so its census is its own, exactly as its settlement is. An immutable NFT of `B`'s
+    // category at an output no frame of the transaction lists is refused, and the same shape one output further
+    // in is refused too, so the census is over the transaction rather than over the listed index.
+    const { plan, artifacts } = buildRoundTrip();
+    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const event = artifacts.B!.events![0]!;
+    const payload = encodeEventCommitment(event.parameters, [1n]);
+
+    const appended = (outputs: readonly VmOutput[]): readonly VmOutput[] => [
+      ...outputs, eventOutput(CATEGORY_B, event.signature, payload),
+    ];
+    expect(verdict(draft, B_MASTER, appended)).toContain('refused');
+    expect(verdict(draft, B_MASTER, (outputs) => ownCategoryImmutable(outputs, 0, CATEGORY_B, new Uint8Array([7]))))
+      .toContain('refused');
+  });
+
+  it('leaves an own-category NFT no frame lists to the validator when the category is shared', () => {
+    // `A` runs on two masters, so the union of the events their frames list is the validator's census to make
+    // (5.2 puts the event census on the validator input, 7.2 V7 states the union), and a master cannot express a
+    // union it does not hold. This pins that gap: the shape is accepted until the validator's census is emitted.
+    const { plan, artifacts } = buildRoundTrip();
+    const { draft } = createComposedDerivationHost({ artifacts: [artifacts.A!, artifacts.B!], plan });
+    const bEvent = draft.blockOf(B_MASTER).events[0]!;
+
+    expect(verdict(draft, A_SECOND, (outputs) => ownCategoryImmutable(outputs, bEvent, CATEGORY_A, new Uint8Array([9]))))
+      .toBe('accepted');
   });
 
   it('emits every contract of a unit whose contracts attribute different numbers of events', () => {

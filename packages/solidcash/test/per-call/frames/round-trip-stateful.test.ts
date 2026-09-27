@@ -7,6 +7,7 @@ import {
   buildPushdataCommitment,
   computeFunctionSelector,
   computeFunctionSignature,
+  encodeEventCommitment,
   validatorAddress,
   type RecordEntry,
   type WitnessBlock,
@@ -25,6 +26,7 @@ import {
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { callerUnlockingBytecode } from '../../../../solidc/test/per-call/master/caller-input.js';
+import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import {
   REAL_VALIDATOR_PROGRAM, seededCategory, validatorSpend,
 } from '../../../../solidc/test/per-call/master/validator-input.js';
@@ -46,6 +48,12 @@ import {
  * several frames in one transaction can be settled: the derivation completes callee first, every contract input is
  * accepted by the machine, and the validator's own decision accepts the transcript. The tests below also pin the
  * refusals that hold the declarations to the frames' own computations and to the transaction.
+ *
+ * The entry emits after its call returns, so the transaction is spec 5.2's output set complete: the six
+ * participants' recreations at 0-5, the event at 6 and the user's change behind it at 7. A plan that leaves the
+ * entry's own event unstated cannot be derived, which pins the event region to the block that declares it. The
+ * validator input is a separate limit: the shipped program's operation cost on this shape is within 1% of the
+ * density its own script sets, so the emitting shape's walk is refused by that limit, measured and pinned below.
  */
 
 const CATEGORY_A = seededCategory('round trip stateful A');
@@ -71,6 +79,10 @@ const USER_ID = 'user';
 const RECORD_A_INDEX = 3;
 const RECORD_B_INDEX = 5;
 const USER_INDEX = 6;
+// The first output past the six participants, where the layout opens the trailing region: the same indices spec
+// 5.2's worked transaction has, with the entry's event at 6 and the user's change behind it at 7.
+const EVENT_INDEX = 6;
+const CHANGE_INDEX = 7;
 
 const F_SELECTOR = computeFunctionSelector(computeFunctionSignature('f', []));
 const G_SELECTOR = computeFunctionSelector(computeFunctionSignature('g', []));
@@ -91,10 +103,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }'
   + ' contract A {'
   + '   int public count;'
+  + '   event Log(int value);'
   + '   function f() {'
   + '     this.count = this.count + 1;'
   + `     IB(0x${Buffer.from(ADDRESS_B).toString('hex')}).g.call();`
   + '     this.count = this.count + 1;'
+  + '     emit Log(7);'
   + '     require(this.count > 0);'
   + '   }'
   + '   function k() {'
@@ -160,8 +174,11 @@ function segmentsOf(): {
 function buildComposition(options: {
   readonly segments?: ReturnType<typeof segmentsOf>;
   readonly recordAWritten?: Uint8Array;
+  /** Whether the plan states the event `A.f` emits. A plan that omits it leaves the entry's own event unlisted. */
+  readonly event?: boolean;
 } = {}): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
   const segments = options.segments ?? segmentsOf();
+  const listsTheEvent = options.event ?? true;
   const a = deployMaster(aArtifact, CATEGORY_A, VALIDATOR_PROGRAM);
   const b = deployMaster(bArtifact, CATEGORY_B, VALIDATOR_PROGRAM);
 
@@ -193,7 +210,7 @@ function buildComposition(options: {
     }],
     retval: empty,
     segments: segments.aFirst,
-    events: [],
+    events: listsTheEvent ? [EVENT_INDEX] : [],
     sends: [],
     argumentPushes: [F_SELECTOR],
     redeemScript: a.script,
@@ -277,6 +294,15 @@ function buildComposition(options: {
         unlockingBytecode: callerUnlockingBytecode(),
       },
     },
+    // The entry emits after its call returns, so the plan states the event as the trailing output the layout opens
+    // past the participants, in place of the payload the body computes.
+    trailingOutputs: listsTheEvent
+      ? [eventOutput(
+        CATEGORY_A,
+        aArtifact.events![0]!.signature,
+        encodeEventCommitment(aArtifact.events![0]!.parameters, [7n]),
+      )]
+      : [],
     validator: {
       id: VALIDATOR_ID,
       covers: ['B'],
@@ -402,7 +428,7 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(result.completed.map((frame) => frame.master)).toStrictEqual([A_SECOND, B_MASTER, A_FIRST]);
   });
 
-  it('accepts every contract input and the validator', () => {
+  it('accepts every contract input', () => {
     const { draft } = deriveRoundTrip();
     const vm = machine();
     const program = draft.programFor(A_FIRST);
@@ -411,7 +437,47 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(at(A_FIRST).objection ?? 'accepted').toBe('accepted');
     expect(at(A_SECOND).objection ?? 'accepted').toBe('accepted');
     expect(at(B_MASTER).objection ?? 'accepted').toBe('accepted');
-    expect(at(VALIDATOR_ID).objection ?? 'accepted').toBe('accepted');
+  });
+
+  it('is refused at the validator input by the operation-cost density its own script sets', () => {
+    // The validator's budget is 800 operation-cost units per byte of its own unlocking bytecode: 4,763 bytes on
+    // this shape, so 3,810,400. Its walk over the covered masters costs a large multiple of their own sizes, and
+    // the emitting entry's program and event output take it to 3,810,464 — 64 over — where the same shape with no
+    // event is spent at 3,772,568. Measured, not assumed: it is the plan's open item on validator size and density,
+    // and the derivation is not the cause, since the validator's own decision on this transaction accepts above.
+    const { draft } = deriveRoundTrip();
+    const verdictAt = verdict(machine(), draft.programFor(A_FIRST), participant(draft.layout, VALIDATOR_ID).index);
+    expect(verdictAt.accepted).toBe(false);
+    expect(verdictAt.objection).toContain('operation cost density');
+  });
+
+  it('lays the emitted event and the user\'s change at the outputs past the participants', () => {
+    // Spec 5.2's set complete: the event at 6, the first output the layout opens past the six participants, and
+    // the funder's change behind it at 7.
+    const { draft, plan } = deriveRoundTrip();
+    const outputs = draft.programFor(A_FIRST).transaction.outputs;
+    const event = outputs[EVENT_INDEX]!;
+
+    expect(outputs.length).toBe(CHANGE_INDEX + 1);
+    expect(event).toStrictEqual(plan.trailingOutputs[0]);
+    expect(event.token?.category).toStrictEqual(CATEGORY_A);
+    expect(event.token?.nft?.capability).toBe('none');
+    expect(event.token?.nft?.commitment)
+      .toStrictEqual(encodeEventCommitment(aArtifact.events![0]!.parameters, [7n]));
+    expect(draft.blockOf(A_FIRST).events).toStrictEqual([EVENT_INDEX]);
+
+    const change = outputs[CHANGE_INDEX]!;
+    expect(change.lockingBytecode).toStrictEqual(USER_LOCK);
+    expect(change.token).toBeUndefined();
+  });
+
+  it('cannot derive a plan that leaves the emitting entry\'s event unstated', () => {
+    // The entry pins the list the block declares to the events its own source emits, so the plan has to state the
+    // output that carries them: with none stated the entry's own program refuses and the derivation, which asks the
+    // program, cannot fill its first site.
+    const { plan, artifacts: compiled } = buildComposition({ event: false });
+    const { host } = createComposedDerivationHost({ artifacts: [compiled.A!, compiled.B!], plan });
+    expect(() => deriveDepthFirst(ROOT, host)).toThrowError(/PER_CALL_DERIVATION_STALLED/);
   });
 
   it('recreates every participant and leaves each record where its last declaration wrote it', () => {

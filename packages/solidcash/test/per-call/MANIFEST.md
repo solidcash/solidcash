@@ -21,25 +21,24 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 309 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 303 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 144 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 79 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 142 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 77 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 91 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 74 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 9 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 22 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 6 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 938 tests (114 + 352 + 472), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts` and the directory counts are per-directory runs of the same config. One caveat on
-reproducing them: the working tree also carries an unrelated edit pass over these same directories that was not
-made by this work and is not committed, so a fresh count of the working tree is lower than the committed one until
-that pass lands or is reverted.
+Total: 906 tests (114 + 341 + 451), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`, the directory counts are per-directory runs of the same config, and both were taken
+after the pass that dropped cases repeating another file's case, which is why a few files hold fewer cases than
+the refusal table above attributes to them.
 
 ## What each directory covers
 

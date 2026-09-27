@@ -1382,8 +1382,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // Dynamic-storage writes (string / unbounded bytes): the value is kept on the stack until the
   // epilogue, where the chunk write loop (split + verify trailing chunk outputs) is emitted.
   private pendingDynamicWrites: Map<string, { valueStackName: string; sv: StateVariableNode }> = new Map();
-  private valueChunkTrailingCountActive = false;
-  private static readonly VALUE_CHUNK_TRAILING_COUNT = '__internal__valueChunkTrailingCount';
   private runtimeLoopEntryInputCountActive = false;
   private static readonly RUNTIME_LOOP_ENTRY_INPUT_COUNT = '__internal__runtimeLoopEntryInputCount';
   // Route-owned pending-entry journal count. Individual bounded records live on the shared altstack so the legal
@@ -5917,7 +5915,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingEntryDeletes = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
-    this.valueChunkTrailingCountActive = false;
     this.runtimeLoopEntryInputCountActive = false;
     this.runtimeLoopEntryJournalCountActive = false;
     this.runtimeLoopEntryOutputCountActive = false;
@@ -6653,29 +6650,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.runtimeLoopBchTransferActive = this.functionContainsRuntimeLoopBchTransfer(node);
       this.runtimeLoopNftTransferActive = this.functionContainsRuntimeLoopNftTransfer(node);
     }
-    const seenChunkableMappingWrites = new WeakSet<Node>();
-    const hasChunkableMappingWrite = (candidate: Node): boolean => {
-      if (seenChunkableMappingWrites.has(candidate)) return false;
-      seenChunkableMappingWrites.add(candidate);
-      if (candidate instanceof MappingAssignNode && candidate.collection?.sorted
-        && this.isChunkableValue(candidate.collection.innermostValueType)) return true;
-      for (const value of Object.values(candidate as unknown as Record<string, unknown>)) {
-        if (value instanceof Node && hasChunkableMappingWrite(value)) return true;
-        if (Array.isArray(value)) {
-          for (const item of value) if (item instanceof Node && hasChunkableMappingWrite(item)) return true;
-        }
-      }
-      return false;
-    };
-    if (hasChunkableMappingWrite(node.body)) {
-      // Mapping value chunks precede the entry node which references their digest even when the function has no
-      // unrelated dynamic-state write. Keep one path-stable running width so the INSERT verifier can cross the
-      // chunks produced by the value it has just authenticated.
-      this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
-      this.pushToStack(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
-      this.valueChunkTrailingCountActive = true;
-    }
-
     // Allocate the complete semantic transfer frame before visiting control flow. Branch/loop-local allocation
     // can lose a register when inlining or early-return lowering moves the transfer beneath a nested branch: the
     // epilogue still owns the function-wide transfer slot, but the real stack only saw the conditional push.
@@ -9890,6 +9864,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitAddDynamicOutputsBeforeEntries(
     locationData: SingleLocationData, callsiteDepth = 0, includeCollectionIterations = true,
   ): void {
+    const dynamicChunkSize = 120;
     if (includeCollectionIterations) this.emitAddCollectionIterCounts(locationData, callsiteDepth);
     this.emitAddForeignReadOnlyChunkCounts(locationData, false, callsiteDepth);
     const dynamicValueNames = new Set([...this.pendingDynamicWrites.values()].map((w) => w.valueStackName));
@@ -9904,17 +9879,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(valueStackName) + 1 + callsiteDepth)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_SIZE, locationData); this.emit(Op.OP_NIP, locationData);
-      this.emitValueChunkCountFromLength(locationData);
+      // Dynamic-state ChunkNfts have no inline-value exemption: even a short non-empty value occupies one
+      // output. Sorted mapping values use a different format and cannot supply this positional prefix.
+      this.emit(encodeInt(BigInt(dynamicChunkSize - 1)), locationData);
+      this.emit(Op.OP_ADD, locationData);
+      this.emit(encodeInt(BigInt(dynamicChunkSize)), locationData);
+      this.emit(Op.OP_DIV, locationData);
       this.emit(Op.OP_ADD, locationData);
     }
-    if (this.valueChunkTrailingCountActive) {
-      this.emitPickCompilerRouteFrameValue(
-        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT,
-        locationData,
-        1 + callsiteDepth,
-      );
-      this.emit(Op.OP_ADD, locationData);
-    }
+    // Mapping continuations are authenticated by identity and may live in separate output bands. Their total
+    // width is not a positional prefix of scalar NEW entries (the SDK appends computed chunks after entries).
     // A message-bus fixed sorted batch emits its rewritten predecessors at the head of the trailing output band.
     // Scalar INSERT NEWs and runtime-loop entries both use this helper to locate the first entry after dynamic
     // runs, so both must also cross that compiler-published predecessor prefix.
@@ -21547,22 +21521,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(VC)), loc); this.emit(Op.OP_DIV, loc); // nNew = ceil(size/VC)
     this.pushToStack('(vc_nnew)');
 
-    if (this.valueChunkTrailingCountActive) {
-      // Retain the count before the value becomes its compact len+digest tail, from which the original run width
-      // cannot be recovered. The accumulator is allocated before control flow, so inline values leave it intact.
-      this.emitPickCompilerRouteFrameValue(
-        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc,
-      );
-      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)') + 1)), loc);
-      this.emit(Op.OP_PICK, loc);
-      this.emit(Op.OP_ADD, loc);
-      this.pushToStack('(value_chunk_trailing_count_next)');
-      this.emitReplaceCompilerRouteFrameValue(
-        GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, node,
-      );
-      this.popFromStack();
-    }
-
     // A chunk address commits to this contract category, collection, storage slot, and complete value digest.
     // Discover its outputs by that identity rather than by a shared positional cursor. An invoked kernel handler
     // executes above its caller's still-live frame, so a cursor kept in either frame cannot be addressed soundly
@@ -29002,9 +28960,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // --- final cleanup: drop the deferred written-var values + the foreign-read count temps ---
     const finalTemps = [...writtenValueStackNames, ...fReadTempNames];
-    if (this.valueChunkTrailingCountActive) {
-      finalTemps.push(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT);
-    }
     if (this.runtimeLoopEntryInputCountActive) {
       finalTemps.push(GenerateTargetTraversalWithLocation.RUNTIME_LOOP_ENTRY_INPUT_COUNT);
     }

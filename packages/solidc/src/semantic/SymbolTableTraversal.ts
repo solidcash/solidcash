@@ -7886,23 +7886,23 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         return false;
       };
-      // Return statements which are guaranteed to execute before this call. This deliberately follows only the
-      // branch/loop arm which contains the call; earlier conditional statements remain opaque to the field-write
+      // Return statements which are guaranteed to execute before this expression. This deliberately follows only
+      // the branch/loop arm containing it; earlier conditional statements remain opaque to the field-write
       // resolver below. The result is metadata-only and never changes executable source order.
-      const dominatingStatements = (): StatementNode[] | undefined => {
+      const dominatingStatements = (target: Node = node): StatementNode[] | undefined => {
         if (!this.currentFunction?.body) return undefined;
         const prior: StatementNode[] = [];
         const visitBlock = (block: BlockNode): boolean => {
           for (const statement of block.statements ?? []) {
-            if (!containsNode(statement, node)) {
+            if (!containsNode(statement, target)) {
               prior.push(statement);
               continue;
             }
             if (statement instanceof BlockNode) return visitBlock(statement);
             if (statement instanceof UncheckedNode) return visitBlock(statement.block);
             if (statement instanceof BranchNode) {
-              if (containsNode(statement.ifBlock, node)) return visitBlock(statement.ifBlock);
-              if (statement.elseBlock && containsNode(statement.elseBlock, node)) {
+              if (containsNode(statement.ifBlock, target)) return visitBlock(statement.ifBlock);
+              if (statement.elseBlock && containsNode(statement.elseBlock, target)) {
                 return visitBlock(statement.elseBlock);
               }
             }
@@ -7910,9 +7910,9 @@ export default class SymbolTableTraversal extends AstTraversal {
               return visitBlock(statement.block);
             }
             if (statement instanceof TryCatchNode) {
-              if (containsNode(statement.tryBlock, node)) return visitBlock(statement.tryBlock);
+              if (containsNode(statement.tryBlock, target)) return visitBlock(statement.tryBlock);
               for (const clause of statement.catchClauses) {
-                if (containsNode(clause.block, node)) return visitBlock(clause.block);
+                if (containsNode(clause.block, target)) return visitBlock(clause.block);
               }
             }
             return true;
@@ -8775,12 +8775,21 @@ export default class SymbolTableTraversal extends AstTraversal {
           ? loweredConditions.slice(0, node.sourceActivationConditions.length)
           : node.sourceActivationConditions;
       const serializedConditions = (sourceConditions ?? []).map(({ expression, negated }) => {
-        const serialized = serializeExpression(expression) ?? {
-          kind: 'missing', name: expression.constructor.name,
-        };
-        return negated
-          ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression
-          : serialized;
+        // A branch predicate observes writes before branch entry, not later writes before this call. Reusing
+        // the call's prefix can turn an already-entered `if (entry.status == 1)` into `0 == 1` after its body
+        // assigns status = 0, dropping subsequent calls. Each nested predicate owns its own evaluation prefix.
+        const callPriorStatements = priorStatements;
+        priorStatements = dominatingStatements(expression);
+        try {
+          const serialized = serializeExpression(expression) ?? {
+            kind: 'missing', name: expression.constructor.name,
+          };
+          return negated
+            ? { kind: 'unary', operator: '!', expression: serialized } as ExternalCallExpression
+            : serialized;
+        } finally {
+          priorStatements = callPriorStatements;
+        }
       });
       const containsUnresolvedConditionNode = (expression: ExternalCallExpression): boolean => {
         if (expression.kind === 'unsupported' || expression.kind === 'missing'

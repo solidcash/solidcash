@@ -79,11 +79,11 @@ const RETURN_EVENT_PARAMETERS = new Set(['__internal__returnOutputIdx']);
  * Synthetic parameters the direct path reads a call's co-spent input through.
  *
  * A master checks a call against the witness block's call records instead of a co-spent input, so these operands
- * are not part of its frame and are not read by its body.
+ * are not part of its frame and are not read by its body. The per-slot names are recognised by pattern, since the
+ * semantic pass injects one per returning slot.
  */
 const EXTERNAL_CALL_PARAMETERS = new Set([
   '__internal__externalCallInputBase',
-  '__internal__externalReturnOutputIdx',
 ]);
 
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
@@ -120,6 +120,12 @@ function isExternalCallParameter(name: string): boolean {
     || /^__internal__extcallAnchorIdx\d+$/.test(name)
     || /^__internal__extcallMasterIdx\d+$/.test(name)
     || /^__internal__loopTargets\d+$/.test(name)
+    // The direct path names the output that carries a call's return event through this operand, one per returning
+    // slot (the bare name when there is one, an indexed name per slot when there are several). It reads the value
+    // back from that output, which a per-call master does not write: its frame records the returned value in
+    // `retval`, and the body takes the call's result from its own witness record, so the operand is neither
+    // supplied nor read and is stripped from the published interface like the others.
+    || /^__internal__externalReturnOutputIdx\d*$/.test(name)
     // The direct path checks the co-spent callee's selector through this operand. A site checks its record's
     // selector against the compile-time value it folds, so a composed body neither supplies nor reads it.
     || /^__internal__externalCallSelector\d*$/.test(name);

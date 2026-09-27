@@ -5,7 +5,7 @@ import type {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeMessageBatch, evaluateFixedEffectPredicate, messageBusTransactionSignatureFrameHex,
+  encodeMessageBatch, messageBusTransactionSignatureFrameHex,
   resolveMessageBusAbiFunction, resolveMessageBusHandler,
   type EncodedMessageBatch, type MessageBatchCall,
 } from './message-bus.js';
@@ -2179,29 +2179,7 @@ export function planCompiledGraph(
     // X5: the refusal above precedes this, so an accepted plan always measures zero option bits. Deriving them
     // anyway - from that same measurement - is what makes the committed byte a real field: relax the refusal and
     // the option travels into the callManifest, where the participant verifier rejects it, instead of vanishing.
-    let bits = measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
-    // A bound raw `{value:}` option belongs to this row's PARENT EDGE, not to the invocation of the
-    // caller handler that authored it. E2 admits exactly one unconditional raw edge, so its compiler-owned
-    // transfer marker identifies the one child row without guessing from runtime values.
-    if (invocation.parent !== null) {
-      const parentInvocation = invocations[invocation.parent];
-      const parentParticipant = participants[parentInvocation.callee];
-      const parentAbi = resolveGraphAbiFunction(
-        parentParticipant.artifact, parentInvocation.function, parentInvocation.selector,
-      );
-      const parentHandler = resolveMessageBusHandler(
-        parentParticipant.artifact, parentInvocation.function, parentAbi?.selector,
-      );
-      // A conditional native payment can share its handler with an ordinary token call on the opposite path.
-      // Only suppress the value bit when the compiler's predicate proves that transfer inactive for this row;
-      // unknown/state-dependent predicates retain the conservative commitment and covenant verification.
-      if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value'
-        && (!transfer.condition
-          || evaluateFixedEffectPredicate(transfer.condition, parentInvocation.args ?? []) !== false))) {
-        bits |= CALL_OPTION_VALUE;
-      }
-    }
-    return bits;
+    return measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
   });
 
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -2475,6 +2453,7 @@ export function planCompiledGraph(
     childrenOf[invocations[child].parent!].push(child);
   }
   const consumerCallsites: (number | undefined)[] = invocations.map(() => undefined);
+  const boundValueBits = invocations.map(() => 0);
   const sourceOccurrences: ({
     sourceCallsiteId: number;
     sourceLogicalIndex?: number;
@@ -2553,6 +2532,7 @@ export function planCompiledGraph(
     const inferredOccurrence = new Map<string, number>();
     children.forEach((child, position) => {
       const callsite = bindings[position];
+      let callValueEffect = callsite?.callValueEffect;
       consumerCallsites[child] = callsite?.callsiteId;
       if (callsite?.callsiteId !== undefined) {
         const invocation = invocations[child];
@@ -2607,6 +2587,7 @@ export function planCompiledGraph(
             }
           }
           sourceEffectOrdinal = row.sourceEffectOrdinal;
+          callValueEffect = row.callValueEffect;
           if (!Number.isSafeInteger(sourceCallsiteId) || sourceCallsiteId < 0) {
             throw new Error(`messageBus: invocation ${child} has an invalid batched source callsite`);
           }
@@ -2698,6 +2679,29 @@ export function planCompiledGraph(
           sourceCallsiteProvenance,
         };
       }
+      // Value authority belongs to the validated source edge, not every child of a handler that can pay.
+      // Grouped rows must use their own marker; the physical representative may describe a different call.
+      if (callValueEffect === undefined) {
+        const parentHandler = resolveMessageBusHandler(
+          parentArtifact, parentInvocation.function, parentFunction?.selector,
+        );
+        const valueTransfers = parentHandler?.transfers?.filter((transfer) => transfer.callOption === 'value') ?? [];
+        if (valueTransfers.length > 0) {
+          // Preserve only the old, unambiguous single unconditional raw edge outside the kernel convention.
+          if (parentArtifact.messageBus?.convention !== 'kernel-row-loop'
+            && publishedCallsites.length === 1 && children.length === 1 && !callsite?.batchInvocations
+            && callsite?.interfaceName === '__raw__' && callsite.functionName === '__raw__'
+            && (callsite.occurrence ?? 'once') === 'once' && !callsite.condition
+            && valueTransfers.length === 1 && !valueTransfers[0].condition) {
+            callValueEffect = true;
+          } else {
+            throw new Error(`messageBus: invocation ${child} omits per-callsite value metadata; recompile its caller`);
+          }
+        }
+      } else if (typeof callValueEffect !== 'boolean') {
+        throw new Error(`messageBus: invocation ${child} has invalid per-callsite value metadata`);
+      }
+      if (callValueEffect) boundValueBits[child] = CALL_OPTION_VALUE;
       if (!callsite?.hasReturnValues) return;
       const produced = plannedBase[child].resultTypes;
       if (produced.length === 0) {
@@ -2809,6 +2813,7 @@ export function planCompiledGraph(
   }
   const planned = plannedBase.map((invocation, index) => Object.freeze({
     ...invocation,
+    callOptions: invocation.callOptions | boundValueBits[index],
     ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
     ...(sourceOccurrences[index] !== undefined && sourceOccurrences[index]),
     producerPath: producerPaths[index],

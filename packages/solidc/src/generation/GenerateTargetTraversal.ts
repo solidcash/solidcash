@@ -90,7 +90,7 @@ import {
   canonicalizeUpsertKeyExpression,
 } from './upsertKeySources.js';
 import { MAX_INPUT_BYTESIZE } from '../constants.js';
-import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import {
   deriveKernelJournalDispositionHandlerScope, isKernelReadCarrierBindingToken,
   kernelJournalDispositionScopeKey, refreshKernelReadCarrierAuthorization,
@@ -18992,6 +18992,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         returnTypes: batchRow.returnTypes,
         batchInvocations: undefined,
       } satisfies ExternalCallSlot;
+    // Both graph paths return before ordinary call lowering. Queue the reached raw call's payment before
+    // either reconstructs its result, so runtime-emission handlers also settle their compiler-owned slot.
+    if ((this.currentFunction.graphEmissionHandler || this.currentFunction.graphRuntimeEmissionHandler)
+      && node.interfaceName === '__raw__' && node.callOptions?.value && node.valueTransferIndex >= 0) {
+      const address = this.getAddressParamFromTarget(node.addressExpression);
+      // Payment is evaluated before the emission's calldata/target replay. Copies must not consume an
+      // identifier merely because source-order liveness marked its call-option occurrence as the final use.
+      const value = cloneNode(node.callOptions.value) as ExpressionNode;
+      node.callOptions.value = address
+        ? this.emitValueTransfer(node.valueTransferIndex, value, address, locationData, node)
+        : this.emitValueTransferToExpression(
+          node.valueTransferIndex, value, cloneNode(node.addressExpression) as ExpressionNode, locationData, node,
+        );
+    }
     if (this.currentFunction.graphRuntimeEmissionHandler) {
       if (!graphEmissionSlot) throw new Error(
         `Runtime graph call '${node.interfaceName}.${node.functionName}' in '${this.currentFunction.name}' `
@@ -19022,14 +19036,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
     if (this.currentFunction.graphEmissionHandler) {
-      // The graph path returns before ordinary external-call lowering below. Settle the admitted raw value
-      // option into this handler's compiler-owned transfer frame before reconstructing `(success, data)`.
-      if (node.interfaceName === '__raw__' && node.callOptions?.value
-        && node.valueTransferIndex >= 0 && physicalSlot?.addressParam) {
-        node.callOptions.value = this.emitValueTransfer(
-          node.valueTransferIndex, node.callOptions.value, physicalSlot.addressParam, locationData, node,
-        );
-      }
       const returnTypes = physicalSlot?.returnTypes ?? node.callInfo?.returnTypes ?? [];
       if (node.opaqueReturn) {
         if (node.discardedOpaqueReturn) return node;
@@ -19679,9 +19685,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     const graphCallMode = (slot.callMode === ExternalCallMode.STATICCALL ? 1 : 0)
       | (rawCall && (handler.graphRawCallValueEffect === true
-        || slot.callValueEffect === true
-        || hasEffectiveCallValue(slot.sourceCallNode?.callOptions?.value)
-        || (slot.sourceCallNode?.valueTransferIndex ?? -1) >= 0) ? 2 : 0);
+        || hasExternalCallValueEffect(slot)) ? 2 : 0);
     if (rawCall && (globalThis as { process?: { env?: Record<string, string> } }).process
       ?.env?.SOLIDC_DEBUG_ARG_ORDER === '1') {
       console.error('graph-call-mode-source', JSON.stringify({

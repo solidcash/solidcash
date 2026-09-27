@@ -27,7 +27,7 @@ import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
-import { hasEffectiveCallValue } from '../semantic/branchOps.js';
+import { hasEffectiveCallValue, hasExternalCallValueEffect } from '../semantic/branchOps.js';
 import { externalResultEncoding } from '../semantic/ExternalResultEncoding.js';
 import {
   analyzeChildDeploymentRecipes, analyzeFixedBchEffectRecipes, childDeploymentValueRecipe,
@@ -2413,6 +2413,7 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => {
+        const rawCall = ec.interfaceName === '__raw__' && ec.functionName === '__raw__';
         // A grouped call owns one physical route even when its logical rows are conditional or repeated.
         // Publish row cardinality below; the outer callsite itself is the singular co-spend.
         const occurrenceInfo = ec.batchInvocations
@@ -2465,6 +2466,8 @@ function buildFunctionAbiMetadata(
           ...(ec.returnEventSignature && { returnEventSignature: ec.returnEventSignature }),
           ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
           ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
+          // Publish false too: absence denotes a legacy artifact, not a proven value-free edge.
+          callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(ec)),
           ...(ec.opaqueReturn && { opaqueReturn: true }),
           ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
           ...(ec.rawSelector && { rawSelector: binToHex(ec.rawSelector) }),
@@ -2478,6 +2481,7 @@ function buildFunctionAbiMetadata(
               sourceCallsiteId: row.sourceCallsiteId,
               sourceEffectOrdinal: row.sourceEffectOrdinal,
               logicalIndex: row.logicalIndex,
+              callValueEffect: rawCall && (func.graphRawCallValueEffect === true || hasExternalCallValueEffect(row)),
               inputs: row.parameterTypes.map((type, index) => ({
                 name: `arg${index}`, type: abiTypeString(type),
               })),

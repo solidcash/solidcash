@@ -1294,6 +1294,8 @@ export interface ExternalCallAbi {
   returnEventSignature?: string;
   computedOffset?: number;
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  /** Value bit emitted for this graph edge. Explicit false distinguishes new artifacts from legacy absence. */
+  callValueEffect?: boolean;
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
@@ -1310,6 +1312,8 @@ export interface ExternalCallAbi {
     sourceEffectOrdinal?: number;
     /** Ordered row inside this physical batch template (0..n-1, dense). */
     logicalIndex: number;
+    /** Value bit for this exact logical source row, never inherited from its physical representative. */
+    callValueEffect?: boolean;
     inputs: readonly AbiInput[];
     argSources?: readonly ArgSource[];
     occurrence?: 'once' | 'conditional' | 'loop';

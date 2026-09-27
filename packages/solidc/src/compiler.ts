@@ -11165,12 +11165,16 @@ function synthesizeMessageBusRoute(
             require(callManifest.slice(rowStart + 10, rowStart + 14)
               == localBatch.slice(batchCursor, batchCursor + 4));
             bigint callManifestMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            // The manifest binds parent-edge options; the local batch carries only the callee's read-only bit.
+            // A value-bearing call remains an ordinary callee invocation. Its exact value flag is bound by the
+            // caller's emission equality and its payment by the caller's transfer covenant/effect rows.
+            require(callManifestMode <= 2 && (row > 0 || callManifestMode == 0));
             if (callManifestMode % 2 == 1) {
               activeStaticInvocationRows = activeStaticInvocationRows + 1;
             }
-            if (batchModeWidth == 0) { require(callManifestMode == 0); }
+            if (batchModeWidth == 0) { require(callManifestMode % 2 == 0); }
             else {
-              require(callManifestMode
+              require(callManifestMode % 2
                 == int(bytes.concat(localBatch.slice(batchCursor + 12, batchCursor + 13), hex"00")));
             }
             require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));

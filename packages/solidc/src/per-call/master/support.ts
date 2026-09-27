@@ -690,9 +690,22 @@ function unsupportedReturnShape(entry: FunctionDefinitionNode): string | undefin
       + 'is compared with one value the entry computed, which a tuple of several values is not yet';
   }
   const type = entry.returnTypes[0];
-  if (type === undefined || isScalarArgumentType(type)) return undefined;
+  if (type === undefined || holdsAsOneEncodedItem(type)) return undefined;
   return `the entry point '${entry.name}' returns ${compositeTypeName(type)}, but a frame's \`retval\` is `
     + 'compared with one scalar value the entry computed, which a composite value is not yet';
+}
+
+/**
+ * True when a value of `type` is one item on the stack whose encoding a `return` leaves as the compared blob.
+ *
+ * A scalar is its own encoding, and an array is a value the language holds already encoded — under a Solidity
+ * import it is the ABI words of its elements — so the entry's `return` leaves exactly the bytes the frame's
+ * `retval` holds and the comparison is the same one a scalar return makes. A struct, a tuple, a mapping, a
+ * function pointer and a token container are several items or an encoding the body does not produce.
+ */
+function holdsAsOneEncodedItem(type: Type): boolean {
+  const resolved = type instanceof ValueType ? type.underlyingType : type;
+  return isScalarArgumentType(resolved) || resolved instanceof ArrayType;
 }
 
 /** The name a return shape is refused by, when its encoding is not a blob the entry's own code compares. */

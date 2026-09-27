@@ -1,10 +1,10 @@
 import { encodeInt, Op, sha256 as sha256Sync, VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE } from '@solidcash/utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   BoundedProbeTraceCollector,
   compactFaithfulProbeTrace,
   isValueChunkIdentityCountPin,
-} from '../../src/stateful/StatefulContract.js';
+} from '../../src/stateful/faithful-probe-trace.js';
 import {
   extractIdentityScanValueChunkPin,
   selectHashedValueForChunkPin,
@@ -189,5 +189,61 @@ describe('faithful OP_INVOKE probe trace compaction', () => {
         collector.observe(state(instructions, 0, [value]) as never);
       }
     }).toThrow(/too much distinct extractor evidence/);
+  });
+
+  it.each([32, 35, 64])('encodes a shared %i-byte authentication value once per probe', (length) => {
+    const collector = new BoundedProbeTraceCollector();
+    const value = length === 35 ? p2sh32(new Uint8Array(32).fill(7)) : new Uint8Array(length).fill(7);
+    const encode = vi.spyOn(value, 'reduce');
+    const observation = state([{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }], 0, [value]);
+    try {
+      for (let index = 0; index < 200; index++) collector.observe(observation as never);
+      collector.finish(observation as never);
+      expect(encode).toHaveBeenCalledTimes(1);
+      collector.reset();
+      collector.observe(observation as never);
+      collector.finish(observation as never);
+      expect(encode).toHaveBeenCalledTimes(2);
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
+  it('rechecks same-stack authentication when cached values move between stacks', () => {
+    const value = new Uint8Array(180).fill(0x53);
+    const digest = sha256Sync(value);
+    const decoy = new Uint8Array(256).fill(0x61);
+    const collector = new BoundedProbeTraceCollector();
+    const instructions = [{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }];
+    const terminal = state([{ opcode: Op.OP_VERIFY }], 0);
+    const candidates = (): Uint8Array[] => collector.finish(terminal as never)
+      .find((item) => item.ip === -1)?.stack ?? [];
+    collector.observe(state(instructions, 0, [value, decoy], { alternateStack: [digest] }) as never);
+    expect(candidates()).not.toContain(value);
+    collector.observe(state(instructions, 0, [decoy], { alternateStack: [value, digest] }) as never);
+    expect(candidates()).toContain(value);
+    collector.reset();
+    collector.observe(state(instructions, 0, [value, decoy], { alternateStack: [digest] }) as never);
+    expect(candidates()).not.toContain(value);
+  });
+
+  it.each(['tail', 'lock'])('retains a value authenticated later by a cached %s', (kind) => {
+    const value = new Uint8Array(180).fill(0x53);
+    const digest = sha256Sync(value);
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, value.length, true);
+    const witness = kind === 'lock' ? p2sh32(digest)
+      : Uint8Array.from([...length, ...digest, ...value.slice(0, VALUE_HEAD_SIZE)]);
+    const decoy = new Uint8Array(256).fill(0x61);
+    const collector = new BoundedProbeTraceCollector();
+    const instructions = [{ opcode: Op.OP_OUTPUTTOKENCOMMITMENT }];
+    collector.observe(state(instructions, 0, [value, decoy]) as never);
+    for (let index = 0; index < 200; index++) {
+      collector.observe(state(instructions, 0, [witness]) as never);
+    }
+    const projected = collector.finish(state([{ opcode: Op.OP_VERIFY }], 0) as never);
+    expect(projected.find((item) => item.ip === -1)?.stack).toContain(value);
+    expect(selectHashedValueForChunkPin(projected.flatMap((item) => [item.stack, item.alternateStack]),
+      kind === 'lock' ? witness : undefined, 2)?.value).toEqual(value);
   });
 });

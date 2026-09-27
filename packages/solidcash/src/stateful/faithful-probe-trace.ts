@@ -303,6 +303,7 @@ export class BoundedProbeTraceCollector {
   private lockDigestHexes = new Set<string>();
   private sameStackAuthenticated = new Set<string>();
   private digestCache = new WeakMap<Uint8Array, string>();
+  private hexCache = new WeakMap<Uint8Array, string>();
 
   reset(): void {
     this.awaitingVerification = false;
@@ -318,6 +319,7 @@ export class BoundedProbeTraceCollector {
     this.lockDigestHexes = new Set();
     this.sameStackAuthenticated = new Set();
     this.digestCache = new WeakMap();
+    this.hexCache = new WeakMap();
   }
 
   private digestOf(value: Uint8Array): string {
@@ -326,6 +328,14 @@ export class BoundedProbeTraceCollector {
     const digest = binToHex(sha256Sync(value));
     this.digestCache.set(value, digest);
     return digest;
+  }
+
+  private hexOf(value: Uint8Array): string {
+    const cached = this.hexCache.get(value);
+    if (cached !== undefined) return cached;
+    const hex = binToHex(value);
+    this.hexCache.set(value, hex);
+    return hex;
   }
 
   private retainEvidence(key: string, value: Uint8Array): void {
@@ -341,7 +351,10 @@ export class BoundedProbeTraceCollector {
   private scanEvidence(state: AuthenticationProgramStateCommon): void {
     const maximumCandidateBytes = VALUE_HEAD_SIZE + VALUE_CHUNK_SIZE * VALUE_CHUNK_MAX_COUNT;
     for (const stack of [state.stack, state.alternateStack ?? []]) {
-      const localDigests = new Set(stack.filter((item) => item.length === 32).map(binToHex));
+      // VM operations replace byte arrays rather than mutating existing stack items, as required by the
+      // shallow trace snapshots and digest cache above. Encode each authentication value once per probe,
+      // but recompute stack membership: a previously seen value can acquire its digest in a later state.
+      const localDigests = new Set(stack.filter((item) => item.length === 32).map((item) => this.hexOf(item)));
       for (const item of stack) {
         if (item.length > 60 && item.length <= maximumCandidateBytes) {
           const digest = this.digestOf(item);
@@ -352,11 +365,11 @@ export class BoundedProbeTraceCollector {
         }
         if (item.length === 64) {
           const storedLength = item[0]! | (item[1]! << 8) | (item[2]! << 16) | (item[3]! << 24);
-          if (storedLength > 60) this.tailRootHexes.add(binToHex(item.subarray(4, 36)));
+          if (storedLength > 60) this.tailRootHexes.add(this.hexOf(item).slice(8, 72));
         }
-        if (isP2sh32LockingBytecode(item)) this.lockDigestHexes.add(binToHex(item.subarray(2, 34)));
+        if (isP2sh32LockingBytecode(item)) this.lockDigestHexes.add(this.hexOf(item).slice(4, 68));
         if (item.length === 32 || item.length === 64 || isP2sh32LockingBytecode(item)) {
-          const key = `${item.length}:${binToHex(item)}`;
+          const key = `${item.length}:${this.hexOf(item)}`;
           this.retainEvidence(key, item);
           this.authItems.set(key, item);
         }

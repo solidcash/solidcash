@@ -103,7 +103,9 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_STATE_INPUTS_MISMATCH',
   'V7_CENSUS_OWN_FUNGIBLE',
   'V7_CENSUS_UNEXPECTED_IMMUTABLE',
+  'V7_CENSUS_UNEXPECTED_MUTABLE',
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
+  'V7_EVENT_OUTPUT_SHARED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -139,8 +141,9 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 10. settles on `[M]`: no category is settled twice, and every category the covered masters need settled — one that
  *     two of them share, or that a delegate or internal frame runs on — is one the transcript settles;
  * 11. census on `[M]`: no input and no output of a settled contract's own category carries a fungible amount, a
- *     bare 32-byte own-category output is an event a frame on that contract lists, and every listed event names an
- *     output of the transaction.
+ *     mutable own-category output is one a frame on that contract declares for a record it writes, a bare 32-byte
+ *     own-category output is an event a frame on that contract lists, every listed event names an output of the
+ *     transaction, and no two frames list the same one.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -1278,10 +1281,10 @@ function emitSettlementCensus(e: Emitter): void {
 }
 
 /**
- * The events and the own-category outputs of one settled contract.
+ * The events, the record outputs and the own-category outputs of one settled contract.
  *
  * Entry `[M, settleCount, settles]`, exit `[M, settleCount, after]`. The category is reversed to the order the
- * machine reports a spent token's and kept on the stack for the two walks; the entry's state-input list is skipped,
+ * machine reports a spent token's and kept on the stack for the walks; the entry's state-input list is skipped,
  * because the settlement rule already decided it.
  */
 function emitOneSettleCensus(e: Emitter): void {
@@ -1292,6 +1295,11 @@ function emitOneSettleCensus(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_REVERSEBYTES);
   // `[M, settleCount, after, X]`.
   emitCollectOwnEvents(e);
+  e.op(O.OP_TOALTSTACK);
+  emitCollectOwnRecordOutputs(e);
+  emitRequireMutableOutputsListed(e);
+  e.op(O.OP_FROMALTSTACK);
+  emitRequireEventsDistinct(e);
   emitRequireOwnOutputsListed(e);
   e.op(O.OP_DROP, O.OP_DROP);
 }
@@ -1363,6 +1371,190 @@ function emitAppendMasterEvents(e: Emitter): void {
   e.op(O.OP_DROP);
   e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
   e.op(O.OP_DROP);
+}
+
+/**
+ * Every record output a frame on the contract under inspection declares, as raw two-byte indices.
+ *
+ * Entry `[M, settleCount, after, X]`, exit `[M, settleCount, after, X, outs]`. A frame's context category is its own
+ * unless it borrows its caller's records, and the indices are gathered in the accumulator on the alternate stack so
+ * the walk's own items are untouched as it reads each block.
+ */
+function emitCollectOwnRecordOutputs(e: Emitter): void {
+  const O = Opcodes;
+  e.count(3).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  // `[M, settleCount, after, X, masters]`.
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitAppendMasterRecordOutputs(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/**
+ * The record outputs of the master under inspection, appended to the accumulator.
+ *
+ * Entry `[.., rest, index]`, exit `[.., rest]`. The block is walked to its segment region and each record entry's
+ * output index is concatenated onto the accumulator on the alternate stack, unless the entry names no output. The
+ * segment region is the block's own layout, so the walk stops at the event list.
+ */
+function emitAppendMasterRecordOutputs(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP, O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectSegmentRecordOutputs);
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/** One segment: a counted list of record entries, each one's output collected. */
+function emitCollectSegmentRecordOutputs(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitCollectRecordOutput);
+}
+
+/**
+ * One record entry's output index, appended to the accumulator when the entry writes a record.
+ *
+ * Entry `[.., rest]`, exit `[.., rest]`. The entry's two indices are followed by the commitment at each end; an entry
+ * that names no output leaves the accumulator alone and the commitments are dropped either way.
+ */
+function emitCollectRecordOutput(e: Emitter): void {
+  const O = Opcodes;
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_NIP);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  e.op(O.OP_DUP);
+  e.push(INDEX_NONE_RAW).op(O.OP_EQUAL, O.OP_IF);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ELSE);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+  e.op(O.OP_ENDIF);
+  dropLengthPrefixed(e, 4);
+  dropLengthPrefixed(e, 4);
+}
+
+/**
+ * Every mutable own-category output is one a frame on the contract declares, or the validator's own recreation.
+ *
+ * Entry `[.., X, outs]`, exit `[.., X]`. The amount rule has already refused any own-category token that carries a
+ * fungible amount, so a 33-byte answer whose last byte is the mutable capability is a record's output and its index
+ * has to appear among the frames' declarations; the output at the validator's own index is its recreation, which the
+ * entry rule already required in place.
+ */
+function emitRequireMutableOutputsListed(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_TXOUTPUTCOUNT);
+  e.count(0);
+  // `[.., X, outs, count, index]`.
+  loopCounted(e, (em) => {
+    em.op(O.OP_DUP);
+    em.op(O.OP_OUTPUTTOKENCATEGORY);
+    em.op(O.OP_SIZE);
+    em.count(33).op(O.OP_NUMEQUAL, O.OP_IF);
+    em.op(O.OP_DUP).count(32).op(O.OP_SPLIT, O.OP_NIP);
+    em.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_EQUAL);
+    em.op(O.OP_SWAP).count(32).op(O.OP_SPLIT, O.OP_DROP);
+    em.count(5).op(O.OP_PICK, O.OP_EQUAL);
+    em.op(O.OP_BOOLAND);
+    em.op(O.OP_ELSE);
+    em.op(O.OP_DROP, O.OP_0);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_IF);
+    emitRequireOutputIsDeclared(em);
+    em.op(O.OP_ENDIF);
+    em.op(O.OP_1ADD);
+  });
+  e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * The output index on top is one of the declared record outputs, or the validator's own index.
+ *
+ * Entry `[.., X, outs, count, index]`, exit the same. The index is encoded as the two little-endian bytes a witness
+ * block writes a record's output with, and searched for among the declarations; an index too wide to be declared is
+ * refused, because no declaration could name it.
+ */
+function emitRequireOutputIsDeclared(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.push(INDEX_NONE_NUMBER).op(O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
+  e.op(O.OP_DUP);
+  e.push(new Uint8Array(2)).op(O.OP_CAT);
+  e.count(2).op(O.OP_SPLIT, O.OP_DROP);
+  // `[.., outs, count, index, needle]`.
+  e.op(O.OP_DUP);
+  e.count(4).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitFoundWidth(e, 2);
+  e.count(2).op(O.OP_PICK);
+  e.op(O.OP_INPUTINDEX, O.OP_NUMEQUAL);
+  e.op(O.OP_BOOLOR, O.OP_VERIFY);
+  e.op(O.OP_DROP);
+}
+
+/**
+ * No two frames on the contract list the same event output.
+ *
+ * Entry `[.., events]`, exit the same. The listed indices are the raw two-byte fields a witness block writes; every
+ * one of them has to appear exactly once in the gathered list, which is what a shared event output would break.
+ */
+function emitRequireEventsDistinct(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(2).op(O.OP_SPLIT, O.OP_SWAP);
+  // `[.., events, rest, event]`.
+  e.op(O.OP_DUP);
+  e.count(3).op(O.OP_PICK);
+  e.op(O.OP_SWAP);
+  emitCountItem(e, 2);
+  e.count(1).op(O.OP_NUMEQUALVERIFY);
+  e.op(O.OP_DROP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+}
+
+/**
+ * Counts occurrences of a `width`-byte value.
+ *
+ * Entry `[.., run, needle]`, exit `[.., count]`. `run` is a multiple of `width`; each item is compared byte for byte
+ * as it is read.
+ */
+function emitCountItem(e: Emitter, width: number): void {
+  const O = Opcodes;
+  e.op(O.OP_SWAP).count(0).op(O.OP_SWAP, O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(width).op(O.OP_SPLIT, O.OP_SWAP);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL);
+  e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_NIP);
 }
 
 /**
@@ -1804,6 +1996,9 @@ function emitPrefixedPayload(e: Emitter, width: number): void {
 
 /** `0xffff` as an unsigned script number: the sentinel a missing index carries. */
 const INDEX_NONE_NUMBER = new Uint8Array([0xff, 0xff, 0x00]);
+
+/** The same sentinel as the two raw bytes a witness block writes an index with. */
+const INDEX_NONE_RAW = new Uint8Array([0xff, 0xff]);
 
 /** Drops the first `n` bytes of the item on top. */
 function dropFront(e: Emitter, n: number): void {

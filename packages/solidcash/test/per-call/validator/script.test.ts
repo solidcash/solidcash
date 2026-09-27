@@ -997,6 +997,45 @@ describe('the validator program refuses each rule it enforces', () => {
     expect(accepted(tampered, index)).toBe(false);
   });
 
+  test('refuses a mutable own-category output that no frame declares', () => {
+    // Every record a frame writes is an output the frame declares for it. A mutable token of the contract's category
+    // at an output no frame declares is a container the settlement does not account for, which is what the census
+    // refuses; the same composition without the extra output is the accepted control.
+    const composition = laidOut(singleContractPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    const record = modelled.outputs.find((output) => output.token.capability === TokenCapability.MUTABLE)!;
+    const extra: ModelledTransaction['outputs'][number] = {
+      index: modelled.outputs.length,
+      value: 1_000n,
+      lockingBytecode: record.lockingBytecode,
+      token: mutableTokenShape(record.token.category, seedBytes('census-extra-record', 4)),
+    };
+    const tampered: ModelledTransaction = { ...modelled, outputs: [...modelled.outputs, extra] };
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_CENSUS_UNEXPECTED_MUTABLE');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
+  test('refuses an event output two frames both list', () => {
+    // An event output belongs to one frame: two frames claiming the same output would make the settlement's
+    // attribution ambiguous. Two frames on the same contract's records list the output the first one already does.
+    const composition = laidOut(abbaPlan());
+    const index = composition.validatorIndex;
+    const modelled = materialise(composition);
+    const first = composition.blocks.get('A.f')!;
+    expect(first.events.length).toBeGreaterThanOrEqual(1);
+    expect(derivationOf(modelled, index).accepted).toBe(true);
+    expect(accepted(modelled, index)).toBe(true);
+
+    composition.blocks.get('A.k')!.events = [first.events[0]!];
+    const tampered = materialise(composition);
+    expect(derivationOf(tampered, index).rejection?.reason).toBe('V7_EVENT_OUTPUT_SHARED');
+    expect(accepted(tampered, index)).toBe(false);
+  });
+
   test('runs the reference composition at the published operation-cost density', () => {
     // The plan's open question: the program costs operations the unlocking bytecode has to pay for, and the real
     // profile budgets 800 cost per byte. A program that did not fit would make every composed transaction

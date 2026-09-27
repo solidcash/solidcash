@@ -4,6 +4,8 @@
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
+  getDefaultStateValue,
+  parseArrayTypeString,
   type AbiFunction,
   type ArgSource,
   type Artifact,
@@ -12,7 +14,7 @@ import {
   type ExternalResultConsumerAbi,
   type StateValue,
 } from '@solidcash/utils';
-import type { FunctionArgument } from '../Argument.js';
+import type { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { visitExternalExpressionEvaluationPath } from '../message-bus/result-evaluation-path.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import {
@@ -114,11 +116,33 @@ export async function resolveExternalExpressionReturns(
     producerByCallsite.set(producer.callsiteId, producer);
   }
   const resolvingProducers = new Set<number>();
-  const provisionalValue = (type: string): FunctionArgument => type === 'bool' ? false
-    : type === 'string' ? ''
-      : type.endsWith('[]') ? []
-        : type.startsWith('bytes') || type.startsWith('address') ? new Uint8Array()
-          : 0n;
+  const provisionalValues = (types: readonly string[]): FunctionArgument[] => {
+    const artifact = registryOwner.inner.artifact;
+    const structs = artifact.structs ?? artifact.stateLayout?.structs;
+    let remainingElements = 10_000;
+    const value = (type: string, ancestors = new Set<string>()): ConstructorArgument => {
+      if (remainingElements <= 0) throw new Error('Provisional producer result exceeds the aggregate element limit.');
+      remainingElements -= 1;
+      const array = parseArrayTypeString(type);
+      if (array) {
+        if (array.bound === undefined) return [];
+        if (!Number.isSafeInteger(array.bound) || array.bound > remainingElements) {
+          throw new Error('Provisional producer result exceeds the aggregate element limit.');
+        }
+        return Array.from({ length: array.bound }, () => value(array.elementType, ancestors));
+      }
+      const struct = structs?.find((candidate) => candidate.name === type);
+      if (struct) {
+        if (ancestors.has(type)) throw new Error(`Circular provisional producer result type '${type}'.`);
+        const next = new Set(ancestors).add(type);
+        return Object.fromEntries(struct.fields.map((field) => [field.name, value(field.type, next)]));
+      }
+      if (type === 'string') return '';
+      if (artifact.enums?.some((candidate) => candidate.name === type)) return 0n;
+      return getDefaultStateValue(type) as ConstructorArgument;
+    };
+    return types.map((type) => value(type));
+  };
   const registeredTarget = (
     interfaceName: string, target: FunctionArgument | undefined,
   ): StatefulContract | {
@@ -302,7 +326,9 @@ export async function resolveExternalExpressionReturns(
       if (!allowProvisional || !(error instanceof Error)
         || !error.message.includes('Could not derive the return value')) throw error;
       if (!returnTypes?.length) return 0n;
-      const placeholders = returnTypes.map(provisionalValue);
+      // Planning may need an aggregate's elements before its state-dependent producer can execute.
+      // Preserve the published type shape; these seeds still cannot satisfy an exact result request.
+      const placeholders = provisionalValues(returnTypes);
       return placeholders.length === 1 ? placeholders[0] : placeholders as unknown as FunctionArgument;
     }
   };

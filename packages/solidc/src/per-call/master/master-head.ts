@@ -168,6 +168,8 @@ export interface MasterHeadOptions {
 const FRAME_KIND_ROOT = 0;
 /** The frame kind of a message call: the one a callee of an external call runs. */
 const FRAME_KIND_CALL = 1;
+/** The frame kind of a read-only call: the one a callee of a `view`/`pure` read runs. */
+const FRAME_KIND_STATIC = 2;
 
 /** Builds the head a master program opens with. */
 export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
@@ -402,7 +404,7 @@ class HeadEmitter {
     this.emitPopPush(Opcodes.OP_UTXOBYTECODE, 'origin');
   }
 
-  /** Branches on the frame kind: a root frame is the master's to check, a message call the validator's. */
+  /** Branches on the frame kind: a root frame is the master's to check, a callee's frame the validator's. */
   private branchOnFrameKind(): void {
     this.emitBranch(
       () => {
@@ -413,16 +415,23 @@ class HeadEmitter {
       },
       () => this.assertRootFrame(),
       () => this.emitBranch(
-        () => {
-          this.pick('kind');
-          this.bin2num();
-          this.pushNumber(FRAME_KIND_CALL);
-          this.numequal();
-        },
+        () => this.frameKindIs(FRAME_KIND_CALL),
         () => this.assertCallFrame(),
-        () => this.emitRefusal(),
+        () => this.emitBranch(
+          () => this.frameKindIs(FRAME_KIND_STATIC),
+          () => this.assertStaticFrame(),
+          () => this.emitRefusal(),
+        ),
       ),
     );
+  }
+
+  /** Pushes whether the frame kind on the stack is `kind`. */
+  private frameKindIs(kind: number): void {
+    this.pick('kind');
+    this.bin2num();
+    this.pushNumber(kind);
+    this.numequal();
   }
 
   /**
@@ -448,14 +457,28 @@ class HeadEmitter {
 
   /** A message call: the master's self constant is checked above, and the validator binds sender, value, origin. */
   private assertCallFrame(): void {
-    this.pick('kind');
-    this.bin2num();
-    this.pushNumber(FRAME_KIND_CALL);
-    this.numequalVerify();
+    this.assertFrameKindValue(FRAME_KIND_CALL);
     // The call data's selector leads the frame's argument pushes, below the constructor arguments and the frame
     // values. A body with a single entry never reads it, so the head removes it here rather than leaving a stray
     // item the final stack cannot clean.
     if (this.callDataSelectorUnconsumed) this.dropBottom();
+  }
+
+  /**
+   * A read-only call: the callee runs a static frame, whose `address(this)` is its own code constant like a
+   * message call's. The validator binds the frame values and refuses any record, event or send the frame changes.
+   */
+  private assertStaticFrame(): void {
+    this.assertFrameKindValue(FRAME_KIND_STATIC);
+    if (this.callDataSelectorUnconsumed) this.dropBottom();
+  }
+
+  /** Requires the frame's `kind` to be `kind`; the shared arm of the two callee frame kinds. */
+  private assertFrameKindValue(kind: number): void {
+    this.pick('kind');
+    this.bin2num();
+    this.pushNumber(kind);
+    this.numequalVerify();
   }
 
   /** Fails the input, for a shape the master does not admit rather than one it checks as something else. */
@@ -525,11 +548,12 @@ class HeadEmitter {
    * master the validator settles the records instead.
    *
    * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which is another
-   * contract's settlement, so a master that made one never settles its own.
+   * contract's settlement, so a master that made one never settles its own. A message or read-only call runs on
+   * the callee's own records, which its own master or validator settles, so such a caller still settles its own.
    */
   private assertSelfSettlementWhenAlone(): void {
     if (!this.settlesOwnRecords) return;
-    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL)) return;
+    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC)) return;
     this.emitBranch(
       () => {
         this.emitInputIndex();

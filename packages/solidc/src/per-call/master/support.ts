@@ -287,8 +287,9 @@ type CallSitesDerivation =
  *
  * The head is one prefix, so it checks the same calls[] records whichever entry runs: every entry must make the
  * same calls, and only calls whose shape the head's checks describe are admitted — a call to a compile-time
- * address whose result is unused, with compile-time argument values the caller's own code can hash. Anything else
- * is refused by name, because the head would have to check a shape it cannot describe.
+ * address whose argument values the caller's own code can hash, and whose frame kind is one the head admits: a
+ * message call or a read-only call. Anything else is refused by name, because the head would have to check a
+ * shape it cannot describe.
  */
 function derivePerCallMasterCallSites(
   interfaces: readonly InterfaceNode[],
@@ -318,11 +319,17 @@ function deriveEntryCallSites(
 ): { calls: MasterCallSite[]; reason?: string } {
   const calls: MasterCallSite[] = [];
   for (const slot of entry.externalCalls ?? []) {
-    if (slot.callMode !== undefined && slot.callMode !== ExternalCallMode.REGULAR) {
-      // A read-only call would make the callee run a static frame, and the emitted kind branch has no arm for one,
-      // so the callee would refuse it at run time. Refusing here says which shape is missing.
-      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, and a callee `
-        + 'cannot yet run a static frame' };
+    if (slot.callMode === ExternalCallMode.DELEGATECALL) {
+      // A delegate frame runs on the caller's own records, and the head checks its own address, not its context:
+      // it has no arm that recognises the caller whose records such a callee would run on.
+      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, whose callee `
+        + 'runs on its caller\'s own records, and the master head has no arm that recognises such a caller' };
+    }
+    if (slot.callMode !== undefined
+      && slot.callMode !== ExternalCallMode.REGULAR
+      && slot.callMode !== ExternalCallMode.STATICCALL) {
+      return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
+        + 'master head has no frame kind for' };
     }
     if (slot.addressLiteral === undefined) {
       return { calls: [], reason: `the call to '${slot.functionName}' targets an address only known at run time, `
@@ -344,7 +351,7 @@ function deriveEntryCallSites(
     const args = encodeSiteArguments(slot, interfaces);
     if ('reason' in args) return { calls: [], reason: args.reason };
     calls.push({
-      kind: FrameKind.CALL,
+      kind: isReadCall(slot, interfaces) ? FrameKind.STATIC : FrameKind.CALL,
       selector,
       target: hexToBin(slot.addressLiteral),
       interfaceName: slot.interfaceName,
@@ -353,6 +360,21 @@ function deriveEntryCallSites(
     });
   }
   return { calls };
+}
+
+/**
+ * True when the site is a read, so its callee runs a static frame rather than a message frame.
+ *
+ * A `.staticcall` is a read by construction. A plain method read — no `.call`/`.staticcall` suffix — is a read
+ * when the interface method it names is `view` or `pure`. An explicit `.call` is a message call even when the
+ * method it names is `view`, because the suffix, not the method, chose the frame.
+ */
+function isReadCall(slot: ExternalCallSlot, interfaces: readonly InterfaceNode[]): boolean {
+  if (slot.callMode === ExternalCallMode.STATICCALL) return true;
+  if (slot.callMode !== undefined) return false;
+  const iface = interfaces.find((candidate) => candidate.name === slot.interfaceName);
+  const fn = iface?.functions.find((candidate) => candidate.name === slot.functionName);
+  return fn?.stateMutability === 'view' || fn?.stateMutability === 'pure';
 }
 
 /**

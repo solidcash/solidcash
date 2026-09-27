@@ -73,6 +73,10 @@ import {
   writesChunkableValue,
 } from './writer-group-selection.js';
 import { ownsCapturedValueChunkOutputBase } from './value-chunk-base-writer-select.js';
+import {
+  identityScanValueChunkOutputBase,
+  publishIdentityScanValueChunkRange,
+} from './identity-scan-value-chunk-range.js';
 
 type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
@@ -488,6 +492,17 @@ export function deriveRouteValueChunks(
     group.valueChunkProducerClaims,
     group.valueChunkStateOwner,
   );
+  if (scanPin && resourceSelection.status === 'exact' && allChunks.length > 0) {
+    const identity = valueChunkWriteResourceIdentity(resourceSelection.write);
+    const base = identityScanValueChunkOutputBase(
+      scanPin.outputIndex, allChunks.length, identity, stb.getDerivedChunkOutputs(),
+    );
+    for (const [offset, chunk] of allChunks.entries()) chunk.outputIndex = base + offset;
+    scanPin.outputIndex = base;
+    if (publishIdentityScanValueChunkRange(
+      [...new Set([group, ...(witness ? [witness.carrier] : [])])], identity, base, allChunks.length,
+    )) stb._refreshInputs();
+  }
   if (allChunks.length > 0) {
     const observedCarrier = witness?.carrier ?? group;
     const observedAbi = witness?.abiFunction ?? group.compilerRoute?.abiFunction

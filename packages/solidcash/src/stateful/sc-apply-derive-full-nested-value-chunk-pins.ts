@@ -55,6 +55,10 @@ import {
   valueChunkWriteResourceIdentity,
 } from './value-chunk-persist.js';
 import { describeValueChunkWrites } from './writer-group-selection.js';
+import {
+  identityScanValueChunkOutputBase,
+  publishIdentityScanValueChunkRange,
+} from './identity-scan-value-chunk-range.js';
 
 export type ApplyDeriveFullNestedValueChunkPinHost = {
   readonly categoryId: string;
@@ -216,7 +220,7 @@ if (debugTargetsThisDerivation) console.error('derive-nested-summary', JSON.stri
 nestedProbeHadError ||= nestedTrace.some((state) => state.error !== undefined);
 const band = stb.getPublishJobEventsBand();
 const identityPin = extractIdentityScanValueChunkPin(nestedTrace);
-const fallbackBase = band?.start
+let fallbackBase = band?.start
   ?? llc.valueChunkOutputBase
   ?? proxyGroup?.valueChunkOutputBase
   ?? stb.getContinuationOutputBase(probeBuilder2);
@@ -336,6 +340,16 @@ const allChunks = extractAllRouteValueChunks(
   transportedProducerClaims,
   transportedStateOwner,
 );
+if (identityPin && valueChunkResourceIdentity !== undefined && allChunks.length > 0) {
+  fallbackBase = identityScanValueChunkOutputBase(
+    fallbackBase, allChunks.length, valueChunkResourceIdentity, stb.getDerivedChunkOutputs(),
+  );
+  for (const [offset, chunk] of allChunks.entries()) chunk.outputIndex = fallbackBase + offset;
+  if (pin) pin.outputIndex = fallbackBase;
+  if (publishIdentityScanValueChunkRange(
+    [llc, ...attachedGroups], valueChunkResourceIdentity, fallbackBase, allChunks.length,
+  )) stb._refreshInputs();
+}
 // The extracted value is the derived post-handler value: it owns continuation
 // outputs and persistence only. `__internal__valueWitness_N` authenticates the
 // exact proof-entry value before this handler; replacing it here would make a

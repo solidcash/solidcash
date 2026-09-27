@@ -105,8 +105,9 @@ export function hexOf(bytes: Uint8Array): string {
 export function token(
   category: Uint8Array,
   capability: 'minting' | 'mutable',
+  commitment: Uint8Array = EMPTY,
 ): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } {
-  return { category, amount: 0n, nft: { capability, commitment: EMPTY } };
+  return { category, amount: 0n, nft: { capability, commitment } };
 }
 
 /** A master's source output: the deployed master UTXO the input recreates in place. */

@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../../../../solidc/src/compiler.js';
 import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry.js';
 
 /**
- * A proxy, and the delegatecall it is built from, do not compile for per-call composition.
+ * Which proxy shapes compile for per-call composition, and which are refused by name.
  *
- * The design binds a proxied call to the proxy's own settled implementation, so the proxy's master reads the
- * implementation from its state and names it as the delegate target. That shape is not emitted yet: a contract
- * whose fallback dispatches is refused because the master head cannot precede a selector-dispatched fallback, and a
- * body that issues a delegatecall is refused because the witness call records it would need are not emitted. There
- * is therefore no spend to mutate, and the refusal is pinned by name here instead.
+ * The design binds a proxied call to the proxy's own settled implementation: the proxy's master reads the
+ * implementation from its state and names it as the delegate target, forwarding the call data it received. A
+ * contract whose *only* body is such a fallback now compiles, and the toy drives the compiled shape; a fallback
+ * beside ordinary entries is still refused, because the head cannot precede a selector-dispatched fallback. A
+ * delegatecall whose call data is not the entry's own is refused too, since the witness call record it would need
+ * is not emitted. Wherever a shape is refused there is no spend to mutate, so the refusal is pinned by name.
  */
 
 /** The compile's thrown diagnostic, or an error when the convention served the source. */
@@ -34,11 +35,35 @@ describe('a proxy does not compile for per-call composition', () => {
     expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
   });
 
-  it('refuses a body that issues a delegatecall, by name', () => {
-    // The delegatecall target here is a caller-supplied parameter, so the compiler's delegatecall security gate has
-    // to be lifted before the per-call shape is reached. The per-call refusal is the one recorded.
+  it('serves the fallback that forwards its own call data, which is the proxy the toy drives', () => {
+    // The one delegatecall shape the convention emits: the entry's own received call data is forwarded unchanged to
+    // an implementation the contract's own state names. Compiling it is the point of this case, so an error is the
+    // failure.
     const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';
+      + ' contract Proxy {'
+      + '   address implementation;'
+      + '   fallback(bytes input) external { implementation.delegatecall(input); require(true); }'
+      + ' }';
+    expect(() => compileString(source, { composition: 'per-call' })).not.toThrow();
+  });
+
+  it('refuses a delegatecall whose call data is not the entry\'s own, by name', () => {
+    // The target here is a caller-supplied parameter and the data is a constant, so the compiler's delegatecall
+    // security gate has to be lifted before the per-call shape is reached. The per-call refusal is the one recorded:
+    // a forwarded call carries the entry's own received call data, and this one carries something else.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Proxy { function set(address target) { target.delegatecall(hex"aabbccdd"); require(true); } }';
+    const refusal = refusalOf(source, undefined, { allowUnsafeOperations: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('a low-level call needs the witness `calls[]` checks, which are not emitted yet');
+  });
+
+  it('refuses an ordinary entry that forwards its own parameter, which only a fallback may do', () => {
+    // The same data operand and the same origin, but reached through an entry a selector names rather than the
+    // fallback: the convention serves one shape - the fallback the whole contract is - and refuses the rest.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Proxy { address implementation;'
+      + '   function set(bytes data) { implementation.delegatecall(data); require(true); } }';
     const refusal = refusalOf(source, undefined, { allowUnsafeOperations: true });
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('a low-level call needs the witness `calls[]` checks, which are not emitted yet');

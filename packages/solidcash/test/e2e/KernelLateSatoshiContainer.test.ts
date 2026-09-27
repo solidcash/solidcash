@@ -26,34 +26,48 @@ describe('kernel late satoshi-container resources', () => {
         const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {}, { saltContract: true });
         return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
       };
-      const wallet = await participant(`contract LateWallet() {
+      const receipt = await participant(`contract LateReceipt() {
+        int public stored;
+        function record(int amount) public returns (bool) { this.stored = amount; return true; }
+      }`);
+      const wallet = await participant(`interface ILateReceipt { function record(int amount) external returns (bool); }
+      contract LateWallet() {
       int public calls;
       function touch(int value) public { this.calls = value; require(true); }
-      function pay(bool active, address destination, int amount) public {
+      function pay(bool active, address destination, int amount, address receipt) public {
         this.calls = this.calls + 1;
         if (active) { this.transfer(destination, amount); }
+        address(receipt).call(abi.encodeCall(ILateReceipt.record, (amount)));
         require(true);
       }
     }`);
+      wallet._registerResolvedExternal('ILateReceipt', receipt);
+      wallet._registerResolvedExternal('__raw__', receipt);
+      const primer = await participant(`interface ILateWallet { function touch(int value) external; }
+      contract LatePrimer(address wallet) {
+        function prime() public { ILateWallet(wallet).touch(0); require(true); }
+      }`, [wallet.inner.lockingBytecode]);
+      primer._registerResolvedExternal('ILateWallet', wallet);
       const middle = await participant(`interface ILateWallet {
-      function pay(bool active, address destination, int amount) external;
+      function pay(bool active, address destination, int amount, address receipt) external;
     }
     contract LateMiddle(address wallet) {
-      function run(bool active, address destination, int amount) public {
-        ILateWallet(wallet).pay(active, destination, amount); require(true);
+      function run(bool active, address destination, int amount, address receipt) public {
+        ILateWallet(wallet).pay(active, destination, amount, receipt); require(true);
       }
     }`, [wallet.inner.lockingBytecode]);
       middle._registerResolvedExternal('ILateWallet', wallet);
-      const relayArtifact = compileString(`interface ILateWallet { function touch(int value) external; }
+      const relayArtifact = compileString(`interface ILatePrimer { function prime() external; }
     interface ILateMiddle {
-      function run(bool active, address destination, int amount) external;
+      function run(bool active, address destination, int amount, address receipt) external;
     }
     contract LateRelay() {
       int public runs;
-      function relay(address wallet, address middle, bool active, address destination, int amount) public {
+      function relay(address primer, address middle, bool active, address destination, int amount,
+                     address receipt) public {
         this.runs = this.runs + 1;
-        ILateWallet(wallet).touch(0);
-        ILateMiddle(middle).run(active, destination, amount); require(true);
+        ILatePrimer(primer).prime();
+        ILateMiddle(middle).run(active, destination, amount, receipt); require(true);
       }
     }`, KERNEL);
       const signer = new Signer(new Uint8Array(32).fill(0x4b), provider);
@@ -66,7 +80,7 @@ describe('kernel late satoshi-container resources', () => {
         getContractFactory(relayArtifact, signer), { runs: 0n }, { initializer: false },
       );
       deployed.implementation._registerResolvedExternal('ILateMiddle', middle);
-      deployed.implementation._registerResolvedExternal('ILateWallet', wallet);
+      deployed.implementation._registerResolvedExternal('ILatePrimer', primer);
       const destination = hexToBin(`76a914${'37'.repeat(20)}88ac`);
       if (funded) {
         await provider.addUtxo(wallet.satoshiContainer.address, {
@@ -74,7 +88,8 @@ describe('kernel late satoshi-container resources', () => {
         });
       }
       const call = (deployed as any).relay(
-        wallet.inner.lockingBytecode, middle.inner.lockingBytecode, active, destination, 1_000n,
+        primer.inner.lockingBytecode, middle.inner.lockingBytecode, active, destination, 1_000n,
+        receipt.inner.lockingBytecode,
       );
       const prepared = await (call as unknown as {
         _applyOverrides(): Promise<{
@@ -96,7 +111,8 @@ describe('kernel late satoshi-container resources', () => {
         if (!isContractUnlocker(container.unlocker)) throw new Error('missing container unlocker');
         expect(container.unlocker.params).toEqual([1n, BigInt(masterIndex)]);
       }
-      expect(prepared.__preparedAtomicCalls?.map((node) => node.functionName)).toEqual(['relay', 'touch', 'run', 'pay']);
+      expect(prepared.__preparedAtomicCalls?.map((node) => node.functionName))
+        .toEqual(['relay', 'prime', 'touch', 'run', 'pay', 'record']);
       const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
       const composed = messageBus.compose({
         preparedCalls: prepared.__preparedAtomicCalls!, funder, changeAddress: signer.getAddress(),
@@ -121,6 +137,7 @@ describe('kernel late satoshi-container resources', () => {
       }
       await expect(call.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
       expect((await wallet.getState()).calls).toBe(1n);
+      expect((await receipt.getState()).stored).toBe(1_000n);
       expect((await provider.getUtxos(wallet.satoshiContainer.address)).map((utxo) => utxo.satoshis))
         .toEqual(funded ? [active ? 49_000n : 50_000n] : []);
     }, 180_000,

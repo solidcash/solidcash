@@ -325,14 +325,29 @@ describe('late transitive call preparation', () => {
 
   it('does not replace an unvisited logical reader when a later writer takes its physical input', async () => {
     const leaf = contract(3, [handler('run')]);
-    const shared = contract(2, [handler('read', [edge('Leaf')]), handler('run', [], true)]);
-    const first = contract(1, [handler('run', [edge('Shared')])]);
+    const inputs = ['left', 'middle', 'right'].map((name) => ({ name, type: 'int' }));
+    const shared = withExpressionResolution(contract(2, [handler('read', [edge('Leaf')]), {
+      ...handler('run', [], true), inputs,
+    }]));
+    const first = withExpressionResolution(contract(1, [{ ...handler('run', [{
+      ...edge('Shared'), argSources: inputs.map((_, paramIndex) => ({ kind: 'forward', paramIndex })),
+    }]), inputs }]));
     first._externalRegistry.set('Shared', shared);
     shared._externalRegistry.set('Leaf', leaf);
     const fixture = preparation([group(first, 'run', 7n), group(shared, 'read', 1n)]);
+    fixture.groups[0].functionArgs = [7n, 8n, 9n];
+    fixture.nodes[1].args = [7n, 8n, 9n];
+    Object.assign(fixture.groups[1], {
+      logicalFunctionName: 'read', logicalFunctionArgs: [1n],
+      logicalContract: shared, logicalArtifact: shared.inner.artifact,
+    });
     await fixture.expand();
     expect(fixture.groups[1].functionName).toBe('run');
-    expect(fixture.groups[1].functionArgs).toEqual([7n]);
+    expect(fixture.groups[1].functionArgs).toEqual([7n, 8n, 9n]);
+    expect(fixture.groups[1].logicalFunctionName).toBe('run');
+    expect(fixture.groups[1].logicalFunctionArgs).toEqual([7n, 8n, 9n]);
+    expect(fixture.groups[1].logicalContract).toBe(shared);
+    expect(fixture.groups[1].logicalArtifact).toBe(shared.inner.artifact);
     expect(fixture.groups.find((value) => value.categoryId === leaf.categoryId)?.functionArgs).toEqual([1n]);
     expect(fixture.nodes.at(-1)).toMatchObject({ parent: 2, args: [1n] });
   });

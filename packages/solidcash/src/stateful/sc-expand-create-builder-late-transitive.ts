@@ -702,6 +702,13 @@ export async function expandCreateBuilderLateTransitive(
         physicalOwner.functionName = proxyCallee ? '__forward' : (rawFunctionName ?? nested.functionName);
         physicalOwner.functionArgs = proxyCallee && selectedFn.selector
           ? [selectProxyForwardInput(selectedFn.selector)] : childArgs;
+        // The replacement ABI, arguments and execution context are one frame. Downstream identity and
+        // witness planning must not read the earlier reader's logical arguments with the writer's ABI.
+        // expansionGroups retains the old call separately so its unvisited descendants still expand.
+        physicalOwner.logicalFunctionName = rawFunctionName ?? nested.functionName;
+        physicalOwner.logicalFunctionArgs = childArgs;
+        physicalOwner.logicalContract = selectedContract;
+        physicalOwner.logicalArtifact = selectedContract.inner.artifact;
         physicalOwner.callMode = nested.callMode;
         physicalOwner.internalArgs = lateInternalArgs;
         physicalOwner.relativeOutputInternalArgs = [...lateRelativeOutputInternalArgs];

@@ -83,6 +83,15 @@ strictFieldAccess = false,
   };
   const inferredType = (candidate: ExternalCallExpression): string => {
     if (candidate.type) return candidate.type;
+    if (candidate.kind === 'field' && candidate.expression && candidate.name) {
+      const ownerType = inferredType(candidate.expression);
+      return (artifact.structs ?? artifact.stateLayout?.structs)
+        ?.find((struct) => struct.name === ownerType)
+        ?.fields.find((field) => field.name === candidate.name)?.type ?? '';
+    }
+    if (candidate.kind === 'state' && candidate.name) {
+      return artifact.stateLayout?.variables.find((variable) => variable.name === candidate.name)?.type ?? '';
+    }
     if (candidate.kind === 'call' && candidate.name
       && (artifact.structs ?? artifact.stateLayout?.structs)
         ?.some((struct) => struct.name === candidate.name)) return candidate.name;
@@ -110,6 +119,8 @@ strictFieldAccess = false,
   const narrowAddress = (locking: Uint8Array): Uint8Array => {
     if (locking.length === 0) return new Uint8Array(20);
     if (locking.length === 20) return locking;
+    // A projected Solidity struct field can already be an ABI address word.
+    if (locking.length === 32) return locking.slice(12);
     if (locking.length === 23) return locking.slice(2, 22);
     if (locking.length === 35) return hash160Sync(locking);
     return locking.slice(3, 23);

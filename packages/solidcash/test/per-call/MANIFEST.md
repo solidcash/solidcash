@@ -13,7 +13,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 114 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 261 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 268 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 77 |
@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | — not written |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | — not written |
 
-Total: 756 tests, all passing at `1df4dc7f1` (114 + 299 + 343).
+Total: 763 tests, all passing at `7d145ab87` (114 + 306 + 343).
 
 ## What each directory covers
 
@@ -112,9 +112,10 @@ indices, and is held to its own derivation by a generated differential check.
   path: a compiled unit that contributes emitted definitions (a library import) is refused by name, and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
   in place, a whole multi-target batch, and the sender and compile-time key forms are now derived, planned and
-  settled; the marketplace's first root stops one wall further on — its constructor emits an event, and the master
-  head fixes one tail for every body it runs. The ladder stands at "blocked at compile" and no title count is
-  claimed.
+  settled, and a body now pins its own event count against the head's region, so a constructor that emits shares the
+  head. The marketplace's first root stops one wall further on: its `string` state, set from `string` constructor
+  arguments, is lowered into a band of chunk inputs whose base the direct convention's SDK computes and the per-call
+  path has no supplier for. The ladder stands at "blocked at compile" and no title count is claimed.
 - The composer lays out the shapes whose entries make the same number of external calls: a call-back shape, a
   user-entered multi-entry master, and a two-master contract whose validator has nothing to settle are refused by
   name. Delegatecall, mapping records and value sends are refused by name as well.

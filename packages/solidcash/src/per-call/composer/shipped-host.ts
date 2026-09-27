@@ -195,6 +195,14 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
   }
   const vm = options.vm ?? createVirtualMachineBch2026(false);
   const blocks = new Map<string, WitnessBlock>();
+  /**
+   * Where each master's last run stopped.
+   *
+   * A step fills one site and nothing else moves the draft, so the state a step starts from is exactly the state
+   * the previous step's run ended with. Reusing that verdict is what keeps the cost at one fresh run per site
+   * rather than two: the run before a fill is only made when the master has not been run yet.
+   */
+  const lastStop = new Map<string, ExecutionStop>();
 
   const blockFor = (run: ShippedMasterRun): WitnessBlock => {
     let block = blocks.get(run.master);
@@ -233,12 +241,14 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       }
 
       const block = blockFor(run);
-      // The run before the fill: with this site's witness still unfilled, where does the real program stop?
-      const before = runOnce(vm, run.programFor(block));
+      // The state before the fill: the master's previous run ended on this draft, so its verdict stands unless
+      // this is the first step for the master.
+      const before = lastStop.get(run.master) ?? runOnce(vm, run.programFor(block));
       options.onRun?.(run.master, site, before);
       const { callee } = run.fill(site, block);
       // The run after the fill: does the real program move?
       const after = runOnce(vm, run.programFor(block));
+      lastStop.set(run.master, after);
       options.onRun?.(run.master, site, after);
 
       if (!reachedFurther(before, after)) return {};

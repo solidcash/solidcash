@@ -198,6 +198,7 @@ function buildHost(
   onRun?: (master: string, site: { readonly kind: string; readonly site: number }, stop: {
     readonly accepted: boolean;
   }) => void,
+  vm?: Parameters<typeof createShippedDerivationHost>[0]['vm'],
 ): { host: ReturnType<typeof createShippedDerivationHost>; composition: Composition } {
   const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
   const composition = buildComposition();
@@ -236,6 +237,7 @@ function buildHost(
       artifacts: [artifacts.Caller!, artifacts.Callee!],
       runs: [callerRun, calleeRun],
       ...(onRun === undefined ? {} : { onRun }),
+      ...(vm === undefined ? {} : { vm }),
     }),
     composition,
   };
@@ -432,5 +434,33 @@ describe('a host driving a caller whose entry makes no call', () => {
     const future = { ...composition, stopSites: { ...composition.stopSites, version: 2 } };
     expect(() => readPublishedStopSites({ composition: future }))
       .toThrow(/PER_CALL_HOST_STOP_SITES_VERSION/);
+  });
+});
+
+describe('the runs a derivation spends', () => {
+  it('runs each master once per site after the first, not twice', () => {
+    // The state a step starts from is the state the previous step's run ended on, so the run before a fill is only
+    // needed for a master's first site. Counting the machine's own evaluations pins the saving: the caller publishes
+    // three sites (its call and the two segment closes) and the callee one, so the derivation spends four fresh
+    // runs and two reused verdicts, against eight runs if every site ran the program before and after its fill.
+    const machine = createVirtualMachineBch2026(false);
+    let evaluations = 0;
+    const counting = new Proxy(machine, {
+      get(target, property, receiver) {
+        if (property === 'evaluate') {
+          return (program: Parameters<typeof target.evaluate>[0]) => {
+            evaluations += 1;
+            return target.evaluate(program);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const { host } = buildHost(undefined, counting as ReturnType<typeof createVirtualMachineBch2026>);
+    deriveDepthFirst(
+      { contract: 'Caller', functionName: CALLER_ENTRY, kind: FrameKind.ROOT, master: 'caller-1' },
+      host,
+    );
+    expect(evaluations).toBe(6);
   });
 });

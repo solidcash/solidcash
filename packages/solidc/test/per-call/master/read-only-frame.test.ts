@@ -4,7 +4,8 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  TokenCapability, argsHash, asmToScript, buildPushdataCommitment, encodeArgumentList, encodeIntegerValue,
+  TokenCapability, argsHash, asmToScript, buildPushdataCommitment, encodeArgumentList,
+  encodeCallDataArguments, encodeIntegerValue, encodeResultList,
   encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress,
   type RecordEntry,
   type WitnessBlock,
@@ -93,6 +94,10 @@ interface ReadComposition {
 interface ReadOptions {
   /** The frame kind the caller records for its call; the static kind unless a test overrides it. */
   readonly recordedKind?: number;
+  /** The argument pushes the callee's call data carries, when the read passes an argument. */
+  readonly argumentPushes?: Uint8Array;
+  /** The value the callee's own frame records as its return, when the callee returns something. */
+  readonly calleeRetval?: Uint8Array;
 }
 
 /**
@@ -123,8 +128,8 @@ function buildRead(
       target: ADDRESS_CALLEE,
       value: 0n,
       calleeRef: CALLEE_INDEX,
-      argsHash: argsHash(selector, new Uint8Array(0)),
-      result: ANSWER_RETVAL,
+      argsHash: argsHash(selector, options.argumentPushes ?? new Uint8Array(0)),
+      result: options.calleeRetval ?? ANSWER_RETVAL,
     }],
     segments: [[], []],
     events: [],
@@ -138,7 +143,7 @@ function buildRead(
     sender: ADDRESS_CALLER,
     self: ADDRESS_CALLEE,
     value: 0n,
-    retval: ANSWER_RETVAL,
+    retval: options.calleeRetval ?? ANSWER_RETVAL,
     calls: [],
     segments: [[]],
     events: [],
@@ -159,6 +164,7 @@ function buildRead(
       unlockingBytecode: new Uint8Array([
         ...encodeDataPush(encodeWitnessBlock(calleeBlock)),
         ...encodeDataPush(selector),
+        ...(options.argumentPushes ?? new Uint8Array(0)),
         ...encodeDataPush(calleeProgram),
       ]),
     },
@@ -591,5 +597,48 @@ describe('the reads a master still cannot compile', () => {
       + '   int r = ICallee(target).peek.staticcall(); require(r == 1); } }';
     const refusal = refusalOf(source);
     expect(refusal).toContain("the call to 'peek' targets an address only known at run time");
+  });
+});
+
+/**
+ * A read whose argument only the running code knows.
+ *
+ * The value the read passes is the transaction's own input count, so the caller's digest is folded from a value it
+ * holds when it reads, and the callee answers with the value it received — so the same frame settles both the
+ * argument the caller computed and the return the callee computed.
+ */
+const ARGUMENT_READ_ENTRY_COUNT = 4;
+const ARGUMENT_READ = 'pragma solidcash ^0.13.0;'
+  + ' interface IReader { function peek(int n) returns (int); }'
+  + ' contract Answer { function peek(int n) view returns (int) { return n; } }'
+  + ' contract Reader { function readIt() {'
+  + `   int r = IReader(0x${toHex(ADDRESS_CALLEE)}).peek.staticcall(tx.inputs.length); `
+  + `require(r == ${ARGUMENT_READ_ENTRY_COUNT}); require(true); } }`;
+
+/** The push the caller computes for the argument: the input count's minimal script number, `OP_4` here. */
+const ARGUMENT_PUSHES = encodeCallDataArguments([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT))]);
+/** What the callee's own code returns: the value it received. */
+const ARGUMENT_RETVAL = encodeResultList([encodeIntegerValue(BigInt(ARGUMENT_READ_ENTRY_COUNT))]);
+
+describe('a read whose argument exists only when the code runs', () => {
+  it('is accepted at the caller, the callee and the validator', () => {
+    const verdicts = readVerdicts(ARGUMENT_READ, { argumentPushes: ARGUMENT_PUSHES, calleeRetval: ARGUMENT_RETVAL });
+    expect(verdicts[CALLER_INDEX]).toBe(true);
+    expect(verdicts[CALLEE_INDEX]).toBe(true);
+    expect(verdicts[VALIDATOR_INDEX]).toBe(true);
+  });
+
+  it('is refused when the call data carries another argument', () => {
+    const other = encodeCallDataArguments([encodeIntegerValue(5n)]);
+    const verdicts = readVerdicts(ARGUMENT_READ, { argumentPushes: other, calleeRetval: ARGUMENT_RETVAL });
+    expect(verdicts[CALLER_INDEX]).toBe(false);
+  });
+
+  it('is refused when the callee records another return value', () => {
+    const verdicts = readVerdicts(ARGUMENT_READ, {
+      argumentPushes: ARGUMENT_PUSHES,
+      calleeRetval: encodeResultList([encodeIntegerValue(5n)]),
+    });
+    expect(verdicts[CALLEE_INDEX]).toBe(false);
   });
 });

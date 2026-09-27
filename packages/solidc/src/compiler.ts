@@ -14920,35 +14920,10 @@ function compileResolvedAst(
     console.warn(`Error: ${message}`);
   }
   const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
-  // fold-plan authority: ensure completePushValue_* sits beside every leadingPushValue_* on the published route ABI
-  // (late AST inject can miss the already-materialized ABI row that unlockers read).
-  const withCompletePushBesideLeading = <T extends { name: string; type: string }>(
-    inputs: readonly T[],
-  ): T[] => {
-    const extras: T[] = [];
-    for (const input of inputs) {
-      if (!input.name.startsWith('__internal__leadingPushValue_')) continue;
-      const complete = input.name.replace(
-        '__internal__leadingPushValue_',
-        '__internal__completePushValue_',
-      );
-      if (inputs.some((candidate) => candidate.name === complete)
-        || extras.some((candidate) => candidate.name === complete)) continue;
-      extras.push({ ...input, name: complete });
-    }
-    return extras.length === 0 ? [...inputs] : [...inputs, ...extras];
-  };
-  const publishedMessageBusRouteAbi = messageBusRouteAbi === undefined
-    ? undefined
-    : {
-      ...messageBusRouteAbi,
-      inputs: withCompletePushBesideLeading(messageBusRouteAbi.inputs),
-    };
-  // Also patch ordinary handler ABI rows so completePushValue_* is visible beside leading.
-  artifact.abi = artifact.abi.map((fn) => ({
-    ...fn,
-    inputs: withCompletePushBesideLeading(fn.inputs),
-  }));
+  // Witness inputs must come from the same finalized AST parameters used by code generation. Eligible
+  // folds receive their complete-value witness before codegen; appending it only to a published direct
+  // handler ABI puts an unmodeled item below its frame and shifts every bottom-relative witness read.
+  const publishedMessageBusRouteAbi = messageBusRouteAbi;
   if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn.name !== '__message_bus1');
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a

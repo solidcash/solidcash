@@ -467,19 +467,19 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   half — a callee running between its caller's segments, so roots never interleave (T30) — is the derived order
   itself, which the transcript need not follow, so the program decides it only as far as the order-free half of the
   chain rule reaches (B7).
-- [x] B7 V7 (partial, and the settlement rules are in): every settlement rule the program lists is held against the
-  model over generated compositions and pinned by a machine refusal of its own — no category settled twice
+- [x] B7 V7 (the settlement rules): every settlement rule the program lists is held against the model over generated
+  compositions and pinned by a machine refusal of its own — no category settled twice
   (`emitSettleCategoriesAreDistinct`),
   the state-inputs half (`emitSettlementStateInputs`: every input the transcript lists as a settled contract's state
   is a mutable NFT of its category and not the validator, every such input in the transaction is listed, and no index
   twice), the records the frames read against the state UTXOs the contract spends (`2cb452941`), the census
   (`d055ac85f`, `abe0de286`: no own-category fungible amount, a mutable own-category output only for a record a frame
   declares, a bare own-category output only for an event a frame lists inside the transaction and no event listed
-  twice, and every master of the contract recreated at its own index), the value floor (`82879cfcc`), and as of this
-  round the record chains as the order-free half the program can decide: an entry continues from the transaction's
-  own commitment at the record's input or from another declaration's end view, and is continued by another
-  declaration's start view or by the transaction's own commitment at the record's output, with a declaration that
-  creates the record continuing from nothing and one that deletes it continued by nothing. The census reads
+  twice, and every master of the contract recreated at its own index), the value floor (`82879cfcc`) and the record
+  chains (`ccde697cc`, this round for the end), both halves: an entry continues from the transaction's own commitment
+  at the record's input or from another declaration's end view, and is continued by another declaration's start view
+  or by the transaction's own commitment at the record's output, with a declaration that creates the record
+  continuing from nothing and one that deletes it continued by nothing. The census reads
   `OP_OUTPUTTOKENCATEGORY` rather than the commitment because the opcode appends a capability byte only for mutable
   and minting tokens, so an immutable NFT of a settled category and a fungible token of it are the same 32 bytes on
   the wire (the Log row and Deviations carry the measurement). The chains are both halves: the pairing above, and the

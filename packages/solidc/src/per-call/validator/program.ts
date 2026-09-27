@@ -38,6 +38,17 @@ export const TRANSCRIPT_MAGIC = new Uint8Array([0x50, 0x43, 0x37, 0x01]);
 export const MAX_TRANSCRIPT_COUNT = 255;
 
 /**
+ * Inert bytes the program carries and drops at the end, which buy the input's own operation-cost budget.
+ *
+ * The budget is eight hundred units per byte of the input's unlocking bytecode, and the walk over the covered
+ * masters' inputs spends more than a small composition's own bytes buy, so a program that never padded would fit
+ * only transactions that are large for reasons of their own. The padding is one data push the program drops where
+ * it ends, which leaves the stack exactly as the checks left it; a byte of it costs one unit of stack and buys
+ * eight hundred, and the input stays well under the ten-thousand-byte limit on an unlocking bytecode.
+ */
+export const VALIDATOR_INPUT_PADDING_BYTES = 2_048;
+
+/**
  * The rules this program enforces on chain.
  *
  * Each is a named rejection reason of the derivation, so a differential run can ask "would the derivation refuse
@@ -165,6 +176,10 @@ export function buildValidatorProgram(): Uint8Array {
   emitSettleCategoriesAreDistinct(e);
   emitSettlementMembership(e);
   emitFrameAddresses(e);
+
+  // The padding block: pushed and dropped where the program ends, so the stack a caller sees is the one the checks
+  // produced, and the input's own bytes pay for the walk over the covered masters' inputs.
+  e.push(new Uint8Array(VALIDATOR_INPUT_PADDING_BYTES)).op(O.OP_DROP);
 
   // `[M]`. The input succeeds when the program reaches the end and leaves one truthy item.
   e.op(O.OP_DROP, O.OP_1);

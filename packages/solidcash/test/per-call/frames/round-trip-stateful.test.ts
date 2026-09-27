@@ -439,16 +439,18 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(at(B_MASTER).objection ?? 'accepted').toBe('accepted');
   });
 
-  it('is refused at the validator input by the operation-cost density its own script sets', () => {
+  it('is accepted at the validator input at the operation-cost density its own script sets', () => {
     // The validator's budget is 800 operation-cost units per byte of its own unlocking bytecode: 4,763 bytes on
     // this shape, so 3,810,400. Its walk over the covered masters costs a large multiple of their own sizes, and
-    // the emitting entry's program and event output take it to 3,810,464 — 64 over — where the same shape with no
-    // event is spent at 3,772,568. Measured, not assumed: it is the plan's open item on validator size and density,
-    // and the derivation is not the cause, since the validator's own decision on this transaction accepts above.
+    // the emitting entry's program and event output took it to 3,810,464 — 64 over — while the same shape with no
+    // event is spent at 3,772,568. That is why the program carries a padding block it drops where it ends: a byte
+    // of it buys 800 units, so the walk fits and a rule added next has room too. Measured, not assumed: it is the
+    // plan's open item on validator size and density, and the derivation is not the cause, since the validator's
+    // own decision on this transaction accepts above.
     const { draft } = deriveRoundTrip();
     const verdictAt = verdict(machine(), draft.programFor(A_FIRST), participant(draft.layout, VALIDATOR_ID).index);
-    expect(verdictAt.accepted).toBe(false);
-    expect(verdictAt.objection).toContain('operation cost density');
+    expect(verdictAt.objection ?? '').toBe('');
+    expect(verdictAt.accepted).toBe(true);
   });
 
   it('lays the emitted event and the user\'s change at the outputs past the participants', () => {

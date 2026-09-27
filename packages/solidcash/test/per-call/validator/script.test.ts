@@ -33,6 +33,7 @@ import {
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../../../src/index.js';
 import {
+  VALIDATOR_INPUT_PADDING_BYTES,
   VALIDATOR_PROGRAM_REASONS,
   buildValidatorProgram,
   decideValidator,
@@ -877,8 +878,13 @@ describe('the validator program refuses each rule it enforces', () => {
     });
     const spentBytes = transaction.inputs[index]!.unlockingBytecode.length
       + transaction.inputs[index]!.lockingBytecode.length;
-    const cost = (state as { readonly operationCost?: number }).operationCost;
+    const cost = (state as { readonly metrics?: { readonly operationCost?: number; readonly maximumOperationCost?: number; readonly stackPushedBytes?: number; readonly evaluatedInstructionCount?: number; readonly hashDigestIterations?: number; readonly arithmeticCost?: number } }).metrics;
     console.log('published density', JSON.stringify({
+      metrics: cost,
+      sizes: transaction.inputs.map((input, i) => [
+        i, input.unlockingBytecode.length, input.lockingBytecode.length,
+        program.sourceOutputs[i]!.token ? 'tok' : '-',
+      ]),
       programBytes: PROGRAM.length,
       spentBytes,
       budgetPerByte: 800,
@@ -887,5 +893,11 @@ describe('the validator program refuses each rule it enforces', () => {
       accepted: vm.stateSuccess(state) === true,
     }));
     expect(vm.stateSuccess(state)).toBe(true);
+    // The padding block exists so this input pays for the walk it runs: the budget the padding buys has to exceed
+    // what the enforced checks spend, or a rule added next would push an honest composition over the limit and the
+    // failure would read as a wrong refusal rather than as a budget. The bound is the padding's own contribution,
+    // so it moves with the constant rather than with a number copied from one run.
+    expect((cost?.maximumOperationCost ?? 0) - (cost?.operationCost ?? 0))
+      .toBeGreaterThan((VALIDATOR_INPUT_PADDING_BYTES * 800) / 2);
   });
 });

@@ -278,12 +278,6 @@ export function constructCreateBuilderTransactionBuilder(
     }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
-  // The composed coordinate of the root dynamic chunk. A materialized frame that cannot address the relocated
-  // index is a participant-local frame (a derivation probe or the participant's own published block); the
-  // relocated value computed from it IS the composed coordinate, and it is the only place the published block's
-  // layout is visible. Remember it so a frame-free refresh (which sees the builder's pre-layout input list) does
-  // not report a coordinate derived from the wrong index space.
-  let composedDynamicChunkBase: bigint | undefined;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
     || compilerRouteUsesPhysicalWrapper(
       overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
@@ -298,32 +292,24 @@ export function constructCreateBuilderTransactionBuilder(
       if (target !== undefined && localIndex < 0) {
         throw new Error('Selected root dynamic-storage chunk input is absent from the finalized transaction');
       }
-      // The block base relocates a participant-local index into the aggregate frame. A probe that evaluates the
-      // participant-LOCAL frame cannot address the relocated index at all (measured: 222 in an 88-input frame),
-      // so keep the frame-local value there; the aggregate build re-applies the relocated one.
-      const relocated = resolveDynamicChunkInputBase(localIndex, overrides?.blockBase ?? 0);
-      const frameLength = materialized?.inputs.length;
-      const unaddressable = localIndex >= 0 && frameLength !== undefined
-        && relocated >= BigInt(frameLength);
-      if (unaddressable) composedDynamicChunkBase = relocated;
-      finalArgs[topLevelDynamicChunkArgumentIndex] =
-        unaddressable ? BigInt(localIndex) : composedDynamicChunkBase ?? relocated;
+      // Published witnesses always use aggregate coordinates, including when the absolute index would happen
+      // to fit in this participant's local frame. buildParticipantProbeProgram performs the inverse conversion
+      // only in generated probe bytecode, without changing these shared final-transaction arguments.
+      finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
+        localIndex, overrides?.blockBase ?? 0,
+      );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {
         console.error('dynamic-chunk-root-base', JSON.stringify({
           functionName,
           blockBase: overrides?.blockBase ?? 0,
           localIndex,
-          frameLength,
-          unaddressable,
-          composed: composedDynamicChunkBase === undefined ? undefined : String(composedDynamicChunkBase),
+          frameLength: materialized?.inputs.length,
           target: target === undefined ? undefined : `${target.txid.slice(0, 12)}:${target.vout}`,
           value: String(finalArgs[topLevelDynamicChunkArgumentIndex]),
           readChunks: dynamicReadChunkInputs.length,
           writeChunks: dynamicChunkInputs.length,
-          // Who materialized this frame. A participant-local frame can be either the block this build PUBLISHES
-          // or a derivation probe of it; only the caller distinguishes them, and the composed coordinate is
-          // correct for the published block while the local substitute is required for the probe.
+          // Identify the materialization boundary without changing its published coordinate convention.
           stack: new Error('dynamic-chunk-root-base').stack?.split('\n').slice(2, 5)
             .map((line) => line.trim().replace(/.*\/packages\//, 'packages/')),
         }));

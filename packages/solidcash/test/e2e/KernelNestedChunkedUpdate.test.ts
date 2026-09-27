@@ -8,30 +8,35 @@ import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e
 import { messageBusVmAccepts } from '../journal-message-bus/e2e/vm-accepts.js';
 
 describe('kernel participant-local identity and chunked updates', () => {
-  it('persists both fixed-array and scalar updates after authenticating the public self identity', async () => {
+  it.each([false, true])('persists both fixed-array and scalar updates (dynamic proxy: %s)', async (proxied) => {
     const provider = createMessageBusCapstoneTestProvider();
     const note = 'preserved record payload '.repeat(12);
+    const banner = 'preserved dynamic state '.repeat(8);
     const artifacts = compileStringMulti(`pragma solidity ^0.8.20;
       struct Record { string note; int16[2] consensus; uint claimed; }
       interface IStore { function release(uint key) external; }
       contract Store {
+        ${proxied ? 'string public banner;' : ''}
         mapping(uint => Record) records;
         event Completed(uint key, Record record);
+        ${proxied ? 'function initialize() public { this.banner = ""; }' : ''}
         function seed(uint key, Record memory value) public {
-          records[key] = value;
+          this.records[key] = value;
+          ${proxied ? `this.banner = "${banner}";` : ''}
         }
         function release(uint key) public {
+          ${proxied ? `require(this.banner == "${banner}");` : ''}
           require(address(this) != address(0));
-          Record memory current = records[key];
+          Record memory current = this.records[key];
           current.consensus[0] = absolute(current.consensus[0]) + 1;
           current.consensus[1] = absolute(current.consensus[1]);
-          records[key].consensus = current.consensus;
-          records[key].claimed = 1;
+          this.records[key].consensus = current.consensus;
+          this.records[key].claimed = 1;
           emit Completed(key, current);
         }
         function absolute(int16 value) internal pure returns (int16) { return value < 0 ? -value : value; }
         function check(uint key) public view {
-          Record memory current = records[key];
+          Record memory current = this.records[key];
           require(current.note == "${note}" && current.consensus[0] == 1
             && current.consensus[1] == 1 && current.claimed == 1);
         }
@@ -52,42 +57,56 @@ describe('kernel participant-local identity and chunked updates', () => {
         txid: (index + 1).toString(16).padStart(64, '0'), vout: 0, satoshis: 1_000_000n,
       });
     }
-    const store = await getContractFactory(artifacts.Store, signer).deploy();
+    const storeFactory = getContractFactory(artifacts.Store, signer);
+    const proxyStore = proxied ? await upgrades.deployProxy(storeFactory, []) : undefined;
+    const store = proxyStore?.proxy ?? await storeFactory.deploy();
     const coordinator = await upgrades.deployProxy(getContractFactory(artifacts.Coordinator, signer), []);
     coordinator.implementation._registerResolvedExternal('IStore', store);
-    await store.call.seed(7n, [note, [0n, 1n], 0n]).send();
+    const seedArgs = [7n, [note, [0n, 1n], 0n]];
+    await (proxyStore ? proxyStore.forward('seed', seedArgs) : store.call.seed(...seedArgs)).send();
     const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
     const composition = messageBus.compose({
       preparedCalls: [
         { contract: coordinator.proxy, executionArtifact: coordinator.implementation.inner.artifact,
           executor: coordinator.implementation, functionName: 'run',
           args: [store.inner.lockingBytecode, 7n] },
-        { contract: store, functionName: 'release', args: [7n], callsiteId: 0 },
+        { contract: store, functionName: 'release', args: [7n], callsiteId: 0,
+          ...(proxyStore && { executionArtifact: proxyStore.implementation.inner.artifact,
+            executor: proxyStore.implementation }) },
       ],
       funder, changeAddress: funder.unlocker.generateLockingBytecode(),
     });
     const builder = await composition.build();
     expect(messageBusVmAccepts(builder)).toBe(true);
-    const storeIndex = builder.inputs.findIndex((input) => isContractUnlocker(input.unlocker)
-      && input.unlocker.contract.artifact.contractName === 'Store');
+    const storeIndex = builder.inputs.findIndex((input) => input.token?.category === store.categoryId
+      && input.token.nft?.capability === 'minting');
     expect(storeIndex).toBeGreaterThan(0);
-    const original = builder.inputs[storeIndex].unlocker;
+    const executorIndex = proxyStore ? builder.inputs.findIndex((input) => isContractUnlocker(input.unlocker)
+      && input.unlocker.contract.artifact.contractName === 'Store') : storeIndex;
+    const original = builder.inputs[executorIndex].unlocker;
     if (!isContractUnlocker(original)) throw new Error('Missing store route');
-    const anchorIndex = original.abiFunction.inputs.findIndex(
-      (input) => input.name === '__internal__graphSelfIdentityInput',
-    );
-    expect(anchorIndex).toBeGreaterThanOrEqual(0);
-    const absolute = original.params[anchorIndex] as bigint;
-    expect(absolute).toBeGreaterThan(BigInt(storeIndex));
-    // A local coordinate must never leak into the final aggregate transaction.
-    const forged = [...original.params];
-    forged[anchorIndex] = absolute - BigInt(storeIndex);
-    builder.inputs[storeIndex].unlocker = original.contract.createCompilerRouteUnlocker(
-      original.abiFunction, hexToBin(original.abiFunction.selector!),
-    )(...forged);
-    expect(messageBusVmAccepts(builder)).toBe(false);
-    builder.inputs[storeIndex].unlocker = original;
+    for (const witness of [
+      '__internal__graphSelfIdentityInput',
+      ...(proxied ? ['__internal__dynamicChunkInputBase'] : []),
+    ]) {
+      const position = original.abiFunction.inputs.findIndex((input) => input.name === witness);
+      expect(position).toBeGreaterThanOrEqual(0);
+      const absolute = original.params[position] as bigint;
+      expect(absolute).toBeGreaterThan(BigInt(storeIndex));
+      // A local coordinate must never leak into the final aggregate transaction.
+      const forged = [...original.params];
+      forged[position] = absolute - BigInt(storeIndex);
+      builder.inputs[executorIndex].unlocker = original.contract.createCompilerRouteUnlocker(
+        original.abiFunction, hexToBin(original.abiFunction.selector!),
+      )(...forged);
+      expect(messageBusVmAccepts(builder)).toBe(false);
+      builder.inputs[executorIndex].unlocker = original;
+    }
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/u) });
-    await expect(store.call.check(7n).send()).resolves.toBeDefined();
+    expect((await store.getEntries('records'))[0].value).toMatchObject({
+      note, consensus: [1n, 1n], claimed: 1n,
+    });
+    if (proxied) expect((await store.getState()).banner).toBe(banner);
+    else await expect(store.call.check(7n).send()).resolves.toBeDefined();
   }, 180_000);
 });

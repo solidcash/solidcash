@@ -1298,10 +1298,8 @@ export async function assembleAtomicComposition(
       }
       actualSizes.push(actualSize);
       {
-        // The aggregate publishes this participant's block at `base`, so an absolute input coordinate witness
-        // must be relocated by it. The participant's own build resolves such witnesses against its LOCAL frame
-        // (measured: the root dynamic-chunk base is the local index 23), and `addInputs` below copies that
-        // unlocker verbatim - so the published bytecode addresses an unrelated input.
+        // The participant publishes dynamic-input witnesses in aggregate coordinates. Convert them back to
+        // local offsets for layout claims; the layout authority below publishes the resolved absolute values.
         const publishedBase = graph.layout.participantInputs[participant.participant] ?? 0;
         const masterUnlocker = local.inputs[0]?.unlocker as {
           abiFunction?: AbiFunction;
@@ -1312,8 +1310,7 @@ export async function assembleAtomicComposition(
           (input) => input.name === '__internal__dynamicChunkInputBase',
         ) ?? -1;
         const localChunkBase = chunkIndex < 0 ? undefined : masterUnlocker?.params?.[chunkIndex];
-        // The participant resolved these witnesses against its own frame, but the aggregate publishes that frame
-        // at `publishedBase`, so a witness the covenant addresses in TRANSACTION coordinates must be relocated.
+        // Layout claims use local resource offsets; their resolved witnesses name aggregate coordinates.
         // The unlocker documents `syncEncodedArgsFromParams` for exactly this: it re-encodes the mutated slot and
         // drops the cached unlocking bytecode. Without the resync the edit is invisible and the published script
         // keeps addressing the participant-local coordinate.
@@ -1321,8 +1318,8 @@ export async function assembleAtomicComposition(
         //                                          chunk NFT).
         //   `__internal__vmapBatchPredOut_<slot>` - read with OP_OUTPUTBYTECODE (measured: the displaced
         //                                          predecessor's P' output instead of this participant's).
-        // layout-sentinel / PredOut: tagged absent/inactive sentinels stay untouched — only active coordinates relocate.
-        // A value outside this frame's extent cannot be a participant-local coordinate.
+        // Tagged absent/inactive sentinels stay untouched. Dynamic-input witnesses already include publishedBase;
+        // provisional PredOut witnesses still need their exact local resource output resolved below.
         const relocatable: Array<{ index: number; name: string; limit: number }> = [];
         if (chunkIndex >= 0) relocatable.push({ index: chunkIndex, name: 'dynamicChunkInputBase', limit: local.inputs.length });
         for (const [index, input] of (masterUnlocker?.abiFunction?.inputs ?? []).entries()) {
@@ -1364,8 +1361,17 @@ export async function assembleAtomicComposition(
           // Discover claims for every publishedBase including 0 (participant 0 / atomic physical layout).
           if (masterUnlocker?.params === undefined) continue;
           if (candidate.name === 'dynamicChunkInputBase') {
-            if (!layoutWitnessIsActiveCoordinate(value) || value >= BigInt(candidate.limit)) continue;
-            dynLocalBase = Number(value);
+            if (!layoutWitnessIsActiveCoordinate(value)) continue;
+            const localIndex = value - BigInt(publishedBase);
+            if (localIndex < 0n || localIndex >= BigInt(candidate.limit)) {
+              throw layoutInvariantError({
+                invariantId: 'dynamic-chunk-input-outside-participant',
+                participant: participant.participant,
+                resource: candidate.name,
+                message: 'Published dynamic-storage input does not belong to its participant block',
+              });
+            }
+            dynLocalBase = Number(localIndex);
             continue;
           }
           const slot = /(\d+)$/.exec(candidate.name)?.[1];

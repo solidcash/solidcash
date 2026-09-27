@@ -24,7 +24,18 @@ function walk(node: Node, visit: (node: Node) => void, seen = new Set<Node>()): 
   }
 }
 
-/** Snapshot a local memory array at an external call, including writes through inlined helper aliases.
+/** Struct field writes are lowered to whole-local rebuilds; array writes keep their local target. */
+export function hasLocalAggregateMutation(target: IdentifierNode, prior: readonly StatementNode[]): boolean {
+  let found = false;
+  const inspect = (child: Node): void => {
+    if ((child instanceof AssignNode && child.identifier.name === target.name)
+      || (child instanceof ArrayAssignNode && child.name === target.name)) found = true;
+  };
+  for (const statement of prior) walk(statement, inspect);
+  return found;
+}
+
+/** Snapshot a local memory aggregate at an external call, including writes through inlined helper aliases.
  * The dependency slice is a local program, not initializer substitution: scalar temporaries and indices
  * must be read at the write's program point, and aliases must share the same array within that frame.
  * An unsupported mutation fails closed instead of publishing the allocation's stale default contents.
@@ -90,8 +101,22 @@ export function serializeLocalArraySnapshot(
     });
     return found;
   };
+  const parameters: string[] = [];
+  const args: ExternalCallExpression[] = [];
+  // Producer results remain explicit call arguments, where graph dependency discovery and callsite
+  // remapping authenticate them. The local program only transforms those already-produced values.
+  // Never hoist a conditional producer into an unconditional dependency.
+  const bindProducer = (value: ExternalCallExpression, conditional: boolean): ExternalCallExpression | undefined => {
+    if (value.kind !== 'producerResult') return value;
+    if (conditional) return undefined;
+    let name = `__snapshot_result_${parameters.length}`;
+    while (declarations.has(name)) name += '_';
+    parameters.push(name);
+    args.push(value);
+    return { kind: 'identifier', name, ...(value.type && { type: value.type }) };
+  };
   const block = (
-    statements: readonly StatementNode[], ancestors: readonly StatementNode[],
+    statements: readonly StatementNode[], ancestors: readonly StatementNode[], conditional = false,
   ): ExternalCallStatement[] | undefined => {
     const result: ExternalCallStatement[] = [];
     const before = [...ancestors];
@@ -105,7 +130,8 @@ export function serializeLocalArraySnapshot(
       if (affects(statement)) {
         const expression = (value: ExpressionNode): ExternalCallExpression | undefined => serialize(value, needed, before);
         if (statement instanceof VariableDefinitionNode) {
-          const value = statement.expression && expression(statement.expression);
+          const serialized = statement.expression && expression(statement.expression);
+          const value = serialized && bindProducer(serialized, conditional);
           if (statement.expression && !value) return undefined;
           result.push({ kind: 'variable', name: statement.name, type: statement.type.toString(),
             ...(value && { expression: value }) });
@@ -123,18 +149,18 @@ export function serializeLocalArraySnapshot(
           result.push({ kind: 'arrayAssign', name: statement.name, index, expression: value });
         } else if (statement instanceof BranchNode) {
           const condition = expression(statement.condition);
-          const ifBody = block(statement.ifBlock.statements ?? [], before);
-          const elseBody = statement.elseBlock ? block(statement.elseBlock.statements ?? [], before) : [];
+          const ifBody = block(statement.ifBlock.statements ?? [], before, true);
+          const elseBody = statement.elseBlock ? block(statement.elseBlock.statements ?? [], before, true) : [];
           if (!condition || !ifBody || !elseBody) return undefined;
           result.push({ kind: 'branch', condition, statements: ifBody, elseStatements: elseBody });
         } else if (statement instanceof WhileNode) {
           const condition = expression(statement.condition);
-          const body = block(statement.block.statements ?? [], before);
+          const body = block(statement.block.statements ?? [], before, true);
           if (!condition || !body) return undefined;
           result.push({ kind: 'while', condition, statements: body });
         } else if (statement instanceof BlockNode || statement instanceof UncheckedNode) {
           const nested = statement instanceof BlockNode ? statement.statements : statement.block.statements;
-          const body = block(nested ?? [], before);
+          const body = block(nested ?? [], before, conditional);
           if (!body) return undefined;
           result.push({ kind: 'block', statements: body });
         } else return undefined;
@@ -145,6 +171,12 @@ export function serializeLocalArraySnapshot(
   };
   const statements = block(prior, []);
   if (!statements) return undefined;
-  return { kind: 'call', type: declarations.get(target.name)!.type.toString(), parameters: [], args: [],
+  const hasHiddenProducer = (value: unknown): boolean => {
+    if (!value || typeof value !== 'object') return false;
+    if (['producerResult', 'externalCall'].includes((value as { kind?: string }).kind ?? '')) return true;
+    return Object.values(value).some(hasHiddenProducer);
+  };
+  if (hasHiddenProducer(statements)) return undefined;
+  return { kind: 'call', type: declarations.get(target.name)!.type.toString(), parameters, args,
     statements: [...statements, { kind: 'return', expression: { kind: 'identifier', name: target.name } }] };
 }

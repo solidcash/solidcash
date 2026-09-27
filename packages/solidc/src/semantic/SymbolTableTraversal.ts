@@ -124,7 +124,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
-import { serializeLocalArraySnapshot } from './external-call-local-array.js';
+import { hasLocalAggregateMutation, serializeLocalArraySnapshot } from './external-call-local-array.js';
 import { cloneNode } from '../ast/clone.js';
 import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import {
@@ -8054,7 +8054,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           && serializedProgramLocals?.has(expression.name) === true;
         if (!serializedProgramLocals && expression instanceof IdentifierNode && priorStatements) {
           const initializer = resolveInitializer(expression);
-          if (initializer instanceof NewArrayNode || initializer instanceof ArrayNode) {
+          const returnedAggregate = initializer instanceof ExternalFunctionCallNode
+            && initializer.callInfo?.returnTypes?.some((type) =>
+              type instanceof StructType || type instanceof ArrayType || this.structMap.has(type.toString()))
+            && hasLocalAggregateMutation(expression, priorStatements);
+          if (initializer instanceof NewArrayNode || initializer instanceof ArrayNode || returnedAggregate) {
             const snapshot = serializeLocalArraySnapshot(expression, priorStatements, (value, locals, before) => {
               const savedLocals = serializedProgramLocals;
               const savedPrior = priorStatements;
@@ -8099,7 +8103,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (constant && constant.expression !== expression) {
             return serializeExpression(constant.expression, seen);
           }
-          if (definition instanceof VariableDefinitionNode
+          if (!preservedLocal && definition instanceof VariableDefinitionNode
             && definitionDependsOnProducer(definition)) {
             unresolvedProducerAlias = true;
             // `serializedProgramLocals` is a NAME set shared with the pure helper currently being serialized, so
@@ -8213,6 +8217,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             ?? (expression.expression.type instanceof StructType
               ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
               : undefined);
+          // A snapshot program reads its live local frame. Substituting an earlier initializer or field
+          // assignment here would discard ordered writes, including the struct rebuild for an array element.
+          if (expression.expression instanceof IdentifierNode
+            && serializedProgramLocals?.has(expression.expression.name)) {
+            return inner && { kind: 'field', name: expression.name, expression: inner,
+              ...(fieldType && { type: fieldType.toString() }) };
+          }
           // A typed call may consume a field immediately after the source assigns it through a local struct or
           // storage-pointer alias. Publish the dominating RHS directly so SDK planning does not have to guess the
           // value from application names. Conditional/repeated writes conservatively invalidate this shortcut.
@@ -8674,7 +8685,10 @@ export default class SymbolTableTraversal extends AstTraversal {
             ...(parameters && statements && { parameters, statements }),
           };
         }
-        if (expression instanceof IdentifierNode) return { kind: 'identifier', name: expression.name };
+        if (expression instanceof IdentifierNode) {
+          const type = expression.type ?? expression.definition?.type ?? this.symbolTables[0].get(expression.name)?.type;
+          return { kind: 'identifier', name: expression.name, ...(type && { type: type.toString() }) };
+        }
         return {
           kind: 'unsupported',
           name: expression.constructor.name,

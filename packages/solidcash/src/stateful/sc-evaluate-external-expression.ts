@@ -496,6 +496,7 @@ strictFieldAccess = false,
         if (existing !== undefined) return existing;
         const copy: FunctionArgument[] = [];
         arrayCopies.set(value, copy as FunctionArgument);
+        arrayCopies.set(copy as FunctionArgument, copy as FunctionArgument);
         for (const element of value) copy.push(localValue(element));
         return copy as FunctionArgument;
       };
@@ -537,11 +538,11 @@ strictFieldAccess = false,
             const value = statement.expression
               ? evaluateWith(statement.expression) : defaultValue(statement.type);
             if (value === undefined) { invalid = true; return { returned: false }; }
-            bindings.set(statement.name, value);
+            bindings.set(statement.name, localValue(value));
           } else if (statement.kind === 'assign' && statement.name && statement.expression) {
             const value = evaluateWith(statement.expression);
             if (value === undefined) { invalid = true; return { returned: false }; }
-            bindings.set(statement.name, value);
+            bindings.set(statement.name, localValue(value));
           } else if (statement.kind === 'arrayAssign' && statement.name && statement.index && statement.expression) {
             const array = bindings.get(statement.name);
             const index = evaluateWith(statement.index);

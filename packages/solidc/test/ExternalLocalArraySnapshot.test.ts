@@ -1,7 +1,7 @@
 import { ArrayType, PrimitiveType } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import {
-  ArrayAssignNode, ArrayPushNode, BlockNode, BoolLiteralNode, BreakNode, ExternalCallExpression, IdentifierNode,
+  ArrayAssignNode, ArrayPushNode, BlockNode, BoolLiteralNode, BranchNode, BreakNode, ExternalCallExpression, IdentifierNode,
   IntLiteralNode, NewArrayNode, VariableDefinitionNode, WhileNode,
 } from '../src/ast/AST.js';
 import { serializeLocalArraySnapshot } from '../src/semantic/external-call-local-array.js';
@@ -13,6 +13,30 @@ const target = new IdentifierNode('values');
 const serialize = (): ExternalCallExpression => ({ kind: 'literal', type: 'bigint', value: '0' });
 
 describe('local array snapshot admission', () => {
+  it('publishes dominating producer results as explicit snapshot inputs', () => {
+    const producer: ExternalCallExpression = { kind: 'producerResult', callsiteId: 3, resultIndex: 0, type: 'int[]' };
+    const snapshot = serializeLocalArraySnapshot(target, [declaration()], () => producer)!;
+    expect(snapshot.args).toEqual([producer]);
+    expect(snapshot.parameters).toHaveLength(1);
+    expect(snapshot.statements![0].expression).toEqual({
+      kind: 'identifier', name: snapshot.parameters![0], type: 'int[]',
+    });
+    expect(JSON.stringify(snapshot.statements)).not.toContain('producerResult');
+  });
+
+  it('does not hoist a conditional producer into an unconditional dependency', () => {
+    const branch = new BranchNode(new BoolLiteralNode(false), new BlockNode([declaration()]));
+    expect(serializeLocalArraySnapshot(target, [branch], () => ({
+      kind: 'producerResult', callsiteId: 3, resultIndex: 0, type: 'int[]',
+    }))).toBeUndefined();
+  });
+
+  it('rejects producer expressions hidden inside local program statements', () => {
+    expect(serializeLocalArraySnapshot(target, [declaration()], () => ({
+      kind: 'field', name: 'values', expression: { kind: 'producerResult', callsiteId: 3, resultIndex: 0 },
+    }))).toBeUndefined();
+  });
+
   it('rejects ambiguous shadowed bindings instead of matching writes by spelling', () => {
     expect(serializeLocalArraySnapshot(target, [declaration(), new BlockNode([declaration()])], serialize))
       .toBeUndefined();

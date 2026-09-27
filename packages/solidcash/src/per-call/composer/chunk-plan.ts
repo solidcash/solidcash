@@ -7,15 +7,17 @@
  * band that begins one layout width past the record block its own frame declares.
  *
  * This module derives, from the value the transaction spends and the value the execution writes, the header and the
- * chunk commitments of both, and lays the run out as the participants a block holds and the record entries a
- * segment declares. Every byte it produces comes from the shipped encoders (`buildPushdataCommitment`,
- * `buildChunkCommitment`, `splitValueIntoChunks`, `dynamicChunkSignature`, `computeCollectionHash`,
- * `buildEntryNftCovenantScript`); the layout facts — where the band sits, and which input authorizes the write — are
- * the caller's, and a run that cannot be laid out is refused by name.
+ * chunk commitments of both, and lays the run out as the records a block holds — some kept in place, some created as
+ * trailing outputs, some removed — and the record entries a segment declares. Every byte it produces comes from the
+ * shipped encoders (`buildPushdataCommitment`, `buildChunkCommitment`, `splitValueIntoChunks`,
+ * `dynamicChunkSignature`, `computeCollectionHash`, `buildEntryNftCovenantScript`); the layout facts — where the band
+ * sits, and which input authorizes the write — are the caller's, and a run that cannot be laid out is refused by
+ * name.
  */
 
 import { encodeDataPush, hexToBin, Opcodes } from '@bitauth/libauth';
 import {
+  INDEX_NONE,
   buildChunkCommitment,
   buildEntryNftCovenantScript,
   buildPushdataCommitment,
@@ -75,8 +77,8 @@ export interface ChunkRunPlan {
 /**
  * Plans one write to a dynamic value.
  *
- * The run keeps its width: a value whose byte length crosses a chunk boundary would create or delete chunks, which
- * is a band the plan does not lay out yet, so it is refused rather than spelled as a run that cannot be written.
+ * The plan states both sides of the write, however their widths compare: a value whose byte length crosses a chunk
+ * boundary creates or removes chunks, and the layout places those records beside the ones the write keeps.
  */
 export function planChunkRun(options: {
   readonly layout: StateLayout | undefined;
@@ -87,28 +89,41 @@ export function planChunkRun(options: {
   const declared = requireDynamicVariable(options.layout, options.variable);
   const spent = dynamicValueRecords(options.layout, options.variable, options.spent);
   const written = dynamicValueRecords(options.layout, options.variable, options.written);
-  if (spent.chunks.length !== written.chunks.length) {
-    throw chunkRunUnplannable(
-      options.variable,
-      `the write changes the run's width, from ${spent.chunks.length} chunk(s) to ${written.chunks.length}, `
-      + 'which no plan lays out yet',
-    );
-  }
   return { variable: options.variable, type: declared.type, spent, written };
 }
 
-/** One chunk of a run: the participant a block holds it as, and the record a segment declares. */
+/**
+ * How a write treats one chunk of a run.
+ *
+ * A write that changes the run's width keeps every chunk both sides hold, and either creates the chunks only the
+ * written value holds or removes the ones only the spent value holds. The two tails are disjoint, so no chunk is
+ * both created and removed.
+ */
+export type ChunkRecordRole = 'kept' | 'created' | 'removed';
+
+/** One chunk of a run: the record a segment declares, and what the transaction does with it. */
 export interface ChunkRecordPlacement {
   /** The identity the layout and the plan's segments name it by. */
   readonly id: string;
-  /** The index the chunk sits at, as an input and as the output that recreates it. */
+  /** The index the chunk sits at: the input that spends it and the output that writes it, where each exists. */
   readonly index: number;
-  readonly input: DraftInput;
-  /** The record entry a segment declares for this chunk: kept in place, with both commitments. */
+  readonly role: ChunkRecordRole;
+  /** The commitment the chunk carries before the write; empty for a created chunk. */
+  readonly viewIn: Uint8Array;
+  /** The commitment the chunk carries after the write; empty for a removed chunk. */
+  readonly viewOut: Uint8Array;
+  /**
+   * The input that spends the chunk, for a kept or a removed chunk. A removed chunk's input carries the write
+   * authorization but names no chunk output: the transaction spends it and writes no record at its index.
+   */
+  readonly input?: DraftInput;
+  /** The output the transaction writes at the chunk's index, for a kept or a created chunk. */
+  readonly output?: DraftSourceOutput;
+  /** The record entry a segment declares for this chunk. */
   readonly entry: RecordEntry;
 }
 
-/** A run laid out: the participants, and the record entries one segment declares for them. */
+/** A run laid out: the records it touches, and the entries one segment declares for them. */
 export interface ChunkRunLayout {
   readonly records: readonly ChunkRecordPlacement[];
   /** The entries of one segment that reads and writes the run, in index order. */
@@ -128,8 +143,12 @@ function chunkToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
 /**
  * Lays a run out at the index the layout gives its first chunk.
  *
- * The chunks are entry NFTs of the value's own collection, so the input and the output that recreates it share the
- * collection's covenant lock, and the input's unlocking bytecode names the master whose write authorizes the run.
+ * The chunks are entry NFTs of the value's own collection, so every input and every output share the collection's
+ * covenant lock, and an input's unlocking bytecode names the master whose write authorizes the run. A chunk both
+ * sides hold is kept in place: its input recreates it at its index. A chunk only the written value holds is created:
+ * its output sits at the chunk's index with no input at all, so the caller places it in the trailing region. A chunk
+ * only the spent value holds is removed: its input is spent with the write authorization and no record is written at
+ * its index, so the caller places its input among the funders and leaves its output to the funder region.
  * The caller states the index the band starts at — one layout width past the frame's first declared record — because
  * that is where the emitted body reads the coordinate from.
  */
@@ -142,28 +161,84 @@ export function layOutChunkRun(options: {
   readonly writer: number;
   /** The satoshi value each chunk carries; a kept chunk's output keeps the input's value. */
   readonly valueSatoshis: bigint;
+  /**
+   * The lock a removed chunk's satoshis are paid to. Required when the write removes chunks: the body pins the
+   * chunk address on exactly the chunks the written value holds, so a removed chunk's satoshis cannot be re-locked
+   * at the collection address without reading as one more chunk.
+   */
+  readonly removedLock?: Uint8Array;
 }): ChunkRunLayout {
-  const { plan, category, base, writer, valueSatoshis } = options;
+  const { plan, category, base, writer, valueSatoshis, removedLock } = options;
   if (!Number.isInteger(base) || base < 0) throw chunkRunUnplannable(plan.variable, `the band starts at ${base}`);
+  if (plan.spent.chunks.length > plan.written.chunks.length && removedLock === undefined) {
+    throw chunkRunUnplannable(
+      plan.variable,
+      `the write removes ${plan.spent.chunks.length - plan.written.chunks.length} chunk(s), so it needs the lock `
+      + 'their satoshis are paid to',
+    );
+  }
   const lock = scriptToLockingBytecode(
     buildEntryNftCovenantScript(category, computeCollectionHash(dynamicChunkSignature(plan.variable, plan.type))),
     'p2sh32',
   );
   // The covenant's own unlocking bytecode: the master the write belongs to, then the flag that takes the write path.
   const unlockingBytecode = new Uint8Array([...encodeDataPush(encodeInt(BigInt(writer))), Opcodes.OP_1]);
+  const chunkSource = (commitment: Uint8Array): DraftSourceOutput =>
+    ({ lockingBytecode: lock, valueSatoshis, token: chunkToken(category, commitment) });
+  const keptCount = Math.min(plan.spent.chunks.length, plan.written.chunks.length);
 
-  const records = plan.spent.chunks.map((spent, offset): ChunkRecordPlacement => {
-    const written = plan.written.chunks[offset] ?? new Uint8Array(0);
+  const records: ChunkRecordPlacement[] = [];
+  // Chunks both sides hold are kept in place, at their own index.
+  for (let offset = 0; offset < keptCount; offset += 1) {
     const index = base + offset;
-    const source: DraftSourceOutput = {
-      lockingBytecode: lock, valueSatoshis, token: chunkToken(category, spent),
-    };
-    return {
+    const viewIn = plan.spent.chunks[offset]!;
+    const viewOut = plan.written.chunks[offset]!;
+    const source = chunkSource(viewIn);
+    const output = chunkSource(viewOut);
+    records.push({
       id: chunkRecordId(plan.variable, index),
       index,
-      input: { source, output: { ...source, token: chunkToken(category, written) }, unlockingBytecode },
-      entry: { in: index, out: index, viewIn: spent, viewOut: written },
-    };
-  });
+      role: 'kept',
+      viewIn,
+      viewOut,
+      input: { source, output, unlockingBytecode },
+      output,
+      entry: { in: index, out: index, viewIn, viewOut },
+    });
+  }
+  // Chunks only the written value holds are created: an output at the index and no input.
+  for (let offset = keptCount; offset < plan.written.chunks.length; offset += 1) {
+    const index = base + offset;
+    const viewOut = plan.written.chunks[offset]!;
+    const output = chunkSource(viewOut);
+    records.push({
+      id: chunkRecordId(plan.variable, index),
+      index,
+      role: 'created',
+      viewIn: new Uint8Array(0),
+      viewOut,
+      output,
+      entry: { in: INDEX_NONE, out: index, viewIn: new Uint8Array(0), viewOut },
+    });
+  }
+  // Chunks only the spent value holds are removed: an input at the index and no record written back. The chunk's
+  // satoshis are paid to the caller's lock, so the input recreates no record.
+  for (let offset = keptCount; offset < plan.spent.chunks.length; offset += 1) {
+    const index = base + offset;
+    const viewIn = plan.spent.chunks[offset]!;
+    records.push({
+      id: chunkRecordId(plan.variable, index),
+      index,
+      role: 'removed',
+      viewIn,
+      viewOut: new Uint8Array(0),
+      input: {
+        source: chunkSource(viewIn),
+        output: { lockingBytecode: removedLock!, valueSatoshis },
+        unlockingBytecode,
+      },
+      entry: { in: index, out: INDEX_NONE, viewIn, viewOut: new Uint8Array(0) },
+    });
+  }
   return { records, entries: records.map((record) => record.entry) };
 }

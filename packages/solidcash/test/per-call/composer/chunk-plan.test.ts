@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DYNAMIC_LEN_TYPE,
+  INDEX_NONE,
   chunkCountForLength,
   computeCollectionHash,
   decodePushdataValue,
@@ -41,6 +42,8 @@ const layout: StateLayout = artifacts.stateLayout!;
 const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'utf8'));
 const SPENT = utf8('hello');
 const WRITTEN = utf8('hello!');
+/** A plain lock a removed chunk's satoshis are paid to; the planner only stores it. */
+const REMOVED_LOCK = new Uint8Array([0x51, 0x52, 0x53]);
 
 /** The byte length a header commitment carries, decoded by the shipped field decoder. */
 function headerLength(header: Uint8Array): number {
@@ -140,16 +143,65 @@ describe('the chunk plan', () => {
       .toThrowError(/the artifact publishes no state layout/);
   });
 
-  it('refuses a write that changes the run\'s width', () => {
-    // 120 bytes fill one chunk and 121 need two, so the write would create a chunk the plan cannot lay out yet.
+  it('plans a write that keeps its width even when every piece differs', () => {
+    expect(planChunkRun({ layout, variable: 'name', spent: SPENT, written: WRITTEN }).written.chunks).toHaveLength(1);
+  });
+
+  it('lays a growing run out: the chunks both sides hold kept, the rest created with no input', () => {
+    // 120 bytes fill one chunk and 121 need two, so the write creates the second chunk.
     const oneChunk = new Uint8Array(120).fill(0x61);
     const twoChunks = new Uint8Array(121).fill(0x61);
-    expect(() => planChunkRun({ layout, variable: 'name', spent: oneChunk, written: twoChunks }))
-      .toThrowError(/changes the run's width, from 1 chunk\(s\) to 2/);
-    expect(() => planChunkRun({ layout, variable: 'name', spent: twoChunks, written: oneChunk }))
-      .toThrowError(/from 2 chunk\(s\) to 1/);
-    // A value that keeps its width is planned even when every piece differs.
-    expect(planChunkRun({ layout, variable: 'name', spent: SPENT, written: WRITTEN }).written.chunks).toHaveLength(1);
+    const plan = planChunkRun({ layout, variable: 'name', spent: oneChunk, written: twoChunks });
+    const run = layOutChunkRun({ plan, category: CATEGORY, base: 5, writer: 0, valueSatoshis: 1_000n });
+
+    expect(run.records.map((record) => record.role)).toStrictEqual(['kept', 'created']);
+    const [kept, created] = run.records;
+    expect(kept!.index).toBe(5);
+    expect(kept!.input?.source.token).toStrictEqual({
+      category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: plan.spent.chunks[0] },
+    });
+    expect(created!.index).toBe(6);
+    expect(created!.input).toBeUndefined();
+    expect(created!.output?.token).toStrictEqual({
+      category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: plan.written.chunks[1] },
+    });
+    expect(run.entries).toStrictEqual([
+      { in: 5, out: 5, viewIn: plan.spent.chunks[0], viewOut: plan.written.chunks[0] },
+      { in: INDEX_NONE, out: 6, viewIn: new Uint8Array(0), viewOut: plan.written.chunks[1] },
+    ]);
+  });
+
+  it('lays a shrinking run out: the chunks both sides hold kept, the rest removed with no output', () => {
+    const oneChunk = new Uint8Array(120).fill(0x61);
+    const twoChunks = new Uint8Array(121).fill(0x61);
+    const plan = planChunkRun({ layout, variable: 'name', spent: twoChunks, written: oneChunk });
+    const run = layOutChunkRun({
+      plan, category: CATEGORY, base: 5, writer: 0, valueSatoshis: 1_000n, removedLock: REMOVED_LOCK,
+    });
+
+    expect(run.records.map((record) => record.role)).toStrictEqual(['kept', 'removed']);
+    const removed = run.records[1]!;
+    expect(removed.index).toBe(6);
+    expect(removed.output).toBeUndefined();
+    expect(removed.input?.source.token).toStrictEqual({
+      category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: plan.spent.chunks[1] },
+    });
+    // The removed chunk's input carries the write authorization but no record is written at its index: its
+    // satoshis are paid to the caller's plain lock.
+    expect(removed.input?.unlockingBytecode).toStrictEqual(new Uint8Array([0x00, 0x51]));
+    expect(removed.input?.output).toStrictEqual({ lockingBytecode: REMOVED_LOCK, valueSatoshis: 1_000n });
+    expect(run.entries).toStrictEqual([
+      { in: 5, out: 5, viewIn: plan.spent.chunks[0], viewOut: plan.written.chunks[0] },
+      { in: 6, out: INDEX_NONE, viewIn: plan.spent.chunks[1], viewOut: new Uint8Array(0) },
+    ]);
+  });
+
+  it('refuses a shrinking write that names no lock for the removed chunks\' satoshis', () => {
+    const oneChunk = new Uint8Array(120).fill(0x61);
+    const twoChunks = new Uint8Array(121).fill(0x61);
+    const plan = planChunkRun({ layout, variable: 'name', spent: twoChunks, written: oneChunk });
+    expect(() => layOutChunkRun({ plan, category: CATEGORY, base: 5, writer: 0, valueSatoshis: 1_000n }))
+      .toThrowError(/the write removes 1 chunk\(s\), so it needs the lock their satoshis are paid to/);
   });
 
   it('refuses a band that is not an index the layout can give', () => {

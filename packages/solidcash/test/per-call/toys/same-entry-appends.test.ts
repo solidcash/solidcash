@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
+  INDEX_NONE,
   buildChunkCommitment,
   buildPushdataCommitment,
   encodeIntegerValue,
   packFixedWidthElement,
+  splitValueIntoChunks,
+  type RecordEntry,
   type StateLayout,
 } from '@solidcash/utils';
 import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
@@ -15,8 +18,8 @@ import {
   token, userInput, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layOutChunkRun, participant, planChunkRun,
-  type CompositionDraftPlan, type DraftMaster,
+  assertCompositionSettlement, createComposedDerivationHost, deriveDepthFirst, layOutChunkRun, layoutTransaction,
+  participant, planChunkRun, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -27,15 +30,14 @@ import {
  * so the composition carries three call records and the callee runs on one master per call.
  *
  * The log's `items` is a chunk-packed array: its bytes live in a run of chunk UTXOs locked by the value's own
- * collection covenant, and the emitted body reassembles that run from the transaction's co-spent chunk inputs.
- * One transaction has one chunk input for the run, so the run carries the value the transaction spends; a frame
- * that appends after another reads the spent value rather than the value the earlier frame wrote, so the run is
- * not carried across frames and the derivation stalls where the second frame closes its segment. The file pins
- * this limit: the three call sites publish, and the appends cannot be laid out (the log's run has no chunk to
- * spend) or carried (a second frame's write is refused).
- *
- * The limit is the run's shape, not the emit, so the derivation probe compiles a log without the event and states
- * the appends against it. The three-call shape and the dynamic array are the toy's.
+ * collection covenant, and the emitted body reads that run from the transaction's co-spent chunk inputs and closes
+ * each frame's segment against the transaction's chunk outputs. A write that changes the run's width creates or
+ * removes chunks, and the composer lays those records out: a chunk only the later stage holds is created as a
+ * trailing output, and one only the earlier stage holds is spent as a funder input. What the run still does not
+ * carry is a value from one frame to the next: the transaction's chunk output at the run's index holds the final
+ * element stream, and a frame's close compares its own computed value against it, so only a frame whose value is
+ * the final one closes. The file pins that limit, and the derivation probe compiles a log without the event and
+ * states the appends against it. The three-call shape and the dynamic array are the toy's.
  */
 
 const HUB_LABEL = 'same entry appends hub';
@@ -45,7 +47,6 @@ const HUB_CATEGORY = seededCategory(HUB_LABEL);
 const LOG_CATEGORY = seededCategory(LOG_LABEL);
 const VALIDATOR_ID = 'validator';
 const HEADER_ID = 'header';
-const CHUNK_ID = 'chunk';
 const USER_ID = 'user';
 
 /** The three unrolled calls the toy's `Hub.go` makes. */
@@ -121,13 +122,18 @@ function chunkOf(index: number, bytes: Uint8Array): Uint8Array {
 /**
  * Compiles the run source, deploys both contracts, and plans `appends` against an initial element stream.
  *
- * The plan places the caller, the validator, one callee master per append, the log's header and chunk records, and
- * the user, in that order: `appends.length` masters, then the two state records, then the funder inputs.
+ * The log's element stream is read at every frame boundary, and each frame declares the run's whole view for its
+ * own append: the header's length and one entry per chunk the two stages hold. The run's records follow the band the
+ * emitted body reads: chunks both the initial and the final stage hold are kept as the contract's state UTXOs,
+ * chunks only the final stage holds are created as trailing outputs, and chunks only the initial stage holds are
+ * spent as funder inputs. The plan places the caller, the validator, one callee master per append, then the log's
+ * records, then the funder inputs.
  */
 function build(initial: readonly bigint[], appends: readonly bigint[]): {
   readonly plan: CompositionDraftPlan;
   readonly artifacts: ReturnType<typeof compileAndDeploy>['artifacts'];
   readonly contracts: ReturnType<typeof compileAndDeploy>['contracts'];
+  readonly chunkIds: readonly string[];
 } {
   const { artifacts, contracts } = compileAndDeploy(runSource(appends), { Hub: HUB_LABEL, Log: LOG_LABEL });
   const hub = contracts.Hub!;
@@ -137,13 +143,14 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
 
   const frames = appends.length;
   const headerIndex = frames + 2;
-  const chunkIndex = frames + 3;
-  const userIndex = chunkIndex + 1;
+  const base = headerIndex + layout.dataNftCount;
 
-  const values = [0, ...appends.map((_unused, index) => index + 1)]
+  // The element stream at each frame boundary, and the chunk commitments each stage holds.
+  const stages = [0, ...appends.map((_unused, index) => index + 1)]
     .map((count) => itemsBytes([...initial, ...appends.slice(0, count)]));
-  const headers = values.map((bytes) => headerOf(layout, bytes));
-  const chunks = values.map((bytes) => chunkOf(0, bytes));
+  const headers = stages.map((bytes) => headerOf(layout, bytes));
+  const chunksAt = (stage: number): readonly Uint8Array[] =>
+    splitValueIntoChunks(stages[stage]!).map((piece, index) => chunkOf(index, piece));
 
   const selector = selectorOf(artifacts, 'Log', 'append');
   const pushFor = (index: number): readonly Uint8Array[] => [selector, encodeIntegerValue(appends[index]!)];
@@ -167,39 +174,62 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
     segments: Array.from({ length: frames + 1 }, () => []),
   });
 
-  const logMaster = (index: number): DraftMaster => master({
-    master: `log-${index + 1}`,
-    contract: 'Log',
-    entry: 'append',
-    program: log.program,
-    frame: { kind: FrameKind.CALL, sender: hub.address, self: log.address, value: 0n },
-    facts: {
-      contract: 'Log', functionName: 'append', kind: FrameKind.CALL, callerIsUser: false,
-      originEqualsCaller: false, makesExternalCall: false, mastersOfContract: frames,
-    },
-    enteredBy: 'hub-1',
-    origin: USER_ID,
-    argumentPushes: pushFor(index),
-    // The run's whole view for this frame: what the append before it left, and what this append computes.
-    segments: [[
-      { in: headerIndex, out: headerIndex, viewIn: headers[index]!, viewOut: headers[index + 1]! },
-      { in: chunkIndex, out: chunkIndex, viewIn: chunks[index]!, viewOut: chunks[index + 1]! },
-    ]],
-  });
+  const logMaster = (frame: number): DraftMaster => {
+    const before = chunksAt(frame);
+    const after = chunksAt(frame + 1);
+    // The run's whole view for this frame: what the append before it left, and what this append computes. A chunk
+    // only the later stage holds is created, and one only the earlier stage holds is removed.
+    const entries: RecordEntry[] = [];
+    for (let offset = 0; offset < Math.max(before.length, after.length); offset += 1) {
+      const index = base + offset;
+      if (offset < before.length && offset < after.length) {
+        entries.push({ in: index, out: index, viewIn: before[offset]!, viewOut: after[offset]! });
+      } else if (offset < after.length) {
+        entries.push({ in: INDEX_NONE, out: index, viewIn: EMPTY, viewOut: after[offset]! });
+      } else {
+        entries.push({ in: index, out: INDEX_NONE, viewIn: before[offset]!, viewOut: EMPTY });
+      }
+    }
+    return master({
+      master: `log-${frame + 1}`,
+      contract: 'Log',
+      entry: 'append',
+      program: log.program,
+      frame: { kind: FrameKind.CALL, sender: hub.address, self: log.address, value: 0n },
+      facts: {
+        contract: 'Log', functionName: 'append', kind: FrameKind.CALL, callerIsUser: false,
+        originEqualsCaller: false, makesExternalCall: false, mastersOfContract: frames,
+      },
+      enteredBy: 'hub-1',
+      origin: USER_ID,
+      argumentPushes: pushFor(frame),
+      segments: [[
+        { in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame + 1]! },
+        ...entries,
+      ]],
+    });
+  };
 
-  // The run's input and output: one chunk, spent at the initial value and written at the final one, authorized by
-  // the last appending master. `layOutChunkRun` builds the collection covenant lock and both sides.
   const run = layOutChunkRun({
-    plan: {
-      variable: 'items', type: 'int256[]',
-      spent: { header: headers[0]!, chunks: [chunks[0]!] },
-      written: { header: headers[frames]!, chunks: [chunks[frames]!] },
-    },
+    plan: planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[frames]! }),
     category: LOG_CATEGORY,
-    base: chunkIndex,
+    base,
     writer: frames + 1,
     valueSatoshis: 1_000n,
+    removedLock: USER_LOCK,
   });
+  const kept = run.records.filter((record) => record.role === 'kept');
+  const created = run.records.filter((record) => record.role === 'created');
+  const removed = run.records.filter((record) => record.role === 'removed');
+  const logState = [HEADER_ID, ...kept.map((record) => record.id)];
+  const funderInputBase = layoutTransaction([
+    { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+    {
+      contract: 'Log',
+      masters: Array.from({ length: frames }, (_unused, index) => `log-${index + 1}`),
+      state: logState,
+    },
+  ]).funderInputBase;
 
   const plan: CompositionDraftPlan = {
     blocks: [
@@ -207,10 +237,13 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
       {
         contract: 'Log',
         masters: Array.from({ length: frames }, (_unused, index) => `log-${index + 1}`),
-        state: [HEADER_ID, CHUNK_ID],
+        state: logState,
       },
     ],
-    userInputs: [{ id: USER_ID, index: userIndex }],
+    userInputs: [
+      ...removed.map((record) => ({ id: record.id, index: record.index })),
+      { id: USER_ID, index: funderInputBase + removed.length },
+    ],
     masters: [hubMaster, ...Array.from({ length: frames }, (_unused, index) => logMaster(index))],
     inputs: {
       'hub-1': { source: masterInput(hub) },
@@ -232,17 +265,22 @@ function build(initial: readonly bigint[], appends: readonly bigint[]): {
         },
         unlockingBytecode: encodeDataPush(new Uint8Array([1])),
       },
-      [CHUNK_ID]: run.records[0]!.input,
+      ...Object.fromEntries(run.records.filter((record) => record.input !== undefined)
+        .map((record) => [record.id, record.input!])),
       [USER_ID]: userInput(),
     },
+    ...(created.length === 0 ? {} : { trailingOutputs: created.map((record) => record.output!) }),
     validator: {
       id: VALIDATOR_ID,
       covers: ['Log'],
-      settles: [{ category: LOG_CATEGORY, stateInputs: [HEADER_ID, CHUNK_ID] }],
+      settles: [{
+        category: LOG_CATEGORY,
+        stateInputs: [HEADER_ID, ...kept.map((record) => record.id), ...removed.map((record) => record.id)],
+      }],
       redeemScript: validator.redeem,
     },
   };
-  return { plan, artifacts, contracts };
+  return { plan, artifacts, contracts, chunkIds: run.records.map((record) => record.id) };
 }
 
 /** The machine's verdict on one participant's own input of the assembled transaction. */
@@ -276,24 +314,49 @@ describe('one entry appending to one log three times', () => {
       .toStrictEqual(['items:true']);
   });
 
-  it('cannot lay the three appends out: the log starts with no chunk to spend', () => {
+  it('lays a run that grows from empty out: the chunk is created with no input to spend', () => {
     const { artifacts } = compileAndDeploy(toySource(APPENDS), { Hub: HUB_LABEL, Log: LOG_LABEL });
     const layout = artifacts.Log!.stateLayout!;
     const written = itemsBytes(APPENDS.map((append) => append.item));
 
-    // The log starts with no items, so its run holds no chunk; the appends would have to create the first one,
-    // which the chunk plan does not lay out.
-    const refusal = refusalOf(() => planChunkRun({ layout, variable: 'items', spent: EMPTY, written }));
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_CHUNK_UNPLANNABLE');
-    expect(refusal.message).toMatch(/the write changes the run's width, from 0 chunk\(s\) to 1/);
+    // The log starts with no items, so its run holds no chunk and the appends create the first one.
+    const plan = planChunkRun({ layout, variable: 'items', spent: EMPTY, written });
+    expect(plan.spent.chunks).toHaveLength(0);
+    expect(plan.written.chunks).toHaveLength(1);
 
-    // A run of the same width is planned: what the toy needs, and what the plan cannot express, is a growing run.
-    const sameWidth = planChunkRun({
-      layout, variable: 'items', spent: itemsBytes([7n, 8n]), written: itemsBytes([7n, 8n, 9n]),
+    const run = layOutChunkRun({ plan, category: LOG_CATEGORY, base: 7, writer: 0, valueSatoshis: 1_000n });
+    expect(run.records.map((record) => record.role)).toStrictEqual(['created']);
+    expect(run.records[0]!.input).toBeUndefined();
+    expect(run.records[0]!.output?.token).toStrictEqual({
+      category: LOG_CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: plan.written.chunks[0] },
     });
-    expect(sameWidth.spent.chunks).toHaveLength(1);
-    expect(sameWidth.written.chunks).toHaveLength(1);
+    expect(run.entries).toStrictEqual([
+      { in: INDEX_NONE, out: 7, viewIn: EMPTY, viewOut: plan.written.chunks[0] },
+    ]);
+  });
+
+  it('chains each frame\'s run declaration from what the frame before it wrote', () => {
+    const { artifacts } = compileAndDeploy(toySource(APPENDS), { Hub: HUB_LABEL, Log: LOG_LABEL });
+    const layout = artifacts.Log!.stateLayout!;
+    const stages = [0, 1, 2, 3].map((count) =>
+      itemsBytes(APPENDS.slice(0, count).map((append) => append.item)));
+    const headers = stages.map((bytes) => headerOf(layout, bytes));
+    const chunks = stages.map((bytes) => chunkOf(0, bytes));
+
+    // The first frame creates the run's chunk; each later frame reads what the frame before it wrote.
+    const frames = [0, 1, 2].map((frame) => [
+      { in: 1, out: 1, viewIn: headers[frame]!, viewOut: headers[frame + 1]! },
+      frame === 0
+        ? { in: INDEX_NONE, out: 3, viewIn: EMPTY, viewOut: chunks[1]! }
+        : { in: 3, out: 3, viewIn: chunks[frame]!, viewOut: chunks[frame + 1]! },
+    ]);
+    expect(() => assertCompositionSettlement(
+      frames.map((segments, index) => ({ master: `log-${index + 1}`, segments: [segments] })),
+      {
+        inputCommitments: new Map([[1, headers[0]!]]),
+        outputCommitments: new Map([[1, headers[3]!], [3, chunks[3]!]]),
+      },
+    )).not.toThrow();
   });
 
   it('settles one append: the frame reads the run it spends and writes it once', () => {
@@ -311,7 +374,7 @@ describe('one entry appending to one log three times', () => {
 
     // The run's output carries the appended element stream, and the log's header the value's byte length.
     const program = draft.programFor('hub-1');
-    expect(program.transaction.outputs[participant(draft.layout, CHUNK_ID).index]!.token?.nft?.commitment)
+    expect(program.transaction.outputs[participant(draft.layout, single.chunkIds[0]!).index]!.token?.nft?.commitment)
       .toStrictEqual(chunkOf(0, itemsBytes([7n, 10n])));
     expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
       .toStrictEqual(headerOf(single.artifacts.Log!.stateLayout!, itemsBytes([7n, 10n])));
@@ -332,6 +395,22 @@ describe('one entry appending to one log three times', () => {
     expect(refusal.message).toMatch(/master "log-1" of Log\.append\(\) filled no witness at site 0/);
   });
 
+  it('composes the three appends from empty, and stalls where each frame closes its own run', () => {
+    // The run is laid out now — its first chunk is created, so the composition assembles — but the transaction
+    // writes one chunk output, holding the final element stream, and a frame's close compares its own computed
+    // value against it. Only a frame whose value is the final one closes, so the first append already stalls.
+    const three = build([], APPENDS.map((append) => append.item));
+    const { host } = createComposedDerivationHost({
+      vm: compositionMachine(),
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
+    });
+    const refusal = refusalOf(() => deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host));
+    expect(refusal.name).toBe('PerCallComposerError');
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.message).toMatch(/master "log-1" of Log\.append\(\) filled no witness at site 0 \(close of segment 0\)/);
+  });
+
   it('refuses a run whose written chunk the frame did not compute', () => {
     // The control for the accept above: the same settled transaction with the chunk output rewritten to a value no
     // frame computed makes the callee's own input refused.
@@ -345,7 +424,7 @@ describe('one entry appending to one log three times', () => {
 
     const vm = compositionMachine();
     const program = draft.programFor('hub-1');
-    const chunkIndex = participant(draft.layout, CHUNK_ID).index;
+    const chunkIndex = participant(draft.layout, single.chunkIds[0]!).index;
     const outputs = program.transaction.outputs.map((output, index) => (index === chunkIndex
       ? { ...output, token: token(LOG_CATEGORY, 'mutable', chunkOf(0, itemsBytes([7n, 99n]))) }
       : output));

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import {
   FrameKind,
+  INDEX_NONE,
   encodeInt,
   validatorAddress,
   type RecordEntry,
@@ -80,14 +81,23 @@ const token = (
  * coordinate the emitted body reads. That is the control which shows the accept below is the compiler's own
  * arithmetic rather than a coordinate the plan picked.
  */
-function build(options: { readonly filler?: boolean } = {}): {
+function build(options: {
+  readonly filler?: boolean;
+  readonly source?: string;
+  readonly spent?: Uint8Array;
+  readonly written?: Uint8Array;
+} = {}): {
   plan: CompositionDraftPlan;
   layout: StateLayout;
+  source: string;
   chunkIds: readonly string[];
   base: number;
   stateIndex: number;
 } {
-  const artifact = compileString(SOURCE, { composition: 'per-call' });
+  const source = options.source ?? SOURCE;
+  const spentBytes = options.spent ?? SPENT;
+  const writtenBytes = options.written ?? WRITTEN;
+  const artifact = compileString(source, { composition: 'per-call' });
   const stateLayout = artifact.stateLayout!;
   const master = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
 
@@ -100,10 +110,14 @@ function build(options: { readonly filler?: boolean } = {}): {
   const stateIndex = participant(opened, 'name').index;
   const base = stateIndex + stateLayout.dataNftCount;
 
-  const run = planChunkRun({ layout: stateLayout, variable: 'name', spent: SPENT, written: WRITTEN });
+  const run = planChunkRun({ layout: stateLayout, variable: 'name', spent: spentBytes, written: writtenBytes });
   const chunks = layOutChunkRun({
     plan: run, category: CATEGORY, base, writer: participant(opened, MASTER_ID).index, valueSatoshis: CHUNK_VALUE,
+    removedLock: USER_LOCK,
   });
+  const kept = chunks.records.filter((record) => record.role === 'kept');
+  const created = chunks.records.filter((record) => record.role === 'created');
+  const removed = chunks.records.filter((record) => record.role === 'removed');
   const chunkIds = chunks.records.map((record) => record.id);
 
   const stateEntry: RecordEntry = {
@@ -130,13 +144,18 @@ function build(options: { readonly filler?: boolean } = {}): {
     redeemScript: master.script,
   };
 
-  const stateIds = [...(options.filler === true ? ['name', fillerId] : ['name']), ...chunkIds];
+  // Kept chunks are the run's participants, at the band the body reads; created chunks are trailing outputs and
+  // removed chunks are funder inputs, both at the indices past them.
+  const stateIds = [...(options.filler === true ? ['name', fillerId] : ['name']), ...kept.map((record) => record.id)];
+  const funderInputBase = layoutTransaction([{ contract: 'Named', masters: [MASTER_ID], state: stateIds }])
+    .funderInputBase;
+  const chunkInputs = chunks.records.filter((record) => record.input !== undefined);
   const plan: CompositionDraftPlan = {
     blocks: [{ contract: 'Named', masters: [MASTER_ID], state: stateIds }],
-    userInputs: [{
-      id: USER_ID,
-      index: layoutTransaction([{ contract: 'Named', masters: [MASTER_ID], state: stateIds }]).funderInputBase,
-    }],
+    userInputs: [
+      ...removed.map((record) => ({ id: record.id, index: record.index })),
+      { id: USER_ID, index: funderInputBase + removed.length },
+    ],
     masters: [masterEntry],
     inputs: {
       [MASTER_ID]: {
@@ -149,7 +168,7 @@ function build(options: { readonly filler?: boolean } = {}): {
         },
         unlockingBytecode: encodeDataPush(encodeInt(1n)),
       },
-      ...Object.fromEntries(chunks.records.map((record) => [record.id, record.input])),
+      ...Object.fromEntries(chunkInputs.map((record) => [record.id, record.input!])),
       ...(options.filler === true
         ? {
           [fillerId]: {
@@ -163,8 +182,9 @@ function build(options: { readonly filler?: boolean } = {}): {
         unlockingBytecode: callerUnlockingBytecode(),
       },
     },
+    ...(created.length === 0 ? {} : { trailingOutputs: created.map((record) => record.output!) }),
   };
-  return { plan, layout: stateLayout, chunkIds, base, stateIndex };
+  return { plan, layout: stateLayout, source, chunkIds, base, stateIndex };
 }
 
 const ROOT = { contract: 'Named', functionName: ENTRY, kind: FrameKind.ROOT, master: MASTER_ID };
@@ -177,7 +197,7 @@ const compose = (options: Parameters<typeof build>[0] = {}): {
   const built = build(options);
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(),
-    artifacts: [compileString(SOURCE, { composition: 'per-call' })],
+    artifacts: [compileString(built.source, { composition: 'per-call' })],
     plan: built.plan,
   });
   return { host, draft, built };
@@ -224,6 +244,61 @@ describe('a state whose value lives in chunks', () => {
     // The segment declares the header and the run, which is what the body closes against.
     expect(draft.blockOf(MASTER_ID).segments.flat().map((entry) => `${entry.in}/${entry.out}`))
       .toStrictEqual([`${built.stateIndex}/${built.stateIndex}`, `${built.base}/${built.base}`]);
+  });
+
+  it('accepts a run that grows, writing a created chunk at the index past the kept ones', () => {
+    // 120 bytes fill one chunk and 121 need two, so the write creates a second chunk: no input at its record, and
+    // an output where the emitted body computes it.
+    const spentBytes = new Uint8Array(120).fill(0x61);
+    // The entry appends a byte, so the written value is the spent one plus `!`, which crosses into a second chunk.
+    const writtenBytes = new Uint8Array([...spentBytes, 0x21]);
+    const { host, draft, built } = compose({ spent: spentBytes, written: writtenBytes });
+    expect(deriveDepthFirst(ROOT, host).completed.map((frame) => frame.master)).toStrictEqual([MASTER_ID]);
+    expect(verdictAt(draft)).toBe('accepted');
+
+    const run = planChunkRun({ layout: built.layout, variable: 'name', spent: spentBytes, written: writtenBytes });
+    const program = draft.programFor(MASTER_ID);
+    const keptIndex = participant(draft.layout, chunkRecordId('name', built.base)).index;
+    const createdIndex = keptIndex + 1;
+    expect(program.transaction.outputs[keptIndex]!.token?.nft?.commitment).toStrictEqual(run.written.chunks[0]);
+    expect(program.transaction.outputs[createdIndex]!.token).toStrictEqual({
+      category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: run.written.chunks[1] },
+    });
+    expect(draft.blockOf(MASTER_ID).segments.flat().map((entry) => `${entry.in}/${entry.out}`))
+      .toStrictEqual([`${built.stateIndex}/${built.stateIndex}`, `${built.base}/${built.base}`,
+        `${INDEX_NONE}/${createdIndex}`]);
+  });
+
+  it('accepts a run that shrinks, spending a chunk and writing no record back', () => {
+    // 121 bytes need two chunks and a five-byte write needs one, so the second chunk is removed: spent with the
+    // write's authorization and no record written at its index.
+    const shrinkSource = 'pragma solidcash ^0.13.0;'
+      + ' contract Named {'
+      + '   string public name;'
+      + '   function append() { this.name = "short"; }'
+      + ' }';
+    const spentBytes = new Uint8Array(121).fill(0x61);
+    const writtenBytes = utf8('short');
+    const { host, draft, built } = compose({ source: shrinkSource, spent: spentBytes, written: writtenBytes });
+    expect(deriveDepthFirst(ROOT, host).completed.map((frame) => frame.master)).toStrictEqual([MASTER_ID]);
+    expect(verdictAt(draft)).toBe('accepted');
+
+    const run = planChunkRun({ layout: built.layout, variable: 'name', spent: spentBytes, written: writtenBytes });
+    expect(run.spent.chunks).toHaveLength(2);
+    expect(run.written.chunks).toHaveLength(1);
+    const program = draft.programFor(MASTER_ID);
+    const keptIndex = participant(draft.layout, chunkRecordId('name', built.base)).index;
+    const removedIndex = keptIndex + 1;
+    expect(program.transaction.outputs[keptIndex]!.token?.nft?.commitment).toStrictEqual(run.written.chunks[0]);
+    expect(program.sourceOutputs[removedIndex]!.token?.nft?.commitment).toStrictEqual(run.spent.chunks[1]);
+    // The removed chunk's index writes no record: the output there is the funder's, paid to a plain lock.
+    expect(program.transaction.outputs[removedIndex]!.token).toBeUndefined();
+    expect(program.transaction.outputs[removedIndex]!.lockingBytecode).not.toStrictEqual(
+      program.sourceOutputs[removedIndex]!.lockingBytecode,
+    );
+    expect(draft.blockOf(MASTER_ID).segments.flat().map((entry) => `${entry.in}/${entry.out}`))
+      .toStrictEqual([`${built.stateIndex}/${built.stateIndex}`, `${built.base}/${built.base}`,
+        `${removedIndex}/${INDEX_NONE}`]);
   });
 
   it('refuses a run one participant further on than the coordinate the body reads', () => {

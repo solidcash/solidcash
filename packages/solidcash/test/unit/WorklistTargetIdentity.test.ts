@@ -46,6 +46,40 @@ function derive(
 }
 
 describe('worklist Solidity target identity projection', () => {
+  it('binds forwarded canonical address words to the registered owner identity', () => {
+    const forwarding = compileString(`pragma solidity ^0.8.0;
+      interface LeafApi { function read() external view returns (uint256); }
+      contract ForwardingRoot {
+        function check(address destination) public view returns (uint256) {
+          return LeafApi(destination).read();
+        }
+      }
+    `, KERNEL);
+    const plan = (
+      argument: string, locks = { physical, logical }, solidityImportCompat = true,
+    ): ReturnType<typeof deriveCompiledGraphPlan> => deriveCompiledGraphPlan({
+      root: { artifact: { ...forwarding, compiler: { ...forwarding.compiler, options: { solidityImportCompat } } },
+        lockingBytecode: `aa20${'11'.repeat(32)}87` },
+      function: 'check', args: [hexToBin(argument)], targets: {},
+      target: () => ({ participant: {
+        artifact: leaf, lockingBytecode: locks.physical, logicalLockingBytecode: locks.logical,
+        logicalIdentityOffset: identityOffset,
+      } }),
+    });
+    expect(plan(payload(logical)).invocations[1].targetLockingBytecode).toBe(logical);
+    expect(plan('00'.repeat(12) + payload(logical)).invocations[1]).toMatchObject({
+      targetLockingBytecode: logical, targetIdentityOffset: identityOffset,
+    });
+    expect(() => plan('01'.repeat(12) + payload(logical))).toThrow(/target proof disagrees/);
+    expect(() => plan('00'.repeat(12) + 'ff'.repeat(20))).toThrow(/target proof disagrees/);
+    expect(() => plan('00'.repeat(12) + payload(logical), { physical, logical }, false))
+      .toThrow(/target proof disagrees/);
+    const sharedPayload = '44'.repeat(20);
+    const ambiguous = { physical: `a914${sharedPayload}87`, logical: `76a914${sharedPayload}88ac` };
+    expect(() => plan('00'.repeat(12) + sharedPayload, ambiguous)).toThrow(/target proof disagrees/);
+    expect(plan(ambiguous.logical, ambiguous).invocations[1].targetLockingBytecode).toBe(ambiguous.logical);
+  });
+
   it.each([
     ['physical', physical, 0, ''], ['logical', logical, identityOffset, ''],
     ['physical word', physical, 0, '00'.repeat(12)], ['logical word', logical, identityOffset, '00'.repeat(12)],

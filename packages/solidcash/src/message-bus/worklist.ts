@@ -1,4 +1,4 @@
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   artifactExecutionIdentityFingerprint,
   scriptToBytecode,
@@ -383,16 +383,19 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
     const sourceUsesSolidityAddresses = source.artifact.compiler.options?.solidityImportCompat === true;
-    const suppliedTargets = encoded instanceof Uint8Array
-      ? [encodedHex!, ...(sourceUsesSolidityAddresses && encoded.length === 20
-        ? [binToHex(encodeLockingBytecodeP2pkh(encoded))] : [])]
-      : [];
-    const provedTarget = authenticatedTargets.find((candidate) => {
-      if (suppliedTargets.includes(candidate)) return true;
-      if (!sourceUsesSolidityAddresses || !(encoded instanceof Uint8Array) || encoded.length !== 20) return false;
+    const suppliedIdentity = sourceUsesSolidityAddresses && encoded instanceof Uint8Array
+      && (encoded.length === 20 || encoded.length === 32)
+      ? solidityAddressArgumentIdentity(encoded) : undefined;
+    const suppliedTargets = encodedHex === undefined ? [] : [encodedHex];
+    const exactTarget = authenticatedTargets.find((candidate) => candidate === encodedHex);
+    const projectedTargets = [...new Set(authenticatedTargets.filter((candidate) => {
+      if (suppliedIdentity === undefined) return false;
       const narrowed = lockingBytecodeToSolidityAddressPayload(hexToBin(candidate));
-      return narrowed !== undefined && binToHex(narrowed) === encodedHex;
-    });
+      return narrowed !== undefined && binToHex(narrowed) === suppliedIdentity;
+    }))];
+    // ABI address words are identities, not scripts. Resolve a canonical word only against this owner's
+    // authenticated locks; never pick arbitrarily when physical and logical locks have the same projection.
+    const provedTarget = exactTarget ?? (projectedTargets.length === 1 ? projectedTargets[0] : undefined);
     if (provedTarget === undefined) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {

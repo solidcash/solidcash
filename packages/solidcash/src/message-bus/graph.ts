@@ -1,4 +1,5 @@
 import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import type {
   AbiFunction, Artifact, CallsiteCallerIdentityAbi, ExternalCallAbi, ExternalResultEncoding,
   InvocationAnalysisFunction,
@@ -1190,18 +1191,8 @@ const MAX_GRAPH_INVOCATIONS = 24;
 const MAX_GRAPH_DEPTH = 7;
 
 /**
- * Largest message-bus batch batch blob the atomic bus admits, in bytes (X106).
- *
- * NOT A SECOND COPY ANY MORE. This is the shared `MAX_MESSAGE_BUS_BLOB_BYTES` from `@solidcash/utils` under
- * the name the SDK's messageBus callers already use, so the messageEnvelope's per-participant frame check and the
- * compiler's route check (republished as `artifact.messageBus.maximumBlobBytes`) cannot drift apart. Both were
- * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
- * only place they can share one literal.
- *
- * A re-export rather than a rename, because the value is load-bearing: the blob is one BCH stack item, and the
- * shared value is the consensus 520-byte maximum accepted by the compiler-generated PUSHDATA2 route.
- *
- * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
+ * Historical envelope ceiling retained for legacy/unrolled participants. Kernel participants instead
+ * use the active BCH-2026 stack-item ceiling, matching the compiler's executable batch guard.
  */
 export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_MESSAGE_BUS_BLOB_BYTES;
 
@@ -1215,10 +1206,12 @@ export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_MESSAGE_BUS_BLOB_BYTES;
  */
 export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
   const published = artifact.messageBus?.maximumBlobBytes;
-  if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
+  const maximum = artifact.messageBus?.convention === 'kernel-row-loop'
+    ? ConsensusBch2026.maximumStackItemLength : GRAPH_MAX_BATCH_BLOB_BYTES;
+  if (published === undefined || published <= maximum) return;
   throw new Error(
     `messageBus: participant ${participant} publishes an message-bus batch blob envelope of ${published} bytes, wider than the `
-    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the atomic bus admits`,
+    + `${maximum} the atomic bus admits`,
   );
 }
 /** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */

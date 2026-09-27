@@ -38,6 +38,7 @@ import {
 } from './monotone-lattice.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 import { recordActiveConstraintPass } from '../stateful/value-chunk-persist.js';
+import { graphSemanticDerivationCeiling } from './semantic-derivation-budget.js';
 
 /**
  * Record one non-final semantic claim fingerprint on the monotone lattice.
@@ -149,9 +150,7 @@ export async function runComposeSemanticClaimLoop(
     + (hasRuntimeLoopEvents ? 1 : 0)
     + valueSlots.length + tokenSlots.length + sidecarSlots.length + (hasComputedValueChunks ? 1 : 0);
   const maximumPasses = mutableClaimCount + 2;
-  const publishedPassCeiling = plan.participants
-    .map((entry) => entry.artifact.messageBus?.resourceBudgets?.maximumSemanticDerivationPasses)
-    .find((ceiling): ceiling is number => typeof ceiling === 'number');
+  const publishedPassCeiling = graphSemanticDerivationCeiling(plan.participants.map((entry) => entry.artifact));
   if (publishedPassCeiling !== undefined && maximumPasses > publishedPassCeiling) {
     throw new Error(
       `messageBus: semantic derivation needs ${maximumPasses} passes but resourceBudgets `

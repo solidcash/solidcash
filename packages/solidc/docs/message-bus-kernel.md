@@ -185,11 +185,11 @@ Execution order:
    the contract is a graph participant).
 2. Prefetch authenticated state for the published footprint (the journal wrapper already does this for
    parameter-keyed mapping helpers and scalar internals).
-3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact. The default kernel ceiling is
-   39: a 520-byte batch has a seven-byte header and each row consumes at least thirteen bytes, including
-   its call-options byte. Effect frames and resource budgets reserve the same row ceiling; actual arguments,
-   modes, and values can reach the blob-size limit sooner. Explicit smaller compiler ceilings remain valid.
-   Legacy unrolled routes retain their eight-row ceiling (two for compact resource batches).
+3. `require(rowCount <= maximumRows)` with `maximumRows` from the artifact. Kernel batches use the BCH-2026
+   10,000-byte stack-item ceiling, not the old 520-byte publication cap. The one-byte row count limits a batch
+   to 255 rows; effect frames and resource budgets reserve that same row ceiling. Actual arguments, modes,
+   values, or total input size can reach their limits sooner. Explicit smaller compiler row ceilings remain
+   valid. Legacy unrolled routes retain the 520-byte envelope and eight-row ceiling (two for compact batches).
 4. For each `row` in `[0, rowCount)`:
    - bind logical `msg.sender` / `msg.sig` / `msg.data` / `msg.value` from the row;
    - dispatch `rowSelector` to a handler `OP_INVOKE` (unknown selector → `revert("unknown batch selector")`);
@@ -200,6 +200,8 @@ Execution order:
 
 SDK participant auto-derivation uses the compiler-published `maximumSemanticDerivationPasses` budget,
 as graph settlement does. The legacy default of twenty probes must not truncate larger kernel effect frames.
+Graph settlement sums each participant's mutable-claim allowance, with one shared assembly/confirmation pair;
+the first participant's budget alone cannot bound the complete graph.
 Unchanged-program and cycle checks still stop probes early; final VM validation is unchanged.
 
 Generated locals inside the loop are **reused across iterations**. Codegen must not bake `rowIndex`

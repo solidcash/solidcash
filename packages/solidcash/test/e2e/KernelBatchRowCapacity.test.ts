@@ -8,7 +8,7 @@ import { setupStatefulUtxos } from '../test-util.js';
 import { createMessageBusCapstoneTestProvider } from '../journal-message-bus/e2e/message-bus-semantic-profile.js';
 
 describe('kernel batch row capacity', () => {
-  it.each([10, 39])('executes %s effect-bearing rows with distinct event slots', async (count) => {
+  it.each([10, 255])('executes %s effect-bearing rows with distinct event slots', async (count) => {
     const artifact = compileString(`contract Tally() {
       int public count;
       event Tick(int count);
@@ -23,6 +23,8 @@ describe('kernel batch row capacity', () => {
     const inner = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {}, { saltContract: true });
     const tally = StatefulContract.withCategory(inner, setup.categoryId);
+    expect(() => tally.batch(Array.from({ length: 256 }, () => ({ function: 'tick', args: [] }))))
+      .toThrow(/row count must be between 1 and 255/);
     const call = tally.batch(Array.from({ length: count }, () => ({ function: 'tick', args: [] })));
     const builder = await call.build();
     const transaction = builder.buildLibauthTransaction();

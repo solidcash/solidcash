@@ -11,9 +11,10 @@ const OPTIONS = { forceStateful: true, messageBus: true, maximumInputBytes: 1_00
 describe('kernel batch row capacity', () => {
   it('derives the kernel row ceiling from the existing batch envelope, with matching effect frames', () => {
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: true });
-    // Seven header bytes; each no-argument row still has twelve framing bytes and one call-options byte.
-    const maximum = Math.floor((artifact.messageBus!.maximumBlobBytes - 7) / 13);
-    expect(maximum).toBe(39);
+    // Seven header bytes, twelve bytes per SCB1 row, and a one-byte row count.
+    const maximum = Math.min(255, Math.floor((artifact.messageBus!.maximumBlobBytes - 7) / 12));
+    expect(maximum).toBe(255);
+    expect(artifact.messageBus!.maximumBlobBytes).toBe(10_000);
     expect(artifact.messageBus!.maximumRows).toBe(maximum);
     expect(artifact.messageBus!.resourceBudgets?.maximumRows).toBe(maximum);
     expect(artifact.messageBus!.route.blockLayout!.slots.filter((slot) => slot.kind === 'event')).toHaveLength(maximum);
@@ -22,6 +23,7 @@ describe('kernel batch row capacity', () => {
   it('preserves the explicit legacy unroll ceiling', () => {
     const artifact = compileString(SOURCE, { ...OPTIONS, messageBusKernel: false });
     expect(artifact.messageBus!.maximumRows).toBe(8);
+    expect(artifact.messageBus!.maximumBlobBytes).toBe(520);
     expect(artifact.messageBus!.convention).toBe('legacy-unroll');
   });
 });

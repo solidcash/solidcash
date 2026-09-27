@@ -238,8 +238,9 @@ import { recoverCompileByMonotoneRefusal } from './admissionRetry.js';
 
 // A participant's row results are concatenated into one VM byte string before that complete return vector is
 // hash-committed. This is therefore a cumulative participant-route bound, not a per-row allowance. Source the
-// ceiling from the active BCH-2026 consensus profile rather than the unrelated 520-byte batch-publication cap.
+// ceiling from the active BCH-2026 consensus profile.
 const MAX_KERNEL_RESULT_BYTES = ConsensusBch2026.maximumStackItemLength;
+const MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES = ConsensusBch2026.maximumStackItemLength;
 
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
@@ -3203,11 +3204,10 @@ export function classifyMessageBusRejection(reason: string): MessageBusStaticRej
   return 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT';
 }
 const MAX_MESSAGE_BUS_ROWS = 8;
-// SCB1/SCB2 carry a one-byte row count. Within the unchanged 520-byte envelope, even an empty-argument
-// row needs 12 framing bytes plus its call-options byte, after the seven-byte batch header. Runtime kernel
-// dispatch has no unroll-size reason to impose the smaller legacy ceiling. Use the envelope-derived bound
-// consistently for the executable guard, per-row effect frames, and published resource budgets.
-const MAX_KERNEL_MESSAGE_BUS_ROWS = Math.min(0xff, Math.floor((MAX_MESSAGE_BUS_BLOB_BYTES - 7) / 13));
+// SCB1/SCB2 carry a one-byte row count. A batch has a seven-byte header and each SCB1 row needs at least
+// twelve framing bytes (SCB2 adds a call-options byte). With BCH-2026 stack items, the count byte is the
+// binding row ceiling. Runtime kernel dispatch has no unroll-size reason to retain the legacy eight-row cap.
+const MAX_KERNEL_MESSAGE_BUS_ROWS = Math.min(0xff, Math.floor((MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES - 7) / 12));
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 const MB_ROW_PLACEHOLDER = '__MB_ROW__';
 const MB_DISPATCH_SENTINEL = '__MB_DISPATCH__';
@@ -8255,6 +8255,8 @@ function synthesizeMessageBusRoute(
   }
 
   const selector = sourceFunctionSelectorHex;
+  const routeMaximumBlobBytes = compilerOptions.messageBusKernel === true
+    ? MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES : MAX_MESSAGE_BUS_BLOB_BYTES;
   const defaultRouteMaximumRows = compilerOptions.messageBusKernel === true
     ? MAX_KERNEL_MESSAGE_BUS_ROWS
     : resourceShapedHandler
@@ -11601,7 +11603,7 @@ function synthesizeMessageBusRoute(
         ${kernelV2SignatureFence ? 'bigint __message_bus_signature_count = 0;' : ''}
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
-        require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
+        require(batchBlob.length <= ${routeMaximumBlobBytes});
         // This carrier can approach the transaction-size ceiling. A control-flow scope makes its lifetime
         // explicit so generic row-frame updates never rotate dead unlocking bytecode through the main stack.
         // Merge tails share the survivor unlocker but are not the batch-push carrier; skip the self-check there.
@@ -15056,6 +15058,8 @@ function compileResolvedAst(
     }
     const messageBusRouteFn = ast.contract.functions.find((fn) => fn.messageBusRoute);
     const messageBusMaximumRows = messageBusRouteFn?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
+    const messageBusMaximumBlobBytes = messageBusRouteFn?.messageBusDispatch === 'kernel-row-loop'
+      ? MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES : MAX_MESSAGE_BUS_BLOB_BYTES;
     const extractedVerifierProgram = detachedVerifierProgram;
     const fixedChunkableWriteSelectors = [
       ...ast.contract.functions,
@@ -15075,11 +15079,11 @@ function compileResolvedAst(
       ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
-      maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+      maximumBlobBytes: messageBusMaximumBlobBytes,
       // published resource budgets: multi-axis worst-case budgets for compose authority (kernel fails closed if absent).
       resourceBudgets: buildMessageBusResourceBudgets({
         maximumRows: messageBusMaximumRows,
-        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumBlobBytes: messageBusMaximumBlobBytes,
         maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
         trailingCapacity: publishedMessageBusRouteAbi?.blockLayout?.trailingCapacity,
       }),
@@ -15087,7 +15091,7 @@ function compileResolvedAst(
       deployability: buildDeployabilityCertificate({
         measuredBytecodeBytes: asmToBytecode(artifact.bytecode).length,
         maximumRows: messageBusMaximumRows,
-        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumBlobBytes: messageBusMaximumBlobBytes,
         maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
       }),
       ...(fixedChunkableWriteSelectors.length > 0 && {
@@ -15527,19 +15531,19 @@ function compileResolvedAst(
         routeInBytecode: false,
         convention: 'kernel-row-loop',
         available: false,
-        maximumRows: MAX_MESSAGE_BUS_ROWS,
-        maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+        maximumRows: MAX_KERNEL_MESSAGE_BUS_ROWS,
+        maximumBlobBytes: MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES,
         // published resource budgets: stamp budgets even on the non-executable stub so kernel consumers fail closed consistently.
         resourceBudgets: buildMessageBusResourceBudgets({
-          maximumRows: MAX_MESSAGE_BUS_ROWS,
-          maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+          maximumRows: MAX_KERNEL_MESSAGE_BUS_ROWS,
+          maximumBlobBytes: MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES,
           maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
         }),
         // deployability certificate: still stamp a concrete certificate on the non-executable stub path.
         deployability: buildDeployabilityCertificate({
           measuredBytecodeBytes: asmToBytecode(artifact.bytecode).length,
-          maximumRows: MAX_MESSAGE_BUS_ROWS,
-          maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
+          maximumRows: MAX_KERNEL_MESSAGE_BUS_ROWS,
+          maximumBlobBytes: MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES,
           maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
         }),
         atomicMessageBus: {

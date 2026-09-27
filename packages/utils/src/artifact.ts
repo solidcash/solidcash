@@ -1459,18 +1459,15 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Largest message-bus batch message-bus blob any generated covenant admits, in bytes (X106).
+ * Legacy message-bus batch blob limit and default for callers without an explicit published ceiling.
  *
- * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
- * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
- * messageBus graph generator enforces the same bound while framing each participant's message-envelope rows. Both
- * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
- * compiler and the SDK already depend on, so it is the only place the two can share a literal.
+ * The compiler compiles each route's selected bound (`require(batchBlob.length <= N)`) and republishes it as
+ * `Artifact.messageBus.maximumBlobBytes`; the SDK graph generator enforces that same bound while framing
+ * participant rows. Keep this shared legacy default for old/unrolled artifacts.
  *
- * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
- * blob envelope, NOT the trailing region, is the binding constraint. The bound is the BCH maximum stack-item
- * size: the blob is one unlocking-bytecode push and can use the canonical PUSHDATA2 form through 520 bytes.
- * Silent drift between the copies would therefore move a real consensus-facing limit.
+ * This is the historical stack-item limit, not the BCH-2026 limit. Kernel routes publish and enforce the
+ * active consensus profile's larger stack-item ceiling explicitly, including in their resource budgets and
+ * deployability certificates. SDK encoding always follows the artifact's published maximumBlobBytes.
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 

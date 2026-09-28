@@ -55,7 +55,12 @@ const selectorOf = (name: string): Uint8Array =>
 
 /** Spends the master's own input with one entry's selector, and reports whether the machine accepted it. */
 function spend(entry: string): boolean {
-  const lock = encodeLockingBytecodeP2sh32(hash256(program));
+  return spendSelector(program, selectorOf(entry));
+}
+
+/** Spends a master program's own input with `selector` under the shared standalone frame, and reports the verdict. */
+function spendSelector(programBytes: Uint8Array, selector: Uint8Array): boolean {
+  const lock = encodeLockingBytecodeP2sh32(hash256(programBytes));
   const block: WitnessBlock = {
     kind: 0,
     callerRef: 0,
@@ -88,8 +93,8 @@ function spend(entry: string): boolean {
       { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(2), sequenceNumber: 0xffffffff,
         unlockingBytecode: new Uint8Array([
           ...encodeDataPush(encodeWitnessBlock(block)),
-          ...encodeDataPush(selectorOf(entry)),
-          ...encodeDataPush(program),
+          ...encodeDataPush(selector),
+          ...encodeDataPush(programBytes),
         ]) },
     ],
     outputs: [{ lockingBytecode: OWNER_LOCK, valueSatoshis: 100_000n }, masterOutput],
@@ -127,5 +132,53 @@ describe('a body the master cannot serve', () => {
     const artifacts = compileStringMulti(ALL_REFUSED_SOURCE, { composition: 'per-call' });
     expect(artifacts.Only?.composition?.convention).toBe('per-call');
     expect(refusalOf(ALL_REFUSED_SOURCE, 'Only').message).toContain('returns a function pointer');
+  });
+});
+
+/**
+ * A refused entry that makes external calls must not size the head's call count.
+ *
+ * A master whose only call-making entries are refused can still stand alone, because a refused body is a stub that
+ * makes no call. The head's count is therefore the served bodies' bound, which keeps the standalone frame a user
+ * enters admissible. Taking the count from every entry the call-site pass measured instead holds a call no served
+ * body makes, and the head refuses the frame before any body runs.
+ */
+const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IOracle { function get(int id) view returns (int); }'
+  + ' contract Feed {'
+  + '   address public oracle;'
+  + '   mapping(int => int) public log;'
+  + '   constructor(address o) { this.oracle = o; }'
+  + '   function readBack(int id) {'
+  + '     int x = IOracle(this.oracle).get(id);'
+  + '     this.log[id] = x + 1;'
+  + '     require(true);'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }';
+
+const refusedCallArtifact = compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }).Feed!;
+const refusedCallProgram = fillPlaceholders(
+  scriptToBytecode(asmToScript(refusedCallArtifact.bytecode)),
+  refusedCallArtifact.composition!.placeholders,
+  { category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH },
+);
+const refusedCallSelector = (name: string): Uint8Array =>
+  new Uint8Array(Buffer.from(refusedCallArtifact.abi.find((entry) => entry.name === name)!.selector!, 'hex'));
+
+describe('a refused call-making entry', () => {
+  it('is refused by name and publishes no call site', () => {
+    const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }) as
+      Record<string, { composition?: unknown }>);
+    expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.readBack()']);
+    const stopSites = refusedCallArtifact.composition?.stopSites as { entries: { calls: unknown[] }[] };
+    expect(stopSites.entries.flatMap((entry) => entry.calls)).toStrictEqual([]);
+  });
+
+  it('admits the standalone frame the served entry is entered by', () => {
+    // The served entry is one no call is left in the head for, so the user's root frame is admitted; the refused
+    // entry's own stub still fails when the dispatcher reaches it.
+    expect(spendSelector(refusedCallProgram, refusedCallSelector('ping'))).toBe(true);
+    expect(spendSelector(refusedCallProgram, refusedCallSelector('readBack'))).toBe(false);
   });
 });

@@ -527,3 +527,53 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
     expect(commitments).toContain(buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0));
   });
 });
+
+/**
+ * A constructor frame beside a call-making entry the compiler refuses.
+ *
+ * The master head fixes one call count for every body behind its dispatcher, and a refused body is emitted as a
+ * stub that makes no call. The head's count is therefore the served bodies' bound, which keeps the standalone root
+ * frame the deployment runs admissible. A refused entry that makes a call must not leave its call in that count:
+ * otherwise the head holds a call the served bodies never make, refuses the deployment's own root frame, and the
+ * constructor probe stops on that refusal instead of a declaration close.
+ */
+const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IOracle { function get(int id) view returns (int); }'
+  + ' contract Feed {'
+  + '   address public oracle;'
+  + '   mapping(int => int) public log;'
+  + '   constructor(address o) { this.oracle = o; }'
+  + '   function readBack(int id) {'
+  + '     int x = IOracle(this.oracle).get(id);'
+  + '     this.log[id] = x + 1;'
+  + '     require(true);'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }';
+
+const refusedCallArtifact = compileString(REFUSED_CALL_SOURCE, { composition: 'per-call' });
+const refusedCallLayout = refusedCallArtifact.stateLayout!;
+const ORACLE_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(5));
+
+describe('a per-call genesis beside a refused call-making entry', () => {
+  const refinedGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+    artifact: refusedCallArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [ORACLE_LOCK], senderLockingBytecode: OWNER_LOCK,
+  });
+
+  it('refuses the call-making entry by name and publishes no call site for it', () => {
+    const composition = refusedCallArtifact.composition as {
+      refusedEntries?: readonly { readonly functionName: string }[];
+      stopSites?: { readonly entries: readonly { readonly calls: readonly unknown[] }[] };
+    };
+    expect(composition.refusedEntries?.map((refused) => refused.functionName)).toStrictEqual(['Feed.readBack()']);
+    expect((composition.stopSites?.entries ?? []).flatMap((entry) => entry.calls)).toStrictEqual([]);
+  });
+
+  it('accepts the standalone root frame and carries the state the constructor computed', () => {
+    const genesis = refinedGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    const expected = buildPushdataCommitment(refusedCallLayout, { oracle: ORACLE_LOCK }, 0);
+    expect(genesis.commitments[0]).toBe(expected);
+  });
+});

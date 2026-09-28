@@ -938,6 +938,11 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   );
   if (tail.reason !== undefined) return refuse(tail.reason);
   const entryCalls = calls.entryCalls.filter((entry) => !refusals.has(entry.entryName));
+  // The head fixes one call count for every body behind its dispatcher, and a refused body is emitted as a stub
+  // that makes no call, so the count is the served bodies' bound rather than every entry the call-site pass
+  // measured. Taking the unfiltered count would leave the head refusing the standalone frame a served master is
+  // entitled to when the only call-making entries are the refused ones.
+  const callCount = Math.max(0, ...entryCalls.map((entry) => entry.pathCount ?? entry.calls.length));
   if (entryCalls.length === 0 && contract.constructorDef === undefined) {
     // Every body is refused, so the master would dispatch only to refusals. That is still a contract whose
     // functions are each reported by name, which is what a builder needs to say which shape is missing.
@@ -952,7 +957,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   return {
     supported: true,
     entryCalls,
-    callCount: calls.callCount,
+    callCount,
     tail: tail.tail,
     ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
   };

@@ -529,15 +529,14 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
 });
 
 /**
- * A constructor frame beside a call-making entry the compiler refuses.
+ * A constructor frame beside a call-making entry the master serves.
  *
- * The master head fixes one call count for every body behind its dispatcher, and a refused body is emitted as a
- * stub that makes no call. The head's count is therefore the served bodies' bound, which keeps the standalone root
- * frame the deployment runs admissible. A refused entry that makes a call must not leave its call in that count:
- * otherwise the head holds a call the served bodies never make, refuses the deployment's own root frame, and the
- * constructor probe stops on that refusal instead of a declaration close.
+ * The entry reads another contract and writes a mapping, so it publishes a call site; the head fixes one call
+ * count for every body behind its dispatcher, and the served bound is one. A master that makes a call cannot stand
+ * alone, so the deployment's constructor frame now carries a validator reference, which the derivation builds, and
+ * the probe closes on a declaration rather than on the head's standalone refusal.
  */
-const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IOracle { function get(int id) view returns (int); }'
   + ' contract Feed {'
   + '   address public oracle;'
@@ -551,29 +550,37 @@ const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function ping() { require(true); }'
   + ' }';
 
-const refusedCallArtifact = compileString(REFUSED_CALL_SOURCE, { composition: 'per-call' });
-const refusedCallLayout = refusedCallArtifact.stateLayout!;
+const servedCallArtifact = compileString(SERVED_CALL_SOURCE, { composition: 'per-call' });
+const servedCallLayout = servedCallArtifact.stateLayout!;
 const ORACLE_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(5));
 
-describe('a per-call genesis beside a refused call-making entry', () => {
+describe('a per-call genesis beside a call-making entry the master serves', () => {
   const refinedGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
-    artifact: refusedCallArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    artifact: servedCallArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
     provider: compositionProvider(), constructorArgs: [ORACLE_LOCK], senderLockingBytecode: OWNER_LOCK,
   });
 
-  it('refuses the call-making entry by name and publishes no call site for it', () => {
-    const composition = refusedCallArtifact.composition as {
+  it('serves the call-making entry and publishes the call site for its read', () => {
+    const composition = servedCallArtifact.composition as {
       refusedEntries?: readonly { readonly functionName: string }[];
-      stopSites?: { readonly entries: readonly { readonly calls: readonly unknown[] }[] };
+      stopSites?: {
+        readonly entries: readonly {
+          readonly functionName: string;
+          readonly calls: readonly { readonly functionName: string }[];
+        }[];
+      };
     };
-    expect(composition.refusedEntries?.map((refused) => refused.functionName)).toStrictEqual(['Feed.readBack()']);
-    expect((composition.stopSites?.entries ?? []).flatMap((entry) => entry.calls)).toStrictEqual([]);
+    expect(composition.refusedEntries ?? []).toStrictEqual([]);
+    const entry = (name: string): readonly { readonly functionName: string }[] =>
+      composition.stopSites?.entries.find((candidate) => candidate.functionName === name)?.calls ?? [];
+    expect(entry('Feed.readBack()').map((call) => call.functionName)).toStrictEqual(['get']);
+    expect(entry('Feed.ping()')).toStrictEqual([]);
   });
 
-  it('accepts the standalone root frame and carries the state the constructor computed', () => {
+  it('accepts the constructor frame and carries the state the constructor computed', () => {
     const genesis = refinedGenesis();
     expect(accepted(genesis.program)).toBe(true);
-    const expected = buildPushdataCommitment(refusedCallLayout, { oracle: ORACLE_LOCK }, 0);
+    const expected = buildPushdataCommitment(servedCallLayout, { oracle: ORACLE_LOCK }, 0);
     expect(genesis.commitments[0]).toBe(expected);
   });
 });

@@ -145,16 +145,17 @@ describe('a body the master cannot serve', () => {
  * makes no call. The head's count is therefore the served bodies' bound, which keeps the standalone frame a user
  * enters admissible. Taking the count from every entry the call-site pass measured instead holds a call no served
  * body makes, and the head refuses the frame before any body runs.
+ *
+ * The call here sits in a switch arm, a shape the call walk cannot count through, so the body stays refused by
+ * name and its entry still sizes nothing.
  */
 const REFUSED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IOracle { function get(int id) view returns (int); }'
   + ' contract Feed {'
   + '   address public oracle;'
-  + '   mapping(int => int) public log;'
   + '   constructor(address o) { this.oracle = o; }'
-  + '   function readBack(int id) {'
-  + '     int x = IOracle(this.oracle).get(id);'
-  + '     this.log[id] = x + 1;'
+  + '   function pick(uint sel) {'
+  + '     switch (sel) { case 0: IOracle(this.oracle).get(1); break; default: require(true); }'
   + '     require(true);'
   + '   }'
   + '   function ping() { require(true); }'
@@ -173,7 +174,9 @@ describe('a refused call-making entry', () => {
   it('is refused by name and publishes no call site', () => {
     const refusals = publishedRefusals(compileStringMulti(REFUSED_CALL_SOURCE, { composition: 'per-call' }) as
       Record<string, { composition?: unknown }>);
-    expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.readBack()']);
+    expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Feed.pick()']);
+    expect(refusals.find((refused) => refused.functionName === 'Feed.pick()')!.reason)
+      .toContain('is in a body that switches');
     const stopSites = refusedCallArtifact.composition?.stopSites as { entries: { calls: unknown[] }[] };
     expect(stopSites.entries.flatMap((entry) => entry.calls)).toStrictEqual([]);
   });
@@ -182,7 +185,60 @@ describe('a refused call-making entry', () => {
     // The served entry is one no call is left in the head for, so the user's root frame is admitted; the refused
     // entry's own stub still fails when the dispatcher reaches it.
     expect(spendSelector(refusedCallProgram, refusedCallSelector('ping'))).toBe(true);
-    expect(spendSelector(refusedCallProgram, refusedCallSelector('readBack'))).toBe(false);
+    expect(spendSelector(refusedCallProgram, refusedCallSelector('pick'))).toBe(false);
+  });
+});
+
+/**
+ * A call-making entry the master serves, and the wall its bare frame hits.
+ *
+ * The entry reads another contract and then writes a verified mapping. It was refused before the mapping write's
+ * own segment and the conditional-call admission were served; it compiles served now and publishes the read's call
+ * site. Its bare standalone frame no longer settles: a master whose served body makes a call cannot be entered
+ * without that call, so the head's standalone arm refuses the user's root frame before any body runs. The entry is
+ * entered with a composed frame instead — the validator input and the call record — which this file does not build.
+ */
+const SERVED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IOracle { function get(int id) view returns (int); }'
+  + ' contract Feed {'
+  + '   address public oracle;'
+  + '   mapping(int => int) public log;'
+  + '   constructor(address o) { this.oracle = o; }'
+  + '   function readBack(int id) {'
+  + '     int x = IOracle(this.oracle).get(id);'
+  + '     this.log[id] = x + 1;'
+  + '     require(true);'
+  + '   }'
+  + '   function ping() { require(true); }'
+  + ' }';
+
+const servedCallArtifact = compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }).Feed!;
+const servedCallProgram = fillPlaceholders(
+  scriptToBytecode(asmToScript(servedCallArtifact.bytecode)),
+  servedCallArtifact.composition!.placeholders,
+  { category: categorySlotValue(CATEGORY), contractAddress: ADDRESS, templateHash: TEMPLATE_HASH },
+);
+const servedCallSelector = (name: string): Uint8Array =>
+  new Uint8Array(Buffer.from(servedCallArtifact.abi.find((entry) => entry.name === name)!.selector!, 'hex'));
+
+describe('a call-making entry the master serves', () => {
+  it('publishes no refusal and the call site for the read it makes', () => {
+    const refusals = publishedRefusals(compileStringMulti(SERVED_CALL_SOURCE, { composition: 'per-call' }) as
+      Record<string, { composition?: unknown }>);
+    expect(refusals).toStrictEqual([]);
+    const entry = (servedCallArtifact.composition?.stopSites as
+      { entries: { functionName: string; calls: unknown[] }[] }).entries
+      .find((candidate) => candidate.functionName === 'Feed.readBack()')!;
+    expect(entry.calls).toHaveLength(1);
+  });
+
+  it('refuses the standalone frame it was formerly entered by, now that a served body makes a call', () => {
+    // The head's standalone arm (`assertStandalone`) emits a refusal whenever its call count is nonzero, because a
+    // master whose served body makes a call cannot be entered without that call. This master's served bound is one,
+    // so both entries stop at that arm, before their bodies run; the entry is entered with a composed frame
+    // instead.
+    expect(spendSelector(servedCallProgram, servedCallSelector('ping'))).toBe(false);
+    expect(spendSelector(servedCallProgram, servedCallSelector('readBack'))).toBe(false);
   });
 });
 

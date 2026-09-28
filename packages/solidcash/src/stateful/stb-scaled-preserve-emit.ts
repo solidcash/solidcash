@@ -35,7 +35,7 @@ export interface ScaledPreserveEmitHost extends ChunkableWritePlanningHost {
   readonly authenticatedOutputLockingBytecodes: ReadonlyMap<number, unknown>;
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   readonly delegateDynamicChunksAtSuffix: boolean;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getExternalCallOutputBase(groupIndex: number): number;
   getRuntimeLoopEventOutputIndex(index: number): number;
   findMintingInputIndex(categoryId: string): number;
@@ -161,7 +161,7 @@ export function tokenWriterOccupancyForHost(
     firstPublish: isInitialChunkableValueWrite(host),
     hasTokenWriter: hasMintingBandTokenWriter(host),
     implIndex: chunkableValueWriteInputIndex(host),
-    band: host.getPublishJobEventsBand(),
+    band: host.getChunkableValueWriteBand(),
     tokenMaster,
     outputs,
   });
@@ -175,7 +175,7 @@ export function reassertScaledPreserveOneToOnes(
   const emitDests = new Set(emitDestinationIndices(host));
   const emitDest = scaledEmitOutputIndex(host, builder.outputs.length);
   if (emitDest !== undefined) emitDests.add(emitDest);
-  const persistBand = host.getPublishJobEventsBand();
+  const persistBand = host.getChunkableValueWriteBand();
   const returnWitnesses = returnWitnessOutputIndices(host.externalCallUtxoGroups);
   for (const group of host.externalCallUtxoGroups) {
     if (!isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention)) continue;
@@ -213,7 +213,7 @@ export function scidReservedIndices(
 ): Set<number> {
   const reserved = new Set(emitDestinationIndices(host));
   for (const index of host.authenticatedOutputLockingBytecodes.keys()) reserved.add(index);
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (band) {
     reserved.add(Math.max(0, band.start - 1));
     for (let index = band.start; index <= band.end; index++) reserved.add(index);

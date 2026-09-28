@@ -25,7 +25,7 @@ export interface MaterializeValueAndDynamicChunksHost {
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly delegateDynamicChunksAtSuffix: boolean;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getValueChunkVars(): Array<{ id: string; lockingBytecode: Uint8Array }>;
   valueChunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   padOutputsToIndex(builder: TransactionBuilder, outputIndex: number): void;
@@ -40,7 +40,7 @@ export function appendValueChunks(
   host: MaterializeValueAndDynamicChunksHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   const fixedBandPins = band
     ? [...host.derivedChunkOutputs.entries()].filter(([index, chunk]) => (
       chunk.fixedIndex === true

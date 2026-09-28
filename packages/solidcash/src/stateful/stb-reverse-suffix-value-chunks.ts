@@ -32,7 +32,7 @@ export interface ReverseSuffixValueChunkHost {
   readonly dynamicChunkVars: readonly DynamicChunkVar[];
   readonly chunkRawCommitments: ReadonlyMap<string, readonly string[]>;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   setChunkRawCommitments(name: string, commitments: string[]): void;
   dynamicChunkOutputCount(): number;
   padOutputsToIndex(builder: TransactionBuilder, index: number): void;
@@ -50,7 +50,7 @@ export function reassertStagedValueChunkOutputs(
     }
     return undefined;
   };
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   // Only relocate when a prior append parked staged chunk locks before the band
   // (publishJobEvent dataNft slots). Do not rewrite a healthy full-width layout.
   const stagedLocks = new Set(

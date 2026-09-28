@@ -30,9 +30,9 @@ export interface EnsurePersistedJobEventsInputsHost {
   readonly builderOptions: TransactionBuilderOptions;
   readonly allInputs: readonly UnlockableUtxo[];
   setPendingJobEventsPredecessors(extras: UnlockableUtxo[]): void;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
-  persistJobEventsTokenCategory(): string | undefined;
-  jobEventsPublishCategory(): string | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
+  persistedValueChunkCategory(): string | undefined;
+  chunkableValueWriteCategory(): string | undefined;
   isInitialChunkableValueWrite(): boolean;
   isPersistedChunkableValueWriteReady(): boolean;
   persistedValueChunkWrite(categoryId: string): ValueChunkWriteDescriptor | null | undefined;
@@ -52,8 +52,8 @@ export async function ensurePersistedJobEventsInputs(
 ): Promise<void> {
   const tokenWriterPresent = host.externalCallUtxoGroups.some((group) =>
     isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));
-  const band = host.getPublishJobEventsBand();
-  const categoryId = host.persistJobEventsTokenCategory() ?? host.jobEventsPublishCategory();
+  const band = host.getChunkableValueWriteBand();
+  const categoryId = host.persistedValueChunkCategory() ?? host.chunkableValueWriteCategory();
   if (!shouldRestorePersistedContinuationInputs({
     initialWrite: host.isInitialChunkableValueWrite(),
     mintingBandWriter: tokenWriterPresent,

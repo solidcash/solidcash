@@ -29,7 +29,7 @@ export interface RepackViewTailsHost {
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   dynamicChunkOutputCount(): number;
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
@@ -64,7 +64,7 @@ export function repackViewTailsAfterMaterialization(
     : -1;
   const writerEnd = Math.max(
     lastCollidingMutableWriterIndex(builder.outputs, planned),
-    viewTailOccupancyCap(planned, host.getPublishJobEventsBand()),
+    viewTailOccupancyCap(planned, host.getChunkableValueWriteBand()),
     derivedEnd,
   );
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

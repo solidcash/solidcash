@@ -45,7 +45,7 @@ export interface PlaceTailReturnHost {
     token?: Output['token'];
   }>;
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   dynamicChunkOutputCount(): number;
   tailReturnEventOutputs(): readonly PlaceTailReturnEvent[];
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions;
@@ -96,7 +96,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
     (categoryId) => host.findMintingInputIndex(categoryId),
     tailReturns,
     swapCategoryId,
-    host.getPublishJobEventsBand()?.end ?? -1,
+    host.getChunkableValueWriteBand()?.end ?? -1,
     host.viewTailPackOptions(jobsCount > 0
       ? builder.outputs.length - jobsCount - 1
       : builder.outputs.length),

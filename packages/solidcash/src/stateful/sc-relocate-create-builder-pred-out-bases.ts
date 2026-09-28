@@ -101,7 +101,7 @@ export function relocateCreateBuilderPredOutBases(params: {
           ...externalCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
           ...lowLevelCallUtxoGroups.map((candidate) => candidate.valueChunkOutputCount ?? 0),
         );
-        // Match getPublishJobEventsBand / liveJobEventsBandWidth: plannedWidth 2 must stay
+        // Match getChunkableValueWriteBand / liveJobEventsBandWidth: plannedWidth 2 must stay
         // nNew 2. valueChunkBandWidth's default minimum 3 made whitelist publish report
         // plannedWidth 2 / nNew 3 while the live band was only 2 wide.
         const liveWidth = legacyLiveValueChunkBandWidth({ plannedWidth });

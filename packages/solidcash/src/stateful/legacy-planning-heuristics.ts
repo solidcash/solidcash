@@ -41,6 +41,26 @@ export function legacyGroupLooksLikePublishJobEvent(group: {
     || legacyIsPublishJobEventName(group.compilerRoute?.abiFunction?.name);
 }
 
+/** Pre-descriptor plans did not publish a write operation. Use planned INSERTs when available. */
+type LegacyValueChunkWriteGroup = {
+  functionName?: string;
+  logicalFunctionName?: string;
+  plannedEntryInserts?: readonly unknown[];
+};
+
+export function legacyInitialValueChunkWrite(
+  lowLevelGroups: readonly LegacyValueChunkWriteGroup[],
+  externalGroups: readonly LegacyValueChunkWriteGroup[],
+): boolean {
+  if ([...lowLevelGroups, ...externalGroups].some(
+    (group) => (group.plannedEntryInserts?.length ?? 0) > 0,
+  )) return true;
+  // Historical plans may also predate plannedEntryInserts. Keep their ABI compatibility here only.
+  return lowLevelGroups.some((group) => group.functionName === 'publishJobPost')
+    || externalGroups.some((group) =>
+      (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
+}
+
 /** Historical jobEvents collection identity — legacy band packing only. */
 export function legacyIsJobEventsCollection(collection: string | undefined): boolean {
   if (collection === undefined) return false;

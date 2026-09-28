@@ -30,8 +30,8 @@ import {
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
-  jobEventsPublishCategory,
-  persistJobEventsTokenCategory,
+  chunkableValueWriteCategory,
+  persistedValueChunkCategory,
 } from './stb-chunkable-write-planning.js';
 import {
   chunkableValueWriteInputIndex,
@@ -124,13 +124,13 @@ export function placeJobEventsPredecessorInputs(
   // ordinary builder options and leave the materialized block immutable.
   if (host.preserveBlockLayoutWidth || host.compilerRouteDelegateBlock
     || host.blockLayout?.trailingCapacity !== undefined) return;
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
-  const categoryId = jobEventsPublishCategory(host);
+  const categoryId = chunkableValueWriteCategory(host);
   const persistUpdate = isPersistedChunkableValueWriteReady(host)
     && !isInitialChunkableValueWrite(host);
   const persistCategory = persistUpdate
-    ? (persistJobEventsTokenCategory(host) ?? categoryId) : categoryId;
+    ? (persistedValueChunkCategory(host) ?? categoryId) : categoryId;
   const persistLock = (persistCategory ? settlement().persistedJobEventsLocks.get(persistCategory) : undefined)
     ?? (categoryId ? settlement().persistedJobEventsLocks.get(categoryId) : undefined);
   const persistHex = persistLock ? binToHex(persistLock) : '';
@@ -254,7 +254,7 @@ export function placeJobEventsPredecessorInputs(
 
 /** Move a participant block off a compiler-owned dynamic-output band without changing existing order. */
 export function swapMintingOffValueChunkBand(host: MintingSwapPredecessorHost): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
   const collisionIndex = collidingParticipantGroupIndex(
     host.externalCallUtxoGroups,

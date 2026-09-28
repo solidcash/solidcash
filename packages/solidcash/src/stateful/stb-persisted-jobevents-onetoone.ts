@@ -29,8 +29,8 @@ import { cloneToken } from './stb-output-utils.js';
 import {
   isInitialChunkableValueWrite,
   isPersistedChunkableValueWriteReady,
-  jobEventsPublishCategory,
-  persistJobEventsTokenCategory,
+  chunkableValueWriteCategory,
+  persistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
 } from './stb-chunkable-write-planning.js';
@@ -76,9 +76,9 @@ export function reassertPersistedJobEventsOneToOnes(
   if (emitDest >= 0) eventDestinations.add(emitDest);
   const destCategory = emitDest >= 0 && builder.outputs[emitDest]?.token?.category
     ? String(builder.outputs[emitDest]!.token!.category)
-    : jobEventsPublishCategory(host);
-  const categoryId = destCategory ?? jobEventsPublishCategory(host);
-  const persistLockCategory = persistJobEventsTokenCategory(host) ?? categoryId;
+    : chunkableValueWriteCategory(host);
+  const categoryId = destCategory ?? chunkableValueWriteCategory(host);
+  const persistLockCategory = persistedValueChunkCategory(host) ?? categoryId;
   const persistLock = (persistLockCategory ? persistedJobEventsLock(persistLockCategory) : undefined)
     ?? host.jobEventsRedeemLock;
   const replayCategories = new Set([categoryId, persistLockCategory].filter(
@@ -93,11 +93,11 @@ export function reassertPersistedJobEventsOneToOnes(
       firstPublish: isInitialChunkableValueWrite(host),
       layoutDestOccupiedByMintingWriter: host.hasMintingBandTokenWriter(),
     }),
-    bandStart: host.getPublishJobEventsBand()?.start ?? -1,
-    nNew: host.getPublishJobEventsBand()?.nNew ?? 0,
+    bandStart: host.getChunkableValueWriteBand()?.start ?? -1,
+    nNew: host.getChunkableValueWriteBand()?.nNew ?? 0,
   }));
   const persistRecipeLock = host.persistUpdateDigestLock(
-    persistJobEventsTokenCategory(host) ?? categoryId,
+    persistedValueChunkCategory(host) ?? categoryId,
   );
   for (const [index, input] of host.allInputs.entries()) {
     const commit = String(input?.token?.nft?.commitment ?? '');
@@ -125,7 +125,7 @@ export function reassertPersistedJobEventsOneToOnes(
           && declaredLock.every((byte, offset) => byte === inputLock[offset])));
       if (!inputOwnsSlot) continue;
     }
-    const liveBand = host.getPublishJobEventsBand();
+    const liveBand = host.getChunkableValueWriteBand();
     // An UPDATE can deliberately place an old predecessor input at the same
     // coordinate as the new value's chunk 0. The predecessor still
     // authorizes the spend, but its one-to-one recreation must not replace
@@ -144,12 +144,12 @@ export function reassertPersistedJobEventsOneToOnes(
         && (existing.token.category === input.token?.category
           || isPersistValueChunkCommitment(commit)))
         || forceChunk0) {
-        const persistCat = persistJobEventsTokenCategory(host) ?? input.token?.category ?? categoryId;
+        const persistCat = persistedValueChunkCategory(host) ?? input.token?.category ?? categoryId;
         const persistValue = host.stagedValueChunkWrite(persistCat)
           ?? host.persistedValueChunkValue(persistCat);
         const destOffset = [...persistDests].sort((left, right) => left - right).indexOf(index);
         const inputLock = input.unlocker?.generateLockingBytecode();
-        const publishCategory = jobEventsPublishCategory(host);
+        const publishCategory = chunkableValueWriteCategory(host);
         const inputCategory = input.token?.category ?? persistCat;
         const persistVLock = host.persistValueChunkLock(publishCategory, persistValue)
           ?? host.persistValueChunkLock(persistLockCategory, persistValue)
@@ -219,7 +219,7 @@ export function reassertPersistedJobEventsOneToOnes(
       && (sameCategory || persistShaped);
     const rematerialize = shouldRematerializePersistUpdateForHost(host);
     const stampDigest = shouldStampPersistUpdateDigestLockForHost(host);
-    const band = host.getPublishJobEventsBand();
+    const band = host.getChunkableValueWriteBand();
     const inWriteBand = !!band && index >= band.start && index <= band.end;
     // INSERT / whitelist must not restamp persist `v` onto dest. UPDATE
     // dest-18 persist EQUALVERIFYs the Created-digest lock even when the
@@ -227,7 +227,7 @@ export function reassertPersistedJobEventsOneToOnes(
     if (isPersistValueChunk && inWriteBand && !rematerialize && !stampDigest) continue;
     const recipeLock = stampDigest
       ? host.persistUpdateDigestLock(
-        persistJobEventsTokenCategory(host) ?? input.token?.category ?? categoryId,
+        persistedValueChunkCategory(host) ?? input.token?.category ?? categoryId,
       )
       : persistRecipeLock;
     const lock = ((persistDests.has(index) && persistRecipeLock)

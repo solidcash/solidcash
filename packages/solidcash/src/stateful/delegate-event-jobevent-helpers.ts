@@ -212,12 +212,10 @@ export function isWithdrawShapedJobEvent(event: unknown): boolean {
 export function shouldRematerializePersistUpdate(parts: {
   persistReady: boolean;
   initialWrite?: boolean;
-  /** @deprecated Use `initialWrite`. */
-  publishJobPost?: boolean;
   event?: unknown;
   plannedInserts?: number;
 }): boolean {
-  if (!parts.persistReady || (parts.initialWrite ?? parts.publishJobPost ?? false)) return false;
+  if (!parts.persistReady || parts.initialWrite === true) return false;
   if ((parts.plannedInserts ?? 0) > 0) return false;
   return isWithdrawShapedJobEvent(parts.event);
 }

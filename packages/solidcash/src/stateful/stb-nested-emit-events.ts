@@ -30,7 +30,7 @@ import {
   chunkableValueWriteGroups,
   hasChunkableValueWriteMetadata,
   isInitialChunkableValueWrite,
-  jobEventsPublishCategory,
+  chunkableValueWriteCategory,
   permitsLegacyNamedValueChunkFallbackForGroups,
   shouldRematerializePersistUpdateForHost,
 } from './stb-chunkable-write-planning.js';
@@ -116,7 +116,7 @@ export function reassertNestedEmitEvents(
       ?? chunkableWriterEventOutputIndex(impl, eventOffset);
   const persistEmitEarly = shouldRematerializePersistUpdateForHost(host);
   const categoryId = eventSelection.status === 'exact'
-    ? eventSelection.categoryId : jobEventsPublishCategory(host);
+    ? eventSelection.categoryId : chunkableValueWriteCategory(host);
   const emitInfo = eventSelection.status === 'exact'
     ? { eventSignature: eventSelection.eventSignature }
     : publishFn?.emits?.[0];

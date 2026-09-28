@@ -234,7 +234,7 @@ export async function allocateCreateBuilderFunders(
       ...externalCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
       ...lowLevelCallUtxoGroups.map((group) => group.valueChunkOutputCount ?? 0),
     );
-    const plannedDynamicBand = builder.getPublishJobEventsBand();
+    const plannedDynamicBand = builder.getChunkableValueWriteBand();
     const predictedDynamicBand = plannedDynamicBand && predictedBandWidth > 0
       ? {
         ...plannedDynamicBand,

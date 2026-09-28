@@ -181,7 +181,7 @@ export function deriveFullPhase2Convergence(
       commitment: chunk.commitment.slice(0, 12),
       lockingBytecode: binToHex(chunk.lockingBytecode.slice(0, 8)),
     })),
-    sharedChunkBand: stb.getPublishJobEventsBand(),
+    sharedChunkBand: stb.getChunkableValueWriteBand(),
     valueChunkCarriers: stb.getExternalCallUtxoGroups().flatMap((group, groupIndex) => {
       const witness = valueChunkOutputWitnessCarrier(stb, group);
       return witness ? [{

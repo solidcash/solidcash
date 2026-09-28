@@ -218,7 +218,7 @@ if (debugTargetsThisDerivation) console.error('derive-nested-summary', JSON.stri
   })),
 }));
 nestedProbeHadError ||= nestedTrace.some((state) => state.error !== undefined);
-const band = stb.getPublishJobEventsBand();
+const band = stb.getChunkableValueWriteBand();
 const identityPin = extractIdentityScanValueChunkPin(nestedTrace);
 let fallbackBase = band?.start
   ?? llc.valueChunkOutputBase

@@ -41,7 +41,7 @@ export interface ViewTailOccupancyHost {
   readonly delegateDynamicChunksAtSuffix: boolean;
   readonly derivedChunkOutputs: ReadonlyMap<number, unknown>;
   readonly builtReturnEventOutputIndices: Map<string, number>;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   findMintingInputIndex(categoryId: string): number;
   dynamicChunkOutputCount(): number;
   tailReturnEventOutputs(): readonly ViewTailReturnEvent[];
@@ -66,7 +66,7 @@ returnOutputRefs?: Map<string, Output>,
   if (tailReturns.length === 0) return;
   const jobsCountForPack = host.delegateDynamicChunksAtSuffix ? host.dynamicChunkOutputCount() : 0;
   const packOptions: ViewTailPackOptions = {
-    band: host.getPublishJobEventsBand(),
+    band: host.getChunkableValueWriteBand(),
     suffixStart: jobsCountForPack > 0
       ? builder.outputs.length - jobsCountForPack - 1
       : Math.max(0, host.allInputs.length - 1),
@@ -235,7 +235,7 @@ export function vacateViewTailsFromJobEventsBand(
   host: ViewTailOccupancyHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
   let vacated = false;
   for (let index = band.start; index <= band.end; index++) {

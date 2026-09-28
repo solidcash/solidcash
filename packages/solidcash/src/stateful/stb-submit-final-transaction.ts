@@ -26,7 +26,7 @@ export interface SubmitFinalTransactionHost {
   readonly logicalIdentityUtxo?: UnlockableUtxo;
   readonly externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
   readonly builderOptions: TransactionBuilderOptions;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   getLowLevelCallMasterInputIndex(index: number): number;
   logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void;
   persistPlacedJobEventsBand(builder: TransactionBuilder, txid: string): void;
@@ -217,7 +217,7 @@ txid = provider.sendPreparedTransaction
       console.error('submit-fail-layout', {
         reason,
         outputCount: finalBuilder.outputs.length,
-        jobEventsBand: host.getPublishJobEventsBand(),
+        jobEventsBand: host.getChunkableValueWriteBand(),
         derivedEntries: [...host.externalCallEntryOutputsByIndex.entries()].map(([index, placed]) => ({
           index, cat: placed.categoryId.slice(0, 8), commit: placed.commitment.slice(0, 24),
           len: placed.commitment.length,
@@ -267,7 +267,7 @@ txid = provider.sendPreparedTransaction
           };
         }),
         bandSlots: (() => {
-          const band = host.getPublishJobEventsBand();
+          const band = host.getChunkableValueWriteBand();
           if (!band) return [];
           return Array.from({ length: band.nNew }, (_u, offset) => {
             const index = band.start + offset;

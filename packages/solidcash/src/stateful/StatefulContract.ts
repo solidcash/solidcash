@@ -7724,7 +7724,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 stack: (state.stack ?? []).slice(-32).map((item) => `${item.length}:${binToHex(item)}`),
               };
             }),
-            band: stb.getPublishJobEventsBand(),
+            band: stb.getChunkableValueWriteBand(),
             groups: stb.getExternalCallUtxoGroups().map((group, index) => ({
               index,
               fn: group.logicalFunctionName ?? group.functionName,

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  legacyInitialValueChunkWrite,
   legacyIsJobEventsCollection,
   legacyIsPublishJobEventName,
   legacyScalarNameHints,
   permitsLegacyScalarNameHeuristics,
 } from '../../src/stateful/legacy-planning-heuristics.js';
 import { permitsLegacyNamedValueChunkFallback } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { isInitialChunkableValueWrite } from '../../src/stateful/stb-chunkable-write-planning.js';
 
 describe('legacy planning heuristics isolation (item 1)', () => {
   it('exposes JobEvent / jobEvents name matchers only via the legacy adapter module', () => {
@@ -40,5 +42,23 @@ describe('legacy planning heuristics isolation (item 1)', () => {
       functionName: 'publishJobEvent',
     };
     expect(permitsLegacyNamedValueChunkFallback([kernelGroup as never])).toBe(false);
+  });
+
+  it('recognizes a renamed legacy first write from planned inserts without changing kernel behavior', () => {
+    const group = { functionName: 'createRecord', plannedEntryInserts: [{ blockSlot: 1 }] };
+    const host = {
+      externalCallUtxoGroups: [group],
+      lowLevelCallUtxoGroups: [],
+      messageBusConvention: 'legacy-unroll',
+      composedParticipant: false,
+      getLowLevelCallMasterInputIndex: () => -1,
+      getExternalCallMasterInputIndex: () => -1,
+    };
+    expect(legacyInitialValueChunkWrite([], [group])).toBe(true);
+    expect(isInitialChunkableValueWrite(host as never)).toBe(true);
+    expect(isInitialChunkableValueWrite({ ...host, messageBusConvention: 'kernel-row-loop' } as never))
+      .toBe(false);
+    expect(legacyInitialValueChunkWrite([{ functionName: 'publishJobPost' }], [])).toBe(true);
+    expect(legacyInitialValueChunkWrite([], [{ functionName: 'updateRecord' }])).toBe(false);
   });
 });

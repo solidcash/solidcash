@@ -60,7 +60,7 @@ export function deriveFullPhase1GroupFront(
   }
   let probeBuilder = stb.build();
   if (valueChunkWitness && group.valueChunkOutputBase === undefined) {
-    const plannedBand = stb.getPublishJobEventsBand();
+    const plannedBand = stb.getChunkableValueWriteBand();
     const usesPlannedBand = plannedBand !== undefined
       && writesChunkableValue(valueChunkWitness.carrier, valueChunkWitness.abiFunction);
     // Reuse an already-planned continuation band for the same chunkable writer. Only an unowned run is

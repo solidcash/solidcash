@@ -17,9 +17,9 @@ import {
 import { stripSurplusValueChunkLocks } from './scid-minting-return-layout.js';
 import {
   hasChunkableValueWriteMetadata,
-  jobEventsPublishCategory,
+  chunkableValueWriteCategory,
   permitsLegacyNamedValueChunkFallbackForGroups,
-  persistJobEventsTokenCategory,
+  persistedValueChunkCategory,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
   valueChunkWriteCategorySelection,
@@ -95,7 +95,7 @@ export function packJobsSuffix(
   host: JobEventsBandHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   const tailStart = band ? band.end + 1 : 0;
   const chunkHex = host.jobEventsRedeemLock ? binToHex(host.jobEventsRedeemLock) : '';
   let jobsLock: Uint8Array | undefined;
@@ -122,7 +122,7 @@ export function materializeJobEventsBand(
   host: JobEventsBandHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (host.messageBusConvention === 'kernel-row-loop'
     && [...host.derivedChunkOutputs.values()].some((chunk) => chunk.resourceIdentity !== undefined)) {
     host.applyDerivedValueChunks(builder);
@@ -133,7 +133,7 @@ export function materializeJobEventsBand(
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs() && band) {
     const at = host.allInputs[band.start];
     if (at?.token?.nft?.capability === 'minting') {
-      const publishCat = jobEventsPublishCategory(host);
+      const publishCat = chunkableValueWriteCategory(host);
       // Missing publishCat must still refuse: otherwise FakeToken's minting slot becomes the band.
       if (!publishCat || at.token.category?.toLowerCase() !== publishCat.toLowerCase()) {
         return;
@@ -152,7 +152,7 @@ export function materializeJobEventsBand(
   // ambiguity is likewise a refusal, never permission to choose the first source-level handler.
   if (tokenWriterPresent) return;
   if (!band) return;
-  const categoryId = jobEventsPublishCategory(host);
+  const categoryId = chunkableValueWriteCategory(host);
   const fromDerived = [...host.derivedChunkOutputs.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, chunk]) => chunk)
@@ -160,7 +160,7 @@ export function materializeJobEventsBand(
       && chunk.commitment.length >= 3 && chunk.commitment !== '00');
   const derivedOwnerCategory = coherentAuthenticatedValueChunkRun(fromDerived)[0]?.categoryId;
   const stateOwnerCategory = derivedOwnerCategory
-    ?? persistJobEventsTokenCategory(host)
+    ?? persistedValueChunkCategory(host)
     ?? categoryId;
   if (fromDerived.length > 0 && stateOwnerCategory) {
     host.rememberJobEventsChunks(stateOwnerCategory, fromDerived);
@@ -322,18 +322,18 @@ export function ensureLiveJobEventsBand(
   host: JobEventsBandHost,
   builder: TransactionBuilder,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
   if (!permitsLegacyNamedValueChunkFallbackForGroups(host) && host.hasStagedValueChunkOutputs()) {
     const at = host.allInputs[band.start];
     if (at?.token?.nft?.capability === 'minting') {
-      const publishCat = jobEventsPublishCategory(host);
+      const publishCat = chunkableValueWriteCategory(host);
       if (!publishCat || at.token.category?.toLowerCase() !== publishCat.toLowerCase()) {
         return;
       }
     }
   }
-  const categoryId = jobEventsPublishCategory(host);
+  const categoryId = chunkableValueWriteCategory(host);
   const fromDerived = [...host.derivedChunkOutputs.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, chunk]) => chunk)
@@ -341,7 +341,7 @@ export function ensureLiveJobEventsBand(
       && chunk.commitment.length >= 3 && chunk.commitment !== '00');
   const derivedOwnerCategory = coherentAuthenticatedValueChunkRun(fromDerived)[0]?.categoryId;
   const persistTokenCategory = derivedOwnerCategory
-    ?? persistJobEventsTokenCategory(host)
+    ?? persistedValueChunkCategory(host)
     ?? categoryId;
   const persistDigestLock = shouldUseLegacyPersistDigestLockForValueChunks({
     hasWriteMetadata: hasChunkableValueWriteMetadata(host),
@@ -359,7 +359,7 @@ export function ensureLiveJobEventsBand(
     ?? host.stagedValueChunkWrite(persistTokenCategory);
   const persistValue = stagedValue
     ?? host.persistedValueChunkValue(persistTokenCategory);
-  const publishCategory = jobEventsPublishCategory(host);
+  const publishCategory = chunkableValueWriteCategory(host);
   const persistVLock = host.persistValueChunkLock(persistTokenCategory, persistValue)
     ?? host.persistValueChunkLock(publishCategory, persistValue);
 
@@ -471,9 +471,9 @@ export function persistPlacedJobEventsBand(
   builder: TransactionBuilder,
   txid?: string,
 ): void {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   if (!band) return;
-  const categoryId = jobEventsPublishCategory(host);
+  const categoryId = chunkableValueWriteCategory(host);
   if (!categoryId) return;
   const liveLocks = new Map<string, { lock: Uint8Array; n: number }>();
   for (let index = band.start; index <= band.end; index++) {

@@ -609,10 +609,10 @@ import {
   isInitialChunkableValueWrite,
   isInitialChunkableValueWriteForDigest,
   isPersistedChunkableValueWriteReady,
-  jobEventsPublishCategory,
+  chunkableValueWriteCategory,
   permitsLegacyNamedValueChunkFallbackForGroups,
   persistDigestCategories,
-  persistJobEventsTokenCategory,
+  persistedValueChunkCategory,
   persistedChunkableValueWriteState,
   shouldRematerializePersistUpdateForHost,
   shouldStampPersistUpdateDigestLockForHost,
@@ -1736,7 +1736,7 @@ export class StatefulTransactionBuilder {
 
   /** Collection entry lock next to the jobEvents band (not the value-chunk redeem). */
   entryLockNearJobEventsBand(): Uint8Array | undefined {
-    const band = this.getPublishJobEventsBand();
+    const band = this.getChunkableValueWriteBand();
     const chunkLock = this.jobEventsRedeemLock;
     const chunkHex = chunkLock ? binToHex(chunkLock) : '';
     const prefer = band ? [band.start - 1, band.start - 2, band.start] : [];
@@ -1843,7 +1843,7 @@ export class StatefulTransactionBuilder {
       authenticatedOutputLockingBytecodes: this.authenticatedOutputLockingBytecodes,
       mintingOutputSwap: this.mintingOutputSwap,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getExternalCallOutputBase: (groupIndex) => this.getExternalCallOutputBase(groupIndex),
       getRuntimeLoopEventOutputIndex: (index) => this.getRuntimeLoopEventOutputIndex(index),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
@@ -1939,7 +1939,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       tokenWriterOccupancy: (tokenMaster, outputs) => this.tokenWriterOccupancy(tokenMaster, outputs),
       syncBuilderUnlockers: (builder) => { this._syncBuilderUnlockers(builder); },
     };
@@ -1970,7 +1970,7 @@ export class StatefulTransactionBuilder {
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       derivedChunkOutputs: this.derivedChunkOutputs,
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
@@ -2039,7 +2039,7 @@ export class StatefulTransactionBuilder {
       authenticatedViewReturnByGroup: this.authenticatedViewReturnByGroup,
       valueChunkOutputs: this.valueChunkOutputs,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
       tailReturnEventOutputs: () => this.tailReturnEventOutputs(),
       viewTailPackOptions: (suffixStart) => this.viewTailPackOptions(suffixStart),
@@ -2141,7 +2141,7 @@ export class StatefulTransactionBuilder {
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
       derivedChunkOutputs: this.derivedChunkOutputs,
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       dynamicChunkOutputCount: () => this._dynamicChunkOutputCount(),
       viewTailPackOptions: (suffixStart) => this.viewTailPackOptions(suffixStart),
       syncBuilderUnlockers: (builder) => { this._syncBuilderUnlockers(builder); },
@@ -2400,7 +2400,7 @@ export class StatefulTransactionBuilder {
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       delegateDynamicChunksAtSuffix: this.delegateDynamicChunksAtSuffix,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getValueChunkVars: () => this.getValueChunkVars(),
       valueChunkRawCommitments: this.valueChunkRawCommitments,
       padOutputsToIndex: (b, outputIndex) => { this._padOutputsToIndex(b, outputIndex); },
@@ -2562,7 +2562,7 @@ export class StatefulTransactionBuilder {
       logicalIdentityUtxo: this.logicalIdentityUtxo,
       externalIdentityAnchorUtxos: this.externalIdentityAnchorUtxos,
       builderOptions: this.builderOptions,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       logCovenantFailureTrace: (b, reason) => { this._logCovenantFailureTrace(b, reason); },
       persistPlacedJobEventsBand: (b, txid) => { this._persistPlacedJobEventsBand(b, txid); },
@@ -2895,7 +2895,7 @@ export class StatefulTransactionBuilder {
       getExternalCallEntryOutput: (categoryId, blockSlot) => (
         this.getExternalCallEntryOutput(categoryId, blockSlot)
       ),
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       applyDerivedValueChunks: (b) => { this._applyDerivedValueChunks(b); },
     };
   }
@@ -2911,8 +2911,8 @@ export class StatefulTransactionBuilder {
       get viewTailRepackAttempted() { return self.viewTailRepackAttempted; },
       set viewTailRepackAttempted(value) { self.viewTailRepackAttempted = value; },
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
-      jobEventsPublishCategory: () => this._jobEventsPublishCategory(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
+      chunkableValueWriteCategory: () => this._chunkableValueWriteCategory(),
       hasStagedValueChunkOutputs: () => this.hasStagedValueChunkOutputs(),
       permitsLegacyNamedValueChunkFallback: () => this._permitsLegacyNamedValueChunkFallback(),
       stripSurplusDerivedValueChunkLocks: (b) => { this._stripSurplusDerivedValueChunkLocks(b); },
@@ -3156,7 +3156,7 @@ export class StatefulTransactionBuilder {
       lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
       messageBusConvention: this.messageBusConvention,
       mintingOutputSwap: this.mintingOutputSwap,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       getExternalCallMasterInputIndex: (groupIndex) => this.getExternalCallMasterInputIndex(groupIndex),
       getLowLevelCallMasterInputIndex: (llcIndex) => this.getLowLevelCallMasterInputIndex(llcIndex),
@@ -3178,7 +3178,7 @@ export class StatefulTransactionBuilder {
       dynamicChunkVars: this.dynamicChunkVars,
       chunkRawCommitments: this.chunkRawCommitments,
       derivedChunkOutputs: this.derivedChunkOutputs,
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
       setChunkRawCommitments: (name, commitments) => {
         this.setChunkRawCommitments(name, commitments);
       },
@@ -3361,7 +3361,7 @@ export class StatefulTransactionBuilder {
 
   viewTailPackOptions(suffixStart?: number): ViewTailPackOptions {
     return {
-      band: this.getPublishJobEventsBand(),
+      band: this.getChunkableValueWriteBand(),
       // Input and output counts are independent once return witnesses, computed
       // outputs, and suffix sidecars are materialized. Only enforce a suffix
       // boundary when the caller derived it from an actual output layout.
@@ -3390,7 +3390,7 @@ export class StatefulTransactionBuilder {
       getLowLevelCallMasterInputIndex: (index) => this.getLowLevelCallMasterInputIndex(index),
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       getLoopEntryCommitments: (collection) => this.getLoopEntryCommitments(collection),
-      jobEventsPublishCategory: () => this._jobEventsPublishCategory(),
+      chunkableValueWriteCategory: () => this._chunkableValueWriteCategory(),
       persistedChunkableValueWriteState: () => this._persistedChunkableValueWriteState(),
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
       isInitialChunkableValueWrite: () => this._isInitialChunkableValueWrite(),
@@ -3456,8 +3456,8 @@ export class StatefulTransactionBuilder {
     swapMintingOffValueChunkBand(this._mintingSwapPredecessorHost());
   }
 
-  private _jobEventsPublishCategory(): string | undefined {
-    return jobEventsPublishCategory(this._chunkableWritePlanningHost());
+  private _chunkableValueWriteCategory(): string | undefined {
+    return chunkableValueWriteCategory(this._chunkableWritePlanningHost());
   }
 
   private _valueChunkWriteCategorySelection(): ValueChunkWriteCategorySelection {
@@ -3465,8 +3465,8 @@ export class StatefulTransactionBuilder {
   }
 
   /** Persist chunks are proxy-category; the LLC master is the impl minting category. */
-  private _persistJobEventsTokenCategory(): string | undefined {
-    return persistJobEventsTokenCategory(this._chunkableWritePlanningHost());
+  private _persistedValueChunkCategory(): string | undefined {
+    return persistedValueChunkCategory(this._chunkableWritePlanningHost());
   }
 
   /** ExtraTransfer swap parks p2pkh funders on the jobEvents band. Put predecessor chunks back. */
@@ -3487,9 +3487,9 @@ export class StatefulTransactionBuilder {
       setPendingJobEventsPredecessors: (extras) => {
         this.pendingJobEventsPredecessors = extras;
       },
-      getPublishJobEventsBand: () => this.getPublishJobEventsBand(),
-      persistJobEventsTokenCategory: () => this._persistJobEventsTokenCategory(),
-      jobEventsPublishCategory: () => this._jobEventsPublishCategory(),
+      getChunkableValueWriteBand: () => this.getChunkableValueWriteBand(),
+      persistedValueChunkCategory: () => this._persistedValueChunkCategory(),
+      chunkableValueWriteCategory: () => this._chunkableValueWriteCategory(),
       isInitialChunkableValueWrite: () => this._isInitialChunkableValueWrite(),
       isPersistedChunkableValueWriteReady: () => this._isPersistedChunkableValueWriteReady(),
       persistedValueChunkWrite: (categoryId) => this._persistedValueChunkWrite(categoryId),
@@ -4865,9 +4865,9 @@ export class StatefulTransactionBuilder {
    */
   seedPersistedJobEventsBand(): number {
     if (!this._shouldRematerializePersistUpdate()) return 0;
-    const band = this.getPublishJobEventsBand();
+    const band = this.getChunkableValueWriteBand();
     if (!band) return 0;
-    const categoryId = this._jobEventsPublishCategory();
+    const categoryId = this._chunkableValueWriteCategory();
     const value = this._persistedValueChunkValue(categoryId);
     const lock = persistUpdateRedeemLock(
       categoryId, this.jobEventsRedeemLock, this._persistedValueChunkWrite(categoryId),
@@ -4876,7 +4876,7 @@ export class StatefulTransactionBuilder {
       ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
     if (!value || !lock) return 0;
     if (this.bumpPublishJobEventsWidth(valueChunkCountFor(value))) this._refreshInputs();
-    const live = this.getPublishJobEventsBand() ?? band;
+    const live = this.getChunkableValueWriteBand() ?? band;
     return seedChunksFromPersistedValue(
       (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, {
         ...chunk,

@@ -163,7 +163,7 @@ const applyMintingMasterFills = (): boolean => {
     )) continue;
     const master = builder.findMintingInputIndex(group.categoryId);
     if (master < 0) continue;
-    const band = builder.getPublishJobEventsBand();
+    const band = builder.getChunkableValueWriteBand();
     const tokenReturn = tokenWriterReturnIndex(
       master, group.blockLayout, band,
       builder.tokenWriterOccupancy(master, builder.build().outputs),
@@ -231,7 +231,7 @@ if (pendingTokenCallInputFills.length > 0) {
     }
     if (tokenIndex < 0 || !fill.group.refreshInternalArgs) continue;
     for (const position of fill.positions) fill.encodedArgs[position] = BigInt(tokenIndex);
-    const fillBand = builder.getPublishJobEventsBand();
+    const fillBand = builder.getChunkableValueWriteBand();
     const tokenReturn = tokenWriterReturnIndex(
       tokenIndex, fill.tokenGroup?.blockLayout, fillBand,
       builder.tokenWriterOccupancy(tokenIndex, builder.build().outputs),

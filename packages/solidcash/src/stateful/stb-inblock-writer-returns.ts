@@ -36,7 +36,7 @@ export interface InBlockWriterReturnHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly pendingReturnEventOutputs: readonly InBlockWriterPendingReturn[];
   findMintingInputIndex(categoryId: string): number;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   tokenWriterOccupancy(
     tokenMaster: number,
     outputs?: ReadonlyArray<{ token?: { nft?: { commitment?: string } } }>,
@@ -64,7 +64,7 @@ export function reassertInBlockWriterReturns(
     const master = host.findMintingInputIndex(physical.categoryId);
     const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
     if (master < 0 || returnSlot === undefined) continue;
-    const band = host.getPublishJobEventsBand();
+    const band = host.getChunkableValueWriteBand();
     const outputIndex = tokenWriterReturnIndex(
       master, physical.blockLayout, band,
       host.tokenWriterOccupancy(master, builder.outputs),

@@ -13,6 +13,7 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { getEntryNftLockingBytecode } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { LEGACY_JOB_EVENTS_COLLECTION_ALIASES } from './legacy-planning-heuristics.js';
 import {
   resolveChunkableEntryCollection,
   resolvePublishedEntryBlockOffset,
@@ -96,7 +97,7 @@ if ((stb.hasStagedValueChunkOutputs() || stb.getJobEventsRedeemLock()) && chunkC
       ?? llc.logicalArtifact?.messageBus?.convention
       ?? llc.externalContract?.inner.artifact.messageBus?.convention,
     // Compatibility for descriptor-free legacy artifacts only.
-    legacyFallback: 'jobEvents',
+    legacyFallback: LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0],
   });
   const blockSize = nestedEntryAbi?.blockLayout?.blockSize
     ?? llc.blockLayout?.blockSize

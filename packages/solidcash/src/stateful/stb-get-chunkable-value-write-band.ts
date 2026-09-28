@@ -6,7 +6,10 @@ import type { AbiFunction } from '@solidcash/utils';
 import { peekBuildId } from './buildSequence.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import type { UnlockableUtxo } from '../interfaces.js';
-import { legacyIsPublishJobEventName } from './legacy-planning-heuristics.js';
+import {
+  LEGACY_JOB_EVENTS_COLLECTION_ALIASES,
+  legacyIsPublishJobEventName,
+} from './legacy-planning-heuristics.js';
 import {
   computePublishJobEventsBand,
   shouldKeepPersistAtLayoutBase,
@@ -22,7 +25,10 @@ import {
   persistedJobEventsWidth,
   type DerivedChunkOutputObservation,
 } from './value-chunk-persist.js';
-import { groupChunkableValueWriteCollection } from './chunkable-value-write-selection.js';
+import {
+  groupChunkableValueWriteCollection,
+  permitsLegacyNamedValueChunkFallback,
+} from './chunkable-value-write-selection.js';
 import type {
   ChunkableValueWriteExecution,
   ChunkableValueWriteGroups,
@@ -42,7 +48,7 @@ export interface GetChunkableValueWriteBandHost {
   getLowLevelCallMasterInputIndex(index: number): number;
   findMintingInputIndex(categoryId: string): number;
   getLoopEntryCommitments(collection: string): readonly string[];
-  jobEventsPublishCategory(): string | undefined;
+  chunkableValueWriteCategory(): string | undefined;
   persistedChunkableValueWriteState(): { width?: number } | undefined;
   isPersistedChunkableValueWriteReady(): boolean;
   isInitialChunkableValueWrite(): boolean;
@@ -50,10 +56,7 @@ export interface GetChunkableValueWriteBandHost {
   entryScaledPreserveRange(): { start: number; endExclusive: number } | undefined;
 }
 
-/**
- * Live publishJobEvent value-chunk band (`impl + blockSize` for `nNew` slots).
- * Occupancy, view tails, and FakeToken rotation all share this range.
- */
+/** Live chunkable-value continuation band (`impl + blockSize` for `nNew` slots). */
 export function getChunkableValueWriteBand(
   host: GetChunkableValueWriteBandHost,
 ): { start: number; end: number; nNew: number } | undefined {
@@ -112,12 +115,14 @@ export function getChunkableValueWriteBand(
     publishLlcIndex >= 0
       ? host.lowLevelCallUtxoGroups[publishLlcIndex]
       : publishExternal as ExternalCallUtxoGroup,
-  ) ?? 'jobEvents';
-  const jobEventsCount = [...new Set(
+  ) ?? (permitsLegacyNamedValueChunkFallback([
+    ...host.lowLevelCallUtxoGroups, ...host.externalCallUtxoGroups,
+  ], host.messageBusConvention) ? LEGACY_JOB_EVENTS_COLLECTION_ALIASES[0] : undefined);
+  const valueChunkEntryCount = activeCollection === undefined ? 0 : new Set(
     host.getLoopEntryCommitments(activeCollection)
       .filter((commitment) => !isEmptyValueChunkCommitment(commitment)),
-  )].length;
-  const publishCategory = host.jobEventsPublishCategory();
+  ).size;
+  const publishCategory = host.chunkableValueWriteCategory();
   const exactPersisted = host.persistedChunkableValueWriteState();
   const persistWidth = host.isPersistedChunkableValueWriteReady() && !host.isInitialChunkableValueWrite()
     ? exactPersisted?.width ?? persistedJobEventsWidth(publishCategory) : 0;
@@ -130,7 +135,7 @@ export function getChunkableValueWriteBand(
       : []),
   );
   const insertShift = persistWidth > 0 ? 0
-    : (plannedInserts > 0 || jobEventsCount === 0 ? 1 : 0);
+    : (plannedInserts > 0 || valueChunkEntryCount === 0 ? 1 : 0);
   // Persist dest is INPUTINDEX+event.offset of the executing publishJobEvent.
   // The value-chunk band is impl+blockSize. If those disagree, dest can land
   // on a persist predecessor (output 20/21) and mutable conservation fails.
@@ -214,7 +219,7 @@ export function getChunkableValueWriteBand(
     start: start === undefined ? undefined : start + (Number.isFinite(probeShift) ? probeShift : 0),
     preserveEndExclusive: Math.max(preserveEndExclusive, forcedStart ?? -1),
     plannedWidth,
-    jobEventsCount,
+    jobEventsCount: valueChunkEntryCount,
     liveWidth: liveJobEventsBandWidth({ plannedWidth, persistWidth, derivedWidth }),
   });
   if (probeShift !== 0 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env

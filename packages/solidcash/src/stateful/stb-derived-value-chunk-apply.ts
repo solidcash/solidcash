@@ -31,7 +31,7 @@ export interface DerivedValueChunkApplyHost {
   readonly lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   readonly messageBusConvention?: 'legacy-unroll' | 'kernel-row-loop';
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   findMintingInputIndex(categoryId: string): number;
   getExternalCallMasterInputIndex(groupIndex: number): number;
   getLowLevelCallMasterInputIndex(llcIndex: number): number;
@@ -46,7 +46,7 @@ export function applyDerivedValueChunks(
   host: DerivedValueChunkApplyHost,
   builder: TransactionBuilder,
 ): boolean {
-  const band = host.getPublishJobEventsBand();
+  const band = host.getChunkableValueWriteBand();
   const repairOwner = selectTokenBandRepairOwner(
     host.externalCallUtxoGroups,
     (categoryId) => host.findMintingInputIndex(categoryId),

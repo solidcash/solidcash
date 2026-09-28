@@ -71,7 +71,7 @@ export interface RepairNestedCalleeOutputsHost {
   chunkableValueWriteInputIndex(): number;
   shouldRematerializePersistUpdate(): boolean;
   getExternalCallEntryOutput(categoryId: string, blockSlot: number): string | undefined;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
   applyDerivedValueChunks(builder: TransactionBuilder): void;
 }
 
@@ -402,7 +402,7 @@ export function repairNestedCalleeOutputs(
     const blockSize = fn?.blockLayout?.blockSize ?? 1;
     // Executing impl verifies chunks at INPUTINDEX+trailingBase (15+5=20).
     // min(impl, proxy)+blockSize is 17 and overwrites meceTags.
-    const chunkBase = host.getPublishJobEventsBand()?.start
+    const chunkBase = host.getChunkableValueWriteBand()?.start
       ?? Math.max(implIndex + blockSize, masterIndex + blockSize);
     const derivedIndexes = [...host.derivedChunkOutputs.keys()]
       .filter((outputIndex) => {

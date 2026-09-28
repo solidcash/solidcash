@@ -422,7 +422,7 @@ export function deriveRouteValueChunks(
   convention?: 'legacy-unroll' | 'kernel-row-loop',
 ): RouteValueChunkProgress {
   if (!group.blockLayout) return { changed: false, discovered: false };
-  const sharedBand = stb.getPublishJobEventsBand();
+  const sharedBand = stb.getChunkableValueWriteBand();
   const explicitBase = group.valueChunkOutputBase !== undefined && group.valueChunkOutputBase >= 0
     ? group.valueChunkOutputBase : undefined;
   const witness = valueChunkOutputWitnessCarrier(stb, group);

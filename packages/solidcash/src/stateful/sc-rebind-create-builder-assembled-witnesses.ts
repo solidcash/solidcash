@@ -84,7 +84,7 @@ export function rebindCreateBuilderAssembledWitnesses(
     .filter((index) => index >= 0);
   const plannedJobEventsOccupancy = viewTailOccupancyCap(
     plannedViewTails,
-    builder.getPublishJobEventsBand(),
+    builder.getChunkableValueWriteBand(),
   );
   const assignedReturns = assignPhysicalReturnIndices(
     externalCallUtxoGroups,
@@ -200,7 +200,7 @@ export function rebindCreateBuilderAssembledWitnesses(
               .filter(([name]) => /ReturnOutputIdx/.test(name)),
           ),
         })),
-      band: builder.getPublishJobEventsBand(),
+      band: builder.getChunkableValueWriteBand(),
       packOptions: builder.viewTailPackOptions(),
     });
   }

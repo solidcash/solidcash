@@ -18,8 +18,8 @@ export interface FinalizeBuildJobsBandAndViewsHost {
   readonly pinnedEntrySlots: ReadonlySet<unknown>;
   viewTailRepackAttempted: boolean;
   builtReturnEventOutputIndices: Map<string, number>;
-  getPublishJobEventsBand(): { start: number; end: number; nNew: number } | undefined;
-  jobEventsPublishCategory(): string | undefined;
+  getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
+  chunkableValueWriteCategory(): string | undefined;
   hasStagedValueChunkOutputs(): boolean;
   permitsLegacyNamedValueChunkFallback(): boolean;
   stripSurplusDerivedValueChunkLocks(builder: TransactionBuilder): void;
@@ -56,8 +56,8 @@ export function finalizeBuildJobsBandAndViews(
   builder: TransactionBuilder,
   returnOutputRefs: Map<string, Output>,
 ): 'rebuild' | 'continue' {
-  const chunkBand = host.getPublishJobEventsBand();
-  const publishCategory = host.jobEventsPublishCategory();
+  const chunkBand = host.getChunkableValueWriteBand();
+  const publishCategory = host.chunkableValueWriteCategory();
   const chunkLock = host.jobEventsRedeemLock
     ?? (publishCategory ? persistedJobEventsLock(publishCategory) : undefined);
   // Kernel identity-scan pins count matching locks anywhere. A single persist band

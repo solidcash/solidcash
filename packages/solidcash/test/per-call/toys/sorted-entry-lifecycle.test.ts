@@ -12,7 +12,7 @@ import {
   userInput, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, layOutMappingWrites, participant, planMappingWrite,
+  createComposedDerivationHost, deriveComposition, layOutMappingWrites, participant, planMappingWrite,
   type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 
@@ -84,6 +84,7 @@ const node = (slot: Uint8Array, value: bigint): Uint8Array => encodeEntryCommitm
 /** The whole composition: the plan the composer lays out, its segments, and the draft the derivation fills. */
 function drive(): {
   readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly derived: ReturnType<typeof deriveComposition>;
   readonly segments: readonly (readonly RecordEntry[])[];
   readonly nodeAfter: Uint8Array;
   readonly headAfter: Uint8Array;
@@ -205,10 +206,13 @@ function drive(): {
     },
   };
 
-  const { draft } = createComposedDerivationHost({
+  const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [artifacts.Hub!, artifacts.Ledger!], plan,
   });
-  return { draft, segments, nodeAfter, headAfter };
+  // A call record carries no callee until the derivation resolves each site to the master it reaches, so the
+  // composition is derived before any frame runs: the hub's own records name the three ledger frames.
+  const derived = deriveComposition([rootOf('Hub', 'run', 'hub-1')], host);
+  return { draft, derived, segments, nodeAfter, headAfter };
 }
 
 /** The machine's verdict on one participant's own input of the assembled transaction. */
@@ -299,13 +303,22 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     expect(verdictAt(rewriting, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 
-  it('settles the whole insert, update and delete lifecycle, every frame accepting', () => {
-    // The one transaction writes two records: the head the insert relinks, and the node the insert creates and
-    // both later frames rewrite. Each commitment is read back through the shipped sorted-list encoder, and each
-    // frame's own segment declares the view it reads and the view it writes.
-    const { draft, nodeAfter, headAfter } = drive();
+  it('settles the whole insert, update and delete lifecycle, every input accepting', () => {
+    // The derivation resolves each of the hub's call records to the frame it reaches, and one transaction writes
+    // two records: the head the insert relinks, and the node the insert creates and both later frames rewrite.
+    // Each commitment is read back through the shipped sorted-list encoder, and each frame's own segment declares
+    // the view it reads and the view it writes.
+    const { draft, derived, nodeAfter, headAfter } = drive();
     const slot = keyToSlotMulti([KEY_PUSH]);
     const program = draft.programFor('hub-1');
+    expect(derived.completed.map((frame) => frame.master))
+      .toStrictEqual(['insert-1', 'update-1', 'remove-1', 'hub-1']);
+    // Each call record names the frame the derivation resolved it to, in source order.
+    expect(draft.blockOf('hub-1').calls.map((call) => call.calleeRef)).toStrictEqual([
+      participant(draft.layout, 'insert-1').index,
+      participant(draft.layout, 'update-1').index,
+      participant(draft.layout, 'remove-1').index,
+    ]);
     expect(program.transaction.outputs[HEAD_INDEX]!.token?.nft?.commitment).toStrictEqual(relinkedHead(slot));
     expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment).toStrictEqual(node(slot, DEFAULT));
     expect(nodeAfter).toStrictEqual(node(slot, DEFAULT));
@@ -315,8 +328,8 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     expect(draft.blockOf('update-1').segments[0]![0]!.viewOut).toStrictEqual(node(slot, UPDATED));
     expect(draft.blockOf('remove-1').segments[0]![0]!.viewOut).toStrictEqual(node(slot, DEFAULT));
 
-    expect(verdictAt(draft, 'insert-1')).toBe('accepted');
-    expect(verdictAt(draft, 'update-1')).toBe('accepted');
-    expect(verdictAt(draft, 'remove-1')).toBe('accepted');
+    for (const id of ['hub-1', 'insert-1', 'update-1', 'remove-1', 'validator']) {
+      expect(`${id}: ${verdictAt(draft, id)}`).toBe(`${id}: accepted`);
+    }
   });
 });

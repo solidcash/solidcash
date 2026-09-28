@@ -285,8 +285,8 @@ import {
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, callsOnEveryPath, callsRepeat,
-  DYNAMIC_CHUNK_BASE_PARAMETER,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteSegment,
+  callsOnEveryPath, callsRepeat, DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -1072,6 +1072,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * body is currently in (a record rebuilt for a segment the body has already left).
    */
   private perCallReadSegment: number | undefined;
+  /**
+   * The segment a body's sorted-batch write lands in, as the number of external calls its own code makes before the
+   * write. The derivation reads the write's records where the body begins, and the batch verification reads the
+   * write's own declaration, so both resolve against this segment rather than the one the frame ends in.
+   */
+  private perCallBatchWriteSegment = 0;
   /**
    * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
    *
@@ -3429,6 +3435,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
     if (batches.length === 0) return;
+    // The write's records are declared in the segment the write lands in; the derivation reads that segment.
+    this.perCallBatchWriteSegment = perCallBatchWriteSegment(node) ?? 0;
     const constants = new Set(this.constantExpressions.keys());
     // The admission rule admits a contract only when every one of its bodies writes the derivable shape. An
     // internal body the advisory check does not cover would otherwise be compiled with a derivation its record
@@ -6725,6 +6733,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallOrdinal = 0;
     this.perCallRecordSegment = new Map();
     this.perCallReadSegment = undefined;
+    this.perCallBatchWriteSegment = 0;
     this.perCallStaleWrites = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -24177,7 +24186,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_IF, loc);
     }
+    // The verification reads the proof node's declared view, which is the segment the write landed in rather than
+    // the one the frame ends in: a call after the write leaves the proof record declared only in the write's own
+    // segment.
+    const previousReadSegment = this.perCallReadSegment;
+    if (this.perCallMaster) this.perCallReadSegment = this.perCallBatchWriteSegment;
     this.emitSortedBatchTransitionVerification(node);
+    this.perCallReadSegment = previousReadSegment;
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
     const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {

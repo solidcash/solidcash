@@ -54,6 +54,7 @@ import {
   LowLevelCallNode,
   LowLevelCallStatementNode,
   MappingAssignNode,
+  Node,
   NullaryOpNode,
   StateAccessNode,
   StateArrayAssignNode,
@@ -523,6 +524,52 @@ function unsupportedBatchWriteShape(
     + 'segment would not fix which transition ran';
 }
 
+/** True when a body's subtree makes an external call, so a branch or loop over it runs one on some paths only. */
+function subtreeMakesExternalCall(node: Node): boolean {
+  let found = false;
+  walkInvocationAst(node, (candidate) => {
+    if (candidate instanceof ExternalFunctionCallNode || candidate instanceof LowLevelCallNode
+      || candidate instanceof LowLevelCallStatementNode) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+/**
+ * How many external calls a body makes before its derivable batch write, or undefined when the source does not fix
+ * that number.
+ *
+ * The derivation reads the segment the write's records are declared in, and a call closes the segment the code
+ * before it runs in, so a write that precedes every call lands in the segment the derivation reads while one that
+ * follows a call lands in a later one. A write inside a branch or loop that also makes a call is a position the
+ * source does not fix, so it is left to the caller to refuse.
+ */
+export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number | undefined {
+  const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  if (slots.size === 0) return undefined;
+  let calls = 0;
+  let segment: number | undefined;
+  let ambiguous = false;
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
+      || node instanceof LowLevelCallStatementNode) {
+      calls += 1;
+      return;
+    }
+    if (node instanceof MappingAssignNode && slots.has(node.entrySlotIndex)) {
+      if (segment === undefined) segment = calls;
+      else if (segment !== calls) ambiguous = true;
+      return;
+    }
+    if ((node instanceof BranchNode || node instanceof SwitchNode || node instanceof WhileNode
+      || node instanceof DoWhileNode || node instanceof TryCatchNode) && subtreeMakesExternalCall(node)) {
+      ambiguous = true;
+    }
+  });
+  return ambiguous ? undefined : segment;
+}
+
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
 function isUndeclaredHiddenParameter(
   entry: FunctionDefinitionNode,
@@ -792,15 +839,17 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     entryPoints.find((entry) => entry.name === entryName)!, reason,
   );
   const servedWithCalls = served.filter((entry) => !refusals.has(entry.name));
-  // A derived mapping write is settled in the segment its own code runs, which the derivation reads as the first
-  // segment. A master that makes a call splits the execution, so which segment the write lands in is a fact the
-  // frame does not fix and the derivation will not guess.
+  // A derived mapping write is settled in the segment its records are declared in, and a call closes the segment
+  // the code before it runs in. The derivation is emitted where the body begins, so it reads the segment a write
+  // that precedes every call lands in; a write a call precedes lands in a later one, which the derivation does not
+  // read, and a write beside a call inside a branch is a position the source does not fix.
   if (calls.callCount > 0) {
     for (const fn of [...servedWithCalls, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
-      if (derivableBatchWitnessNames(fn, constants) !== undefined) {
-        refuseBody(fn, 'a verified-mapping write is derived from the segment the entry runs, but the master makes '
-          + 'external calls, which split the execution into later segments');
-      }
+      if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
+      if (perCallBatchWriteSegment(fn) === 0) continue;
+      refuseBody(fn, 'a verified-mapping write is derived from the segment its own code runs in, but the master '
+        + 'makes external calls and the write does not precede them, so the segment the write lands in is a fact '
+        + 'the derivation does not read');
     }
   }
   const bodies = [

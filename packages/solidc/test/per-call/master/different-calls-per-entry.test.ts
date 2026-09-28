@@ -232,6 +232,7 @@ function buildComposition(entry: Entry, options: EntryCompositionOptions = {}): 
   };
   const dropFrameAndSelector = new Uint8Array([
     Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+    Opcodes.OP_DROP,
     Opcodes.OP_1,
   ]);
   const callee = masterProgram({

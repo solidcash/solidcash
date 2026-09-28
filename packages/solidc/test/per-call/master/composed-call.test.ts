@@ -195,11 +195,11 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     category: CATEGORY_B,
     address: ADDRESS_B,
     options: { blockOnTop: false, frameKinds: [0, 1], reservesValidatorHashSlot: true, calls: [] },
-    // The head leaves the four frame values and the block's declared call count above the callee's own
-    // selector push.
+    // The head leaves the four frame values, the category-owner index and the block's declared call count above
+    // the callee's own selector push.
     body: new Uint8Array([
       Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
-      Opcodes.OP_1,
+      Opcodes.OP_DROP, Opcodes.OP_1,
     ]),
   });
 
@@ -301,7 +301,8 @@ function standaloneVerdicts(
     address: ADDRESS_A,
     options: { blockOnTop: true },
     body: new Uint8Array([
-      Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_1,
+      Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+      Opcodes.OP_1,
     ]),
   });
   const userIndex = masterCount;

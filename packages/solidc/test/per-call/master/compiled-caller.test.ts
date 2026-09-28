@@ -117,11 +117,12 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     },
     { category: categorySlotValue(CATEGORY_CALLEE), contractAddress: ADDRESS_CALLEE, templateHash },
   );
-  // The head drops the block copy, then leaves four frame values and the declared call count above the callee's
-  // selector push.
+  // The head drops the block copy, then leaves four frame values, the category-owner index and the declared call
+  // count above the callee's selector push.
   const calleeProgram = new Uint8Array([
     ...filledCallee,
-    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
+    Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_DROP,
     Opcodes.OP_1,
   ]);
 

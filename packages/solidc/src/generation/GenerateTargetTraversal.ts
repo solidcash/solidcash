@@ -275,8 +275,8 @@ import { analyseContractInvocations, walkInvocationAst } from '../analysis/Invoc
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
-  buildMasterHeadScript, callCountSlotName, eventCountSlotName, eventOutputSlotName, recordInputIndexSlotName,
-  recordOutputIndexSlotName, retvalSlotName,
+  buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventCountSlotName, eventOutputSlotName,
+  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
@@ -3140,6 +3140,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The block's declared call count sits above the record indices, below `retval`, where each body pins it to
     // the number of calls its own source makes.
     this.pushToStack(callCountSlotName());
+    // The frame's `retval` is left above the call count and below the owner slot, so both are registered before
+    // the dynamic-state coordinate below is derived from the record indices' depths.
+    if (returnsValue) this.pushToStack(retvalSlotName());
+    // The owner of the records this frame uses: the head parks the input index whose UTXO carries their contract's
+    // category, which is the frame's own input for a frame that owns its records and its caller's for a frame that
+    // runs on them. A body's record-category check reads it here, so it resolves the records' owner rather than
+    // the code that executes.
+    this.pushToStack(categoryOwnerSlotName());
     // A body that reads or writes a dynamic value addresses its chunk run from the frame's declared record block,
     // one layout width past it, exactly as the direct convention addresses the run from the input its frame runs
     // on. Derived here rather than taken as an argument, and registered above the record indices the derivation
@@ -3152,8 +3160,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
       this.pushToStack(DYNAMIC_CHUNK_BASE_PARAMETER);
     }
-    // The frame's `retval` is left above everything else, so its slot is registered last.
-    if (returnsValue) this.pushToStack(retvalSlotName());
   }
 
   /**
@@ -5849,7 +5855,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // constructor names so this body reads `msg.sender`, `address(this)`, `msg.value` and `tx.origin` from the
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
-        // The seeded array is the frame top-first, so the list below runs topmost to deepest.
+        // The seeded array is the frame top-first, so the list below runs topmost to deepest. The head leaves the
+        // category-owner slot topmost, above `retval`, the call count, and the record and event slots below them.
+        if (this.stack.includes(categoryOwnerSlotName())) subTraversal.stack.push(categoryOwnerSlotName());
         if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
         if (this.stack.includes(callCountSlotName())) subTraversal.stack.push(callCountSlotName());
         if (this.stack.includes(DYNAMIC_CHUNK_BASE_PARAMETER)) {
@@ -25185,7 +25193,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // owner must inline this check so emitMasterInputIndex can read that authenticated owner from the local frame;
     // invoking the shared helper would silently compare against the executing implementation input instead.
     // Raw emit: callers manage the stack tracker.
-    if (!this.usesMessageBusOwnerBlockBase()
+    if (!this.perCallMaster && !this.usesMessageBusOwnerBlockBase()
       && !this.usesProxyStateBlockBase()
       && this.invokeSubroutineIfDefined(
         GenerateTargetTraversalWithLocation.CAT_BASE_EQ_MASTER_SUBROUTINE_ID, locationData)) {
@@ -25194,7 +25202,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_DROP, locationData);
-    this.emitMasterInputIndex(locationData, untrackedStackItems);
+    // A per-call body names the records' owner through the head's slot: a frame that runs on its caller's records
+    // uses the caller's category, so comparing against the executing input would refuse a record the frame owns.
+    if (this.stack.includes(categoryOwnerSlotName())) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryOwnerSlotName()) + untrackedStackItems)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emitMasterInputIndex(locationData, untrackedStackItems);
+    }
     this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
     this.emit(encodeInt(32n), locationData);
     this.emit(Op.OP_SPLIT, locationData);

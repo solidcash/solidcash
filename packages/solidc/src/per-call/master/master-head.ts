@@ -114,6 +114,20 @@ export function retvalSlotName(): string {
   return '__internal__frameRetval';
 }
 
+/**
+ * The tracked slot holding the input index whose UTXO carries the category of the contract whose records this
+ * frame uses.
+ *
+ * A frame that owns its records - a root, message-call, read-only-call or create frame - is the master's own
+ * input, so the slot holds `OP_INPUTINDEX`. A frame that runs on its caller's records - a delegate frame, and an
+ * internal frame if the head ever admits one - names its caller's input instead, because the contract whose
+ * records it uses is the one whose context it runs in. A state site compares the base of a record's category
+ * against this slot's UTXO category, so the check names the records' owner rather than the code that executes.
+ */
+export function categoryOwnerSlotName(): string {
+  return '__internal__frameCategoryOwner';
+}
+
 /** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
 const HASH_TYPE_ALL = 0x41;
 /** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
@@ -205,6 +219,8 @@ const FRAME_KIND_CALL = 1;
 const FRAME_KIND_STATIC = 2;
 /** The frame kind of a delegate call: the one a `delegatecall` callee runs on its caller's records. */
 const FRAME_KIND_DELEGATE = 3;
+/** The frame kind of an internal call: the one a callee that runs on its caller's records as its own code does. */
+const FRAME_KIND_INTERNAL = 4;
 
 /** Builds the head a master program opens with. */
 export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
@@ -333,12 +349,56 @@ class HeadEmitter {
 
   /** Consumes everything the reader left but `[origin, sender, value, self]`, origin topmost. */
   frameChecks(): void {
+    this.parkCategoryOwner();
     if (this.composed) this.composedFrameChecks();
     else this.standaloneFrameChecks();
     this.leaveEventSlots();
     this.leaveRecordSlots();
     this.leaveCallCountSlot();
     this.leaveRetvalSlot();
+    this.leaveCategoryOwnerSlot();
+  }
+
+  /**
+   * Parks the input index whose UTXO carries the category of the contract whose records this frame uses.
+   *
+   * The two header fields that decide which - the frame kind and the caller reference - are still on the stack
+   * here, before the tail walk consumes the rest. A frame that owns its records is the master's own input; a
+   * frame that runs on its caller's records names its caller's input. The parked value is recovered with the
+   * other parked slots once the checks have run.
+   */
+  private parkCategoryOwner(): void {
+    this.emitBranch(
+      () => {
+        this.frameKindIs(FRAME_KIND_DELEGATE);
+        this.frameKindIs(FRAME_KIND_INTERNAL);
+        this.emitOp(Opcodes.OP_BOOLOR);
+        this.pop(2);
+        this.push('bool');
+      },
+      () => {
+        this.pick('callerRef');
+        this.bin2num();
+        this.replaceTop('owner');
+      },
+      () => {
+        this.emitInputIndex();
+        this.replaceTop('owner');
+      },
+    );
+    this.emitOp(Opcodes.OP_TOALTSTACK);
+    this.pop(1);
+  }
+
+  /**
+   * Moves the category-owner input index off the alt stack, where the header read parked it beneath every later
+   * parking, so a body's record-category check resolves the records' owner through it.
+   *
+   * Popped last because it was parked first, before `retval` and the call, record and event parkings above it.
+   */
+  private leaveCategoryOwnerSlot(): void {
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(categoryOwnerSlotName());
   }
 
   /**

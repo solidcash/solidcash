@@ -70,10 +70,11 @@ function masterProgram(options: MasterHeadOptions): { program: Uint8Array; lock:
       ...(head.validatorHashSlotOffset === undefined ? {} : { templateHash: TEMPLATE_HASH }),
     },
   );
-  // The head leaves the four frame values, the block's declared call count, the record indices when the head
-  // keeps them, and the event region: the declared count above one slot per position, when the region holds any.
+  // The head leaves the four frame values, the category-owner index, the block's declared call count, the record
+  // indices when the head keeps them, and the event region: the declared count above one slot per position, when
+  // the region holds any.
   const eventRegionSize = options.tail?.maxEventCount ?? 0;
-  const leaves = 4 + 1 + (options.keepsRecordIndices === true ? 2 : 0)
+  const leaves = 4 + 1 + 1 + (options.keepsRecordIndices === true ? 2 : 0)
     + (eventRegionSize > 0 ? eventRegionSize + 1 : 0);
   const program = new Uint8Array([
     ...filled,

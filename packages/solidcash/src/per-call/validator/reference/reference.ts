@@ -417,6 +417,9 @@ class ReferenceRun {
         if (input === undefined || !eq(chain[0]!.entry.viewIn, input.token.nftCommitment)) {
           this.reject('V7', 'A_CHAIN_DOES_NOT_START_AT_THE_INPUT_COMMITMENT', Number(slot.slice(3)));
         }
+      } else if (chain[0]!.entry.viewIn.length !== 0) {
+        // A record the transaction creates starts from nothing.
+        this.reject('V7', 'A_CREATED_RECORD_DOES_NOT_START_EMPTY', Number(slot.slice(4)));
       }
       for (let at = 1; at < chain.length; at += 1) {
         if (!eq(chain[at]!.entry.viewIn, chain[at - 1]!.entry.viewOut)) {

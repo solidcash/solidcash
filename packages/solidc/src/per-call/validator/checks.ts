@@ -455,6 +455,9 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
       if (!bytesEqual(first.viewIn, input!.token.nftCommitment)) {
         check('V7', 'V7_CHAIN_START_MISMATCH', input!.index);
       }
+    } else if (first.viewIn.length !== 0) {
+      // A record the transaction creates starts from nothing.
+      check('V7', 'V7_CHAIN_START_MISMATCH', first.out);
     }
     for (let at = 1; at < chain.length; at += 1) {
       if (!bytesEqual(chain[at]!.entry.viewIn, chain[at - 1]!.entry.viewOut)) {

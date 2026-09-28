@@ -8,6 +8,15 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 
 ## 0. Changes
 
+### Since the implementation (2026-09-28)
+
+- **Order.** The program derives the V6 order on chain and follows the record chains in it (section 7.2), so a
+  transcript whose views chain only in another order is refused (T9, T30). The program got smaller doing it.
+- **Created records.** A created record's chain starts from nothing in both reference models, as section 20 already
+  said and the program already enforced.
+- **Validator facets.** A validator may span several inputs (section 24). This resolves open point 7's size half;
+  the facets are built in Phase R.
+
 ### Since the implementation (2026-09-26)
 
 - **Value tails.** The clause that said any value over 64 bytes takes the length-prefixed form is removed. The shipped
@@ -357,6 +366,7 @@ A runs on two masters, so its validator settles it. B runs on one master, so B s
   one program derive every category's address. It is emitted by the compiler (`validatorProgram`), and the runtime
   budget its cost fits into is an open point (section 12).
 - It checks V1-V11 (section 7.2).
+- It may span several inputs, a head and its facets (section 24); the head is the input described here.
 - Its correctness is the security core of all composition (section 9).
 
 ### 3.3 `stateX`: state UTXOs
@@ -728,6 +738,8 @@ Conversely, every covered master that is not a root appears in exactly one calle
 - The walk must reach every covered master exactly once. This rules out cycles and unreachable masters (T31).
 - Each call's callee runs entirely between the caller's segment that made the call and the caller's next segment.
   One master's segments stay in order, and roots never interleave (T30).
+- The program derives the order with a recursive visit that takes three of the machine's 100 control-stack entries
+  per call level, so a call tree deeper than about 30 levels is refused.
 
 **V7. Settlement**, for each contract X in `M.settles`:
 - every master of `catX` in the transaction is covered;
@@ -1019,7 +1031,7 @@ defaults.
 
 | Limit (real BCH) | Masters | Validator |
 | --- | --- | --- |
-| 10,000 B per unlocking bytecode and per script (consensus: `maximumBytecodeLength`, a.k.a. `MAX_SCRIPT_SIZE`; also the 2026 relay limit) | Arguments + witnesses + code. Witnesses are about 0.1-2 KB; views are at most 128 B per record per segment | `M` (a few bytes per master and segment) + the fixed `V_TEMPLATE` |
+| 10,000 B per unlocking bytecode and per script (consensus: `maximumBytecodeLength`, a.k.a. `MAX_SCRIPT_SIZE`; also the 2026 relay limit) | Arguments + witnesses + code. Witnesses are about 0.1-2 KB; views are at most 128 B per record per segment | `M` (a few bytes per master and segment) + the fixed `V_TEMPLATE`, whose checks are split across facet inputs (section 24) |
 | 10,000 B stack item | Views are at most 128 B | Reads each covered master's unlocking bytecode. On a real chain that is at most 10,000 B, so a master must fit its code into 10,000 B through code splitting (open point 11). The mock lifts both limits |
 | Op-cost budget, (41 + unlocking length) x 800 | Its own execution | Reads and hashes every covered master's witnesses. Large compositions may need unlocking padding for density (open point 7) |
 | 100,000 B transaction, relay policy (consensus: 1,000,000 B) | Every executing master carries its code, once per entry. Code splitting bounds each master, not their sum (below) | Negligible |
@@ -1077,7 +1089,8 @@ cost profile for this reason, and the program's fit inside the published 800-per
 
 **Status for the 66** (Part II):
 - Resolved by Part II: open points 1, 2, 3, 5 and 6 (sections 16-19 and 21), and 4 (section 20).
-- Outside the 66 (real chain, or features the tests do not use): 7, 8, 10 beyond preservation, 11, 14 and 16.
+- Outside the 66 (real chain, or features the tests do not use): 7, 8, 10 beyond preservation, 11, 14 and 16. Open
+  point 7's size half is resolved by design (section 24) and built in Phase R.
 - Decided: 12, 13 and 15.
 
 1. **The witness block's byte layout** (section 4): field order, length prefixes and versioning. Masters and the
@@ -1091,7 +1104,8 @@ cost profile for this reason, and the program's fit inside the published 800-per
      have no front-runner;
    - the facet routing table.
 6. **Pool sizes and defaults** for masters and validators, and how deployment and the harness set them.
-7. **Validator program size, op-cost density, and padding.**
+7. **Validator program size, op-cost density, and padding.** Size: the validator spans several inputs (section 24).
+   Density: each of those inputs funds its own checks and carries its own padding, measured in plan A9.
 8. **User callers other than P2PKH**, such as P2SH wallets, for standalone mode.
 9. **`msg.sender` inside `this.g()` in today's compiler.** Measured on `ea7a48e27`: it keeps the caller.
    - `AstBuilder.ts:7323` warns: "msg.sender is not re-set to self".
@@ -1678,11 +1692,61 @@ Implementation status of every rule and mechanism in this spec is tracked only i
 | 22 | `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value | Take job sanity | The native `ecrecover` must return address 0 for invalid input, not fail the script; OpenZeppelin then raises its own errors |
 | 23 | Records growing within one transaction and across 30 transactions | 8 MECE tags in `initialize`; 30 events for one job; registrations | Section 20 |
 | 24 | `string => string` mapping set and delete | `updateMeceTag`, `removeMeceTag` (refused as `KERNEL_LAYOUT` today) | Section 20 |
-| 25 | Deep chains, four calls below M plus proxy hops, about 24 masters | `arbitrate` | V6 has no depth limit; pools (21) |
+| 25 | Deep chains, four calls below M plus proxy hops, about 24 masters | `arbitrate` | The program's V6 walk allows about 30 call levels (section 7.2); pools (21) |
 | 26 | A multi-megabyte master script in the mock (MarketplaceV1) | Every M entry | The validator reads only the first push (W0); relaxed op-cost |
 
 Out of scope, and identical to the EVM: `U.pay` has no caller check while M leaves U a maximum allowance, so anyone
 can move M's tokens into an escrow; `publishJobPost` also approves M for itself.
+
+## 24. Validator facets (resolves open point 7's size half)
+
+A real chain caps each unlocking bytecode at 10,000 B and funds each input's execution at 800 operation-cost units
+per byte of that same unlocking bytecode (section 12). Measured on the reference composition after the order walk
+landed: the program is 10,270 B, the validator input's unlocking bytecode 10,354 B, and it spends 4,897,165 of the
+8,316,000 units its bytes buy. The program still has checks to emit, and `arbitrate` covers about 24 masters. So a
+validator may span several inputs.
+
+**Shape.**
+- A validator is a head and `K - 1` facets. `K` and the split of the checks are part of `V_TEMPLATE` v1.
+- The head is the validator input of section 3.2: a mutable NFT of `cat` at `addrV(cat)`, carrying `M`, running
+  `V_TEMPLATE`. Masters recognize it through `H_V` exactly as before (N1).
+- Facet `k` (`1 <= k < K`) is an input at the fixed position `head + k`, locked by `P2SH32(F_k)`, where `F_k` is the
+  facet's code. It holds no token and pins no category, so any facet UTXO of that code serves any contract.
+- Every check runs in exactly one input. The head keeps what decides what the others read: the pin, V1, `M`'s
+  header and indices (V2), completeness (V3), and the binding below.
+
+**Binding, in the head.**
+- For each `k`, the input at `head + k` is locked by `P2SH32(F_k)`. `V_TEMPLATE` carries each `F_k`'s hash, so
+  `addrV` commits to every facet's code (D9), and no facet can be replaced without changing every address.
+- The output at `head + k` recreates the facet in place with at least its value, as V1 does for the head, so a
+  facet pool cannot run out inside a transaction (section 21).
+- Facets do not carry the head's hash, so the two hashes are not circular.
+
+**Reading, in each facet.**
+- Facet `k` reads `M` from the input at `OP_INPUTINDEX - k`: the first push of that input's unlocking bytecode, and
+  the category from the pin that opens its redeem script. A check that needs `V_TEMPLATE`'s bytes (V11 derives
+  addresses from them) reads them from the same redeem script.
+- A facet does not check that input. The head binds its facets; nothing relies on a facet spent without its head,
+  and the facet's value stays in the facet it recreates.
+- A transaction is valid only when every input succeeds, so a head and its facets decide exactly what one input
+  running every check would: each check runs once, over one `M`, at one head.
+
+**Budget.**
+- Each input funds its own execution. Moving code into a facet moves its cost with it, so the split divides the
+  work and not only the bytes, and each facet carries the padding its own checks need.
+- `K` inputs hold up to `K x 10,000 B` of program and `K x 8,000,000` units. Plan A9 sizes `K` and the split from
+  the measured program and from `arbitrate`.
+
+**Threats** (section 9).
+- A facet left out or moved: the head requires each facet's lock at `head + k` (the T4 and T6 class).
+- A facet of other code: its lock is not `P2SH32(F_k)`.
+- A facet that reads another transcript: it reads the input at `OP_INPUTINDEX - k`, and the head holds it at
+  `head + k`, so both name the same head.
+- Two heads sharing a facet: a position holds one lock, the facets' codes differ, and a head's lock is not a facet's,
+  so `h + k = h' + k'` forces `h = h'` and `k = k'`.
+
+**Unchanged:** `M`'s wire format, the witness blocks, the masters, `addrV`'s form and every check's rule. Only the
+input a check runs in moves. The facets are built in Phase R (plan A9), before the freeze binds (open point 13).
 
 ---
 

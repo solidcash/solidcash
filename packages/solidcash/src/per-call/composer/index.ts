@@ -4,6 +4,7 @@
  */
 
 export * from './refusals.js';
+export * from './refusal.js';
 export * from './derivation.js';
 export * from './shipped-host.js';
 export * from './draft.js';

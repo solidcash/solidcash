@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 348 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 354 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -30,16 +30,17 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 72 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
+| `packages/solidcash/test/per-call/receipt/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 84 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 89 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 15 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 85 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1120 tests (115 + 389 + 616), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 616 is the eleven rows above it.
+Total: 1135 tests (115 + 395 + 625), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 395 is the four rows above it, and `solidcash` 625 is the twelve rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -132,6 +133,10 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   read from the assembled caller references, and its reason names the frame, the source line and the custom error the
   artifact publishes (name and declared parameters). A nested revert reports the callee rather than the caller, both
   frames are reported when both refuse, and the provider is asserted to have seen no transaction.
+- **`solidcash/test/per-call/receipt/`** — the logs a composition's events make: each listed event output is matched to
+  the event its covenant declares and reported with the emitting contract's `addrV(category)`, the fields keyed by
+  parameter name and in declared order, including an event a nested frame emitted (reported with the callee's address)
+  and an anonymous event (disambiguated by its covenant).
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own

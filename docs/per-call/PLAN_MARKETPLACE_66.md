@@ -554,7 +554,13 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   `read` site is published: the compiler does not hold the record identity a read resolves to, and an invented one
   would be worse than an omitted one.
 - [x] C11 A code constant slot for `addrX`; stream F fills it at deployment.
-- [ ] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule;
+- [ ] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule.
+  **Measured** (`f1fea7af9`, `master/low-level-token-calls.test.ts`): `abi.encodeCall`/`abi.encodeWithSelector` plus
+  `address(token).call(data)` are refused per body rather than lowered - with the result bound the reason is the
+  direct path's return-event machinery, as a bare statement the missing call-witness checks - so no non-canonical
+  argument digest is ever published, and the equivalent typed call is served and publishes its call site. The
+  `code.length` gate is served but through the general P2SH-only extractor, so a plain-account or zero-address
+  target fails the script rather than answering zero. The lowering itself is the remaining work;
   `address(this).balance` constant-folded for value 0 (spec 17; section 23 rows 9-11).
 - [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22).
 - [ ] C14 Fix: a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally
@@ -681,7 +687,14 @@ risk. Take the slices in order, each with its own tests.
   such, a refusing read reports the machine's objection (without the `require` message, which the shifted failing
   instruction does not reach), the provider's transaction count is asserted unchanged, and the module refuses read
   entries that make external calls or touch mapping-backed records.
-- [ ] E5 Events to ethers logs and receipts: category to `addrV`, including nested frames.
+- [x] E5 Events to ethers logs and receipts: category to `addrV`, including nested frames. Landed (`85fc9c520`):
+  the SDK reads the frames' own witness blocks as the census, matches each listed output to the event its covenant
+  declares (anonymous events disambiguated by their covenant), decodes the commitment with the shipped decoder and
+  reports a log whose address is the emitting contract's `addrV(category)` - not the covenant's lock - with the fields
+  keyed by the artifact's parameter names and in declared order. Measured: a caller that emits and then calls an
+  emitter that emits reports both logs with their own contracts' addresses, the nested one's five fields decoded from
+  a value wider than 32 bytes; a composition that emits nothing reports nothing; an event output no frame lists is not
+  reported, because the frames are the census (`test/per-call/receipt/`).
 - [ ] E6 A serialization queue for sends that could touch the same masters, validators or records.
 - [ ] E7 Time: locktime fixed before derivation; strictly later block times in the mock.
 - [ ] E8 Simulation before funding: a send from an unfunded wallet reports its revert.
@@ -703,10 +716,18 @@ risk. Take the slices in order, each with its own tests.
   address, and one record per data NFT carries the commitment the constructor's frame computed. The marketplace
   fixture's four escrow contracts now deploy through it.
 - [x] F2 Bake `addrX` into `code_X`; `getAddress()` returns `addrV(cat)`.
-- [ ] F3 CREATE look-ahead:
-  - reserve genesis-eligible UTXOs;
-  - the `getCreateAddress` shim maps nonce `n + i` to the `i`-th reserved UTXO;
-  - an error pointing at the documentation when too few are reserved.
+- [x] F3 CREATE look-ahead (`8bdd2e6d2`):
+  - reserve genesis-eligible UTXOs: `CreateLookahead.reserve(n)` tops up to the number a caller says it will create,
+    reusing the shipped genesis-funding selection, and a new reservation registry keeps a reserved coin out of that
+    selection and out of the fan-out, so an address a caller was given cannot be spent by an unrelated send;
+  - the `getCreateAddress` shim maps nonce `n + i` to the `i`-th reserved UTXO's category and answers
+    `deployMaster(child, category, validatorProgram).address` - the same value the deployment produces, computed
+    without broadcasting; measured equal to the deployed address for a child deployed through the shipped path;
+  - an error pointing at the documentation when too few are reserved (`CreateAddressError`, naming
+    `packages/solidc/docs/contract-creation.md`, which gains the section).
+  - **Not done, and named**: no factory-level shim and no wiring into a real `new C(...)` execution or the composer
+    (the `CREATE` frame itself remains spec open point 14), and `StatefulContract.deployFrom`'s own inline vout-0
+    selection does not consult the reservation registry yet, so a `deployFrom` could still pick a reserved coin.
 - [ ] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
 - [x] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
   result unchanged. Landed (`5d4aeb6ed`): a caller does not write the proxy. `buildProxyArtifact` derives the source
@@ -1889,3 +1910,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | 4ab50885e | per-call | an off-chain read returns what the entry computed | 115 + 389 + 616 | **E4 landed.** A read is a transaction derived with a static root frame and evaluated, never sent: the value is the one the entry returned, which the frame's own return comparison carries. `readPerCallEntry` classifies the contract's live records through the deployment layer, plans the static root over them, learns the returned bytes from that comparison, derives and decodes through the shipped decoders. Driven against a record an earlier *accepted* composition wrote (`bump(7)` then `current()` returns `7n`, and `scaled(3)` returns `21n`), with the provider's transaction count asserted unchanged. A nested read (a static call inside the read's root frame) lands too: the callee's value is learned first and written into the caller's call record, both frames and the callee's record accept, and the derivation completes callee first. Pinned rather than papered over: a read spends a validator UTXO (the head admits a static frame only with a validator reference), the validator reference's own verdict on a read-only root is a user-rooted rule (asserted as such), a refusing read reports the machine's objection without the `require` message the shifted instruction does not reach, and the module refuses read entries that make external calls or touch mapping-backed records. New `reads/` suite (8). |
 | 2026-09-28 | ff3e12558 | per-call tests | two appends through the proxy, and the hub-called wall | 115 + 389 + 616 | Two root frames each forward their own call data to the implementation, so two delegate frames write the proxy's records and each emits, with the run growing inside its kept chunks; every contract input - both proxy masters, the validator, the record, both chunks, both implementation masters - is accepted, and the header, chunk and event commitments read back through the shipped encoders. The variant a *hub* would use is the wall, and it is the plan's: a fallback's input is the whole call data it received, so a source call into the proxy cannot carry the four-byte selector a called frame reads - the composer refuses that band, and the compiled fallback master, which is served as a user's root (exactly how the deployment uses it), does not run under a call frame's band. Toys 78 to 85. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 616 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash toys 85, deploy 84, composer 153, hostile 66, frames 72, shapes 15, reads 8, reverts 3; 1120 in total) with `yarn build` exit 0 - it caught a readonly-index type error in the new read module, which is fixed - and both package suites green. Ticks this round: **E4**, with E3 partial (the innermost reason and the custom error surface; the argument values are not evaluated by the compiler) and Y4 partial (two user-entered appends through the proxy settle; the hub-called variant is the named wall). No marketplace project compile, per rule 4.6. |
+| 2026-09-28 | 8bdd2e6d2 | per-call | a deployment predicts a child's address before the child exists | 115 + 395 + 625 | **F3, the piece MS9's four predicted addresses need.** A child's address is derived from a token category, and a category comes from spending a genesis-eligible vout-0 UTXO, so the deployment side looks ahead: `CreateLookahead.reserve(n)` tops up reserved coins through the shipped selection, `getCreateAddress(nonce)` answers the address the nonce's coin derives (`addrV(category)` from the child's own artifact and validator program, computed without broadcasting), and `getFundingUtxo(nonce)` hands back the coin the create will spend. A new reservation registry keeps a reserved coin out of the genesis funding selection and the fan-out, so an address a caller was given cannot be spent by an unrelated send; asking for one more than was reserved refuses with an error naming the documentation (which gains the section). Measured: the predicted address equals the deployed child's (checked against the deployed artifact and against the predicted lock's own UTXOs). Named as not done: no factory-level shim, no wiring into a real `new C(...)` execution or the composer, and `deployFrom`'s own inline selection does not consult the registry yet. Deploy 84 to 89. |
+| 2026-09-28 | 85fc9c520 | per-call | an event reads back as a log naming its emitter | 115 + 395 + 625 | **E5 landed.** An event is a token NFT at an event covenant whose category is the emitter's, so the receipt a caller wants is the emitting contract's address plus the decoded fields. The SDK reads the frames' own witness blocks as the census, matches each listed output to the event its covenant declares (anonymous events disambiguated by their covenant), decodes the commitment with the shipped decoder, and reports a log whose address is `addrV(category)` - not the covenant's lock - with the fields keyed by parameter name and in declared order. Measured: a caller that emits, then calls an emitter that emits, reports both logs with their own contracts' addresses, the nested one's five fields decoded from a value wider than 32 bytes; a composition with no events reports none; an event output no frame lists is not reported, because the frames are the census. New `receipt/` suite (4). |
+| 2026-09-28 | f1fea7af9 | per-call tests | the low-level token-call shape and the code-length boundary | 115 + 395 + 625 | **C12's gap measured rather than assumed.** OpenZeppelin's SafeERC20 builds a token call as `abi.encodeCall`/`abi.encodeWithSelector` and invokes it through `address(token).call(data)`. On the shipped per-call compiler both forms are **refused per body** instead of lowered: with the result bound the reason is the direct path's return-event machinery, as a bare statement the missing call-witness checks - so no non-canonical argument digest is ever published. The equivalent typed call is served and publishes its call site (the control). The `code.length` gate is served but through the general P2SH-only extractor, so a plain-account or zero-address target fails the script rather than answering zero; that boundary is pinned as a boundary, not claimed as the rule. The lowering itself is what remains. solidc master 348 to 354. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 395 + 625 | The manifest's table is refreshed from this round's runs (solidc master 354, solidcash deploy 89, toys 85, receipt 4, reads 8, reverts 3, composer 153, hostile 66, frames 72, shapes 15; 1135 in total) with `yarn build` exit 0 and both package suites green. Ticks this round: **F3, E4, E5, Y2**; E3 partial (the innermost reason and the custom error surface; the argument values are not evaluated by the compiler) and C12's lowering still open with its measurements recorded. No marketplace project compile, per rule 4.6. |

@@ -825,7 +825,9 @@ import {
 } from './faithful-probe-trace.js';
 export {
   compactFaithfulProbeTrace,
+  evaluateBoundedProbeCandidates,
   evaluateProbeTrace,
+  MAX_BOUNDED_PROBE_STATES,
 } from './faithful-probe-trace.js';
 import {
   extractVerifiedValuesFromTrace,

@@ -16,8 +16,10 @@ import { isCompilerDescribedRouteEventCommitment } from './compiler-described-ro
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   extractEvmScalarReturnCommitment,
+  selectEvmScalarReturnCommitment,
 } from './external-return-encoding.js';
 import {
+  evaluateBoundedProbeCandidates,
   evaluateFaithfulOrDebugTrace,
   evaluateProbeTrace,
 } from './faithful-probe-trace.js';
@@ -111,6 +113,11 @@ export function deriveFullPhase1ReturnAndEvents(
     }
     let evmScalar = calleeReturnEncoding === 'evm-abi-v1'
       ? extractEvmScalarReturnCommitment(fullTraceRet, calleeReturnTypes, false) : undefined;
+    if (!returnCommitments?.length && !evmScalar && calleeReturnEncoding === 'evm-abi-v1') {
+      evmScalar = selectEvmScalarReturnCommitment(
+        evaluateBoundedProbeCandidates(host.inner.provider, returnProgram), calleeReturnTypes, false,
+      );
+    }
     if (!returnCommitments?.length && !evmScalar) {
       fullTraceRet = evaluateFaithfulOrDebugTrace(host.inner.provider, returnProgram);
       returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange, true);

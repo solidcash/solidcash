@@ -67,6 +67,55 @@ const probeVmCache = new WeakMap<NetworkProvider, CachedProbeVm>();
 const debugVmCache = new WeakMap<NetworkProvider, ReturnType<typeof createVirtualMachineBch2026ForProvider>>();
 const faithfulTraceVmCache = new WeakMap<NetworkProvider, CachedFaithfulTraceVm>();
 
+/** The scalar-return fallback inspects only the execution tail, never an unbounded VM debug trace. */
+export const MAX_BOUNDED_PROBE_STATES = 96;
+const MAX_BOUNDED_PROBE_CANDIDATE_BYTES = 64 * 1024;
+type ProbeProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0];
+type BoundedCandidateVm = {
+  vm: ReturnType<typeof createVirtualMachineBch2026ForProvider>;
+  stacks: Uint8Array[][];
+  next: number;
+  count: number;
+};
+const boundedCandidateVmCache = new WeakMap<NetworkProvider, BoundedCandidateVm>();
+
+/** Collect at most four live stack values from each of the last 96 executed states. */
+export function evaluateBoundedProbeCandidates(
+  provider: NetworkProvider,
+  program: ProbeProgram,
+): Uint8Array[] {
+  let cached = boundedCandidateVmCache.get(provider);
+  if (!cached) {
+    cached = { vm: undefined as unknown as BoundedCandidateVm['vm'], stacks: [], next: 0, count: 0 };
+    const capture = (unknownState: unknown): void => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      cached!.stacks[cached!.next] = state.stack.slice(-4)
+        .filter((item) => item.length <= MAX_BOUNDED_PROBE_CANDIDATE_BYTES)
+        .map((item) => item.slice());
+      cached!.next = (cached!.next + 1) % MAX_BOUNDED_PROBE_STATES;
+      cached!.count = Math.min(cached!.count + 1, MAX_BOUNDED_PROBE_STATES);
+    };
+    cached.vm = createFaithfulTraceVmForProvider(provider, capture, capture);
+    boundedCandidateVmCache.set(provider, cached);
+  }
+  cached.stacks = [];
+  cached.next = 0;
+  cached.count = 0;
+  const finalState = cached.vm.evaluate(program) as AuthenticationProgramStateCommon;
+  // Include the final phase exit even when the ordinary-size VM has no phase hook.
+  cached.stacks[cached.next] = finalState.stack.slice(-4)
+    .filter((item) => item.length <= MAX_BOUNDED_PROBE_CANDIDATE_BYTES)
+    .map((item) => item.slice());
+  cached.next = (cached.next + 1) % MAX_BOUNDED_PROBE_STATES;
+  cached.count = Math.min(cached.count + 1, MAX_BOUNDED_PROBE_STATES);
+  const candidates: Uint8Array[] = [];
+  for (let age = 1; age <= cached.count; age += 1) {
+    const stack = cached.stacks[(cached.next - age + MAX_BOUNDED_PROBE_STATES) % MAX_BOUNDED_PROBE_STATES];
+    for (let index = stack.length - 1; index >= 0; index -= 1) candidates.push(stack[index]);
+  }
+  return candidates;
+}
+
 export function cachedDebugVm(provider: NetworkProvider): ReturnType<typeof createVirtualMachineBch2026ForProvider> {
   const existing = debugVmCache.get(provider);
   if (existing) return existing;

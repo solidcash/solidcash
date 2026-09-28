@@ -1444,7 +1444,11 @@ risk. Take the slices in order, each with its own tests.
   a round takes the next unticked item; the commit that lands it removes its line here.
   - **Claimed by the parallel worker, from `539e09825`:** the two sorted-batch walls of the project census - a
     verified-mapping write a call precedes (`UnicrowArbitrator` 3, `UnicrowDispute` 1; MS4 and MS7's arbitration)
-    and a mapping write whose key is a field access (`Unicrow.pay`, MS3's pull). Released: the composer helper
+    and a mapping write whose key is a field access (`Unicrow.pay`, MS3's pull). With the first comes a gap it
+    exposed, open and pre-existing: a frame's code verifies its mapping-node declarations only in the segment it
+    writes them, so a composer can declare a node changed in another segment (before the write, or after it and
+    back) and a callee between those segments reads that view. The fix claimed with it: outside its write segment
+    a frame's mapping nodes must be declared kept. Released: the composer helper
     that fills a frame's value list, which needs compiler metadata naming each slot's read. Not claimed: the
     fixture, the proxy hop, the dynamic-value walls, I2's security items and every other replica. (The batch
     planner and R4's write half landed; their rows are in the Log.)

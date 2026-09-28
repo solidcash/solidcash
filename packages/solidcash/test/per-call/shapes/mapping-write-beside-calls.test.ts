@@ -39,7 +39,7 @@ import {
 
 /**
  * A mapping write beside calls: the arbitration shape, where the entry records the award, then reads a value through
- * a static call and settles through a second call.
+ * a static call and settles through a second call, and the same award recorded after both calls.
  *
  * A call closes the segment the code before it runs in, so the write's records are declared in the segment it lands
  * in and the batch walk reads the groups there. In every other segment the frame declares the node kept: its code
@@ -62,6 +62,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.awarded[id] = id + 100;'
   + `     IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf(id);`
   + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(id);`
+  + '     require(true);'
+  + '   }'
+  + '   function arbitrateLate(int id) {'
+  + `     int amount = IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf(id);`
+  + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(id);`
+  + '     this.awarded[id] = amount;'
   + '     require(true);'
   + '   }'
   + '   function awardOf(int id) view returns (int) { return this.awarded[id]; }'
@@ -105,9 +111,10 @@ const updateShape = (views: readonly (readonly [Uint8Array, Uint8Array])[]): Nod
   segments: (node) => views.map(([viewIn, viewOut]) => [{ in: node, out: node, viewIn, viewOut }]),
 });
 
-/** The composition: the entry runs on the arbiter, whose mapping has the shape `shape` gives it. */
-function buildPlan(shape: NodeShape): CompositionDraftPlan {
-  const entry = 'arbitrate';
+type Entry = 'arbitrate' | 'arbitrateLate';
+
+/** The composition: `entry` runs on the arbiter, whose mapping has the shape `shape` gives it. */
+function buildPlan(entry: Entry, shape: NodeShape): CompositionDraftPlan {
   const arbiter = contracts.Arbiter!;
   const oracle = contracts.Oracle!;
   const escrow = contracts.Escrow!;
@@ -201,22 +208,21 @@ function buildPlan(shape: NodeShape): CompositionDraftPlan {
   };
 }
 
-const compose = (shape: NodeShape): ReturnType<typeof composeAndDerive> =>
-  composeAndDerive(buildPlan(shape), [artifacts.Arbiter!, artifacts.Oracle!, artifacts.Escrow!],
-    [rootOf('Arbiter', 'arbitrate', ARBITER_MASTER)]);
+const compose = (shape: NodeShape, entry: Entry = 'arbitrate'): ReturnType<typeof composeAndDerive> =>
+  composeAndDerive(buildPlan(entry, shape), [artifacts.Arbiter!, artifacts.Oracle!, artifacts.Escrow!],
+    [rootOf('Arbiter', entry, ARBITER_MASTER)]);
 
 const refusals = (outcome: ReturnType<typeof composeAndDerive>): readonly string[] => outcome.verdicts
   .filter((verdict) => !verdict.accepted).map((verdict) => `${verdict.participant}: ${verdict.objection}`);
 
-/** The insert's shape: the head relinked and the node created in the first segment, then each later one's records. */
-const insertShape = (later: (head: number, node: number) => RecordEntry[][]): NodeShape => ({
-  before: SENTINEL, after: HEAD_AFTER, created: CREATED,
-  segments: (head, node) => [[
-    { in: head, out: head, viewIn: SENTINEL, viewOut: HEAD_AFTER },
-    { in: INDEX_NONE, out: node, viewIn: new Uint8Array(0), viewOut: CREATED },
-  ], ...later(head, node)],
+/** The insert's shape: the head relinked and the node created, with each segment's records. */
+const insertShape = (segments: NodeShape['segments']): NodeShape => ({
+  before: SENTINEL, after: HEAD_AFTER, created: CREATED, segments,
 });
 const kept = (index: number, view: Uint8Array): RecordEntry => ({ in: index, out: index, viewIn: view, viewOut: view });
+const relinks = (head: number): RecordEntry => ({ in: head, out: head, viewIn: SENTINEL, viewOut: HEAD_AFTER });
+const creates = (node: number, view = CREATED): RecordEntry =>
+  ({ in: INDEX_NONE, out: node, viewIn: new Uint8Array(0), viewOut: view });
 
 describe('a mapping write beside two calls', () => {
   it('settles the award written before both calls, kept in the segments after it', () => {
@@ -228,18 +234,36 @@ describe('a mapping write beside two calls', () => {
     const index = participant(outcome.draft.layout, NODE_ID).index;
     expect(bytesToHex(outcome.transaction.outputs[index]!.token!.nft!.commitment)).toBe(bytesToHex(AFTER));
     // The created node is declared where it is created only, or kept at its output after that.
-    expect(refusals(compose(insertShape((head) => [[kept(head, HEAD_AFTER)], [kept(head, HEAD_AFTER)]]))))
+    expect(refusals(compose(insertShape((head, node) => [[relinks(head), creates(node)],
+      [kept(head, HEAD_AFTER)], [kept(head, HEAD_AFTER)]])))).toStrictEqual([]);
+    expect(refusals(compose(insertShape((head, node) => [[relinks(head), creates(node)],
+      [kept(head, HEAD_AFTER), kept(node, CREATED)], [kept(head, HEAD_AFTER), kept(node, CREATED)]]))))
       .toStrictEqual([]);
-    expect(refusals(compose(insertShape((head, node) => [[kept(head, HEAD_AFTER), kept(node, CREATED)],
-      [kept(head, HEAD_AFTER), kept(node, CREATED)]])))).toStrictEqual([]);
+  });
+
+  it('settles the award written after both calls, kept in the segments before it', () => {
+    const outcome = compose(updateShape([[BEFORE, BEFORE], [BEFORE, BEFORE], [BEFORE, AFTER]]), 'arbitrateLate');
+    expect(refusals(outcome)).toStrictEqual([]);
+    const index = participant(outcome.draft.layout, NODE_ID).index;
+    expect(bytesToHex(outcome.transaction.outputs[index]!.token!.nft!.commitment)).toBe(bytesToHex(AFTER));
+    expect(refusals(compose(insertShape((head, node) => [[kept(head, SENTINEL)], [kept(head, SENTINEL)],
+      [relinks(head), creates(node)]]), 'arbitrateLate'))).toStrictEqual([]);
   });
 
   it('refuses the node declared changed and back in the segments after the one it is written in', () => {
     expect(() => compose(updateShape([[BEFORE, AFTER], [AFTER, FAKE], [FAKE, AFTER]])))
       .toThrow(/PER_CALL_DERIVATION_STALLED/);
-    expect(() => compose(insertShape((head, node) => [
+    expect(() => compose(insertShape((head, node) => [[relinks(head), creates(node)],
       [kept(head, HEAD_AFTER), { in: node, out: node, viewIn: CREATED, viewOut: FAKE }],
       [kept(head, HEAD_AFTER), { in: node, out: node, viewIn: FAKE, viewOut: CREATED }],
     ]))).toThrow(/PER_CALL_DERIVATION_STALLED/);
+  });
+
+  it('refuses the node declared changed, or created, in the segments before the one it is written in', () => {
+    expect(() => compose(updateShape([[BEFORE, AFTER], [AFTER, AFTER], [AFTER, AFTER]]), 'arbitrateLate'))
+      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose(insertShape((head, node) => [[kept(head, SENTINEL), creates(node, FAKE)],
+      [kept(head, SENTINEL), kept(node, FAKE)], [relinks(head), { in: node, out: node, viewIn: FAKE, viewOut: CREATED }],
+    ]), 'arbitrateLate')).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });

@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 442 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 443 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -38,16 +38,16 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 76 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 109 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 111 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 41 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1412 checks (115 + 483 + 812 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1417 checks (115 + 484 + 816 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 483 is the four rows above it, `solidcash` 812 (811 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 484 is the four rows above it, `solidcash` 816 (815 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -260,8 +260,9 @@ and the binding of a delegate callee to the implementation the record names by `
   written with its value chunks (an altered chunk and a record past them stall), and
   `initializer-batch.test.ts` an initializer's record write, eight inserts into an empty mapping and event as one
   sorted batch (a chain that skips the other keys stalls, and so does a created record no write made), and
-  `mapping-write-beside-calls.test.ts` an award written before two calls, as an update and as an insert, with the
-  node kept in the segments after the write (a node declared changed and back between the calls stalls).
+  `mapping-write-beside-calls.test.ts` an award written before two calls and one written after them, each as an
+  update and as an insert, with the node kept in the segments the write is not in (a node declared changed and
+  back between the calls, changed before the write, or created before the write it belongs to stalls).
 - **`solidcash/test/per-call/time/`** — time as the transaction's own field: a `require(tx.time >= n)` gate compiled
   per-call and driven from a payment's block time, read through the mock chain's strictly-advancing clock and the
   deployment layer's `providerUnixLocktime`. The earlier and the later transaction settle with every frame reading

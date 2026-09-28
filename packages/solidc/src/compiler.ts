@@ -12593,9 +12593,14 @@ function compileResolvedAst(
   // an `initializer`/`reinitializer` modifier; every externally callable implementation function (including the
   // synthesized public-state getters above) is intended to execute in the proxy's state context. Mark that surface
   // before modifier expansion consumes the custom-modifier metadata. Native SolidCash sources remain explicit.
-  if (mergedCompilerOptions.solidityImportCompat && ast.contract.functions.some((fn) => fn.customModifiers.some(
-    (modifier) => modifier.name === 'initializer' || modifier.name === 'reinitializer',
-  ))) {
+  // The direct convention expresses that context by handing the entry the co-spent proxy master's input index as
+  // `__internal__proxyMasterIndex`. A per-call master reads its frames' blocks instead, and a DELEGATE frame is a
+  // frame kind the head establishes rather than a property of a body, so the marking and its operand do not apply
+  // to this convention.
+  if (mergedCompilerOptions.solidityImportCompat && mergedCompilerOptions.composition !== 'per-call'
+    && ast.contract.functions.some((fn) => fn.customModifiers.some(
+      (modifier) => modifier.name === 'initializer' || modifier.name === 'reinitializer',
+    ))) {
     for (const fn of ast.contract.functions) {
       const externallyCallable = fn.modifiers.includes(FunctionModifier.PUBLIC)
         || fn.modifiers.includes(FunctionModifier.EXTERNAL);

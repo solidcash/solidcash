@@ -13,19 +13,22 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 /**
  * An implementation entry the compiler refused is reported by name, not as the opcode its stub fails on.
  *
- * A Solidity-compatible upgradeable implementation is marked `delegate` by initializer inference, and that marking
- * injects the direct convention's `__internal__proxyMasterIndex` witness. A per-call master serves delegate frames
- * from its own declared records and supplies no such operand, so the body is refused by name and emitted as a body
- * that fails whenever the dispatcher reaches it. The hop that runs the entry stops on that stub, and the deployment
- * has to say which entry the compiler refused rather than report the opcode the stub stopped on.
+ * A body a per-call master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
+ * hop that runs one stops on that stub. The artifact publishes the reason beside the stop sites, and the deployment
+ * has to say which entry the compiler refused rather than report the opcode the stub stopped on. The refused shape
+ * here is an opaque low-level call, which names no method to lower to.
+ *
+ * The shape this file used before - a Solidity-compatible `initializer`-marked entry - is served as of 2026-09-28
+ * (initializer inference is a direct-convention lowering and no longer runs for this convention), and the last case
+ * asserts that: it compiles, and the same hop settles through the same shipped path.
  */
 
 const IMPL_CATEGORY = '31'.repeat(32);
 const PROXY_CATEGORY = '42'.repeat(32);
 
-// The refused shape: `initializer` inference marks every externally callable function `delegate`, so the entry the
-// hop runs carries the direct convention's proxy-master witness.
-const REFUSED_SOURCE = 'pragma solidity ^0.8.19;\n'
+// The refused shape: the payload is opaque, so the call names no method the convention could compile as a typed
+// call, and the body keeps its own low-level refusal.
+const REFUSED_SOURCE = 'pragma solidcash ^0.13.0;\n'
   + 'contract Impl {\n'
   + '  uint public initialized;\n'
   + '  int public version;\n'
@@ -33,32 +36,48 @@ const REFUSED_SOURCE = 'pragma solidity ^0.8.19;\n'
   + '  bytes32 public resultHash;\n'
   + '  bytes32 public jobSalt;\n'
   + '  bytes32 public metaHash;\n'
+  + '  function initialize(address expected) {\n'
+  + '    (bool ok, bytes ret) = address(expected).call(hex"deadbeef");\n'
+  + '    require(ok);\n'
+  + '    require(msg.sender == expected);\n'
+  + '    this.initialized = 1;\n'
+  + '    this.version = 7;\n'
+  + '  }\n'
+  + '}\n';
+
+// The same fields and the same body with the opaque call replaced by a state write: an ordinary per-call entry.
+const SERVED_SOURCE = 'pragma solidcash ^0.13.0;\n'
+  + 'contract Impl {\n'
+  + '  uint public initialized;\n'
+  + '  int public version;\n'
+  + '  bytes32 public contentHash;\n'
+  + '  bytes32 public resultHash;\n'
+  + '  bytes32 public jobSalt;\n'
+  + '  bytes32 public metaHash;\n'
+  + '  function initialize(address expected) {\n'
+  + '    require(msg.sender == expected);\n'
+  + '    this.initialized = 1;\n'
+  + '    this.version = 7;\n'
+  + '  }\n'
+  + '}\n';
+
+/** The Solidity-compatible shape initializer inference used to refuse for this convention. */
+const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;\n'
+  + 'contract Impl {\n'
+  + '  uint public initialized;\n'
+  + '  int public version;\n'
+  + '  uint public lastSeen;\n'
   + '  modifier initializer() { require(initialized == 0); _; }\n'
   + '  function initialize(address expected) public initializer {\n'
   + '    require(msg.sender == expected);\n'
   + '    initialized = 1;\n'
   + '    version = 7;\n'
+  + '    lastSeen = block.timestamp;\n'
   + '  }\n'
   + '}\n';
 
-// The same fields with no `initializer` modifier: the entry stays an ordinary per-call body, so the proxy the
-// deployment generates keeps records the two layouts agree on.
-const SERVED_SOURCE = 'pragma solidity ^0.8.19;\n'
-  + 'contract Impl {\n'
-  + '  uint public initialized;\n'
-  + '  int public version;\n'
-  + '  bytes32 public contentHash;\n'
-  + '  bytes32 public resultHash;\n'
-  + '  bytes32 public jobSalt;\n'
-  + '  bytes32 public metaHash;\n'
-  + '  function initialize(address expected) public {\n'
-  + '    require(msg.sender == expected);\n'
-  + '    initialized = 1;\n'
-  + '    version = 7;\n'
-  + '  }\n'
-  + '}\n';
-
-const COMPILE_OPTIONS = { composition: 'per-call', solidityImportCompat: true } as const;
+const COMPILE_OPTIONS = { composition: 'per-call' } as const;
+const SOLIDITY_OPTIONS = { composition: 'per-call', solidityImportCompat: true } as const;
 
 /** Funds the two genesis UTXOs and returns the deployer's own lock and funder. */
 async function funded(network: MockNetworkProvider): Promise<{
@@ -91,8 +110,7 @@ describe('a hop whose implementation entry the compiler refused', () => {
     } | undefined)?.refusedEntries ?? [];
 
     expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Impl.initialize()']);
-    expect(refusals[0]!.reason).toContain("a proxy implementation's entry");
-    expect(refusals[0]!.reason).toContain('__internal__proxyMasterIndex');
+    expect(refusals[0]!.reason).toContain("the call to '__raw__'");
     const published = (artifacts.Impl!.composition as {
       readonly stopSites?: { readonly entries: readonly { readonly functionName: string }[] };
     } | undefined)?.stopSites?.entries ?? [];
@@ -116,9 +134,9 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
     await expect(deployment).rejects.toThrow(PerCallProxyDeployError);
     await expect(deployment).rejects.toThrow(
-      /the implementation's "initialize" entry is refused by the compiler.*__internal__proxyMasterIndex/,
+      /the implementation's "initialize" entry is refused by the compiler \(Impl\.initialize\(\)\).*'__raw__'/,
     );
-    await expect(deployment).rejects.not.toThrow(/opcode 105/);
+    await expect(deployment).rejects.not.toThrow(/stopped at opcode/);
   });
 
   it('refuses the same entry by name when a caller reaches it later, through the call surface', async () => {
@@ -144,9 +162,9 @@ describe('a hop whose implementation entry the compiler refused', () => {
     await expect(call).rejects.toThrow(/the implementation's "initialize" entry is refused by the compiler/);
   });
 
-  it('settles the same hop when the implementation declares no initializer inference', async () => {
-    // The control: the same fields and the same initialize body, reached through the same shipped path. What
-    // decides the refusal is the delegate marking the initializer modifier carries, not the hop itself.
+  it('settles the same hop when the entry has no refusal of its own', async () => {
+    // The control: the same fields and the same initialize body without the opaque call, reached through the same
+    // shipped path. What decides the refusal is the body's own shape, not the hop itself.
     const artifacts = compileStringMulti(SERVED_SOURCE, COMPILE_OPTIONS);
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
@@ -164,6 +182,35 @@ describe('a hop whose implementation entry the compiler refused', () => {
 
     expect(deployment.initialize.completed.map((frame) => frame.functionName))
       .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${proxy.contractName}.__fallback()`]);
+    expect(deployment.initialize.accepted).toBe(true);
+  });
+
+  it('serves a Solidity-compatible proxy implementation whose entries initializer inference would mark', async () => {
+    // Initializer inference belongs to the direct convention, which hands an entry the co-spent proxy master's
+    // input index; a per-call master serves a delegate frame from the records its own block declares. So the
+    // marking no longer runs for this convention, the entries stay ordinary bodies, and the hop settles.
+    const artifacts = compileStringMulti(INITIALIZER_SOURCE, SOLIDITY_OPTIONS);
+    const refusals = (artifacts.Impl!.composition as {
+      readonly refusedEntries?: readonly { readonly functionName: string }[];
+    } | undefined)?.refusedEntries ?? [];
+    expect(refusals).toStrictEqual([]);
+    expect(artifacts.Impl!.abi.some((entry) => entry.inputs.some(
+      (input) => input.name === '__internal__proxyMasterIndex',
+    ))).toBe(false);
+
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [deployerLock] },
+      callerLockingBytecode: deployerLock,
+      vm: compositionMachine(),
+    });
+
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
   });
 });

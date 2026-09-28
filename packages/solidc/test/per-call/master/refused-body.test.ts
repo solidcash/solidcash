@@ -3,8 +3,11 @@ import {
   encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
   hash256,
 } from '@bitauth/libauth';
-import { asmToScript, encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock } from '@solidcash/utils';
-import { compileStringMulti } from '../../../src/compiler.js';
+import {
+  asmToScript, buildPushdataCommitment, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock,
+  scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
+} from '@solidcash/utils';
+import { compileString, compileStringMulti } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -180,5 +183,153 @@ describe('a refused call-making entry', () => {
     // entry's own stub still fails when the dispatcher reaches it.
     expect(spendSelector(refusedCallProgram, refusedCallSelector('ping'))).toBe(true);
     expect(spendSelector(refusedCallProgram, refusedCallSelector('readBack'))).toBe(false);
+  });
+});
+
+/**
+ * A Solidity-compatible proxy implementation's entries are served like any other entry.
+ *
+ * Solidity has no `delegate` keyword, so the direct convention infers the proxy-implementation surface from an
+ * `initializer`/`reinitializer` modifier and hands each such entry the co-spent proxy master's input index as
+ * `__internal__proxyMasterIndex`. That operand belongs to the direct convention's state base: a per-call master
+ * reads the records its own frame declares, and its head establishes a `DELEGATE` frame kind where the proxy
+ * relationship applies, so no body carries the marking or the operand under this convention.
+ */
+const INITIALIZER_SOURCE = 'pragma solidity ^0.8.19;'
+  + ' contract Impl {'
+  + '   address public owner;'
+  + '   mapping(string => string) public tags;'
+  + '   modifier initializer() { _; }'
+  + '   function initialize(address who) public initializer { owner = who; tags["DA"] = "x"; }'
+  + '   function setOwner(address who) public { owner = who; }'
+  + ' }';
+
+describe('a Solidity-compatible proxy implementation', () => {
+  it('is served, and no entry carries the proxy-master operand', () => {
+    const artifacts = compileStringMulti(INITIALIZER_SOURCE, {
+      composition: 'per-call', solidityImportCompat: true,
+    });
+    expect(publishedRefusals(artifacts as Record<string, { composition?: unknown }>)).toStrictEqual([]);
+    for (const artifact of Object.values(artifacts)) {
+      for (const entry of artifact.abi) {
+        expect(entry.inputs.map((input) => input.name)).not.toContain('__internal__proxyMasterIndex');
+      }
+    }
+    expect(artifacts.Impl?.abi.map((entry) => entry.name).sort())
+      .toStrictEqual(['initialize', 'owner', 'setOwner', 'tags']);
+  });
+
+  it('keeps the marking and the operand under the direct convention', () => {
+    // The control for the inference the per-call convention skips: the direct build still marks the surface and
+    // still publishes the operand its delegate frame addresses through.
+    const direct = compileString(INITIALIZER_SOURCE, { solidityImportCompat: true });
+    const initialize = direct.abi.find((entry) => entry.name === 'initialize')!;
+    expect(initialize.modifiers).toContain('delegate');
+    expect(initialize.inputs.map((input) => input.name)).toContain('__internal__proxyMasterIndex');
+  });
+});
+
+/** A proxy implementation whose initializer writes the one record the frame declares. */
+const INITIALIZER_WRITE_SOURCE = 'pragma solidity ^0.8.19;'
+  + ' contract Store {'
+  + '   uint256 count;'
+  + '   modifier initializer() { _; }'
+  + '   function initialize(uint256 value) public initializer { count = value; }'
+  + ' }';
+
+const STORE_CATEGORY = seededCategory('initializer implementation');
+const STORE_ADDRESS = validatorAddress(STORE_CATEGORY, REAL_VALIDATOR_PROGRAM);
+/** A record's lock: the entry only requires input and output to agree, so any lock serves. */
+const STORE_STATE_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([9, 9, 9])));
+const STORE_USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
+/** The value the record holds before the entry runs, and the one the entry writes. */
+const STORE_BEFORE = 42n;
+const STORE_WRITTEN = 7n;
+
+const storeArtifact = compileString(INITIALIZER_WRITE_SOURCE, {
+  composition: 'per-call', solidityImportCompat: true,
+});
+const storeProgram = fillPlaceholders(
+  scriptToBytecode(asmToScript(storeArtifact.bytecode)),
+  storeArtifact.composition!.placeholders,
+  { category: categorySlotValue(STORE_CATEGORY), contractAddress: STORE_ADDRESS, templateHash: TEMPLATE_HASH },
+);
+const storeLock = encodeLockingBytecodeP2sh32(hash256(storeProgram));
+/** The record's commitment for one value of `count`. */
+const storeCommitment = (count: bigint): Uint8Array =>
+  new Uint8Array(Buffer.from(buildPushdataCommitment(storeArtifact.stateLayout!, { count }, 0), 'hex'));
+/**
+ * The selector the dispatcher is entered with.
+ *
+ * A Solidity-compatible contract exposes a getter for its state variable, so the master has several entries and the
+ * frame's leading call data names the one it runs.
+ */
+const storeSelector: Uint8Array =
+  new Uint8Array(Buffer.from(storeArtifact.abi.find((entry) => entry.name === 'initialize')!.selector!, 'hex'));
+/** The push the entry's one argument reaches it as: the value it writes, in its canonical encoding. */
+const storeArgumentPushes = encodeArgumentList([encodeIntegerValue(STORE_WRITTEN)]);
+
+/** One record token in the shipped form. */
+function storeToken(
+  capability: 'minting' | 'mutable',
+  commitment: Uint8Array = new Uint8Array(0),
+): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable'; commitment: Uint8Array } } {
+  return { category: STORE_CATEGORY, amount: 0n, nft: { capability, commitment } };
+}
+
+/** Spends the initializer's own input; the frame's record declares `viewOut` as the value the write produced. */
+function spendInitializer(viewOut: Uint8Array): boolean {
+  const block: WitnessBlock = {
+    kind: 0,
+    callerRef: 2,
+    originRef: 2,
+    validatorRef: 0xffff,
+    sender: STORE_USER_LOCK,
+    self: STORE_ADDRESS,
+    value: 0n,
+    retval: new Uint8Array(0),
+    calls: [],
+    segments: [[{ in: 1, out: 1, viewIn: storeCommitment(STORE_BEFORE), viewOut }]],
+    events: [],
+    sends: [],
+  };
+  const masterValue = 20_000n;
+  const sourceOutputs = [
+    { lockingBytecode: storeLock, valueSatoshis: masterValue, token: storeToken('minting') },
+    { lockingBytecode: STORE_STATE_LOCK, valueSatoshis: masterValue,
+      token: storeToken('mutable', storeCommitment(STORE_BEFORE)) },
+    { lockingBytecode: STORE_USER_LOCK, valueSatoshis: 100_000n },
+  ];
+  const transaction = {
+    version: 2,
+    inputs: [
+      { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array([
+          ...encodeDataPush(encodeWitnessBlock(block)),
+          ...encodeDataPush(storeSelector),
+          ...storeArgumentPushes,
+          ...encodeDataPush(storeProgram),
+        ]) },
+      { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(2), sequenceNumber: 0xffffffff,
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])) },
+      { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(4), sequenceNumber: 0xffffffff,
+        unlockingBytecode: callerUnlockingBytecode() },
+    ],
+    outputs: [
+      sourceOutputs[0]!,
+      { lockingBytecode: STORE_STATE_LOCK, valueSatoshis: masterValue,
+        token: storeToken('mutable', storeCommitment(STORE_WRITTEN)) },
+      sourceOutputs[2]!,
+    ],
+    locktime: 0,
+  };
+  const vm = compositionMachine();
+  return vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction })) === true;
+}
+
+describe('a Solidity-compatible initializer the master serves', () => {
+  it('settles the write it was refused for, and refuses a record of another value', () => {
+    expect(spendInitializer(storeCommitment(STORE_WRITTEN))).toBe(true);
+    expect(spendInitializer(storeCommitment(STORE_WRITTEN + 1n))).toBe(false);
   });
 });

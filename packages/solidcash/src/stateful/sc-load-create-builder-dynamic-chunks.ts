@@ -80,11 +80,12 @@ export function orderedActiveTrailingEntryCollections(
   sortedBatches: readonly { collection: string }[] | undefined,
   ...activeCollections: readonly Iterable<string>[]
 ): string[] {
+  const sources = activeCollections.map((source) => [...source]);
   const active = new Set<string>();
-  for (const source of activeCollections) for (const collection of source) active.add(collection);
+  for (const source of sources) for (const collection of source) active.add(collection);
   return orderedTrailingEntryCollections(
     sortedBatches?.filter((batch) => active.has(batch.collection)),
-    ...activeCollections,
+    ...sources,
   );
 }
 
@@ -255,10 +256,10 @@ export async function loadCreateBuilderDynamicChunks(
   // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
   // that order here or two collections written out of declaration order receive each other's locking bytecode.
   const trailingCollectionSources = [
+    batchPredCommitments.keys(),
     entryLoopWrites,
     sortedLoopCommitments.keys(),
     runtimeLoopDerivedCounts.keys(),
-    batchPredCommitments.keys(),
     sortedInserts.map((insert) => insert.collection),
   ] as const;
   const orderedLoopCollections = entryRouteRows !== undefined || delegateRouteRows !== undefined

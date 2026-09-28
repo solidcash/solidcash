@@ -1460,16 +1460,15 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
-  - **Claimed by the parallel worker, from `539e09825`:** the two sorted-batch walls of the project census - a
-    verified-mapping write a call precedes (`UnicrowArbitrator` 3, `UnicrowDispute` 1; MS4 and MS7's arbitration)
-    and a mapping write whose key is a field access (`Unicrow.pay`, MS3's pull). With the first comes a gap it
+  - **Claimed by the parallel worker, from `0e895b621`:** (1) the fix for a gap the write-after-call work
     exposed, open and pre-existing: a frame's code verifies its mapping-node declarations only in the segment it
     writes them, so a composer can declare a node changed in another segment (before the write, or after it and
-    back) and a callee between those segments reads that view. The fix claimed with it: outside its write segment
-    a frame's mapping nodes must be declared kept. Released: the composer helper
-    that fills a frame's value list, which needs compiler metadata naming each slot's read. Not claimed: the
-    fixture, the proxy hop, the dynamic-value walls, I2's security items and every other replica. (The batch
-    planner and R4's write half landed; their rows are in the Log.)
+    back) and a callee between those segments reads that view. The fix: outside its write segment a frame's
+    mapping nodes must be declared kept. It lands on top of the write-after-call change, which widens the gap
+    and should not land without it. (2) The keccak compute side-car (`MarketplaceV1.takeJob`). **Handed back**:
+    the verified-mapping write a call precedes, which the implementer's round is serving (its uncommitted walk
+    carries the same segment skip; the parallel worker's scratch version is dropped), and the field-access key,
+    served in `ed072744e`. Released earlier: the composer's value-list helper. Not claimed: everything else.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

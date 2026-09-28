@@ -4,7 +4,7 @@ import path from 'path';
 import { pathToFileURL } from 'url';
 import { Worker } from 'worker_threads';
 import { deserialize, serialize } from 'v8';
-import type { ArtifactMap } from '@solidcash/utils';
+import type { Artifact, ArtifactMap } from '@solidcash/utils';
 
 interface ProjectSource {
   path: string;
@@ -12,6 +12,24 @@ interface ProjectSource {
   declarations: string[];
   dependencies: string[];
   hash: string;
+}
+
+/** Parameter labels and declaration order do not distinguish two copies of the same interface ABI. */
+function declarationAbiIdentity(artifact: Artifact): string {
+  const sorted = (members: unknown[]): string[] => members.map(stableStringify).sort();
+  return stableStringify({
+    functions: sorted(artifact.abi.map((fn) => ({
+      name: fn.name, inputs: fn.inputs.map((parameter) => parameter.type),
+      outputs: fn.outputs?.map((parameter) => parameter.type) ?? [], resultEncoding: fn.resultEncoding,
+    }))),
+    errors: sorted((artifact.errors ?? []).map((error) => ({
+      name: error.name, signature: error.signature, parameters: error.parameters.map((parameter) => parameter.type),
+    }))),
+    events: sorted((artifact.events ?? []).map((event) => ({
+      name: event.name, signature: event.signature, anonymous: event.anonymous ?? false,
+      parameters: event.parameters.map((parameter) => ({ type: parameter.type, indexed: parameter.indexed ?? false })),
+    }))),
+  });
 }
 
 interface FileCacheEntry {
@@ -310,6 +328,7 @@ export async function compileSolidityProject(
   const allSources = new Map<string, ProjectSource>();
   const sources = sourceFiles.map((file) => readSource(file, manifest, allSources));
   const projectPaths = new Set(sources.map((source) => source.path));
+  const selectedDeclarations = new Set(sources.flatMap((source) => source.declarations));
   const imported = new Set<string>();
   for (const source of sources) {
     for (const dependency of source.dependencies) if (projectPaths.has(dependency)) imported.add(dependency);
@@ -411,8 +430,18 @@ export async function compileSolidityProject(
       // compileFileMulti returns artifacts for the root and every imported declaration. Only the source that
       // declares a contract owns its published artifact: an importing root can be compiled with a different
       // primary-contract context, and publishing that imported copy makes focused compiles overwrite canonical
-      // dependency artifacts. Filtering here also keeps one-file iteration proportional to the selected source.
-      if (!ownedDeclarations.has(name)) continue;
+      // dependency artifacts. ABI-only imports have no executable context to replace, but are required by
+      // generated factories for interface/error declarations. Keep them when no selected owner will publish
+      // the declaration; a selected owner remains authoritative even for ABI-only metadata.
+      if (!ownedDeclarations.has(name)) {
+        if (selectedDeclarations.has(name) || artifact.isLibrary !== true || artifact.bytecode !== '') continue;
+        if (artifacts[name]) {
+          if (declarationAbiIdentity(artifacts[name]) !== declarationAbiIdentity(artifact)) {
+            throw new Error(`Conflicting imported ABI-only declaration '${name}'; select its declaration owner explicitly.`);
+          }
+          continue;
+        }
+      }
       if (artifact.abi?.some((fn) => fn.modifiers?.includes('delegate'))) {
         artifact.delegateProxyStateOutputCountPinned = true;
       }

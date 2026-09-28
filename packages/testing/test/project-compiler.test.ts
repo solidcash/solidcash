@@ -120,6 +120,61 @@ describe('compileSolidityProject', () => {
     expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' } });
   });
 
+  it('retains imported ABI-only declarations without publishing imported executable contracts', async () => {
+    const [root] = project({
+      'Root.sol': 'import "./Dependency.sol"; contract Root {}',
+      'Dependency.sol': 'interface IReasons { error Rejected(uint value); } contract Dependency {}',
+    });
+    const declaration = { contractName: 'IReasons', abi: [], isLibrary: true, bytecode: '',
+      errors: [{ name: 'Rejected', signature: 'Rejected(uint256)', parameters: [{ name: 'value', type: 'uint256' }] }] };
+    const compile = (): any => ({
+      Root: { abi: [], from: 'root' },
+      IReasons: declaration,
+      Dependency: { abi: [], bytecode: '51', from: 'import' },
+    });
+    const result = await compileSolidityProject([root], {}, compile);
+    expect(result.artifacts).toEqual({ Root: { abi: [], from: 'root' }, IReasons: declaration });
+  });
+
+  it('keeps a selected declaration owner authoritative over an imported ABI-only copy', async () => {
+    const files = project({
+      'IReasons.sol': 'interface IReasons {}',
+      'Root.sol': 'import "./IReasons.sol"; contract Root {}',
+    });
+    const compile = (file: string): any => (path.basename(file) === 'Root.sol'
+      ? { Root: {}, IReasons: { isLibrary: true, bytecode: '', from: 'import' } }
+      : { IReasons: { isLibrary: true, bytecode: '', from: 'owner' } });
+    const result = await compileSolidityProject(files, {}, compile);
+    expect(result.artifacts.IReasons).toMatchObject({ from: 'owner' });
+  });
+
+  it('rejects conflicting imported ABI-only declarations instead of selecting an arbitrary factory', async () => {
+    const files = project({ 'First.sol': 'contract First {}', 'Second.sol': 'contract Second {}' });
+    const compile = (file: string): any => ({
+      [path.basename(file, '.sol')]: {},
+      IReasons: { isLibrary: true, bytecode: '', abi: [],
+        errors: [{ name: path.basename(file, '.sol'), signature: `${path.basename(file, '.sol')}()`, parameters: [] }] },
+    });
+    await expect(compileSolidityProject(files, {}, compile)).rejects.toThrow(/Conflicting imported ABI-only declaration/);
+  });
+
+  it('accepts imported ABI-only copies with equivalent signatures but different parameter labels and order', async () => {
+    const files = project({ 'First.sol': 'contract First {}', 'Second.sol': 'contract Second {}' });
+    const compile = (file: string): any => {
+      const first = path.basename(file) === 'First.sol';
+      const parameter = { name: first ? 'value' : 'amount', type: 'uint256' };
+      const abi = [{ name: 'write', inputs: [parameter] }, { name: 'read', inputs: [] }];
+      return {
+        [path.basename(file, '.sol')]: {},
+        IReasons: { isLibrary: true, bytecode: '', abi: first ? abi : abi.reverse(),
+          errors: [{ name: 'Rejected', signature: 'Rejected(uint256)', parameters: [parameter] }],
+          events: [{ name: 'Changed', signature: 'Changed(uint256)', parameters: [parameter] }] },
+      };
+    };
+    const result = await compileSolidityProject(files, {}, compile);
+    expect(result.artifacts.IReasons.abi[0].inputs[0].name).toBe('value');
+  });
+
   it('asks the compiler to fully compile only declarations owned by the source file', async () => {
     const files = project({
       'Leaf.sol': 'contract Leaf {}',

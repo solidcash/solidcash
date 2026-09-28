@@ -4,7 +4,7 @@ import {
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind, ValueType,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
-  ATOMIC_MESSAGE_BUS_MAX_ROWS,
+  ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
@@ -2759,6 +2759,18 @@ export function generateDeclarationArtifact(
 ): Artifact {
   const primary = ast.interfaceDefinitions.find((i) => i.name === ast.libraryName)
     ?? ast.interfaceDefinitions[0];
+  // Imported libraries can lift unrelated errors/events into the file-level namespace. An interface factory
+  // describes only that interface and its bases, independent of which concrete root imported it.
+  const interfaceScope: InterfaceNode[] = [];
+  const collectInterfaceScope = (iface: InterfaceNode): void => {
+    if (interfaceScope.includes(iface)) return;
+    interfaceScope.push(iface);
+    for (const parentName of iface.parents) {
+      const parent = ast.interfaceDefinitions.find((entry) => entry.name === parentName);
+      if (parent) collectInterfaceScope(parent);
+    }
+  };
+  if (primary) collectInterfaceScope(primary);
   // A standalone abstract contract (compiled under solidityImportCompat) has no interface, but its own
   // public/external functions form the ABI - solc emits an ABI + empty bytecode for abstract contracts.
   const abstractContract = ast.contract?.isAbstract ? ast.contract : undefined;
@@ -2788,27 +2800,37 @@ export function generateDeclarationArtifact(
     }))
     : undefined;
 
-  const allEventDefs = [...(ast.eventDefinitions || []), ...(abstractContract?.eventDefinitions || [])];
+  const allEventDefs = primary ? interfaceScope.flatMap((iface) => iface.eventDefinitions) : [
+    ...(ast.eventDefinitions || []), ...(abstractContract?.eventDefinitions || []),
+  ];
   const events = allEventDefs.length > 0
-    ? allEventDefs.map((ev) => ({
-      name: ev.name,
-      signature: ev.signature,
-      parameters: ev.parameters.map((p) => ({
-        name: p.name,
-        type: abiTypeString(p.type),
-        ...(p.indexed && { indexed: true }),
-      })),
-      ...(ev.isAnonymous && { anonymous: true }),
-    }))
+    ? [...new Map(allEventDefs.map((ev) => {
+      const signature = ev.signature || computeEventSignature(ev.name, ev.parameters.map((p) => abiTypeString(p.type)));
+      return [signature, {
+        name: ev.name,
+        signature,
+        parameters: ev.parameters.map((p) => ({
+          name: p.name,
+          type: abiTypeString(p.type),
+          ...(p.indexed && { indexed: true }),
+        })),
+        ...(ev.isAnonymous && { anonymous: true }),
+      }] as const;
+    })).values()]
     : undefined;
 
-  const allErrors = [...(ast.errorDefinitions || []), ...(abstractContract?.errorDefinitions || [])];
+  const allErrors = primary ? interfaceScope.flatMap((iface) => iface.errorDefinitions) : [
+    ...(ast.errorDefinitions || []), ...(abstractContract?.errorDefinitions || []),
+  ];
   const errors = allErrors.length > 0
-    ? allErrors.map((err) => ({
-      name: err.name,
-      signature: err.signature,
-      parameters: err.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
-    }))
+    ? [...new Map(allErrors.map((err) => {
+      const signature = err.signature || computeErrorSignature(err.name, err.parameters.map((p) => abiTypeString(p.type)));
+      return [signature, {
+        name: err.name,
+        signature,
+        parameters: err.parameters.map((p) => ({ name: p.name, type: abiTypeString(p.type) })),
+      }] as const;
+    })).values()]
     : undefined;
 
   return {

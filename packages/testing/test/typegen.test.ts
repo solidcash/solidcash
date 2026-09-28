@@ -3,7 +3,9 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Artifact } from '@solidcash/utils';
+import { compileFileMulti } from 'solidc';
 import { resolveConfig } from '../src/config.js';
+import { compileSolidityProject } from '../src/project-compiler.js';
 import { generateTypechainTargets } from '../src/typegen.js';
 
 const temporary: string[] = [];
@@ -41,6 +43,40 @@ function writeFixture(root: string, value: Artifact): void {
 }
 
 describe('TypeChain-compatible generation', () => {
+  it('generates imported error-interface factories from a real project compile', async () => {
+    const root = project();
+    const contractsDir = path.join(root, 'contracts');
+    const artifactsDir = path.join(root, 'artifacts');
+    fs.mkdirSync(contractsDir);
+    fs.mkdirSync(artifactsDir);
+    const source = path.join(contractsDir, 'Ledger.sol');
+    fs.writeFileSync(source, `pragma solidity ^0.8.20;
+      import { IReasons } from "./IReasons.sol";
+      contract Ledger { function check(uint amount) public { require(amount > 0); } }
+    `);
+    fs.writeFileSync(path.join(contractsDir, 'IReasons.sol'), `pragma solidity ^0.8.20;
+      interface IReasons { error Rejected(uint256 supplied, uint256 limit); }
+    `);
+    const result = await compileSolidityProject([source],
+      { solidityImportCompat: true, messageBus: false, suppressWarnings: true }, compileFileMulti);
+    expect(result.artifacts.IReasons.errors).toEqual([{
+      name: 'Rejected', signature: 'Rejected(uint256,uint256)',
+      parameters: [{ name: 'supplied', type: 'uint256' }, { name: 'limit', type: 'uint256' }],
+    }]);
+    for (const [name, value] of Object.entries(result.artifacts)) {
+      fs.writeFileSync(path.join(artifactsDir, `${name}.json`), JSON.stringify(value));
+      fs.writeFileSync(path.join(artifactsDir, `${name}.artifact.ts`), `export default ${JSON.stringify(value)} as const;\n`);
+    }
+    const outDir = path.join(root, 'bindings');
+    generateTypechainTargets({ artifactsDir, contractsDir, cacheDir: path.join(root, 'cache'),
+      targets: [{ target: 'ethers6', outDir }] });
+    expect(fs.readFileSync(path.join(outDir, 'index.ts'), 'utf8')).toContain("export * from './contracts/IReasons.js';");
+    const generated = fs.readFileSync(path.join(outDir, 'contracts', 'IReasons.ts'), 'utf8');
+    expect(generated).toContain('export class IReasons__factory');
+    expect(generated).toContain('static createInterface()');
+    expect(generated).toContain('errors: metadata.errors ?? []');
+  });
+
   it('resolves optional target defaults relative to the config directory', () => {
     const root = project();
     const config = resolveConfig({ typegen: { targets: [{ target: 'ethers6' }] } }, root);

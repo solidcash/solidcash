@@ -526,6 +526,10 @@ import {
 import {
   loadCreateBuilderDynamicChunks as loadCreateBuilderDynamicChunksImpl,
 } from './sc-load-create-builder-dynamic-chunks.js';
+export {
+  orderedActiveTrailingEntryCollections,
+  orderedTrailingEntryCollections,
+} from './sc-load-create-builder-dynamic-chunks.js';
 import {
   resolveCreateBuilderEffectiveLayout as resolveCreateBuilderEffectiveLayoutImpl,
 } from './sc-resolve-create-builder-effective-layout.js';

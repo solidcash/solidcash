@@ -61,6 +61,33 @@ export type LoadCreateBuilderDynamicChunksResult = {
   delegateRouteGroup: ExternalCallUtxoGroup | undefined;
 };
 
+/** Keep compiler fixed-batch coordinates ahead of runtime-discovered trailing entries. */
+export function orderedTrailingEntryCollections(
+  sortedBatches: readonly { collection: string }[] | undefined,
+  ...runtimeCollections: readonly Iterable<string>[]
+): string[] {
+  const collections: string[] = [];
+  const add = (name: string): void => {
+    if (!collections.includes(name)) collections.push(name);
+  };
+  for (const batch of sortedBatches ?? []) add(batch.collection);
+  for (const source of runtimeCollections) for (const name of source) add(name);
+  return collections;
+}
+
+/** The route ABI is a union; only collections reached by this envelope own physical slots. */
+export function orderedActiveTrailingEntryCollections(
+  sortedBatches: readonly { collection: string }[] | undefined,
+  ...activeCollections: readonly Iterable<string>[]
+): string[] {
+  const active = new Set<string>();
+  for (const source of activeCollections) for (const collection of source) active.add(collection);
+  return orderedTrailingEntryCollections(
+    sortedBatches?.filter((batch) => active.has(batch.collection)),
+    ...activeCollections,
+  );
+}
+
 /**
  * After event locks are collected: fetch old dynamic/value chunks to consume,
  * plan loop-entry NFT pads, and materialize runtime-loop event/transfer trailing
@@ -227,20 +254,16 @@ export async function loadCreateBuilderDynamicChunks(
   // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
   // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
   // that order here or two collections written out of declaration order receive each other's locking bytecode.
-  const orderedLoopCollections: string[] = [];
-  const addLoopCollection = (name: string): void => {
-    if (!orderedLoopCollections.includes(name)) orderedLoopCollections.push(name);
-  };
-  // Fixed-batch rewritten predecessors occupy the first write-path trailing coordinates. Runtime loop bodies
-  // call emitAddDynamicOutputsBeforeEntries before addressing their own collection rows, so their physical
-  // outputs must follow this fixed suffix even when source metadata lists the runtime collection first.
-  for (const name of batchPredCommitments.keys()) addLoopCollection(name);
-  for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
-  for (const name of runtimeLoopDerivedCounts.keys()) addLoopCollection(name);
-  for (const name of entryLoopWrites) addLoopCollection(name);
-  // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
-  // proxy's entryLoopWrites cannot advertise a scalar vmap INSERT. The insertion plan itself is authoritative.
-  for (const ins of sortedInserts) addLoopCollection(ins.collection);
+  const trailingCollectionSources = [
+    entryLoopWrites,
+    sortedLoopCommitments.keys(),
+    runtimeLoopDerivedCounts.keys(),
+    batchPredCommitments.keys(),
+    sortedInserts.map((insert) => insert.collection),
+  ] as const;
+  const orderedLoopCollections = entryRouteRows !== undefined || delegateRouteRows !== undefined
+    ? orderedActiveTrailingEntryCollections(entryAbiFunction?.sortedBatchInfo, ...trailingCollectionSources)
+    : orderedTrailingEntryCollections(entryAbiFunction?.sortedBatchInfo, ...trailingCollectionSources);
   const localStateCollections = new Set(host.inner.stateLayout?.collections?.map((collection: any) => collection.name));
   const loopEntryVars = orderedLoopCollections.map((name) => {
     const collection = stateLayout.collections?.find((candidate) => candidate.name === name);

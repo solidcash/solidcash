@@ -374,7 +374,9 @@ function parkFirstRecordBase(): number[] {
   const parked = (): number[] => [Opcodes.OP_DROP, Opcodes.OP_BIN2NUM, Opcodes.OP_1SUB, Opcodes.OP_TOALTSTACK];
   return [
     Opcodes.OP_DUP, ...takeFixedWidthField(2), ...parked(),
-    Opcodes.OP_DUP, ...takeFixedWidthField(2), ...parked(),
+    // The output field is read from the same copy: the split leaves the remainder on top, so the field just taken is
+    // dropped before the next one is split off, or the second read would take the input field again.
+    Opcodes.OP_DUP, ...takeFixedWidthField(2), Opcodes.OP_NIP, ...takeFixedWidthField(2), ...parked(),
   ];
 }
 

@@ -280,7 +280,9 @@ import {
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
-import { declaredRecordViewScript, type RecordSide } from '../per-call/master/declared-view.js';
+import {
+  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript, type RecordSide,
+} from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, callsOnEveryPath, callsRepeat,
@@ -6980,7 +6982,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The parameter is NOT passed by the SDK - it's computed inline from OP_INPUTBYTECODE.
     // Entry-point compile only: as an internal subroutine (self low-level call lowering) the caller pushes
     // the payload as a declared arg, and _redeemPushSize does not exist on the subroutine's stack.
-    if (node.isFallback && node.parameters.length > 0 && !this.isDefineSubTraversal
+    // A per-call master's caller pushes the received call data as the fallback's declared argument, so the body
+    // reads that argument at its own depth instead of rebuilding it from the unlocking bytecode.
+    if (node.isFallback && node.parameters.length > 0 && !this.isDefineSubTraversal && !this.perCallMaster
       && !node.parameters[0].name.startsWith('__internal__')) {
       const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
       this.emitMsgData(loc);
@@ -22345,7 +22349,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private emitVerifySortedValueOutput(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
-    untrackedItemsAtEntry = 1,
+    untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false,
   ): void {
     const id = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
     this.bumpSubroutineUse(id);
@@ -22367,23 +22371,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     this.emitVerifySortedValueOutputInline(
-      loc, addrDepth, f1Depth, f2Depth, f3Depth, false, untrackedItemsAtEntry,
+      loc, addrDepth, f1Depth, f2Depth, f3Depth, false, untrackedItemsAtEntry, topIsDeclaredOrdinal,
     );
   }
 
   private emitVerifySortedValueOutputInline(
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
-    consumeFrame = false, untrackedItemsAtEntry = 1,
+    consumeFrame = false, untrackedItemsAtEntry = 1, topIsDeclaredOrdinal = false,
   ): void {
     if (this.readsRecordsFromFrame) {
       // A per-call frame closes against the view its own segment declares: the transaction's output at the
-      // coordinate may be another frame's write. Settlement ties the declaration to the transaction.
+      // coordinate may be another frame's write. Settlement ties the declaration to the transaction. A record the
+      // frame never spent has no coordinate to resolve at, so the write names it by its position in the segment.
       this.emit(encodeInt(BigInt(f1Depth)), loc); this.emit(Op.OP_PICK, loc);      // f1 (baseline)
       this.emit(encodeInt(BigInt(f2Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f2 (+1: f1 copy)
       this.emit(Op.OP_CAT, loc);                                           // f1||f2
       this.emit(encodeInt(BigInt(f3Depth + 1)), loc); this.emit(Op.OP_PICK, loc);  // f3 (+1: f1||f2 blob)
       this.emit(Op.OP_CAT, loc);                                           // f1||f2||f3
-      this.emit(Op.OP_SWAP, loc); this.emitRecordCommitmentRead('out', loc); this.emit(Op.OP_EQUALVERIFY, loc);
+      this.emit(Op.OP_SWAP, loc);
+      if (topIsDeclaredOrdinal) {
+        // A negative index names the record by its ordinal in the segment's declaration; a non-negative one is a
+        // coordinate. The write pushes the ordinal form only for the arm that rewrites a record it never spent.
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_NEGATE, loc); // -(ordinal + 1) -> ordinal
+        this.emitDeclaredOrdinalCommitmentRead('out', loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emitRecordCommitmentRead('out', loc);
+        this.emit(Op.OP_ENDIF, loc);
+      } else {
+        this.emitRecordCommitmentRead('out', loc);
+      }
+      this.emit(Op.OP_EQUALVERIFY, loc);
       return;
     }
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
@@ -22715,12 +22734,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       // The written key's node sits where the frame declares it: an update rewrites the co-spent node in place,
       // so its output is the record the segment declares at the entry slot; an insert creates a trailing node,
-      // which the direct convention places at the entry slot's own output. A per-call frame reads the first from
-      // its segment's declaration and the second from the input its frame runs on, so the two arms differ.
+      // which the direct convention places at the entry slot's own output. A per-call frame rewrites the record
+      // by its position in the segment's declared list, because the node may have been created by an earlier
+      // frame and have no input for the frame's own base to reach.
+      const declaredOrdinal = this.readsRecordsFromFrame && inBatch
+        ? this.batchTargetOrdinal(slotIndex)
+        : undefined;
       this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
-      if (this.readsRecordsFromFrame) this.emitPerCallEntryIndex('out', slotIndex, loc);
-      else this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      if (declaredOrdinal !== undefined) {
+        // A record the transaction creates has no input for the frame's own base to reach: its declared input is
+        // the sentinel, so the coordinate the write proves the record at is negative. Such a record is named by
+        // its position in the segment's declared list instead, as a negative index so the shared close can tell
+        // it from the non-negative coordinates the other arms push. A record the frame spent keeps its coordinate.
+        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
+        this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's input coordinate
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(BigInt(-(declaredOrdinal + 1))), loc);
+        this.emit(Op.OP_ELSE, loc);
+        this.emitPerCallEntryIndex('out', slotIndex, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      } else if (this.readsRecordsFromFrame) {
+        this.emitPerCallEntryIndex('out', slotIndex, loc);
+      } else {
+        this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      }
       this.emit(Op.OP_ELSE, loc);
       this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc);
@@ -22740,7 +22779,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // at the logical fixed output: H(k) || plannedNext || computedValue.
       this.emit(Op.OP_FROMALTSTACK, loc);
       this.emit(Op.OP_SWAP, loc);                              // [v,H,addr,next,outIdx]
-      this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4, 4);
+      this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4, 4, declaredOrdinal !== undefined);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // next, addr, H
       this.emit(Op.OP_DROP, loc); this.popFromStack(); // v
       if (aliasOwner !== undefined) {
@@ -24533,7 +24572,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (targets.length === 1) {
         const slot = targets[0];
         const directProofField = (field: 'slot' | 'next' | 'value', extra = 0): void => {
-          commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
+          commitmentField(() => {
+            proofIndex(slot, extra);
+            // A per-call frame reads the proof node from the record its own segment declares; the transaction has no
+            // input at a coordinate a created node's record carries, and another frame may hold the spent value.
+            if (this.readsRecordsFromFrame) this.emitRecordCommitmentRead('in', loc);
+            else this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          }, field);
         };
         // Message-bus routes expose the union of all handlers in one ABI. A target unused by the selected handler
         // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
@@ -24792,6 +24837,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Direct entry points already performed this combined fixed+runtime scan before executing the body. Routes
       // must defer it until now because only their authenticated activity flags reveal which fixed rows exist.
       if (!this.isCompilerMessageBusRoute(node) && runtimeCollections.has(batch.collection)) continue;
+
+      // A per-call frame writes one record group of a collection the transaction may hold other records of: the
+      // insert frame relinks a predecessor this frame never touches, so the transaction's collection census is not
+      // this frame's to prove. The frame's own records are declared, and settlement ties those declarations to the
+      // transaction's real inputs and outputs.
+      if (this.readsRecordsFromFrame) continue;
 
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
@@ -29870,7 +29921,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_i)') + 1)), loc); // +1: outIdx-partial untracked
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc); // [..., outIdx]
-      // (a) locking bytecode == chunk address
+      // (a) locking bytecode == chunk address; (b) category base == master + mutable. A per-call frame writes the
+      // run its own segment declares rather than one at the arithmetic band: the band names the record, and the
+      // record's own declared index is where the transaction actually carries the chunk. A created chunk is a
+      // trailing output beside the events, so its index differs from the band; the declared index is what the
+      // transaction checks address.
+      const declaredIndexOnStack = this.readsRecordsFromFrame;
+      if (declaredIndexOnStack) {
+        this.emit(Op.OP_DUP, loc); // [..., outIdx, outIdx]
+        this.emitChunkRecordIndex('out', loc); // consumes the copy -> [..., outIdx, declaredIdx]
+      }
       this.emit(Op.OP_DUP, loc);
       this.emit(Op.OP_OUTPUTBYTECODE, loc);
       if (this.currentFunctionIsDelegate) {
@@ -29881,20 +29941,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, chunkHash), loc);
         this.popFromStack();
       } else {
-        this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)') + 2)), loc);
+        // One more untracked item (the band coordinate) sits above the address when the declared index is on top.
+        this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_chunkaddr)')
+          + (declaredIndexOnStack ? 3 : 2))), loc);
         this.emit(Op.OP_PICK, loc);
       }
-      this.emit(Op.OP_EQUALVERIFY, loc); // [..., outIdx]
-      // (b) category base == master + mutable
+      this.emit(Op.OP_EQUALVERIFY, loc); // [...]
       this.emit(Op.OP_DUP, loc);
-      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [..., outIdx, cat]
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // [..., index, cat]
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(32n), loc);
       this.emit(Op.OP_SPLIT, loc);
-      this.emit(Op.OP_NIP, loc); // [..., outIdx, cat, capability]
+      this.emit(Op.OP_NIP, loc); // [..., index, cat, capability]
       this.emit(new Uint8Array([0x01]), loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
-      this.emitVerifyCatBaseEqMaster(loc, 2); // consumes cat -> [..., outIdx]
+      this.emitVerifyCatBaseEqMaster(loc, declaredIndexOnStack ? 3 : 2); // consumes cat -> [..., index]
+      // The declared index was only for the transaction checks; the band coordinate stays for the view below.
+      if (declaredIndexOnStack) this.emit(Op.OP_DROP, loc); // -> [..., outIdx]
       // (c) commitment == expected. The direct convention keeps the TIGHT pattern
       // <expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY so the SDK trace extractor
       // (extractCommitmentsFromTrace) reads each chunk's expected commitment; a per-call frame closes against the
@@ -29902,7 +29965,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_expected)') + 1)), loc); // +1: outIdx on top
       this.emit(Op.OP_PICK, loc); // [..., outIdx, expected]
       this.emit(Op.OP_SWAP, loc); // [..., expected, outIdx]
-      this.emitRecordCommitmentRead('out', loc); // [..., expected, commitment]
+      this.emitChunkRecordView('out', loc); // [..., expected, commitment]
       this.emit(Op.OP_EQUALVERIFY, loc); // [..., (dyn_expected)]
 
       // --- clean up body-local temporaries ((dyn_expected)) back to the snapshot depth ---
@@ -30118,6 +30181,112 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       callCount: this.perCallExecutionCallCount(),
       side,
     })), loc);
+  }
+
+  /**
+   * Leaves the commitment the running segment's declaration puts at the ordinal on top of the stack.
+   *
+   * Entry `[..., ordinal]`, exit `[..., view]`. A record the frame never spent has no input coordinate for the
+   * frame's own base to reach, so the write that rewrites it names it by its position in the segment's declared
+   * list instead — the batch's own target order. The record is then resolved the same way whether the frame spent
+   * it or an earlier frame created it.
+   */
+  private emitDeclaredOrdinalCommitmentRead(side: RecordSide, loc: SingleLocationData): void {
+    if (this.perCallCallsMadeActive) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the body of '${this.currentFunction?.name ?? 'unknown'}' reads its state records, and its calls repeat, so `
+        + 'which segment declares the view it reads is a run-time value the read does not yet locate',
+        { function: this.currentFunction?.name, entry: true },
+      );
+    }
+    this.emit(bytecodeToScript(declaredRecordOrdinalViewScript({
+      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+      callCount: this.perCallExecutionCallCount(),
+      side,
+    })), loc);
+  }
+
+  /**
+   * The position in the segment's declared list of the record group a batch target writes.
+   *
+   * A segment declares one record group per target, the collections in the order the body writes them, so a
+   * target's group sits after every target of the batches that precede it, one record each. This ordinal is read
+   * only for a record the transaction creates; a target the frame's inventory does not hold takes two records and
+   * shifts the groups after it, which this count alone does not see.
+   */
+  private batchTargetOrdinal(slotIndex: number): number | undefined {
+    let ordinal = 0;
+    for (const batch of this.currentFunction.sortedBatchInfo ?? []) {
+      const index = batch.slotIndices.indexOf(slotIndex);
+      if (index >= 0) return ordinal + index;
+      ordinal += batch.slotIndices.length;
+    }
+    return undefined;
+  }
+
+  /**
+   * Leaves the commitment a dynamic value's chunk site reads or closes against.
+   *
+   * Entry `[..., coordinate]`, exit `[..., view]`. The direct convention reads the transaction's own chunk at the
+   * coordinate. A per-call frame instead selects the record its own segment declares at the run's position: the
+   * coordinate the loop computed fixes that position past the frame's declared record block, so it names the
+   * ordinal, and the record's declared view carries the commitment. That is what lets a created chunk be declared
+   * wherever the plan places it — beside per-append event outputs, which a fixed band offset cannot be reconciled
+   * with — while the frame still reads and closes the run the frame before it wrote.
+   */
+  private emitChunkRecordView(side: RecordSide, loc: SingleLocationData): void {
+    if (!this.readsRecordsFromFrame) {
+      this.emitRecordCommitmentRead(side, loc);
+      return;
+    }
+    if (this.perCallCallsMadeActive) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the body of '${this.currentFunction?.name ?? 'unknown'}' writes a dynamic value, and its calls repeat, so `
+        + 'which segment declares the run it writes is a run-time value the record does not yet locate',
+        { function: this.currentFunction?.name, entry: true },
+      );
+    }
+    this.emitChunkRecordOrdinal(side, loc);
+    this.emit(bytecodeToScript(declaredRecordOrdinalViewScript({
+      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+      callCount: this.perCallExecutionCallCount(),
+      side,
+    })), loc);
+  }
+
+  /**
+   * Leaves the declared index of the record a dynamic value's chunk site addresses, on top of a coordinate.
+   *
+   * Entry `[..., coordinate]`, exit `[..., index]`: the coordinate the loop computed fixes the record's position
+   * past the frame's declared record block, so the record that position names declares the index the transaction
+   * actually carries the chunk at. A created chunk's index is its trailing output, which the band the body reads
+   * from does not equal once events precede it.
+   */
+  private emitChunkRecordIndex(side: RecordSide, loc: SingleLocationData): void {
+    this.emitChunkRecordOrdinal(side, loc);
+    this.emit(bytecodeToScript(declaredRecordOrdinalIndexScript({
+      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+      callCount: this.perCallExecutionCallCount(),
+      side,
+    })), loc);
+  }
+
+  /**
+   * Turns the coordinate of a dynamic value's chunk site into the ordinal of the record it occupies.
+   *
+   * Entry `[..., coordinate]`, exit `[..., ordinal]`. The record block begins one below the frame's first declared
+   * record, and every declared record before the run occupies one coordinate, so the difference is the ordinal. The
+   * input block's base names an input coordinate and the output block's base an output coordinate, so each side
+   * subtracts its own.
+   */
+  private emitChunkRecordOrdinal(side: RecordSide, loc: SingleLocationData): void {
+    const baseSlot = side === 'out' ? recordOutputIndexSlotName() : recordInputIndexSlotName();
+    this.emit(encodeInt(BigInt(this.getStackIndex(baseSlot) + 1)), loc); // +1: coordinate on top
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_1ADD, loc);
+    this.emit(Op.OP_SUB, loc);
   }
 
   /**
@@ -30882,7 +31051,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // (c) commitment -> chunkIndex (== i) ++ chunkData. A per-call frame reads its own segment's declared view of
     // the record at the coordinate, so the run one frame wrote is the run the next frame reads.
-    this.emitRecordCommitmentRead('in', loc); // [..., commitment]
+    this.emitChunkRecordView('in', loc); // [..., commitment]
     this.emitPushdataDecode(lenType, loc); // [..., chunkIndex, remainder]
     this.emit(Op.OP_SWAP, loc); // [..., remainder, chunkIndex]
     this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_ri)') + 2)), loc); // +2: remainder, chunkIndex

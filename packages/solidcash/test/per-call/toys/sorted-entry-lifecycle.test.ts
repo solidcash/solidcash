@@ -287,22 +287,36 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     expect(verdictAt(draft, 'insert-1')).toBe('accepted');
   });
 
-  it('refuses the creating frame when its declared close is not the one it computed', () => {
-    // The control for the accept above: the insert frame reads the head at the view its segment declares and
-    // closes the created node against the value its body computes, so a declaration rewritten to a value no
-    // frame wrote is refused.
-    const { draft } = drive();
-    const record = draft.blockOf('insert-1').segments[0]![1]!;
-    record.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
-    expect(verdictAt(draft, 'insert-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+  it('refuses a frame whose declared close is not the one its body computed', () => {
+    // The control for the accepts below: each frame closes against the view its own segment declares, so a
+    // declaration rewritten to a value no frame wrote is refused rather than resolved.
+    const creating = drive().draft;
+    creating.blockOf('insert-1').segments[0]![1]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
+    expect(verdictAt(creating, 'insert-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+
+    const rewriting = drive().draft;
+    rewriting.blockOf('update-1').segments[0]![0]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
+    expect(verdictAt(rewriting, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 
-  it('leaves the frames that rewrite the created node refused by the master', () => {
-    // The composer lays the chain, but a master that rewrites the node it did not spend reads its state through
-    // the transaction's own inputs rather than the frame's declaration, so it cannot resolve the created node and
-    // the machine refuses the frame. Pinned rather than papered over.
-    const { draft } = drive();
-    expect(verdictAt(draft, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
-    expect(verdictAt(draft, 'remove-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+  it('settles the whole insert, update and delete lifecycle, every frame accepting', () => {
+    // The one transaction writes two records: the head the insert relinks, and the node the insert creates and
+    // both later frames rewrite. Each commitment is read back through the shipped sorted-list encoder, and each
+    // frame's own segment declares the view it reads and the view it writes.
+    const { draft, nodeAfter, headAfter } = drive();
+    const slot = keyToSlotMulti([KEY_PUSH]);
+    const program = draft.programFor('hub-1');
+    expect(program.transaction.outputs[HEAD_INDEX]!.token?.nft?.commitment).toStrictEqual(relinkedHead(slot));
+    expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment).toStrictEqual(node(slot, DEFAULT));
+    expect(nodeAfter).toStrictEqual(node(slot, DEFAULT));
+    expect(headAfter).toStrictEqual(relinkedHead(slot));
+
+    expect(draft.blockOf('insert-1').segments[0]![1]!.viewOut).toStrictEqual(node(slot, INSERTED));
+    expect(draft.blockOf('update-1').segments[0]![0]!.viewOut).toStrictEqual(node(slot, UPDATED));
+    expect(draft.blockOf('remove-1').segments[0]![0]!.viewOut).toStrictEqual(node(slot, DEFAULT));
+
+    expect(verdictAt(draft, 'insert-1')).toBe('accepted');
+    expect(verdictAt(draft, 'update-1')).toBe('accepted');
+    expect(verdictAt(draft, 'remove-1')).toBe('accepted');
   });
 });

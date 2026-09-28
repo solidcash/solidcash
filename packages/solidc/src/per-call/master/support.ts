@@ -1207,7 +1207,11 @@ function callsIn(value: unknown, calls: number[], base: number): number | CallSe
   let found = 0;
   let structured: CallSetDivergence | undefined;
   walkInvocationAst(value, (node) => {
-    if (node instanceof ExternalFunctionCallNode) {
+    // A low-level forwarded delegatecall is a call the execution records too: the site binds its `DELEGATE` record
+    // where the source makes it, so it occupies a position like any external call.
+    if (node instanceof ExternalFunctionCallNode
+      || node instanceof LowLevelCallStatementNode
+      || node instanceof LowLevelCallNode) {
       calls.push(base + found);
       found += 1;
     } else if (node instanceof SwitchNode) structured ??= 'switch';
@@ -1422,7 +1426,8 @@ function deriveEntryCallSites(
       target: new Uint8Array(0),
       targetFromStack: true,
       forwarded: true,
-      ordinal: (positions?.length ?? 0) + index,
+      // The forwarded call sits at its own walk position, which is the same list the typed calls read.
+      ordinal: positions?.[index] ?? index,
     });
   }
   return {

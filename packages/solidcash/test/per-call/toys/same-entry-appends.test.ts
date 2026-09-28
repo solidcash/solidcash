@@ -183,13 +183,15 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
     // only the later stage holds is created, and one only the earlier stage holds is removed.
     const entries: RecordEntry[] = [];
     for (let offset = 0; offset < Math.max(before.length, after.length); offset += 1) {
-      const index = base + offset;
       if (offset < before.length && offset < after.length) {
+        const index = runIndexOf(offset);
         entries.push({ in: index, out: index, viewIn: before[offset]!, viewOut: after[offset]! });
       } else if (offset < after.length) {
+        const index = runIndexOf(offset);
         entries.push({ in: INDEX_NONE, out: index, viewIn: EMPTY, viewOut: after[offset]! });
       } else {
-        entries.push({ in: index, out: INDEX_NONE, viewIn: before[offset]!, viewOut: EMPTY });
+        // A removed chunk is spent at its own band index, which is where the transaction already carries it.
+        entries.push({ in: base + offset, out: INDEX_NONE, viewIn: before[offset]!, viewOut: EMPTY });
       }
     }
     return {
@@ -243,6 +245,13 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
       state: logState,
     },
   ]).funderInputBase;
+
+  // Where the transaction actually carries each of the run's chunks. A chunk the final stage keeps is a participant
+  // at its own band index, while one the final stage creates is a trailing output after the events, so a run created
+  // in the trailing region sits at different coordinates than the band the body reads it from.
+  const runIndexOf = (offset: number): number => (offset < kept.length
+    ? base + offset
+    : funderInputBase + emitted.length + (offset - kept.length));
 
   const plan: CompositionDraftPlan = {
     blocks: [
@@ -298,7 +307,7 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
         stateInputs: [HEADER_ID, ...kept.map((record) => record.id), ...removed.map((record) => record.id)],
         // A chunk the transaction creates has no input to name, so it is declared by the trailing output it
         // appears at: the frames' later declarations address it by that index.
-        createdOutputs: created.map((record) => record.index),
+        createdOutputs: created.map((_record, offset) => funderInputBase + emitted.length + offset),
       }],
       redeemScript: validator.redeem,
     },
@@ -527,18 +536,47 @@ describe('one entry appending to one log three times', () => {
     });
   });
 
-  it('refuses the per-append events beside a run the transaction creates', () => {
-    // The run band sits at the frame's fixed coordinate — one layout width past the frame's declared record block —
-    // and the trailing region begins there, holding the events first. So a transaction that both creates the run's
-    // first chunk and carries one event per append has no layout that satisfies both: the created chunk's band
-    // index and the first event output are the same index. The composer refuses it at the plan layer, before any
-    // script runs.
-    const three = build([], [10n, 20n], true);
-    expect(() => createComposedDerivationHost({
+  it('settles the per-append events beside a run the transaction creates', () => {
+    // The run does not exist when the transaction starts, so the first append creates its chunk while every append
+    // emits. The created chunk's output is a trailing output after the events, so its index is not the band the
+    // frame reads the run from: the frame's own segment declares the index, and the body checks the transaction at
+    // that declaration. The plan declares the created record where the trailing region puts it, and the whole
+    // composition derives and settles with the created chunk, the header and every event read back.
+    const three = build([], APPENDS.map((append) => append.item), true);
+    const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
       artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
       plan: three.plan,
-    })).toThrow(/creates records at .*trailing region/);
+    });
+    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
+    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
+    expect(verdictAt(draft, 'log-1')).toBe('accepted');
+    expect(verdictAt(draft, 'log-2')).toBe('accepted');
+    expect(verdictAt(draft, 'log-3')).toBe('accepted');
+    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
+    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+
+    const values = APPENDS.map((append) => append.item);
+    const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));
+    expect(chunks).toHaveLength(1);
+    const program = draft.programFor('hub-1');
+    // The created chunk is a trailing output the plan placed after the events; the plan's declaration is where the
+    // transaction carries it.
+    expect(draft.trailingOutputs).toHaveLength(APPENDS.length + 1);
+    const createdIndex = draft.trailingOutputs[APPENDS.length]!.index;
+    expect(program.transaction.outputs[createdIndex]!.token?.nft?.commitment).toStrictEqual(chunks[0]);
+    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
+    // One event per append, each carrying the payload the body computed.
+    const event = three.artifacts.Log!.events![0]!;
+    const eventIndices = draft.assembly.outputs.eventIndices;
+    expect(eventIndices).toHaveLength(APPENDS.length);
+    APPENDS.forEach((append, index) => {
+      const payload = encodeEventCommitment(event.parameters, [BigInt(index + 1), append.item]);
+      expect(program.transaction.outputs[eventIndices[index]!]!.token?.nft).toStrictEqual({
+        capability: 'none', commitment: payload,
+      });
+    });
   });
 
   it('refuses a run whose declared close is not the one the frame computed', () => {

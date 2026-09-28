@@ -41,6 +41,127 @@ export interface DeclaredViewOptions {
   readonly side: RecordSide;
 }
 
+/** Options for a read that selects its record by position in the segment rather than by index. */
+export interface DeclaredRecordOrdinalOptions {
+  /** The segment the body is running in, as the number of its external calls already executed. */
+  readonly segmentIndex: number;
+  /** How many call records the block declares, which is the body's own number of calls. */
+  readonly callCount: number;
+  /** Which view the selected record's read returns. */
+  readonly side: RecordSide;
+}
+
+/**
+ * Builds the script that leaves the view of the record at a given ordinal in the running segment.
+ *
+ * Entry `[..., ordinal]`, exit `[..., view]`. A segment's records are an ordered list, and a frame that names a run
+ * declares the run's records at fixed positions in it, so an ordinal selects a record without the body having to
+ * know the index the composer gave it. That is what lets a created chunk sit wherever the trailing region puts it,
+ * beside event outputs, rather than at a band offset the layout cannot always place it at. An ordinal past the
+ * segment's declared count fails the read rather than selecting a record the frame did not declare.
+ */
+export function declaredRecordOrdinalViewScript(options: DeclaredRecordOrdinalOptions): Uint8Array {
+  return buildOrdinalWalk(options, ({ op, skipField, takeView }) => {
+    // The target record leads. Read its view for this side and leave only that view.
+    skipField(takeFixedWidthField(2)); // in
+    skipField(takeFixedWidthField(2)); // out
+    if (options.side === 'in') {
+      takeView(takeLengthPrefixedField32()); // viewIn, dropping the record's remaining fields
+    } else {
+      skipField(takeLengthPrefixedField32()); // viewIn
+      takeView(takeLengthPrefixedField32()); // viewOut
+    }
+    op(Opcodes.OP_TOALTSTACK); // park the view while the walk's own items go
+    op(Opcodes.OP_2DROP); // count, ordinal
+    op(Opcodes.OP_FROMALTSTACK);
+    // A record with no view on this side reads as empty, which fails rather than resolving to a spent commitment.
+    op(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_VERIFY);
+  });
+}
+
+/**
+ * Builds the script that leaves the declared index of the record at a given ordinal in the running segment.
+ *
+ * Entry `[..., ordinal]`, exit `[..., index]`, where `index` is the record's `in` field for the input side and its
+ * `out` field for the output side. A body uses it to check the transaction's own input or output at the coordinate
+ * the record declares, which is where a created record's output actually sits rather than at the band the body
+ * reads it from.
+ */
+export function declaredRecordOrdinalIndexScript(options: DeclaredRecordOrdinalOptions): Uint8Array {
+  return buildOrdinalWalk(options, ({ op, raw, skipField }) => {
+    if (options.side === 'out') skipField(takeFixedWidthField(2)); // the `in` field leads the record
+    raw(takeFixedWidthField(2)); // the index this side names
+    op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP); // [count, ordinal, index, rest]
+    op(Opcodes.OP_DROP); // [count, ordinal, index]
+    op(Opcodes.OP_TOALTSTACK); // park the index while the walk's own items go
+    op(Opcodes.OP_2DROP); // count, ordinal
+    op(Opcodes.OP_FROMALTSTACK);
+  });
+}
+
+interface OrdinalWalkEmitters {
+  readonly op: (...opcodes: number[]) => void;
+  readonly raw: (script: Uint8Array) => void;
+  readonly skipField: (field: Uint8Array) => void;
+  readonly takeView: (field: Uint8Array) => void;
+}
+
+/**
+ * Emits the walk that carries the ordinal on top to the segment it names, skips the records before the ordinal, and
+ * leaves `[count, ordinal, records]` with the target record leading; the tail then takes the field this read names.
+ */
+function buildOrdinalWalk(
+  options: DeclaredRecordOrdinalOptions,
+  tail: (emit: OrdinalWalkEmitters) => void,
+): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
+  const takeView = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_SWAP, Opcodes.OP_NIP); };
+
+  // The ordinal is parked for the walk and used once the target segment's record list is on top.
+  op(Opcodes.OP_TOALTSTACK);
+  raw(readOwnWitnessBlockScript());
+  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  skipField(takeLengthPrefixedField()); // sender
+  skipField(takeLengthPrefixedField()); // self
+  skipField(takeFixedWidthField(8)); // value
+  skipField(takeLengthPrefixedField32()); // retval
+  skipField(takeFixedWidthField(2)); // declared call count
+  for (let call = 0; call < options.callCount; call += 1) skipCallRecord(bytes);
+  skipField(takeFixedWidthField(2)); // declared segment count
+  for (let segment = 0; segment < options.segmentIndex; segment += 1) skipSegment(op, raw, num);
+
+  // The target segment's record list. `[records, count]` with the records on top, then the ordinal below the count.
+  raw(takeFixedWidthField(2)); // [countBytes, records]
+  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP); // [count, records]
+  op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP); // [count, ordinal, records]
+
+  // Require the ordinal to name a declared record.
+  num(1); op(Opcodes.OP_PICK); // ordinal
+  num(3); op(Opcodes.OP_PICK); // count
+  op(Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY); // ordinal < count
+
+  // Skip `ordinal` records; a zero ordinal must not run the skip body once, so the loop is guarded.
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  skipField(takeFixedWidthField(2)); // in
+  skipField(takeFixedWidthField(2)); // out
+  skipField(takeLengthPrefixedField32()); // viewIn
+  skipField(takeLengthPrefixedField32()); // viewOut
+  op(Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP); // ordinal -= 1
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL); // repeat until it reaches zero
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+
+  tail({ op, raw, skipField, takeView });
+  return new Uint8Array(bytes);
+}
+
 /**
  * Builds the script that leaves the declared view of the record at the coordinate on top of the stack.
  *

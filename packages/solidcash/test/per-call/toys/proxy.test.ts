@@ -7,7 +7,7 @@ import {
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
-  USER_LOCK, compileAndDeploy, entryName, master, masterInput, selectorOf,
+  USER_LOCK, compileAndDeploy, composeAndDerive, entryName, master, masterInput, rootOf, selectorOf,
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
@@ -50,6 +50,7 @@ function proxyRecord(artifacts: Artifacts, implementation: Uint8Array): Uint8Arr
 
 interface Composition {
   readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly plan: CompositionDraftPlan;
   readonly record: Uint8Array;
   readonly selector: Uint8Array;
   readonly input: Uint8Array;
@@ -137,7 +138,7 @@ function compose(): Composition {
     vm: compositionMachine(), artifacts: [artifacts.Proxy!, artifacts.Impl!], plan,
   });
   return {
-    draft, record, selector: answerSelector, input, implAddress: implContract.address, artifacts,
+    draft, plan, record, selector: answerSelector, input, implAddress: implContract.address, artifacts,
   };
 }
 
@@ -170,6 +171,22 @@ const LOCAL_SLICE_SOURCE = PROLOGUE
 /** A body whose call data is a parameter-shaped value that is not the entry's own received call data. */
 const PARAMETER_DATA_SOURCE = PROLOGUE
   + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';
+
+/** A fallback beside ordinary entries: the contract would dispatch by selector, which the head cannot precede. */
+const FALLBACK_BESIDE_ENTRY_SOURCE = PROLOGUE
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   function set(address to) { require(to != 0x00); }'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+
+/** A receive: the contract would dispatch by stack depth, which the head cannot precede. */
+const RECEIVE_SOURCE = PROLOGUE
+  + ' contract Proxy { address implementation; receive() external payable { require(true); } }';
+
+/** A non-delegate low-level call: a call kind the master's own record binding does not describe. */
+const NON_DELEGATE_CALL_SOURCE = PROLOGUE
+  + ' contract Proxy { function set(address target) { target.call(hex"aabbccdd"); require(true); } }';
 
 /** One entry the compiler refused, as the artifact publishes it. */
 interface PublishedRefusal {
@@ -236,6 +253,68 @@ describe('the delegate shapes a per-call master admits', () => {
     const refusal = refusalOf(UNHELD_TARGET_SOURCE);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+  });
+
+  it('refuses a fallback beside an ordinary entry, by name', () => {
+    const refusal = refusalOf(FALLBACK_BESIDE_ENTRY_SOURCE);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+  });
+
+  it('refuses a receive, by name', () => {
+    const refusal = refusalOf(RECEIVE_SOURCE);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('receive makes the contract dispatch by stack depth');
+  });
+
+  it('refuses a non-delegate low-level call, by name', () => {
+    const refusal = refusalOf(NON_DELEGATE_CALL_SOURCE, { allowUnsafeOperations: true });
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
+  });
+});
+
+describe('the proxied hop settles end to end', () => {
+  /** Derives the hop from the shipped plan: both frames run, and the machine is asked about every contract input. */
+  function settle(): { outcome: ReturnType<typeof composeAndDerive>; composition: Composition } {
+    const composition = compose();
+    const outcome = composeAndDerive(
+      composition.plan, [composition.artifacts.Proxy!, composition.artifacts.Impl!],
+      [rootOf('Proxy', '__fallback', 'proxy-1')],
+    );
+    return { outcome, composition };
+  }
+
+  it('completes the implementation frame and then the proxy frame that forwarded to it', () => {
+    expect(settle().outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Impl', 'answer'), entryName('Proxy', '__fallback')]);
+  });
+
+  it('accepts the proxy master, the validator and the implementation master', () => {
+    const { outcome } = settle();
+    const verdicts = new Map(outcome.verdicts.map((verdict) => [verdict.participant, verdict]));
+    for (const id of ['proxy-1', 'validator', 'impl-1']) {
+      const verdict = verdicts.get(id);
+      expect(verdict?.accepted, `${id}: ${verdict?.objection ?? 'not placed'}`).toBe(true);
+    }
+  });
+
+  it('binds the callee reference, the forwarded digest and the callee\'s result into the caller\'s record', () => {
+    const { outcome, composition } = settle();
+    const call = outcome.draft.blockOf('proxy-1').calls[0]!;
+    expect(call.kind).toBe(FrameKind.DELEGATE);
+    expect(call.target).toStrictEqual(composition.implAddress);
+    expect(call.argsHash).toStrictEqual(argsHash(composition.selector, new Uint8Array(0)));
+    // The derivation filled the reference with the implementation's own input index.
+    expect(call.calleeRef).toBe(participant(outcome.draft.layout, 'impl-1').index);
+    // The callee returns nothing and the record carries exactly that value back to the caller unchanged.
+    expect(call.result).toStrictEqual(new Uint8Array(0));
+    expect(outcome.draft.blockOf('impl-1').retval).toStrictEqual(call.result);
+    // The implementation runs the delegate frame the caller wrote: the caller's sender and address(this).
+    const impl = outcome.draft.blockOf('impl-1');
+    expect(impl.kind).toBe(FrameKind.DELEGATE);
+    expect(impl.sender).toStrictEqual(outcome.draft.blockOf('proxy-1').sender);
+    expect(impl.self).toStrictEqual(outcome.draft.blockOf('proxy-1').self);
   });
 });
 

@@ -1465,18 +1465,22 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
-  - **Claimed by the parallel worker, from `5bfdafdd3`:** (1) **Open soundness hole, found probing the data
-    record side of T43 (T44):** a frame's data-NFT record is checked against its code only where the code writes
-    it, so a frame can declare it changed in any segment its code does not write it in, and the transaction
-    settles that commitment. Probed on a one-field `Ledger` (`int count`, a composition like
-    `shapes/mapping-write-beside-calls.test.ts`): a body that never touches `count` - with no call, or with one -
-    settles its record rewritten to a value no code computed; a body that writes `count` before a call settles
-    the record changed after the write, final output included; every contract input is accepted, the validator
-    included. So an entry of a per-call contract lets whoever composes the transaction rewrite that contract's
-    data record. The fix, claimed: every segment that declares a data record its code does not write in that
-    segment declares it kept (the T43 walk, per record); a record written in more than one segment, or in one
-    the source does not fix, is closed per segment or refused by name. (2) The keccak compute side-car
-    (`MarketplaceV1.takeJob`). **Handed back**: the verified-mapping write a call precedes, served in
+  - **Claimed by the parallel worker, from `aa7c48e4f`:** (1) **Open soundness hole (T44), critical: a record a
+    frame declares is checked against the frame's code only where the code writes or reads it, so a frame can
+    declare any record of its contract changed in any segment its code does not write it in, and the
+    transaction settles that commitment.** Probed through the shipped composer: an entry of a one-field `Ledger`
+    (`int count`) that never touches `count`, with no call or with one, settles its data record rewritten to a
+    value no code computed; an entry that writes `count` before a call settles the record changed after the
+    write, final output included; and an entry of the kept-nodes replica's `Arbiter` that never touches its
+    mapping (`ping`) settles another key's node rewritten. Every contract input is accepted, the validator
+    included; the record's own covenant still refuses a changed lock. So any entry of a per-call contract lets
+    whoever composes the transaction rewrite any record of that contract - its data record, a balance in a
+    mapping - and a record written before a call and again after it (a reentrancy guard) can show a callee a
+    forged value between. The fix, claimed: at every segment close (each call site and the body's end) the
+    frame walks the segment's records and requires every one its code does not account for there kept in
+    place - the data records it wrote in that segment are rebuilt and compared, and the write segment's batch
+    groups and value chunks are the batch walk's - which subsumes the T43 check. (2) The keccak compute
+    side-car (`MarketplaceV1.takeJob`). **Handed back**: the verified-mapping write a call precedes, served in
     `6dd0bdfd8`, and the field-access key, served in `ed072744e`. Released earlier: the composer's value-list
     helper. Not claimed: everything else.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite

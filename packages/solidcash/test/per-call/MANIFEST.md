@@ -36,14 +36,14 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 39 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 52 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 8 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1187 tests (115 + 405 + 667), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 667 is the fifteen rows above
+Total: 1203 tests (115 + 405 + 683), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 683 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.

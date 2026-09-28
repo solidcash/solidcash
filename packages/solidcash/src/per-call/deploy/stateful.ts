@@ -25,7 +25,7 @@ import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { derivePerCallGenesis } from './genesis.js';
-import { stateRecordLockingBytecode } from './records.js';
+import { entryRecordLockingBytecode, stateRecordLockingBytecode } from './records.js';
 
 /** Raised when a per-call deployment cannot be built from the artifact or the options. */
 export class PerCallDeployError extends Error {
@@ -114,6 +114,23 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
       to: recordLockingBytecode,
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment } },
+    });
+  }
+  // The mapping nodes the constructor's frame materialized: the empty list's head sentinel and any node its writes
+  // created. Each sits at its collection's entry covenant, so a composition spends and recreates it under the
+  // covenant's own rules; the collection's signature derives that lock.
+  for (const entry of genesis.entries) {
+    const collection = artifact.stateLayout?.collections
+      ?.find((candidate) => candidate.name === entry.collection);
+    if (collection === undefined) {
+      throw new PerCallDeployError(
+        `genesis minted a node for collection "${entry.collection}", which the artifact does not publish`,
+      );
+    }
+    builder.addOutput({
+      to: entryRecordLockingBytecode(categoryId, collection.signature),
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
     });
   }
 

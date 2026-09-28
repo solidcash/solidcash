@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32 } from '@bitauth/libauth';
 import {
-  buildAnonymousEventNftCovenantScript, buildEventNftCovenantScript, buildPushdataCommitment, bytesEqual,
-  computeEventNameHash, encodeEventCommitment, hash256, scriptToBytecode, sha256, validatorAddress,
+  buildAnonymousEventNftCovenantScript, buildEntryNftCovenantScript, buildEventNftCovenantScript,
+  buildPushdataCommitment, bytesEqual, computeCollectionHash, computeEventNameHash, encodeEventCommitment,
+  encodeIntegerValue, hash256, scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator/index.js';
@@ -10,6 +11,8 @@ import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../
 import { Contract, SignatureTemplate, StatefulContract } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, derivePerCallGenesis } from '../../../src/per-call/deploy/index.js';
+import { planMappingWrite } from '../../../src/per-call/composer/index.js';
+import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -242,5 +245,161 @@ describe('a per-call genesis whose constructor emits an event', () => {
     const output = genesis.program!.transaction.outputs[index]!;
     const expected = encodeEventCommitment(definition.parameters, [7n]);
     expect(Array.from(output.token!.nft!.commitment)).toStrictEqual(Array.from(expected));
+  });
+});
+
+/**
+ * A constructor that writes one mapping entry. A genesis starts from an empty sorted list, so the write is an
+ * insertion: the head sentinel is relinked to the new key's slot and the new node is created carrying the value.
+ * The nodes come from the shipped planner against the empty list, and the block's segment declares the pair, which
+ * is what the master's own batch derivation reads and its settlement chains.
+ */
+const MAPPING_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Registry {'
+  + '   int public count;'
+  + '   mapping(address => int) public balances;'
+  + '   constructor(address admin, int seed) { this.count = seed + 1; this.balances[admin] = seed; }'
+  + '   function touch() { require(true); }'
+  + ' }';
+
+const mappingArtifact = compileString(MAPPING_SOURCE, { composition: 'per-call' });
+const mappingStateLayout = mappingArtifact.stateLayout!;
+const MAPPING_ADMIN = new Uint8Array(20).fill(7);
+const MAPPING_SEED = 5n;
+
+/** The nodes the shipped planner materializes for the constructor's write against the empty list. */
+const mappingWritePlan = planMappingWrite({
+  keys: [MAPPING_ADMIN],
+  value: encodeIntegerValue(MAPPING_SEED),
+  inventory: [headSentinelCommitment()],
+  encodeValue: (value) => value,
+});
+const MAPPING_HEAD_AFTER = mappingWritePlan.written[0]!.after;
+const MAPPING_CREATED = mappingWritePlan.written[1]!.after;
+
+/** The entry covenant the mapping's nodes sit at, derived from the collection's signature. */
+const mappingEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
+  buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(mappingStateLayout.collections![0]!.signature)),
+)));
+
+const mappingGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+  artifact: mappingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+  provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN, MAPPING_SEED],
+  senderLockingBytecode: OWNER_LOCK,
+});
+
+/** The index of the entry output whose commitment is `commitment`, or `-1` when none carries it. */
+function entryOutputIndex(program: VmProgram | undefined, commitment: Uint8Array): number {
+  return program!.transaction.outputs.findIndex((output) => (
+    bytesEqual(output.lockingBytecode, mappingEntryLock)
+    && bytesEqual(output.token?.nft?.commitment ?? new Uint8Array(0), commitment)
+  ));
+}
+
+/** The program with the output at `index` carrying a commitment off the value a frame computed. */
+function withOutputCommitment(program: VmProgram, index: number, commitment: Uint8Array): VmProgram {
+  const outputs = program.transaction.outputs.map((output, at) => (
+    at === index && output.token !== undefined
+      ? { ...output, token: { ...output.token, nft: { ...output.token.nft!, commitment } } }
+      : output
+  ));
+  return { ...program, transaction: { ...program.transaction, outputs } };
+}
+
+describe('a per-call genesis whose constructor writes a mapping entry', () => {
+  it('mints the record, the relinked head and the created node from the shipped encoders', () => {
+    const genesis = mappingGenesis();
+    expect(genesis.commitments).toStrictEqual([buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0)]);
+    expect(genesis.entries).toStrictEqual([
+      { collection: 'balances', commitment: Buffer.from(MAPPING_HEAD_AFTER).toString('hex') },
+      { collection: 'balances', commitment: Buffer.from(MAPPING_CREATED).toString('hex') },
+    ]);
+    // The head sentinel is relinked to the key's slot and the created node carries the value the write stored.
+    expect(Buffer.from(MAPPING_HEAD_AFTER).toString('hex'))
+      .not.toBe(Buffer.from(headSentinelCommitment()).toString('hex'));
+  });
+
+  it('builds a transaction whose entry outputs carry those commitments, accepted by the machine', () => {
+    const genesis = mappingGenesis();
+    const headIndex = entryOutputIndex(genesis.program, MAPPING_HEAD_AFTER);
+    const createdIndex = entryOutputIndex(genesis.program, MAPPING_CREATED);
+    expect(headIndex).toBeGreaterThanOrEqual(0);
+    expect(createdIndex).toBeGreaterThanOrEqual(0);
+    expect(accepted(genesis.program)).toBe(true);
+  });
+
+  it('refuses a created node the frame did not compute', () => {
+    const genesis = mappingGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    const index = entryOutputIndex(genesis.program, MAPPING_CREATED);
+    const wrong = new Uint8Array(MAPPING_CREATED);
+    wrong[wrong.length - 1] = 0x09;
+    expect(accepted(withOutputCommitment(genesis.program!, index, wrong))).toBe(false);
+  });
+
+  it('refuses a relinked head the frame did not compute', () => {
+    const genesis = mappingGenesis();
+    const index = entryOutputIndex(genesis.program, MAPPING_HEAD_AFTER);
+    const wrong = new Uint8Array(MAPPING_HEAD_AFTER);
+    wrong[32] = 0x01;
+    expect(accepted(withOutputCommitment(genesis.program!, index, wrong))).toBe(false);
+  });
+
+  it('derives a mapping-only constructor, whose whole state is the list it writes', () => {
+    const plain = compileString(
+      'pragma solidcash ^0.13.0;'
+      + ' contract Reg {'
+      + '   mapping(address => int) public balances;'
+      + '   constructor(address admin) { this.balances[admin] = 1; }'
+      + '   function touch() { require(true); }'
+      + ' }',
+      { composition: 'per-call' },
+    );
+    const genesis = derivePerCallGenesis({
+      artifact: plain, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
+    });
+    expect(genesis.commitments).toStrictEqual([]);
+    expect(genesis.entries.map((entry) => entry.collection)).toStrictEqual(['balances', 'balances']);
+    expect(accepted(genesis.program)).toBe(true);
+  });
+
+  it('refuses a constructor that writes more than one collection, by name', () => {
+    const multi = compileString(
+      'pragma solidcash ^0.13.0;'
+      + ' contract Multi {'
+      + '   mapping(address => int) public first;'
+      + '   mapping(address => int) public second;'
+      + '   constructor(address who) { this.first[who] = 1; this.second[who] = 2; }'
+      + '   function touch() { require(true); }'
+      + ' }',
+      { composition: 'per-call' },
+    );
+    expect(() => derivePerCallGenesis({
+      artifact: multi, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans exactly one write/);
+  });
+
+  it('deploys through the shipped SDK entry point, minting the entry nodes at the collection covenant', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '12'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { categoryId } = await StatefulContract.deploy(mappingArtifact, [MAPPING_ADMIN, MAPPING_SEED], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+
+    expect(categoryId).toBe(fundingUtxo.txid);
+    const minted = await provider.getUtxosByTokenCategory(categoryId);
+    const commitments = minted.map((utxo) => utxo.token?.nft?.commitment ?? '');
+    expect(commitments).toContain(Buffer.from(MAPPING_HEAD_AFTER).toString('hex'));
+    expect(commitments).toContain(Buffer.from(MAPPING_CREATED).toString('hex'));
+    expect(commitments).toContain(buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0));
   });
 });

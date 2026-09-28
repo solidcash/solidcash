@@ -15,6 +15,8 @@
 import { hexToBin } from '@bitauth/libauth';
 import {
   buildDataNftCovenantScript,
+  buildEntryNftCovenantScript,
+  computeCollectionHash,
   isMultiDataNftLayout,
   parsePushdataCommitment,
   scriptToBytecode,
@@ -25,7 +27,7 @@ import { encodeFunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
-import { createUnlockingBytecode } from '../../utils.js';
+import { createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
 
 /** Raised when a per-call deployment's records cannot be read. */
 export class PerCallRecordError extends Error {
@@ -45,6 +47,17 @@ export class PerCallRecordError extends Error {
  */
 export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
   return getDataNftLockingBytecode(categoryId);
+}
+
+/**
+ * The lock a mapping node sits at: the entry-NFT covenant the collection's signature derives.
+ *
+ * A genesis mints a mapping's head sentinel and every node the constructor's write creates at this lock, and a
+ * composition spends and recreates each node at it, so the node's covenant pins the collection.
+ */
+export function entryRecordLockingBytecode(categoryId: string, collectionSignature: string): Uint8Array {
+  const covenant = buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSignature));
+  return scriptToLockingBytecode(covenant, 'p2sh32');
 }
 
 /**

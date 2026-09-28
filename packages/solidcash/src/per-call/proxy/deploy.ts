@@ -194,6 +194,32 @@ function entryName(artifact: Artifact, functionName: string): string {
 }
 
 /**
+ * Refuses a hop whose entry the compiler did not emit, naming the entry and the shape that refused it.
+ *
+ * A body a per-call master cannot serve is emitted as a body that fails whenever the dispatcher reaches it, so a
+ * frame that runs one stops on that stub and the hop would report the opcode rather than the shape. The artifact
+ * publishes the reason beside the stop sites, keyed by the same identity, which is what a caller reads instead.
+ *
+ * The refused entry is the one the hop names, or the proxy's fallback the hop is entered on. A refusal here is an
+ * answer about the artifact, so it is raised before either genesis is deployed rather than after the hop fails.
+ */
+function requireServedEntry(artifact: Artifact, functionName: string, role: string): void {
+  const identity = entryName(artifact, functionName);
+  const listed = (artifact.composition as {
+    readonly refusedEntries?: readonly { readonly functionName: string; readonly reason: string }[];
+  } | undefined)?.refusedEntries ?? [];
+  const reason = listed.find((entry) => entry.functionName === identity)?.reason;
+  if (reason !== undefined) {
+    throw new PerCallProxyDeployError(`${role} is refused by the compiler (${identity}): ${reason}`);
+  }
+}
+
+/** How a hop names the entry it runs, e.g. `"initialize" entry`. */
+function entryLabelFor(functionName: string): string {
+  return `"${functionName}" entry`;
+}
+
+/**
  * Refuses a proxy that is not the served shape: an `address implementation` field and a fallback body.
  *
  * The proxy's records are the implementation's records, so the proxy declares the implementation's fields beside
@@ -342,6 +368,9 @@ export async function deployPerCallProxy(
   const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
+  requireServedEntry(implementationArtifact, options.initialize.functionName,
+    `the implementation's ${entryLabelFor(options.initialize.functionName)}`);
+  requireServedEntry(proxyArtifact, '__fallback', "the proxy's fallback");
   if (options.callerLockingBytecode.length !== 25) {
     throw new PerCallProxyDeployError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
@@ -405,7 +434,7 @@ export async function deployPerCallProxy(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    entryLabel: `"${options.initialize.functionName}" entry`,
+    entryLabel: entryLabelFor(options.initialize.functionName),
     planFor: (writtenCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
@@ -942,6 +971,9 @@ export async function callPerCallProxyEntry(
       `implementation "${implementationArtifact.contractName}" publishes no entry "${options.functionName}"`,
     );
   }
+  requireServedEntry(implementationArtifact, options.functionName,
+    `the implementation's ${entryLabelFor(options.functionName)}`);
+  requireServedEntry(proxyArtifact, '__fallback', "the proxy's fallback");
   if (options.callerLockingBytecode.length !== 25) {
     throw new PerCallProxyDeployError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
@@ -999,7 +1031,7 @@ export async function callPerCallProxyEntry(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    entryLabel: `"${options.functionName}" entry`,
+    entryLabel: entryLabelFor(options.functionName),
     planFor: (writtenCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,

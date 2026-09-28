@@ -108,6 +108,15 @@ const EXTERNAL_CALL_PARAMETERS = new Set([
 const VALUE_WITNESS_PARAMETER = /^__internal__valueWitness_(\d+)$/;
 
 /**
+ * The direct convention's operand for the co-spent proxy master's input index.
+ *
+ * Solidity-compatible upgradeable contracts mark their entries `delegate` by initializer inference, which injects
+ * this operand. A per-call delegate frame runs on the records its own witness block declares, so the operand names
+ * an input the head never reads and never leaves: the body that carries it is refused as the shape it is.
+ */
+const PROXY_MASTER_WITNESS_PARAMETER = '__internal__proxyMasterIndex';
+
+/**
  * The direct convention's fold operands: pushes earlier rows made, their complete form, and the first output of a
  * written long value's chunks. A per-call frame reads an entry's current value itself and finds its chunk outputs by
  * address, so the body neither receives nor reads them.
@@ -817,6 +826,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (perTurnValue !== undefined) {
       refuseBody(fn, `the body reads a long mapping value once per loop turn ('${perTurnValue.name}'), and the `
         + 'frame\'s block lists one value per slot');
+    }
+    const proxyMasterWitness = fn.parameters.find(
+      (parameter) => parameter.name === PROXY_MASTER_WITNESS_PARAMETER);
+    if (proxyMasterWitness !== undefined) {
+      refuseBody(fn, 'a proxy implementation\'s entry: the direct convention hands it the co-spent proxy master\'s '
+        + `input index through the hidden parameter '${proxyMasterWitness.name}', and a per-call master serves a `
+        + 'delegate frame from the records its own frame declares instead');
     }
     const hidden = fn.parameters.filter((parameter) =>
       isUndeclaredHiddenParameter(fn, parameter.name, constants));

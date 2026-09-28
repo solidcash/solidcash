@@ -126,8 +126,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     require(true);'
   + '   }'
   + '   function register(int readKey, int writeKey, int value) {'
-  + '     int current = this.registrations[readKey];'
-  + '     require(current == 7);'
+  + '     this.count = this.count + 1;'
   + '     this.registrations[readKey] = value;'
   + '     this.registrations[writeKey] = value;'
   + '     emit Registered(readKey, value);'
@@ -307,7 +306,11 @@ function buildScalarEntry(): ProxiedEntry & {
 /** Lays out the registration entry: a read of its own mapping record and two writes, the second an insert. */
 function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {}): ProxiedEntry & {
   readonly mappingEntries: readonly RecordEntry[];
+  readonly headIndex: number;
+  readonly keyNodeIndex: number;
   readonly createdIndex: number;
+  readonly headAfter: Uint8Array;
+  readonly keyNodeAfter: Uint8Array;
   readonly createdCommitment: Uint8Array;
 } {
   const readKeyPush = encodeIntegerValue(KEYS.readKey);
@@ -315,9 +318,15 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
   const { pushes: callPushes, callData } = callDataOf('Impl', 'register',
     [readKeyPush, writeKeyPush, encodeIntegerValue(WRITTEN_VALUE)]);
 
-  const headBefore = headSentinelCommitment();
+  // The read node is already in the map, so the head sentinel links to it rather than carrying the empty map's
+  // +infinity successor. Building it from a shipped genesis insert keeps the inventory a real sorted list.
   const readSlot = keyToSlot(readKeyPush);
-  const nodeBefore = encodeEntryCommitment(readSlot, new Uint8Array(32), encodeIntegerValue(COUNT_BEFORE));
+  const genesis = planMappingWrite({
+    keys: [readKeyPush], value: COUNT_BEFORE, inventory: [headSentinelCommitment()],
+    encodeValue: (value) => encodeIntegerValue(value),
+  });
+  const headBefore = genesis.written[0]!.after;
+  const nodeBefore = genesis.written.find((node) => !node.existed)!.after;
   const update = planMappingWrite({
     keys: [readKeyPush], value: WRITTEN_VALUE, inventory: [headBefore, nodeBefore],
     encodeValue: (value) => encodeIntegerValue(value),
@@ -327,7 +336,17 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
     encodeValue: (value) => encodeIntegerValue(value),
   });
 
-  const blocks = transactionBlocks(true);
+  // The mapping nodes are the row's entry UTXOs, so they sit in the row's own block: the read node first (the
+  // batch's first target), then the head the insert relinks. The frame's data-NFT record leads the block, and the
+  // implementation master follows the row's whole block.
+  const blocks: CompositionDraftPlan['blocks'] = [
+    {
+      contract: proxyContract, masters: [PROXY_MASTER],
+      validator: { id: VALIDATOR_ID, settles: [] as readonly string[] },
+      state: [RECORD_ID, KEY_NODE_ID, HEAD_ID],
+    },
+    { contract: implementationContract, masters: [IMPL_MASTER], state: [] as readonly string[] },
+  ];
   const layout = layoutTransaction(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
   const headIndex = participant(layout, HEAD_ID).index;
@@ -347,16 +366,17 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
   })[0]!;
 
   const recordBefore = recordOf(COUNT_BEFORE);
-  const recordEntry: RecordEntry = {
-    in: recordIndex, out: recordIndex, viewIn: recordBefore, viewOut: recordBefore,
+  const recordAfter = recordOf(COUNT_AFTER);
+  const recordWritten: RecordEntry = {
+    in: recordIndex, out: recordIndex, viewIn: recordBefore, viewOut: recordAfter,
   };
   const eventPayload = encodeEventCommitment(EVENT.parameters, [KEYS.readKey, WRITTEN_VALUE]);
   const createdCommitment = insert.written.find((node) => !node.existed)!.after;
   // The frame has to declare the contract's data-NFT record; the writer's groups follow it, or precede it in the
   // control that shows the alternative order resolves the record at the wrong coordinate.
   const writerSegment: readonly RecordEntry[] = options.recordLast === true
-    ? [...mappingEntries, recordEntry]
-    : [recordEntry, ...mappingEntries];
+    ? [...mappingEntries, recordWritten]
+    : [recordWritten, ...mappingEntries];
 
   const proxyMaster: DraftMaster = master({
     master: PROXY_MASTER, contract: proxyContract, entry: '__fallback', program: PROXY.program,
@@ -371,7 +391,7 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
     }],
     segments: [
       [{ in: recordIndex, out: recordIndex, viewIn: recordBefore, viewOut: recordBefore }],
-      [{ in: recordIndex, out: recordIndex, viewIn: recordBefore, viewOut: recordBefore }],
+      [{ in: recordIndex, out: recordIndex, viewIn: recordAfter, viewOut: recordAfter }],
     ],
     argumentPushes: [callData],
     dispatches: true,
@@ -418,8 +438,8 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
       },
       [RECORD_ID]: {
         source: recordSource,
-        output: recordSource,
-        unlockingBytecode: stateRecordUnlockingBytecode(PROXY_CATEGORY_HEX, proxyIndex, 0),
+        output: { ...recordSource, token: token(PROXY_CATEGORY, 'mutable', recordAfter) },
+        unlockingBytecode: stateRecordUnlockingBytecode(PROXY_CATEGORY_HEX, proxyIndex, 1),
       },
       [HEAD_ID]: {
         source: headSource,
@@ -450,7 +470,10 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
       redeemScript: validatorFor(PROXY_CATEGORY).redeem,
     },
   };
-  return { plan, recordIndex, eventIndex, mappingEntries, createdIndex, createdCommitment };
+  return {
+    plan, recordIndex, eventIndex, mappingEntries, headIndex, keyNodeIndex, createdIndex,
+    headAfter: insert.written[0]!.after, keyNodeAfter: update.written[0]!.after, createdCommitment,
+  };
 }
 
 describe('a proxied single master: the outer hop', () => {
@@ -520,14 +543,11 @@ describe('a proxied single master: the outer hop', () => {
 });
 
 describe('the registration mapping write on the same proxy hop', () => {
-  it('cannot be laid out: the frame must declare its data-NFT record, and the batch then misfinds its groups', () => {
+  it('stalls in the writer\'s own close: the batch read resolves no declared view', () => {
     const built = buildRegistrationEntry();
-    // The plan itself is built from the shipped encoders: the read node is rewritten in place, the head is
-    // relinked, and the second key's node is created — three records across the two writer groups.
+    // The plan is built from the shipped encoders: the read node is rewritten in place, the head is relinked, and
+    // the second key's node is created — three records across the two writer groups.
     expect(built.mappingEntries).toHaveLength(3);
-    expect(built.createdCommitment).toStrictEqual(
-      encodeEntryCommitment(keyToSlot(encodeIntegerValue(KEYS.writeKey)), new Uint8Array(32),
-        encodeIntegerValue(WRITTEN_VALUE)));
 
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [proxyArtifact, implementationArtifact], plan: built.plan,
@@ -538,6 +558,10 @@ describe('the registration mapping write on the same proxy hop', () => {
     } catch (error) {
       stalled = error as Error;
     }
+    // The frame's group walk now starts on the target groups, so the close reaches its declared-record read; that
+    // read then names a coordinate the transaction has no input at, and the run stops in the writer's own close.
+    // The group walk is what this pins: with the state record read as the first group, the same plan fails earlier,
+    // inside the derivation, on the state record's commitment.
     expect(stalled).toBeDefined();
     expect(stalled!.message).toMatch(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
     expect(stalled!.message).toMatch(/site 0 \(close of segment 0\)/);
@@ -547,12 +571,16 @@ describe('the registration mapping write on the same proxy hop', () => {
     });
     const impl = report.refusals.find((refusal) => refusal.master === IMPL_MASTER);
     expect(impl).toBeDefined();
-    // The frame's body refused: the writer's group walk reads the declared data-NFT record and splits it as a node.
-    expect(impl!.objection).toMatch(/OP_SPLIT/);
-    expect(impl!.objection).toMatch(/requested split index: 32/);
+    expect(impl!.objection).toMatch(/invalid transaction UTXO index/);
+    // The plan itself is sound: the created node's commitment is the shipped encoder's value for the second write,
+    // and the rewritten head and read node carry the commitments the shipped planner computed.
+    expect(bytesToHex(built.createdCommitment)).toBe(bytesToHex(encodeEntryCommitment(
+      keyToSlot(encodeIntegerValue(KEYS.writeKey)), keyToSlot(encodeIntegerValue(KEYS.readKey)),
+      encodeIntegerValue(WRITTEN_VALUE))));
+    expect(bytesToHex(built.headAfter)).not.toBe(bytesToHex(headSentinelCommitment()));
   });
 
-  it('still cannot be laid out with the record declared last: the data-NFT coordinate then resolves elsewhere', () => {
+  it('still refuses the record declared last: the batch then reads it as a target group', () => {
     const built = buildRegistrationEntry({ recordLast: true });
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [proxyArtifact, implementationArtifact], plan: built.plan,
@@ -563,16 +591,18 @@ describe('the registration mapping write on the same proxy hop', () => {
     } catch (error) {
       stalled = error as Error;
     }
+    // The driver's own message: the writer's derivation never advances because the state record sits behind the
+    // groups it reads, so the group walk consumes a mapping record as the state record's group.
     expect(stalled).toBeDefined();
     expect(stalled!.message).toMatch(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
 
     const report = reportCompositionRefusal({
       draft, artifacts: [proxyArtifact, implementationArtifact], vm: compositionMachine(),
     });
+    expect(report.accepted).toBe(false);
     const impl = report.refusals.find((refusal) => refusal.master === IMPL_MASTER);
     expect(impl).toBeDefined();
-    // With the record behind the groups the batch reads, the record's own coordinate is the first group's index.
-    expect(impl!.objection).toMatch(/OP_VERIFY/);
+    expect(impl!.objection).toMatch(/OP_VERIFY|OP_SPLIT/);
   });
 });
 

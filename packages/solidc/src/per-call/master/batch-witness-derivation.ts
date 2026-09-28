@@ -44,6 +44,13 @@ import { callSectionWalkScript } from './frame-tail.js';
 export interface BatchWitnessDerivationOptions {
   /** Top-relative depths of the one target's keys, in source order, when the script begins. */
   readonly keyDepths: readonly number[];
+  /**
+   * How many records a segment declares at the head of its record list for the frame's own contract state.
+   *
+   * A per-call frame declares its own data-NFT state records before any mapping target's group, so a derivation
+   * steps over that many records before reading a group. Absent means none.
+   */
+  readonly leadingRecords?: number;
 }
 
 /**
@@ -67,11 +74,13 @@ export function batchDerivationSlotName(kind: BatchDerivationSlot, slotIndex: nu
  *
  * Entry `[..., key, base]` with `key` at `keyDepth`; exit `[..., Trailing, PredOut, Next, Proof, Slot, base]`.
  * The script leaves the base untouched and consumes everything it pushes, so the caller registers exactly five
- * tracked slots. A segment that declares neither one nor two records fails rather than reading a field that is
- * not there.
+ * tracked slots. The target's group is the one or two records that follow `leadingRecords` records the frame
+ * declares for its own contract state, and a segment whose record count is not that whole count fails rather than
+ * reading a field that is not there.
  */
 export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivationOptions): Uint8Array {
   const bytes: number[] = [];
+  const leading = options.leadingRecords ?? 0;
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
@@ -84,6 +93,8 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   const takeAndDropLp32 = (): void => { takeLp32(); op(Opcodes.OP_NIP); };
   /** Rolls the item at `depth` to the top and drops it, removing a field or marker under the working area. */
   const rollAndDrop = (depth: number): void => { num(depth); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); };
+  /** Drops one declared record from the top of a record list: its two index fields and its two view commitments. */
+  const skipRecord = (): void => { takeAndDrop(2); takeAndDrop(2); takeAndDropLp32(); takeAndDropLp32(); };
   /** Leaves bytes 32..64 of the item on top: the commitment's successor link. */
   const takeSuccessor = (): void => {
     num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_NIP); // drop the slot half
@@ -118,11 +129,20 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
   takeField(2); // [block, records, Slot]
 
-  // A single target declares one record (update) or two (insert); require that and branch on it.
+  // A single target declares one record (update) or two (insert) in its group, after the records the frame's own
+  // contract state declares; require that whole count and branch on it.
   pick(1); op(Opcodes.OP_BIN2NUM); // [count, block, records, Slot]
-  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(1)), Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(2)), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY);
-  num(2); op(Opcodes.OP_NUMEQUAL); // [isInsert, block, records, Slot]
+  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(leading + 1)), Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_VERIFY);
+  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(leading + 2)), Opcodes.OP_LESSTHANOREQUAL,
+    Opcodes.OP_VERIFY);
+  if (leading > 0) {
+    // Bring the record list above the count copy, step over the state records at its head, and return the copy.
+    num(1); op(Opcodes.OP_ROLL);
+    for (let record = 0; record < leading; record += 1) skipRecord();
+    op(Opcodes.OP_SWAP);
+  }
+  num(leading + 2); op(Opcodes.OP_NUMEQUAL); // [isInsert, block, records, Slot]
   op(Opcodes.OP_IF);
 
   // INSERT: record 0 is the predecessor; the created node is the record that follows it.
@@ -184,13 +204,21 @@ function minimalNumber(value: number): Uint8Array {
 export interface BatchTargetsDerivationOptions {
   /** Top-relative depths of each target's keys, in target order and, inside a target, in source order. */
   readonly keyDepths: readonly (readonly number[])[];
+  /**
+   * How many records a segment declares at the head of its record list for the frame's own contract state.
+   *
+   * A per-call frame declares its own data-NFT state records before any mapping target's group, so the walk steps
+   * over that many records before reading the first group. Absent means none.
+   */
+  readonly leadingRecords?: number;
 }
 
 /**
  * Builds the script that leaves every target of one batch's five sorted-batch operands, reading the master's own
  * witness block.
  *
- * A batch's first segment declares one record group per target, in the order the writes were planned: a target the
+ * A batch's first segment declares one record group per target, after `leadingRecords` records the frame declares
+ * for its own contract state, in the order the writes were planned: a target the
  * inventory holds is rewritten in place, so its group is one record whose `viewIn` and `viewOut` both carry the
  * target's slot; a target the inventory does not hold is spliced in, so its group is the relinked predecessor
  * followed by the created node. The created node's `viewOut` carries the target slot, which is what tells the two
@@ -285,7 +313,22 @@ class BatchTargetsDerivationBuilder {
     this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
     this.takeFixedField(2, 'record_count');
     this.nip(); // drop the declared count, keep the entries
+    this.skipLeadingStateRecords();
     this.main[0] = 'records';
+  }
+
+  /**
+   * Steps over the records the frame's own contract state declares at the head of the record list.
+   *
+   * The list is the item on top, so each field read and drop leaves it in place: the modelled stack is unchanged.
+   */
+  private skipLeadingStateRecords(): void {
+    for (let record = 0; record < (this.options.leadingRecords ?? 0); record += 1) {
+      this.dropFixedField(2); // in
+      this.dropFixedField(2); // out
+      this.dropLengthField32(); // viewIn
+      this.dropLengthField32(); // viewOut
+    }
   }
 
   /** Derives one target's operands from its record group while the frame stays put. */

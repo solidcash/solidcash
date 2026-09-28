@@ -3502,9 +3502,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return keyDepth;
       });
     });
+    // The segment declares the frame's own data-NFT state records before any target's group, so the derivation
+    // steps over them; a delegate frame declares the records of the layout it mirrors, which is its caller's.
     const script = slots.length === 1
-      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]! })
-      : buildBatchTargetsDerivationScript({ keyDepths });
+      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, leadingRecords: this.dataNftCount })
+      : buildBatchTargetsDerivationScript({ keyDepths, leadingRecords: this.dataNftCount });
     this.emit([...script], loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {
@@ -30290,14 +30292,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * start, as the negative index the shared close reads as a position rather than a coordinate.
    *
    * A group occupies one record when the inventory held the target and two when it did not, so a record's position
-   * is the target's own ordinal, plus one for every earlier target that inserted, plus the record's offset inside
-   * the group. Which earlier targets inserted is a fact about the running frame: a target's `PredOut` operand is
-   * non-negative exactly when it rewrote a predecessor, so its group declared an extra record.
+   * is the target's own ordinal past the frame's own state records, plus one for every earlier target that
+   * inserted, plus the record's offset inside the group. Which earlier targets inserted is a fact about the running
+   * frame: a target's `PredOut` operand is non-negative exactly when it rewrote a predecessor, so its group
+   * declared an extra record.
    */
   private emitDeclaredGroupRecordOrdinal(
     declaredOrdinal: number, recordOffset: number, locationData: SingleLocationData,
   ): void {
-    this.emit(encodeInt(BigInt(-(declaredOrdinal + recordOffset + 1))), locationData);
+    this.emit(encodeInt(BigInt(-(this.dataNftCount + declaredOrdinal + recordOffset + 1))), locationData);
     for (const prior of this.batchTargetSlots().slice(0, declaredOrdinal)) {
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${prior}`, locationData);
       this.emit(encodeInt(0n), locationData);

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { composeDraft, participant, type CompositionDraftPlan } from '../../../src/per-call/composer/index.js';
+import {
+  composeDraft, layoutTransaction, participant, type CompositionDraftPlan,
+} from '../../../src/per-call/composer/index.js';
 import {
   USER_LOCK, composeAndDerive, compileAndDeploy, entryName, hexOf, master, masterInput,
   rootOf, seededAddress, selectorOf, selectorOfSignature, token, userInput, userInputs, validatorFor,
@@ -321,31 +323,172 @@ describe('a call and a return call between two contracts', () => {
 });
 
 describe('a three-contract chain that calls back to the first', () => {
+  // First.begin -> Second.middle -> Third.end -> Second.back -> First.finish. Both First and Second are entered
+  // twice, each through a second entry that makes no call; each contract's master serves both of its entries.
+  const firstAddress = seededAddress('the chain head');
+  const secondAddress = seededAddress('the chain middle');
+  const thirdAddress = seededAddress('the chain tail');
+  const SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface ISecond { function middle(); function back(); }'
+    + ' interface IThird { function end(); }'
+    + ' interface IFirst { function finish(); }'
+    + ' contract First {'
+    + `   function begin() { ISecond(0x${hexOf(secondAddress)}).middle.call(); require(true); }`
+    + '   function finish() { require(true); }'
+    + ' }'
+    + ' contract Second {'
+    + `   function middle() { IThird(0x${hexOf(thirdAddress)}).end.call(); require(true); }`
+    + `   function back() { IFirst(0x${hexOf(firstAddress)}).finish.call(); require(true); }`
+    + ' }'
+    + ' contract Third {'
+    + `   function end() { ISecond(0x${hexOf(secondAddress)}).back.call(); require(true); }`
+    + ' }';
+
+  /**
+   * The plan the chain is run from: the two entries of First and of Second, Third's one, the one validator, and
+   * the user that entered the head. `rootSelector` off models a plan that leaves the multi-entry root without the
+   * selector its dispatcher consumes, which is the plan fault the derivation reports as a stalled step.
+   */
+  function planFor(
+    built: ReturnType<typeof compileAndDeploy>,
+    options: { readonly rootSelector?: boolean } = {},
+  ): CompositionDraftPlan {
+    const { artifacts, contracts } = built;
+    const first = contracts.First!;
+    const second = contracts.Second!;
+    const third = contracts.Third!;
+    const validator = validatorFor(first.category);
+    const begin = selectorOf(artifacts, 'First', 'begin');
+    const finish = selectorOf(artifacts, 'First', 'finish');
+    const middle = selectorOf(artifacts, 'Second', 'middle');
+    const back = selectorOf(artifacts, 'Second', 'back');
+    const end = selectorOf(artifacts, 'Third', 'end');
+    const blocks = [
+      { contract: 'First', masters: ['first-1', 'first-2'], validator: { id: 'validator', settles: [] }, state: [] },
+      { contract: 'Second', masters: ['second-1', 'second-2'], state: [] },
+      { contract: 'Third', masters: ['third-1'], state: [] },
+    ];
+    const rootSelector = options.rootSelector === false ? {} : { argumentPushes: [begin], dispatches: true };
+    return {
+      blocks,
+      // The user follows the participants, at the index the layout reserves for the first funder.
+      userInputs: userInputs(['user'], layoutTransaction(blocks).funderInputBase),
+      masters: [
+        master({
+          master: 'first-1', contract: 'First', entry: 'begin', program: first.program,
+          facts: {
+            contract: 'First', functionName: 'begin', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: first.address, value: 0n },
+          enteredBy: 'user', origin: 'user', ...rootSelector,
+          calls: [{ kind: FrameKind.CALL, callee: 'second-1', target: second.address, value: 0n, argumentPushes: [middle] }],
+        }),
+        master({
+          master: 'second-1', contract: 'Second', entry: 'middle', program: second.program,
+          facts: {
+            contract: 'Second', functionName: 'middle', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.CALL, sender: first.address, self: second.address, value: 0n },
+          enteredBy: 'first-1', origin: 'user', argumentPushes: [middle],
+          calls: [{ kind: FrameKind.CALL, callee: 'third-1', target: third.address, value: 0n, argumentPushes: [end] }],
+        }),
+        master({
+          master: 'third-1', contract: 'Third', entry: 'end', program: third.program,
+          facts: {
+            contract: 'Third', functionName: 'end', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 1,
+          },
+          frame: { kind: FrameKind.CALL, sender: second.address, self: third.address, value: 0n },
+          enteredBy: 'second-1', origin: 'user', argumentPushes: [end],
+          calls: [{ kind: FrameKind.CALL, callee: 'second-2', target: second.address, value: 0n, argumentPushes: [back] }],
+        }),
+        master({
+          master: 'second-2', contract: 'Second', entry: 'back', program: second.program,
+          facts: {
+            contract: 'Second', functionName: 'back', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.CALL, sender: third.address, self: second.address, value: 0n },
+          enteredBy: 'third-1', origin: 'user', argumentPushes: [back],
+          calls: [{ kind: FrameKind.CALL, callee: 'first-2', target: first.address, value: 0n, argumentPushes: [finish] }],
+        }),
+        master({
+          master: 'first-2', contract: 'First', entry: 'finish', program: first.program,
+          facts: {
+            contract: 'First', functionName: 'finish', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.CALL, sender: second.address, self: first.address, value: 0n },
+          enteredBy: 'second-2', origin: 'user', argumentPushes: [finish],
+        }),
+      ],
+      inputs: {
+        'first-1': { source: masterInput(first) },
+        'first-2': { source: masterInput(first) },
+        'second-1': { source: masterInput(second) },
+        'second-2': { source: masterInput(second) },
+        'third-1': { source: masterInput(third) },
+        validator: {
+          source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(first.category, 'mutable') },
+        },
+        user: userInput(),
+      },
+      validator: {
+        // One validator, hosted by the head's block, covers the whole chain and settles the two re-entered contracts.
+        id: 'validator', covers: ['Second', 'Third'],
+        settles: [{ category: first.category, stateInputs: [] }, { category: second.category, stateInputs: [] }],
+        redeemScript: validator.redeem,
+      },
+    };
+  }
+
   it('is emitted although two contracts in the chain are re-entered', () => {
-    // First.begin -> Second.middle -> Third.end -> Second.back -> First.finish. Both First and Second are entered
-    // twice, each through a second entry that makes no call; each contract's master serves both of its entries.
-    const firstAddress = seededAddress('the chain head');
-    const secondAddress = seededAddress('the chain middle');
-    const thirdAddress = seededAddress('the chain tail');
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface ISecond { function middle(); function back(); }'
-      + ' interface IThird { function end(); }'
-      + ' interface IFirst { function finish(); }'
-      + ' contract First {'
-      + `   function begin() { ISecond(0x${hexOf(secondAddress)}).middle.call(); require(true); }`
-      + '   function finish() { require(true); }'
-      + ' }'
-      + ' contract Second {'
-      + `   function middle() { IThird(0x${hexOf(thirdAddress)}).end.call(); require(true); }`
-      + `   function back() { IFirst(0x${hexOf(firstAddress)}).finish.call(); require(true); }`
-      + ' }'
-      + ' contract Third {'
-      + `   function end() { ISecond(0x${hexOf(secondAddress)}).back.call(); require(true); }`
-      + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
     expect(artifacts.First?.abi.map((entry) => entry.name).sort()).toEqual(['begin', 'finish']);
     expect(artifacts.Second?.abi.length).toBe(2);
     expect(artifacts.Third?.abi.length).toBe(1);
+  });
+
+  it('derives the whole call-back chain end to end, callee first, and the machine accepts every contract input', () => {
+    const built = compileAndDeploy(SOURCE, {
+      First: 'the chain head', Second: 'the chain middle', Third: 'the chain tail',
+    });
+    const outcome = composeAndDerive(planFor(built), [
+      built.artifacts.First!, built.artifacts.Second!, built.artifacts.Third!,
+    ], [rootOf('First', 'begin', 'first-1')]);
+
+    // Each contract's masters sit in entry order and the one validator follows the head's block.
+    expect(['first-1', 'first-2', 'validator', 'second-1', 'second-2', 'third-1']
+      .map((id) => participant(outcome.draft.layout, id).index)).toStrictEqual([0, 1, 2, 3, 4, 5]);
+    expect(outcome.draft.layout.funderInputBase).toBe(6);
+    // The chain closes: the entry the last call reaches completes first, the user's entry last.
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('First', 'finish'), entryName('Second', 'back'), entryName('Third', 'end'),
+      entryName('Second', 'middle'), entryName('First', 'begin'),
+    ]);
+    // Each call resolves to its callee's layout index.
+    expect(outcome.draft.assembly.calls.map((call) => `${call.from}->${call.calleeRef}`))
+      .toStrictEqual(['first-1->3', 'second-1->5', 'third-1->4', 'second-2->1']);
+    // The one validator names every master that points at it and the user's entry as its root.
+    expect(outcome.draft.assembly.transcripts.map((entry) => ({
+      validator: entry.validator, roots: entry.transcript.roots, masters: entry.transcript.masters,
+    }))).toStrictEqual([{ validator: 'validator', roots: [0], masters: [0, 1, 3, 4, 5] }]);
+    expectEveryContractInputAccepted(outcome);
+    expectDerivationConvergedWithAssembly(outcome, ['first-1', 'first-2', 'second-1', 'second-2', 'third-1']);
+  });
+
+  it('is refused by the derivation when the multi-entry root carries no selector, so its body is never reached', () => {
+    // First serves two entries, so its program dispatches on the call data the user's input carries. A plan that
+    // leaves the root without that selector stops the program inside the dispatcher, before its first call site,
+    // so filling the call record moves nothing and the step reads as a stall rather than a program wall.
+    const built = compileAndDeploy(SOURCE, {
+      First: 'the chain head', Second: 'the chain middle', Third: 'the chain tail',
+    });
+    expect(() => composeAndDerive(planFor(built, { rootSelector: false }), [
+      built.artifacts.First!, built.artifacts.Second!, built.artifacts.Third!,
+    ], [rootOf('First', 'begin', 'first-1')])).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });
 

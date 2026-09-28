@@ -5947,13 +5947,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // head's slots, as the inlined single-entry body does, and each emit's listed output index from its own.
       if (this.perCallMaster) {
         // The seeded array is the frame top-first, so the list below runs topmost to deepest. The head leaves the
-        // category-owner slot topmost, above `retval`, the call count, and the record and event slots below them.
-        if (this.stack.includes(categoryOwnerSlotName())) subTraversal.stack.push(categoryOwnerSlotName());
-        if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
-        if (this.stack.includes(callCountSlotName())) subTraversal.stack.push(callCountSlotName());
+        // dynamic-chunk base topmost (it copies the record-input index above every other slot), above the
+        // category-owner slot, `retval`, the call count, and the record and event slots below them.
         if (this.stack.includes(DYNAMIC_CHUNK_BASE_PARAMETER)) {
           subTraversal.stack.push(DYNAMIC_CHUNK_BASE_PARAMETER);
         }
+        if (this.stack.includes(categoryOwnerSlotName())) subTraversal.stack.push(categoryOwnerSlotName());
+        if (this.perCallReturnsValue) subTraversal.stack.push(retvalSlotName());
+        if (this.stack.includes(callCountSlotName())) subTraversal.stack.push(callCountSlotName());
         if (this.stack.includes(recordInputIndexSlotName())) {
           subTraversal.stack.push(recordInputIndexSlotName());
           subTraversal.stack.push(recordOutputIndexSlotName());

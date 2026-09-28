@@ -44,6 +44,9 @@ export function assertMessageBusVerifierProgram(program: unknown): asserts progr
   const canonicalInputs = [
     ['activeInputIndex', 'bigint'], ['expectedLocalRows', 'bigint'], ['localBatch', 'bytes'],
   ];
+  const canonicalUpgradeInputs = [
+    ['__internal__upgradeBytecode', 'bytes'], ['__internal__upgradeStateSuffix', 'bytes'],
+  ];
   const canonicalGraphInputs = [
     ['suppliedFixedSize', 'bigint'], ['suppliedBlockSize', 'bigint'], ['suppliedEmissions', 'bytes'],
     ['suppliedCallers', 'bytes'], ['suppliedSettlementBoundary', 'bigint'],
@@ -51,7 +54,10 @@ export function assertMessageBusVerifierProgram(program: unknown): asserts progr
   ];
   const metadataInputs = inputs as { name: string; type: string }[];
   const expectedInputs = inputCount === 3 ? canonicalInputs
-    : inputCount === 10 ? [...canonicalInputs, ...canonicalGraphInputs] : undefined;
+    : inputCount === 5 ? [...canonicalInputs, ...canonicalUpgradeInputs]
+      : inputCount === 10 ? [...canonicalInputs, ...canonicalGraphInputs]
+        : inputCount === 12 ? [...canonicalInputs, ...canonicalUpgradeInputs, ...canonicalGraphInputs]
+          : undefined;
   if (new Set(ids).size !== ids.length || new Set(names).size !== names.length
     || expectedInputs === undefined
     || !expectedInputs.every(([name, type], index) =>

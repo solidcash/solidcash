@@ -62,6 +62,7 @@ export interface NestedOutputReassertHost {
   readonly pinnedEntrySlots: ReadonlySet<number>;
   readonly requiredEntryOutputSlots: ReadonlySet<number>;
   readonly loopEntryVars: readonly NestedReassertLoopEntryVar[];
+  readonly blockLayout?: { slots: readonly { kind: string }[] };
   readonly stateLayout: StateLayout;
   readonly categoryId: string;
   readonly dataNftUtxos: readonly UnlockableUtxo[];
@@ -143,6 +144,10 @@ export function stripSurplusEmptyCollectionEntriesForHost(
     ...host.externalCallUtxoGroups,
     ...host.lowLevelCallUtxoGroups,
   ];
+  // A direct fixed sorted batch owns a target at its declared entry slot plus a trailing predecessor. Its
+  // trailing count alone is not the collection's complete output width. Runtime upsert loops have no fixed
+  // entry slot, so their existing surplus/fail-closed handling must continue to run.
+  if (activeGroups.length === 0 && host.blockLayout?.slots.some((slot) => slot.kind === 'entry')) return;
   const groupCollections = activeGroups.map(groupChunkableValueWriteCollections);
   if (groupCollections.some((collections) => collections.length > 1)) return;
   const selectedCollections = new Set(groupCollections.flat());

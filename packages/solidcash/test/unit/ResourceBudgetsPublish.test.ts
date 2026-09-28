@@ -10,6 +10,7 @@ import {
   clearComposeKernelAuthorityResults,
 } from '../../src/message-bus/compose-kernel-authority.js';
 import { assertWithinKernelBudgets, createKernelExecutionPlan } from '../../src/message-bus/kernel-execution-plan.js';
+import { assertMessageBusCapability } from '../../src/stateful/covenant-helpers.js';
 
 const KERNEL = {
   forceStateful: true,
@@ -49,6 +50,29 @@ describe('published resource budgets/published semantic-derivation ceiling resou
         maximumRows: artifact.messageBus!.maximumRows,
       }).maximumSemanticDerivationPasses,
     });
+  });
+
+  it('accepts the exact kernel blob ceiling and rejects a changed or mislabeled ceiling', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      contract Store() {
+        int x;
+        function set(int v) public { this.x = v; require(true); }
+      }`, KERNEL);
+    expect(() => assertMessageBusCapability(artifact)).not.toThrow();
+    for (const maximumBlobBytes of [9_999, 10_001]) {
+      expect(() => assertMessageBusCapability({
+        ...artifact,
+        messageBus: { ...artifact.messageBus!, maximumBlobBytes },
+      })).toThrow(/malformed replacement message bus capability/);
+    }
+    expect(() => assertMessageBusCapability({
+      ...artifact,
+      messageBus: { ...artifact.messageBus!, convention: 'legacy-unroll' },
+    })).toThrow(/malformed replacement message bus capability/);
+    expect(() => assertMessageBusCapability({
+      ...artifact,
+      messageBus: { ...artifact.messageBus!, convention: 'unsupported' as never },
+    })).toThrow(/malformed replacement message bus capability/);
   });
 
   it('authorizeComposeParticipantLayout fails closed when kernel requires published budgets', () => {

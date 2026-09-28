@@ -139,6 +139,7 @@ import {
   hexToBin,
   binsAreEqual,
   decodeTransactionUnsafe,
+  encodeAuthenticationInstructions,
   encodeTransaction,
   AuthenticationProgramStateCommon,
   encodeLockingBytecodeP2pkh,
@@ -7812,8 +7813,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               group.logicalFunctionName, group.functionName, group.compilerRoute?.abiFunction?.name,
             ]),
           ].filter((name): name is string => !!name);
+          const activeInstructions = (lastStep as {
+            instructions?: Parameters<typeof encodeAuthenticationInstructions>[0];
+            controlStack?: unknown[];
+          });
+          const activeBodyHex = (activeInstructions.controlStack?.length ?? 0) > 0
+            && activeInstructions.instructions !== undefined
+            ? binToHex(encodeAuthenticationInstructions(activeInstructions.instructions)) : undefined;
           const requireMessage = probeRequireMessage(
-            artifactCandidates, selector, ip, logicalFunctionNames,
+            artifactCandidates, selector, ip, logicalFunctionNames, activeBodyHex,
           );
           return `VM failed at ip ${ip ?? '?'}`
             + `${opcode !== undefined ? ` opcode ${opcode}` : ''}: ${detail}`

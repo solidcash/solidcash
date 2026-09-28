@@ -652,7 +652,7 @@ interface OptionalLoweringFeatures {
   needsInlineAssembly: boolean;
   needsTailRecursion: boolean;
   needsReturnInLoop: boolean;
-  needsNamedReturns: boolean;
+  needsReturnDesugaring: boolean;
   needsNestedBranchReturn: boolean;
   needsPostfixIncDec: boolean;
   needsMappingFieldCoalesce: boolean;
@@ -713,7 +713,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let hasFunctionPointers = false;
   let needsTailRecursion = false;
   let needsReturnInLoop = false;
-  let needsNamedReturns = false;
+  let needsReturnDesugaring = false;
   let needsNestedBranchReturn = false;
   let needsPostfixIncDec = false;
   let needsMappingFieldCoalesce = false;
@@ -758,7 +758,11 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
     if (node instanceof FunctionDefinitionNode) {
       definedFunctionNames.add(node.name);
-      if (node.returnNames.length > 0) needsNamedReturns = true;
+      // This pass also supplies Solidity's fall-through defaults and a safe body for empty void
+      // functions. Named returns alone are not a complete admission test for it.
+      if (node.returnNames.length > 0 || (node.body && (
+        node.returnTypes.length > 0 || (node.body.statements?.length ?? 0) === 0
+      ))) needsReturnDesugaring = true;
     }
     if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
@@ -832,7 +836,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsInlineAssembly,
     needsTailRecursion,
     needsReturnInLoop,
-    needsNamedReturns,
+    needsReturnDesugaring,
     needsNestedBranchReturn,
     needsPostfixIncDec,
     needsMappingFieldCoalesce,
@@ -13144,7 +13148,7 @@ function compileResolvedAst(
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
-    needsTailRecursion, needsReturnInLoop, needsNamedReturns, needsNestedBranchReturn,
+    needsTailRecursion, needsReturnInLoop, needsReturnDesugaring, needsNestedBranchReturn,
     needsPostfixIncDec, needsMappingFieldCoalesce, needsLoop, needsBreakContinue,
     needsEarlyReturn, needsVMapCounter, needsAlphaRename,
     statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
@@ -13182,7 +13186,7 @@ function compileResolvedAst(
   if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
-  if (needsNamedReturns) ast = ast.accept(new NamedReturnTransformation()) as Ast;
+  if (needsReturnDesugaring) ast = ast.accept(new NamedReturnTransformation()) as Ast;
 
   // A return nested under further conditions with fall-through (internal fns) -> flag + gated tail +
   // terminal return (after NamedReturn so implicit tails are explicit; before semantic so locals resolve).

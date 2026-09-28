@@ -58,7 +58,10 @@ describe('legacy planning heuristics isolation (item 1)', () => {
     expect(isInitialChunkableValueWrite(host as never)).toBe(true);
     expect(isInitialChunkableValueWrite({ ...host, messageBusConvention: 'kernel-row-loop' } as never))
       .toBe(false);
-    expect(legacyInitialValueChunkWrite([{ functionName: 'publishJobPost' }], [])).toBe(true);
+    expect(legacyInitialValueChunkWrite([{ functionName: 'publishJobPost' }], [])).toBe(false);
+    expect(legacyInitialValueChunkWrite([{
+      functionName: 'publishJobPost', plannedEntryInserts: [{ blockSlot: 1 }],
+    }], [])).toBe(true);
     expect(legacyInitialValueChunkWrite([], [{ functionName: 'updateRecord' }])).toBe(false);
   });
 });

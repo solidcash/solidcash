@@ -2,8 +2,8 @@
  * Legacy planning heuristics isolated from the kernel builder path.
  *
  * Kernel artifacts (`messageBus.convention === 'kernel-row-loop'` or typed value-chunk /
- * state-transition descriptors) must never take these branches. Old Marketplace-shaped plans
- * that lack descriptors may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
+ * state-transition descriptors) must never take these branches. Older plans without descriptors
+ * may opt in explicitly via `permitsLegacyNamedValueChunkFallback`.
  */
 
 export type LegacyScalarNameHints = {
@@ -52,13 +52,9 @@ export function legacyInitialValueChunkWrite(
   lowLevelGroups: readonly LegacyValueChunkWriteGroup[],
   externalGroups: readonly LegacyValueChunkWriteGroup[],
 ): boolean {
-  if ([...lowLevelGroups, ...externalGroups].some(
+  return [...lowLevelGroups, ...externalGroups].some(
     (group) => (group.plannedEntryInserts?.length ?? 0) > 0,
-  )) return true;
-  // Historical plans may also predate plannedEntryInserts. Keep their ABI compatibility here only.
-  return lowLevelGroups.some((group) => group.functionName === 'publishJobPost')
-    || externalGroups.some((group) =>
-      (group.functionName ?? group.logicalFunctionName) === 'publishJobPost');
+  );
 }
 
 /** Historical jobEvents collection identity — legacy band packing only. */

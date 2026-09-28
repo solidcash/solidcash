@@ -307,7 +307,10 @@ function installCachedInvokeEvaluator(
     return state;
   });
   for (let opcode = 0; opcode < 256; opcode += 1) {
-    const operation = instructionSet.operations[opcode]!;
+    const operation = instructionSet.operations[opcode];
+    // Unknown opcodes are dispatched through instructionSet.undefined. Leave those slots empty so a diagnostic
+    // observer still receives libauth's consensus error instead of a TypeError from this return probe.
+    if (operation === undefined) continue;
     instructionSet.operations[opcode] = ((state: State) => {
       const probe = returnProbes.get(state as object);
       if (probe !== undefined && state.controlStack.length < probe.frameDepth) {

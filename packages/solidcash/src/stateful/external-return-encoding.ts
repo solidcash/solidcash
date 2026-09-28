@@ -280,6 +280,7 @@ export function probeRequireMessage(
   selector: string | undefined,
   errorIp: number | undefined,
   logicalFunctionNames: readonly string[] = [],
+  activeBodyHex?: string,
 ): string | undefined {
   if (errorIp === undefined) return undefined;
   const seen = new Set<Artifact>();
@@ -291,6 +292,23 @@ export function probeRequireMessage(
     add(artifact.delegateArtifact);
   };
   for (const artifact of artifacts) add(artifact);
+  if (activeBodyHex !== undefined) {
+    // An OP_INVOKE failure is addressed in the active outlined body, not the entry point. Identical bytecode
+    // may have more than one source owner; attribute it only if all matching owners agree on one message.
+    const messages = new Set<string>();
+    let matched = false;
+    for (const artifact of candidates) {
+      for (const body of Object.values(artifact.debug?.invokeDebug ?? {})) {
+        if (body.bytecode.toLowerCase() !== activeBodyHex.toLowerCase()) continue;
+        matched = true;
+        const requirement = body.requires.find((entry) => entry.ip === errorIp - 1)
+          ?? body.requires.find((entry) => entry.ip === errorIp);
+        if (!requirement?.message) return undefined;
+        messages.add(requirement.message);
+      }
+    }
+    if (matched) return messages.size === 1 ? [...messages][0] : undefined;
+  }
   for (const artifact of candidates) {
     const selectors = selector ? [selector] : Object.keys(artifact.debug?.functionDebug ?? {});
     for (const candidateSelector of selectors) {

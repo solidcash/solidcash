@@ -13,7 +13,6 @@ import { addressToLockScript, scriptToLockingBytecode } from '../utils.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { shouldKeepPersistAtLayoutBase } from './early-value-chunk-helpers.js';
-import { legacyIsJobEventsCollection } from './legacy-planning-heuristics.js';
 import {
   assignPersistPredecessors,
   orderPersistPredecessorCandidates,
@@ -163,9 +162,9 @@ export function placeJobEventsPredecessorInputs(
       if (!info.exists || !info.utxo) continue;
       if (describedCollection !== undefined) {
         if (info.collection !== describedCollection) continue;
-      } else if (hasChunkableValueWriteMetadata(host)
-        || !legacyIsJobEventsCollection(info.collection)) {
-        // Metadata ambiguity is a refusal. The source-name match is compatibility-only for old plans.
+      } else if (hasChunkableValueWriteMetadata(host) || persistHex === '') {
+        // With no descriptor, admit only an already authenticated persisted continuation lock.
+        // The candidate's exact lock and commitment are checked by consider() below.
         continue;
       }
       consider(info.utxo);

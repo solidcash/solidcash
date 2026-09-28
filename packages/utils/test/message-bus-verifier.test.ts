@@ -45,4 +45,36 @@ describe('message-bus replacement verifier-program metadata', () => {
     unsupported.inputs.push({ name: 'extra', type: 'bigint' });
     expect(() => assertMessageBusVerifierProgram(unsupported)).toThrow(/function table/);
   });
+
+  it('accepts the exact upgrade ABI and rejects reordered authority inputs', () => {
+    const upgrade = program();
+    upgrade.inputs = [
+      ...upgrade.inputs,
+      { name: '__internal__upgradeBytecode', type: 'bytes' },
+      { name: '__internal__upgradeStateSuffix', type: 'bytes' },
+    ];
+    upgrade.inputCount = upgrade.inputs.length;
+    expect(() => assertMessageBusVerifierProgram(upgrade)).not.toThrow();
+    const graphUpgrade = program();
+    graphUpgrade.inputs = [
+      ...upgrade.inputs,
+      { name: 'suppliedFixedSize', type: 'bigint' },
+      { name: 'suppliedBlockSize', type: 'bigint' },
+      { name: 'suppliedEmissions', type: 'bytes' },
+      { name: 'suppliedCallers', type: 'bytes' },
+      { name: 'suppliedSettlementBoundary', type: 'bigint' },
+      { name: 'suppliedCompletionPositions', type: 'bytes' },
+      { name: 'suppliedSettlementTable', type: 'bytes' },
+    ];
+    graphUpgrade.inputCount = graphUpgrade.inputs.length;
+    expect(() => assertMessageBusVerifierProgram(graphUpgrade)).not.toThrow();
+    const reordered = program();
+    reordered.inputs = [
+      ...reordered.inputs,
+      { name: '__internal__upgradeStateSuffix', type: 'bytes' },
+      { name: '__internal__upgradeBytecode', type: 'bytes' },
+    ];
+    reordered.inputCount = reordered.inputs.length;
+    expect(() => assertMessageBusVerifierProgram(reordered)).toThrow(/function table/);
+  });
 });

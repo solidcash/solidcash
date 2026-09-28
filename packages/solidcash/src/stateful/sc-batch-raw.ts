@@ -63,7 +63,10 @@ export function mergePublishedMessageBusHandlerMetadata(
   const published = callable.selector !== undefined
     ? publishedHandlers.find((handler) => handler.selector === callable.selector)
     : publishedHandlers.find((handler) => handler.name === callable.name);
-  if (published === undefined) return callable;
+  // Keep the artifact ABI object itself when there is no published metadata to add. Carrier-route
+  // authentication deliberately checks this identity before trusting runtime row metadata.
+  if (published === undefined || ((published.dynamicReads?.length ?? 0) === 0
+    && (published.dynamicWrites?.length ?? 0) === 0)) return callable;
   return {
     ...callable,
     ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),

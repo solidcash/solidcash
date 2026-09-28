@@ -1,6 +1,7 @@
 import {
   binToHex, hexToBin, isHex, cashAddressToLockingBytecode, lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   AbiFunction,
   AbiInput,
@@ -68,12 +69,14 @@ export function assertMessageBusCapability(artifact: Artifact): MessageBusVerifi
   const atomic = replacement.atomicMessageBus;
   const route = replacement.route;
   if (replacement.selector !== '53434231'
+    || (replacement.convention !== 'kernel-row-loop' && replacement.convention !== 'legacy-unroll')
     || !Number.isSafeInteger(replacement.maximumRows) || (replacement.maximumRows as number) < 1
     || (replacement.maximumRows as number) > ATOMIC_MESSAGE_BUS_MAX_ROWS
     || (replacement.minimumRows !== undefined
       && (!Number.isSafeInteger(replacement.minimumRows) || (replacement.minimumRows as number) < 1
         || (replacement.minimumRows as number) > (replacement.maximumRows as number)))
-    || replacement.maximumBlobBytes !== MAX_MESSAGE_BUS_BLOB_BYTES
+    || replacement.maximumBlobBytes !== (replacement.convention === 'kernel-row-loop'
+      ? ConsensusBch2026.maximumStackItemLength : MAX_MESSAGE_BUS_BLOB_BYTES)
     || !atomic || typeof atomic !== 'object' || Array.isArray(atomic)
     || (atomic as Record<string, unknown>).domain !== ATOMIC_MESSAGE_BUS_DOMAIN_HEX
     || (atomic as Record<string, unknown>).maximumParticipants !== ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS

@@ -1889,6 +1889,7 @@ export class StatefulTransactionBuilder {
       pinnedEntrySlots: this.pinnedEntrySlots,
       requiredEntryOutputSlots: this.requiredEntryOutputSlots,
       loopEntryVars: this.loopEntryVars,
+      blockLayout: this.blockLayout,
       stateLayout: this.stateLayout,
       categoryId: this.categoryId,
       dataNftUtxos: this.dataNftUtxos,

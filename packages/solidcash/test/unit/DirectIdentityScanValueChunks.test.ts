@@ -34,7 +34,7 @@ const fixture = (): {
   } as unknown as ExternalCallUtxoGroup;
   const outputs = new Map<number, Chunk>();
   const stb = {
-    getPublishJobEventsBand: () => undefined,
+    getChunkableValueWriteBand: () => undefined,
     getDerivedChunkOutputs: () => outputs,
     getObservedValueChunks: () => [],
     setDerivedChunkOutput: (index: number, chunk: Chunk) => {

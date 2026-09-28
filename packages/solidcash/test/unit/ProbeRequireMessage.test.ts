@@ -41,6 +41,10 @@ describe('probeRequireMessage', () => {
     expect(probeRequireMessage([artifact], 'ffffffff', 8)).toBeUndefined();
   });
 
+  it('retains entry-point attribution when no outlined body matches', () => {
+    expect(probeRequireMessage([artifact], '01020304', 8, [], '51')).toBe('index out of bounds');
+  });
+
   it('attributes a generated route only when its logical functions have one unique reason', () => {
     expect(probeRequireMessage([artifact], 'ffffffff', 3000, ['read']))
       .toBe('index out of bounds');

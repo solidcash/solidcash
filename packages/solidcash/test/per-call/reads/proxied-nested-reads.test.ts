@@ -31,10 +31,10 @@ import {
  * which the provider's transaction count is asserted to show.
  *
  * One wall is pinned rather than worked around: a callee entry that takes a parameter is refused by the module,
- * because a read cannot resolve an argument from the caller's live records. A view that returns a struct is served:
- * the struct is one pushdata blob the shipped decoder reads back, so the wall the shape used to be is gone. A
- * contract a caller reaches more than once is served: one call is one frame, and each frame takes its own master of
- * that contract, which is what the chain has to hold.
+ * because a read cannot resolve an argument from the caller's live records. Everything else the shape needs is
+ * served: a view that returns a struct is one pushdata blob the shipped decoder reads back, a contract a caller
+ * reaches more than once runs one frame per call with its own master each, and an entry that makes two calls
+ * derives.
  */
 
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
@@ -48,6 +48,8 @@ const PEER_HEX = bytesToHex(PEER_CATEGORY);
 const READER_ADDRESS = validatorAddress(READER_CATEGORY, VALIDATOR_PROGRAM);
 const STORE_ADDRESS = validatorAddress(STORE_CATEGORY, VALIDATOR_PROGRAM);
 const PEER_ADDRESS = validatorAddress(PEER_CATEGORY, VALIDATOR_PROGRAM);
+const CATALOG_CATEGORY = seededCategory('proxied nested reads catalog');
+const CATALOG_HEX = bytesToHex(CATALOG_CATEGORY);
 
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
@@ -189,6 +191,19 @@ async function chain(n: bigint, options: { readonly storeMasters?: number } = {}
   return provider;
 }
 
+/** Funds a contract that keeps no state: the master it runs on and the validator a read frame needs. */
+async function fundStateless(
+  provider: MockNetworkProvider, artifact: Artifact, category: Uint8Array, seed: string,
+): Promise<void> {
+  const deployed = deployMaster(artifact, category, VALIDATOR_PROGRAM);
+  const categoryHex = bytesToHex(category);
+  const txid = (suffix: string, pad: string): string => `${seed}${suffix}`.padEnd(64, pad).slice(0, 64);
+  await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
+    utxo(txid('11', 'a'), 20_000n, categoryHex, 'minting', empty));
+  await provider.addUtxo(bytesToHex(deployed.address),
+    utxo(txid('22', 'b'), 20_000n, categoryHex, 'mutable', empty));
+}
+
 /** The reader's own read of the store's implementation, named at the store's proxy category. */
 function read(
   provider: MockNetworkProvider, functionName: string,
@@ -273,5 +288,24 @@ describe('a view whose return type is a struct', () => {
     // A struct is one pushdata blob the entry's own `return` leaves, so a struct-returning view is admitted like one
     // returning a fixed-size array: the entry has a master the read can plan and a `retval` blob to decode.
     expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
+  });
+
+  it('reads a struct carrying a string list back, decoded through the shipped decoder', async () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Catalog {'
+      + '   struct Item { int id; string[] labels; }'
+      + '   function item() view returns (Item) { return Item(7, ["a", "b"]); }'
+      + ' }';
+    const catalog = compileStringMulti(source, { composition: 'per-call' }).Catalog!;
+    const provider = new MockNetworkProvider();
+    await fundStateless(provider, catalog, CATALOG_CATEGORY, 'd');
+
+    const result = await readPerCallEntry({
+      provider, artifact: catalog, categoryId: CATALOG_HEX, functionName: 'item', vm: compositionMachine(),
+    });
+
+    // The entry's own `return` is the blob the frame records, and the read's answer is that blob decoded.
+    expect(result.accepted).toBe(true);
+    expect(result.values).toStrictEqual([{ id: 7n, labels: ['a', 'b'] }]);
   });
 });

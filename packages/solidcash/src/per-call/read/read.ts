@@ -175,6 +175,16 @@ const VALIDATOR_ID = 'validator';
 /** The layout a contract that keeps no state variable is classified against: no records, none expected. */
 const NO_STATE_LAYOUT: StateLayout = { variables: [], dataNftCount: 0, commitmentLimit: 0 };
 
+/**
+ * The struct definitions an artifact publishes.
+ *
+ * A contract that keeps no state variable publishes no state layout, and its structs — the ones an entry's argument
+ * or return type names — live on the artifact itself.
+ */
+function structDefinitionsOf(artifact: Artifact): readonly StructDefinitionInfo[] | undefined {
+  return artifact.stateLayout?.structs ?? artifact.structs;
+}
+
 /** The record identity for data-NFT index `nftIndex` of the contract the read's root frame runs on. */
 function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
@@ -505,7 +515,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   const callerRef = root.records[0]?.id ?? VALIDATOR_ID;
   root.enteredBy = callerRef;
   root.origin = callerRef;
-  root.argumentPushes = entryArgumentPushes(root.entry, options.args ?? [], root.artifact.stateLayout?.structs,
+  root.argumentPushes = entryArgumentPushes(root.entry, options.args ?? [], structDefinitionsOf(root.artifact),
     functionName);
   for (const frame of frames) {
     if (frame === root) continue;
@@ -697,7 +707,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   });
   const accepted = machine.stateSuccess(state) === true;
   const retval = learned.get(READ_MASTER)!;
-  const values = decodeReturnValues(retval, root.entry.outputs, root.artifact.stateLayout?.structs);
+  const values = decodeReturnValues(retval, root.entry.outputs, structDefinitionsOf(root.artifact));
   return {
     values,
     value: values[0] ?? 0n,

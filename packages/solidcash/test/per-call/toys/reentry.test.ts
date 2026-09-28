@@ -2,24 +2,30 @@ import { describe, expect, it } from 'vitest';
 import {
   FrameKind,
   buildEntryNftCovenantScript,
+  bytesToHex,
   computeCollectionHash,
   decodeIntegerValue,
   decodeWitnessBlock,
+  encodeEventCommitment,
   encodeIntegerValue,
   encodeResultList,
+  scriptToBytecode,
   splitFirstPush,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { scriptToLockingBytecode } from '../../../src/utils.js';
+import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
+import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
+import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   USER_LOCK, compileAndDeploy, entryName, hexOf, master, masterInput, rootOf, seededAddress, selectorOf, token,
   userInput, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, createShippedDerivationHost, deriveDepthFirst, layOutMappingWrites, participant,
-  planMappingWrite, type CompositionDraftPlan, type DraftMaster, type MappingNodePlacement,
+  createComposedDerivationHost, createShippedDerivationHost, deriveDepthFirst, layOutMappingWrites,
+  layoutTransaction, participant, planMappingWrite, type CompositionDraft, type CompositionDraftPlan,
+  type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import type { ArtifactMap } from '../shapes/harness.js';
@@ -509,5 +515,636 @@ describe('the pair a claim returns beside the record write', () => {
     const swapped = driveSettled(false, false, true, [2n, 1n]);
     expect(verdictAt(swapped.draft, 'claim-1')).toBe('refused: Program failed an OP_VERIFY operation.');
     expect(verdictAt(swapped.draft, 'release-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+  });
+});
+
+/** The vault graph with an integer record and an integer balance, so every commitment is a shipped integer tail. */
+const GRAPH_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IToken { function transfer(address to, int amount); }'
+  + ' interface IVault {'
+  + '   function markClaimed(int id);'
+  + '   function pay(address to, int amount);'
+  + ' }'
+  + ' interface IClaimer { function claim(int id) returns (int); }'
+  + ' contract Token {'
+  + '   mapping(address => int) public balances;'
+  + '   function transfer(address to, int amount) {'
+  + '     this.balances[to] = this.balances[to] + amount;'
+  + '     require(this.balances[to] >= amount);'
+  + '   }'
+  + ' }'
+  + ' contract Vault {'
+  + '   mapping(int => int) public recs;'
+  + '   event Released(int first);'
+  + '   function release(int id) {'
+  + '     this.recs[id] = 1;'
+  + `     int first = IClaimer(0x${CLAIMER}).claim(id);`
+  + '     emit Released(first);'
+  + '     require(true);'
+  + '   }'
+  + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
+  + `   function pay(address to, int amount) { IToken(0x${TOKEN}).transfer(to, amount); require(true); }`
+  + ' }'
+  + ' contract Claimer {'
+  + '   function claim(int id) returns (int) {'
+  + `     IVault(0x${VAULT}).markClaimed(id);`
+  + `     IVault(0x${VAULT}).pay(0x${USER}, 1);`
+  + `     IVault(0x${VAULT}).pay(0x${USER}, 2);`
+  + '     return 1;'
+  + '   }'
+  + ' }';
+
+const graph = compileAndDeploy(GRAPH_SOURCE, LABELS);
+
+/** The two payments `claim` makes, and the balance the token's node ends at after both. */
+const AMOUNTS = [1n, 2n] as const;
+const BALANCE_AFTER = AMOUNTS[0] + AMOUNTS[1];
+
+/** The token balance node's slot, and its commitment at a value, from the shipped encoders. */
+function balanceNode(value: bigint): Uint8Array {
+  return encodeEntryCommitment(keyToSlotMulti([USER_LOCK]), ZERO_SLOT, encodeIntegerValue(value));
+}
+
+/**
+ * The unlocking a mapping node carries into a composition: the entry covenant's `<masterInputIndex> <flag>` shape.
+ *
+ * The node is written, so the flag is `1`, the write path a minting NFT of the node's own category at
+ * `masterInputIndex` authorizes. The bytes are the shipped encoding `stateRecordUnlockingBytecode` builds for a
+ * data-NFT record; only the redeem script differs, because a mapping node sits at its collection's entry covenant.
+ */
+function entryNodeUnlocking(
+  script: ReturnType<typeof buildEntryNftCovenantScript>,
+  masterInputIndex: number,
+): Uint8Array {
+  const args = [1n, BigInt(masterInputIndex)]
+    .map((value) => encodeFunctionArgument(value, 'bigint') as Uint8Array);
+  return createUnlockingBytecode('p2sh32', scriptToBytecode(script), args);
+}
+
+/** One participant's verdict on the assembled transaction, through the shipped machine. */
+function verdictsOf(draft: CompositionDraft): readonly {
+  readonly participant: string; readonly accepted: boolean; readonly objection?: string;
+}[] {
+  const program = draft.programFor('release-1');
+  const vm = compositionMachine();
+  return draft.layout.participants.map((placed) => {
+    const state = vm.evaluate({
+      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    });
+    return vm.stateSuccess(state) === true
+      ? { participant: placed.id, accepted: true }
+      : { participant: placed.id, accepted: false, objection: String(state.error) };
+  });
+}
+
+/** One participant's verdict in a form a test reads. */
+function verdictOf(outcome: GraphOutcome, id: string): { readonly accepted: boolean; readonly objection?: string } {
+  return outcome.verdicts.find((verdict) => verdict.participant === id)!;
+}
+
+interface GraphOutcome {
+  readonly draft: CompositionDraft;
+  readonly completed: readonly string[];
+  readonly error?: string;
+  readonly verdicts: ReturnType<typeof verdictsOf>;
+  readonly vaultNodeIndex: number;
+  readonly tokenNodeIndex: number;
+  readonly eventIndex: number;
+  readonly vaultRelease: Uint8Array;
+  readonly vaultWritten: Uint8Array;
+  readonly balanceWritten: Uint8Array;
+}
+
+/**
+ * Lays the vault graph out and derives it through the shipped path.
+ *
+ * `release` writes the vault record in its first segment and calls `claim`; `claim` re-enters `markClaimed` and
+ * pays twice, each `pay` reaching `transfer`. The vault record's declarations chain across `release` and
+ * `markClaimed`; the token balance node, already held at zero, is rewritten by the two transfers, so its chain
+ * runs from the spent commitment to the value the second transfer leaves. One validator covers every contract and
+ * settles both records.
+ *
+ * The claimer's read-back of the vault's record is the piece of the graph that does not reach this path; it is
+ * pinned by the composition below. `vaultRecordWritten` overrides the commitment the transaction writes for the
+ * vault record, which is this composition's refused control: the frames keep their own declarations, so only the
+ * settlement can refuse it.
+ */
+function driveGraph(options: { readonly vaultRecordWritten?: Uint8Array } = {}): GraphOutcome {
+  const { artifacts, contracts } = graph;
+  const vault = contracts.Vault!;
+  const claimer = contracts.Claimer!;
+  const tokenContract = contracts.Token!;
+  const validator = validatorFor(vault.category);
+
+  const idPush = encodeIntegerValue(ID);
+  const slot = keyToSlotMulti([idPush]);
+  const encodeValue = (value: bigint): Uint8Array => encodeIntegerValue(value);
+
+  // The vault record the transaction holds, the value `release` writes, and the value `markClaimed` leaves.
+  const recordSpent = encodeEntryCommitment(slot, ZERO_SLOT, encodeValue(0n));
+  const vaultRelease = encodeEntryCommitment(slot, ZERO_SLOT, encodeValue(1n));
+  const vaultWritten = encodeEntryCommitment(slot, ZERO_SLOT, encodeValue(2n));
+  const releaseWrite = planMappingWrite({ keys: [idPush], value: 1n, inventory: [recordSpent], encodeValue });
+  const markWrite = planMappingWrite({
+    keys: [idPush], value: 2n, inventory: [releaseWrite.written[0]!.after], encodeValue,
+  });
+
+  // The token balance node, held at zero when the transaction starts: the two transfers rewrite it in turn.
+  const balanceSpent = balanceNode(0n);
+  const firstTransfer = planMappingWrite({ keys: [USER_LOCK], value: AMOUNTS[0], inventory: [balanceSpent], encodeValue });
+  const secondTransfer = planMappingWrite({
+    keys: [USER_LOCK], value: BALANCE_AFTER, inventory: [firstTransfer.written[0]!.after], encodeValue,
+  });
+  const balanceWritten = secondTransfer.written[0]!.after;
+
+  const blocks: CompositionDraftPlan['blocks'] = [
+    {
+      contract: 'Vault', masters: ['release-1', 'markClaimed-1', 'pay-1', 'pay-2'],
+      validator: { id: 'validator', settles: [] }, state: ['vaultNode'],
+    },
+    { contract: 'Claimer', masters: ['claim-1'], state: [] },
+    { contract: 'Token', masters: ['transfer-1', 'transfer-2'], state: ['tokenNode'] },
+  ];
+  const layout = layoutTransaction(blocks);
+  const vaultNodeIndex = participant(layout, 'vaultNode').index;
+  const tokenNodeIndex = participant(layout, 'tokenNode').index;
+  const releaseIndex = participant(layout, 'release-1').index;
+  const transferIndex = participant(layout, 'transfer-1').index;
+  const eventIndex = layout.participantCount;
+
+  const vaultPlacements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(slot), { in: vaultNodeIndex, out: vaultNodeIndex }],
+  ]);
+  const vaultSegments = layOutMappingWrites([[releaseWrite], [markWrite]], {
+    placementOf: (candidate) => vaultPlacements.get(bytesToHex(candidate)),
+  });
+  const tokenPlacements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(keyToSlotMulti([USER_LOCK])), { in: tokenNodeIndex, out: tokenNodeIndex }],
+  ]);
+  const tokenSegments = layOutMappingWrites([[firstTransfer], [secondTransfer]], {
+    placementOf: (candidate) => tokenPlacements.get(bytesToHex(candidate)),
+  });
+
+  const releaseSelector = selectorOf(artifacts, 'Vault', 'release');
+  const markSelector = selectorOf(artifacts, 'Vault', 'markClaimed');
+  const paySelector = selectorOf(artifacts, 'Vault', 'pay');
+  const claimSelector = selectorOf(artifacts, 'Claimer', 'claim');
+  const transferSelector = selectorOf(artifacts, 'Token', 'transfer');
+
+  const vaultFacts = (functionName: string, kind: number, makesExternalCall: boolean): DraftMaster['facts'] => ({
+    contract: 'Vault', functionName, kind, callerIsUser: kind === FrameKind.ROOT,
+    originEqualsCaller: kind === FrameKind.ROOT, makesExternalCall, mastersOfContract: 4,
+  });
+  const tokenFacts = (): DraftMaster['facts'] => ({
+    contract: 'Token', functionName: 'transfer', kind: FrameKind.CALL, callerIsUser: false,
+    originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+  });
+
+  const releaseMaster: DraftMaster = {
+    ...master({
+      master: 'release-1', contract: 'Vault', entry: 'release', program: vault.program,
+      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: vault.address, value: 0n },
+      facts: vaultFacts('release', FrameKind.ROOT, true),
+      enteredBy: 'user', origin: 'user', argumentPushes: [releaseSelector, idPush], dispatches: true,
+      calls: [{
+        kind: FrameKind.CALL, callee: 'claim-1', target: claimer.address, value: 0n,
+        argumentPushes: [claimSelector, idPush],
+      }],
+      segments: [vaultSegments[0]!, []],
+    }),
+    events: [eventIndex],
+  };
+  const markMaster: DraftMaster = master({
+    master: 'markClaimed-1', contract: 'Vault', entry: 'markClaimed', program: vault.program,
+    frame: { kind: FrameKind.CALL, sender: claimer.address, self: vault.address, value: 0n },
+    facts: vaultFacts('markClaimed', FrameKind.CALL, false),
+    enteredBy: 'claim-1', origin: 'user', argumentPushes: [markSelector, idPush],
+    segments: [vaultSegments[1]!],
+  });
+  const payMaster = (index: number): DraftMaster => master({
+    master: `pay-${index + 1}`, contract: 'Vault', entry: 'pay', program: vault.program,
+    frame: { kind: FrameKind.CALL, sender: claimer.address, self: vault.address, value: 0n },
+    facts: vaultFacts('pay', FrameKind.CALL, true),
+    enteredBy: 'claim-1', origin: 'user',
+    argumentPushes: [paySelector, encodeValue(AMOUNTS[index]!), USER_LOCK],
+    calls: [{
+      kind: FrameKind.CALL, callee: `transfer-${index + 1}`, target: tokenContract.address, value: 0n,
+      argumentPushes: [transferSelector, encodeValue(AMOUNTS[index]!), USER_LOCK],
+    }],
+  });
+  const claimMaster: DraftMaster = {
+    ...master({
+      master: 'claim-1', contract: 'Claimer', entry: 'claim', program: claimer.program,
+      frame: { kind: FrameKind.CALL, sender: vault.address, self: claimer.address, value: 0n },
+      facts: {
+        contract: 'Claimer', functionName: 'claim', kind: FrameKind.CALL, callerIsUser: false,
+        originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 1,
+      },
+      enteredBy: 'release-1', origin: 'user', argumentPushes: [claimSelector, idPush],
+      calls: [
+        {
+          kind: FrameKind.CALL, callee: 'markClaimed-1', target: vault.address, value: 0n,
+          argumentPushes: [markSelector, idPush],
+        },
+        {
+          kind: FrameKind.CALL, callee: 'pay-1', target: vault.address, value: 0n,
+          argumentPushes: [paySelector, encodeValue(AMOUNTS[0]!), USER_LOCK],
+        },
+        {
+          kind: FrameKind.CALL, callee: 'pay-2', target: vault.address, value: 0n,
+          argumentPushes: [paySelector, encodeValue(AMOUNTS[1]!), USER_LOCK],
+        },
+      ],
+    }),
+    retval: encodeResultList([encodeValue(1n)]),
+  };
+  const transferMaster = (index: number): DraftMaster => master({
+    master: `transfer-${index + 1}`, contract: 'Token', entry: 'transfer', program: tokenContract.program,
+    frame: { kind: FrameKind.CALL, sender: vault.address, self: tokenContract.address, value: 0n },
+    facts: tokenFacts(),
+    enteredBy: `pay-${index + 1}`, origin: 'user',
+    argumentPushes: [transferSelector, encodeValue(AMOUNTS[index]!), USER_LOCK],
+    segments: [tokenSegments[index]!],
+  });
+
+  const vaultEntryScript = buildEntryNftCovenantScript(
+    vault.category, computeCollectionHash(artifacts.Vault!.stateLayout!.collections![0]!.signature),
+  );
+  const tokenEntryScript = buildEntryNftCovenantScript(
+    tokenContract.category, computeCollectionHash(artifacts.Token!.stateLayout!.collections![0]!.signature),
+  );
+  const vaultLock = scriptToLockingBytecode(vaultEntryScript, 'p2sh32');
+  const tokenLock = scriptToLockingBytecode(tokenEntryScript, 'p2sh32');
+  const vaultEvent = artifacts.Vault!.events![0]!;
+
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: [{ id: 'user', index: layout.participantCount }],
+    masters: [
+      releaseMaster, markMaster, payMaster(0), payMaster(1),
+      claimMaster, transferMaster(0), transferMaster(1),
+    ],
+    inputs: {
+      'release-1': { source: masterInput(vault) },
+      'markClaimed-1': { source: masterInput(vault) },
+      'pay-1': { source: masterInput(vault) },
+      'pay-2': { source: masterInput(vault) },
+      'claim-1': { source: masterInput(claimer) },
+      'transfer-1': { source: masterInput(tokenContract) },
+      'transfer-2': { source: masterInput(tokenContract) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable') },
+      },
+      vaultNode: {
+        source: { lockingBytecode: vaultLock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', recordSpent) },
+        output: {
+          lockingBytecode: vaultLock, valueSatoshis: 20_000n,
+          token: token(vault.category, 'mutable', options.vaultRecordWritten ?? vaultWritten),
+        },
+        unlockingBytecode: entryNodeUnlocking(vaultEntryScript, releaseIndex),
+      },
+      tokenNode: {
+        source: {
+          lockingBytecode: tokenLock, valueSatoshis: 20_000n,
+          token: token(tokenContract.category, 'mutable', balanceSpent),
+        },
+        output: {
+          lockingBytecode: tokenLock, valueSatoshis: 20_000n,
+          token: token(tokenContract.category, 'mutable', balanceWritten),
+        },
+        unlockingBytecode: entryNodeUnlocking(tokenEntryScript, transferIndex),
+      },
+      user: userInput(),
+    },
+    trailingOutputs: [
+      eventOutput(vault.category, vaultEvent.signature, encodeEventCommitment(vaultEvent.parameters, [1n])),
+    ],
+    validator: {
+      id: 'validator', covers: ['Claimer', 'Token'],
+      settles: [
+        { category: vault.category, stateInputs: ['vaultNode'] },
+        { category: tokenContract.category, stateInputs: ['tokenNode'] },
+      ],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Vault!, artifacts.Claimer!, artifacts.Token!], plan,
+  });
+  let completed: readonly string[] = [];
+  let error: string | undefined;
+  try {
+    completed = deriveDepthFirst(rootOf('Vault', 'release', 'release-1'), host)
+      .completed.map((frame) => frame.master);
+  } catch (caught) {
+    error = (caught as Error).message;
+  }
+  return {
+    draft, completed, error, verdicts: verdictsOf(draft),
+    vaultNodeIndex, tokenNodeIndex, eventIndex, vaultRelease, vaultWritten, balanceWritten,
+  };
+}
+
+describe('the vault graph: release, two payments through the token and the emit', () => {
+  it('publishes the descriptor, the two collections and the event the graph needs', () => {
+    for (const name of ['Token', 'Vault', 'Claimer']) {
+      expect(graph.artifacts[name]?.composition?.convention).toBe('per-call');
+    }
+    expect(graph.artifacts.Vault?.stateLayout?.mappings?.map((mapping) => `${mapping.name}:${mapping.sorted}`))
+      .toStrictEqual(['recs:true']);
+    expect(graph.artifacts.Token?.stateLayout?.mappings?.map((mapping) => `${mapping.name}:${mapping.sorted}`))
+      .toStrictEqual(['balances:true']);
+    expect(graph.artifacts.Vault?.events?.map((event) => event.signature)).toStrictEqual(['Released(int256)']);
+    const claim = entriesOf(graph.artifacts, 'Claimer')
+      .find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
+    expect(claim.calls.map((call) => call.functionName)).toStrictEqual(['markClaimed', 'pay', 'pay']);
+  });
+
+  it('derives the whole graph and is accepted at every contract input', () => {
+    const { draft, completed, error, verdicts, vaultNodeIndex, tokenNodeIndex, eventIndex } = driveGraph();
+
+    // Every hop runs on its own master, callee before caller.
+    expect(error).toBeUndefined();
+    expect(completed).toStrictEqual([
+      'markClaimed-1', 'transfer-1', 'pay-1', 'transfer-2', 'pay-2', 'claim-1', 'release-1',
+    ]);
+
+    // Every participant - the seven masters, the validator, the vault record and the token's node - is accepted.
+    const rejected = verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    expect(verdicts.map((verdict) => verdict.participant)).toStrictEqual([
+      'release-1', 'markClaimed-1', 'pay-1', 'pay-2', 'validator', 'vaultNode', 'claim-1',
+      'transfer-1', 'transfer-2', 'tokenNode',
+    ]);
+    expect(participant(draft.layout, 'vaultNode').index).toBe(vaultNodeIndex);
+    expect(participant(draft.layout, 'tokenNode').index).toBe(tokenNodeIndex);
+    expect(draft.trailingOutputs.map((placed) => placed.index)).toStrictEqual([eventIndex]);
+  });
+
+  it('chains each record\'s views across every frame that runs on it', () => {
+    const { draft, vaultNodeIndex, tokenNodeIndex, vaultRelease, vaultWritten, balanceWritten } = driveGraph();
+    const program = draft.programFor('release-1');
+
+    // The vault record the transaction spends and writes, read back through the shipped encoder, and the two
+    // frames that touch it: `release` writes 1, and `markClaimed` carries on from 1 to 2.
+    expect(program.sourceOutputs[vaultNodeIndex]!.token?.nft?.commitment)
+      .toStrictEqual(encodeEntryCommitment(keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(0n)));
+    expect(program.transaction.outputs[vaultNodeIndex]!.token?.nft?.commitment).toStrictEqual(vaultWritten);
+    expect(draft.blockOf('release-1').segments[0]![0]).toStrictEqual({
+      in: vaultNodeIndex, out: vaultNodeIndex,
+      viewIn: encodeEntryCommitment(keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(0n)),
+      viewOut: vaultRelease,
+    });
+    expect(draft.blockOf('markClaimed-1').segments[0]![0]).toStrictEqual({
+      in: vaultNodeIndex, out: vaultNodeIndex, viewIn: vaultRelease, viewOut: vaultWritten,
+    });
+
+    // The token's balance node, held at 0: the first transfer closes it at 1 and the second reads 1 and closes it
+    // at 3, all read back from the transaction the machine evaluates and the shipped encoders.
+    expect(program.sourceOutputs[tokenNodeIndex]!.token?.nft?.commitment).toStrictEqual(balanceNode(0n));
+    expect(program.transaction.outputs[tokenNodeIndex]!.token?.nft?.commitment).toStrictEqual(balanceWritten);
+    expect(balanceWritten).toStrictEqual(balanceNode(BALANCE_AFTER));
+    expect(draft.blockOf('transfer-1').segments[0]![0]).toStrictEqual({
+      in: tokenNodeIndex, out: tokenNodeIndex, viewIn: balanceNode(0n), viewOut: balanceNode(AMOUNTS[0]),
+    });
+    expect(draft.blockOf('transfer-2').segments[0]![0]).toStrictEqual({
+      in: tokenNodeIndex, out: tokenNodeIndex, viewIn: balanceNode(AMOUNTS[0]), viewOut: balanceWritten,
+    });
+  });
+
+  it('emits the value the claimer returned and records it in the callers\' frames', () => {
+    const { draft, eventIndex } = driveGraph();
+    const program = draft.programFor('release-1');
+
+    // The event `release` emits carries the value `claim` returned, at the layout's first trailing output, read
+    // back through the shipped event encoder.
+    expect(draft.blockOf('release-1').events).toStrictEqual([eventIndex]);
+    const event = graph.artifacts.Vault!.events![0]!;
+    expect(program.transaction.outputs[eventIndex]!.token?.nft).toStrictEqual({
+      capability: 'none', commitment: encodeEventCommitment(event.parameters, [1n]),
+    });
+
+    // `claim` returns the value, so its own `retval` and `release`'s call record carry it, read back through the
+    // shipped result encoding.
+    const returned = encodeResultList([encodeIntegerValue(1n)]);
+    expect(blockOf(draft.unlockingBytecodeOf('claim-1')).retval).toStrictEqual(returned);
+    expect(blockOf(draft.unlockingBytecodeOf('release-1')).calls[0]!.result).toStrictEqual(returned);
+  });
+
+  it('refuses a transaction whose vault record output is not what the last declaration ends at', () => {
+    // The control on the same composition: every frame keeps its own declaration and the body computes what it
+    // closes against, so the masters are self-consistent; the settlement is what holds the chain's last
+    // declaration to the commitment the transaction writes, and it refuses.
+    const honest = driveGraph();
+    const written = encodeEntryCommitment(
+      keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(9n),
+    );
+    const broken = driveGraph({ vaultRecordWritten: written });
+
+    expect(verdictOf(honest, 'validator').accepted).toBe(true);
+    // `release` and `markClaimed` still accept: each reads its own declaration, and the transaction's output is not
+    // what either of them closes against.
+    expect(verdictOf(broken, 'release-1').accepted).toBe(true);
+    expect(verdictOf(broken, 'markClaimed-1').accepted).toBe(true);
+    expect(verdictOf(broken, 'validator').accepted).toBe(false);
+  });
+});
+
+/**
+ * The read-back the same graph's claimer makes, and the wall it meets.
+ *
+ * `Vault.release` writes its record and calls `Claimer.claim`, which reads the record back through the read-only
+ * `get` and returns what it read. The composition is otherwise the smallest that carries the hop: the vault's two
+ * masters and record, the claimer's master, one validator and the user. Every participant but the reading frame is
+ * accepted by the machine, and the derivation stops on the reading frame's own close.
+ *
+ * A frame that reads a mapping record without writing it cannot resolve the record its segment declares: the
+ * declared-view read comes back empty and the frame's own non-empty check fails, an `OP_VERIFY` inside the read
+ * helper. The fault is the read path, not the plan. The plan declares the record at the coordinate the writing
+ * frames use, and the writing frames of the settled graph above are accepted at that coordinate; a frame that
+ * reads a mapping record it also writes resolves it (the two transfers read and rewrite the balance node), so the
+ * read itself works and only a read the frame does not write fails.
+ */
+const READBACK_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IVault { function get(int id) view returns (int); }'
+  + ' interface IClaimer { function claim(int id) returns (int); }'
+  + ' contract Vault {'
+  + '   mapping(int => int) public recs;'
+  + '   event Released(int first);'
+  + '   function release(int id) {'
+  + '     this.recs[id] = 1;'
+  + `     int first = IClaimer(0x${CLAIMER}).claim(id);`
+  + '     emit Released(first);'
+  + '     require(true);'
+  + '   }'
+  + '   function get(int id) view returns (int) { return this.recs[id]; }'
+  + ' }'
+  + ' contract Claimer {'
+  + '   function claim(int id) returns (int) {'
+  + `     int s = IVault(0x${VAULT}).get(id);`
+  + '     require(s == 1);'
+  + '     return s;'
+  + '   }'
+  + ' }';
+
+/** The smallest composition carrying the read-back hop: release's write, the read-only get, and the return. */
+function driveReadBack(): GraphOutcome {
+  const { artifacts, contracts } = compileAndDeploy(READBACK_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
+  const vault = contracts.Vault!;
+  const claimer = contracts.Claimer!;
+  const validator = validatorFor(vault.category);
+
+  const idPush = encodeIntegerValue(ID);
+  const slot = keyToSlotMulti([idPush]);
+  const before = encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(0n));
+  const releaseView = encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(1n));
+  const releaseWrite = planMappingWrite({
+    keys: [idPush], value: 1n, inventory: [before], encodeValue: (value) => encodeIntegerValue(value),
+  });
+
+  const blocks: CompositionDraftPlan['blocks'] = [
+    {
+      contract: 'Vault', masters: ['release-1', 'get-1'],
+      validator: { id: 'validator', settles: [] }, state: ['vaultNode'],
+    },
+    { contract: 'Claimer', masters: ['claim-1'], state: [] },
+  ];
+  const layout = layoutTransaction(blocks);
+  const vaultNodeIndex = participant(layout, 'vaultNode').index;
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(slot), { in: vaultNodeIndex, out: vaultNodeIndex }],
+  ]);
+  const releaseSegments = layOutMappingWrites([[releaseWrite]], {
+    placementOf: (candidate) => placements.get(bytesToHex(candidate)),
+  });
+
+  const releaseSelector = selectorOf(artifacts, 'Vault', 'release');
+  const getSelector = selectorOf(artifacts, 'Vault', 'get');
+  const claimSelector = selectorOf(artifacts, 'Claimer', 'claim');
+  const entryScript = buildEntryNftCovenantScript(
+    vault.category, computeCollectionHash(artifacts.Vault!.stateLayout!.collections![0]!.signature),
+  );
+  const lock = scriptToLockingBytecode(entryScript, 'p2sh32');
+  const eventIndex = layout.participantCount;
+  const vaultEvent = artifacts.Vault!.events![0]!;
+  const releaseIndex = participant(layout, 'release-1').index;
+
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: [{ id: 'user', index: layout.participantCount }],
+    masters: [
+      {
+        ...master({
+          master: 'release-1', contract: 'Vault', entry: 'release', program: vault.program,
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: vault.address, value: 0n },
+          facts: {
+            contract: 'Vault', functionName: 'release', kind: FrameKind.ROOT, callerIsUser: true,
+            originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 2,
+          },
+          enteredBy: 'user', origin: 'user', argumentPushes: [releaseSelector, idPush], dispatches: true,
+          calls: [{
+            kind: FrameKind.CALL, callee: 'claim-1', target: claimer.address, value: 0n,
+            argumentPushes: [claimSelector, idPush],
+          }],
+          segments: [releaseSegments[0]!, []],
+        }),
+        events: [eventIndex],
+      },
+      {
+        ...master({
+          master: 'get-1', contract: 'Vault', entry: 'get', program: vault.program,
+          frame: { kind: FrameKind.STATIC, sender: claimer.address, self: vault.address, value: 0n },
+          facts: {
+            contract: 'Vault', functionName: 'get', kind: FrameKind.STATIC, callerIsUser: false,
+            originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+          },
+          enteredBy: 'claim-1', origin: 'user', argumentPushes: [getSelector, idPush],
+          // The read-only frame declares the record it reads, at the coordinate the writing frames use.
+          segments: [[{ in: vaultNodeIndex, out: vaultNodeIndex, viewIn: releaseView, viewOut: releaseView }]],
+        }),
+        retval: encodeResultList([encodeIntegerValue(1n)]),
+      },
+      {
+        ...master({
+          master: 'claim-1', contract: 'Claimer', entry: 'claim', program: claimer.program,
+          frame: { kind: FrameKind.CALL, sender: vault.address, self: claimer.address, value: 0n },
+          facts: {
+            contract: 'Claimer', functionName: 'claim', kind: FrameKind.CALL, callerIsUser: false,
+            originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 1,
+          },
+          enteredBy: 'release-1', origin: 'user', argumentPushes: [claimSelector, idPush],
+          calls: [{
+            kind: FrameKind.STATIC, callee: 'get-1', target: vault.address, value: 0n,
+            argumentPushes: [getSelector, idPush],
+          }],
+        }),
+        retval: encodeResultList([encodeIntegerValue(1n)]),
+      },
+    ],
+    inputs: {
+      'release-1': { source: masterInput(vault) },
+      'get-1': { source: masterInput(vault) },
+      'claim-1': { source: masterInput(claimer) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable') },
+      },
+      vaultNode: {
+        source: { lockingBytecode: lock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', before) },
+        output: {
+          lockingBytecode: lock, valueSatoshis: 20_000n,
+          token: token(vault.category, 'mutable', releaseWrite.written[0]!.after),
+        },
+        unlockingBytecode: entryNodeUnlocking(entryScript, releaseIndex),
+      },
+      user: userInput(),
+    },
+    trailingOutputs: [
+      eventOutput(vault.category, vaultEvent.signature, encodeEventCommitment(vaultEvent.parameters, [1n])),
+    ],
+    validator: {
+      id: 'validator', covers: ['Claimer'],
+      settles: [{ category: vault.category, stateInputs: ['vaultNode'] }],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Vault!, artifacts.Claimer!], plan,
+  });
+  let completed: readonly string[] = [];
+  let error: string | undefined;
+  try {
+    completed = deriveDepthFirst(rootOf('Vault', 'release', 'release-1'), host)
+      .completed.map((frame) => frame.master);
+  } catch (caught) {
+    error = (caught as Error).message;
+  }
+  return {
+    draft, completed, error, verdicts: verdictsOf(draft),
+    vaultNodeIndex, tokenNodeIndex: -1, eventIndex,
+    vaultRelease: releaseView, vaultWritten: releaseWrite.written[0]!.after, balanceWritten: new Uint8Array(0),
+  };
+}
+
+describe('the claimer\'s read-back of the record `release` wrote', () => {
+  it('pins the wall: the read-only frame cannot resolve the record its segment declares', () => {
+    const { completed, error, verdicts } = driveReadBack();
+
+    // The derivation stops on the reading frame's own segment close, before the claimer that called it resumes.
+    expect(error).toBe(
+      'PER_CALL_DERIVATION_STALLED: master "get-1" of Vault.get() filled no witness at site 0 (close of segment 0)',
+    );
+    expect(completed).toStrictEqual([]);
+
+    // The reading frame is the only refused participant: `release`'s write and call, the call back into the vault
+    // the claimer records, the validator and the vault's record are all accepted by the machine.
+    const refused = verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(refused).toStrictEqual(['get-1: Program failed an OP_VERIFY operation.']);
+    expect(verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`)).toStrictEqual([
+      'release-1:true', 'get-1:false', 'validator:true', 'vaultNode:true', 'claim-1:true',
+    ]);
   });
 });

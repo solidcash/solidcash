@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 380 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 393 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -36,15 +36,15 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 96 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 35 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1304 tests passed (115 + 421 + 768), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1312 tests passed (115 + 434 + 763), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 421 is the four rows above it, and `solidcash` 768 is the fifteen rows above
+`vitest.per-call.config.ts`: `solidc` 434 is the four rows above it, and `solidcash` 763 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -91,7 +91,8 @@ and the binding of a delegate callee to the implementation the record names by `
   offsets, the frame checks the machine enforces on a real spend (ownership, recreation, hash type, `msg.sender`,
   `tx.origin`, `address(this)`), the witness-block reader, dispatch over one master's entry points, state read and
   written through the frame's declared record views — the walk that recovers them from the witness block is
-  `declared-view.test.ts` — record settlement across the segments of one execution, the
+  `declared-view.test.ts`, and its run-time-count variant, which resolves a read against the segment the execution's
+  own call count names, is `declared-view-runtime.test.ts` and `looped-call-state-read.test.ts` — record settlement across the segments of one execution, the
   returns an entry settles against the frame's `retval`, one head serving bodies that make different numbers of
   calls and each body pinning the block's declared count to its own, call sites and their argument digests, a
   dynamic value's
@@ -321,14 +322,14 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   and chunk commitments and `layOutChunkRun` places the run one layout width past the block's data NFTs, and a plan
   built that way derives with the machine accepting the master that wrote the value (`frames/chunk-run.test.ts`).
   What no plan lays out is a write that changes the run's width: creating or deleting chunks is refused by name
-  (`PER_CALL_CHUNK_UNPLANNABLE`). The compile's first reported failure is read the same way each round —
+  (`PER_CALL_CHUNK_UNPLANNABLE`). The compile is read the same way each round —
   `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, because the
-  harness compiles the built compiler rather than the sources. At `8876b4db7` it is `unicrow/UnicrowClaim.sol` and a
-  loop: "the call to 'arbitrationCalculation' runs conditionally, and the paths through 'claimMultiple' do not make
-  the same number of calls, so its call records are not a fixed set the head can check" — a `for` over the caller's
-  own escrow list, whose trip count is a run-time value, so the calls it makes are not a set the head can count. A
-  branch whose arms each make one call is admitted now, which is the shape of that unit's `claim`. The
-  ladder stands at "blocked at compile" and no title count is claimed.
+  harness compiles the built compiler rather than the sources. At `d63d2fc3b` its first reported failure was
+  `unicrow/UnicrowClaim.sol`'s `claimMultiple`: a loop of calls whose body also reads the state of the contract it
+  runs on, where the segment a read resolves against is a number only the execution knows. The declared-view walk
+  takes the running execution's own counts now, so the project compiles end to end — nine sources, seven artifacts,
+  no failure — and the next rung is the harness box (the testing layer composing per-call masters for the fixture),
+  not a compiler refusal. A title count is not claimed until that rung is crossed.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state
   write — is emitted and deploys, and a block declaring a count no body makes is refused at the caller. The

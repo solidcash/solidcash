@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
+  argsHash,
   buildChunkCommitment,
   buildPushdataCommitment,
   bytesToHex,
+  computeFunctionSelector,
+  encodeArgumentList,
   encodeEventCommitment,
   packFixedWidthElement,
   splitValueIntoChunks,
@@ -24,7 +27,7 @@ import {
   selectorOf, token, userInput, userInputs, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, layOutChunkRun, participant, planChunkRun,
+  createComposedDerivationHost, layoutTransaction, layOutChunkRun, participant, planChunkRun,
   type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -42,12 +45,11 @@ import {
  * from `layoutTransaction`/`participant`, the run's records from `planChunkRun`/`layOutChunkRun`, and every
  * commitment from the shipped encoders; no coordinate in the plan is a literal.
  *
- * The entries are the composition's root frames, one signed input each, which is the shape the deployment and the
- * composer serve: a fallback's `input` is the whole call data the frame received, so it is what a user's root
- * supplies. A contract cannot be its caller: the composer lays a call out as argument pushes whose first is a
- * four-byte selector, which is what a callee's dispatcher consumes, so no call can carry a fallback's received call
- * data, and the compiled fallback master — entered as a root — stops inside its own frame parse on a call frame.
- * The repeated hub-call shape is pinned in the last cases rather than approximated.
+ * The composition is driven both ways. A user enters the fallback as a root frame, one signed input per append, and
+ * supplies its whole call data as the argument. A contract enters it as a call frame: a called frame's call data
+ * leads with a four-byte selector, so the hub calls the proxy's forwarding entry with the framed call data as its
+ * argument, and the fallback — entered under the call — reads that argument and forwards it verbatim. Both settle,
+ * and the call frame's band is the reason a fallback cannot be called with the framed call data alone.
  */
 
 const PROXY_LABEL = 'proxied append run proxy';
@@ -65,6 +67,11 @@ const HUB_MASTER = 'hub-1';
 const APPEND_COUNT = 2;
 /** The element `append` pushes and the id its event carries. */
 const APPEND = { id: 1n, item: 10n } as const;
+/**
+ * The forwarding entry the hub calls. A called frame's call data leads with a four-byte selector, and the
+ * fallback ignores it, so the selector only has to be one the hub's own compiled site records.
+ */
+const FORWARD_SELECTOR = computeFunctionSelector('forward(bytes)');
 
 const proxyMasterId = (turn: number): string => `proxy-${turn}`;
 const implMasterId = (turn: number): string => `impl-${turn}`;
@@ -91,13 +98,22 @@ const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** The hub source: one unrolled call to the proxy's address per append. */
-function hubSource(proxyAddress: Uint8Array, appends: number): string {
+/**
+ * The hub source: one unrolled call to the proxy's address per append.
+ *
+ * A contract that enters a proxy cannot use the implementation's argument list: a called frame's unlocking
+ * bytecode begins with a four-byte selector, and a fallback's received `input` is the whole call data the frame
+ * received. The hub therefore calls a forwarding entry that takes that framed call data as its one argument, and
+ * the proxy's fallback receives it verbatim and hands it to the implementation.
+ */
+function hubSource(proxyAddress: Uint8Array, callData: Uint8Array, appends: number): string {
+  const framed = bytesToHex(callData);
   return 'pragma solidcash ^0.13.0;'
-    + ' interface IProxy { function append(); }'
+    + ' interface IProxy { function forward(bytes input); }'
     + ' contract Hub {'
     + '   function go() {'
-    + Array.from({ length: appends }, () => `     IProxy(0x${hexOf(proxyAddress)}).append();`).join('\n')
+    + Array.from({ length: appends }, () =>
+      `     IProxy(0x${hexOf(proxyAddress)}).forward(hex"${framed}");`).join('\n')
     + '     require(true);'
     + '   }'
     + ' }';
@@ -161,6 +177,10 @@ interface Built {
   readonly records: readonly ChunkRecordPlacement[];
   /** The payload every append's event carries, from the implementation's declared event. */
   readonly eventPayload: Uint8Array;
+  /** The implementation's `append` selector. */
+  readonly appendSelector: Uint8Array;
+  /** The framed call data a caller forwards to the implementation: the selector's push. */
+  readonly callData: Uint8Array;
   readonly proxyContract: string;
   readonly implementationContract: string;
   readonly hubContract?: string;
@@ -366,7 +386,7 @@ function build(): Built {
 
   return {
     plan, artifacts: [proxyArtifact, implementationArtifact], layout, proxy, impl, headers, stages, records,
-    eventPayload: payload, proxyContract, implementationContract,
+    eventPayload: payload, appendSelector, callData, proxyContract, implementationContract,
     roots: Array.from({ length: APPEND_COUNT }, (_unused, turn) =>
       rootOf(proxyContract, '__fallback', proxyMasterId(turn + 1))),
   };
@@ -375,24 +395,35 @@ function build(): Built {
 /**
  * Lays the same appends out with a hub as the single root calling the proxy's fallback once per append.
  *
- * This is the shape a contract's own entry would drive, and it is the shape the composer refuses: the call's band
- * would have to carry the fallback's received call data.
+ * This is the shape a contract's own entry drives. The hub calls the proxy's forwarding entry once per append,
+ * handing it the framed call data the fallback forwards; the proxy's fallback is entered as a `CALL` frame, reads
+ * that call data as its one argument, and delegates to the implementation, which runs on the proxy's records.
  */
-function buildHubCall(forwarded: boolean): Built {
+function buildHubCall(): Built {
   const { contracts, proxy, impl, layout } = compileAndDeployHalf();
   const { proxyArtifact, implementationArtifact } = contracts;
   const proxyContract = proxyArtifact.contractName;
   const implementationContract = implementationArtifact.contractName;
-  const hubArtifact = compileStringMulti(hubSource(proxy.address, APPEND_COUNT), { composition: 'per-call' }).Hub!;
-  const hub = deployed(hubArtifact.contractName, HUB_CATEGORY,
-    deployMaster(hubArtifact, HUB_CATEGORY, VALIDATOR_PROGRAM));
-  const hubContract = hubArtifact.contractName;
 
   const stages = Array.from({ length: APPEND_COUNT + 1 }, (_unused, turn) =>
     itemsBytes([...SPENT_ITEMS, ...Array.from({ length: turn }, () => APPEND.item)]));
   const headers = stages.map((bytes) => recordCommitment(layout, impl.address, bytes));
+
   const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
-  const argumentPushes = forwarded ? [encodeDataPush(appendSelector)] : [appendSelector];
+  // The fallback forwards the call data it received: the selector's push and nothing else, because `append` takes
+  // no parameters. The framed bytes are what the hub hands the proxy as the forwarding entry's one argument.
+  const callData = encodeDataPush(appendSelector);
+  // The call the hub makes: its forwarding entry's selector, then the framed call data. The fallback drops the
+  // selector (it dispatches nothing) and reads the framed data as its `input`, so the implementation's own call
+  // data is the same framed bytes.
+  const argumentPushes = [FORWARD_SELECTOR, callData];
+
+  const hubArtifact = compileStringMulti(hubSource(proxy.address, callData, APPEND_COUNT), {
+    composition: 'per-call',
+  }).Hub!;
+  const hub = deployed(hubArtifact.contractName, HUB_CATEGORY,
+    deployMaster(hubArtifact, HUB_CATEGORY, VALIDATOR_PROGRAM));
+  const hubContract = hubArtifact.contractName;
 
   const runPlan = planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[APPEND_COUNT]! });
   const probeState = [RECORD_ID, ...runPlan.written.chunks.map((_chunk, offset) => `items#probe${offset}`)];
@@ -467,7 +498,10 @@ function buildHubCall(forwarded: boolean): Built {
     frame: { kind: FrameKind.CALL, sender: hub.address, self: proxy.address, value: 0n },
     enteredBy: HUB_MASTER, origin: 'user',
     calls: [{
-      kind: FrameKind.DELEGATE, callee: implMasterId(turn), target: impl.address, value: 0n, argumentPushes,
+      // The fallback forwards `input` verbatim, so the delegate callee's call data is the framed bytes the hub
+      // handed the proxy, i.e. the implementation's own selector push.
+      kind: FrameKind.DELEGATE, callee: implMasterId(turn), target: impl.address, value: 0n,
+      argumentPushes: [appendSelector],
     }],
     segments: [[recordEntry(headers[turn - 1]!, headers[turn - 1]!)], [recordEntry(headers[turn]!, headers[turn]!)]],
     argumentPushes,
@@ -484,7 +518,7 @@ function buildHubCall(forwarded: boolean): Built {
     enteredBy: proxyMasterId(turn), origin: 'user',
     calls: [],
     segments: [[recordEntry(headers[turn - 1]!, headers[turn]!), ...chunkEntries(turn)]],
-    argumentPushes,
+    argumentPushes: [appendSelector],
   });
 
   const event = implementationArtifact.events![0]!;
@@ -543,7 +577,7 @@ function buildHubCall(forwarded: boolean): Built {
 
   return {
     plan, artifacts: [hubArtifact, proxyArtifact, implementationArtifact], layout, proxy, impl, headers, stages,
-    records, eventPayload: payload, proxyContract, implementationContract, hubContract,
+    records, eventPayload: payload, appendSelector, callData, proxyContract, implementationContract, hubContract,
     roots: [rootOf(hubContract, 'go', HUB_MASTER)],
   };
 }
@@ -559,7 +593,10 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     const proxyArtifact = buildProxyArtifact(implementationArtifact);
     const proxy = deployed(proxyArtifact.contractName, PROXY_CATEGORY,
       deployMaster(proxyArtifact, PROXY_CATEGORY, VALIDATOR_PROGRAM));
-    const hubArtifact = compileStringMulti(hubSource(proxy.address, APPEND_COUNT), { composition: 'per-call' }).Hub!;
+    const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
+    const hubArtifact = compileStringMulti(
+      hubSource(proxy.address, encodeDataPush(appendSelector), APPEND_COUNT), { composition: 'per-call' },
+    ).Hub!;
 
     // The write rebuilds the record from the writer's declaration, so the two layouts must be the same geometry.
     const implementationLayout = implementationArtifact.stateLayout!;
@@ -689,66 +726,126 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
-  it('refuses a call to the proxy that carries the bytes the fallback forwards', () => {
-    // The plan-level half of the wall the hub-call shape hits. A fallback's `input` is the whole call data the frame
-    // received, so the band that would hand it to the proxy is the framed call data. The composer lays a call out as
-    // pushes whose first is a four-byte selector, so it refuses that band and names it.
-    const built = buildHubCall(true);
-    expect(() => createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: built.artifacts, plan: built.plan,
-    })).toThrowError(/the call from "hub-1" to "proxy-1" does not begin with a 4-byte selector/);
+  it('settles the hub-entered appends: the fallback receives the forwarded call data, then delegates', () => {
+    const built = buildHubCall();
+    const outcome = settleOutcome(built);
+    // Each append's delegate frame completes before the proxy fallback that forwarded to it, in call order, and
+    // the hub that drove them all completes last.
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => [
+        entryName(built.implementationContract, 'append'),
+        entryName(built.proxyContract, '__fallback'),
+      ]).flat(),
+      entryName(built.hubContract!, 'go'),
+    ]);
+    // The fallback is entered by the hub's call, not by a user's root: every fallback frame the derivation ran
+    // was a `CALL`.
+    const fallbackFrames = outcome.completed
+      .filter((frame) => frame.functionName === entryName(built.proxyContract, '__fallback'));
+    expect(fallbackFrames).toHaveLength(APPEND_COUNT);
+    expect(fallbackFrames.every((frame) => frame.kind === FrameKind.CALL)).toBe(true);
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    // Every contract input is asked: the hub, each proxy master, each implementation master, the validator, the
+    // record and every chunk of the run.
+    const asked = new Set(outcome.verdicts.map((verdict) => verdict.participant));
+    expect([...asked].sort()).toStrictEqual([
+      HUB_MASTER,
+      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
+      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
+      VALIDATOR_ID, RECORD_ID, ...built.records.map((record) => record.id),
+    ].sort());
   });
 
-  it('pins the wall: the hub-called fallback stalls in its frame and no call witness moves it', () => {
-    // The program-level half. With the band the composer does accept, the hub's call reaches the proxy's fallback
-    // master, and the compiled fallback body — which the deployment enters as a user's root frame — stops inside
-    // its own frame parse on a call frame. The step fills the call's witness and the program does not move, so the
-    // driver refuses rather than retrying.
-    const built = buildHubCall(false);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: built.artifacts, plan: built.plan,
+  it('binds the hub\'s call: the proxy frame runs on the framed call data the hub handed it', () => {
+    const built = buildHubCall();
+    const outcome = settleOutcome(built);
+    const layout = outcome.draft.layout;
+    const hub = outcome.draft.blockOf(HUB_MASTER);
+    // One forwarding call per append, each reaching the proxy input at its own place in the layout, and each
+    // record carries the digest of the selector and the framed call data the hub's own site computed.
+    expect(hub.calls).toHaveLength(APPEND_COUNT);
+    hub.calls.forEach((call, turn) => {
+      expect(call.kind).toBe(FrameKind.CALL);
+      expect(call.target).toStrictEqual(built.proxy.address);
+      expect(call.calleeRef).toBe(participant(layout, proxyMasterId(turn + 1)).index);
+      expect(call.argsHash).toStrictEqual(argsHash(FORWARD_SELECTOR, encodeArgumentList([built.callData])));
     });
 
-    let stall: unknown;
-    expect(() => {
-      try {
-        deriveDepthFirst(built.roots[0]!, host);
-      } catch (caught) {
-        stall = caught;
-        throw caught;
-      }
-    }).toThrowError(/PER_CALL_DERIVATION_STALLED/);
-    expect(String(stall)).toContain('master "proxy-1"');
-    expect(String(stall)).toContain(entryName(built.proxyContract, '__fallback'));
-    expect(String(stall)).toContain('site 0 (call 0)');
+    // The proxy runs a call frame entered by the hub; its fallback reads the framed call data and delegates to the
+    // implementation, which runs as the proxy on the proxy's records.
+    const proxy = outcome.draft.blockOf(proxyMasterId(1));
+    expect(proxy.kind).toBe(FrameKind.CALL);
+    expect(proxy.callerRef).toBe(participant(layout, HUB_MASTER).index);
+    expect(proxy.sender).toStrictEqual(outcome.draft.blockOf(HUB_MASTER).self);
+    expect(proxy.calls[0]!.kind).toBe(FrameKind.DELEGATE);
+    expect(proxy.calls[0]!.target).toStrictEqual(built.impl.address);
+    expect(proxy.calls[0]!.argsHash).toStrictEqual(argsHash(built.appendSelector, encodeArgumentList([])));
+    const impl = outcome.draft.blockOf(implMasterId(1));
+    expect(impl.kind).toBe(FrameKind.DELEGATE);
+    expect(impl.self).toStrictEqual(built.proxy.address);
+  });
 
-    // The shape was driven to the wall: the layout places the hub, one proxy master and one implementation master
-    // per append, the validator, the record and every chunk of the run.
-    expect(draft.layout.participants.map((entry) => entry.id)).toStrictEqual([
-      HUB_MASTER,
-      VALIDATOR_ID,
-      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => proxyMasterId(turn + 1)),
-      RECORD_ID,
-      ...built.records.map((record) => record.id),
-      ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => implMasterId(turn + 1)),
-    ]);
+  it('carries the run across frames: each delegate frame reads what the frame before it wrote', () => {
+    const built = buildHubCall();
+    const outcome = settleOutcome(built);
+    for (let turn = 1; turn <= APPEND_COUNT; turn += 1) {
+      const impl = outcome.draft.blockOf(implMasterId(turn));
+      expect(bytesToHex(impl.segments[0]![0]!.viewIn)).toBe(bytesToHex(built.headers[turn - 1]!));
+      expect(bytesToHex(impl.segments[0]![0]!.viewOut)).toBe(bytesToHex(built.headers[turn]!));
+      const before = splitValueIntoChunks(built.stages[turn - 1]!);
+      const after = splitValueIntoChunks(built.stages[turn]!);
+      built.records.forEach((record, offset) => {
+        const entry = impl.segments[0]!.find((candidate) => candidate.in === record.index)!;
+        expect(entry.viewIn).toStrictEqual(chunkOf(offset, before[offset]!));
+        expect(entry.viewOut).toStrictEqual(chunkOf(offset, after[offset]!));
+      });
 
-    // The machine's own verdict on the proxy frame: the proxy's master program stops at ip 1063, inside the head's
-    // own frame parse and before it reaches the delegate call the site names, with a stack read one item past the
-    // bottom. Adding a band item moves the stop but never reaches the call, so no call witness moves it.
-    const program = draft.programFor(proxyMasterId(1));
-    const vm = compositionMachine();
-    const state = vm.evaluate({
-      inputIndex: participant(draft.layout, proxyMasterId(1)).index,
-      sourceOutputs: program.sourceOutputs,
-      transaction: program.transaction,
+      const proxy = outcome.draft.blockOf(proxyMasterId(turn));
+      expect(bytesToHex(proxy.segments[0]![0]!.viewOut)).toBe(bytesToHex(built.headers[turn - 1]!));
+      expect(bytesToHex(proxy.segments[1]![0]!.viewIn)).toBe(bytesToHex(built.headers[turn]!));
+    }
+  });
+
+  it('writes the run the hub-called appends computed: the header, every chunk and every event read back', () => {
+    const built = buildHubCall();
+    const outcome = settleOutcome(built);
+    const transaction = outcome.transaction;
+    const final = built.stages[APPEND_COUNT]!;
+
+    expect(transaction.outputs[participant(outcome.draft.layout, RECORD_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(recordCommitment(built.layout, built.impl.address, final));
+    const chunks = splitValueIntoChunks(final).map((piece, index) => chunkOf(index, piece));
+    expect(chunks).toHaveLength(2);
+    built.records.forEach((record, offset) => {
+      const index = participant(outcome.draft.layout, record.id).index;
+      expect(transaction.outputs[index]!.token?.nft?.commitment).toStrictEqual(chunks[offset]);
     });
-    expect(vm.stateSuccess(state)).not.toBe(true);
-    expect(String(state.error)).toContain('invalid stack index');
-    expect(String(state.error)).toContain('Current stack depth: 10; requested depth: 10');
-    expect((state as { readonly ip?: number }).ip).toBe(1063);
 
-    // The hub's call site was filled before the driver reached the proxy frame, so the stall is the proxy's frame.
-    expect(draft.blockOf(HUB_MASTER).calls[0]!.calleeRef).toBe(participant(draft.layout, proxyMasterId(1)).index);
+    const eventIndices = outcome.draft.assembly.outputs.eventIndices;
+    expect(eventIndices).toHaveLength(APPEND_COUNT);
+    eventIndices.forEach((index) => {
+      expect(transaction.outputs[index]!.token?.nft).toStrictEqual({
+        capability: 'none', commitment: built.eventPayload,
+      });
+    });
+  });
+
+  it('refuses a call to the proxy whose band is the framed call data alone', () => {
+    // The control that genuinely refuses. Every called frame's call data leads with a four-byte selector: the
+    // validator reads that push as the selector and hashes it with the argument pushes, so a band that is the whole
+    // framed call data as one push cannot describe a call. The composer names the band's first push and refuses it.
+    const built = buildHubCall();
+    const framedBand = [built.callData];
+    const plan: CompositionDraftPlan = {
+      ...built.plan,
+      masters: built.plan.masters.map((candidate) => (candidate.master === HUB_MASTER
+        ? { ...candidate, calls: candidate.calls.map((call) => ({ ...call, argumentPushes: framedBand })) }
+        : candidate)),
+    };
+    expect(() => createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: built.artifacts, plan,
+    })).toThrowError(/the call from "hub-1" to "proxy-1" does not begin with a 4-byte selector/);
   });
 });

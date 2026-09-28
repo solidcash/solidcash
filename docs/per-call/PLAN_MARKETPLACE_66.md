@@ -682,10 +682,16 @@ risk. Take the slices in order, each with its own tests.
   the root-addressed **value-chunk** form (`splitValueIntoValueChunks`, `buildValueChunkCommitment`,
   `valueChunkSignature`) that nothing lays out; the emitted body requires exactly `ceil(size/126)` value-chunk NFTs
   at the derived address (`emitSortedValueChunkPin`), so a long write would be refused by the machine rather than
-  by name. **The delete half is a different and small shape**: codegen already lowers a sorted delete to an upsert
-  of the default (`visitMappingDelete`, because `sortedValueKind('string') === 'rawbytes'` is non-null), so only the
-  per-call admission — `isOneWrite` refusing `['delete']` — and the composer's splice-removal plan stand in the
-  way. And a `put(string, string)` master that emits at all is 21,314 bytes, past the 10,000-byte P2SH per-input
+  by name. **The delete half is served.** Codegen already lowered a sorted delete to an upsert of the value type's
+  default (`visitMappingDelete`, because `sortedValueKind('string') === 'rawbytes'` is non-null); the per-call
+  admission now counts a `delete` as the one write it is (`isOneWrite`, scoped there so the kernel paths that read
+  `isSortedValue` are untouched), and the composer gained `planMappingDelete`, which plans that same transition —
+  the node rewritten in place with the caller's encoded default, `removed: false` — instead of the splice removal
+  the `value: undefined` form plans. Measured: `Tags.remove(string k) { delete this.tags[k]; }` compiles with no
+  refusal and no value-witness operand, the node's output commitment is `encodeEntryCommitment(slot, ZERO_SLOT,
+  encodeChunkableValueTail(empty))`, every contract input is accepted, and the **set** stays refused by name for the
+  value witness (`shapes/string-mapping-delete.test.ts`). A **long** value is not covered: the delete writes the
+  short empty default, so no value chunks are involved. And a `put(string, string)` master that emits at all is 21,314 bytes, past the 10,000-byte P2SH per-input
   limit, so this shape needs the code split on a real chain whatever else is done (D3).
 - [ ] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one. (partial: the master
   head now derives a body's chunk-run coordinate from the record block its own frame declares, and the machine

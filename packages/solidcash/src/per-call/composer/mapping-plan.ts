@@ -4,8 +4,9 @@
  * A mapping is a sorted list of node UTXOs. A node's commitment is its slot, its successor's slot and the value it
  * carries, and its slot is the key's (or composite keys') hash. An execution that writes a key therefore touches
  * whole node records rather than one value in place: an update rewrites one node's value, an insert splices a new
- * node between the predecessor and the successor the predecessor pointed at, and a delete relinks the predecessor
- * around the removed node.
+ * node between the predecessor and the successor the predecessor pointed at, and a delete either relinks the
+ * predecessor around the removed node or, as a per-call body compiles it, rewrites the node's value to the type's
+ * default (`planMappingDelete`).
  *
  * This module derives, for one write against the state the transaction spends, the node commitments the execution
  * must write, and then lays those nodes out as the record entries each segment must declare. It computes hashes and
@@ -156,6 +157,41 @@ export function planMappingWrite<V>(request: MappingWriteRequest<V>): MappingWri
     },
   ];
   return { slot, existed: false, removed: false, predecessor, written };
+}
+
+/** One delete the execution performs: the target key(s), whose node keeps its place and takes a default value. */
+export interface MappingDeleteRequest {
+  /** The collection's key(s): one entry for a flat mapping, several for a nested `m[a][b]`. */
+  readonly keys: readonly Uint8Array[];
+  /** The current node inventory: every node commitment the caller reads from the state UTXOs. */
+  readonly inventory: readonly Uint8Array[];
+  /**
+   * The value type's default, encoded as the node's value tail.
+   *
+   * A sorted mapping's `delete m[k]` compiles to an upsert of the default (`visitMappingDelete` routes it through
+   * the sorted-value upsert), so the body rewrites the node where it stands rather than unlinking it. The caller
+   * supplies the encoding because the default depends on the collection's declared value type: an empty value's
+   * tail for `string`, the minimal zero for an int, and so on.
+   */
+  readonly encodeDefault: () => Uint8Array;
+}
+
+/**
+ * Plans a delete as the body performs it: the target rewritten in place with the value type's default.
+ *
+ * This is the delete-side counterpart of `planMappingWrite`. A write of `undefined` removes a key by relinking the
+ * predecessor around it — the list removal the direct convention performs — while a per-call body never unlinks a
+ * node, so the plan that agrees with the emitted bytes is an in-place write of the default tail. An absent key is
+ * an insert of the default node, exactly as the upsert's absent branch does. The returned plan's `removed` is
+ * therefore always false: the node stays.
+ */
+export function planMappingDelete(request: MappingDeleteRequest): MappingWritePlan {
+  return planMappingWrite({
+    keys: request.keys,
+    value: request.encodeDefault(),
+    inventory: request.inventory,
+    encodeValue: (encoded: Uint8Array) => encoded,
+  });
 }
 
 /** Where a node sits in the transaction the plan describes. */

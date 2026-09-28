@@ -109,7 +109,9 @@ describe('a keccak compute side-car', () => {
 });
 
 describe('a string-keyed string mapping', () => {
-  it('is refused by name: its value witness is a hidden parameter the head does not supply', () => {
+  it('refuses its set by name: the value witness is a hidden parameter the head does not supply', () => {
+    // A write of a dynamic value reads the value back, so the body carries a value-witness operand the frame
+    // cannot fix. The delete below is the other half of the shape and is served.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Tags {'
       + '   mapping(string => string) public tags;'
@@ -118,5 +120,17 @@ describe('a string-keyed string mapping', () => {
     const message = refusal(source);
     expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(message).toContain("the hidden parameter '__internal__valueWitness_0'");
+  });
+
+  // The delete is served: a sorted delete lowers to an upsert of the value type's default, so the frame writes the
+  // node's value tail back to the empty string and takes no value witness. The accept and the frame it settles are
+  // cases in `shapes/string-mapping-delete.test.ts`.
+  it('serves its delete: the entry writes the value type default and takes only its key', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Tags {'
+      + '   mapping(string => string) tags;'
+      + '   function remove(string k) { delete this.tags[k]; require(true); }'
+      + ' }';
+    expect(refusal(source)).toBe('');
   });
 });

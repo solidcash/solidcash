@@ -423,10 +423,16 @@ function derivableTargetBatches(
  * record group for the target, which fixes both the value the write started from and the node it produces. A read
  * of an entry the execution does not write is a different matter — nothing in the frame fixes the value it saw —
  * and stays refused.
+ *
+ * A `delete` is that same one transition. A sorted mapping's delete lowers to an upsert of the value type's
+ * default (`visitMappingDelete` routes it through `emitSortedValueUpsert`), so codegen emits a write of the target
+ * node exactly as it does for an assignment. The access is classified `delete` rather than `write` only because
+ * the declared value type is not one of the fixed-width kinds the classifier names, which says nothing about the
+ * transition the body performs.
  */
 function isOneWrite(operations: readonly string[]): boolean {
   const reads = operations.filter((operation) => operation === 'read').length;
-  const writes = operations.filter((operation) => operation === 'write').length;
+  const writes = operations.filter((operation) => operation === 'write' || operation === 'delete').length;
   return writes === 1 && reads <= 1 && reads + writes === operations.length;
 }
 

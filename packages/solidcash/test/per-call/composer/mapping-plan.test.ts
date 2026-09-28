@@ -6,6 +6,7 @@ import {
   PerCallComposerError,
   assertRecordChains,
   layOutMappingWrites,
+  planMappingDelete,
   planMappingWrite,
   type MappingNodePlacement,
   type MappingNodePlacements,
@@ -135,6 +136,25 @@ describe('planning a mapping write against the state the transaction spends', ()
     expect(plan.written[0]!.after).toStrictEqual(expected.predNewCommitment);
     // The relinked predecessor is the lower node's own next, which the shipped list also produced.
     expect(plan.written[0]!.after).toStrictEqual(encodeEntryCommitment(lower.slot, ZERO_SLOT, value(50n)));
+  });
+
+  it('keeps a deleted node in place with the caller\'s default, unlike the list removal', () => {
+    const { upper, inventory, upperCommitment } = twoNodeList();
+    const defaultTail = value(0n);
+    const plan = planMappingDelete({ keys: [upper.key], inventory, encodeDefault: () => defaultTail });
+
+    // The node stays: it is rewritten with the default tail and its successor link kept, never unlinked.
+    expect(plan.existed).toBe(true);
+    expect(plan.removed).toBe(false);
+    expect(plan.written).toHaveLength(1);
+    expect(plan.written[0]!.slot).toStrictEqual(upper.slot);
+    expect(plan.written[0]!.before).toStrictEqual(upperCommitment);
+    expect(plan.written[0]!.after).toStrictEqual(encodeEntryCommitment(upper.slot, ZERO_SLOT, defaultTail));
+
+    // The same request through a write of `undefined` is the list removal: it relinks the predecessor instead.
+    const removal = planMappingWrite({ keys: [upper.key], value: undefined, inventory, encodeValue });
+    expect(removal.removed).toBe(true);
+    expect(removal.written[0]!.slot).toStrictEqual(ZERO_SLOT);
   });
 
   it('leaves the inventory alone when the write removes a key it does not hold', () => {

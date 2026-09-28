@@ -3,8 +3,6 @@ import {
   FrameKind, decodeIntegerValue, decodePushdataValue, decodeWitnessBlock, encodeIntegerValue, encodePushdataValue,
   splitFirstPush,
 } from '@solidcash/utils';
-import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
@@ -19,8 +17,8 @@ import { layoutTransaction, type CompositionDraftPlan, type DraftMaster } from '
  * elements it read; the derivation completing is the machine accepting that read. The caller's call record is
  * decoded back with the same shipped decoder, so the stored value is asserted rather than assumed.
  *
- * A fixed-size array argument the caller builds at run time is refused by the compiler, and that refusal is pinned
- * by its exact message.
+ * A fixed-size array argument the caller builds at run time is driven too: the site's digest is over the wire's
+ * push of the caller's own value, so the callee reading the elements it was sent is what shows the two agree.
  */
 
 const USER = 'user';
@@ -168,23 +166,22 @@ describe('fixed-size array arguments and results across a read-only call', () =>
     expect(drive(spec)).toStrictEqual([1n, 2n, 3n, 4n, 5n]);
   });
 
-  it('refuses a fixed-size array argument the caller builds at run time', () => {
-    const calleeLabel = 'array calls refused';
-    const calleeAddress = hexOf(seededAddress(calleeLabel));
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface ICal { function f(uint16[4] xs) pure returns (uint16[4]); }'
-      + ' contract Cal { function f(uint16[4] xs) pure returns (uint16[4]) { return xs; } }'
-      + ' contract Caller { function start() {'
-      + '   uint16[4] xs; xs[0] = 1; xs[1] = 2; xs[2] = 3; xs[3] = 4;'
-      + `   uint16[4] r = ICal(0x${calleeAddress}).f(xs);`
-      + '   require(true); } }';
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
-
-    expect(refusals).toStrictEqual([{
-      functionName: 'Caller.start()',
-      reason: "the call to 'f' passes a run-time argument whose value the compiler cannot encode into one push, "
-        + 'so the caller cannot compute the digest its record must carry',
-    }]);
+  it('drives a fixed-size array argument the caller builds at run time', () => {
+    // The caller fills its own array element by element, and the site's digest has to be the wire's push of that
+    // value, so the callee reading the elements it was sent is what proves the two agree.
+    const spec: ArrayCase = {
+      label: 'uint16[4] run-time', type: 'uint16[4]',
+      argument: encodePushdataValue([1n, 2n, 3n, 4n], 'uint16[4]'), argumentExpression: 'xs',
+      result: [1n, 2n, 3n, 4n],
+      source: (address: string, argument: string): string => 'pragma solidcash ^0.13.0;'
+        + ' interface ICal { function f(uint16[4] xs) pure returns (uint16[4]); }'
+        + ' contract Cal { function f(uint16[4] xs) pure returns (uint16[4]) {'
+        + '   require(xs[0] == 1); require(xs[3] == 4); return xs; } }'
+        + ' contract Caller { function start() {'
+        + '   uint16[4] xs; xs[0] = 1; xs[1] = 2; xs[2] = 3; xs[3] = 4;'
+        + `   uint16[4] r = ICal(0x${address}).f(${argument});`
+        + '   require(r[0] == 1); require(r[3] == 4); require(true); } }',
+    };
+    expect(drive(spec)).toStrictEqual([1n, 2n, 3n, 4n]);
   });
 });

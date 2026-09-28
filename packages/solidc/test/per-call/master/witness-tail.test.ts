@@ -138,6 +138,7 @@ function encodeBlockWithSegmentCount(block: WitnessBlock, segmentCount: number):
   return writer
     .pushCounted16(block.events, (out, output) => { out.pushUint16(output); })
     .pushCounted16(block.sends, (out, output) => { out.pushUint16(output); })
+    .pushCounted16(block.values ?? [], (out, value) => { out.pushLp32(value); })
     .finish();
 }
 

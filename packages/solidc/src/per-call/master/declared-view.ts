@@ -181,6 +181,9 @@ function buildOrdinalWalk(
  *
  *     in:u16 out:u16 viewIn:u32-len viewOut:u32-len
  *
+ * A record the segment declares more than once, a predecessor several inserts share, is read at its first
+ * declaration on the input side, its view when the segment began, and at its last on the output side.
+ *
  * The walk leaves the alt stack as it found it, so a body that already parked values there is unaffected.
  */
 export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Array {
@@ -245,8 +248,10 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
     }
 
     // newResult = match ? view : result. `result` is on top: the match arm drops it, the other drops the view.
+    // The input side keeps the first match: a later one only counts while the result is still empty.
     num(4); op(Opcodes.OP_ROLL);
     raw(new Uint8Array([Opcodes.OP_FROMALTSTACK]));
+    if (options.side === 'in') op(Opcodes.OP_OVER, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_NOT, Opcodes.OP_BOOLAND);
     op(Opcodes.OP_IF);
     op(Opcodes.OP_DROP);
     op(Opcodes.OP_ELSE);

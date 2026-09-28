@@ -203,6 +203,8 @@ export interface DraftMaster {
   readonly sends: readonly number[];
   readonly argumentPushes: readonly Uint8Array[];
   readonly redeemScript: Uint8Array;
+  /** The long mapping values the body reads, by value-witness slot, which the frame's block lists. */
+  readonly values?: readonly Uint8Array[];
   /**
    * True when this program dispatches over several entries, so the call data is the selector its own dispatcher
    * consumes rather than something a caller recorded.
@@ -318,6 +320,7 @@ function toCompositionPlan(
       sends: master.sends,
       argumentPushes: master.argumentPushes,
       redeemScript: master.redeemScript,
+      ...(master.values === undefined ? {} : { values: master.values }),
       ...(master.dispatches === undefined ? {} : { dispatches: master.dispatches }),
     })),
     ...(plan.validator === undefined ? {} : { validator: plan.validator }),
@@ -426,6 +429,7 @@ export function composeDraft(
       segments: normalizedSegments.get(master.master)!.map((segment) => [...segment]),
       events: [...master.events],
       sends: [...master.sends],
+      ...(master.values === undefined || master.values.length === 0 ? {} : { values: [...master.values] }),
     });
   }
 

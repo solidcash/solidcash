@@ -1469,13 +1469,14 @@ describe('the obstacles this flow replica works around', () => {
     // this plan stalls in both node orders, so the stall is an interaction rather than the ledger, the depth or
     // the entry count. The order only picks the machine's objection: the body's write order fails early with the
     // `OP_SPLIT` below, while the compiler's published order fails at the batch topology check with
-    // `Program failed an OP_VERIFY operation.`
+    // `Program failed an OP_VERIFY operation.` The failing split reads past the block's send list: the two bytes it
+    // finds there are the block's empty value list.
     const one = buildOnePullPlan();
     expect(derivationRefusal(one.plan, one.artifacts, 'pull-1')).toStrictEqual({
       message: 'PER_CALL_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
         + '(close of segment 0)',
       objection: 'Program called an OP_SPLIT operation with an invalid index. '
-        + 'stack item length: 0; requested split index: 4.',
+        + 'stack item length: 2; requested split index: 4.',
     });
   });
 

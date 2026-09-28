@@ -109,17 +109,15 @@ describe('a keccak compute side-car', () => {
 });
 
 describe('a string-keyed string mapping', () => {
-  it('refuses its set by name: the value witness is a hidden parameter the head does not supply', () => {
-    // A write of a dynamic value reads the value back, so the body carries a value-witness operand the frame
-    // cannot fix. The delete below is the other half of the shape and is served.
+  it('serves its set: the head supplies the value witness from the frame\'s block', () => {
+    // The body reads a long value through a value-witness operand, which the frame's block lists; a short value is
+    // inline in the node, so the operand is unread. The frames it settles are cases in `shapes/mapping-values`.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Tags {'
       + '   mapping(string => string) public tags;'
       + '   function put(string k, string v) { this.tags[k] = v; require(true); }'
       + ' }';
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain("the hidden parameter '__internal__valueWitness_0'");
+    expect(refusal(source)).toBe('');
   });
 
   // The delete is served: a sorted delete lowers to an upsert of the value type's default, so the frame writes the

@@ -104,6 +104,31 @@ const EXTERNAL_CALL_PARAMETERS = new Set([
   '__internal__delegateInputIndex',
 ]);
 
+/** A long mapping value a body reads, one per value-witness slot; the head supplies it from the frame's block. */
+const VALUE_WITNESS_PARAMETER = /^__internal__valueWitness_(\d+)$/;
+
+/**
+ * The direct convention's fold operands: pushes earlier rows made, their complete form, and the first output of a
+ * written long value's chunks. A per-call frame reads an entry's current value itself and finds its chunk outputs by
+ * address, so the body neither receives nor reads them.
+ */
+function isFoldParameter(name: string): boolean {
+  return /^__internal__leadingPushValue_\d+$/.test(name)
+    || /^__internal__completePushValue_\d+$/.test(name)
+    || name === '__internal__valueChunkOutputBase';
+}
+
+/** The value-witness slots a body reads: one past the highest slot its parameters name. */
+export function valueWitnessSlotsOf(fn: FunctionDefinitionNode): number {
+  if (fn.perCallValueWitnessSlots !== undefined) return fn.perCallValueWitnessSlots;
+  let slots = 0;
+  for (const parameter of fn.parameters) {
+    const match = VALUE_WITNESS_PARAMETER.exec(parameter.name);
+    if (match !== null) slots = Math.max(slots, Number(match[1]) + 1);
+  }
+  return slots;
+}
+
 /** Removes the frame parameters a master does not take, from every function and so from the published ABI. */
 export function stripFrameParameters(contract: ContractNode): void {
   const constants = contractConstantNames(contract);
@@ -114,13 +139,15 @@ export function stripFrameParameters(contract: ContractNode): void {
     if (!fn) continue;
     // The sorted-batch operands and a dynamic value's chunk-run coordinate are derived from the master's own frame,
     // so they are not supplied as arguments any more than the frame values are; publishing them would ask a caller
-    // for values it cannot know.
+    // for values it cannot know. A long value the body reads comes from the frame's block the same way.
     const derived = derivableBatchWitnessNames(fn, constants);
     const derivedDynamic = derivableDynamicChunkNames(fn);
+    fn.perCallValueWitnessSlots = valueWitnessSlotsOf(fn);
     fn.parameters = fn.parameters.filter((parameter) =>
       !(derived?.has(parameter.name) ?? false) && !(derivedDynamic?.has(parameter.name) ?? false)
       && !FRAME_PARAMETERS.has(parameter.name) && !RETURN_EVENT_PARAMETERS.has(parameter.name)
-      && !isExternalCallParameter(parameter.name));
+      && !isExternalCallParameter(parameter.name)
+      && !VALUE_WITNESS_PARAMETER.test(parameter.name) && !isFoldParameter(parameter.name));
     // A multi-target batch is classified as a dense linear row batch for the direct convention. The per-call master
     // derives the operands itself and settles the batch through the general per-target arm, which reads no rank or
     // row, so a derivable batch is reclassified here before the body is emitted.
@@ -586,6 +613,8 @@ function isUndeclaredHiddenParameter(
     && !FRAME_PARAMETERS.has(name)
     && !RETURN_EVENT_PARAMETERS.has(name)
     && !isExternalCallParameter(name)
+    && !VALUE_WITNESS_PARAMETER.test(name)
+    && !isFoldParameter(name)
     && !(derivableBatchWitnessNames(entry, constants)?.has(name) ?? false)
     && !(derivableDynamicChunkNames(entry)?.has(name) ?? false);
 }
@@ -771,6 +800,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       refuseBody(fn, 'the body reads or writes a dynamic value and makes an external call, so the value\'s chunk '
         + 'run and the call\'s blocks share the frame\'s records, which the master cannot locate from one '
         + 'declaration');
+    }
+    // A loop that reads a long value once per turn takes a list of values for one slot, and the block lists one.
+    const perTurnValue = fn.parameters.find((parameter) =>
+      VALUE_WITNESS_PARAMETER.test(parameter.name) && parameter.type instanceof ArrayType);
+    if (perTurnValue !== undefined) {
+      refuseBody(fn, `the body reads a long mapping value once per loop turn ('${perTurnValue.name}'), and the `
+        + 'frame\'s block lists one value per slot');
     }
     const hidden = fn.parameters.filter((parameter) =>
       isUndeclaredHiddenParameter(fn, parameter.name, constants));
@@ -1108,7 +1144,8 @@ export function derivePerCallTailShape(
         + 'the tail holds' };
     }
   }
-  return { tail: { maxEventCount, sendCount: 0 } };
+  const valueWitnessCount = Math.max(0, ...bodies.map((body) => valueWitnessSlotsOf(body)));
+  return { tail: { maxEventCount, sendCount: 0, valueWitnessCount } };
 }
 
 /**

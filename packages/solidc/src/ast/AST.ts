@@ -916,6 +916,8 @@ export class FunctionDefinitionNode extends Node implements Named {
    * is supplied as an authenticated transaction coordinate because compact delegate layouts need not preserve
    * the function's maximum block width. */
   usesDynamicChunkInputBase?: boolean;
+  /** Per-call: the value-witness slots the body reads, recorded when the head takes over their parameters. */
+  perCallValueWitnessSlots?: number;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
   /** Runtime emission vector is returned and threaded across this route's repeated local rows. */

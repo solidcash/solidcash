@@ -680,7 +680,7 @@ function splitPushFrames(unlockingBytecode: Uint8Array): Uint8Array[] {
 
 /**
  * Reads a master's witness block in section 16's layout:
- * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call.
+ * `kind:u8 target:lp16 value:u64 calleeRef:u16 argsHash:32 result:lp32` per call, and a trailing value list.
  *
  * The frozen codec's own decoder reads a call as `kind, calleeRef, target, value, ...`, which is neither section
  * 16's order nor the order the frozen encoder writes, so it cannot read back a version 1 block that has a call. The
@@ -732,6 +732,8 @@ function readBlock(payload: Uint8Array): WitnessBlock {
 
   const events = reader.readCounted16((inner): number => inner.readUint16());
   const sends = reader.readCounted16((inner): number => inner.readUint16());
+  // The values a body reads are bound by the master against its records, so the validator only reads past them.
+  reader.readCounted16((inner): Uint8Array => inner.readLp32());
   reader.assertEnd();
   if (segments.length !== calls.length + 1) throw new PerCallEncodingError('segment and call counts disagree');
   for (const segment of segments) {

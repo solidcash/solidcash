@@ -74,6 +74,8 @@ export interface PlannedMaster {
   readonly argumentPushes: readonly Uint8Array[];
   /** The master's redeem script: the category pin followed by the contract code. */
   readonly redeemScript: Uint8Array;
+  /** The long mapping values the body reads, by value-witness slot. */
+  readonly values?: readonly Uint8Array[];
   /** True when the program dispatches over several entries, so a user's call data selects one. */
   readonly dispatches?: boolean;
 }
@@ -430,6 +432,7 @@ export function assembleComposition(plan: CompositionPlan): CompositionAssembly 
       sends: master.sends,
       argumentPushes: master.argumentPushes,
       redeemScript: master.redeemScript,
+      ...(master.values === undefined ? {} : { values: master.values }),
     });
     assembled.push({
       id: master.master,

@@ -1088,6 +1088,8 @@ function emitStaticMaster(e: Emitter): void {
   takeUnsignedCount(e, 2);
   e.op(O.OP_OVER);
   e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_NIP);
+  // A read-only frame may read long values; the master that reads them checks them.
+  dropValueList(e);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUALVERIFY, O.OP_DROP);
   e.op(O.OP_ELSE, O.OP_DROP, O.OP_DROP, O.OP_ENDIF);
@@ -2894,6 +2896,12 @@ function dropIndexList(e: Emitter): void {
   loopCounted(e, (emitter) => dropFront(emitter, 2));
 }
 
+/** The value list: a counted list of `lp32` values, which the master that reads them checks. */
+function dropValueList(e: Emitter): void {
+  takeUnsignedCount(e, 2);
+  loopCounted(e, (emitter) => dropLengthPrefixed(emitter, 4));
+}
+
 /**
  * Consumes one witness block.
  *
@@ -2921,6 +2929,7 @@ function consumeWitnessBlock(e: Emitter): void {
   loopCounted(e, dropSegment);
   dropIndexList(e);
   dropIndexList(e);
+  dropValueList(e);
   e.op(O.OP_SIZE);
   e.count(0).op(O.OP_NUMEQUAL, O.OP_VERIFY, O.OP_DROP);
 }

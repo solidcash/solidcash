@@ -276,7 +276,7 @@ import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
   buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventCountSlotName, eventOutputSlotName,
-  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName,
+  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, valueWitnessSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
@@ -3126,7 +3126,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('__internal__frameValue');
     this.pushToStack('__internal__frameSender');
     this.pushToStack('__internal__frameOrigin');
-    // Above the frame values the head leaves the event region: the declared count, then one output slot per
+    // Directly above the frame values the head leaves one slot per long value a body reads, the last slot deepest,
+    // under the names the bodies' own reads resolve.
+    for (let slot = (tail.tail.valueWitnessCount ?? 0) - 1; slot >= 0; slot -= 1) {
+      this.pushToStack(valueWitnessSlotName(slot));
+    }
+    // Above them the head leaves the event region: the declared count, then one output slot per
     // position up to the region size, first position topmost. Registering the count first and the positions in
     // reverse lets an inlined body read the count it pins and each emit's listed output index at a fixed depth.
     if (tail.tail.maxEventCount > 0) {

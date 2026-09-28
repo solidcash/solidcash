@@ -44,6 +44,7 @@ import {
   takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
+  unsignedLength,
 } from './witness-reader.js';
 
 /** One external call a master makes, as the code records it. */
@@ -131,12 +132,14 @@ export function callSectionWalkScript(): number[] {
  * consumes each segment's declared count. `maxEventCount` is the size of the event region the head parks: the
  * largest number of events any body the master runs emits. The block's own declared count is checked against it
  * and each body pins the count it emits, so bodies may emit different numbers. `sendCount` is the send list an
- * entry fixes; a master with no call, event or send carries none of them.
+ * entry fixes; a master with no call, event or send carries none of them. `valueWitnessCount` is the number of
+ * value slots the head parks: the most value-witness slots any body the master runs reads.
  */
 export interface MasterTailShape {
   readonly segmentRecordCounts?: readonly number[];
   readonly maxEventCount: number;
   readonly sendCount: number;
+  readonly valueWitnessCount?: number;
 }
 
 /** A tail carrying no events and no sends, with every segment declaring no record. */
@@ -182,8 +185,9 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * record is walked past — the site that made the call binds it in the caller's own body. The segment count
  * must be the call count plus one, and every segment's records are walked. The block's declared event count must
  * be at most `maxEventCount`, that many listed outputs are checked and the region is padded with the no-index
- * sentinel to `maxEventCount` slots, and the send count must equal the shape's. The remaining tail must be empty,
- * so nothing follows the last field.
+ * sentinel to `maxEventCount` slots, and the send count must equal the shape's. The value list may hold at most
+ * `valueWitnessCount` values, parked last, one slot each. The remaining tail must be empty, so nothing follows the
+ * last field.
  *
  * The block declares how many call records and segments it holds, and the walk reads those counts rather than
  * fixing them: one head serves every body the master dispatches, and two bodies may make different numbers of
@@ -226,8 +230,28 @@ export function verifyTailScript(
   bytes.push(...eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true));
   bytes.push(...requireU16Equals(tail.sendCount));
   if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
+  bytes.push(...valueSection(tail.valueWitnessCount ?? 0));
   bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   return new Uint8Array(bytes);
+}
+
+/**
+ * Consumes the value list and parks one slot per value-witness slot, leaving the tail on top.
+ *
+ * The block may list at most `slots` values. Slot `k` is parked `k`-th, holding the `k`-th listed value or empty
+ * past the list; a body that reads a long value at an empty slot fails its own hash check. The count is read
+ * unsigned, as the validator reads it, so no count the validator refuses is accepted here.
+ */
+function valueSection(slots: number): number[] {
+  const bytes: number[] = [...takeFixedWidthField(2), Opcodes.OP_SWAP, ...unsignedLength()];
+  for (let slot = 0; slot < slots; slot += 1) {
+    // `[..., rest, count]`.
+    bytes.push(Opcodes.OP_DUP, ...encodeDataPush(scriptNumber(slot)), Opcodes.OP_GREATERTHAN, Opcodes.OP_IF);
+    bytes.push(Opcodes.OP_SWAP, ...takeLengthPrefixedField32(), Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK, Opcodes.OP_SWAP);
+    bytes.push(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_TOALTSTACK, Opcodes.OP_ENDIF);
+  }
+  bytes.push(...encodeDataPush(scriptNumber(slots)), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY);
+  return bytes;
 }
 
 /** Consumes a `u16` count and requires it to equal `expected`, leaving the tail on top. */

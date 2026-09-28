@@ -130,6 +130,16 @@ export function categoryOwnerSlotName(): string {
   return '__internal__frameCategoryOwner';
 }
 
+/**
+ * The tracked slot holding the long mapping value a body reads at value-witness slot `slot`.
+ *
+ * It is the name the body's own read resolves, so the value the frame's block lists at that slot is where the
+ * direct convention's argument would be. The body checks it against the hash its record holds.
+ */
+export function valueWitnessSlotName(slot: number): string {
+  return `__internal__valueWitness_${slot}`;
+}
+
 /** `SIGHASH_ALL`, the hash type a root frame's caller must sign with. */
 const HASH_TYPE_ALL = 0x41;
 /** Clears bit 5, the only bit that separates `SIGHASH_UTXOS | SIGHASH_ALL` (`0x61`) from `SIGHASH_ALL` (`0x41`). */
@@ -365,6 +375,7 @@ class HeadEmitter {
     this.parkCategoryOwner();
     if (this.composed) this.composedFrameChecks();
     else this.standaloneFrameChecks();
+    this.leaveValueSlots();
     this.leaveEventSlots();
     this.leaveRecordSlots();
     this.leaveCallCountSlot();
@@ -444,6 +455,20 @@ class HeadEmitter {
   private leaveCallCountSlot(): void {
     this.emitOp(Opcodes.OP_FROMALTSTACK);
     this.push(callCountSlotName());
+  }
+
+  /**
+   * Moves the value slots off the alt stack, where the tail walk parked them last, so a body finds each long value
+   * it reads at its own slot.
+   *
+   * Slot `k` was parked `k`-th, so the last slot comes back first and slot 0 ends up topmost of them, above the
+   * frame values and below the event region.
+   */
+  private leaveValueSlots(): void {
+    for (let slot = (this.tailShape.valueWitnessCount ?? 0) - 1; slot >= 0; slot -= 1) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(valueWitnessSlotName(slot));
+    }
   }
 
   /**

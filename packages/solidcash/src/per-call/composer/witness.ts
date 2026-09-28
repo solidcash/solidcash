@@ -47,6 +47,8 @@ export interface MasterWitnessInput {
   readonly argumentPushes: readonly Uint8Array[];
   /** The master's redeem script: the category pin followed by the contract code. */
   readonly redeemScript: Uint8Array;
+  /** The long mapping values the body reads, by value-witness slot. */
+  readonly values?: readonly Uint8Array[];
 }
 
 /** A master's assembled witness: the block, and the unlocking bytecode that introduces it. */
@@ -70,6 +72,7 @@ export function assembleMasterWitness(input: MasterWitnessInput): MasterWitness 
     segments: input.segments.map((segment) => [...segment]),
     events: [...input.events],
     sends: [...input.sends],
+    ...(input.values === undefined || input.values.length === 0 ? {} : { values: [...input.values] }),
   };
   return {
     block,

@@ -1366,6 +1366,7 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
         segCount:u16   { recCount:u16 { in:u16 out:u16 viewIn:lp32 viewOut:lp32 } x recCount } x segCount
         eventCount:u16 { out:u16 } x eventCount
         sendCount:u16  { out:u16 } x sendCount
+        valueCount:u16 { value:lp32 } x valueCount      section 20; the long mapping values the frame reads
 ```
 
 - **Records.** A record entry names its input `in` and its output `out`:
@@ -1376,6 +1377,9 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
   - a frame that reads or rewrites a record an earlier frame created: `in == out == that output index`, because the
     frame resolves the record through its own declaration and the record has no input to name;
   - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it.
+- **Values.** Entry `i` is the value the body's `i`-th long-value read takes; the body checks it against the root in
+  the node's head (section 20). A read that finds its value inline, and a frame that reads none, leave the entry
+  empty or the list short, and a master's head takes at most as many as its widest body reads.
 - **Counts.** `segCount == callCount + 1`.
 - **Exactness.** Lengths are exact, and nothing follows the last field (T33).
 
@@ -1555,14 +1559,18 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
     touched record with `viewIn == viewOut`. Its own code checks the proof, as today.
   - `s(k)` is the key's masked slot from the encodings above, never the raw hash: the mask changes the last byte
     for about half of all keys. Slots compare as little-endian 255-bit numbers, which the mask keeps non-negative.
-  - A long value arrives as a witness, which the frame checks against the root in the head.
+  - A long value arrives in the value list of the frame's block (section 16), and the frame checks it against the
+    root in the head.
 - **Inserts across frames.**
   - A node created in the transaction can be relinked or updated by later frames.
   - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later frame
     that reads or rewrites the node declares `in == out` at the created output's index and continues from the view
     the frame before it left.
   - V7 and S1 require the final view to equal the created output.
-  - `MarketplaceData.initialize` inserts 8 MECE tags in one frame, using today's batch insert.
+  - `MarketplaceData.initialize` inserts 8 MECE tags in one frame, using today's batch insert. A batch decides every
+    predecessor against the list it started from, so inserts into one gap share their predecessor: each insert's
+    group declares it again, continuing from the view the group before it left, and its gap is proved against its
+    first declaration in the segment, the view the batch started from.
 - **Long values written by several frames.** This is `jobEvents[jobId]`, where each append rewrites the whole
   array: 5 appends in `publishJobPost`, and 30 events in "update job many times".
   - Each frame that writes the value mints the chunks of its own version, and checks them itself, as today.

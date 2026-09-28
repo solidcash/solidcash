@@ -240,6 +240,17 @@ describe('the walk a body uses to read its segment\'s declared record view', () 
     }).accepted).toBe(true);
   });
 
+  it('reads a record its segment declares twice at its first viewIn and its last viewOut', () => {
+    // A predecessor two inserts share is declared by each insert's group; the gap is proved against its first view.
+    const segments = [[RECORD(BEFORE, MIDDLE), RECORD(MIDDLE, AFTER)]];
+    expect(read({ coordinate: RECORD_INDEX, expected: BEFORE, segmentIndex: 0, callCount: 0, segments }).accepted)
+      .toBe(true);
+    expect(read({ coordinate: RECORD_INDEX, expected: MIDDLE, segmentIndex: 0, callCount: 0, segments }).accepted)
+      .toBe(false);
+    expect(read({ coordinate: RECORD_INDEX, expected: AFTER, segmentIndex: 0, callCount: 0, segments, side: 'out' })
+      .accepted).toBe(true);
+  });
+
   it('returns the view of the record at an ordinal', () => {
     const first = kept(RECORD_INDEX, BEFORE, MIDDLE);
     const second = kept(RECORD_INDEX + 1, MIDDLE, AFTER);

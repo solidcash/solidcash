@@ -15,8 +15,11 @@
  *     segCount:u16  { recCount:u16 { in:u16 out:u16 viewIn:lp32 viewOut:lp32 } }
  *     eventCount:u16 { out:u16 }
  *     sendCount:u16  { out:u16 }
+ *     valueCount:u16 { value:lp32 }
  *
  * `segCount` is always `callCount + 1`: a call splits the execution, so a program with no calls has one segment.
+ * `values` are the long mapping values the body reads, one per value-witness slot in slot order; the body checks
+ * each against the hash its record holds, so a value the frame does not read is empty.
  */
 
 import { encodeDataPush } from '@bitauth/libauth';
@@ -82,6 +85,8 @@ export interface WitnessBlock {
   events: number[];
   /** Output indices of value sends to a user. */
   sends: number[];
+  /** The long mapping values the body reads, by value-witness slot; omitted when there are none. */
+  values?: Uint8Array[];
 }
 
 /** Encodes a witness block. */
@@ -140,6 +145,7 @@ export function encodeWitnessBlock(block: WitnessBlock): Uint8Array {
     })
     .pushCounted16(block.events, (out, outputIndex) => { out.pushUint16(outputIndex); })
     .pushCounted16(block.sends, (out, outputIndex) => { out.pushUint16(outputIndex); })
+    .pushCounted16(block.values ?? [], (out, value) => { out.pushLp32(value); })
     .finish();
 }
 
@@ -200,6 +206,7 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
 
   const events = reader.readCounted16((inner): number => inner.readUint16());
   const sends = reader.readCounted16((inner): number => inner.readUint16());
+  const values = reader.readCounted16((inner): Uint8Array => inner.readLp32());
   reader.assertEnd();
 
   if (segments.length !== calls.length + 1) {
@@ -209,7 +216,10 @@ export function decodeWitnessBlock(payload: Uint8Array): WitnessBlock {
     );
   }
 
-  return { kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends };
+  return {
+    kind, callerRef, originRef, validatorRef, sender, self, value, retval, calls, segments, events, sends,
+    ...(values.length > 0 ? { values } : {}),
+  };
 }
 
 /**

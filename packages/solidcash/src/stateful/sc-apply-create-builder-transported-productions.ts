@@ -95,6 +95,32 @@ export function applyCreateBuilderTransportedProductions(params: {
       production.stateOwner,
     );
     if (selection?.status !== 'exact') {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
+        console.error('transported-value-producer-mismatch', JSON.stringify({
+          resourceIdentity,
+          collection: production.write.collection,
+          transportedClaim: production.claim,
+          derivedClaim: derived,
+          selection,
+          rowCount: rows.length,
+          rows: rows.slice(0, 24).map((row) => ({
+            selector: row.selector ?? row.handler.selector,
+            producerPath: row.producerPath,
+            sourceEffectOrder: row.handler.sourceEffectOrder,
+            entryAccesses: row.handler.entryAccesses?.slice(0, 24).map((access) => ({
+              collection: access.collection,
+              operations: access.operations,
+              mutationEffectOrdinals: access.mutationEffectOrdinals,
+              storedValueSource: access.storedValueSource && {
+                version: access.storedValueSource.version,
+                execution: access.storedValueSource.execution,
+                mutationEffectOrdinal: access.storedValueSource.mutationEffectOrdinal,
+              },
+            })),
+          })),
+        }));
+      }
       throw new Error('Transported value production disagrees with its routed terminal producer.');
     }
   }

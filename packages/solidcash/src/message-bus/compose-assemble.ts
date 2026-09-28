@@ -89,6 +89,7 @@ import {
 import { layoutInvariantError } from './diagnostics.js';
 import { layoutWitnessIsActiveCoordinate } from './layout-sentinels.js';
 import { isPendingBatchPredecessor } from './pending-batch-predecessor.js';
+import { retainTerminalValueChunkProductions } from './terminal-value-chunk-productions.js';
 import { allowsDeferredComputeVmDiscovery } from './materialization-mode.js';
 import {
   finalizeMonotonePass,
@@ -326,6 +327,33 @@ export async function assembleAtomicComposition(
       const blockSize = participant.lifecycle?.balancedSpan ?? participant.blockLayout!.blockSize;
       const returnBlob = participantReturnBlob(participant.participant, results);
       const returnCommitment = participantReturnCommitment(returnBlob);
+      const routeRows = participant.invocations.map((invocationIndex) => {
+        const invocation = descriptors[invocationIndex];
+        const plannedInvocation = plan.invocations[invocationIndex];
+        const published = findMessageBusHandlerForInvocation(participant.artifact, {
+          function: invocation.functionName,
+          selectorHex: plannedInvocation.selectorHex,
+        });
+        const selector = (published?.selector ?? plannedInvocation.selectorHex).toLowerCase();
+        // Kernel dispatch joins by selector; the diagnostic function name is not authority.
+        const handler = participant.artifact.abi.find((candidate) =>
+          candidate.selector?.toLowerCase() === selector)
+          ?? (participant.artifact.messageBus?.convention === 'kernel-row-loop'
+            ? undefined
+            : participant.artifact.abi.find((candidate) => candidate.name === invocation.functionName));
+        if (!handler) {
+          throw new Error(`messageBus: handler ABI '${invocation.functionName}' is missing`);
+        }
+        return {
+          args: invocation.args,
+          handler,
+          sourceCallsiteId: plannedInvocation.sourceCallsiteId,
+          sourceLogicalIndex: plannedInvocation.sourceLogicalIndex,
+          occurrenceIndex: plannedInvocation.occurrenceIndex,
+          sourceEffectOrdinal: plannedInvocation.sourceEffectOrdinal,
+          producerPath: plannedInvocation.producerPath,
+        };
+      });
       const valueChunkProductions = new Map<
         string, NonNullable<PreparedAtomicMessageBusCall['valueChunkProductions']>[number]
       >();
@@ -372,27 +400,11 @@ export async function assembleAtomicComposition(
           valueChunkProductions.set(identity, production);
         }
       }
-      // One storage resource written by several batched rows of the same route accumulates a chain of
-      // productions: the first row's claim is the value after row 1, the next row's claim the value after
-      // row 2, and so on. Only the terminal write persists, so keep the highest mutation ordinal per resource
-      // and drop the intermediate lanes: the routed builder accepts exactly one terminal claim per resource
-      // (selectSingletonValueChunkProducer), and a superseded lane's value would never be observable.
-      const terminalProducerByResource = new Map<string, string>();
-      const terminalOrdinalByResource = new Map<string, number>();
-      for (const production of valueChunkProductions.values()) {
-        const resource = valueChunkWriteResourceIdentity(production.write);
-        const ordinal = production.claim.producer.mutationSourceEffectOrdinal;
-        const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
-        if (producer === undefined) continue;
-        if ((terminalOrdinalByResource.get(resource) ?? -1) > ordinal) continue;
-        terminalOrdinalByResource.set(resource, ordinal);
-        terminalProducerByResource.set(resource, producer);
-      }
-      for (const [identity, production] of [...valueChunkProductions]) {
-        const resource = valueChunkWriteResourceIdentity(production.write);
-        const producer = canonicalValueChunkProducerIdentity(production.claim.producer);
-        if (terminalProducerByResource.get(resource) !== producer) valueChunkProductions.delete(identity);
-      }
+      retainTerminalValueChunkProductions(valueChunkProductions, {
+        rows: routeRows,
+        executionLockingBytecode: descriptor.executor?.inner.lockingBytecode ?? contract.inner.lockingBytecode,
+        fixedChunkableWriteSelectors: participant.artifact.messageBus?.fixedChunkableWritePolicy?.selectors,
+      });
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1' && valueChunkProductions.size > 0) {
         console.error('atomic-transported-value-productions', {
@@ -614,33 +626,7 @@ export async function assembleAtomicComposition(
         returnCommitment,
         true,
         descriptor.executor ? { artifact: descriptor.artifact, executor: descriptor.executor } : undefined,
-        participant.invocations.map((invocationIndex) => {
-          const invocation = descriptors[invocationIndex];
-          const plannedInvocation = plan.invocations[invocationIndex];
-          const published = findMessageBusHandlerForInvocation(participant.artifact, {
-            function: invocation.functionName,
-            selectorHex: plannedInvocation.selectorHex,
-          });
-          const selector = (published?.selector ?? plannedInvocation.selectorHex).toLowerCase();
-          // compose selector-first handler join: ABI join is selector-first under kernel; diagnostic name is not authority.
-          const handler = participant.artifact.abi.find((candidate) =>
-            candidate.selector?.toLowerCase() === selector)
-            ?? (participant.artifact.messageBus?.convention === 'kernel-row-loop'
-              ? undefined
-              : participant.artifact.abi.find((candidate) => candidate.name === invocation.functionName));
-          if (!handler) {
-            throw new Error(`messageBus: handler ABI '${invocation.functionName}' is missing`);
-          }
-          return {
-            args: invocation.args,
-            handler,
-            sourceCallsiteId: plannedInvocation.sourceCallsiteId,
-            sourceLogicalIndex: plannedInvocation.sourceLogicalIndex,
-            occurrenceIndex: plannedInvocation.occurrenceIndex,
-            sourceEffectOrdinal: plannedInvocation.sourceEffectOrdinal,
-            producerPath: plannedInvocation.producerPath,
-          };
-        }),
+        routeRows,
         logicalIdentities.get(participant.participant),
         Object.freeze([...valueChunkProductions.values()]),
         frameCaller === undefined ? undefined : hexToBin(frameCaller.lockingBytecode),

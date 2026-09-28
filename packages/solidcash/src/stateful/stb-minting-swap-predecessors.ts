@@ -4,7 +4,7 @@
  * Free functions over MintingSwapPredecessorHost (extends ScaledPreserveEmitHost).
  */
 
-import type { AbiFunction, Artifact, FunctionBlockLayout } from '@solidcash/utils';
+import type { AbiFunction, Artifact, EntryAccessAbi, FunctionBlockLayout } from '@solidcash/utils';
 import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
@@ -64,6 +64,27 @@ export interface MintingSwapPredecessorHost extends Omit<
   setRelocationFunderUtxos(next: UnlockableUtxo[]): void;
 }
 
+/** Route slot indices are physical; a selected handler's local ordinal is only a legacy fallback. */
+export function physicalEntryAccessForSlot(
+  route: Pick<AbiFunction, 'entryAccesses'> | undefined,
+  handlers: readonly Pick<AbiFunction, 'entryAccesses'>[],
+  slotIndex: number,
+): EntryAccessAbi | undefined {
+  const atSlot = (fn: Pick<AbiFunction, 'entryAccesses'>): EntryAccessAbi | undefined =>
+    fn.entryAccesses?.find((access, denseIndex) => access !== undefined
+      && (access.slotIndex ?? denseIndex) === slotIndex);
+  if (route?.entryAccesses !== undefined) return atSlot(route);
+  return handlers.map(atSlot).find((access) => access !== undefined);
+}
+
+/** A learned commitment belongs to the exact collection covenant lock, not just its output coordinate. */
+export function cachedEntryOutputOwnsLock(
+  cachedLockingBytecodeHex: string,
+  currentLockingBytecode: Uint8Array,
+): boolean {
+  return cachedLockingBytecodeHex.toLowerCase() === binToHex(currentLockingBytecode).toLowerCase();
+}
+
 /**
  * Construct an external entry slot's covenant from compiler metadata. Balanced composition can place an
  * unrelated participant or funder in an output-only entry position; its unlocker is therefore not a safe
@@ -81,16 +102,11 @@ export function externalEntryLockingBytecode(
     group.logicalFunctionName,
     group.functionName,
   ].filter((name): name is string => name !== undefined));
-  const routedFunction = group.compilerRoute?.abiFunction;
-  const abiFunctions = [
-    routedFunction && functionNames.has(routedFunction.name) ? routedFunction : undefined,
-    ...artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
-      .filter((candidate) => functionNames.has(candidate.name))),
-  ].filter((candidate): candidate is AbiFunction => candidate !== undefined);
-  const entryAccess = abiFunctions
-    .map((candidate) => candidate.entryAccesses?.find((access, denseIndex) =>
-      (access.slotIndex ?? denseIndex) === (slot.slotIndex ?? 0)))
-    .find((candidate) => candidate !== undefined);
+  const abiFunctions = artifacts.flatMap((artifact) => (artifact.abi as readonly AbiFunction[])
+    .filter((candidate) => functionNames.has(candidate.name)));
+  const entryAccess = physicalEntryAccessForSlot(
+    group.compilerRoute?.abiFunction, abiFunctions, slot.slotIndex ?? 0,
+  );
   const collections = [group.stateLayout, ...artifacts.map((artifact) => artifact.stateLayout)]
     .flatMap((layout) => layout?.collections ?? [])
     .filter((collection, index, all) => all.findIndex((candidate) => (

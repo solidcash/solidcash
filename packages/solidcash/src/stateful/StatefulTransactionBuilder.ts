@@ -635,12 +635,14 @@ import {
   type ScaledPreserveEmitHost,
 } from './stb-scaled-preserve-emit.js';
 import {
+  cachedEntryOutputOwnsLock,
   externalEntryLockingBytecode,
   fillSwappedTokenEntryHoles,
   placeJobEventsPredecessorInputs,
   swapMintingOffValueChunkBand,
   type MintingSwapPredecessorHost,
 } from './stb-minting-swap-predecessors.js';
+export { cachedEntryOutputOwnsLock, physicalEntryAccessForSlot } from './stb-minting-swap-predecessors.js';
 import {
   reassertFixedStateOutputs,
   reassertNestedMintingMasters,
@@ -1410,7 +1412,9 @@ export class StatefulTransactionBuilder {
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
   private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
   /** Physical output index -> derived entry commitment. The VM pin names this index; block-slot walk can drift. */
-  private externalCallEntryOutputsByIndex: Map<number, { categoryId: string; commitment: string }> = new Map();
+  private externalCallEntryOutputsByIndex: Map<number, {
+    categoryId: string; commitment: string; lockingBytecodeHex?: string;
+  }> = new Map();
   // Trailing NEW entry nodes minted for a cross-contract callee INSERT (per group: address lbc + commitment hex),
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
   private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
@@ -4420,6 +4424,7 @@ export class StatefulTransactionBuilder {
     if (mintingMaster >= 0 && outputIndex < mintingMaster) return false;
     let declaredSlot = false;
     let entryOwned = false;
+    let lockingBytecodeHex: string | undefined;
     const considerGroup = (
       group: ExternalCallUtxoGroup,
       blockBase: number,
@@ -4430,7 +4435,11 @@ export class StatefulTransactionBuilder {
         ?? group.blockLayout.slots.find((candidate) => candidate.offset === relative);
       if (!slot) return;
       declaredSlot = true;
-      if (slot.kind === 'entry') entryOwned = true;
+      if (slot.kind === 'entry') {
+        entryOwned = true;
+        const lock = externalEntryLockingBytecode(group, slot);
+        if (lock) lockingBytecodeHex = binToHex(lock);
+      }
     };
     for (const [groupIndex, group] of this.externalCallUtxoGroups.entries()) {
       if (group.sharedGroupIndex !== undefined) continue;
@@ -4448,7 +4457,8 @@ export class StatefulTransactionBuilder {
     // every fixed block remain valid: dynamic loop entries and INSERT nodes are intentionally trailing outputs.
     if (declaredSlot && !entryOwned) return false;
     const previous = this.externalCallEntryOutputsByIndex.get(outputIndex);
-    if (previous?.commitment === commitmentHex && previous.categoryId === categoryId) return false;
+    if (previous?.commitment === commitmentHex && previous.categoryId === categoryId
+      && previous.lockingBytecodeHex === lockingBytecodeHex) return false;
     // A later empty extract must not wipe a real entry node. Allow a shorter P'
     // (zero slot, non-zero next) to replace a stale NEW that was pinned too early.
     if (previous && previous.commitment.length >= 128 && !/^0+$/.test(previous.commitment)
@@ -4458,7 +4468,9 @@ export class StatefulTransactionBuilder {
       const isPredPin = /^0+$/.test(slotHex) && nextHex.length === 64 && !/^0+$/.test(nextHex);
       if (!isPredPin) return false;
     }
-    this.externalCallEntryOutputsByIndex.set(outputIndex, { categoryId, commitment: commitmentHex });
+    this.externalCallEntryOutputsByIndex.set(outputIndex, {
+      categoryId, commitment: commitmentHex, lockingBytecodeHex,
+    });
     return true;
   }
 
@@ -4477,6 +4489,13 @@ export class StatefulTransactionBuilder {
       // at replay time so an old dynamic coordinate cannot overwrite fixed state.
       if (this._isFixedParticipantDataNftOutput(
         outputIndex, existing.token.category ?? placed.categoryId,
+      )) {
+        this.externalCallEntryOutputsByIndex.delete(outputIndex);
+        continue;
+      }
+      if (placed.lockingBytecodeHex && !cachedEntryOutputOwnsLock(
+        placed.lockingBytecodeHex, existing.to instanceof Uint8Array
+          ? existing.to : addressToLockScript(existing.to),
       )) {
         this.externalCallEntryOutputsByIndex.delete(outputIndex);
         continue;

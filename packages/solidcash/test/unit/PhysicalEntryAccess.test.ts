@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { AbiFunction, EntryAccessAbi } from '@solidcash/utils';
+import { buildEntryNftCovenantScript, computeCollectionHash } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import {
   cachedEntryOutputOwnsLock, physicalEntryAccessForSlot,
 } from '../../src/stateful/StatefulTransactionBuilder.js';
+import { externalEntryLockingBytecode } from '../../src/stateful/stb-minting-swap-predecessors.js';
+import { scriptToLockingBytecode } from '../../src/utils.js';
 
 const access = (collection: string): EntryAccessAbi => ({
   collection,
@@ -29,6 +32,28 @@ describe('physical compiler-route entry ownership', () => {
     const logical = { entryAccesses: [access('logical')] } as Pick<AbiFunction, 'entryAccesses'>;
 
     expect(physicalEntryAccessForSlot(route, [logical], 0)?.collection).toBe('physical');
+  });
+
+  it('constructs the physical route collection lock even when the selected handler uses that ordinal locally', () => {
+    const categoryId = '11'.repeat(32);
+    const physicalSignature = 'physical:mapping(bigint => bigint)';
+    const logicalSignature = 'logical:mapping(bigint => bigint)';
+    const group = {
+      categoryId,
+      stateLayout: { collections: [
+        { name: 'physical', signature: physicalSignature },
+        { name: 'logical', signature: logicalSignature },
+      ] },
+      compilerRoute: { abiFunction: { name: '__message_bus1', entryAccesses: [access('physical')] } },
+      logicalFunctionName: 'write',
+      logicalArtifact: { abi: [{ name: 'write', entryAccesses: [access('logical')] }] },
+    } as never;
+    const lock = externalEntryLockingBytecode(group, { kind: 'entry', offset: 1, slotIndex: 0 } as never);
+    const expected = scriptToLockingBytecode(
+      buildEntryNftCovenantScript(new Uint8Array(32).fill(0x11), computeCollectionHash(physicalSignature)),
+      'p2sh32',
+    );
+    expect(lock).toEqual(expected);
   });
 
   it('does not replay a learned entry transition onto a new collection at the same coordinate', () => {

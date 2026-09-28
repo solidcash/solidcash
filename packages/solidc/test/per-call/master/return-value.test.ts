@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { refusalMessageOf } from './refused-entry.js';
+import { isServed, refusalMessageOf } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -231,11 +231,17 @@ describe('the return shapes a master can settle', () => {
     expect(artifact.composition?.convention).toBe('per-call');
   });
 
-  it('refuses several return values, by name', () => {
-    const source = 'pragma solidcash ^0.13.0;'
+  it('serves several return values, and still refuses one of them composite', () => {
+    // A frame's `retval` is one byte string: a tuple's canonical encoding is the concatenation of its values'
+    // encodings, so several scalar values settle against it the way one scalar does.
+    const pair = 'pragma solidcash ^0.13.0;'
       + ' contract Pair { function pair() returns (int, int) { return (1, 2); } }';
-    expect(refusalOf(source)).toContain('returns 2 values');
-    expect(refusalOf(source)).toContain('retval');
+    expect(isServed(pair)).toBe(true);
+    // A composite value among them is not one the entry's own `return` leaves as part of that encoding.
+    const mixed = 'pragma solidcash ^0.13.0;'
+      + ' contract Holder { struct Point { int x; int y; }'
+      + '   function point() returns (int, Point) { return (1, Point(2, 3)); } }';
+    expect(refusalOf(mixed)).toContain('a struct among its values');
   });
 
   it('refuses a struct return, by name', () => {

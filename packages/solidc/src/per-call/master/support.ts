@@ -1001,18 +1001,17 @@ function unsupportedConstructorShape(
  * Why an entry's return shape cannot be settled against the witness `retval`, or undefined for the admitted one.
  *
  * A frame's `retval` holds the bytes the execution returned, and the entry's own code compares them against the
- * blob its `return` built. One scalar value is a blob the code computes and compares; several values are a
- * concatenation whose parts are not told apart here, and a composite's encoding is likewise not decoded back.
+ * blob its `return` built. The blob is one byte string whether the entry returns one value or several: a tuple's
+ * canonical encoding is the concatenation of its values' own encodings, which is the same encoding a call's
+ * arguments go through, so every value of the return has to be one the entry's code produces as part of that
+ * blob. A composite value is the refusal.
  */
 function unsupportedReturnShape(entry: FunctionDefinitionNode): string | undefined {
-  if (entry.returnTypes.length > 1) {
-    return `the entry point '${entry.name}' returns ${entry.returnTypes.length} values, but a frame's \`retval\` `
-      + 'is compared with one value the entry computed, which a tuple of several values is not yet';
-  }
-  const type = entry.returnTypes[0];
-  if (type === undefined || holdsAsOneEncodedItem(type)) return undefined;
-  return `the entry point '${entry.name}' returns ${compositeTypeName(type)}, but a frame's \`retval\` is `
-    + 'compared with one scalar value the entry computed, which a composite value is not yet';
+  const composite = entry.returnTypes.find((type) => !holdsAsOneEncodedItem(type));
+  if (composite === undefined) return undefined;
+  const among = entry.returnTypes.length > 1 ? ' among its values' : '';
+  return `the entry point '${entry.name}' returns ${compositeTypeName(composite)}${among}, but a frame's `
+    + '`retval` is compared with one scalar value the entry computed, which a composite value is not yet';
 }
 
 /**

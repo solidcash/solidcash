@@ -3,7 +3,11 @@ import {
   FrameKind,
   buildEntryNftCovenantScript,
   computeCollectionHash,
+  decodeIntegerValue,
+  decodeWitnessBlock,
   encodeIntegerValue,
+  encodeResultList,
+  splitFirstPush,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
@@ -35,8 +39,10 @@ import type { ArtifactMap } from '../shapes/harness.js';
  * in place and the created node as a trailing output and the frame names the created node by its position in that
  * declaration.
  *
- * A frame's `retval` holds one value, so the `claim` entry cannot return the two amounts `release` emits; the
- * compiler publishes that refusal by name and the toy pins it.
+ * A frame's `retval` is one length-prefixed byte string, and a tuple's canonical encoding is the concatenation
+ * of its values' encodings, so an entry that returns several values settles against `retval` the same way one
+ * scalar does: `claim` returns the two amounts `release` reads back, and the caller decodes the record's `result`.
+ * The last test below settles that returned pair through the shipped path and refuses the control.
  */
 
 const TOKEN_LABEL = 'reentry token';
@@ -50,11 +56,7 @@ const LABELS = { Token: TOKEN_LABEL, Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL 
 const ID = 1n;
 const ZERO_SLOT = new Uint8Array(32);
 
-/** The reason the compiler publishes for an entry whose frame would carry more than one return value. */
-const MULTI_VALUE_REFUSAL = 'the entry point \'claim\' returns 2 values, but a frame\'s `retval` is compared with '
-  + 'one value the entry computed, which a tuple of several values is not yet';
-
-/** The shape's source. `claim` returns one amount, or the pair the design's "amounts" names. */
+/** The shape's source. `claim` returns one amount, or the pair `release` reads back and emits. */
 function source(returns: 'amount' | 'amounts'): string {
   const two = returns === 'amounts';
   const signature = two ? '(int, int)' : '(int)';
@@ -120,6 +122,23 @@ const SETTLED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
   + ' }';
 
+/** The same shape with `claim` returning a pair and `release` reading it back. */
+const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IClaimer { function claim(int id) returns (int, int); }'
+  + ' interface IVault { function markClaimed(int id); }'
+  + ' contract Claimer {'
+  + `   function claim(int id) returns (int, int) { IVault(0x${VAULT}).markClaimed(id); return (1, 2); }`
+  + ' }'
+  + ' contract Vault {'
+  + '   mapping(int => int) recs;'
+  + '   function release(int id) {'
+  + '     this.recs[id] = 1;'
+  + `     int first, int second = IClaimer(0x${CLAIMER}).claim(id);`
+  + '     require(first == 1); require(second == 2); require(true);'
+  + '   }'
+  + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
+  + ' }';
+
 const single = compileAndDeploy(source('amount'), LABELS);
 const amounts = compileAndDeploy(source('amounts'), LABELS);
 
@@ -135,32 +154,9 @@ function entriesOf(artifacts: ArtifactMap, contract: string): readonly Published
   return composition.stopSites?.entries ?? [];
 }
 
-/** The refusal a compile publishes for one entry, or a failure when the compile served it. */
-function publishedRefusalFor(artifacts: ArtifactMap, entry: string): string {
-  const refusal = publishedRefusals(artifacts as Record<string, { composition?: unknown }>)
-    .find((candidate) => candidate.functionName === entry);
-  if (refusal === undefined) throw new Error(`the shipped compiler served ${entry}, so there is no refusal`);
-  return refusal.reason;
-}
-
-/** The error a shipped call raised, or a failure when it returned normally. */
-function refusalOf(run: () => unknown): { readonly name?: string; readonly message: string } {
-  try {
-    run();
-  } catch (error) {
-    const refusal = error as { name?: string; message: string };
-    return { name: refusal.name, message: refusal.message };
-  }
-  throw new Error('the shipped per-call path accepted the call, so there is no refusal to record');
-}
-
-/** The error the derivation host raises when it is asked for an entry's stop sites. */
-function hostRefusal(artifacts: ArtifactMap, entry: string): { readonly name?: string; readonly message: string } {
-  const host = createShippedDerivationHost({
-    artifacts: [artifacts.Vault!, artifacts.Claimer!, artifacts.Token!],
-    runs: [],
-  });
-  return refusalOf(() => host.sitesFor(entry));
+/** One master's witness block, read back from the unlocking bytecode the composer built, through the shipped codec. */
+function blockOf(unlocking: Uint8Array): ReturnType<typeof decodeWitnessBlock> {
+  return decodeWitnessBlock(splitFirstPush(unlocking).payload);
 }
 
 /** The machine's verdict on one participant's own input of the assembled transaction. */
@@ -184,8 +180,17 @@ function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft
  * sentinel rewritten in place and the created node as a trailing output; otherwise the record already exists at
  * the index right after the validator and both writes update it in place. With `control` the created node's output
  * is left at the value the creating frame wrote, which is not the commitment the last declaration ends at.
+ *
+ * With `paired` the same plan drives the shape whose `claim` returns a pair: the master's frame records
+ * `recordedPair` in its `retval`, which the honest run takes from the shipped result encoding and the control
+ * changes, so `release` reads the record's `result` back and requires each value.
  */
-function driveSettled(insert = false, control = false): {
+function driveSettled(
+  insert = false,
+  control = false,
+  paired = false,
+  recordedPair: readonly [bigint, bigint] = [1n, 2n],
+): {
   readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
   readonly completed: readonly string[];
   readonly error?: string;
@@ -195,7 +200,8 @@ function driveSettled(insert = false, control = false): {
   readonly createdIndex: number;
   readonly headIndex: number;
 } {
-  const { artifacts, contracts } = compileAndDeploy(SETTLED_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
+  const { artifacts, contracts } = compileAndDeploy(paired ? PAIRED_SOURCE : SETTLED_SOURCE,
+    { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
   const vault = contracts.Vault!;
   const claimer = contracts.Claimer!;
   const validator = validatorFor(vault.category);
@@ -263,7 +269,7 @@ function driveSettled(insert = false, control = false): {
     enteredBy: 'claim-1', origin: 'user', argumentPushes: [markSelector, idPush],
     segments: [segments[1]!],
   });
-  const claimMaster: DraftMaster = master({
+  const claimBase: DraftMaster = master({
     master: 'claim-1', contract: 'Claimer', entry: 'claim', program: claimer.program,
     frame: { kind: FrameKind.CALL, sender: vault.address, self: claimer.address, value: 0n },
     facts: {
@@ -274,6 +280,11 @@ function driveSettled(insert = false, control = false): {
     calls: [{ kind: FrameKind.CALL, callee: 'markClaimed-1', target: vault.address, value: 0n, argumentPushes: [markSelector, idPush] }],
     segments: [[], []],
   });
+  // The value the claimer's frame records: its own `return (1, 2)` leaves exactly the bytes the shipped result
+  // encoding produces, and the control records another pair.
+  const claimMaster: DraftMaster = paired
+    ? { ...claimBase, retval: encodeResultList(recordedPair.map((value) => encodeIntegerValue(value))) }
+    : claimBase;
 
   const vaultInput = (commitment: Uint8Array, output: Uint8Array): CompositionDraftPlan['inputs'][string] => ({
     source: { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', commitment) },
@@ -454,15 +465,49 @@ function relinkedHead(): Uint8Array {
   );
 }
 
-describe('the amounts a claim returns beside the record write', () => {
-  it('is refused by the compiler: a frame\'s retval holds one value, not a tuple', () => {
-    // The design emits the amounts `claim` returns; taken as a pair, the returned tuple has no frame field to land
-    // in, so the entry is refused as well and the shape cannot be emitted either way.
-    expect(publishedRefusalFor(amounts.artifacts, entryName('Claimer', 'claim'))).toBe(MULTI_VALUE_REFUSAL);
-    expect(hostRefusal(amounts.artifacts, entryName('Claimer', 'claim'))).toStrictEqual({
-      name: 'ShippedHostError',
-      message: `PER_CALL_HOST_ENTRY_REFUSED: ${entryName('Claimer', 'claim')} is refused by the compiler: `
-        + MULTI_VALUE_REFUSAL,
-    });
+describe('the pair a claim returns beside the record write', () => {
+  it('is served by the compiler and settles when the caller reads both values back', () => {
+    // The entry is served: the compiler publishes no refusal for it and the host answers with its stop sites.
+    const refused = publishedRefusals(amounts.artifacts as Record<string, { composition?: unknown }>)
+      .map((refusal) => refusal.functionName);
+    expect(refused).not.toContain(entryName('Claimer', 'claim'));
+    const sites = createShippedDerivationHost({
+      artifacts: [amounts.artifacts.Vault!, amounts.artifacts.Claimer!, amounts.artifacts.Token!], runs: [],
+    }).sitesFor(entryName('Claimer', 'claim'));
+    expect(sites.functionName).toBe(entryName('Claimer', 'claim'));
+    expect(sites.sites.length).toBeGreaterThan(0);
+
+    // The pair the callee's own `return (1, 2)` computes, in the shipped result encoding.
+    const pair = encodeResultList([encodeIntegerValue(1n), encodeIntegerValue(2n)]);
+    const { draft, completed, error } = driveSettled(false, false, true);
+
+    // The callee is derived before its caller, and the vault entry the call re-enters between them.
+    expect(error).toBeUndefined();
+    expect(completed).toStrictEqual(['markClaimed-1', 'claim-1', 'release-1']);
+
+    // Every contract input passes the machine. `release` is accepted because its own `require`s read the two
+    // values back in the order the callee returned them.
+    for (const id of ['release-1', 'markClaimed-1', 'claim-1', 'validator']) {
+      expect(`${id}: ${verdictAt(draft, id)}`).toBe(`${id}: accepted`);
+    }
+
+    // The caller's record of the call carries the pair, and the callee's frame records the same bytes: both read
+    // back from the unlocking bytecode the machine evaluates and compared with the shipped encoders' output.
+    const result = blockOf(draft.unlockingBytecodeOf('release-1')).calls[0]!.result;
+    expect(result).toStrictEqual(pair);
+    expect(blockOf(draft.unlockingBytecodeOf('claim-1')).retval).toStrictEqual(pair);
+    // Reading the record's bytes back through the shipped codecs gives the two values the callee returned, in the
+    // order it declared them.
+    const first = splitFirstPush(result);
+    const second = splitFirstPush(first.rest);
+    expect(decodeIntegerValue(first.payload)).toBe(1n);
+    expect(decodeIntegerValue(second.payload)).toBe(2n);
+
+    // The control records the same two values in the other order. The callee's own comparison refuses the frame
+    // that recorded what its code did not compute, and the caller reads the swapped values back and fails its own
+    // requires.
+    const swapped = driveSettled(false, false, true, [2n, 1n]);
+    expect(verdictAt(swapped.draft, 'claim-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    expect(verdictAt(swapped.draft, 'release-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 });

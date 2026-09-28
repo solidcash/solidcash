@@ -31,15 +31,17 @@ const OWNER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(9));
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Choice {'
+  + '   struct Point { int x; int y; }'
   + '   function good() { require(true); }'
-  + '   function bad() returns (int, int) { return (1, 2); }'
+  + '   function bad() returns (Point) { return Point(1, 2); }'
   + '   function callsBad() { bad(); require(true); }'
   + ' }';
 
 /** A contract whose only body is refused, so the master serves nothing and must still compile. */
 const ALL_REFUSED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Only {'
-  + '   function bad() returns (int, int) { return (1, 2); }'
+  + '   struct Point { int x; int y; }'
+  + '   function bad() returns (Point) { return Point(1, 2); }'
   + ' }';
 
 const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Choice!;
@@ -108,7 +110,7 @@ describe('a body the master cannot serve', () => {
       'Choice.bad()', 'Choice.callsBad()',
     ]);
     expect(reasons.find((refused) => refused.functionName === 'Choice.bad()')!.reason)
-      .toContain('returns 2 values');
+      .toContain('returns a struct');
     // The entry that calls it is refused with it, and the reason names the body it runs.
     expect(reasons.find((refused) => refused.functionName === 'Choice.callsBad()')!.reason)
       .toContain("it runs 'bad'");
@@ -126,6 +128,6 @@ describe('a body the master cannot serve', () => {
     // from the published reasons instead of from a compile that fails.
     const artifacts = compileStringMulti(ALL_REFUSED_SOURCE, { composition: 'per-call' });
     expect(artifacts.Only?.composition?.convention).toBe('per-call');
-    expect(refusalOf(ALL_REFUSED_SOURCE, 'Only').message).toContain('returns 2 values');
+    expect(refusalOf(ALL_REFUSED_SOURCE, 'Only').message).toContain('returns a struct');
   });
 });

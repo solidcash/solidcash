@@ -10,11 +10,11 @@ import { publishedRefusals } from './refused-entry.js';
  * vendored 4.9.3) and then invokes them through `address(token).call(data)`. The convention's intent is that such a
  * call compiles as a typed call of the named function, so the call's argument digest and its result stay canonical.
  *
- * What the shipped compiler does today: the body that carries the call is refused by name, not the contract, and
- * the reason differs by whether the call's result is bound. A body that binds `(bool ok, bytes ret)` keeps the call
- * on the direct path's opaque-return machinery, which a per-call body does not emit; a body that drops the result
- * keeps it as a bare low-level call. Neither is admitted, so the argument digest is never published. The
- * `code.length` gate the helper uses beside the call is served, and so is the equivalent typed call.
+ * What the shipped compiler does today: a payload that names its method statically compiles as that typed call,
+ * whether the payload is written at the call site or held in a local, and whether or not the result is bound. A
+ * payload the compiler cannot name - a raw selector literal, a selector it only holds at run time - leaves the call
+ * on the direct path's opaque-return machinery, which a per-call body does not emit, so that body is refused by
+ * name. The `code.length` gate the helper uses beside the call is served.
  *
  * Each case drives a real source through the shipped compile entry point and reads the refusal the compile
  * publishes; the code-length case reads the entry it serves.
@@ -23,9 +23,6 @@ import { publishedRefusals } from './refused-entry.js';
 /** The reason a result-binding `abi.encode*` low-level call refuses its body. */
 const OPAQUE_RETURN_REFUSAL = "the call to '__raw__' takes the direct path's return-event or value-transfer "
   + 'machinery, which a per-call body does not emit';
-
-/** The reason a bare low-level call refuses its body. */
-const BARE_LOW_LEVEL_REFUSAL = 'a low-level call needs the witness `calls[]` checks, which are not emitted yet';
 
 /**
  * The P2SH validation the general `.code` extractor emits, with `17` and `23` the P2SH20 and P2SH32 lengths.
@@ -87,17 +84,48 @@ const compile = (source: string): Artifacts => compileStringMulti(source, { comp
 const refusalMessage = (source: string): string =>
   publishedRefusals(compile(source)).map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | ');
 
+/** The selector `IToken.transfer(address,int)` compiles to, which a served call site names. */
+const TRANSFER_SELECTOR =
+  Buffer.from(computeFunctionSelector(computeFunctionSignature('transfer', ['address', 'int256']))).toString('hex');
+
+/** The call sites one entry publishes, or a failure naming the entries the artifact does carry. */
+function publishedCallSites(artifacts: Artifacts, functionName: string): unknown[] {
+  const composition = artifacts.Caller!.composition as {
+    stopSites?: { entries?: { functionName: string; calls: unknown[] }[] };
+  };
+  const entry = composition.stopSites?.entries?.find((item) => item.functionName === functionName);
+  if (entry === undefined) {
+    throw new Error(`the artifact publishes no entry "${functionName}"; it carries `
+      + `${(composition.stopSites?.entries ?? []).map((item) => item.functionName).join(', ') || 'none'}`);
+  }
+  return entry.calls as unknown[];
+}
+
 describe('SafeERC20 token-call shapes under per-call', () => {
-  it('refuses a body whose abi.encodeCall payload is invoked through address(token).call', () => {
-    expect(refusalMessage(ENCODE_CALL_SOURCE)).toBe(`Caller.callIt(): ${OPAQUE_RETURN_REFUSAL}`);
+  it('compiles a body whose abi.encodeCall payload is invoked through address(token).call, as the typed call', () => {
+    // The payload names the method statically, so the body compiles as `IToken(token).transfer(to, amount)` and
+    // publishes that call site rather than being refused for the call data's own shape.
+    const artifacts = compile(ENCODE_CALL_SOURCE);
+    expect(publishedRefusals(artifacts)).toEqual([]);
+    expect(publishedCallSites(artifacts, 'Caller.callIt()')).toEqual([
+      expect.objectContaining({
+        interfaceName: 'IToken', functionName: 'transfer', selector: TRANSFER_SELECTOR,
+      }),
+    ]);
   });
 
   it('refuses the same body when the payload carries a raw selector instead of a named function', () => {
     expect(refusalMessage(ENCODE_SELECTOR_SOURCE)).toBe(`Caller.callIt(): ${OPAQUE_RETURN_REFUSAL}`);
   });
 
-  it('refuses a bare low-level call with no result bound', () => {
-    expect(refusalMessage(BARE_CALL_SOURCE)).toBe(`Caller.callIt(): ${BARE_LOW_LEVEL_REFUSAL}`);
+  it('compiles a bare low-level call with no result bound, as the typed call', () => {
+    const artifacts = compile(BARE_CALL_SOURCE);
+    expect(publishedRefusals(artifacts)).toEqual([]);
+    expect(publishedCallSites(artifacts, 'Caller.callIt()')).toEqual([
+      expect.objectContaining({
+        interfaceName: 'IToken', functionName: 'transfer', selector: TRANSFER_SELECTOR,
+      }),
+    ]);
   });
 
   it('serves the address.code.length gate the helper uses beside the call', () => {
@@ -121,18 +149,9 @@ describe('SafeERC20 token-call shapes under per-call', () => {
   it('serves the typed call the same argument values would make', () => {
     const artifacts = compile(TYPED_CALL_SOURCE);
     expect(publishedRefusals(artifacts)).toEqual([]);
-    const composition = artifacts.Caller!.composition as {
-      stopSites?: { entries?: { functionName: string; calls: { interfaceName: string; functionName: string;
-        selector: string }[] }[] };
-    };
-    const entry = composition.stopSites?.entries?.find((item) => item.functionName === 'Caller.callIt()');
-    expect(entry).toBeDefined();
-    const selector = computeFunctionSelector(computeFunctionSignature('transfer', ['address', 'int256']));
-    expect(entry!.calls).toEqual([
+    expect(publishedCallSites(artifacts, 'Caller.callIt()')).toEqual([
       expect.objectContaining({
-        interfaceName: 'IToken',
-        functionName: 'transfer',
-        selector: Buffer.from(selector).toString('hex'),
+        interfaceName: 'IToken', functionName: 'transfer', selector: TRANSFER_SELECTOR,
       }),
     ]);
   });

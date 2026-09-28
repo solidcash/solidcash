@@ -22,6 +22,11 @@
  * masters, the validator, the proxy's record and the caller's own coin — signed by the caller, and broadcast, so
  * the deployment comes out as three broadcast transactions. When it does not, the hop is only derived, which is
  * what a caller that wants the shape without broadcasting it takes.
+ *
+ * A later call by anyone is the same hop on the same live pools: `callPerCallProxyEntry` names the entry and the
+ * caller's coin and runs the identical plan, derivation, evaluation and broadcast. The delegation is one
+ * participant graph with two kinds of caller, so an entry a deployment ran and an entry a user calls settle the
+ * same way.
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
@@ -51,7 +56,7 @@ import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from '.
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
 
-/** The caller's own funding for the initialize hop: the coin the root frame's caller input spends. */
+/** The caller's own funding for a hop: the coin the root frame's caller input spends. */
 export interface PerCallProxyCallerFunding {
   /** A UTXO at `callerLockingBytecode`; a root frame binds `msg.sender` to the lock of the input it names. */
   readonly utxo: Utxo;
@@ -145,8 +150,8 @@ export interface PerCallProxyDeployment {
 
 /** The commitment size a deployment assumes when its provider publishes no limit. */
 const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 10_000_000;
-/** How many times the deployment rebuilds the initialize plan from the state it read back. */
-const MAXIMUM_INITIALIZE_ATTEMPTS = 4;
+/** How many times a hop rebuilds its plan from the state it read back, one attempt per record written. */
+const MAXIMUM_HOP_ATTEMPTS = 4;
 
 const PROXY_MASTER_ID = 'proxy-master';
 const IMPLEMENTATION_MASTER_ID = 'implementation-master';
@@ -392,83 +397,33 @@ export async function deployPerCallProxy(
   const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
-  const root: FrameRequest = {
-    contract: proxyArtifact.contractName,
-    functionName: entryName(proxyArtifact, '__fallback'),
-    kind: FrameKind.ROOT,
-    master: PROXY_MASTER_ID,
-  };
-
-  // 3. `initialize` through the proxy: a root frame on the proxy master, one DELEGATE edge to the implementation.
-  //
-  // The state the entry leaves is not something the deployment can state in advance — the entry computes it — so
-  // the plan carries a candidate and the deployment reads the value the entry actually computed back out of the
-  // machine: the entry closes its record against the declaration the plan wrote, and the failed comparison leaves
-  // both the declaration and the computed value on the stack. Each attempt rebuilds the plan with the value that
-  // was read, so a writing entry converges in one step and a read-only one is accepted on the first attempt.
-  let writtenCommitments = [...recordCommitments];
-  let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
-  for (let attempt = 0; attempt < MAXIMUM_INITIALIZE_ATTEMPTS; attempt += 1) {
-    const plan = buildInitializePlan({
-      ...options, implementationArtifact, proxyArtifact, implementationMaster, proxyMaster,
-      proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
-      recordLockingBytecode,
-    });
-    const candidate = createComposedDerivationHost({
-      vm, artifacts: [proxyArtifact, implementationArtifact], plan,
-    });
-    const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
-    const state = vm.evaluate({
-      inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,
-      sourceOutputs: implementationProgram.sourceOutputs,
-      transaction: implementationProgram.transaction,
-    });
-    if (vm.stateSuccess(state) === true) {
-      composed = candidate;
-      break;
-    }
-    const reading = readComputedDeclaration({ vm, program: implementationProgram, maximumCommitmentBytes });
-    // The declaration the failing comparison closed against is the candidate one of the records carries, and that
-    // is what names the record the entry wrote: the plan states a candidate per record and the body compares them
-    // in the order the frame declares them, so each attempt learns the first one whose write the plan had not
-    // stated yet. A body that writes two records therefore takes one attempt per record.
-    const learned = reading.ok
-      ? writtenCommitments.findIndex((candidate) => bytesEqual(reading.declared, candidate))
-      : -1;
-    if (!reading.ok || learned < 0) {
-      throw new PerCallProxyDeployError(
-        `the implementation's "${options.initialize.functionName}" entry did not settle through the proxy: `
-        + `${describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))}`,
-      );
-    }
-    writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
-      (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
-  }
-  if (composed === undefined) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${options.initialize.functionName}" entry did not settle through the proxy in `
-      + `${MAXIMUM_INITIALIZE_ATTEMPTS} attempts`,
-    );
-  }
-  const { host, draft } = composed;
-  const derived = deriveComposition([root], host);
-
-  const program = draft.programFor(PROXY_MASTER_ID);
-  const verdicts = draft.layout.participants.map((placed): InitializeVerdict => {
-    const state = vm.evaluate({
-      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
-    });
-    return vm.stateSuccess(state) === true
-      ? { id: placed.id, index: placed.index, accepted: true }
-      : { id: placed.id, index: placed.index, accepted: false, objection: String(state.error) };
+  const recordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
+  const settled = await settleHop({
+    vm,
+    proxyArtifact,
+    implementationArtifact,
+    root: rootOn(proxyArtifact),
+    maximumCommitmentBytes,
+    recordCommitments,
+    entryLabel: `"${options.initialize.functionName}" entry`,
+    planFor: (writtenCommitments) => buildHopPlan({
+      proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
+      proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
+      recordCategoryHex: options.proxyDeploy.fundingUtxo.txid,
+      callerSatoshis: options.proxyDeploy.fundingUtxo.satoshis,
+      proxyMasterAmount: options.proxyDeploy.masterAmount ?? 1200n,
+      implementationMasterAmount: options.implementationDeploy.masterAmount ?? 1200n,
+      validatorAmount: recordAmount,
+      recordAmounts: recordCommitments.map(() => recordAmount),
+      callerLockingBytecode: options.callerLockingBytecode,
+      entry: options.initialize,
+    }),
   });
-  // Every participant is a convention input: the masters, the validator and the proxy's record, each spent under
-  // the lock it was minted at.
-  const accepted = verdicts.every((verdict) => verdict.accepted);
+  const { draft, program, verdicts, accepted, writtenCommitments, completed: completedFrames } = settled;
 
   // The hop is the derived transaction until the caller offers its own coin; then it is rebuilt on the geneses'
   // outpoints, signed and broadcast.
-  const broadcast = options.callerFunding === undefined ? undefined : await broadcastInitializeHop({
+  const broadcast = options.callerFunding === undefined ? undefined : await broadcastHop({
     provider,
     callerFunding: options.callerFunding,
     callerLockingBytecode: options.callerLockingBytecode,
@@ -491,7 +446,7 @@ export async function deployPerCallProxy(
     },
     initialize: {
       transaction: program.transaction, sourceOutputs: program.sourceOutputs,
-      draft, completed: derived.completed, verdicts, accepted,
+      draft, completed: completedFrames, verdicts, accepted,
       // The commitment every record of the hop ends at, which the entry's own write computed.
       writtenRecordCommitments: writtenCommitments,
       writtenRecordCommitment: writtenCommitments[0]!,
@@ -500,25 +455,149 @@ export async function deployPerCallProxy(
   };
 }
 
-/** Everything the initialize plan is built from. */
-interface InitializePlanOptions extends PerCallProxyDeployOptions {
-  /** The proxy to plan the hop for: the caller's, or the one generated for the implementation. */
+/** The root frame a hop is entered on: the proxy's fallback, carrying the call data it forwards. */
+function rootOn(proxyArtifact: Artifact): FrameRequest {
+  return {
+    contract: proxyArtifact.contractName,
+    functionName: entryName(proxyArtifact, '__fallback'),
+    kind: FrameKind.ROOT,
+    master: PROXY_MASTER_ID,
+  };
+}
+
+/** What a settled hop produced, before the caller's own coin turns it into a broadcast transaction. */
+interface SettledHop {
+  readonly draft: CompositionDraft;
+  readonly program: ShippedVmProgram;
+  /** The frames the derivation completed, callee before caller. */
+  readonly completed: readonly FrameRequest[];
+  readonly verdicts: readonly InitializeVerdict[];
+  readonly accepted: boolean;
+  /** The commitment every record ends at, which the entry's own write computed. */
+  readonly writtenCommitments: readonly Uint8Array[];
+}
+
+/** Everything one attempt at a hop reads, and how to rebuild the plan once a record's computed value is learned. */
+interface SettleHopOptions {
+  readonly vm: Machine;
   readonly proxyArtifact: Artifact;
+  readonly implementationArtifact: Artifact;
+  readonly root: FrameRequest;
+  readonly maximumCommitmentBytes: number;
+  readonly recordCommitments: readonly Uint8Array[];
+  /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
+  readonly entryLabel: string;
+  /** The plan for a given set of per-record candidate end commitments. */
+  readonly planFor: (writtenCommitments: readonly Uint8Array[]) => CompositionDraftPlan;
+}
+
+/**
+ * Derives a delegate hop and learns what its entry computed.
+ *
+ * The state the entry leaves is not something the caller can state in advance — the entry computes it — so the plan
+ * carries a candidate per record and the machine is asked whether the entry's own frame accepted it: the entry
+ * closes its record against the declaration the plan wrote, and a failed comparison leaves both the declaration and
+ * the computed value on the stack. Each attempt rebuilds the plan with the value that was read, so a writing entry
+ * converges in one step per record it writes and a read-only entry is accepted on the first attempt.
+ */
+async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
+  const { vm, proxyArtifact, implementationArtifact } = options;
+  let writtenCommitments = [...options.recordCommitments];
+  let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
+  for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPTS; attempt += 1) {
+    const plan = options.planFor(writtenCommitments);
+    const candidate = createComposedDerivationHost({
+      vm, artifacts: [proxyArtifact, implementationArtifact], plan,
+    });
+    const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
+    const state = vm.evaluate({
+      inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,
+      sourceOutputs: implementationProgram.sourceOutputs,
+      transaction: implementationProgram.transaction,
+    });
+    if (vm.stateSuccess(state) === true) {
+      composed = candidate;
+      break;
+    }
+    const reading = readComputedDeclaration({
+      vm, program: implementationProgram, maximumCommitmentBytes: options.maximumCommitmentBytes,
+    });
+    // The declaration the failing comparison closed against is the candidate one of the records carries, and that
+    // is what names the record the entry wrote: the plan states a candidate per record and the body compares them
+    // in the order the frame declares them, so each attempt learns the first one whose write the plan had not
+    // stated yet. A body that writes two records therefore takes one attempt per record.
+    const learned = reading.ok
+      ? writtenCommitments.findIndex((candidate) => bytesEqual(reading.declared, candidate))
+      : -1;
+    if (!reading.ok || learned < 0) {
+      throw new PerCallProxyDeployError(
+        `the implementation's ${options.entryLabel} did not settle through the proxy: `
+        + `${describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))}`,
+      );
+    }
+    writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
+      (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
+  }
+  if (composed === undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's ${options.entryLabel} did not settle through the proxy in `
+      + `${MAXIMUM_HOP_ATTEMPTS} attempts`,
+    );
+  }
+  const { host, draft } = composed;
+  const derived = deriveComposition([options.root], host);
+
+  const program = draft.programFor(PROXY_MASTER_ID);
+  const verdicts = draft.layout.participants.map((placed): InitializeVerdict => {
+    const state = vm.evaluate({
+      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    });
+    return vm.stateSuccess(state) === true
+      ? { id: placed.id, index: placed.index, accepted: true }
+      : { id: placed.id, index: placed.index, accepted: false, objection: String(state.error) };
+  });
+  // Every participant is a convention input: the masters, the validator and the proxy's records, each spent under
+  // the lock it was minted at.
+  return {
+    draft, program, completed: derived.completed,
+    verdicts, accepted: verdicts.every((verdict) => verdict.accepted),
+    writtenCommitments,
+  };
+}
+
+/** Everything the hop's plan is built from, whether the hop is a deployment's first call or a user's later one. */
+interface HopPlanOptions {
+  /** The proxy the call is entered on: the caller's, or the one generated for the implementation. */
+  readonly proxyArtifact: Artifact;
+  readonly implementationArtifact: Artifact;
   readonly implementationMaster: DeployedMaster;
   readonly proxyMaster: DeployedMaster;
   readonly proxyCategory: Uint8Array;
   readonly implementationCategory: Uint8Array;
+  /** The entry the proxy forwards to, and its arguments in parameter order. */
+  readonly entry: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
   readonly recordCommitments: readonly Uint8Array[];
   /** The commitment each record is being asked to end at, which a writing entry's own computation replaces. */
   readonly writtenCommitments: readonly Uint8Array[];
-  /** The lock the proxy's genesis minted its record at: the data-NFT covenant the proxy's category derives. */
+  /** The lock the records sit at: the data-NFT covenant the proxy's category derives. */
   readonly recordLockingBytecode: Uint8Array;
+  /** The proxy's category as hex, which the records' write path names the authorizing master by. */
+  readonly recordCategoryHex: string;
+  /** The caller's own input value, and the values the masters, the validator and the records carry. */
+  readonly callerSatoshis: bigint;
+  readonly proxyMasterAmount: bigint;
+  readonly implementationMasterAmount: bigint;
+  readonly validatorAmount: bigint;
+  /** One value per record, in data-NFT order. */
+  readonly recordAmounts: readonly bigint[];
+  /** The 25-byte P2PKH lock of the caller whose coin enters the frame. */
+  readonly callerLockingBytecode: Uint8Array;
 }
 
 /** Lays out the delegate hop from the deployed masters and the proxy's records. */
-function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPlan {
+function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
-  const pushes = callPushes(implementationArtifact, options.initialize.functionName, options.initialize.args ?? []);
+  const pushes = callPushes(implementationArtifact, options.entry.functionName, options.entry.args ?? []);
 
   // One participant per data NFT of the proxy's layout, in data-NFT order: the record the proxy's genesis minted
   // for it. The proxy's block holds its master, its validator and them; the implementation's master follows, and
@@ -600,9 +679,9 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
   const implementationMasterDraft: DraftMaster = {
     master: IMPLEMENTATION_MASTER_ID,
     contract: implementationArtifact.contractName,
-    functionName: entryName(implementationArtifact, options.initialize.functionName),
+    functionName: entryName(implementationArtifact, options.entry.functionName),
     program: implementationMaster.script,
-    facts: factsOf(implementationArtifact, options.initialize.functionName, FrameKind.DELEGATE, false),
+    facts: factsOf(implementationArtifact, options.entry.functionName, FrameKind.DELEGATE, false),
     frame: { kind: FrameKind.DELEGATE, sender: options.callerLockingBytecode, self: proxyMaster.address, value: 0n },
     enteredBy: PROXY_MASTER_ID,
     origin: USER_ID,
@@ -617,9 +696,9 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
     redeemScript: implementationMaster.script,
   };
 
-  const proxyMasterAmount = options.proxyDeploy.masterAmount ?? 1200n;
-  const implementationMasterAmount = options.implementationDeploy.masterAmount ?? 1200n;
-  const proxyRecordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
+  const proxyMasterAmount = options.proxyMasterAmount;
+  const implementationMasterAmount = options.implementationMasterAmount;
+  const proxyRecordAmount = options.validatorAmount;
   return {
     blocks,
     userInputs: [{ id: USER_ID, index: layout.participantCount }],
@@ -638,21 +717,21 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
       },
       ...Object.fromEntries(recordIds.map((id, nftIndex) => [id, {
         source: mutableSource(
-          options.recordLockingBytecode, proxyRecordAmount, options.proxyCategory,
+          options.recordLockingBytecode, options.recordAmounts[nftIndex]!, options.proxyCategory,
           options.recordCommitments[nftIndex]!,
         ),
         output: mutableSource(
-          options.recordLockingBytecode, proxyRecordAmount, options.proxyCategory,
+          options.recordLockingBytecode, options.recordAmounts[nftIndex]!, options.proxyCategory,
           options.writtenCommitments[nftIndex]!,
         ),
         // The covenant's write path names the master of the record's category that authorizes the spend; a record
         // the entry leaves unchanged is spent on the read-only path, which needs no master.
         unlockingBytecode: stateRecordUnlockingBytecode(
-          options.proxyDeploy.fundingUtxo.txid, proxyMasterIndex, writes[nftIndex]! ? 1 : 0,
+          options.recordCategoryHex, proxyMasterIndex, writes[nftIndex]! ? 1 : 0,
         ),
       }])),
       [USER_ID]: {
-        source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.proxyDeploy.fundingUtxo.satoshis },
+        source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerSatoshis },
         unlockingBytecode: callerUnlocking(),
       },
     },
@@ -680,7 +759,7 @@ function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array)
 }
 
 /** Everything the hop's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */
-interface BroadcastInitializeOptions {
+interface BroadcastHopOptions {
   readonly provider: NetworkProvider;
   readonly callerFunding: PerCallProxyCallerFunding;
   readonly callerLockingBytecode: Uint8Array;
@@ -717,7 +796,7 @@ function participantUtxo(pools: { masters: readonly Utxo[]; validators: readonly
  * Supplying the caller's funding is what makes this the real hop; the derived transaction stays the answer when
  * it is absent.
  */
-async function broadcastInitializeHop(options: BroadcastInitializeOptions): Promise<TransactionDetails> {
+async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDetails> {
   const { provider, callerFunding, program, draft } = options;
   const callerLock = callerFunding.funder.generateLockingBytecode();
   if (!bytesEqual(callerLock, options.callerLockingBytecode)) {
@@ -753,11 +832,11 @@ async function broadcastInitializeHop(options: BroadcastInitializeOptions): Prom
     }
     if (real === undefined) {
       throw new PerCallProxyDeployError(
-        `the deployment holds no live UTXO for the initialize hop's "${placed.id}"`);
+        `the deployment holds no live UTXO for the hop's "${placed.id}"`);
     }
     if (real.satoshis !== source.valueSatoshis) {
       throw new PerCallProxyDeployError(
-        `the initialize hop's "${placed.id}" holds ${real.satoshis} satoshis, but the derived hop spends `
+        `the hop's "${placed.id}" holds ${real.satoshis} satoshis, but the derived hop spends `
         + `${source.valueSatoshis}`,
       );
     }
@@ -802,9 +881,159 @@ async function broadcastInitializeHop(options: BroadcastInitializeOptions): Prom
   const expected = binToHex(hash256(rawBytes).reverse());
   if (txid !== expected) {
     throw new PerCallProxyDeployError(
-      `the provider returned txid ${txid} for the initialize hop, not the ${expected} its bytes hash to`,
+      `the provider returned txid ${txid} for the hop, not the ${expected} its bytes hash to`,
     );
   }
   const { attachWait } = await import('../../wait.js');
   return attachWait({ ...transaction, txid, hex: rawHex } as TransactionDetails, provider);
+}
+
+/** What a caller asks a proxied per-call contract for, and what the call produced. */
+export interface PerCallProxyCallOptions {
+  readonly provider: NetworkProvider;
+  /** The implementation behind the proxy: the artifact whose entries the call names. */
+  readonly implementationArtifact: Artifact;
+  /** The proxy the call is entered on, or absent to generate the one the implementation's shape implies. */
+  readonly proxyArtifact?: Artifact;
+  /** The proxy's live category: its master pool, validator pool and records are read from it. */
+  readonly proxyCategoryId: string;
+  /** The implementation's live category: the master its program runs from sits under it. */
+  readonly implementationCategoryId: string;
+  readonly functionName: string;
+  readonly args?: readonly FunctionArgument[];
+  /** The caller's own coin: a UTXO at `callerLockingBytecode`, and the unlocker that signs it. */
+  readonly callerUtxo: Utxo;
+  readonly callerLockingBytecode: Uint8Array;
+  readonly funder: Unlocker;
+  readonly changeAddress?: string | Uint8Array;
+  readonly vm?: Machine;
+}
+
+/** A proxied call's outcome, shaped the way the direct call path's is so a handle can treat them alike. */
+export interface PerCallProxyCallResult {
+  readonly transaction: NonNullable<ShippedVmProgram['transaction']>;
+  readonly sourceOutputs: ShippedVmProgram['sourceOutputs'];
+  readonly draft: CompositionDraft;
+  readonly completed: readonly FrameRequest[];
+  readonly verdicts: readonly InitializeVerdict[];
+  readonly accepted: boolean;
+  readonly writtenCommitments: readonly Uint8Array[];
+  readonly broadcast?: TransactionDetails;
+}
+
+/**
+ * Calls an entry of a per-call implementation through the proxy in front of it.
+ *
+ * The caller's coin enters the proxy's fallback frame, which forwards the call data to the address its own record
+ * holds; the implementation's entry runs as a delegate frame on the proxy's records. The hop is planned exactly the
+ * way a deployment's first call is - the same masters, the same records, the same delegate edge - so nothing here
+ * assumes an entry the deployment wrote: the plan leaves every record's end commitment unstated, the derivation
+ * learns what the entry's own body computed, and the machine is asked about every participant.
+ */
+export async function callPerCallProxyEntry(
+  options: PerCallProxyCallOptions,
+): Promise<PerCallProxyCallResult> {
+  const { provider, implementationArtifact } = options;
+  const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
+  requireProxyShape(proxyArtifact);
+  requireSharedLayout(implementationArtifact, proxyArtifact);
+  if (!implementationArtifact.abi.some((entry) => entry.name === options.functionName)) {
+    throw new PerCallProxyDeployError(
+      `implementation "${implementationArtifact.contractName}" publishes no entry "${options.functionName}"`,
+    );
+  }
+  if (options.callerLockingBytecode.length !== 25) {
+    throw new PerCallProxyDeployError(
+      `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
+    );
+  }
+
+  const proxyLayout = proxyArtifact.stateLayout!;
+  const proxyPools = await readPerCallDeployment(provider, options.proxyCategoryId, proxyLayout);
+  if (proxyPools.records.length !== proxyLayout.dataNftCount) {
+    throw new PerCallProxyDeployError(
+      `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
+      + `declares ${proxyLayout.dataNftCount} data NFT(s)`,
+    );
+  }
+  const proxyMasterUtxo = proxyPools.masters[0];
+  const validatorUtxo = proxyPools.validators[0];
+  if (proxyMasterUtxo === undefined || validatorUtxo === undefined) {
+    throw new PerCallProxyDeployError(
+      `category ${options.proxyCategoryId} holds no proxy master or no validator, which a call is admitted by`,
+    );
+  }
+  const implementationPools = await readPerCallDeployment(
+    provider, options.implementationCategoryId, implementationArtifact.stateLayout!);
+  const implementationMasterUtxo = implementationPools.masters[0];
+  if (implementationMasterUtxo === undefined) {
+    throw new PerCallProxyDeployError(
+      `category ${options.implementationCategoryId} holds no implementation master, which the forwarded frame `
+      + 'runs from',
+    );
+  }
+  const recordCommitments = proxyPools.records.map((record, nftIndex) => {
+    const commitment = record.token?.nft?.commitment;
+    if (commitment === undefined) {
+      throw new PerCallProxyDeployError(
+        `the record at data NFT ${nftIndex} of category ${options.proxyCategoryId} carries no commitment`,
+      );
+    }
+    return hexToBin(commitment);
+  });
+
+  const validatorProgram = perCallValidator.buildValidatorProgram();
+  const proxyCategory = hexToBin(options.proxyCategoryId);
+  const implementationCategory = hexToBin(options.implementationCategoryId);
+  const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
+  const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
+  const vm = options.vm ?? await providerMachine(provider);
+  const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
+    ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
+  const recordAmounts = proxyPools.records.map((record) => record.satoshis);
+
+  const settled = await settleHop({
+    vm,
+    proxyArtifact,
+    implementationArtifact,
+    root: rootOn(proxyArtifact),
+    maximumCommitmentBytes,
+    recordCommitments,
+    entryLabel: `"${options.functionName}" entry`,
+    planFor: (writtenCommitments) => buildHopPlan({
+      proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
+      proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
+      recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
+      recordCategoryHex: options.proxyCategoryId,
+      callerSatoshis: options.callerUtxo.satoshis,
+      proxyMasterAmount: proxyMasterUtxo.satoshis,
+      implementationMasterAmount: implementationMasterUtxo.satoshis,
+      validatorAmount: validatorUtxo.satoshis,
+      recordAmounts,
+      callerLockingBytecode: options.callerLockingBytecode,
+      entry: { functionName: options.functionName, args: options.args ?? [] },
+    }),
+  });
+
+  const broadcast = await broadcastHop({
+    provider,
+    callerFunding: {
+      utxo: options.callerUtxo,
+      funder: options.funder,
+      ...(options.changeAddress === undefined ? {} : { changeAddress: options.changeAddress }),
+    },
+    callerLockingBytecode: options.callerLockingBytecode,
+    proxyArtifact,
+    implementationArtifact,
+    proxyCategoryId: options.proxyCategoryId,
+    implementationCategoryId: options.implementationCategoryId,
+    program: settled.program,
+    draft: settled.draft,
+  });
+
+  return {
+    transaction: settled.program.transaction, sourceOutputs: settled.program.sourceOutputs,
+    draft: settled.draft, completed: settled.completed, verdicts: settled.verdicts,
+    accepted: settled.accepted, writtenCommitments: settled.writtenCommitments, broadcast,
+  };
 }

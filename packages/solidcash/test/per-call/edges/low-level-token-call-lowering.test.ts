@@ -78,6 +78,50 @@ const TYPED = HEAD
   + '   require(ok);'
   + ' } }';
 
+/** The payload held in a local and used by a later low-level call, the OpenZeppelin-style two-statement spelling. */
+const LOCAL_BOUND = HEAD
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = abi.encodeCall(IERC20.transfer, (${RECIPIENT}, ${AMOUNT}));`
+  + `   (bool ok, bytes ret) = address(${TARGET}).call(data);`
+  + '   require(ok);'
+  + '   require(abi.decode(ret, (bool)));'
+  + ' } }';
+
+/** The same, with the selector spelling and the low-level result discarded. */
+const LOCAL_BARE = HEAD
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = ${SELECTOR_PAYLOAD};`
+  + `   address(${TARGET}).call(data);`
+  + '   require(true);'
+  + ' } }';
+
+/** The payload local is reassigned before the call, so the binding no longer holds. */
+const LOCAL_REASSIGNED = HEAD
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = abi.encodeCall(IERC20.transfer, (${RECIPIENT}, ${AMOUNT}));`
+  + '   data = hex"deadbeef";'
+  + `   (bool ok, bytes ret) = address(${TARGET}).call(data);`
+  + '   require(ok);'
+  + ' } }';
+
+/** The payload local is bound to a plain `abi.encode`, which names no method. */
+const LOCAL_OPAQUE = HEAD
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = abi.encode(${RECIPIENT}, ${AMOUNT});`
+  + `   (bool ok, bytes ret) = address(${TARGET}).call(data);`
+  + '   require(ok);'
+  + ' } }';
+
+/** The payload local is declared in a nested block and used in that same block. */
+const NESTED_BOUND = HEAD
+  + ' contract Caller { function f() {'
+  + '   {'
+  + `     bytes memory data = abi.encodeCall(IERC20.transfer, (${RECIPIENT}, ${AMOUNT}));`
+  + `     (bool ok, bytes ret) = address(${TARGET}).call(data);`
+  + '     require(ok);'
+  + '   }'
+  + ' } }';
+
 /** The gate OpenZeppelin's `Address.functionCall` puts beside the call, on the P2SH32 token target itself. */
 const GATED = HEAD
   + ' contract Caller { function f() {'
@@ -214,6 +258,30 @@ describe('a low-level token call whose callee and method are statically known', 
 
   it('lowers the bare statement whose result is ignored to the same typed call', () => {
     expect(callRecord(BARE).record).toStrictEqual(callRecord(TYPED).record);
+  });
+
+  it('lowers a payload held in a local to the typed call, in the binding and discarded positions', () => {
+    const typed = callRecord(TYPED).record;
+    // The tuple-assignment spelling reads the local the block bound to an `abi.encodeCall` payload.
+    expect(callRecord(LOCAL_BOUND).record).toStrictEqual(typed);
+    // The discarded-result spelling reads the local bound to an `abi.encodeWithSelector` payload.
+    expect(callRecord(LOCAL_BARE).record).toStrictEqual(typed);
+  });
+
+  it('lowers a payload local declared in a nested block to the typed call', () => {
+    // The binding is scoped to the block that declared it, but is still in source order before the call.
+    expect(callRecord(NESTED_BOUND).record).toStrictEqual(callRecord(TYPED).record);
+  });
+
+  it('leaves a payload local it cannot name refused by name', () => {
+    // The local is reassigned after its binding, so the payload the call passes on is no longer the named method.
+    expect(refusalsOf(LOCAL_REASSIGNED)).toStrictEqual([
+      { functionName: 'Caller.f()', reason: RAW_REFUSAL },
+    ]);
+    // The local is bound to a plain `abi.encode`, which is opaque: it names no method.
+    expect(refusalsOf(LOCAL_OPAQUE)).toStrictEqual([
+      { functionName: 'Caller.f()', reason: RAW_REFUSAL },
+    ]);
   });
 
   it('leaves a spelling it cannot name statically refused by name', () => {

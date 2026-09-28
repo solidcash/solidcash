@@ -26,7 +26,8 @@ import {
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import {
   chunkRecordId, createComposedDerivationHost, deriveComposition, layoutTransaction, layOutChunkRun, participant,
-  planChunkRun, reportCompositionRefusal, type CompositionDraftPlan, type DraftMaster,
+  planChunkRun, readPublishedStopSites, reportCompositionRefusal,
+  type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import {
   EMPTY,
@@ -869,11 +870,11 @@ describe('the token pull and the shapes that stay open', () => {
     expect(publishedRefusals(compileStringMulti(TOKEN_SOURCE, { composition: 'per-call' }))).toStrictEqual([]);
   });
 
-  it('refuses the low-level token pull whose payload is held in a local, naming the body', () => {
-    // The payload is built by `abi.encodeCall` into a local, then invoked through `address(token).call`. A called
-    // payload the compiler can name statically is now lowered to the typed call it denotes; one held in a local is
-    // not, so the body is refused rather than composed.
-    const source = 'pragma solidcash ^0.13.0;'
+  it('lowers the low-level token pull whose payload is held in a local, to the typed call it denotes', () => {
+    // The payload is built by `abi.encodeCall` into a local and invoked through `address(token).call`. The method
+    // the payload names is static, so the body compiles as the typed call and publishes the call site the
+    // spelled-out typed call publishes.
+    const local = 'pragma solidcash ^0.13.0;'
       + ' interface IToken { function transfer(address to, int amount); }'
       + ' contract Puller {'
       + '   function pull(address token, address to, int amount) {'
@@ -882,11 +883,20 @@ describe('the token pull and the shapes that stay open', () => {
       + '     require(ok);'
       + '   }'
       + ' }';
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([{
-      functionName: 'Puller.pull()',
-      reason: "the call to '__raw__' takes the direct path's return-event or value-transfer machinery, "
-        + 'which a per-call body does not emit',
-    }]);
+    const typed = 'pragma solidcash ^0.13.0;'
+      + ' interface IToken { function transfer(address to, int amount); }'
+      + ' contract Puller {'
+      + '   function pull(address token, address to, int amount) {'
+      + '     IToken(token).transfer(to, amount);'
+      + '     require(true);'
+      + '   }'
+      + ' }';
+    const lowered = compileStringMulti(local, { composition: 'per-call' });
+    expect(publishedRefusals(lowered)).toStrictEqual([]);
+    const published = readPublishedStopSites(lowered.Puller!);
+    const spelled = readPublishedStopSites(compileStringMulti(typed, { composition: 'per-call' }).Puller!);
+    expect(published.entries.find((entry) => entry.functionName === 'Puller.pull()'))
+      .toStrictEqual(spelled.entries.find((entry) => entry.functionName === 'Puller.pull()'));
   });
 });
 

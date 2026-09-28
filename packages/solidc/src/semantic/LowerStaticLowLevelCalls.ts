@@ -27,6 +27,7 @@ import {
 } from '../ast/AST.js';
 import { BytesType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
+import { cloneNode } from '../ast/clone.js';
 
 /** Temporary holding a typed call's return values while the low-level `(success, returndata)` pair is rebuilt. */
 const PREFIX = '__staticcall_ret_';
@@ -56,10 +57,17 @@ interface LowLevelSite {
  *
  * A payload the compiler cannot name statically - a selector computed at run time, an interface it does not know -
  * is left alone, so the call keeps its own low-level refusal.
+ *
+ * A payload held in a local (`bytes data = abi.encodeCall(I.f, (args)); addr.call(data)`) denotes the same call when
+ * the enclosing block bound that local, earlier in source order and without a later reassignment, to exactly one
+ * such abi-encode expression. The lookup is flow-local and block-scoped; every other local stays opaque.
  */
 export default class LowerStaticLowLevelCalls extends AstTraversal {
   private interfaces = new Map<string, InterfaceNode>();
   private counter = 0;
+  // One map per lexical block, innermost last. A name present here shadows any outer binding; a value that is not
+  // an abi-encode node marks a local that was bound to something else (or reassigned), so the lookup stops there.
+  private payloadScopes: Map<string, ExpressionNode | undefined>[] = [];
 
   visitSourceFile(node: SourceFileNode): Node {
     this.interfaces = new Map(node.interfaceDefinitions.map((iface) => [iface.name, iface]));
@@ -79,14 +87,59 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
 
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
+    this.payloadScopes.push(new Map());
     for (const statement of node.statements ?? []) {
       const visited = this.visit(statement) as StatementNode;
       const rewritten = this.rewriteStatement(visited);
       if (rewritten) out.push(...rewritten);
       else out.push(visited);
+      this.recordPayloadBinding(visited);
     }
+    this.payloadScopes.pop();
     node.statements = out;
     return node;
+  }
+
+  /** Track a payload local declared by `statement`, or drop one a later statement reassigns. */
+  private recordPayloadBinding(statement: StatementNode): void {
+    const scope = this.payloadScopes[this.payloadScopes.length - 1];
+    if (!scope) return;
+    if (statement instanceof VariableDefinitionNode) {
+      const encoded = statement.expression instanceof AbiEncodeCallNode
+        || statement.expression instanceof AbiEncodeWithSelectorNode
+        ? statement.expression
+        : undefined;
+      scope.set(statement.name, encoded);
+      return;
+    }
+    if (statement instanceof AssignNode) {
+      this.forgetPayloadBinding(statement.identifier.name);
+      return;
+    }
+    if (statement instanceof TupleAssignmentNode) {
+      for (const element of statement.elements) {
+        if (element.name) this.forgetPayloadBinding(element.name);
+      }
+    }
+  }
+
+  private forgetPayloadBinding(name: string): void {
+    for (let index = this.payloadScopes.length - 1; index >= 0; index -= 1) {
+      const scope = this.payloadScopes[index]!;
+      if (scope.has(name)) {
+        scope.set(name, undefined);
+        return;
+      }
+    }
+  }
+
+  /** The abi-encode expression a bare payload identifier was bound to, if the block still holds that binding. */
+  private boundPayload(name: string): ExpressionNode | undefined {
+    for (let index = this.payloadScopes.length - 1; index >= 0; index -= 1) {
+      const scope = this.payloadScopes[index]!;
+      if (scope.has(name)) return scope.get(name);
+    }
+    return undefined;
   }
 
   private rewriteStatement(statement: StatementNode): StatementNode[] | undefined {
@@ -229,6 +282,13 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   }
 
   private resolveNamedCall(payload: ExpressionNode): NamedCall | undefined {
+    if (payload instanceof IdentifierNode) {
+      const bound = this.boundPayload(payload.name);
+      if (!bound) return undefined;
+      const named = this.resolveNamedCall(bound);
+      // The bound declaration keeps its own argument nodes, so the typed call reads independent copies.
+      return named && { ...named, args: named.args.map((arg) => cloneNode(arg)) };
+    }
     if (payload instanceof AbiEncodeCallNode) {
       if (payload.interfaceName === 'this' || !this.interfaces.has(payload.interfaceName)) return undefined;
       return { interfaceName: payload.interfaceName, functionName: payload.functionName, args: payload.parameters };

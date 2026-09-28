@@ -6,9 +6,12 @@ import {
 import {
   ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
-import type { PerCallProxyDeployHalf, PerCallProxyDeployment } from '../per-call/proxy/deploy.js';
+import type {
+  PerCallProxyCallerFunding, PerCallProxyDeployHalf, PerCallProxyDeployment,
+} from '../per-call/proxy/deploy.js';
 import {
-  StatefulContract, StatefulFunctionCall, ContractRunner, type ContractEventName, type EventListener,
+  StatefulContract, StatefulFunctionCall, ContractRunner, type ConnectedStatefulContract,
+  type ContractEventName, type EventListener,
   type EventLog, type StatefulContractEvent,
 } from './StatefulContract.js';
 import Signer from '../Signer.js';
@@ -87,6 +90,12 @@ export interface DeployProxyOptions {
   // Deploy overrides for the proxy genesis / the implementation genesis (funding, fee, addressType, ...).
   proxyOverrides?: DeployContractOptions;
   implementationOverrides?: DeployContractOptions;
+  /**
+   * The coin that enters a per-call proxy's `initialize` hop, or absent to take the runner's own largest tokenless
+   * UTXO. A hop's root frame binds `msg.sender` to the lock of the input it names, so the coin has to sit at the
+   * deployer's own P2PKH lock.
+   */
+  callerFunding?: PerCallProxyCallerFunding;
 }
 
 /** OZ `upgrades.deployProxy` initial state: a positional initializer list or a named state record. */
@@ -688,7 +697,7 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
   factory: ContractFactory<TImpl>,
   initialState: ProxyInitialState | undefined,
   options: DeployProxyOptions,
-): Promise<PerCallProxyDeployment> {
+): Promise<PerCallProxyDeployment & ConnectedStatefulContract<Artifact>> {
   const implementationArtifact = factory.artifact;
   const runner = options.runner ?? factory.runner;
   const signer = runner instanceof Signer ? runner : undefined;
@@ -721,23 +730,92 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
 
   const { buildProxyArtifact, deployPerCallProxy } = await import('../per-call/proxy/index.js');
   const proxyArtifact = options.proxy ?? buildProxyArtifact(implementationArtifact);
+  // The hop is entered by the deployer's own coin, so a caller that funds it is selected before the geneses and
+  // excluded from them: a genesis must not spend the coin the hop is about to sign.
+  const callerFunding = options.callerFunding ?? await perCallCallerFunding(signer);
+  const callerOutpoint = `${callerFunding.utxo.txid}:${callerFunding.utxo.vout}`;
   const implementationDeploy = await perCallGenesisHalf(
-    options.implementationOverrides, implementationArtifact, signer, new Set(),
+    options.implementationOverrides, implementationArtifact, signer, new Set([callerOutpoint]),
   );
   const proxyDeploy = await perCallGenesisHalf(
     options.proxyOverrides, proxyArtifact, signer,
-    new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`]),
+    new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`, callerOutpoint]),
   );
 
-  return deployPerCallProxy({
+  const deployment = await deployPerCallProxy({
     provider: signer.provider,
     implementationArtifact,
     implementationDeploy,
     proxyArtifact,
     proxyDeploy,
     initialize: { functionName: initializer, args: (initialState ?? []) as FunctionArgument[] },
-    callerLockingBytecode: signer.getLockingBytecode(),
+    callerLockingBytecode: callerFunding.funder.generateLockingBytecode(),
+    callerFunding,
   });
+  const handle = await perCallProxyHandle(
+    implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
+    deployment.proxy.address,
+  );
+  // The deployment is the handle a suite calls through, with the deployment's own record attached: the proxy and
+  // the implementation it forwards to, the derived hop, and the ethers-style accessors a deploy hands back.
+  return Object.assign(handle as unknown as Record<string, unknown>, {
+    implementation: deployment.implementation,
+    proxy: deployment.proxy,
+    initialize: deployment.initialize,
+    deploymentTransaction: () => deployment.proxy.tx,
+    waitForDeployment: async (): Promise<unknown> => {
+      await deployment.initialize.broadcast?.wait?.();
+      return handle;
+    },
+  }) as unknown as PerCallProxyDeployment & ConnectedStatefulContract<Artifact>;
+}
+
+/**
+ * The deployer's own coin for a hop: the largest tokenless UTXO at the signer's address.
+ *
+ * The hop's root frame binds `msg.sender` to the lock of the input it names, so the coin has to sit at the
+ * deployer's own P2PKH lock; it also pays the hop's fee, so the largest one is taken rather than a dust output.
+ */
+async function perCallCallerFunding(signer: Signer): Promise<PerCallProxyCallerFunding> {
+  const spendable = (await signer.getUtxos()).filter((utxo) => utxo.token === undefined);
+  const coin = spendable.sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))[0];
+  if (coin === undefined) {
+    throw new Error(
+      `The deployer's address ${signer.getAddress()} holds no tokenless UTXO to enter the initialize hop with.`,
+    );
+  }
+  return { utxo: coin, funder: signer.unlockP2PKH(), changeAddress: signer.getAddress() };
+}
+
+/**
+ * The handle a per-call proxy deployment returns: the implementation's entries, addressed and held by the proxy.
+ *
+ * The proxy's own artifact is a fallback and nothing else, so a suite's calls name the implementation's ABI while
+ * the state, the address and the category belong to the proxy. The handle carries both facts, and its calls are
+ * composed as the hop that enters the proxy's fallback and delegates into the implementation.
+ */
+async function perCallProxyHandle(
+  implementationArtifact: Artifact, signer: Signer, proxyCategoryId: string,
+  implementationCategoryId: string, proxyAddress: Uint8Array,
+): Promise<ConnectedStatefulContract<Artifact>> {
+  const { Contract } = await import('../Contract.js');
+  const { StatefulContract } = await import('./StatefulContract.js');
+  const { lockingBytecodeToCashAddress } = await import('@bitauth/libauth');
+  const inner = new Contract(implementationArtifact, [] as never, {
+    provider: signer.provider, category: hexToBin(proxyCategoryId),
+  });
+  const handle = StatefulContract.withCategory(inner, proxyCategoryId) as unknown as StatefulContract;
+  const encoded = lockingBytecodeToCashAddress({
+    bytecode: proxyAddress, prefix: getNetworkPrefix(signer.provider.network), tokenSupport: true,
+  });
+  if (typeof encoded === 'string') {
+    throw new Error(`The per-call proxy's own address is not encodable: ${encoded}`);
+  }
+  handle._perCallProxyImplementationCategory = implementationCategoryId;
+  handle._perCallProxyAddress = encoded.address;
+  handle._signer = signer;
+  handle._logicalNonceSigner = signer;
+  return handle as unknown as ConnectedStatefulContract<Artifact>;
 }
 
 /**
@@ -756,7 +834,7 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
 export function deployProxy(
   implementationFactory: ContractFactory<PerCallArtifact>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
-): Promise<PerCallProxyDeployment>;
+): Promise<PerCallProxyDeployment & ConnectedStatefulContract<Artifact>>;
 export function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,

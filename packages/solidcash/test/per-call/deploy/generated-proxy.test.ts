@@ -252,22 +252,16 @@ describe('a generated proxy', () => {
     ));
   });
 
-  it('keeps the address in a record of its own when the implementation declares nothing about its proxy', () => {
-    // A field the implementation does not declare is never rewritten by its frames, so the proxy keeps the address
-    // it forwards to in a data NFT past the implementation's rather than among the implementation's fields.
+  it('refuses a proxy whose own record would change how a commitment leads', () => {
+    // A field the implementation does not declare is never rewritten by its frames, so a proxy can keep the address
+    // it forwards to in a record past the implementation's. It can only do that where the two layouts already agree
+    // on how a commitment leads: an implementation of one record writes it without a leading index, while a proxy
+    // that added a record of its own leads every commitment with one, and a delegate frame writes through the
+    // implementation's own declaration.
     const artifacts = compileStringMulti(NO_IMPLEMENTATION_FIELD, { composition: 'per-call' });
-    const implementationLayout = artifacts.Impl!.stateLayout!;
-    const proxy = buildProxyArtifact(artifacts.Impl!);
-    const proxyLayout = proxy.stateLayout!;
-
-    expect(proxyLayout.dataNftCount).toBe(implementationLayout.dataNftCount + 1);
-    const implementationLines = fieldCoordinates(implementationLayout).split('\n');
-    expect(fieldCoordinates(proxyLayout).split('\n').slice(0, implementationLines.length))
-      .toStrictEqual(implementationLines);
-    const own = proxyLayout.variables.find((variable) => variable.name === 'implementation')!;
-    expect({ type: own.type, nftIndex: own.nftIndex, fieldIndex: own.fieldIndex }).toStrictEqual({
-      type: 'address', nftIndex: implementationLayout.dataNftCount, fieldIndex: 0,
-    });
+    expect(artifacts.Impl!.stateLayout!.dataNftCount).toBe(1);
+    expect(() => buildProxyArtifact(artifacts.Impl!))
+      .toThrow(/only one of them leads a commitment with the index it belongs to/);
   });
 
   it('refuses a field whose type it cannot name, naming the field', () => {

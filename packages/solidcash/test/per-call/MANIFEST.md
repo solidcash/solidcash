@@ -7,6 +7,7 @@ Run a package's focused suites, or one directory of them, with its per-call conf
 
     yarn workspace solidc vitest run --config vitest.per-call.config.ts [<directory>]
     yarn workspace solidcash vitest run --config vitest.per-call.config.ts [<directory>]
+    yarn workspace @solidcash/testing vitest run --config vitest.per-call.config.ts [<directory>]
     yarn workspace @solidcash/utils vitest run test/per-call
 
 The per-call configs keep transpiled modules on disk between runs (`test.experimental.fsModuleCache`), skip
@@ -34,18 +35,21 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 105 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 100 |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | 35 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 38 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
+| `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1324 tests passed (115 + 435 + 774), with one more case that runs under `PER_CALL_FULL=1` (the
-twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 435 is the four rows above it, and `solidcash` 774 is the fifteen rows above
-it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
+Total: 1330 tests passed (115 + 435 + 779 + 1), with one more case that runs under `PER_CALL_FULL=1` (the
+twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 435 is the four rows above it, `solidcash` 779 is the sixteen rows above it,
+and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
+A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
 

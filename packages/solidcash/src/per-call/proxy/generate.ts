@@ -16,7 +16,8 @@
 
 import { compileStringMulti } from 'solidc';
 import {
-  parseType, type Artifact, type StateLayout, type StateVariableInfo, type StructDefinitionInfo,
+  isMultiDataNftLayout, parseType, type Artifact, type StateLayout, type StateVariableInfo,
+  type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { PerCallProxyDeployError } from './errors.js';
 
@@ -203,6 +204,18 @@ export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtif
     };
   }
   const own = proxyFields.slice(implementationFields.length);
+  // A layout with more than one record leads every commitment with the index it belongs to; a single-record one
+  // does not. The writer is the implementation's own frame, and the reader is whoever holds the proxy's layout, so
+  // the two have to agree on that leading field or the write lands on a commitment the proxy cannot place.
+  if (isMultiDataNftLayout(implementation) !== isMultiDataNftLayout(proxy)) {
+    return {
+      ok: false,
+      reason: `the implementation "${implementationArtifact.contractName}" declares `
+        + `${implementation.dataNftCount} data NFT(s) and the proxy "${proxyArtifact.contractName}" declares `
+        + `${proxy.dataNftCount}, so only one of them leads a commitment with the index it belongs to; a delegate `
+        + `frame writes the record through the implementation's own declaration, so both must use the same one`,
+    };
+  }
   if (own.length === 0) {
     if (implementation.dataNftCount === proxy.dataNftCount) return { ok: true, ownAddressRecord: undefined };
     return {

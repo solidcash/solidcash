@@ -804,6 +804,7 @@ export {
 import {
   extractVerifiedValuesFromTrace,
 } from './trace-verified-value-helpers.js';
+import { PerCallFunctionCall } from '../per-call/call/handle.js';
 import {
   isCanonicalEvmScalarReturnVector,
   probeRequireMessage,
@@ -5456,6 +5457,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   _signer?: Signer;
   /** Signer identity retained for logical nonce parity without changing legacy funding behavior. */
   _logicalNonceSigner?: Signer;
+  /**
+   * The implementation's own category, when this handle is a per-call proxy's: its calls are composed as the hop
+   * that enters the proxy's fallback and lets the implementation's master run as a delegate frame, and both
+   * categories are read to place the inputs.
+   */
+  _perCallProxyImplementationCategory?: string;
+  /** The address a per-call proxy's handle presents: the proxy's own master pool, not the implementation's. */
+  _perCallProxyAddress?: string;
 
   /**
    * Maximum number of VM probe iterations for auto-derivation.
@@ -5609,10 +5618,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         new DeployFunctionCall(self as StatefulContract, functionName, args),
       createStatefulFunctionCall: (
         functionName: string, args: FunctionArgument[], abiFunction: AbiFunction,
-      ) => new StatefulFunctionCall(
-        () => self._createBuilder(functionName, args, { abiFunction }),
-        self as StatefulContract, functionName, args, undefined, abiFunction.selector,
-      ),
+      ) => (self.inner.artifact.composition?.convention === 'per-call'
+        ? new PerCallFunctionCall(
+          {
+            artifact: self.inner.artifact,
+            abiEntry: abiFunction,
+            categoryId: self.categoryId,
+            provider: self.inner.provider,
+            signer: self._signer,
+            ...(self._perCallProxyImplementationCategory === undefined
+              ? {} : { proxyImplementationCategoryId: self._perCallProxyImplementationCategory }),
+          },
+          functionName, args,
+        )
+        : new StatefulFunctionCall(
+          () => self._createBuilder(functionName, args, { abiFunction }),
+          self as StatefulContract, functionName, args, undefined, abiFunction.selector,
+        )),
     } as any, contract);
   }
 
@@ -5882,6 +5904,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
     (sc as StatefulContract)._logicalNonceSigner = signer;
+    (sc as StatefulContract)._perCallProxyImplementationCategory = this._perCallProxyImplementationCategory;
+    (sc as StatefulContract)._perCallProxyAddress = this._perCallProxyAddress;
     // Connecting a signer changes only the runner. Preserve the externally visible logical identity used by
     // Solidity `address(this)`/cross-contract `msg.sender`; rebuilding from the category alone otherwise falls
     // back to the physical p2sh32 state covenant address.
@@ -6107,8 +6131,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   get address(): string {
     // For an address-constructed instance the address is known immediately (the category-less scaffold's own
-    // address would differ until resolution).
-    return this._pendingAddress ?? this.inner.address;
+    // address would differ until resolution). A per-call contract behind a proxy is addressed by the proxy, whose
+    // master is not the implementation's, so its address is carried rather than recomputed from the artifact.
+    return this._perCallProxyAddress ?? this._pendingAddress ?? this.inner.address;
   }
 
   get tokenAddress(): string {

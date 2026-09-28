@@ -68,6 +68,7 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 | P27 | The innermost revert reported after state-changing calls (E3) | MS10 | the innermost refusing frame is reported with its source line, reason and the custom error the artifact publishes (`reverts/innermost-revert.test.ts`; E3 landed). The compiler does not evaluate a custom error's argument values, which the report says rather than inventing them |
 | P28 | `STATIC` root reads off-chain, including reverting views (E4) | MS8 | settles: a `STATIC` root read over a contract's live records, nested reads into another contract's views, and a refusing view reported as the innermost refusal (`reads/reads.test.ts`, `reads/nested.test.ts`, `reads/nested-reads.test.ts`) |
 | P29 | CREATE-predicted, circular addresses (F3) | MS9 | partial, as of `867cafe09`. The four escrow contracts deploy through the shipped factory path at their real addresses and are referenced by the next deployment; the fixture stops before the proxy half, so the prediction is exercised but not yet asserted (the assertion is F7's) |
+| P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 Movement since that reading, per the plan's Log: a frame that keeps a data-NFT record and writes a mapping batch now
 settles, as a user-entered root and behind a proxy hop — the batch groups are read past the frame's own state
@@ -85,7 +86,6 @@ every contract input, with the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the
 **MS10** (a root whose own check fails after an earlier call succeeded, a nested callee's failing check reported as
 the innermost frame, and a revert with a declared error carrying arguments, with the compiler's own warning that the
 arguments are not evaluated pinned beside it).
-| P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 ## 3. Test mechanics the titles also need (not shapes)
 

@@ -131,8 +131,8 @@ and the binding of a delegate callee to the implementation the record names by `
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
   machine's acceptance of the caller, its callee and the validator, twice on the same bytes, with two mutated
-  controls refused. `two-contract-round-trip.test.ts` drives the two-contract round trip the design's worked
-  example uses, and `round-trip-composition.test.ts` derives it end to end: the layout places the two masters of
+  controls refused. `round-trip-composition.test.ts` derives the two-contract round trip the design's worked
+  example uses end to end: the layout places the two masters of
   the re-entered contract, the validator and the callee; the shipped host fills every published stop site, callee
   first (`A.k`, then `B.g`, then `A.f`); the machine accepts all four contract inputs of the assembled transaction,
   twice with the same verdict; and the validator's own derivation walks all eleven checks and derives the order the

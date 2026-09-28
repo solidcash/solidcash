@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   asmToScript,
@@ -20,8 +19,9 @@ import {
 } from '../shapes/harness.js';
 import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, participant,
+  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -48,6 +48,9 @@ const VALIDATOR_ID = 'validator';
 const RECORD_ID = 'record-log';
 const USER_ID = 'user';
 const RECORD_VALUE = 20_000n;
+// The log's data NFT sits at the covenant its category derives, so a UTXO at this lock holding the log's mutable
+// token is a genuine record rather than an ordinary lock a caller could mimic.
+const RECORD_LOCK = stateRecordLockingBytecode(hexOf(LOG_CATEGORY));
 
 /** The source, with the number of turns the loop makes written as its bound. */
 function source(trips: number): string {
@@ -142,15 +145,19 @@ function build(turns: number, sourceTurns: number = turns): Run {
     segments: [[kept(recordIndex, recordOf(ITEM * BigInt(turn - 1)), recordOf(ITEM * BigInt(turn)))]],
   });
 
+  const blocks = [
+    { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+    {
+      contract: 'Log',
+      masters: Array.from({ length: turns }, (_unused, index) => `log-${index + 1}`),
+      state: [RECORD_ID],
+    },
+  ];
+  // Every turn rewrites the log's record, and the covenant's write path names one writer: the hub's master and
+  // validator precede the log's masters, so the first log master is the index the spend is authorized by.
+  const masterIndex = participant(layoutTransaction(blocks), 'log-1').index;
   const plan: CompositionDraftPlan = {
-    blocks: [
-      { contract: 'Hub', masters: ['hub-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
-      {
-        contract: 'Log',
-        masters: Array.from({ length: turns }, (_unused, index) => `log-${index + 1}`),
-        state: [RECORD_ID],
-      },
-    ],
+    blocks,
     userInputs: [{ id: USER_ID, index: userIndex }],
     masters: [hubMaster, ...Array.from({ length: turns }, (_unused, index) => logMaster(index + 1))],
     inputs: {
@@ -162,13 +169,13 @@ function build(turns: number, sourceTurns: number = turns): Run {
       },
       [RECORD_ID]: {
         source: {
-          lockingBytecode: USER_LOCK, valueSatoshis: RECORD_VALUE, token: token(LOG_CATEGORY, 'mutable', recordOf(0n)),
+          lockingBytecode: RECORD_LOCK, valueSatoshis: RECORD_VALUE, token: token(LOG_CATEGORY, 'mutable', recordOf(0n)),
         },
         output: {
-          lockingBytecode: USER_LOCK, valueSatoshis: RECORD_VALUE,
+          lockingBytecode: RECORD_LOCK, valueSatoshis: RECORD_VALUE,
           token: token(LOG_CATEGORY, 'mutable', recordOf(ITEM * BigInt(sourceTurns))),
         },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(hexOf(LOG_CATEGORY), masterIndex, 1),
       },
       [USER_ID]: userInput(),
     },
@@ -271,6 +278,9 @@ describe('one entry that calls one callee from a loop', () => {
     expect(verdictAt(draft, 'log-2')).toStrictEqual({ accepted: true });
     expect(verdictAt(draft, 'hub-1')).toStrictEqual({ accepted: true });
     expect(verdictAt(draft, VALIDATOR_ID)).toStrictEqual({ accepted: true });
+    // The record's own input is spent under the data-NFT covenant, so the machine evaluates its script and accepts
+    // the spend; the same unlocking at a plain lock is refused, the control stated in state-record-composition.
+    expect(verdictAt(draft, RECORD_ID)).toStrictEqual({ accepted: true });
     expect(decide(draft).outcomes.map((outcome) => `${outcome.check}:${outcome.status}`))
       .toStrictEqual([
         'V1:accepted', 'V2:accepted', 'V3:accepted', 'V4:accepted', 'V5:accepted', 'V6:accepted',
@@ -281,10 +291,10 @@ describe('one entry that calls one callee from a loop', () => {
   it('composes and derives the whole shape through the shipped composer', () => {
     const run = build(2);
     const outcome = composeAndDerive(run.plan, [run.artifacts.Hub!, run.artifacts.Log!], [rootOf('Hub', 'go', 'hub-1')]);
-    // The record and the user are inputs too; neither is a frame, so the machine's verdict on them is not this
-    // shape's to read.
+    // The user input is a signed P2PKH whose filler signature the machine does not read, so its verdict is not
+    // this shape's; the record's is, because its spend runs the data-NFT covenant's script.
     const rejected = outcome.verdicts
-      .filter((verdict) => ![RECORD_ID, USER_ID].includes(verdict.participant))
+      .filter((verdict) => verdict.participant !== USER_ID)
       .filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(rejected).toStrictEqual([]);
@@ -336,7 +346,7 @@ describe('one entry that calls one callee from a loop', () => {
         [RECORD_ID]: {
           ...run.plan.inputs[RECORD_ID]!,
           output: {
-            lockingBytecode: USER_LOCK,
+            lockingBytecode: RECORD_LOCK,
             valueSatoshis: RECORD_VALUE,
             token: token(LOG_CATEGORY, 'mutable', run.recordOf(ITEM)),
           },
@@ -368,6 +378,7 @@ describe('one entry that calls one callee from a loop', () => {
       expect(verdictAt(draft, master), master).toStrictEqual({ accepted: true });
     }
     expect(verdictAt(draft, VALIDATOR_ID)).toStrictEqual({ accepted: true });
+    expect(verdictAt(draft, RECORD_ID)).toStrictEqual({ accepted: true });
     // The caller's own program is longer than one that carries no padding by the block its input is paid for.
     const hubArtifact = run.artifacts.Hub!;
     const program = scriptToBytecode(asmToScript(hubArtifact.bytecode));

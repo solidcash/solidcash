@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, computeFunctionSelector, computeFunctionSignature, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, participant,
-  type CompositionDraftPlan, type DraftMaster,
+  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -90,15 +90,20 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
     enteredBy: 'ledger-1', origin: 'user', calls: [], retval: new Uint8Array(0), segments: [[]],
     events: [], sends: [], argumentPushes: [selector], redeemScript: callee.program,
   };
+  const categoryHex = hexOf(ledger.category);
+  const blocks = [
+    { contract: 'Ledger', masters: ['ledger-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
+    { contract: 'Callee', masters: ['callee-1'], state: [] },
+  ];
+  // The record is the ledger's data NFT, so it sits at the covenant its category derives and its spend carries
+  // that covenant's write path with the index of the master that rewrites it.
+  const masterIndex = participant(layoutTransaction(blocks), 'ledger-1').index;
   const recordSource = {
-    lockingBytecode: USER_LOCK, valueSatoshis: 20_000n,
+    lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
     token: tokenWith(ledger.category, 'mutable', BEFORE),
   };
   const plan: CompositionDraftPlan = {
-    blocks: [
-      { contract: 'Ledger', masters: ['ledger-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
-      { contract: 'Callee', masters: ['callee-1'], state: [] },
-    ],
+    blocks,
     userInputs: [{ id: 'user', index: 4 }],
     masters: [ledgerMaster, calleeMaster],
     inputs: {
@@ -108,7 +113,7 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
       record: {
         source: recordSource,
         output: { ...recordSource, token: tokenWith(ledger.category, 'mutable', AFTER) },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, masterIndex, 1),
       },
       user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
     },
@@ -119,14 +124,21 @@ function planFor(source: string): { plan: CompositionDraftPlan; artifacts: Retur
 
 const ROOT = { contract: 'Ledger', functionName: entryName('Ledger', 'bump'), kind: FrameKind.ROOT, master: 'ledger-1' };
 
-/** The ledger master's own input, asked of the machine in the currently composed draft. */
-function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['draft']): { accepted: boolean; objection?: string } {
+/** The machine's verdict on one participant's own input of the assembled transaction. */
+function inputVerdict(draft: CompositionDraft, id: string): { accepted: boolean; objection?: string } {
   const program = draft.programFor('ledger-1');
   const vm = compositionMachine();
   const state = vm.evaluate({
-    inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    inputIndex: participant(draft.layout, id).index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
   });
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
+}
+
+/** The ledger master's own input, asked of the machine in the currently composed draft. */
+function masterVerdict(draft: CompositionDraft): { accepted: boolean; objection?: string } {
+  return inputVerdict(draft, 'ledger-1');
 }
 
 function derive(source: string): ReturnType<typeof createComposedDerivationHost> {
@@ -138,12 +150,15 @@ function derive(source: string): ReturnType<typeof createComposedDerivationHost>
 }
 
 describe('a body that writes on both sides of a call', () => {
-  it('chains its record across the call split and the machine accepts the master', () => {
+  it('chains its record across the call split and the machine accepts the master and the record', () => {
     const { draft } = derive(FAITHFUL);
     expect(participant(draft.layout, 'record').index).toBe(RECORD_INDEX);
     expect(draft.blockOf('ledger-1').segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_INDEX], [RECORD_INDEX]]);
     expect(masterVerdict(draft)).toStrictEqual({ accepted: true });
+    // The record's own input is spent under the data-NFT covenant, so the machine evaluates its script and accepts
+    // the spend; the same unlocking at a plain lock is refused, the control stated in state-record-composition.
+    expect(inputVerdict(draft, 'record')).toStrictEqual({ accepted: true });
   });
 });
 

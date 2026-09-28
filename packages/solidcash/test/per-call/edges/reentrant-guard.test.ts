@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, type RecordEntry } from '@solidcash/utils';
 import { compileAndDeploy, entryName, hexOf, seededAddress, userInput, USER_LOCK } from '../shapes/harness.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst,
-  type CompositionDraftPlan, type DraftMaster,
+  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  type CompositionDraft, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { REAL_VALIDATOR_PROGRAM, validatorSpend } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -87,14 +87,20 @@ function plan(): CompositionDraftPlan {
     enteredBy: 'guarded-1', origin: 'user', calls: [], retval: new Uint8Array(0), segments: [[]],
     events: [], sends: [], argumentPushes: [selector], redeemScript: callee.program,
   };
+  const categoryHex = hexOf(guarded.category);
+  const blocks = [
+    { contract: 'Guarded', masters: ['guarded-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
+    { contract: 'Callee', masters: ['callee-1'], state: [] },
+  ];
+  // The record is the guarded contract's data NFT, so it sits at the covenant its category derives and its spend
+  // carries that covenant's write path with the index of the master that rewrites it.
+  const masterIndex = participant(layoutTransaction(blocks), 'guarded-1').index;
   const recordSource = {
-    lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: tokenWith(guarded.category, 'mutable', BEFORE),
+    lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
+    token: tokenWith(guarded.category, 'mutable', BEFORE),
   };
   return {
-    blocks: [
-      { contract: 'Guarded', masters: ['guarded-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
-      { contract: 'Callee', masters: ['callee-1'], state: [] },
-    ],
+    blocks,
     userInputs: [{ id: 'user', index: 4 }],
     masters: [guardedMaster, calleeMaster],
     inputs: {
@@ -104,7 +110,7 @@ function plan(): CompositionDraftPlan {
       record: {
         source: recordSource,
         output: { ...recordSource, token: tokenWith(guarded.category, 'mutable', AFTER) },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, masterIndex, 1),
       },
       user: { source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }, unlockingBytecode: userInput().unlockingBytecode },
     },
@@ -112,21 +118,30 @@ function plan(): CompositionDraftPlan {
   };
 }
 
+/** The machine's verdict on one participant's own input of the assembled transaction. */
+function verdictAt(draft: CompositionDraft, id: string): { accepted: boolean; objection?: string } {
+  const program = draft.programFor('guarded-1');
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: participant(draft.layout, id).index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
+}
+
 describe('a guard field carried across the call split', () => {
-  it('chains the guarded record through both segments and the machine accepts the master', () => {
+  it('chains the guarded record through both segments and the machine accepts the master and the record', () => {
     const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [artifacts.Guarded!, artifacts.Callee!], plan: plan() });
     deriveDepthFirst({ contract: 'Guarded', functionName: entryName('Guarded', 'bump'), kind: FrameKind.ROOT, master: 'guarded-1' }, host);
     // Segment 0 leaves the guard set; segment 1 reads that commitment and clears the guard.
     expect(draft.blockOf('guarded-1').segments.map((segment) => segment.map((entry) => entry.in)))
       .toStrictEqual([[RECORD_INDEX], [RECORD_INDEX]]);
-    const program = draft.programFor('guarded-1');
-    const vm = compositionMachine();
-    const state = vm.evaluate({
-      inputIndex: program.inputIndex, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
-    });
-    expect(vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) })
-      .toStrictEqual({ accepted: true });
+    expect(verdictAt(draft, 'guarded-1')).toStrictEqual({ accepted: true });
+    // The record's own input is spent under the data-NFT covenant, so the machine evaluates its script and accepts
+    // the spend; the same unlocking at a plain lock is refused, the control stated in state-record-composition.
+    expect(verdictAt(draft, 'record')).toStrictEqual({ accepted: true });
   });
 });
 

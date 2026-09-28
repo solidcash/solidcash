@@ -154,7 +154,10 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   // the transaction writes at the record's output or deletes the record. Because the program holds the declarations
   // and not the order the derivation ran them in, the chain is followed order-free: a walk starts at the record's
   // start view and takes as it follows, so a declaration no reached view offers is left over and a chain whose end
-  // is not anchored at the transaction's output or a deletion does not fit. Nothing carries on from a deletion.
+  // is not anchored at the transaction's output or a deletion does not fit. Nothing carries on from a deletion. The
+  // order a frame's own segments ran in is part of the rule and is not enforced: a frame whose declared segments are
+  // swapped leaves a set that still chains, so the program accepts where the derivation names
+  // `V7_CHAIN_START_MISMATCH`.
   'V7_CHAIN_START_MISMATCH',
   'V7_CHAIN_END_MISMATCH',
   'V7_CHAIN_BROKEN',
@@ -170,8 +173,8 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
  * `V6` is absent on purpose: the program requires every covered master to be reached exactly once, which closes
  * cycles and unreachable masters, but the ordering half of that check — a callee running between its caller's
  * segments — is the derived order, which the program does not hold; the record chains the ordering also carries are
- * enforced as far as the order-free half reaches. `V7` is absent because not every one of its rules is emitted here
- * yet.
+ * enforced as far as the order-free half reaches, so a frame whose declared segments are reordered is accepted.
+ * `V7` is absent because not every one of its rules is emitted here yet.
  */
 export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V8', 'V9', 'V10', 'V11'];
 
@@ -1765,6 +1768,13 @@ function emitCheckGatheredIndices(e: Emitter): void {
  * of that rule - every entry has to name a declaration it continues from and one that continues from it - together
  * with the chain's end, which is anchored: every key has a declaration whose write lands at the transaction's own
  * output, or one that deletes the record. No accepted composition can fail either half.
+ *
+ * The order the frames' segments ran in is not enforced. Swapping one frame's two declared segments leaves the
+ * declarations chaining from the spent commitment to the written one as a set, so this walk still consumes them
+ * all and accepts, while the derivation - which walks them in the derived order - refuses the first declaration
+ * because it no longer starts at the spent commitment (`V7_CHAIN_START_MISMATCH`). Closing that needs the V6
+ * order, which the program does not derive; the divergence is measured by
+ * `solidcash/test/per-call/hostile/reordered-segments.test.ts`.
  */
 function emitRequireRecordChains(e: Emitter): void {
   const O = Opcodes;

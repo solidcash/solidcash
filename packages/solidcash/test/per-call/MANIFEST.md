@@ -30,14 +30,14 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 72 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 78 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 62 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 15 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 65 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1075 tests (115 + 389 + 571), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 571 is the nine rows above it.
+Total: 1079 tests (115 + 389 + 575), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 575 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -195,13 +195,13 @@ listed under the table, and none of those is claimed anywhere else.
 | A proxy's call the contract does not hold the target for: a fallback beside ordinary entries, a receive, a delegatecall whose data is not the entry's own received call data, a target the contract does not hold | `proxy-binding.test.ts` (each refused at compile by name) |
 | A standalone master entered by a contract's input rather than a user's | `standalone-caller-contract.test.ts` (refused, with the attribution controls: the same forge is refused whether the frame claims that lock or the user, and a token behind a user lock is accepted) |
 | A proxied call whose delegate callee is not the implementation the proxy's own record names | owed, and now testable: the forwarded hop settles in the machine (`toys/proxy.test.ts`), so the record's target can be mutated against it — no case yet |
+| A master whose declared segments are out of order | `reordered-segments.test.ts` (the derivation refuses `V7_CHAIN_START_MISMATCH`; the program's order-free chain walk accepts, which the case pins) |
+| Two frames that list the same event output | `shared-event-output.test.ts` (the composer refuses the plan's shared list, and a mutation of the assembled spend is refused by the derivation and the program alike) |
 
-Not covered by `hostile/`, and not claimed by any other directory: reordered segments, which the machine accepts —
-its chain walk is order-free, so a master whose segment declarations are reordered is refused by the derivation as
-`V7_CHAIN_START_MISMATCH` but accepted by the program, whose ordering half of `V6` is not emitted — and a witness
-selecting a `catch` branch, which no witness can express: the block carries no branch field and the compiler makes
-every catch a no-op. A value send made as a plain output is refused at compile by name, and that refusal is already
-made in `edges/refused-contract-shapes.test.ts`; no compiled master fixes a send, so there is no spend to mutate.
+Not covered by `hostile/`, and not claimed by any other directory: a witness selecting a `catch` branch, which no
+witness can express: the block carries no branch field and the compiler makes every catch a no-op. A value send made
+as a plain output is refused at compile by name, and that refusal is already made in
+`edges/refused-contract-shapes.test.ts`; no compiled master fixes a send, so there is no spend to mutate.
 
 ## The shape the path currently carries
 

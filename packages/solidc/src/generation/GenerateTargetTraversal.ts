@@ -223,7 +223,6 @@ import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.
 import {
   compileBinaryOp,
   compileAddressToEvmIdentity,
-  compilePackedAddressAsInteger,
   compileCast,
   compileGlobalFunction,
   compileNullaryOp,
@@ -2710,6 +2709,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.userFunctionDefs.set(f.name, f);
     }
 
+    // Reachability runs here, before visitContract. It uses constructor-parameter identity to recognize
+    // foldable immutable getters; initialize that context before the first (cached) invocation scan.
+    this.contractParameters = node.contract.parameters;
     const reachableFreeFunctionIds = this.reachableInvokedFunctionIds(node.contract, node.freeFunctions);
     this.outlinedComputeBlockBaseFunctionIds = new Set();
 
@@ -3673,6 +3675,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       for (const key in current) {
         if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+        // A resolved direct call already contributed its target above unless it folded away. Its callee
+        // identifier is not a function-pointer value; scanning that identifier re-adds a folded target as a
+        // dead OP_DEFINE. Keep scanning arguments, which may contain real function-pointer values.
+        if (key === 'identifier' && current instanceof FunctionCallNode
+          && current.resolvedFunction?.functionId !== undefined) continue;
         const value = current[key as keyof Node];
         if (value instanceof Node) pending.push(value);
         else if (Array.isArray(value)) {
@@ -17302,45 +17309,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     node.parameters.forEach((param, i) => {
       const evmPacked = this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat;
-      // Ethereum's `uint160(address)` *is* the address bytes. A BCH address is the locking bytecode
-      // (p2sh32 = 35 bytes), which cannot be reconstructed from the 20-byte P2PKH/HASH160 extract.
-      // Packed `uint160(address)` therefore publishes the original locking bytecode.
-      const packedAddressAsUint = param instanceof CastNode
-        && param.expression?.type instanceof AddressType
-        && param.type instanceof IntType;
-      if (packedAddressAsUint && param instanceof CastNode) {
-        this.visit(param.expression);
-        // A graph/array address can be a right-aligned ABI word rather than a native locking bytecode.
-        // Its twelve framing bytes are not part of the packed address and would shift every following field.
-        if (evmPacked) this.emit(compilePackedAddressAsInteger(), locationData);
-        node.parameters[i] = param;
-      } else {
-        param = this.visit(param);
-        node.parameters[i] = param;
+      // Keep casts in the normal expression path. In particular uint160(address) must first narrow the
+      // BCH locking bytecode to its 20-byte Solidity identity before integer packed encoding reverses it.
+      param = this.visit(param);
+      node.parameters[i] = param;
 
-        // For packed encoding, pad numeric types to their declared byte width
-        if (evmPacked) {
-          this.emitEvmPackedValue(param.type!, locationData);
-        } else if (param.type === PrimitiveType.BOOL) {
+      // For packed encoding, pad numeric types to their declared byte width
+      if (evmPacked) {
+        this.emitEvmPackedValue(param.type!, locationData);
+      } else if (param.type === PrimitiveType.BOOL) {
         // OP_IF OP_1 OP_ELSE OP_0 OP_ENDIF [1] OP_NUM2BIN -> canonical 0x00/0x01
-          this.emit(Op.OP_IF, locationData);
-          this.emit(encodeInt(1n), locationData);
-          this.emit(Op.OP_ELSE, locationData);
-          this.emit(encodeInt(0n), locationData);
-          this.emit(Op.OP_ENDIF, locationData);
-          this.emit(encodeInt(1n), locationData);
-          this.emit(Op.OP_NUM2BIN, locationData);
-          this.popFromStack();
-          this.pushToStack('(value)');
-        } else if (param.type instanceof IntType) {
+        this.emit(Op.OP_IF, locationData);
+        this.emit(encodeInt(1n), locationData);
+        this.emit(Op.OP_ELSE, locationData);
+        this.emit(encodeInt(0n), locationData);
+        this.emit(Op.OP_ENDIF, locationData);
+        this.emit(encodeInt(1n), locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
+        this.popFromStack();
+        this.pushToStack('(value)');
+      } else if (param.type instanceof IntType) {
         // Pad VM number to declared byte width
-          this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
-          this.emit(Op.OP_NUM2BIN, locationData);
-        } else if (param.type instanceof FixedType) {
+        this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
+      } else if (param.type instanceof FixedType) {
         // Pad VM number to declared byte width
-          this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
-          this.emit(Op.OP_NUM2BIN, locationData);
-        }
+        this.emit(encodeInt(BigInt(param.type.byteWidth)), locationData);
+        this.emit(Op.OP_NUM2BIN, locationData);
       }
 
       // CAT with previous if not the first

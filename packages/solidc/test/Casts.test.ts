@@ -1,9 +1,12 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // Type casts: bytesN<->bytesM, uint160/bytes20(address), uint256<->int, address casts.
+
+// Vitest can reuse a restored console spy; each warning assertion must see only its own compilation.
+beforeEach(() => vi.clearAllMocks());
 
 describe('EVM CREATE2 address compatibility warning', () => {
   const opts = { solidityImportCompat: true };

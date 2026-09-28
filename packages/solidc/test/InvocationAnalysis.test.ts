@@ -66,6 +66,7 @@ describe('Release 0 shared invocation analysis', () => {
       callsiteId: 0,
       returnTypes: ['bigint', 'bool'],
       opaque: false,
+      resultEncoding: 'compact-pushdata-v1',
     }]);
     expect(summary.bounded).toBe(true);
     expect(summary.maximumDirectInvocations).toBe(1);
@@ -229,6 +230,7 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      producerSourceCallsiteId: 0,
       resultIndex: 0,
     }]);
     expect(artifact.abi.find((fn) => fn.name === 'run')!.resultConsumers)
@@ -260,7 +262,8 @@ describe('Release 0 shared invocation analysis', () => {
       },
     });
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
-      .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 }]);
+      .toEqual([{ consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0,
+        producerSourceCallsiteId: 0, resultIndex: 0 }]);
   });
 
   it('links each used tuple result through its synthetic local definition', () => {
@@ -276,8 +279,8 @@ describe('Release 0 shared invocation analysis', () => {
       }`, { forceStateful: true });
     expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
       .toEqual([
-        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
-        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
+        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
+        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 1 },
       ]);
   });
 
@@ -300,6 +303,7 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      producerSourceCallsiteId: 0,
       resultIndex: 0,
     }]);
     expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
@@ -329,6 +333,7 @@ describe('Release 0 shared invocation analysis', () => {
       consumerCallsiteId: 1,
       argument: 0,
       producerCallsiteId: 0,
+      producerSourceCallsiteId: 0,
       resultIndex: 0,
     }]);
     expect(fn.externalCalls?.[1].argSources?.[0]).toMatchObject({
@@ -367,8 +372,8 @@ describe('Release 0 shared invocation analysis', () => {
       });
     }
     expect(fn.resultConsumers).toEqual([
-      { consumerCallsiteId: 1, condition: true, producerCallsiteId: 0, resultIndex: 0 },
-      { consumerCallsiteId: 2, condition: true, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 1, condition: true, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, condition: true, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
     ]);
     expect(artifact.abi.find((candidate) => candidate.name === 'dispatch')!.resultConsumers)
       .toEqual(fn.resultConsumers);
@@ -557,11 +562,11 @@ describe('Release 0 shared invocation analysis', () => {
     expect(fn.resultConsumers).toEqual(expect.arrayContaining([
       {
         consumerCallsiteId: 1, iterationDomain: true,
-        producerCallsiteId: 0, resultIndex: 0,
+        producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0,
       },
       {
         consumerCallsiteId: 1, iterationDomain: true,
-        producerCallsiteId: 0, resultIndex: 1,
+        producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 1,
       },
     ]));
     expect(JSON.stringify(fn.externalCalls?.[1].iterationDomain)).not.toContain('externalCall');

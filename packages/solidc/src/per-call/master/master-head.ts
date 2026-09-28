@@ -34,6 +34,8 @@ import {
   CATEGORY_SLOT_LENGTH, ADDRESS_SLOT_LENGTH, TEMPLATE_HASH_SLOT_LENGTH, placeholderPrefixLength, placeholderPush,
 } from './placeholders.js';
 import {
+  dropFirstPushScript,
+  dropLastPushScript,
   readFrameFieldsScript,
   readFrameHeaderScript,
   readOwnWitnessBlockScript,
@@ -174,6 +176,16 @@ export interface MasterHeadOptions {
    */
   readonly callDataSelectorUnconsumed?: boolean;
   /**
+   * True when the sole entry is a fallback that forwards the call data it received, so the body's one parameter is
+   * the frame's whole call-data band rather than a single argument push.
+   *
+   * A caller that reaches a proxy spells the implementation's own call, so the frame's region is the selector push
+   * followed by the argument pushes — the bytes a fallback receives. The band is materialized from the transaction
+   * and every push the unlocking bytecode carried below it is removed, so the head leaves exactly the one item the
+   * fallback's parameter names. The call arms then drop no selector: the band already begins with it.
+   */
+  readonly callDataBandAsSingleItem?: boolean;
+  /**
    * The external calls the master's entries make, in execution order. The head fixes how many records the tail
    * holds and walks past each of them; the site that made the call binds its record in the caller's own body, and
    * the head keeps the checks on the sections after the calls. Only each site's kind is read here; the records
@@ -229,7 +241,8 @@ export function buildMasterHeadScript(options: MasterHeadOptions): MasterHead {
   // a master that admits a call frame can always remove the block from the bottom; the top form would remove the
   // call data instead. The bottom form also removes a lone block, so it serves both frame kinds.
   const admitsCall = (options.frameKinds ?? [FRAME_KIND_ROOT]).some((kind) => kind !== FRAME_KIND_ROOT);
-  if (options.blockOnTop && !admitsCall) head.dropTop();
+  if (options.callDataBandAsSingleItem === true) head.collapseCallDataBand();
+  else if (options.blockOnTop && !admitsCall) head.dropTop();
   else head.dropBottom();
   head.prologue();
   head.emitBytes(readOwnWitnessBlockScript());
@@ -1027,6 +1040,29 @@ class HeadEmitter {
    */
   dropBottom(): void {
     this.emitOp(Opcodes.OP_DEPTH, Opcodes.OP_1SUB, Opcodes.OP_ROLL, Opcodes.OP_DROP);
+  }
+
+  /**
+   * Leaves the frame's whole call-data band — the pushes between the witness block and the redeem script, their
+   * framing bytes included — as one item, discarding the copies the unlocking bytecode left on the stack.
+   *
+   * A forwarding fallback receives the caller's call data, which is the selector push followed by the argument
+   * pushes. The band is read from the transaction so it is the exact byte string the caller's own site hashed;
+   * then every push the unlocking bytecode carried below it is removed, one bottom item at a time, so the head
+   * opens on the band alone whether the frame is a user's (arguments directly) or a caller's (a selector first).
+   * The loop ends when only the band remains, so a frame with no arguments still leaves one item.
+   */
+  collapseCallDataBand(): void {
+    this.emitOp(Opcodes.OP_INPUTINDEX, Opcodes.OP_INPUTBYTECODE);
+    this.emitBytes(dropLastPushScript());
+    this.emitBytes(dropFirstPushScript());
+    // Drop everything below the band: the block push and the call data pushes the unlocking bytecode carried.
+    this.emitOp(Opcodes.OP_BEGIN);
+    this.emitOp(Opcodes.OP_DEPTH, Opcodes.OP_1SUB, Opcodes.OP_ROLL, Opcodes.OP_DROP);
+    this.emitOp(Opcodes.OP_DEPTH, Opcodes.OP_1, Opcodes.OP_LESSTHANOREQUAL);
+    this.emitOp(Opcodes.OP_UNTIL);
+    this.stack.length = 0;
+    this.stack.push('callDataBand');
   }
 
   private dup(): void {

@@ -65,9 +65,10 @@ export function entryFunctionName(contractName: string, entryName: string): stri
 /**
  * The sites of an execution with `calls` external calls: every call in order, then every segment close.
  *
- * `repeats` marks the calls of a body a loop makes: the site is named once while one execution reaches it as often
- * as the loop turns, so the table is a description of the source rather than an enumeration of the witnesses one
- * execution needs.
+ * A call whose own source site sits in a loop is marked `repeated`: the site is named once while one execution
+ * reaches it as often as the loop turns, so the table is a description of the source rather than an enumeration of
+ * the witnesses one execution needs. A body may make fixed calls beside its loop, and those sites keep their fixed
+ * positions and carry no marker; only the loop's own calls are marked.
  *
  * A call's witness is the callee's result, which a driver derives depth-first; the close of a segment is the
  * records that segment computed, which cannot be compared until the calls bounding it have returned. Publishing
@@ -77,7 +78,6 @@ export function entryStopSites(
   functionName: string,
   calls: readonly MasterCallSite[],
   pathCount: number = calls.length,
-  repeats = false,
 ): StopSiteMetadata {
   const sites: StopSite[] = [];
   for (let descriptor = 0; descriptor < calls.length; descriptor += 1) {
@@ -90,7 +90,7 @@ export function entryStopSites(
       callIndex: call.ordinal ?? descriptor,
       descriptor,
       ...(call.conditional === true ? { conditional: true } : {}),
-      ...(repeats ? { repeated: true } : {}),
+      ...(call.repeats === true ? { repeated: true } : {}),
     });
   }
   // A segment follows each call the execution makes, so the closes are the path's, not the descriptor list's.
@@ -111,7 +111,7 @@ export function entryStopSites(
  *
  * Each entry publishes the calls its own source makes, so a driver that resumes an entry names the callees that
  * entry's sites bind rather than another entry's. The entries share the call count the head fixes, but not the
- * calls themselves.
+ * calls themselves. Each call carries its own `repeats` marker, so a fixed call beside a loop keeps a fixed site.
  */
 export function publishPerCallStopSites(
   contractName: string,
@@ -119,12 +119,11 @@ export function publishPerCallStopSites(
     readonly entryName: string;
     readonly calls: readonly MasterCallSite[];
     readonly pathCount?: number;
-    readonly repeats?: boolean;
   }[],
 ): PublishedPerCallStopSites {
   return {
     version: 1,
-    entries: entries.map(({ entryName, calls, pathCount, repeats }) => {
+    entries: entries.map(({ entryName, calls, pathCount }) => {
       const functionName = entryFunctionName(contractName, entryName);
       return {
         functionName,
@@ -135,7 +134,7 @@ export function publishPerCallStopSites(
           target: binToHex(call.target),
           selector: binToHex(call.selector),
         })),
-        sites: entryStopSites(functionName, calls, pathCount, repeats === true),
+        sites: entryStopSites(functionName, calls, pathCount),
       };
     }),
   };

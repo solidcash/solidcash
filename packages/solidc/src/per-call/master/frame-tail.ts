@@ -91,6 +91,12 @@ export interface MasterCallSite {
   /** True when the source does not fix whether this call runs, so a given execution may reach no witness for it. */
   readonly conditional?: boolean;
   /**
+   * True when this call's own source site sits inside a loop, so one execution reaches the site as often as the
+   * loop turns rather than once. A body may hold fixed calls beside such a loop: only the loop's own sites are
+   * marked, and the calls before it keep the fixed positions the head checks them at.
+   */
+  readonly repeats?: boolean;
+  /**
    * True when the caller forwards its own received call data to the callee unchanged.
    *
    * A proxy's fallback is one such call: it hands its own `input` to the implementation, so neither the selector

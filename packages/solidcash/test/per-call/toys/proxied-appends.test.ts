@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
@@ -183,13 +182,10 @@ function build(): Built {
   const after = recordCommitment(layout, impl.address, writtenItems);
 
   const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
-  // The callee's argument pushes carry the last parameter first. The fallback receives its call data as one `bytes`
-  // argument, so the bytes it forwards are the callee's pushdata-framed call data.
+  // The callee's argument pushes carry the last parameter first. The fallback's one parameter is the call data the
+  // frame received: the selector's push and the argument pushes, with their framing bytes, exactly the bytes the
+  // implementation's own dispatcher reads.
   const argumentPushes = [appendSelector, encodeIntegerValue(APPEND.item), encodeIntegerValue(APPEND.id)];
-  const callData = new Uint8Array([
-    ...encodeDataPush(appendSelector),
-    ...argumentPushes.slice(1).flatMap((push) => [...encodeDataPush(push)]),
-  ]);
 
   const event = implementationArtifact.events![0]!;
   const payload = encodeEventCommitment(event.parameters, [APPEND.id, APPEND.item]);
@@ -264,9 +260,8 @@ function build(): Built {
     // The fallback reads the record before the hop and resumes from what the implementation wrote after it.
     segments: [[proxyRead], [proxyResumed]],
     // The bytes the fallback received are the callee's own call data: the selector's push and its argument
-    // pushes. The fallback's `bytes` parameter carries that call data itself, so the master's own unlocking
-    // frames it once; framing it here again would hand the fallback the push of the call data instead.
-    argumentPushes: [callData],
+    // pushes. The band is the frame's own call data, so the master's unlocking carries it as the entry's pushes.
+    argumentPushes,
     dispatches: true,
   });
   const implMaster: DraftMaster = {
@@ -410,7 +405,7 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
         [{ in: recordIndex, out: recordIndex, viewIn: before, viewOut: before }],
         [{ in: recordIndex, out: recordIndex, viewIn: after, viewOut: after }],
       ],
-      argumentPushes: [encodeDataPush(selector)], dispatches: true,
+      argumentPushes: [selector], dispatches: true,
     });
     const implMaster = master({
       master: IMPL_MASTER, contract: implementationArtifact.contractName, entry: 'bump', program: impl.program,

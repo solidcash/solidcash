@@ -218,7 +218,7 @@ function buildScalarEntry(): ProxiedEntry & {
   readonly eventPayload: Uint8Array;
 } {
   const readKey = encodeIntegerValue(KEYS.readKey);
-  const { pushes, callData } = callDataOf('Impl', 'touch', [readKey, encodeIntegerValue(WRITTEN_VALUE)]);
+  const { pushes } = callDataOf('Impl', 'touch', [readKey, encodeIntegerValue(WRITTEN_VALUE)]);
 
   const blocks = transactionBlocks(false);
   const layout = layoutTransaction(blocks);
@@ -252,7 +252,8 @@ function buildScalarEntry(): ProxiedEntry & {
       argumentPushes: [...pushes],
     }],
     segments: [[recordRead], [recordResumed]],
-    argumentPushes: [callData],
+    // The fallback's one parameter is the frame's own call-data band: the selector push and the argument pushes.
+    argumentPushes: [...pushes],
     dispatches: true,
   });
   const implMaster: DraftMaster = {
@@ -320,7 +321,7 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
 } {
   const readKeyPush = encodeIntegerValue(KEYS.readKey);
   const writeKeyPush = encodeIntegerValue(KEYS.writeKey);
-  const { pushes: callPushes, callData } = callDataOf('Impl', 'register',
+  const { pushes: callPushes } = callDataOf('Impl', 'register',
     [readKeyPush, writeKeyPush, encodeIntegerValue(WRITTEN_VALUE)]);
 
   // The read node is already in the map, so the head sentinel links to it rather than carrying the empty map's
@@ -398,7 +399,8 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
       [{ in: recordIndex, out: recordIndex, viewIn: recordBefore, viewOut: recordBefore }],
       [{ in: recordIndex, out: recordIndex, viewIn: recordAfter, viewOut: recordAfter }],
     ],
-    argumentPushes: [callData],
+    // The fallback's one parameter is the frame's own call-data band: the selector push and the argument pushes.
+    argumentPushes: [...callPushes],
     dispatches: true,
   });
   const implMaster: DraftMaster = {

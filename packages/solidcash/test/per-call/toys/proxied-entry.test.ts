@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { VALIDATOR_PROGRAM_REASONS } from '../../../../solidc/src/per-call/validator/index.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -145,8 +144,9 @@ function build(overrides: { readonly proxyAfterViewIn?: Uint8Array } = {}): Buil
       argumentPushes: [bumpSelector],
     }],
     segments: [[recordRead], [recordResumed]],
-    // The fallback receives its call data as one `bytes` argument: the callee's call data, the selector's push.
-    argumentPushes: [encodeDataPush(bumpSelector)],
+    // The fallback's one parameter is the call data the frame received: the caller's selector push, its
+    // arguments' pushes, with their framing bytes.
+    argumentPushes: [bumpSelector],
     dispatches: true,
   });
   const implMaster: DraftMaster = master({

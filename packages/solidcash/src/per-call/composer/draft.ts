@@ -628,7 +628,10 @@ export function composeDraft(
         learnUnstatedViews(master.master, current);
         if (site.kind !== 'call') return {};
         const visit = site.repeated === true ? visits.get(site.site) ?? 0 : 0;
-        const callIndex = site.repeated === true ? visit : site.callIndex;
+        // A repeated site's own `callIndex` is the position of its call's first record, so its visits fill the
+        // records from there on: the n-th visit is the n-th turn of the loop. A body may make fixed calls before
+        // the loop, and those occupy the positions below `callIndex`, which the site's own visits must not touch.
+        const callIndex = site.repeated === true ? site.callIndex + visit : site.callIndex;
         const call = master.calls[callIndex];
         // A repeated site's execution may have moved past every record the plan declares, which is what ends the
         // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.

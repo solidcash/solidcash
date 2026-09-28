@@ -503,12 +503,6 @@ interface InitializePlanOptions extends PerCallProxyDeployOptions {
 function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
   const pushes = callPushes(implementationArtifact, options.initialize.functionName, options.initialize.args ?? []);
-  // The fallback receives its call data as one `bytes` argument, so its unlocking carries one push whose payload
-  // is the callee's call data: the selector push followed by the argument pushes.
-  const callData = new Uint8Array([
-    ...encodeDataPush(pushes[0]!),
-    ...pushes.slice(1).flatMap((push) => [...encodeDataPush(push)]),
-  ]);
 
   // The proxy's block holds its master, its validator and its record; the implementation's master follows them,
   // and the deployer's signed input enters the composition. The record is kept where the layout places it.
@@ -561,7 +555,8 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
     segments: [[recordKept], [writes ? recordAfter : recordKept]],
     events: [],
     sends: [],
-    argumentPushes: [callData],
+    // The fallback's one parameter is the frame's own call-data band: the selector push and the argument pushes.
+    argumentPushes: pushes,
     redeemScript: proxyMaster.script,
     // A root that carries call data is one a dispatcher selects an entry of; a fallback-only master is the
     // degenerate case, and the flag is what admits its received call data.

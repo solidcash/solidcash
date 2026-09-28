@@ -190,11 +190,15 @@ function source(trips: number): string {
 /**
  * The same composition with the payout loop written inside `claim`, beside its fixed calls.
  *
- * The compiler serves the body, but every call site of an entry whose body loops is published as one the source
- * does not fix, so the fixed reads, the guarded write and the loop's transfer call all share that marking. This is
- * the shape the settling replica splits into `claim` and `pay`.
+ * Only the loop's own call site is marked one the source does not fix: the two reads and the guarded write carry
+ * no marker, so the derivation fills them once each and resumes the loop's site once per turn. The settling
+ * replica above keeps the payout in its own `Payer.pay` entry; this is the shape it no longer needs to split.
+ *
+ * The loop's bound is the count the oracle holds, read through its own entry, so the compiled body carries no
+ * literal trip count: the same body settles for however many turns the plan's record names. `release` returns
+ * rather than compares the payout, so it too embeds no count.
  */
-function sourceMixed(trips: number): string {
+function sourceMixed(): string {
   return 'pragma solidcash ^0.13.0;'
     + ' interface IClaimer { function claim() returns (int); }'
     + ' interface IEscrow {'
@@ -223,8 +227,7 @@ function sourceMixed(trips: number): string {
     + '     this.stored = 1;'
     + '     this.claiming = 1;'
     + `     int paid = IClaimer(0x${CLAIMER_ADDRESS}).claim();`
-    + `     require(paid == ${trips});`
-    + '     require(true);'
+    + '     require(paid >= 0);'
     + '   }'
     + '   function setClaimed(int value) {'
     + '     require(this.claiming == 1);'
@@ -237,11 +240,10 @@ function sourceMixed(trips: number): string {
     + '   function claim() returns (int) {'
     + `     int observed = IEscrow(0x${ESCROW_ADDRESS}).readRecord();`
     + '     require(observed == 1);'
-    + `     int r = IOracle(0x${ORACLE_ADDRESS}).rate();`
-    + '     require(r == 1);'
+    + `     int turns = IOracle(0x${ORACLE_ADDRESS}).rate();`
     + `     IEscrow(0x${ESCROW_ADDRESS}).setClaimed(2);`
     + '     int paid = 0;'
-    + `     for (int i = 0; i < ${trips}; i = i + 1) {`
+    + '     for (int i = 0; i < turns; i = i + 1) {'
     + `       IToken(0x${TOKEN_ADDRESS}).transfer(0x${USER_ADDRESS}, ${SHARES});`
     + '       paid = paid + 1;'
     + '     }'
@@ -294,7 +296,7 @@ interface Run {
  */
 function build(trips: number, options: { readonly mixed?: boolean } = {}): Run {
   const mixed = options.mixed ?? false;
-  const { artifacts, contracts } = compileAndDeploy(mixed ? sourceMixed(trips) : source(trips),
+  const { artifacts, contracts } = compileAndDeploy(mixed ? sourceMixed() : source(trips),
     mixed ? LABELS_WITHOUT_PAYER : LABELS);
   const root = contracts.Root!;
   const escrow = contracts.Escrow!;
@@ -351,7 +353,9 @@ function build(trips: number, options: { readonly mixed?: boolean } = {}): Run {
   const escrowWritten = escrowRec(ESCROW_AFTER_SETTLE);
   const rootWritten = rootRec(ROOT_AFTER);
   const tokenWritten = tokenRec({ paid: BigInt(trips) * SHARES });
-  const oracleKept = oracleRec(ORACLE_VALUE);
+  // The mixed shape's loop turns as often as the oracle's record says, so the count is the plan's data.
+  const oracleValue = mixed ? { rateValue: BigInt(trips) } : ORACLE_VALUE;
+  const oracleKept = oracleRec(oracleValue);
 
   const rootMaster: DraftMaster = {
     ...master({
@@ -448,7 +452,7 @@ function build(trips: number, options: { readonly mixed?: boolean } = {}): Run {
       enteredBy: CLAIM_MASTER, origin: USER_ID, argumentPushes: [rateSelector],
       segments: [[kept(oracleRecordIndex, oracleKept, oracleKept)]],
     }),
-    retval: encodeResultList([encodeIntegerValue(ORACLE_VALUE.rateValue)]),
+    retval: encodeResultList([encodeIntegerValue(oracleValue.rateValue)]),
   };
   const setClaimedMaster = master({
     master: SET_CLAIMED_MASTER, contract: 'Escrow', entry: 'setClaimed', program: escrow.program,
@@ -716,28 +720,52 @@ describe('a claimer that pays once per share, driven through the shipped path', 
       .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 8n * SHARES }));
   });
 
-  it('refuses the same loop written inside the claimer\'s fixed-call body', () => {
-    // The shape as literally stated - `claim` does the two read-only reads, the guarded write and the payout loop -
-    // is served by the compiler (it publishes a table for it), but every call site of a looping body is marked one
-    // the source does not fix. The derivation indexes those records by visit rather than by the site's own call, so
-    // the fixed reads and the loop's transfer call cannot both be filled, and the walk refuses by name.
+  it('settles the same loop written inside the claimer\'s fixed-call body', () => {
+    // The shape as literally stated - `claim` does the read-only read, the oracle read, the guarded write and the
+    // payout loop - derives in one execution. Only the loop's own call site is marked one the source does not fix;
+    // the fixed calls keep their positions, so they and the loop's turns all fill, in order.
     const run = build(2, { mixed: true });
     const claimer = run.artifacts.Claimer!.composition as
       { stopSites?: { entries: { functionName: string; sites: { sites: { kind: string; repeated?: boolean }[] } }[] } };
     const claim = claimer.stopSites!.entries.find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
-    expect(claim.sites.sites.filter((site) => site.kind === 'call').map((site) => site.repeated)).toStrictEqual([
-      true, true, true, true,
-    ]);
+    expect(claim.sites.sites.filter((site) => site.kind === 'call').map((site) => site.repeated ?? false))
+      .toStrictEqual([false, false, false, true]);
 
-    let error: Error | undefined;
-    try {
-      composeAndDerive(run.plan, artifactList(run), [ROOT]);
-    } catch (caught) {
-      error = caught as Error;
+    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+
+    // The two reads, the guarded write and the loop's two turns each run on their own master, and `claim` resumes
+    // only once they have.
+    expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
+      READ_MASTER, RATE_MASTER, SET_CLAIMED_MASTER, 'transfer-1', 'transfer-2',
+      CLAIM_MASTER, RELEASE_MASTER, ROOT_MASTER,
+    ]);
+    // Every participant - every master, the validator and every record - is accepted by the machine.
+    expect(refused(outcome)).toStrictEqual([]);
+
+    // The escrow's record carries what `setClaimed` wrote, the token's what the loop paid and the root's its
+    // score; both events decode in declared order.
+    const outputs = outcome.transaction.outputs;
+    expect(outputs[run.escrowRecordIndex]!.token?.nft?.commitment).toStrictEqual(run.escrowWritten);
+    expect(outputs[run.tokenRecordIndex]!.token?.nft?.commitment).toStrictEqual(run.tokenWritten);
+    expect(outputs[run.rootRecordIndex]!.token?.nft?.commitment).toStrictEqual(run.rootWritten);
+    const logs = compositionEventLogs(outcome.draft, artifactList(run));
+    expect(logs.map((log) => log.eventName)).toStrictEqual(['Scored', 'Noted']);
+    expect(logs.map((log) => log.values)).toStrictEqual([[1n], [2n]]);
+  });
+
+  it('turns the loop beside fixed calls as often as the plan declares records', () => {
+    // The trip count is the count the oracle's record names, so the same compiled `claim` body settles for
+    // however many turns the plan declares: the compiler publishes one repeated site, and the derivation resumes
+    // it once per record. Two turns and four run from one body, each reading back the amount the loop moved.
+    for (const trips of [2, 4]) {
+      const run = build(trips, { mixed: true });
+      const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+      expect(outcome.completed.filter((frame) => frame.master.startsWith('transfer-')).map((frame) => frame.master))
+        .toStrictEqual(Array.from({ length: trips }, (_unused, index) => `transfer-${index + 1}`));
+      expect(refused(outcome)).toStrictEqual([]);
+      expect(outcome.transaction.outputs[run.tokenRecordIndex]!.token?.nft?.commitment)
+        .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: BigInt(trips) * SHARES }));
     }
-    expect(error?.message).toBe('PER_CALL_DERIVATION_STALLED: master "claim-1" of Claimer.claim() '
-      + 'filled no witness at site 1 (call 1) (the call runs in a loop, so the published sites describe the source '
-      + 'rather than this execution)');
   });
 
   it('refuses a store record output no frame computed, on the same composition', () => {

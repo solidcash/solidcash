@@ -9,6 +9,7 @@ import {
   computeFunctionSelector,
   encodeArgumentList,
   encodeEventCommitment,
+  encodeIntegerValue,
   packFixedWidthElement,
   splitValueIntoChunks,
   type RecordEntry,
@@ -46,10 +47,11 @@ import {
  * commitment from the shipped encoders; no coordinate in the plan is a literal.
  *
  * The composition is driven both ways. A user enters the fallback as a root frame, one signed input per append, and
- * supplies its whole call data as the argument. A contract enters it as a call frame: a called frame's call data
- * leads with a four-byte selector, so the hub calls the proxy's forwarding entry with the framed call data as its
- * argument, and the fallback — entered under the call — reads that argument and forwards it verbatim. Both settle,
- * and the call frame's band is the reason a fallback cannot be called with the framed call data alone.
+ * supplies the entry's own call data as the band. A contract enters it as a typed call frame: the hub declares the
+ * implementation's interface and spells `append(item)`, so the frame the proxy's fallback master receives carries
+ * exactly that selector and argument push. The fallback materializes its `input` from the whole band and forwards
+ * it, so the implementation's dispatcher reads the same bytes the hub's site recorded. Both settle, and the call
+ * frame's band is the reason a fallback cannot be called with the framed call data alone.
  */
 
 const PROXY_LABEL = 'proxied append run proxy';
@@ -67,10 +69,7 @@ const HUB_MASTER = 'hub-1';
 const APPEND_COUNT = 2;
 /** The element `append` pushes and the id its event carries. */
 const APPEND = { id: 1n, item: 10n } as const;
-/**
- * The forwarding entry the hub calls. A called frame's call data leads with a four-byte selector, and the
- * fallback ignores it, so the selector only has to be one the hub's own compiled site records.
- */
+/** The selector of the forwarding entry a caller without the implementation's interface enters a proxy by. */
 const FORWARD_SELECTOR = computeFunctionSelector('forward(bytes)');
 
 const proxyMasterId = (turn: number): string => `proxy-${turn}`;
@@ -91,25 +90,45 @@ const IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   address public implementation;'
   + '   int[] items;'
   + '   event Appended(int indexed id, int item);'
-  + '   function append() {'
-  + `     this.items.push(${APPEND.item});`
-  + `     emit Appended(${APPEND.id}, ${APPEND.item});`
+  + '   function append(int item) {'
+  + '     this.items.push(item);'
+  + `     emit Appended(${APPEND.id}, item);`
   + '     require(true);'
   + '   }'
   + ' }';
 
 /**
- * The hub source: one unrolled call to the proxy's address per append.
+ * The hub source: one unrolled typed call to the proxy's address per append.
  *
- * A contract that enters a proxy cannot use the implementation's argument list: a called frame's unlocking
- * bytecode begins with a four-byte selector, and a fallback's received `input` is the whole call data the frame
- * received. The hub therefore calls a forwarding entry that takes that framed call data as its one argument, and
- * the proxy's fallback receives it verbatim and hands it to the implementation.
+ * A contract reaches a proxy the way it reaches any implementation: it declares the implementation's interface and
+ * spells the entry, so the call the proxy's fallback master receives is the implementation's own call data. The
+ * proxy's fallback materializes its `input` from that whole band, so the implementation's dispatcher reads exactly
+ * the selector and argument pushes the hub's site recorded.
  */
-function hubSource(proxyAddress: Uint8Array, callData: Uint8Array, appends: number): string {
-  const framed = bytesToHex(callData);
+function hubSource(proxyAddress: Uint8Array, appends: number): string {
   return 'pragma solidcash ^0.13.0;'
-    + ' interface IProxy { function forward(bytes input); }'
+    + ' interface IStore { function append(int item); }'
+    + ' contract Hub {'
+    + '   function go(int item) {'
+    + Array.from({ length: appends }, () =>
+      `     IStore(0x${hexOf(proxyAddress)}).append(item);`).join('\n')
+    + '     require(true);'
+    + '   }'
+    + ' }';
+}
+
+/**
+ * The forwarding spelling of the same shape: the hub declares a `forward(bytes)` interface and hands the proxy the
+ * item's push.
+ *
+ * A caller without the implementation's interface can still reach it: it hands the proxy the argument the
+ * implementation's dispatcher reads, and the fallback's `input` band carries the forwarding selector, then that
+ * argument's push, which the delegate frame passes on unchanged.
+ */
+function forwardHubSource(proxyAddress: Uint8Array, payload: Uint8Array, appends: number): string {
+  const framed = bytesToHex(payload);
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IProxy { function forward(bytes payload); }'
     + ' contract Hub {'
     + '   function go() {'
     + Array.from({ length: appends }, () =>
@@ -179,7 +198,7 @@ interface Built {
   readonly eventPayload: Uint8Array;
   /** The implementation's `append` selector. */
   readonly appendSelector: Uint8Array;
-  /** The framed call data a caller forwards to the implementation: the selector's push. */
+  /** The call-data band a caller's site carries: the selector's push and the item's push, framed. */
   readonly callData: Uint8Array;
   readonly proxyContract: string;
   readonly implementationContract: string;
@@ -230,9 +249,10 @@ function build(): Built {
   const headers = stages.map((bytes) => recordCommitment(layout, impl.address, bytes));
 
   const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
-  // The callee's argument pushes carry the last parameter first; `append` takes none, so its call data is the
-  // selector's push alone, and that framed byte string is what the fallback receives and forwards.
-  const callData = encodeDataPush(appendSelector);
+  // The callee's argument pushes carry the last parameter first: the selector, then the item. That band is what
+  // the fallback's one parameter carries and what the user supplies.
+  const appendPushes = [appendSelector, encodeIntegerValue(APPEND.item)];
+  const callData = new Uint8Array(appendPushes.flatMap((push) => [...encodeDataPush(push)]));
 
   const runPlan = planChunkRun({ layout, variable: 'items', spent: stages[0]!, written: stages[APPEND_COUNT]! });
 
@@ -301,10 +321,12 @@ function build(): Built {
     enteredBy: rootUserId(turn), origin: rootUserId(turn),
     calls: [{
       kind: FrameKind.DELEGATE, callee: implMasterId(turn), target: impl.address, value: 0n,
-      argumentPushes: [appendSelector],
+      argumentPushes: appendPushes,
     }],
     segments: [[recordEntry(headers[turn - 1]!, headers[turn - 1]!)], [recordEntry(headers[turn]!, headers[turn]!)]],
-    argumentPushes: [callData],
+    // The fallback's one parameter is the frame's own call-data band: the selector push and the item's push, which
+    // is exactly the call data the user supplies for the entry.
+    argumentPushes: appendPushes,
     dispatches: true,
   });
 
@@ -321,7 +343,7 @@ function build(): Built {
     // The delegate frame writes the proxy's record and the run's chunks: it reads what the turn before left and
     // closes its segment against what its own append computes.
     segments: [[recordEntry(headers[turn - 1]!, headers[turn]!), ...chunkEntries(turn)]],
-    argumentPushes: [appendSelector],
+    argumentPushes: appendPushes,
   });
 
   // Events come first in the trailing region, one per append at the output the layout gives it.
@@ -395,11 +417,11 @@ function build(): Built {
 /**
  * Lays the same appends out with a hub as the single root calling the proxy's fallback once per append.
  *
- * This is the shape a contract's own entry drives. The hub calls the proxy's forwarding entry once per append,
- * handing it the framed call data the fallback forwards; the proxy's fallback is entered as a `CALL` frame, reads
- * that call data as its one argument, and delegates to the implementation, which runs on the proxy's records.
+ * This is the shape a contract's own entry drives. The hub makes the implementation's typed call once per append;
+ * the proxy's fallback is entered as a `CALL` frame, materializes its `input` from the frame's whole call-data band,
+ * and delegates to the implementation, which runs on the proxy's records.
  */
-function buildHubCall(): Built {
+function buildHubCall(forward = false): Built {
   const { contracts, proxy, impl, layout } = compileAndDeployHalf();
   const { proxyArtifact, implementationArtifact } = contracts;
   const proxyContract = proxyArtifact.contractName;
@@ -410,15 +432,17 @@ function buildHubCall(): Built {
   const headers = stages.map((bytes) => recordCommitment(layout, impl.address, bytes));
 
   const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
-  // The fallback forwards the call data it received: the selector's push and nothing else, because `append` takes
-  // no parameters. The framed bytes are what the hub hands the proxy as the forwarding entry's one argument.
-  const callData = encodeDataPush(appendSelector);
-  // The call the hub makes: its forwarding entry's selector, then the framed call data. The fallback drops the
-  // selector (it dispatches nothing) and reads the framed data as its `input`, so the implementation's own call
-  // data is the same framed bytes.
-  const argumentPushes = [FORWARD_SELECTOR, callData];
+  // The call the hub makes: the implementation's selector, then the item's push. The proxy's fallback materializes
+  // the whole band that frame carries, so the implementation's dispatcher reads it unchanged. The forwarding
+  // spelling hands the same band over with the forwarding selector in the selector's place.
+  const argumentPushes = forward
+    ? [FORWARD_SELECTOR, encodeIntegerValue(APPEND.item)]
+    : [appendSelector, encodeIntegerValue(APPEND.item)];
+  const callData = new Uint8Array(argumentPushes.flatMap((push) => [...encodeDataPush(push)]));
 
-  const hubArtifact = compileStringMulti(hubSource(proxy.address, callData, APPEND_COUNT), {
+  const hubArtifact = compileStringMulti(forward
+    ? forwardHubSource(proxy.address, encodeIntegerValue(APPEND.item), APPEND_COUNT)
+    : hubSource(proxy.address, APPEND_COUNT), {
     composition: 'per-call',
   }).Hub!;
   const hub = deployed(hubArtifact.contractName, HUB_CATEGORY,
@@ -487,6 +511,9 @@ function buildHubCall(): Built {
       kind: FrameKind.CALL, callee: proxyMasterId(turn + 1), target: proxy.address, value: 0n, argumentPushes,
     })),
     segments: Array.from({ length: APPEND_COUNT + 1 }, () => []),
+    // The typed `go` takes the item, so the user supplies its push and the site frames it as a run-time argument.
+    // The forwarding `go` takes nothing: its whole call data is the frame's band.
+    ...(forward ? {} : { argumentPushes: [encodeIntegerValue(APPEND.item)], dispatches: true }),
   });
 
   const proxyMaster = (turn: number): DraftMaster => master({
@@ -498,10 +525,10 @@ function buildHubCall(): Built {
     frame: { kind: FrameKind.CALL, sender: hub.address, self: proxy.address, value: 0n },
     enteredBy: HUB_MASTER, origin: 'user',
     calls: [{
-      // The fallback forwards `input` verbatim, so the delegate callee's call data is the framed bytes the hub
-      // handed the proxy, i.e. the implementation's own selector push.
+      // The fallback forwards the band it received, which is the caller's whole call data: the forwarding
+      // selector's push and the framed bytes. The delegate callee's call data is that band.
       kind: FrameKind.DELEGATE, callee: implMasterId(turn), target: impl.address, value: 0n,
-      argumentPushes: [appendSelector],
+      argumentPushes,
     }],
     segments: [[recordEntry(headers[turn - 1]!, headers[turn - 1]!)], [recordEntry(headers[turn]!, headers[turn]!)]],
     argumentPushes,
@@ -518,7 +545,7 @@ function buildHubCall(): Built {
     enteredBy: proxyMasterId(turn), origin: 'user',
     calls: [],
     segments: [[recordEntry(headers[turn - 1]!, headers[turn]!), ...chunkEntries(turn)]],
-    argumentPushes: [appendSelector],
+    argumentPushes,
   });
 
   const event = implementationArtifact.events![0]!;
@@ -593,9 +620,8 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     const proxyArtifact = buildProxyArtifact(implementationArtifact);
     const proxy = deployed(proxyArtifact.contractName, PROXY_CATEGORY,
       deployMaster(proxyArtifact, PROXY_CATEGORY, VALIDATOR_PROGRAM));
-    const appendSelector = selectorOf({ Impl: implementationArtifact }, 'Impl', 'append');
     const hubArtifact = compileStringMulti(
-      hubSource(proxy.address, encodeDataPush(appendSelector), APPEND_COUNT), { composition: 'per-call' },
+      hubSource(proxy.address, APPEND_COUNT), { composition: 'per-call' },
     ).Hub!;
 
     // The write rebuilds the record from the writer's declaration, so the two layouts must be the same geometry.
@@ -758,30 +784,32 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     ].sort());
   });
 
-  it('binds the hub\'s call: the proxy frame runs on the framed call data the hub handed it', () => {
+  it('binds the hub\'s call: the proxy frame runs on the call data the hub handed it', () => {
     const built = buildHubCall();
     const outcome = settleOutcome(built);
     const layout = outcome.draft.layout;
     const hub = outcome.draft.blockOf(HUB_MASTER);
-    // One forwarding call per append, each reaching the proxy input at its own place in the layout, and each
-    // record carries the digest of the selector and the framed call data the hub's own site computed.
+    // One typed call per append, each reaching the proxy input at its own place in the layout, and each record
+    // carries the digest of the selector and the item push the hub's own site computed.
     expect(hub.calls).toHaveLength(APPEND_COUNT);
     hub.calls.forEach((call, turn) => {
       expect(call.kind).toBe(FrameKind.CALL);
       expect(call.target).toStrictEqual(built.proxy.address);
       expect(call.calleeRef).toBe(participant(layout, proxyMasterId(turn + 1)).index);
-      expect(call.argsHash).toStrictEqual(argsHash(FORWARD_SELECTOR, encodeArgumentList([built.callData])));
+      expect(call.argsHash)
+        .toStrictEqual(argsHash(built.appendSelector, encodeArgumentList([encodeIntegerValue(APPEND.item)])));
     });
 
-    // The proxy runs a call frame entered by the hub; its fallback reads the framed call data and delegates to the
-    // implementation, which runs as the proxy on the proxy's records.
+    // The proxy runs a call frame entered by the hub; its fallback reads the whole call-data band and delegates to
+    // the implementation, which runs as the proxy on the proxy's records.
     const proxy = outcome.draft.blockOf(proxyMasterId(1));
     expect(proxy.kind).toBe(FrameKind.CALL);
     expect(proxy.callerRef).toBe(participant(layout, HUB_MASTER).index);
     expect(proxy.sender).toStrictEqual(outcome.draft.blockOf(HUB_MASTER).self);
     expect(proxy.calls[0]!.kind).toBe(FrameKind.DELEGATE);
     expect(proxy.calls[0]!.target).toStrictEqual(built.impl.address);
-    expect(proxy.calls[0]!.argsHash).toStrictEqual(argsHash(built.appendSelector, encodeArgumentList([])));
+    expect(proxy.calls[0]!.argsHash)
+      .toStrictEqual(argsHash(built.appendSelector, encodeArgumentList([encodeIntegerValue(APPEND.item)])));
     const impl = outcome.draft.blockOf(implMasterId(1));
     expect(impl.kind).toBe(FrameKind.DELEGATE);
     expect(impl.self).toStrictEqual(built.proxy.address);
@@ -847,5 +875,28 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     expect(() => createComposedDerivationHost({
       vm: compositionMachine(), artifacts: built.artifacts, plan,
     })).toThrowError(/the call from "hub-1" to "proxy-1" does not begin with a 4-byte selector/);
+  });
+
+  it('settles the forwarding spelling: a caller without the interface hands the proxy the item it forwards', () => {
+    // The same implementation, reached by a caller that spells `forward(bytes)` and hands the entry's argument push
+    // over. The fallback forwards the band it received, so the delegate frame carries the forwarding selector and
+    // the argument push on to the implementation, whose one parameter reads that argument.
+    const built = buildHubCall(true);
+    const outcome = settleOutcome(built);
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    // The run and the events are the ones the typed spelling wrote: the item the forwarding caller handed over is
+    // the element the implementation pushed.
+    const final = built.stages[APPEND_COUNT]!;
+    expect(outcome.transaction.outputs[participant(outcome.draft.layout, RECORD_ID).index]!.token?.nft?.commitment)
+      .toStrictEqual(recordCommitment(built.layout, built.impl.address, final));
+    const eventIndices = outcome.draft.assembly.outputs.eventIndices;
+    expect(eventIndices).toHaveLength(APPEND_COUNT);
+    eventIndices.forEach((index) => {
+      expect(outcome.transaction.outputs[index]!.token?.nft).toStrictEqual({
+        capability: 'none', commitment: built.eventPayload,
+      });
+    });
   });
 });

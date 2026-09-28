@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, type Artifact } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
@@ -103,7 +103,6 @@ function planFor(
   const impl = fixture.contracts.Impl!;
   const validator = validatorFor(proxy.category);
   const answer = selectorOf(fixture.artifacts, 'Impl', 'answer');
-  const input = encodeDataPush(answer);
   const proxyCategoryHex = Buffer.from(proxy.category).toString('hex');
 
   const facts = (
@@ -121,7 +120,7 @@ function planFor(
     enteredBy: 'user', origin: 'user',
     calls: [{ kind: FrameKind.DELEGATE, callee: IMPL_MASTER, target: impl.address, value: 0n, argumentPushes: [answer] }],
     segments: [[{ in: recordIndex, out: recordIndex, viewIn: fixture.record, viewOut: fixture.record }], []],
-    argumentPushes: [input],
+    argumentPushes: [answer],
     // A fallback's root carries the user's call data; the root rule admits it only through this flag.
     dispatches: true,
   });

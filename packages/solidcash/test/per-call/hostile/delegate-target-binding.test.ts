@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind, buildPushdataCommitment, type Artifact,
 } from '@solidcash/utils';
@@ -103,7 +102,6 @@ function planFor(
   const callee = fixture.contracts[hop.calleeContract]!;
   const validator = validatorFor(proxy.category);
   const answer = selectorOf(fixture.artifacts, hop.calleeContract, 'answer');
-  const input = encodeDataPush(answer);
   const proxyCategoryHex = Buffer.from(proxy.category).toString('hex');
   // The record's address, which the body reads and pushes and the call declares as its target.
   const target = fixture.contracts.ImplA!.address;
@@ -123,7 +121,7 @@ function planFor(
     enteredBy: 'user', origin: 'user',
     calls: [{ kind: FrameKind.DELEGATE, callee: hop.calleeMaster, target, value: 0n, argumentPushes: [answer] }],
     segments: [[{ in: recordIndex, out: recordIndex, viewIn: fixture.record, viewOut: fixture.record }], []],
-    argumentPushes: [input],
+    argumentPushes: [answer],
     // A fallback's root carries the user's call data; the root rule admits it only through this flag.
     dispatches: true,
   });

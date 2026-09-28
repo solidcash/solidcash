@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   buildChunkCommitment,
   buildPushdataCommitment,
   bytesToHex,
-  computeFunctionSelector,
   encodeEventCommitment,
   encodeIntegerValue,
   encodeResultList,
@@ -52,10 +50,10 @@ import {
  *
  * The outer hop is a generated proxy's fallback, which `DELEGATE`s into the implementation. The implementation
  * writes the proxy's own record (so it runs as the proxy and rebuilds the proxy's data NFT) and then makes two
- * calls to a store. The store is itself reached through a generated proxy: each call goes to the store proxy's
- * forwarding entry with the store entry's call data framed as its one argument, the store proxy's fallback reads
- * that argument and `DELEGATE`s into the store's implementation, and the store entry appends one element to the
- * store's log and emits an event above the 128-byte commitment size.
+ * calls to a store. The store is itself reached through a generated proxy: each call is the store's own typed call,
+ * so the store proxy's fallback master receives the store entry's selector and argument pushes as its frame's
+ * call-data band, materializes it as its `input`, and `DELEGATE`s into the store's implementation; the store entry
+ * then appends one element to the store's log and emits an event above the 128-byte commitment size.
  *
  * The store entry requires `msg.sender` to be the root proxy's address. A call frame's sender is the caller's own
  * address, so the store proxy's fallback is entered with the root proxy's address as its sender; a delegate frame
@@ -70,12 +68,8 @@ import {
  * The whole shipped path runs: the compiler, `deployMaster`, `buildProxyArtifact` for both proxies, the composer,
  * the derivation and the BCH-2026 machine.
  *
- * Two deviations from the shape this file names are pinned rather than worked around. The store proxy's fallback
- * forwards the bytes it received verbatim, so a caller states the store's call data itself: an entry can carry that
- * frame as a run-time argument, but a caller that frames the store's scalar arguments from its own run-time values
- * stalls at its own segment close, where the site's digest is compared with the record it committed to. The token
- * pull's low-level call is refused by the compiler by name. Both are asserted below with the shipped code's own
- * objection.
+ * One deviation from the shape this file names is pinned rather than worked around: the token pull's low-level call
+ * is refused by the compiler by name, and is asserted below with the shipped code's own objection.
  *
  * The read-only hop is driven against the second contract at its own address. A read-only frame makes no calls, and
  * a generated proxy's fallback is a delegate hop, so the read of a contract *behind* its proxy is not settled here.
@@ -168,64 +162,36 @@ function appendPushes(frame: number): readonly Uint8Array[] {
   ];
 }
 
-/** Those pushes as one byte string: the call data the store proxy's fallback forwards verbatim. */
-function framedAppend(frame: number): Uint8Array {
-  return new Uint8Array(appendPushes(frame).flatMap((push) => [...encodeDataPush(push)]));
-}
-
-/** The selector of the forwarding entry a caller enters a proxy by. */
-const FORWARD_SELECTOR = computeFunctionSelector('forward(bytes)');
-
-/** The root implementation: it forwards the two framed calls to the store's proxy, then writes its own record. */
+/** The root implementation: it makes the store's two typed calls through the store's proxy, then writes its record. */
 const ROOT_IMPL_SOURCE = ((): string => {
-  const forwards = APPENDS.map((_append, frame) =>
-    `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(hex"${hexOf(framedAppend(frame))}");`).join('\n');
+  const calls = APPENDS.map((append) =>
+    `     IStore(0x${STORE_PROXY_ADDRESS_HEX}).append(${append.tag}, ${append.item});`).join('\n');
   return 'pragma solidcash ^0.13.0;'
-    + ' interface IStoreProxy { function forward(bytes input); }'
+    + ' interface IStore { function append(int tag, int item); }'
     + ' contract RootImpl {'
     + '   address public implementation;'
     + '   int public count;'
     + '   function run() {'
-    + `\n${forwards}\n`
+    + `\n${calls}\n`
     + '     this.count = this.count + 1;'
     + '     require(true);'
     + '   }'
     + ' }';
 })();
 
-/** The same root, but its entry forwards framed calls it receives as run-time arguments rather than stating them. */
+/** The same root, but its entry passes the store's items as run-time arguments rather than stating them. */
 const ROOT_IMPL_RUNTIME_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IStoreProxy { function forward(bytes input); }'
+  + ' interface IStore { function append(int tag, int item); }'
   + ' contract RootImpl {'
   + '   address public implementation;'
   + '   int public count;'
-  + '   function run(bytes first, bytes second) {'
-  + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(first);`
-  + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(second);`
+  + '   function run(int first, int second) {'
+  + `     IStore(0x${STORE_PROXY_ADDRESS_HEX}).append(1, first);`
+  + `     IStore(0x${STORE_PROXY_ADDRESS_HEX}).append(2, second);`
   + '     this.count = this.count + 1;'
   + '     require(true);'
   + '   }'
   + ' }';
-
-/** A root that builds the store's frame from run-time scalars, which the store's dispatcher does not read. */
-const ROOT_IMPL_SCALAR_SOURCE = ((): string => {
-  const selectorPush = hexOf(new Uint8Array([...encodeDataPush(selectorOf({ Store: STORE_ARTIFACT }, 'Store',
-    'append'))]));
-  const frameOf = (value: string, tag: string): string => 'bytes.concat(hex"'
-    + `${selectorPush}", hex"08", toPaddedBytes(${value}, 8), hex"08", toPaddedBytes(${tag}, 8))`;
-  return 'pragma solidcash ^0.13.0;'
-    + ' interface IStoreProxy { function forward(bytes input); }'
-    + ' contract RootImpl {'
-    + '   address public implementation;'
-    + '   int public count;'
-    + '   function run(int a, int b) {'
-    + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(${frameOf('a', '1')});`
-    + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(${frameOf('b', '2')});`
-    + '     this.count = this.count + 1;'
-    + '     require(true);'
-    + '   }'
-    + ' }';
-})();
 
 /** A proxied implementation: its artifact, the generated proxy, both deployments, and the fallback's call data. */
 interface ImplSetup {
@@ -237,8 +203,6 @@ interface ImplSetup {
   readonly implContract: string;
   /** The pushes the implementation's dispatcher consumes: the selector, then the parameters last-declared-first. */
   readonly implPushes: readonly Uint8Array[];
-  /** The fallback's received call data: each push the caller forwarded, framed. */
-  readonly callData: Uint8Array;
 }
 
 /** Compiles an implementation, generates its proxy, and deploys both at the shape's one pair of addresses. */
@@ -249,7 +213,6 @@ function setupImpl(source: string, entry: string, args: readonly Uint8Array[]): 
   const proxyDeployed = deployMaster(proxyArtifact, ROOT_PROXY_CATEGORY, REAL_VALIDATOR_PROGRAM);
   const selector = selectorOf({ RootImpl: artifact }, 'RootImpl', entry);
   const implPushes = [selector, ...[...args].reverse()];
-  const callData = new Uint8Array(implPushes.flatMap((push) => [...encodeDataPush(push)]));
   return {
     artifact, proxyArtifact,
     impl: {
@@ -260,13 +223,12 @@ function setupImpl(source: string, entry: string, args: readonly Uint8Array[]): 
       name: proxyArtifact.contractName, category: ROOT_PROXY_CATEGORY, address: ROOT_PROXY_ADDRESS,
       program: proxyDeployed.script, lockingBytecode: proxyDeployed.lockingBytecode,
     },
-    proxyContract: proxyArtifact.contractName, implContract: artifact.contractName, implPushes, callData,
+    proxyContract: proxyArtifact.contractName, implContract: artifact.contractName, implPushes,
   };
 }
 
 const APPEND_SETUP = setupImpl(ROOT_IMPL_SOURCE, 'run', []);
-const RUNTIME_SETUP = setupImpl(ROOT_IMPL_RUNTIME_SOURCE, 'run', [framedAppend(0), framedAppend(1)]);
-const SCALAR_SETUP = setupImpl(ROOT_IMPL_SCALAR_SOURCE, 'run', [encodeIntegerValue(10n), encodeIntegerValue(20n)]);
+const RUNTIME_SETUP = setupImpl(ROOT_IMPL_RUNTIME_SOURCE, 'run', [encodeIntegerValue(10n), encodeIntegerValue(20n)]);
 
 const ROOT = rootOf(APPEND_SETUP.proxyContract, '__fallback', PROXY_MASTER);
 
@@ -409,7 +371,8 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
       argumentPushes: [...setup.implPushes],
     }],
     segments: [[recordRead], [recordResumed]],
-    argumentPushes: [setup.callData],
+    // The fallback's one parameter is the frame's own call-data band: the caller's selector push, then its pushes.
+    argumentPushes: [...setup.implPushes],
     dispatches: true,
   });
   const implMaster: DraftMaster = master({
@@ -422,7 +385,7 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
     enteredBy: PROXY_MASTER, origin: USER_ID,
     calls: APPENDS.map((_append, frame) => ({
       kind: FrameKind.CALL, callee: STORE_PROXY_MASTERS[frame]!, target: STORE_PROXY.address, value: 0n,
-      argumentPushes: [FORWARD_SELECTOR, framedAppend(frame)],
+      argumentPushes: appendPushes(frame),
     })),
     segments: [[recordRead], [recordRead], [recordWrite]],
     argumentPushes: [...setup.implPushes],
@@ -443,7 +406,8 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
       argumentPushes: appendPushes(frame),
     }],
     segments: [[headerRead(frame)], [headerResumed(frame)]],
-    argumentPushes: [FORWARD_SELECTOR, framedAppend(frame)],
+    // The fallback's one parameter is the frame's own call-data band: the caller's selector push, then its pushes.
+    argumentPushes: appendPushes(frame),
   });
 
   /** The store's code as its proxy's delegate frame: it appends to the store proxy's log and emits. */
@@ -777,7 +741,6 @@ function buildRead(): {
   const readPushes = (index: number): readonly Uint8Array[] =>
     [tagSelector, encodeIntegerValue(TAGS[index]!)];
   const runSelector = selectorOf({ RootRead: READ_IMPL_ARTIFACT }, 'RootRead', 'run');
-  const callData = new Uint8Array([...encodeDataPush(runSelector)]);
 
   const proxyMaster: DraftMaster = master({
     master: READ_RECORD_MASTER, contract: READ_PROXY_ARTIFACT.contractName, entry: '__fallback',
@@ -793,7 +756,8 @@ function buildRead(): {
       argumentPushes: [runSelector],
     }],
     segments: [[recordRead], [recordResumed]],
-    argumentPushes: [callData],
+    // The fallback's one parameter is the frame's own call-data band: the caller's selector push.
+    argumentPushes: [runSelector],
     dispatches: true,
   });
   const implMaster: DraftMaster = master({
@@ -944,20 +908,14 @@ describe('the token pull and the shapes that stay open', () => {
       .toBe(bytesToHex(finalChunk[0]!));
   });
 
-  it('stalls a caller that builds the store\'s frame from a run-time scalar, naming its site', () => {
-    // A caller cannot frame the store's scalar arguments itself: the store's dispatcher reads the canonical push
-    // the compiler emits, and no source spelling produces one from a run-time scalar. A caller that builds the
-    // frame from its run-time arguments makes the site's digest differ from the record it committed to, and the
-    // derivation stalls at the caller's segment close rather than filling the call.
-    const built = buildAppend(SCALAR_SETUP);
-    let stalled: Error | undefined;
-    try {
-      composeAndDerive(built.plan, built.artifacts, [built.root]);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "impl-1" of RootImpl.run() '
-      + 'filled no witness at site 2 (close of segment 0)');
+  it('settles a caller whose store items are run-time scalars, and the log grows', () => {
+    // The typed call is the caller's own site, so a run-time item is framed by the compiler's canonical push and
+    // the store's dispatcher reads it: the call reaches the store and the header carries the run it wrote.
+    const built = buildAppend(RUNTIME_SETUP);
+    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(bytesToHex(outcome.transaction.outputs[built.headerIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(built.headers[2]!));
   });
 });
 

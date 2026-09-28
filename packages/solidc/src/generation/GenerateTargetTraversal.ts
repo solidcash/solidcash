@@ -3074,7 +3074,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // fallback, whose frame runs on the caller's records with the caller's `msg.sender` and `address(this)`.
     const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE];
     const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
-    const callDataSelectorUnconsumed = dispatchBodyCount === 1;
+    // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
+    // item, so the call arm has no selector left to drop.
+    const callDataSelectorUnconsumed = dispatchBodyCount === 1 && !fallbackAsEntry;
     // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
     // dispatcher can run, the constructor included, fixes them; a shape whose counts the bodies do not fix refuses
     // by name here.
@@ -3117,6 +3119,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
+      ...(fallbackAsEntry ? { callDataBandAsSingleItem: true } : {}),
     }).script], loc);
     this.pushToStack('__internal__frameSelf');
     this.pushToStack('__internal__frameValue');
@@ -3249,7 +3252,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     })), locationData);
     if (runtimeIndex) {
       this.popFromStack(); // the check consumed the position it walked with
+      // A call whose value the body uses leaves that value on the stack, above the counter the increment reads. The
+      // model must carry it so the counter's depth is the real one; a used value that is not modelled makes the
+      // increment pick the value instead and leave the counter where it was. The decode below re-pushes the value.
+      if (usesResult) this.pushToStack('(callResult)');
       this.emitPerCallCountOneCall(node, locationData);
+      if (usesResult) this.popFromStack();
     }
     if (!usesResult) return;
     // The record's `result` is the concatenated canonical pushes of the returned values, so it decodes exactly as

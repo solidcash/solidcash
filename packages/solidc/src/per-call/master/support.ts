@@ -1189,6 +1189,28 @@ export function callsRepeat(block: BlockNode | undefined): boolean {
 }
 
 /**
+ * The external-call source nodes a body reaches inside a loop, whatever the loop is nested in.
+ *
+ * A loop's own calls are the ones one execution reaches a number of times, so their records are not a fixed set
+ * the head can enumerate. A body may also make calls outside the loop — before it, between two of them — and those
+ * are reached once at a position the head checks, so they are not marked. Matching the slots by their source node
+ * keeps the marking to the calls the walk actually reached inside a loop rather than to every call of the body.
+ */
+function loopNestedCallNodes(block: BlockNode | undefined): ReadonlySet<Node> {
+  const nested = new Set<Node>();
+  walkInvocationAst(block, (node) => {
+    if (!(node instanceof WhileNode || node instanceof DoWhileNode)) return;
+    walkInvocationAst(node, (inner) => {
+      if (inner instanceof ExternalFunctionCallNode
+        || inner instanceof LowLevelCallStatementNode || inner instanceof LowLevelCallNode) {
+        nested.add(inner);
+      }
+    });
+  });
+  return nested;
+}
+
+/**
  * Why the source does not fix how many calls a body makes: the statement the walk could not count.
  *
  * Each kind is named so a refusal can say what the shape actually is rather than call every one of them
@@ -1421,6 +1443,9 @@ function deriveEntryCallSites(
   // list is not its place in the execution once arms can share one.
   const walk = callsOnEveryPath(entry.body);
   const positions = 'calls' in walk ? walk.calls : undefined;
+  // Only a loop's own calls repeat. A body may make fixed calls beside a loop, and those keep the positions the
+  // head checks them at; marking every site of a looping body would make the fixed ones unresumable.
+  const loopNested = loopNestedCallNodes(entry.body);
   let descriptor = 0;
   for (const slot of entry.externalCalls ?? []) {
     if (slot.callMode === ExternalCallMode.DELEGATECALL) {
@@ -1478,6 +1503,7 @@ function deriveEntryCallSites(
       target: target.bytes,
       ...(slot.condition === undefined ? {} : { conditional: true }),
       ...(target.fromStack === true ? { targetFromStack: true } : {}),
+      ...(slot.sourceCallNode !== undefined && loopNested.has(slot.sourceCallNode) ? { repeats: true } : {}),
       interfaceName: slot.interfaceName,
       functionName: slot.functionName,
       arguments: args.arguments,

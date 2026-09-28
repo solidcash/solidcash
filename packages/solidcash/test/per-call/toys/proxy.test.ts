@@ -91,8 +91,10 @@ function compose(): Composition {
       argumentPushes: [answerSelector],
     }],
     segments: [[{ in: RECORD_INDEX, out: RECORD_INDEX, viewIn: record, viewOut: record }], []],
-    argumentPushes: [input],
-    // The user's call data is what the fallback receives and forwards; the composer's root rule admits a root that
+    // The fallback's one parameter is the frame's own call-data band: the caller's selector push and its argument
+    // pushes. The user supplies it directly as the entry's push, so the band is the selector's encoded push.
+    argumentPushes: [answerSelector],
+    // The user's call data is the fallback's received call data; the composer's root rule admits a root that
     // carries call data only through this flag, which a fallback-only master is the degenerate case of.
     dispatches: true,
   });

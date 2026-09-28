@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StopSite } from '@solidcash/utils';
-import { refusalOf as publishedRefusalOf } from './refused-entry.js';
+import { isServed, refusalOf as publishedRefusalOf } from './refused-entry.js';
 import { compileStringMulti } from '../../../src/compiler.js';
 import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes/harness.js';
 
@@ -8,11 +8,13 @@ import { hexOf, seededAddress } from '../../../../solidcash/test/per-call/shapes
  * Why a call the head cannot bind is refused, and what the refusal says.
  *
  * A per-call body binds one record per call where the source makes it, so the head needs the call set fixed by the
- * source. Three unrelated facts used to share one refusal: a call whose *occurrence* the source does not fix (a
- * branch, a loop, or a repeated batch), a call whose *callee or selector* is resolved at run time, and the data-NFT
- * inputs the direct convention co-spends for a callee. The third is not part of the shape a site binds — a site
- * reads the callee's record out of the witness block, and the callee's own records are settled by the segments — so
- * it no longer decides admission, and the two that remain name themselves in the message a reader sees.
+ * source. A call whose occurrence the source does not fix — one in a loop, or in a branch whose arms make
+ * different numbers of calls — is served by the run-time position mode, which carries how many calls the execution
+ * has made. The shapes that stay refused are the ones the walk cannot count through (a switch, or a branch or loop
+ * inside an expression) and a call whose callee or selector is resolved at run time; the two name themselves in
+ * the message a reader sees. The data-NFT inputs the direct convention co-spends for a callee are not part of the
+ * shape a site binds — a site reads the callee's record out of the witness block, and the callee's own records are
+ * settled by the segments — so they do not decide admission.
  */
 
 const CALLEE = hexOf(seededAddress('call shape callee'));
@@ -35,6 +37,17 @@ const HELPER_WITH_ARMS = HEAD + INTERFACES
   + '   function go(bool take, int x) { require(pick(take, x) > 0); require(true); }'
   + ' }';
 
+/** A helper that calls out only in one arm, reached from an entry: the shape a parameter-checking helper has. */
+const HELPER_WITH_ONE_ARM = HEAD + INTERFACES
+  + ' contract Caller {'
+  + `   function pick(bool take, int x) internal returns (int) {`
+  + '     int chosen = 0;'
+  + `     if (take) { chosen = ISum(0x${CALLEE}).sum(x); }`
+  + '     return chosen;'
+  + '   }'
+  + '   function go(bool take, int x) { require(pick(take, x) >= 0); require(true); }'
+  + ' }';
+
 /**
  * A caller whose call a branch inside a loop can skip.
  *
@@ -50,10 +63,56 @@ const BRANCHED_IN_LOOP_CALL = HEAD + INTERFACES
   + '   }'
   + ' }';
 
-/** A caller whose call runs only in one branch, which is a call set the source does not fix. */
+/** A caller whose call runs only in one branch: the body carries how many calls it made, zero or one. */
 const CONDITIONAL_CALL = HEAD + INTERFACES
   + ' contract Caller {'
   + `   function go(bool take) { if (take) { IState(0x${CALLEE}).add(1); } require(true); }`
+  + ' }';
+
+/** A caller whose call sits in a switch arm, a statement the call walk cannot count through. */
+const SWITCH_CALL = HEAD + INTERFACES
+  + ' contract Caller {'
+  + '   function go(uint x) {'
+  + `     switch (x) { case 0: IState(0x${CALLEE}).add(1); break; default: require(true); }`
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/** A caller whose raw low-level call runs only in one branch, over a result the per-call body does not settle. */
+const RAW_CONDITIONAL_CALL = HEAD + INTERFACES
+  + ' contract Caller {'
+  + '   function go(bool take, address target, bytes data) {'
+  + '     if (take) { (bool ok,) = address(target).call(data); require(ok); }'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/** A proxy whose fallback always forwards: a served shape, the control for the conditional one below. */
+const FORWARDING_PROXY = HEAD
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+
+/** A proxy whose forwarding delegatecall runs only in one branch, which the run-time mode does not carry. */
+const CONDITIONAL_FORWARDING_PROXY = HEAD
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external {'
+  + '     if (input.length > 0) { this.implementation.delegatecall(input); }'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/** A caller whose verified-mapping write lands behind a call the source does not fix. */
+const CONDITIONAL_CALL_BESIDE_WRITE = HEAD + INTERFACES
+  + ' contract Balances {'
+  + '   address target;'
+  + '   mapping(address => uint) balances;'
+  + '   function set(bool take, address to, uint amount) {'
+  + `     if (take) { IState(0x${CALLEE}).add(1); }`
+  + '     balances[to] = amount;'
+  + '   }'
   + ' }';
 
 /** A caller whose one call is unconditional, so the set the head walks is fixed by the source. */
@@ -85,15 +144,60 @@ describe('a helper whose arms each call out, reached from an entry', () => {
     expect(artifacts.Caller?.composition?.convention).toBe('per-call');
     expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
   });
+
+  it('is admitted when only one of its arms calls out, the shape a check helper has', () => {
+    // The helper is inlined, so the entry makes zero or one call: the body carries the count, as the direct
+    // conditional case does. The helper boundary does not decide admission.
+    expect(isServed(HELPER_WITH_ONE_ARM)).toBe(true);
+  });
 });
 
 describe('a call whose occurrence the source does not fix', () => {
-  it('is refused, and the message names the conditional set rather than a run-time callee', () => {
-    const refusal = refusalOf(CONDITIONAL_CALL);
+  it('is admitted from a branch, where the body counts the calls the arm it ran made', () => {
+    // The body makes zero or one call, a number its source does not fix, so it carries how many it has made and
+    // binds the record that number names. The machine's own cases for the shape live in
+    // `master/conditional-call-entry.test.ts`.
+    const artifacts = compileStringMulti(CONDITIONAL_CALL, { composition: 'per-call' });
+    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
+    const sites = (artifacts.Caller?.composition?.stopSites as { entries: { sites: { sites: StopSite[] } }[] })
+      .entries[0]!.sites.sites;
+    // The site is marked conditional — the arm may skip it — but not repeated: nothing turns.
+    expect(sites[0]).toStrictEqual({
+      kind: 'call', site: 0, callIndex: 0, descriptor: 0, conditional: true,
+    });
+  });
+
+  it('is refused from a switch, whose arms the call walk cannot count through', () => {
+    const refusal = refusalOf(SWITCH_CALL);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('runs conditionally');
-    expect(refusal.message).toContain('do not make the same number of calls');
+    expect(refusal.message).toContain('is in a body that switches');
     expect(refusal.message).not.toContain('resolves its callee');
+  });
+
+  it('is refused for a raw low-level call, whose result the per-call body does not settle', () => {
+    // The branch no longer decides admission, so the raw call's own reason is what a reader sees: its returning
+    // form takes the direct path's return-event machinery, which a per-call body does not emit.
+    const refusal = refusalOf(RAW_CONDITIONAL_CALL);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('return-event or value-transfer machinery');
+    expect(refusal.message).not.toContain('runs conditionally');
+  });
+
+  it('is refused for a conditional forwarding delegatecall, which the run-time position mode does not carry', () => {
+    // A proxy whose fallback always forwards is served; the same fallback behind an arm is refused by name, since
+    // the forwarded site is emitted at a position the descriptor list fixes.
+    expect(isServed(FORWARDING_PROXY)).toBe(true);
+    const refusal = refusalOf(CONDITIONAL_FORWARDING_PROXY);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('forwards its own call data conditionally');
+  });
+
+  it('is refused when a verified-mapping write lands behind it, which the derivation cannot locate', () => {
+    // The write's records are declared in the segment the write lands in, and the derivation locates that segment
+    // by a fixed number of calls. A call the source does not fix moves it, so the body stays refused.
+    const refusal = refusalOf(CONDITIONAL_CALL_BESIDE_WRITE);
+    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
+    expect(refusal.message).toContain('writes a verified mapping behind a call');
   });
 
   it('is admitted inside a loop, where the body counts the calls its own iterations made', () => {

@@ -37,6 +37,7 @@ import {
   BoolLiteralNode,
   BranchNode,
   CastNode,
+  CollectionIterationNode,
   ContractNode,
   DoWhileNode,
   EmitStatementNode,
@@ -926,13 +927,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   );
   const servedWithCalls = served.filter((entry) => !refusals.has(entry.name));
   // A derived mapping write is settled in the segment its records are declared in, and a call closes the segment
-  // the code before it runs in. The derivation is emitted where the body begins, so it reads the segment a write
-  // that precedes every call lands in; a write a call precedes lands in a later one, which the derivation does not
-  // read, and a write beside a call inside a branch is a position the source does not fix.
+  // the code before it runs in. The derivation reads the write's own segment, so a write a call precedes is served
+  // like one that precedes every call; only a write beside a call inside a branch, whose segment the source does
+  // not fix, cannot be located and is refused.
   if (calls.callCount > 0) {
     for (const fn of [...servedWithCalls, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
       if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
-      if (perCallBatchWriteSegment(fn) === 0) continue;
+      if (perCallBatchWriteSegment(fn) !== undefined) continue;
       refuseBody(fn, 'a verified-mapping write is derived from the segment its own code runs in, but the master '
         + 'makes external calls and the write does not precede them, so the segment the write lands in is a fact '
         + 'the derivation does not read');
@@ -1263,6 +1264,88 @@ export function callsRepeat(block: BlockNode | undefined): boolean {
 }
 
 /**
+ * True when a body makes a different number of calls on different paths.
+ *
+ * A loop that reaches a call makes as many as its trip count says, and a branch whose arms make different numbers
+ * leaves the count to the arm that runs. Both leave the record positions to the execution, so the body carries how
+ * many calls it has made rather than addressing records by a fixed position; a body whose paths all make the same
+ * number keeps the fixed positions the head checks, so its emitted bytes are unchanged. A loop or a branch that
+ * reaches no call does not change the count.
+ */
+export function callsVaryOnPaths(block: BlockNode | undefined): boolean {
+  const range = callCountRange(block);
+  return range === undefined || range.least !== range.most;
+}
+
+/** The fewest and most calls a block makes on any one path, or undefined when a construct leaves the count open. */
+function callCountRange(block: BlockNode | undefined): { least: number; most: number } | undefined {
+  let least = 0;
+  let most = 0;
+  for (const statement of block?.statements ?? []) {
+    const range = statementCallRange(statement);
+    if (range === undefined) return undefined;
+    least += range.least;
+    most += range.most;
+  }
+  return { least, most };
+}
+
+/** The fewest and most calls one statement makes on any one path, or undefined when it leaves the count open. */
+function statementCallRange(statement: Node): { least: number; most: number } | undefined {
+  if (statement instanceof BranchNode) {
+    const inCondition = callsInExpression(statement.condition);
+    const inIf = callCountRange(statement.ifBlock);
+    const inElse = statement.elseBlock === undefined
+      ? { least: 0, most: 0 }
+      : callCountRange(statement.elseBlock);
+    if (inCondition === undefined || inIf === undefined || inElse === undefined) return undefined;
+    return {
+      least: inCondition + Math.min(inIf.least, inElse.least),
+      most: inCondition + Math.max(inIf.most, inElse.most),
+    };
+  }
+  if (statement instanceof BlockNode) return callCountRange(statement);
+  if (statement instanceof WhileNode || statement instanceof DoWhileNode) {
+    // A loop whose condition or body reaches a call makes a run-time number of them; one that reaches none makes
+    // none on any path.
+    if (reachesExternalCall(statement.block) || reachesExternalCall(statement.condition)) return undefined;
+    return { least: 0, most: 0 };
+  }
+  if (statement instanceof SwitchNode) {
+    // A switch's arms need not agree, so one that reaches a call leaves the count open.
+    return reachesExternalCall(statement) ? undefined : { least: 0, most: 0 };
+  }
+  if (statement instanceof CollectionIterationNode) {
+    return reachesExternalCall(statement.body) ? undefined : { least: 0, most: 0 };
+  }
+  if (statement instanceof TryCatchNode) {
+    // A catch block is not an executable path, matching the invocation walk.
+    const inExpression = callsInExpression(statement.expression);
+    const inTry = callCountRange(statement.tryBlock);
+    if (inExpression === undefined || inTry === undefined) return undefined;
+    return { least: inExpression + inTry.least, most: inExpression + inTry.most };
+  }
+  // Any other statement makes the calls its own expression reaches, all of them on every path.
+  const own = callsInExpression(statement);
+  return own === undefined ? undefined : { least: own, most: own };
+}
+
+/** How many calls an expression reaches, or undefined when a branch or loop inside it decides the count. */
+function callsInExpression(value: unknown): number | undefined {
+  const own = callsIn(value, [], 0);
+  return typeof own === 'number' ? own : undefined;
+}
+
+/** True when a node reaches an external call anywhere inside it. */
+function reachesExternalCall(value: unknown): boolean {
+  let reaches = false;
+  walkInvocationAst(value, (node) => {
+    if (node instanceof ExternalFunctionCallNode) reaches = true;
+  });
+  return reaches;
+}
+
+/**
  * The external-call source nodes a body reaches inside a loop, whatever the loop is nested in.
  *
  * A loop's own calls are the ones one execution reaches a number of times, so their records are not a fixed set
@@ -1386,21 +1469,26 @@ function callsIn(value: unknown, calls: number[], base: number): number | CallSe
 }
 
 /**
+ * The shapes whose call count the source does not fix and the run-time position mode does not carry.
+ *
+ * A loop that reaches a call and a branch whose arms make different numbers of calls are both carried: the body
+ * binds the record the number of calls it has made names. What remains is a construct the walk cannot even count
+ * through, so the phrase says which statement it was.
+ */
+type RefusedDivergence = Extract<CallSetDivergence, 'switch' | 'nested'>;
+
+/**
  * How a refusal describes a body whose call set the source does not fix.
  *
  * The phrase says which statement the walk could not count, so a reader is not told a call is conditional when it
  * is the trip count of a loop that is the open question.
  */
-function divergencePhrase(divergence: CallSetDivergence, entryName: string): string {
+function divergencePhrase(divergence: RefusedDivergence): string {
   switch (divergence) {
-    case 'loop':
-      return 'is in a body that loops, and the trip count is what decides how many calls it makes';
     case 'switch':
       return 'is in a body that switches, and its arms need not make the same number of calls';
     case 'nested':
       return 'is in a body whose call count a branch or a loop in an expression decides';
-    default:
-      return `runs conditionally, and the paths through '${entryName}' do not make the same number of calls`;
   }
 }
 
@@ -1517,6 +1605,23 @@ function deriveEntryCallSites(
   // list is not its place in the execution once arms can share one.
   const walk = callsOnEveryPath(entry.body);
   const positions = 'calls' in walk ? walk.calls : undefined;
+  const varying = callsVaryOnPaths(entry.body);
+  // A forwarded delegatecall binds the caller's own received call data, and its site is emitted at a position the
+  // descriptor list fixes: the run-time position mode does not carry a forwarded call, so a body that forwards its
+  // own call data and reaches the call conditionally stays refused rather than binding some other record.
+  if (forwards.length > 0 && varying) {
+    return { calls: [], reason: 'the body forwards its own call data conditionally, and the run-time position mode '
+      + 'does not carry a forwarded call, so its call records are not a fixed set the head can check' };
+  }
+  // A verified-mapping write's records are declared in the segment the write lands in, and the derivation locates
+  // that segment by the fixed number of calls before it. The run-time position mode moves the segment with the
+  // calls the execution made, which the derivation cannot follow, so a body that writes such a collection behind a
+  // call the source does not fix stays refused rather than deriving the operands from another segment.
+  if ((entry.sortedBatchInfo?.length ?? 0) > 0 && varying
+    && perCallBatchWriteSegment(entry) === undefined) {
+    return { calls: [], reason: 'the body writes a verified mapping behind a call whose occurrence the source '
+      + 'does not fix, and the derived operands cannot follow the segment the write lands in' };
+  }
   // Only a loop's own calls repeat. A body may make fixed calls beside a loop, and those keep the positions the
   // head checks them at; marking every site of a looping body would make the fixed ones unresumable.
   const loopNested = loopNestedCallNodes(entry.body);
@@ -1534,14 +1639,13 @@ function deriveEntryCallSites(
       return { calls: [], reason: `the call to '${slot.functionName}' is a ${String(slot.callMode)}, which the `
         + 'master head has no frame kind for' };
     }
-    // A body whose calls repeat — a loop whose iterations make calls, whether or not an arm inside the loop skips
-    // one — is admitted: the body binds the record the number of calls it has made names and increments that
-    // number once a call's check passes, so a skipped call leaves the position where it was and the positions are
-    // values the execution carries rather than facts the head checks. Every other divergence stays refused: an
-    // arm pair that makes different numbers of calls is not a trip count, and neither is a switch's arm set.
-    const repeats = 'divergence' in walk && walk.divergence === 'loop';
-    if ('divergence' in walk && !repeats) {
-      return { calls: [], reason: `the call to '${slot.functionName}' ${divergencePhrase(walk.divergence, entry.name)}`
+    // A body whose calls are not a fixed set — a loop whose iterations make calls, or a branch whose arms make
+    // different numbers of calls — is admitted: the body binds the record the number of calls it has made names and
+    // increments that number once a call's check passes, so a skipped call leaves the position where it was and the
+    // positions are values the execution carries rather than facts the head checks. A switch or a branch or loop
+    // inside an expression stays refused: the walk cannot even count its call descriptors.
+    if ('divergence' in walk && walk.divergence !== 'loop' && walk.divergence !== 'arms') {
+      return { calls: [], reason: `the call to '${slot.functionName}' ${divergencePhrase(walk.divergence)}`
         + ', so its call records are not a fixed set the head can check' };
     }
     if (slot.loopArrayVar !== undefined || slot.loopIndexExpression !== undefined

@@ -287,7 +287,7 @@ import {
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteSegment,
-  callsOnEveryPath, callsRepeat, DYNAMIC_CHUNK_BASE_PARAMETER,
+  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -3545,10 +3545,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return keyDepth;
       });
     });
-    // The segment declares the frame's own data-NFT state records before any target's group, so the derivation
-    // steps over them; a delegate frame declares the records of the layout it mirrors, which is its caller's. A
-    // frame that runs on another contract's records addresses them from the input the head parked as their owner,
-    // so its proof operands are measured from that input too.
+    // The write's segment declares the frame's own data-NFT state records before any target's group, so the
+    // derivation steps over them; a delegate frame declares the records of the layout it mirrors, which is its
+    // caller's. A frame that runs on another contract's records addresses them from the input the head parked as
+    // their owner, so its proof operands are measured from that input too.
     const ownerOrdinal = this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())
       ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
       : undefined;
@@ -3556,7 +3556,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       leadingRecords: this.dataNftCount,
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
     };
-    const script = buildBatchTargetsDerivationScript({ keyDepths, ...derivation });
+    const script = buildBatchTargetsDerivationScript({
+      keyDepths, ...derivation, segmentIndex: this.perCallBatchWriteSegment,
+    });
     this.emit([...script], loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {
@@ -7505,18 +7507,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.vmapWitnessSnapshotsRestored = false;
     this.vmapWitnessSnapshotNames = null;
     this.vmapUpsertWitnessSnapshotNames = null;
-    // A body whose calls repeat reaches record positions the source does not fix, so it carries how many calls it
-    // has made: the record a site binds, the segment a read resolves against and the count the body pins are all
-    // that one number. Allocated before the body's own control flow, and only for such a body, so a shape whose
-    // positions are fixed keeps byte-identical code and no slot.
-    // A body that touches a dynamic value and makes a call resolves the value's chunk run against the segment the
-    // access lands in, which is the one its own calls have reached: the count is carried for it too.
-    const resolvesDynamicRunByCalls = this.currentFunction.usesDynamicChunkInputBase === true
-      && ((this.currentFunction.externalCalls?.length ?? 0) > 0
-        || (this.currentFunction.lowLevelCalls?.length ?? 0) > 0);
+    // A body whose calls are not a fixed set — they repeat in a loop, or a branch's arms make different numbers
+    // of them — reaches record positions the source does not fix, so it carries how many calls it has made: the
+    // record a site binds, the segment a read resolves against and the count the body pins are all that one
+    // number. Allocated before the body's own control flow, and only for such a body, so a shape whose positions
+    // are fixed keeps byte-identical code and no slot.
     this.perCallCallsMadeActive = this.perCallMaster && !this.isDefineSubTraversal
       && this.stack.includes(callCountSlotName())
-      && (callsRepeat(this.currentFunction.body) || resolvesDynamicRunByCalls);
+      && callsVaryOnPaths(this.currentFunction.body);
     if (this.perCallCallsMadeActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
@@ -25486,11 +25484,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (hasWrite && fields) {
         // Written NFT: reconstruct commitment from field values and verify
         const sortedFields = [...fields].sort((a, b) => a.fieldIndex - b.fieldIndex);
-        // A frame that ends after a segment it did not touch rebuilds the record from the segment it last touched
-        // it in, where the value the frame left still stands; the current segment need not declare the record.
+        // A written record is closed where the transaction's declaration of it stands. A dynamic field is written
+        // by the epilogue that pins its chunk run, so that close belongs to the segment the epilogue runs in; a
+        // scalar field's write happened where its own code ran, which is the segment a read of it registered, or
+        // the segment the body ends in when the body never read it. Resolving a read for a dynamic write would
+        // close it against a declaration that still holds the value from before the write.
         const previousReadSegment = this.perCallReadSegment;
         if (this.perCallMaster) {
-          this.perCallReadSegment = this.perCallRecordSegment.get(compactOffset) ?? this.perCallSegmentIndex;
+          const writesDynamicField = sortedFields.some((sv) => sv.isDynamic === true
+            && this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+          this.perCallReadSegment = writesDynamicField
+            ? this.perCallSegmentIndex
+            : this.perCallRecordSegment.get(compactOffset) ?? this.perCallSegmentIndex;
         }
 
         let firstField = true;

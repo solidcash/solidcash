@@ -341,6 +341,22 @@ function stepDeclaredSegments(
   op(Opcodes.OP_NIP); // the segment index
 }
 
+/**
+ * Builds the script that steps `count` whole segments off the tail on top, leaving the rest.
+ *
+ * Entry `[..., tail]`, exit `[...]`, with the tail beginning at the first of the skipped segments' declared
+ * record count. A body that reads a late segment's declaration steps the earlier ones over by the widths the
+ * codec writes them with, so the segment a write lands in is reached without the body fixing its records.
+ */
+export function declaredSegmentsSkipScript(count: number): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { for (const byte of script) bytes.push(byte); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  for (let segment = 0; segment < count; segment += 1) skipSegment(op, raw, num);
+  return new Uint8Array(bytes);
+}
+
 /** Steps one call record off the block on top, by the widths the codec writes it with. */
 function skipCallRecord(bytes: number[]): void {
   const emit = (field: Uint8Array): void => { bytes.push(...field, Opcodes.OP_NIP); };

@@ -27,6 +27,7 @@ import {
   takeLengthPrefixedField32,
 } from './witness-reader.js';
 import { callSectionWalkScript } from './frame-tail.js';
+import { declaredSegmentsSkipScript } from './declared-view.js';
 
 /**
  * The tracked slot names one derivation supplies per target, in the order the caller registers them, then the
@@ -78,13 +79,20 @@ export interface BatchTargetsDerivationOptions {
    * the frame's own input.
    */
   readonly recordsOwnerOrdinal?: number;
+  /**
+   * The segment the write's records are declared in, as the number of external calls the body makes before it.
+   *
+   * The walk steps over that many segments after the call section, so the record list it reads is the one the
+   * write lands in rather than the one the body begins in. Absent means the body's first segment.
+   */
+  readonly segmentIndex?: number;
 }
 
 /**
  * Builds the script that leaves every target of one batch's five sorted-batch operands, reading the master's own
  * witness block.
  *
- * A batch's first segment declares one record group per target, after `leadingRecords` records the frame declares
+ * The write's segment declares one record group per target, after `leadingRecords` records the frame declares
  * for its own contract state, in the order the writes were planned: a target the
  * inventory holds is rewritten in place, so its group is one record whose `viewIn` and `viewOut` both carry the
  * target's slot; a target the inventory does not hold is spliced in, so its group is the relinked predecessor
@@ -180,6 +188,10 @@ class BatchTargetsDerivationBuilder {
     // are as the walk found them.
     this.raw(new Uint8Array(callSectionWalkScript()));
     this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
+    // The write's records are declared in the segment the write lands in, which a call before it moves past.
+    if ((this.options.segmentIndex ?? 0) > 0) {
+      this.raw(declaredSegmentsSkipScript(this.options.segmentIndex!));
+    }
     this.takeFixedField(2, 'record_count');
     // The declared count is parked beneath the operands the walk parks, and checked once they are back.
     this.op(Opcodes.OP_SWAP);

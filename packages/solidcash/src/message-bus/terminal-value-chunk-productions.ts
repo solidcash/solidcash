@@ -55,6 +55,15 @@ export function retainTerminalValueChunkProductions(
     if (!producer || !candidates.some((candidate) => (
       canonicalValueChunkProducerIdentity(candidate.claim.producer) === producer
     ))) {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
+        console.error('terminal-value-production-unavailable', JSON.stringify({
+          resourceIdentity,
+          terminal,
+          candidateCount: candidates.length,
+          candidates: candidates.slice(0, 24).map((candidate) => candidate.claim),
+        }));
+      }
       throw new Error('messageBus: transported value productions omit the routed terminal producer');
     }
     terminalProducerByResource.set(resourceIdentity, producer);

@@ -2,6 +2,8 @@
  * phase-boundary extract: SC _createBuilder extract — nested-compose selectedLayout slot assembly + primary publish.
  */
 
+import { foldRouteStoredValues, type StoredValueMutationRow } from './fold-route-stored-values.js';
+import type { StoredValueIncomingEntry } from './sc-encode-stored-element-source.js';
 import {
   binToHex, hexToBin, encodeLockingBytecodeP2pkh,
 } from '@bitauth/libauth';
@@ -916,15 +918,23 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 candidate.collection === access.collection && candidate.operations.includes('write')
               )).map((candidate: any) => ({ row, access: candidate }))
             ));
-            const terminal = writes.at(-1);
-            const recipe = terminal?.access.storedValueSource;
-            // A pre-entry recipe describes one handler's incoming value. Multiple writer rows need
-            // a source-ordered transition fold; never replay the last row against transaction pre-state.
-            const readsIncomingEntry = (expression: unknown): boolean => !!expression
-              && typeof expression === 'object'
-              && ((expression as { kind?: string }).kind === 'entryPreValue'
-                || Object.values(expression).some(readsIncomingEntry));
-            if (recipe && (writes.length === 1 || !readsIncomingEntry(recipe.expression))) {
+            const incomingEntries = [...childStoredValues].flatMap(([slotIndex, value]) => {
+              const sourceAccess = selectedFn?.entryAccesses?.find((candidate, index) => (
+                (candidate.slotIndex ?? index) === slotIndex
+              ));
+              const sourceCollection = childLayout.collections?.find((candidate) => (
+                candidate.name === sourceAccess?.collection || candidate.signature === sourceAccess?.collection
+              ));
+              const slot = childBatchTargets.get(slotIndex);
+              return sourceCollection && slot ? [{ collection: sourceCollection.signature, slot, value }] : [];
+            });
+            const logRecipe = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1' ? console.error.bind(console) : undefined;
+            const encodeRecipe = (
+              terminal: StoredValueMutationRow, entries: readonly StoredValueIncomingEntry[],
+            ): Uint8Array | undefined => {
+              const recipe = terminal.access.storedValueSource;
+              if (!recipe) return undefined;
               const path = terminal.row.producerPath;
               const key = path?.status === 'complete' ? canonicalValueChunkProducerPathContext(path.context) : undefined;
               const externalReturns = externalReturnsForCallsites(
@@ -932,32 +942,28 @@ export async function assembleCreateBuilderNestedComposeSlots(
                 key ? valueResultsByPath.get(key) ?? new Map() : new Map(),
                 terminal.row.handler.externalCalls ?? [],
               );
-              nextValue = host.encodeStoredValueSource(
+              const value = host.encodeStoredValueSource(
                 terminal.access, collection.valueType, [...terminal.row.args], terminal.row.handler,
                 sharedLogicalArtifact, childState.state, externalReturns,
-                [...childStoredValues].flatMap(([slotIndex, value]) => {
-                  const sourceAccess = selectedFn?.entryAccesses?.find((candidate, index) => (
-                    (candidate.slotIndex ?? index) === slotIndex
-                  ));
-                  const sourceCollection = childLayout.collections?.find((candidate) => (
-                    candidate.name === sourceAccess?.collection || candidate.signature === sourceAccess?.collection
-                  ));
-                  const slot = childBatchTargets.get(slotIndex);
-                  return sourceCollection && slot
-                    ? [{ collection: sourceCollection.signature, slot, value }] : [];
-                }),
+                entries,
               );
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_VALUE_CHUNKS === '1') {
-                console.error('value-chunk-whole-recipe', JSON.stringify({
+              if (logRecipe) {
+                logRecipe('value-chunk-whole-recipe', JSON.stringify({
                   collection: collection.name, handler: terminal.row.handler.name,
                   mutationEffectOrdinal: recipe.mutationEffectOrdinal,
-                  resultCount: externalReturns.size, valueBytes: nextValue?.length,
+                  resultCount: externalReturns.size, valueBytes: value?.length,
                   hasProducerPath: key !== undefined,
                 }));
               }
-              if (nextValue) payloadBytes = nextValue.length;
-            }
+              return value;
+            };
+            const targetSlot = childBatchTargets.get(access.slotIndex ?? routeSlot);
+            nextValue = writes.length === 1 ? encodeRecipe(writes[0], incomingEntries)
+              : targetSlot ? foldRouteStoredValues({
+                writes, collection, targetSlot, incomingEntries, artifact: sharedLogicalArtifact,
+                state: childState.state, encode: encodeRecipe,
+              }) : undefined;
+            if (nextValue) payloadBytes = nextValue.length;
           }
           // Keep the three authenticated channels distinct. The proof-entry
           // fetch above owns `__internal__valueWitness_N` (pre-handler bytes),

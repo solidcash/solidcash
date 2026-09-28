@@ -42,8 +42,9 @@ Use it with one title to distinguish a missing value, an output-suffix collision
 requires multiple resource coordinates. The switch only logs and does not relax the refusal.
 It also reports `transported-value-producer-mismatch` when a transported continuation claim disagrees with its
 routed terminal producer: both claims and at most 24 compiler rows with 24 access summaries each, without
-value bytes or stored-value expression trees. This
-distinguishes stale producer selection from incomplete source paths while preserving the ownership gate.
+value bytes or stored-value expression trees. `terminal-value-production-unavailable` reports the expected
+terminal claim and at most 24 candidate claims when assembly cannot find the terminal value. These records
+distinguish stale producer selection from incomplete source paths while preserving the ownership gate.
 
 `SOLIDC_DEBUG_RETURN_CAPTURE=1` reports return-event installs and the producer probe that supplied each
 candidate, including the terminal error and internal indices. Use it only on one named title: the diagnostic

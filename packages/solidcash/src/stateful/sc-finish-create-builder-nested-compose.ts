@@ -239,12 +239,15 @@ export function finishCreateBuilderNestedCompose(
             resolveValueChunkProductionsFromResults: refreshValueProductions,
           }),
           ...(refreshChunkableRouteWitnesses && {
-            deriveRouteValueChunkProductions: (routeRows: any) => {
+            deriveRouteValueChunkProductions: (routeRows: any, resultUpdate?: {
+              producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument>;
+            }) => {
               refreshChunkableRouteWitnesses!(
                 routeRows,
                 routeRows[routeRows.length - 1]?.args ?? [...row.args],
+                undefined, resultUpdate,
               );
-              return valueChunkProductionsForPath(producerPath);
+              return routeRows.flatMap((routeRow: any) => valueChunkProductionsForPath(routeRow.producerPath));
             },
           }),
           ...(childCompilerRoute && {
@@ -320,12 +323,15 @@ export function finishCreateBuilderNestedCompose(
           },
         }),
         ...(refreshChunkableRouteWitnesses && {
-          deriveRouteValueChunkProductions: (routeRows: any) => {
+          deriveRouteValueChunkProductions: (routeRows: any, resultUpdate?: {
+            producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument>;
+          }) => {
             refreshChunkableRouteWitnesses!(
               routeRows,
               routeRows[routeRows.length - 1]?.args ?? graphNestedArgs,
+              undefined, resultUpdate,
             );
-            return valueChunkProductionsForPath(producerPath);
+            return routeRows.flatMap((routeRow: any) => valueChunkProductionsForPath(routeRow.producerPath));
           },
         }),
         ...(resolveGraphNestedArgs && { resolveArgsFromResults: resolveGraphNestedArgs }),

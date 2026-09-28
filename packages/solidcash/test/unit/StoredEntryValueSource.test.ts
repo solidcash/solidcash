@@ -1,10 +1,11 @@
-import { bigIntToVmNumber } from '@bitauth/libauth';
+import { bigIntToVmNumber, binToHex } from '@bitauth/libauth';
 import { decodePushdataValue, encodePushdataValue, type AbiFunction, type Artifact } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import type { FunctionArgument } from '../../src/Argument.js';
 import { keyToSlotMulti } from '../../src/stateful/SortedList.js';
 import { encodeStoredValueSource, type StoredValueIncomingEntry } from '../../src/stateful/sc-encode-stored-element-source.js';
 import { evaluateExternalExpression } from '../../src/stateful/sc-evaluate-external-expression.js';
+import { foldRouteStoredValues, type StoredValueMutationRow } from '../../src/stateful/fold-route-stored-values.js';
 
 const artifact = {
   structs: [{ name: 'Record', fields: [{ name: 'amount', type: 'int256' }, { name: 'payload', type: 'bytes' }] }],
@@ -43,6 +44,48 @@ const encode = (entries?: readonly StoredValueIncomingEntry[], key = 7n): Uint8A
 );
 
 describe('stored incoming-entry recipes', () => {
+  it('folds source-ordered writes over the previous row while preserving the authenticated pre-state', () => {
+    const increment = structuredClone(handler);
+    const expression = increment.entryAccesses![0].storedValueSource!.expression;
+    expression.args![0] = {
+      kind: 'binary', type: 'int256', operator: '+',
+      left: { ...expression.args![1], name: 'amount', type: 'int256' },
+      right: expression.args![0],
+    };
+    const write = (amount: bigint, key = 7n): StoredValueMutationRow => ({
+      row: { handler: increment, args: [key, amount] }, access: increment.entryAccesses![0],
+    });
+    const fold = (writes: readonly StoredValueMutationRow[]): Uint8Array | undefined => foldRouteStoredValues({
+      writes, collection: artifact.stateLayout!.collections![0], targetSlot: incoming.slot,
+      incomingEntries: [incoming], artifact,
+      encode: ({ row, access }, entries) => encodeStoredValueSource(
+        host, access, 'Record', [...row.args], row.handler, artifact, undefined, undefined, entries,
+      ),
+    });
+    expect(decodePushdataValue(fold([write(2n), write(3n)])!, 0, 'Record', artifact.structs).value)
+      .toEqual({ amount: 10n, payload });
+    expect(decodePushdataValue(fold([write(7n), write(3n)])!, 0, 'Record', artifact.structs).value)
+      .toEqual({ amount: 15n, payload });
+    expect(decodePushdataValue(incoming.value, 0, 'Record', artifact.structs).value)
+      .toEqual({ amount: 5n, payload });
+    expect(fold([write(2n), write(3n, 8n)])).toBeUndefined();
+    expect(fold([{
+      ...write(2n), access: { ...increment.entryAccesses![0], storedValueSource: undefined },
+    }, write(3n)])).toBeUndefined();
+    expect(fold([write(2n), {
+      ...write(3n), access: { ...increment.entryAccesses![0], keySources: [{ kind: 'msgSender' }] },
+    }])).toBeUndefined();
+    const replacement = structuredClone(handler);
+    replacement.entryAccesses![0].storedValueSource!.expression.args![1] = {
+      kind: 'literal', type: 'bytes', value: binToHex(payload),
+    };
+    expect(decodePushdataValue(fold([
+      { ...write(2n), access: { ...increment.entryAccesses![0], storedValueSource: undefined } },
+      { row: { handler: replacement, args: [7n, 11n] }, access: replacement.entryAccesses![0] },
+      write(3n),
+    ])!, 0, 'Record', artifact.structs).value).toEqual({ amount: 14n, payload });
+  });
+
   it('uses exact incoming collection/key bytes, not a pending state overlay', () => {
     expect(decodePushdataValue(encode([incoming])!, 0, 'Record', artifact.structs).value)
       .toEqual({ amount: 23n, payload });

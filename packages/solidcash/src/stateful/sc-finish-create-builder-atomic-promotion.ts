@@ -10,6 +10,7 @@ import type { FunctionArgument } from '../Argument.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import {
   canonicalValueChunkProducerPathContext,
+  type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
 import { valueChunkWriteResourceIdentity } from './value-chunk-persist.js';
 
@@ -185,8 +186,11 @@ if (preparedAtomicNodes?.length) {
         .filter((entry): entry is { node: any; row: any } =>
           entry.row !== undefined);
       if (rowSources.length < 2) continue;
-      const terminalNode = rowSources[rowSources.length - 1]!.node;
-      const derive = terminalNode.deriveRouteValueChunkProductions;
+      // Late-discovered descendants may not allocate their own physical derivation context. Any
+      // writer of this owner can supply the authenticated pre-state; the full row list determines
+      // the terminal producer, independently of which row supplied that context.
+      const derive = [...rowSources].reverse()
+        .find((entry) => entry.node.deriveRouteValueChunkProductions)?.node.deriveRouteValueChunkProductions;
       if (!derive) continue;
       const derived = derive(rowSources.map((entry) => entry.row))
         .filter((production: any) => productionResourceIdentity(production) === group.resource);
@@ -222,22 +226,26 @@ if (preparedAtomicNodes?.length) {
           return key === undefined ? [] : [[key, entry.row.args] as [string, readonly FunctionArgument[]]];
         }),
       );
-      const rederive = (): typeof derived => {
+      const rederive = (resultUpdate?: {
+        producerPath: ValueChunkProducerPathDisposition; results: ReadonlyMap<number, FunctionArgument>;
+      }): typeof derived => {
         const refreshed = rowSources.map((entry) => {
           const key = nodePathKey(entry.node.producerPath);
           const args = key === undefined ? undefined : rowArgumentsByPath.get(key);
           return args === undefined ? entry.row : { ...entry.row, args };
         });
-        return derive(refreshed)
+        return derive(refreshed, resultUpdate)
           .filter((production: any) => productionResourceIdentity(production) === group.resource);
       };
       const laneKey = nodePathKey(laneNode.producerPath);
       for (const entry of rowSources) {
         const key = nodePathKey(entry.node.producerPath);
         if (key === undefined) continue;
-        entry.node.resolveValueChunkProductionsFromArgs = (nextArgs: any) => {
+        const refresh = (nextArgs: readonly FunctionArgument[], results?: ReadonlyMap<number, FunctionArgument>): any => {
           rowArgumentsByPath.set(key, nextArgs);
-          const lane = laneKey === undefined ? [] : rederive()
+          const lane = laneKey === undefined ? [] : rederive(results && {
+            producerPath: entry.node.producerPath, results,
+          })
             .filter((production: any) => claimPathKey(production) === laneKey);
           return [
             ...(entry.node.valueChunkProductions ?? []).filter((production: any) => (
@@ -246,6 +254,8 @@ if (preparedAtomicNodes?.length) {
             ...(entry.node === laneNode ? lane : []),
           ];
         };
+        entry.node.resolveValueChunkProductionsFromArgs = refresh;
+        entry.node.resolveValueChunkProductionsFromResults = refresh;
       }
     }
     (builder as StatefulTransactionBuilder & {

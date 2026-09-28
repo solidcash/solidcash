@@ -146,7 +146,7 @@ export function planCreateBuilderNestedBases(params: {
       unlocker: createDataNftUnlocker(child.externalContract.inner, childMasterIndex, child.categoryId),
     }));
     const childBlockInputCount = child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
-    nestedInputBase += childBlockInputCount;
+    nestedInputBase += childBlockInputCount + (child.ordinaryDynamicChunkInputs?.length ?? 0);
     nestedOutputBase += childBlockInputCount;
     // Legacy layouts interleave each proxy's implementation. A compiler route has already included the
     // complete implementation band in nestedInputBase, while outputs remain interleaved.

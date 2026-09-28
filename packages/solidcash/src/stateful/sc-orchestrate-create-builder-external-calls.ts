@@ -324,6 +324,7 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
       bDirectChunkValue,
       bValueChunkOutputCount,
       bKeccak,
+      bDynamicChunkInputs,
     } = nestedPrelude;
     const bSc = nestedPrelude.bSc as unknown as any;
 
@@ -438,6 +439,7 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
           bReturnEventInBlock,
           bGraphBlockhashSelections,
           bKeccak,
+          bDynamicChunkInputs,
           bEntryLoopCommitments,
           bEntryLoopStart,
           bEntryLoopCollection,

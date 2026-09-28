@@ -23,6 +23,7 @@ import {
   VALUE_CHUNK_DOMAIN_TAG,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
+  DYNAMIC_CHUNK_SIZE,
   encodeNftIndexTag,
   generateSourceMap,
   normaliseSourceMapLocationData,
@@ -9867,22 +9868,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-  /** Replace a dynamic value length on top with the number of materialized value-chunk NFTs. */
-  private emitValueChunkCountFromLength(locationData: SingleLocationData): void {
-    // Values through 60 bytes remain inline in the commitment tail. Only the hashed long-value form has a
-    // trailing chunk run, split into VALUE_CHUNK_SIZE-byte commitments.
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(60n), locationData);
-    this.emit(Op.OP_GREATERTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-    this.emit(encodeInt(BigInt(VALUE_CHUNK_SIZE - 1)), locationData);
+  /** Replace a dynamic state byte length on top with its exact 120-byte chunk-NFT count. */
+  private emitDynamicChunkCountFromLength(locationData: SingleLocationData): void {
+    this.emit(encodeInt(BigInt(DYNAMIC_CHUNK_SIZE - 1)), locationData);
     this.emit(Op.OP_ADD, locationData);
-    this.emit(encodeInt(BigInt(VALUE_CHUNK_SIZE)), locationData);
+    this.emit(encodeInt(BigInt(DYNAMIC_CHUNK_SIZE)), locationData);
     this.emit(Op.OP_DIV, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_ENDIF, locationData);
   }
 
   /**
@@ -20522,10 +20513,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(external_out_dynamic_address)';
 
-    // expected = 0 for inline values, otherwise ceil(length / VALUE_CHUNK_SIZE); then initialize the scan.
+    // Dynamic state has no inline tail: expected = ceil(length / DYNAMIC_CHUNK_SIZE).
     this.emit(encodeInt(BigInt(this.getStackIndex('(external_out_dynamic_len)'))), loc);
     this.emit(Op.OP_PICK, loc);
-    this.emitValueChunkCountFromLength(loc);
+    this.emitDynamicChunkCountFromLength(loc);
     this.pushToStack('(external_out_dynamic_expected)');
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(external_out_dynamic_found)');

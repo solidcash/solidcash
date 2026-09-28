@@ -6418,7 +6418,8 @@ export class StatefulTransactionBuilder {
     base += this.iterationEntryInputs.length;
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
-      base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      base += (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)
+        + (g.ordinaryDynamicChunkInputs?.length ?? 0);
     }
     return base;
   }
@@ -6567,7 +6568,8 @@ export class StatefulTransactionBuilder {
     }
     // Skip external call inputs (use full block size when available)
     for (const g of this.externalCallUtxoGroups) {
-      base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      base += (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)
+        + (g.ordinaryDynamicChunkInputs?.length ?? 0);
     }
     // Skip the main block's output-only funder inputs (event/transfer): they sit inside the proxy block,
     // before the low-level call inputs. A delegatecall'd impl that emits events reserves such slots here.
@@ -7070,7 +7072,8 @@ export class StatefulTransactionBuilder {
       (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0), 0,
     );
     const externalCallInputCount = this.externalCallUtxoGroups.reduce(
-      (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
+      (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)
+        + (g.ordinaryDynamicChunkInputs?.length ?? 0), 0,
     );
     const lowLevelCallInputCount = this.lowLevelCallUtxoGroups.reduce(
       (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,

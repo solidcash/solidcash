@@ -12914,7 +12914,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Compute _callInputIndex values
       const externalCallInputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
+        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length)
+          + (g.ordinaryDynamicChunkInputs?.length ?? 0), 0,
       );
       timing('external-input-count');
 

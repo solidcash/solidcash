@@ -148,8 +148,14 @@ export function repairNestedCalleeOutputs(
   const nestedCategories = new Set(
     host.externalCallUtxoGroups.map((group) => group.categoryId).filter((id): id is string => !!id),
   );
+  const consumedDynamicChunks = new Set(host.externalCallUtxoGroups.flatMap((group) => (
+    group.ordinaryDynamicChunkInputs ?? []
+  ).map((chunk) => `${chunk.utxo.txid.toLowerCase()}:${chunk.utxo.vout}`)));
   for (let index = 0; index < host.allInputs.length; index++) {
     const input = host.allInputs[index];
+    // Dynamic writes consume the old chunk run and replace it with a potentially shorter new run. Mirroring
+    // an unmatched old chunk here creates an unauthenticated extra output at the same collection address.
+    if (consumedDynamicChunks.has(`${input.txid.toLowerCase()}:${input.vout}`)) continue;
     const category = input.token?.category;
     if (!category || input.token?.nft?.capability !== 'mutable' || !nestedCategories.has(category)) continue;
     const existing = builder.outputs[index];

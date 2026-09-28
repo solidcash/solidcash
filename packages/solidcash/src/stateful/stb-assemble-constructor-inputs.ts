@@ -77,6 +77,7 @@ export function assembleConstructorInputs(
       externalCallInputs.push(group.masterUtxo as UnlockableUtxo);
       externalCallInputs.push(...group.dataNftUtxos);
     }
+    externalCallInputs.push(...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo));
   }
 
   // Flatten low-level call inputs (stateful groups + raw UTXOs). Prefer the full

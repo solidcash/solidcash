@@ -42,6 +42,7 @@ export interface PushCreateBuilderDirectExternalCallGroupInput {
   bReturnEventInBlock: boolean;
   bGraphBlockhashSelections: NonNullable<ExternalCallUtxoGroup['graphBlockhashSelections']> | [];
   bKeccak: { recreates: NonNullable<ExternalCallUtxoGroup['keccakRecreates']> };
+  bDynamicChunkInputs: NonNullable<ExternalCallUtxoGroup['ordinaryDynamicChunkInputs']>;
   bEntryLoopCommitments: string[] | undefined;
   bEntryLoopStart: number | undefined;
   bEntryLoopCollection: string | undefined;
@@ -83,6 +84,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     bReturnEventInBlock,
     bGraphBlockhashSelections,
     bKeccak,
+    bDynamicChunkInputs,
     bEntryLoopCommitments,
     bEntryLoopStart,
     bEntryLoopCollection,
@@ -240,6 +242,7 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
     ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
+    ...(bDynamicChunkInputs.length > 0 && { ordinaryDynamicChunkInputs: bDynamicChunkInputs }),
     ...(bEntryLoopCommitments && {
       entryLoopCommitments: bEntryLoopCommitments,
       entryLoopStart: bEntryLoopStart,

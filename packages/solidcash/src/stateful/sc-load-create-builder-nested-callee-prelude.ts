@@ -9,10 +9,10 @@ import type {
   StateLayout,
   StateValue,
 } from '@solidcash/utils';
-import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE } from '@solidcash/utils';
+import { VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE, parseChunkCommitment } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
-import { createDataNftUnlocker } from './covenant-helpers.js';
+import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   selectGraphBlockhashReads,
@@ -71,6 +71,7 @@ export interface LoadCreateBuilderNestedCalleePreludeResult {
   bDirectChunkValue: Uint8Array | undefined;
   bValueChunkOutputCount: number;
   bKeccak: { inputs: UnlockableUtxo[]; recreates: Output[] };
+  bDynamicChunkInputs: Array<{ name: string; type: string; utxo: UnlockableUtxo }>;
 }
 
 /**
@@ -180,6 +181,20 @@ export async function loadCreateBuilderNestedCalleePrelude(
       .find((f) => f.name === callInfo.functionName)
     : undefined);
   const bBlockLayout = bAbiFunc?.blockLayout;
+  const directDynamicWrites = new Set(compilerRoute ? [] : bAbiFunc?.dynamicWrites ?? []);
+  const bDynamicChunkInputs = bStatelayout.variables
+    .filter((variable) => variable.dynamic && directDynamicWrites.has(variable.name))
+    .flatMap((variable) => (bState.dynamicChunkUtxos?.[variable.name] ?? [])
+      .filter((utxo) => utxo.token?.category === externalCategoryId
+        && utxo.token.nft?.capability === 'mutable' && utxo.token.nft.commitment.length > 0)
+      .map((utxo) => ({ utxo, index: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
+      .sort((a, b) => a.index - b.index)
+      .map(({ utxo }) => ({
+        name: variable.name, type: variable.type,
+        utxo: { ...utxo, unlocker: createDynamicChunkUnlocker(
+          callInfo.externalContract.inner as any, 0, externalCategoryId, variable.name, variable.type,
+        ) },
+      })));
   const bHasLoop = (bAbiFunc?.sortedUpsertLoopInfo?.length ?? 0) > 0;
   // A whole chunkable value assigned from one published ABI parameter is known before VM derivation. Keep
   // this tied to the compiler's entry effect and valueParam metadata: selecting a merely type-compatible
@@ -222,5 +237,6 @@ export async function loadCreateBuilderNestedCalleePrelude(
     bDirectChunkValue,
     bValueChunkOutputCount,
     bKeccak,
+    bDynamicChunkInputs,
   };
 }

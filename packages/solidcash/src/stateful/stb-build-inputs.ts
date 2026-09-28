@@ -699,7 +699,10 @@ lowLevelCallInputs: UnlockableUtxo[],
     );
     const groupInputs = (group: ExternalCallUtxoGroup): UnlockableUtxo[] => {
       const master = group.masterUtxo as UnlockableUtxo | undefined;
-      const inputs = group.blockInputs ?? (master ? [master, ...group.dataNftUtxos] : []);
+      const inputs = [
+        ...(group.blockInputs ?? (master ? [master, ...group.dataNftUtxos] : [])),
+        ...(group.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo),
+      ];
       return inputs.flatMap((input) => {
         if (master && input
           && input.txid.toLowerCase() === master.txid.toLowerCase() && input.vout === master.vout) {

@@ -7,7 +7,7 @@ import type { AbiFunction, ExternalCallAbi } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
-import { createDataNftUnlocker } from './covenant-helpers.js';
+import { createDataNftUnlocker, createDynamicChunkUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
@@ -89,6 +89,12 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         group.externalContract.inner, masterInputIndex, group.categoryId,
       ),
     }));
+    group.ordinaryDynamicChunkInputs = group.ordinaryDynamicChunkInputs?.map((chunk) => ({
+      ...chunk,
+      utxo: { ...chunk.utxo, unlocker: createDynamicChunkUnlocker(
+        group.externalContract.inner, masterInputIndex, group.categoryId, chunk.name, chunk.type,
+      ) },
+    }));
     // A full block is what gets serialized, so its dataNft slots must carry the re-created unlockers too.
     if (group.blockInputs && group.blockLayout && group.returnEventInBlock === true) {
       let dataIdx = 0;
@@ -159,7 +165,8 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
         // Where this function's external call groups start in the input sequence: immediately after B's own
         // co-spent block, which is blockInputs wide when a full block was assembled (X13).
         const thisGroupEnd = currentInputBase
-          + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length);
+          + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+          + (group.ordinaryDynamicChunkInputs?.length ?? 0);
         bFinalArgs.push(BigInt(thisGroupEnd));
       } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
         // Batch-route callees address their own callees physically; -1 selects the direct identity proof.
@@ -182,6 +189,12 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
       } else if (paramName === '__internal__valueChunkOutputBase') {
         // Composed computed values are relocated after the complete participant layout is materialized.
         bFinalArgs.push(-1n);
+      } else if (paramName === '__internal__dynamicChunkInputBase') {
+        // Old chunks follow this callee's fixed block. With none, the negative sentinel makes the covenant
+        // reconstruct its output base rather than treating input zero as an output coordinate.
+        bFinalArgs.push(group.ordinaryDynamicChunkInputs?.length
+          ? BigInt(masterInputIndex + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length))
+          : -1n);
       } else if (paramName.startsWith('__internal__externalReturnOutputIdx')) {
         // Find child groups with return values, in order
         const children = getChildGroupIndices();
@@ -373,7 +386,8 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
 
     // Advance to next group. A full block occupies blockInputs.length slots (its output-only slots each
     // carry a paired funder), which is what the builder's input flattening emits.
-    currentInputBase += group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length;
+    currentInputBase += (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length)
+      + (group.ordinaryDynamicChunkInputs?.length ?? 0);
   }
   timing('nested-bases-complete');
   return { currentInputBase, groupMasterIndices };

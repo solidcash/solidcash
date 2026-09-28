@@ -330,6 +330,8 @@ export interface ExternalCallUtxoGroup {
   }>;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
+  /** Old dynamic-state chunks consumed by an ordinary direct callee after its master/data block. */
+  ordinaryDynamicChunkInputs?: Array<{ name: string; type: string; utxo: UnlockableUtxo }>;
   /** B's function block layout (for full block ordering) */
   blockLayout?: FunctionBlockLayout;
   /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is

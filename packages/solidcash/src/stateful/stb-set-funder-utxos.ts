@@ -73,6 +73,7 @@ export function setFunderUtxos(
     } else {
       externalCallInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos);
     }
+    externalCallInputs.push(...(g.ordinaryDynamicChunkInputs ?? []).map((chunk) => chunk.utxo));
   }
   const lowLevelCallInputs: UnlockableUtxo[] = [];
   const embeddedDelegateGroups = new Set(host.externalCallUtxoGroups.flatMap((group) => (

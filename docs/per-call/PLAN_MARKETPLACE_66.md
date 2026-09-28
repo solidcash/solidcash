@@ -627,7 +627,12 @@ risk. Take the slices in order, each with its own tests.
   value's own collection covenant and emits the record entry each one declares, and a plan built that way derives
   with the machine accepting the master that wrote the value (`solidcash/test/per-call/frames/chunk-run.test.ts`).
   What is missing is a write that changes the run's width — creating or deleting chunks — which the plan refuses by
-  name, and `bytes`/`T[]` runs, which are unexercised.)
+  name, and `bytes`/`T[]` runs, which are unexercised. **A body that both touches a dynamic value and makes a call
+  is now refused by name rather than crashing** (`110dfb155`): a call ends the segment the code before it runs in,
+  so such a body declares its records per segment and has no single declaration the head can locate the run from -
+  code generation used to ask for the direct convention's return-event operand and die with a stack-variable error,
+  and the reason now names what cannot be located (`dynamic-value-call.test.ts`, with the write-without-a-call and
+  the call-without-a-dynamic-value controls still served).
 - [ ] R6 Mappings inside structs and nested mappings, through today's flattening and composite slots (spec 20).
   - The composite slot of a nested `m[a][b]` write is derived as of `7273d613e`: both derivation builders hash each
     target's keys in source order, concatenate the per-key hashes, hash them once more and mask the result the way
@@ -873,8 +878,13 @@ risk. Take the slices in order, each with its own tests.
     its real depth. Measured: the derivation completes `Impl.answer()` then `Proxy.__fallback()`, the proxy master,
     the implementation master and the validator are accepted, the record's kind is the delegate kind, its target is
     the address the proxy's own state holds, its digest is the selector the fallback received, and the callee's
-    result returns unchanged. Still open: the toy is one hop rather than Y1's shape behind the proxy, and the SDK
-    half (`deployProxy` in three transactions, `initialize` through the proxy, the `Initializable` flag) is untouched.
+    result returns unchanged. **Widened (`365ee2ded`)**: `toys/proxied-entry.test.ts` drives the shape a proxied
+    deployment really has - a stateful implementation whose entry writes the record it inherited from the proxy and
+    then calls a third contract, three masters plus the validator and the record - and every input is accepted, with
+    two controls refused on the same composition (a record output that dropped the field the write did not compute,
+    and a frame whose declaration does not chain from the one before it). **The SDK half landed** (`39deb3656`,
+    F6): three transactions, `initialize` through the proxy, and the `Initializable` flag refused on the second call.
+    Still open: Y1's full shape (appends and events) behind the proxy.
   - [x] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
     Ticked 2026-09-28: the whole lifecycle settles - one transaction writes two records (the head the insert
     relinks and the node it creates, which both later frames rewrite), the derivation completes the three callee
@@ -908,12 +918,13 @@ risk. Take the slices in order, each with its own tests.
   - [x] `AB` — the callee is placed after the caller and its validator, derives first, and the machine accepts.
   - [x] `ABBA` — the re-entered contract's entries make different numbers of calls; the end-to-end composer run is
     `frames/round-trip-composition.test.ts`.
-  - [ ] `ABCBA` — the three contracts are emitted, but no run places the call-back chain end to end. Attempted, and
-    the attempt is recorded rather than landed: the derivation stalls at the root's first call site
-    (`PER_CALL_DERIVATION_STALLED: master "first-1" of First.begin() filled no witness at site 0 (call 0)`), while
-    the two simpler variants settle — a plain three-contract chain (head to middle to tail, completion order tail
-    first), and a contract with two entries whose entry dispatches and calls another contract. So the missing piece
-    is in the chain that closes a cycle, not in chains, dispatch or re-entry on their own.
+  - [x] `ABCBA` — the chain that calls back to its head settles (`bc0926172`): head to middle to tail, tail back to
+    the middle, middle back to the head, with the completion order the design states, each call's resolved callee
+    reference asserted, and every contract input including the one validator accepted by the machine. **The recorded
+    stall was the plan, not the program**: the user-entered head has two entries, so its master dispatches on the
+    call data its own input carries, and the plan that stalled left the root without that selector - the program
+    stopped inside the head's dispatcher (`OP_INVOKE`), before its first call site, and the derivation reported the
+    site as filling nothing. The plan now states it, and a regression pin keeps the wrong plan's stall named.
   - [x] `A.x` and `C.y`, independent: 0 validators — both masters and both users, accepted at every input.
   - [x] `AB` and `CD`, independent: 2 validators — served as of `bf3592099`: a plan names one validator or a list,
     each contract binds to the validator whose hosting block names it, each validator gets its own scoped
@@ -1762,3 +1773,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | 39deb3656 | per-call | a proxied initialize that writes state settles | 115 + 382 + 551 | **F6's write half, and a recorded deviation about the record's shape.** The state an entry leaves is not something a deployment can state in advance, so the hop is planned with a candidate and the value the entry computed is read back out of the machine - the entry closes its record against the declared view, the failed compare leaves both operands, and the plan is rebuilt with the computed one; the reading is shared with the genesis derivation rather than written twice. A record's commitment is rebuilt from the fields *the implementation's own source* declares, so a proxy whose record omits them loses the address its fallback reads after the first call: a deployment now requires the two layouts to agree field by field and refuses a pair that does not, and the fixtures deploy the shared shape. Measured: the three transactions derive, both masters, the validator and the record are accepted, the record ends at the commitment the shipped encoder materializes from the written state with the implementation's address intact, a second `initialize` offered the record the first call left is refused (its control - the same plan, same pushes, offered the state the entry expects - is accepted, so the refusal is the record's state), and a mismatched pair is refused by name. `records/partial-write.test.ts` measures the underlying property with a two-field record and a control that drops the untouched field. |
 | 2026-09-28 | 90def6234 | per-call tests | the last three edge fixtures carry their record at the covenant | 115 + 382 + 551 | The three fixtures that still built a record at a plain lock now build it at `stateRecordLockingBytecode(category)`, spend it on the covenant's write path with the index of the master that rewrites it (taken from the shipped layout), and assert the record input's own verdict beside the masters'. A liveness check - pointing one record back at the plain lock - fails exactly the record assertions, so the acceptance is the covenant's rule. The plain-lock control stays where it is already stated. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 382 + 551 | The manifest's table is refreshed from this round's runs (solidc master 341, solidcash deploy 72, records 7, hostile 58; 1048 in total), from `yarn build` exit 0 and the focused suites. Two ticks move: **F6**, and with it the F6-deviation line the annotation carries. Open and named: broadcasting the initialize transaction, routing `upgrades.deployProxy` to this path, the composer's `fill` still returning `{}` for non-call sites, and F5's built-in proxy (which is what removes the shared-layout requirement). |
+| 2026-09-28 | 110dfb155 | per-call | a dynamic value beside a call is refused by name, not crashed | 115 + 389 + 560 | **A recorded crash becomes a named refusal.** A body that reads or writes a dynamic value *and* makes a call asked code generation for the direct convention's return-event operand, which this convention does not carry, and died with `StackVariableUnavailableError` - the write's chunk run and the call's blocks share the frame's records, and a call splits the frame's declarations across segments, so there is no single declaration the run can be located from. The shape is refused at admission with a reason that states exactly that; the smallest trigger, the same body with a void call, a struct-array write and a dynamic read with a call are all refused, and the write without a call and the call without a dynamic value stay served. The direct convention is untouched and its byte-identity case holds. solidc master 341 to 348. |
+| 2026-09-28 | bc0926172 | per-call | the chain that calls back to its head settles | 115 + 389 + 560 | **`ABCBA`, and the wall was the plan.** The shape closes a cycle - head to middle to tail, tail back to the middle, middle back to the head - and it now derives with the completion order the design states, each call's resolved callee reference asserted, and every contract input including the one validator accepted by the machine. The recorded stall was a property of the plan, not the program: the user-entered head has two entries, so its master dispatches on the call data its own input carries, and a plan that leaves the root without that selector stops inside the head's dispatcher (`OP_INVOKE`) before its first call site - the same ip before and after the host's fill, which is why the derivation reported the site as filling nothing. The regression pin keeps the wrong plan's stall named. Shapes 13 to 15. |
+| 2026-09-28 | 365ee2ded | per-call | a proxied entry that is itself stateful and calls settles | 115 + 389 + 560 | **The proxy toy's hop widened to the shape a proxied deployment really has**: a stateful implementation whose entry writes the record it inherited from the proxy and then calls a third contract, so the transaction carries three masters, the validator and the record. Every input is accepted, each frame's declared view equals what the transaction carries, and two controls are refused on the same composition - a record output that dropped the field the write did not compute, and a frame whose declaration does not chain from the one before it. Found on the way and now stated in the fixture: a body that writes and then calls applies its write at the end of the body, so the record must be declared in the frame's last segment as well as its first. Toys 58 to 65. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 560 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash shapes 15, toys 65; 1064 in total), with `yarn build` exit 0 and both package suites green. Ticks this round: F6 (with the record-owner fix, the shared-layout rule and the delegate-target rule it needed), `ABCBA`, and the two threat rows the delegate-target work closes (T26/T27, T37's `DELEGATE` half). |

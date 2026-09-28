@@ -24,6 +24,7 @@ import {
   USER_LOCK,
   compileAndDeploy,
   composeAndDerive,
+  entryName,
   hexOf,
   master,
   masterInput,
@@ -43,8 +44,11 @@ import {
  * `Root.run` writes the store twice, then `Rater.enter` requires the root user as `tx.origin`, reads the vault's
  * record, calls `Vault.settle(uint16[4], int16[2])`, writes its own flag and calls `Claimer.claim`; the settle
  * result travels back up as a `uint16[N]` the root stores. `claim` re-enters the rater for a `STATIC` read of the
- * flag and a `pure` calculation, and re-enters the vault for its record, its claimed write and one payout per
- * share, each calling `Token.transfer`, the deepest frame below the root. Every coordinate comes from
+ * flag and a `pure` calculation, and re-enters the vault for its record, its claimed write and a payout loop: the
+ * loop reads the share count out of the vault's record and calls `Vault.sendShare` once per turn, and each
+ * `sendShare` calls `Token.transfer`, the deepest frame below the root. The trip count is a value the running frame
+ * reads rather than a constant the source fixes, so the claimer's body carries no literal call count and one
+ * compiled loop settles however many turns the plan's record and calls declare. Every coordinate comes from
  * `layoutTransaction`/`participant`, every commitment from the shipped encoders (`buildPushdataCommitment`,
  * `encodePushdataValue`), and every verdict from the BCH-2026 machine, with the compile, deployment, composer,
  * derivation and machine all running.
@@ -96,10 +100,11 @@ const ROOT_BEFORE = { score: 0n };
 const STORE_BEFORE = { written: 0n };
 const RATER_BEFORE = { settled: 0n };
 const RATER_AFTER = { settled: 1n };
-const VAULT_BEFORE = { escrowId: 1n, settled: 0n, claimed: 0n };
-const VAULT_AFTER_SETTLE = { escrowId: 1n, settled: 1n, claimed: 0n };
-const VAULT_AFTER_CLAIMED = { escrowId: 1n, settled: 1n, claimed: 1n };
 const TOKEN_BEFORE = { paid: 0n };
+
+/** The vault's record for one share count: the count the claimer's payout loop reads, then the fields entries set. */
+const vaultState = (shareCount: bigint, settled: bigint, claimed: bigint): Record<string, bigint> =>
+  ({ shares: shareCount, settled, claimed });
 
 /** One payment per share, so the vault's payout entry takes no run-time value to forward. */
 const DEFAULT_SHARES: readonly bigint[] = [1n, 1n];
@@ -117,7 +122,6 @@ function source(shares: readonly bigint[]): string {
   const xsWire = hexOf(encodePushdataValue([1n, 2n, 3n, 4n], 'uint16[4]'));
   const ysWire = hexOf(encodePushdataValue([-1n, 2n], 'int16[2]'));
   const elementWrites = shares.map((share, index) => `r[${index}] = ${share};`).join(' ');
-  const payout = shares.map(() => `IVault(0x${VAULT_ADDRESS}).sendShare();`).join(' ');
   const total = totalOf(shares);
 
   return [
@@ -148,8 +152,8 @@ function source(shares: readonly bigint[]): string {
     '  int public settled;',
     `  function enter(uint16[2] xs) returns (${type}) {`,
     `    require(tx.origin == 0x${USER_ADDRESS});`,
-    `    int id = IVault(0x${VAULT_ADDRESS}).readRecord();`,
-    '    require(id == 1);',
+    `    int count = IVault(0x${VAULT_ADDRESS}).readRecord();`,
+    '    require(count >= 1);',
     `    ${type} shares = IVault(0x${VAULT_ADDRESS}).settle(hex"${xsWire}", hex"${ysWire}");`,
     '    this.settled = 1;',
     `    int paid = IClaimer(0x${CLAIMER_ADDRESS}).claim();`,
@@ -160,10 +164,10 @@ function source(shares: readonly bigint[]): string {
     `  function calc(${type} xs) pure returns (${type}) { return xs; }`,
     '}',
     'contract Vault {',
-    '  int public escrowId;',
+    '  int public shares;',
     '  int public settled;',
     '  int public claimed;',
-    '  function readRecord() view returns (int) { return this.escrowId; }',
+    '  function readRecord() view returns (int) { return this.shares; }',
     `  function settle(uint16[4] xs, int16[2] ys) returns (${type}) {`,
     `    ${type} r; ${elementWrites}`,
     '    this.settled = 1;',
@@ -182,11 +186,15 @@ function source(shares: readonly bigint[]): string {
     '    require(flag == 1);',
     `    ${type} arr = IRater(0x${RATER_ADDRESS}).calc(hex"${sharesWire}");`,
     '    require(arr[0] == 1);',
-    `    int id = IVault(0x${VAULT_ADDRESS}).readRecord();`,
-    '    require(id == 1);',
+    `    int count = IVault(0x${VAULT_ADDRESS}).readRecord();`,
+    '    require(count >= 1);',
     `    IVault(0x${VAULT_ADDRESS}).setClaimed(1);`,
-    `    ${payout}`,
-    `    return ${total};`,
+    '    int paid = 0;',
+    '    for (int i = 0; i < count; i = i + 1) {',
+    `      IVault(0x${VAULT_ADDRESS}).sendShare();`,
+    '      paid = paid + 1;',
+    '    }',
+    '    return paid;',
     '  }',
     '}',
     'contract Token {',
@@ -258,9 +266,10 @@ function build(shares: readonly bigint[]): Run {
   const storeAfter = storeRecord({ written: 1n + 2n });
   const raterBefore = raterRecord(RATER_BEFORE);
   const raterAfter = raterRecord(RATER_AFTER);
-  const vaultBefore = vaultRecord(VAULT_BEFORE);
-  const vaultSettled = vaultRecord(VAULT_AFTER_SETTLE);
-  const vaultClaimed = vaultRecord(VAULT_AFTER_CLAIMED);
+  const shareCount = BigInt(shares.length);
+  const vaultBefore = vaultRecord(vaultState(shareCount, 0n, 0n));
+  const vaultSettled = vaultRecord(vaultState(shareCount, 1n, 0n));
+  const vaultClaimed = vaultRecord(vaultState(shareCount, 1n, 1n));
   const tokenBefore = tokenRecord(TOKEN_BEFORE);
   const tokenAfter = tokenRecord({ paid: totalOf(shares) });
   const runningPaid = shares.map((_share, index) =>
@@ -393,7 +402,7 @@ function build(shares: readonly bigint[]): Run {
       enteredBy: ENTER_MASTER, origin: USER_ID, argumentPushes: [recordSelector],
       segments: [[kept(vaultRecordIndex, vaultBefore, vaultBefore)]],
     }),
-    retval: encodeResultList([encodeIntegerValue(1n)]),
+    retval: encodeResultList([encodeIntegerValue(shareCount)]),
   };
   const settleMaster: DraftMaster = {
     ...master({
@@ -419,7 +428,7 @@ function build(shares: readonly bigint[]): Run {
       enteredBy: CLAIM_MASTER, origin: USER_ID, argumentPushes: [recordSelector],
       segments: [[kept(vaultRecordIndex, vaultSettled, vaultSettled)]],
     }),
-    retval: encodeResultList([encodeIntegerValue(1n)]),
+    retval: encodeResultList([encodeIntegerValue(shareCount)]),
   };
   const setClaimedMaster: DraftMaster = master({
     master: SET_CLAIMED_MASTER, contract: 'Vault', entry: 'setClaimed', program: vault.program,
@@ -623,6 +632,22 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
       expect(run.artifacts[name]?.composition?.convention).toBe('per-call');
     }
     expect(publishedRefusals(run.artifacts as Record<string, { composition?: unknown }>)).toStrictEqual([]);
+    // The payout is one call site the source repeats, beside four the source fixes: readFlag, calc, readRecord and
+    // setClaimed. The repeated site sits at call 4, so its visits fill the plan's calls from there on: one
+    // sendShare per turn, which is the bound the composer's fill (`site.callIndex + visit`) can bind.
+    const claimer = run.artifacts.Claimer!.composition as {
+      stopSites?: {
+        entries: { functionName: string; sites: { sites: { kind: string; callIndex: number; repeated?: boolean }[] } }[];
+      };
+    };
+    const claim = claimer.stopSites!.entries.find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
+    expect(claim.sites.sites.filter((site) => site.kind === 'call')
+      .map((site) => ({ callIndex: site.callIndex, repeated: site.repeated ?? false })))
+      .toStrictEqual([
+        { callIndex: 0, repeated: false }, { callIndex: 1, repeated: false },
+        { callIndex: 2, repeated: false }, { callIndex: 3, repeated: false },
+        { callIndex: 4, repeated: true },
+      ]);
   });
 
   it('derives callee-first, is accepted at every contract input, and reads every written record back', () => {

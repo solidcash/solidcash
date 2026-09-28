@@ -65,6 +65,8 @@ interface LowLevelSite {
 export default class LowerStaticLowLevelCalls extends AstTraversal {
   private interfaces = new Map<string, InterfaceNode>();
   private counter = 0;
+  /** The locals currently being followed, so a chain that names itself stops instead of recursing. */
+  private resolving = new Set<string>();
   // One map per lexical block, innermost last. A name present here shadows any outer binding; a value that is not
   // an abi-encode node marks a local that was bound to something else (or reassigned), so the lookup stops there.
   private payloadScopes: Map<string, ExpressionNode | undefined>[] = [];
@@ -105,15 +107,11 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     const scope = this.payloadScopes[this.payloadScopes.length - 1];
     if (!scope) return;
     if (statement instanceof VariableDefinitionNode) {
-      const encoded = statement.expression instanceof AbiEncodeCallNode
-        || statement.expression instanceof AbiEncodeWithSelectorNode
-        ? statement.expression
-        : undefined;
-      scope.set(statement.name, encoded);
+      scope.set(statement.name, this.carriedPayload(statement.expression));
       return;
     }
     if (statement instanceof AssignNode) {
-      this.forgetPayloadBinding(statement.identifier.name);
+      this.setPayloadBinding(statement.identifier.name, this.carriedPayload(statement.expression));
       return;
     }
     if (statement instanceof TupleAssignmentNode) {
@@ -123,11 +121,27 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     }
   }
 
+  /**
+   * The payload a value carries on, or undefined when it names nothing this pass can follow.
+   *
+   * A local may be filled from another local rather than from the abi-encode expression directly: an inlined body
+   * declares its parameter and assigns the caller's argument to it, so the chain is followed name by name.
+   */
+  private carriedPayload(value: ExpressionNode | undefined): ExpressionNode | undefined {
+    if (value instanceof AbiEncodeCallNode || value instanceof AbiEncodeWithSelectorNode) return value;
+    return value instanceof IdentifierNode ? value : undefined;
+  }
+
   private forgetPayloadBinding(name: string): void {
+    this.setPayloadBinding(name, undefined);
+  }
+
+  /** Sets the payload a name is bound to, in the innermost scope that holds the name. */
+  private setPayloadBinding(name: string, value: ExpressionNode | undefined): void {
     for (let index = this.payloadScopes.length - 1; index >= 0; index -= 1) {
       const scope = this.payloadScopes[index]!;
       if (scope.has(name)) {
-        scope.set(name, undefined);
+        scope.set(name, value);
         return;
       }
     }
@@ -283,11 +297,19 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
 
   private resolveNamedCall(payload: ExpressionNode): NamedCall | undefined {
     if (payload instanceof IdentifierNode) {
+      // Locals may name each other - an inlined body's parameter is assigned the caller's local, which is itself
+      // bound to the payload - so a name already being resolved is not followed again.
+      if (this.resolving.has(payload.name)) return undefined;
       const bound = this.boundPayload(payload.name);
       if (!bound) return undefined;
-      const named = this.resolveNamedCall(bound);
-      // The bound declaration keeps its own argument nodes, so the typed call reads independent copies.
-      return named && { ...named, args: named.args.map((arg) => cloneNode(arg)) };
+      this.resolving.add(payload.name);
+      try {
+        const named = this.resolveNamedCall(bound);
+        // The bound declaration keeps its own argument nodes, so the typed call reads independent copies.
+        return named && { ...named, args: named.args.map((arg) => cloneNode(arg)) };
+      } finally {
+        this.resolving.delete(payload.name);
+      }
     }
     if (payload instanceof AbiEncodeCallNode) {
       if (payload.interfaceName === 'this' || !this.interfaces.has(payload.interfaceName)) return undefined;

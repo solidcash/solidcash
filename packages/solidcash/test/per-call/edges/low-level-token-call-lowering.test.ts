@@ -112,6 +112,32 @@ const LOCAL_OPAQUE = HEAD
   + '   require(ok);'
   + ' } }';
 
+/** The payload is handed to a helper whose own body makes the low-level call: the `Address` indirection. */
+const HELPER_FORWARD = HEAD
+  + ' library Address {'
+  + '   function forward(address target, bytes data) {'
+  + '     (bool ok, bytes ret) = address(target).call(data);'
+  + '     require(ok);'
+  + '   }'
+  + ' }'
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = abi.encodeCall(IERC20.transfer, (${RECIPIENT}, ${AMOUNT}));`
+  + `   Address.forward(${TARGET}, data);`
+  + ' } }';
+
+/** The same helper handed a payload that names no method. */
+const HELPER_OPAQUE = HEAD
+  + ' library Address {'
+  + '   function forward(address target, bytes data) {'
+  + '     (bool ok, bytes ret) = address(target).call(data);'
+  + '     require(ok);'
+  + '   }'
+  + ' }'
+  + ' contract Caller { function f() {'
+  + `   bytes memory data = abi.encode(${RECIPIENT}, ${AMOUNT});`
+  + `   Address.forward(${TARGET}, data);`
+  + ' } }';
+
 /** The payload local is declared in a nested block and used in that same block. */
 const NESTED_BOUND = HEAD
   + ' contract Caller { function f() {'
@@ -266,6 +292,19 @@ describe('a low-level token call whose callee and method are statically known', 
     expect(callRecord(LOCAL_BOUND).record).toStrictEqual(typed);
     // The discarded-result spelling reads the local bound to an `abi.encodeWithSelector` payload.
     expect(callRecord(LOCAL_BARE).record).toStrictEqual(typed);
+  });
+
+  it('lowers a payload passed to a helper whose own body calls, to the typed call', () => {
+    // The helper's parameter is the caller's local and the caller's local is bound to the payload, so the chain is
+    // followed name by name across the inlined boundary and the call compiles as the typed call it denotes.
+    expect(callRecord(HELPER_FORWARD).record).toStrictEqual(callRecord(TYPED).record);
+  });
+
+  it('leaves the same helper refused when the payload it is handed names no method', () => {
+    // The chain resolves to an `abi.encode`, which is opaque, so the body keeps its own refusal.
+    expect(refusalsOf(HELPER_OPAQUE)).toStrictEqual([
+      { functionName: 'Caller.f()', reason: RAW_REFUSAL },
+    ]);
   });
 
   it('lowers a payload local declared in a nested block to the typed call', () => {

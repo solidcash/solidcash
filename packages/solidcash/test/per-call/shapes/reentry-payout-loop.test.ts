@@ -308,13 +308,13 @@ function build(trips: number, options: { readonly mixed?: boolean } = {}): Run {
   const escrowHex = hexOf(escrow.category);
   const tokenHex = hexOf(tokenContract.category);
   const rootRec = (fields: Record<string, bigint>): Uint8Array =>
-    commitmentOf(artifacts.Root!.stateLayout, fields);
+    commitmentOf(artifacts.Root!.stateLayout!, fields);
   const escrowRec = (fields: Record<string, bigint>): Uint8Array =>
-    commitmentOf(artifacts.Escrow!.stateLayout, fields);
+    commitmentOf(artifacts.Escrow!.stateLayout!, fields);
   const oracleRec = (fields: Record<string, bigint>): Uint8Array =>
-    commitmentOf(artifacts.Oracle!.stateLayout, fields);
+    commitmentOf(artifacts.Oracle!.stateLayout!, fields);
   const tokenRec = (fields: Record<string, bigint>): Uint8Array =>
-    commitmentOf(artifacts.Token!.stateLayout, fields);
+    commitmentOf(artifacts.Token!.stateLayout!, fields);
 
   const transferMasters = Array.from({ length: trips }, (_unused, index) => `transfer-${index + 1}`);
   const blocks: CompositionDraftPlan['blocks'] = [
@@ -648,9 +648,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     // Every participant - every master, the validator and every record - is accepted by the machine. `release`
     // accepting is what holds the payout up: its own body reads `claim`'s return through the call record and
     // requires it to be the number of turns, so the amount `pay` returned is the one the escrow read back.
-    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
-    expect(rejected).toStrictEqual([]);
+    expect(refused(outcome)).toStrictEqual([]);
   });
 
   it('reads the state back from the derived transaction through the shipped encoders', () => {
@@ -681,11 +679,11 @@ describe('a claimer that pays once per share, driven through the shipped path', 
       // The token's paid record ends at the amount the loop moved, one share per turn.
       const outputs = outcome.transaction.outputs;
       expect(outputs[run.tokenRecordIndex]!.token?.nft?.commitment)
-        .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout, { paid: BigInt(trips) * SHARES }));
+        .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: BigInt(trips) * SHARES }));
       // The plan states one call per turn, so the block's call section is what the loop makes.
       const pay = run.plan.masters.find((candidate) => candidate.master === PAY_MASTER)!;
       expect(pay.calls).toHaveLength(trips);
-      expect(outcome.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+      expect(refused(outcome)).toStrictEqual([]);
     }
   });
 
@@ -696,7 +694,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     });
     deriveComposition([ROOT], host);
     const program = draft.programFor(ROOT_MASTER);
-    const wrong = commitmentOf(run.artifacts.Token!.stateLayout, { paid: 999n });
+    const wrong = commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 999n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.tokenRecordIndex
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
       : output));
@@ -713,9 +711,9 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
     expect(outcome.completed.filter((frame) => frame.master.startsWith('transfer-')).map((frame) => frame.master))
       .toStrictEqual(Array.from({ length: 8 }, (_unused, index) => `transfer-${index + 1}`));
-    expect(outcome.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.transaction.outputs[run.tokenRecordIndex]!.token?.nft?.commitment)
-      .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout, { paid: 8n * SHARES }));
+      .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 8n * SHARES }));
   });
 
   it('refuses the same loop written inside the claimer\'s fixed-call body', () => {
@@ -752,7 +750,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     });
     deriveComposition([ROOT], host);
     const program = draft.programFor(ROOT_MASTER);
-    const wrong = commitmentOf(run.artifacts.Root!.stateLayout, { score: 7n });
+    const wrong = commitmentOf(run.artifacts.Root!.stateLayout!, { score: 7n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.rootRecordIndex
       ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
       : output));

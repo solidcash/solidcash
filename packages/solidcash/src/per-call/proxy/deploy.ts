@@ -41,15 +41,8 @@ import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
-
-/** Raised when a proxy deployment cannot be built from the artifacts or the options. */
-export class PerCallProxyDeployError extends Error {
-  public readonly name = 'PerCallProxyDeployError';
-
-  public constructor(message: string) {
-    super(message);
-  }
-}
+import { PerCallProxyDeployError } from './errors.js';
+import { buildProxyArtifact } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
@@ -62,7 +55,15 @@ export interface PerCallProxyDeployOptions {
   /** The implementation's constructor arguments, in parameter order. */
   readonly implementationArgs?: readonly ConstructorArgument[];
   readonly implementationDeploy: PerCallProxyDeployHalf;
-  readonly proxyArtifact: Artifact;
+  /**
+   * The proxy to run behind, or absent to generate one from the implementation's own declaration.
+   *
+   * A generated proxy declares exactly the implementation's record fields plus the fallback that forwards to the
+   * `implementation` field, so it agrees with the implementation by construction. A caller that supplies one keeps
+   * the same requirement: the two must declare the same records, which is why every supplied proxy's layout is
+   * checked against the implementation's.
+   */
+  readonly proxyArtifact?: Artifact;
   readonly proxyDeploy: PerCallProxyDeployHalf;
   /** The entry to call through the proxy, and its arguments in parameter order. */
   readonly initialize: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
@@ -294,14 +295,17 @@ function callerUnlocking(): Uint8Array {
 /**
  * Deploys an implementation and a proxy behind it, then runs `initialize` through the proxy.
  *
- * The proxy's record is seeded with the implementation's address — `addrV(implementationCategory)`, not whatever
- * `Contract.address` reports for a placeholder program — so the proxy's fallback delegates to the master the
- * implementation actually runs on.
+ * The proxy is the caller's, or generated from the implementation's declaration when none is given: either way it
+ * declares the implementation's record fields, and the two layouts are checked to agree. The proxy's record is
+ * seeded with the implementation's address — `addrV(implementationCategory)`, not whatever `Contract.address`
+ * reports for a placeholder program — so the proxy's fallback delegates to the master the implementation actually
+ * runs on.
  */
 export async function deployPerCallProxy(
   options: PerCallProxyDeployOptions,
 ): Promise<PerCallProxyDeployment> {
-  const { provider, implementationArtifact, proxyArtifact } = options;
+  const { provider, implementationArtifact } = options;
+  const proxyArtifact = options.proxyArtifact ?? buildProxyArtifact(implementationArtifact);
   requireProxyShape(proxyArtifact);
   requireSharedLayout(implementationArtifact, proxyArtifact);
   if (options.callerLockingBytecode.length !== 25) {

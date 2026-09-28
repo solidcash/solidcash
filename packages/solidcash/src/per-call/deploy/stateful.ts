@@ -8,9 +8,10 @@
  * is routed here when the artifact publishes `composition.convention === 'per-call'`.
  *
  * The genesis transaction is the same shape the convention's pools expect: the master's minting NFT at the master
- * lock, a validator UTXO at `addrV(category)`, and one state record per data NFT carrying the commitment the
- * constructor's own frame computed. The state comes from `derivePerCallGenesis`, which runs that frame against the
- * BCH-2026 machine; nothing here supplies a commitment the constructor did not compute.
+ * lock, a validator UTXO at `addrV(category)`, one state record per data NFT carrying the commitment the
+ * constructor's own frame computed, and one output per event that frame emitted, at the covenant the body rebuilt.
+ * The state comes from `derivePerCallGenesis`, which runs that frame against the BCH-2026 machine; nothing here
+ * supplies a commitment the constructor did not compute.
  *
  * The records are minted at the data-NFT covenant the category derives, the same lock the direct convention's data
  * NFTs sit at, so a composition spends and recreates each record under the covenant's own rules and a spent UTXO
@@ -18,7 +19,7 @@
  * classifies a category's UTXOs to find the records again.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import { perCallValidator } from 'solidc';
 import type { Artifact } from '@solidcash/utils';
 import type { ConstructorArgument } from '../../Argument.js';
@@ -109,6 +110,19 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     amount: dataNftAmount,
     token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: '' } },
   });
+  // The events the constructor's own frame emitted, at the covenant locks the body rebuilt. They lead the
+  // trailing region, ahead of the records the genesis creates, which is the order a composition's outputs use; an
+  // event output carries the contract's category with no capability.
+  for (const event of genesis.events) {
+    builder.addOutput({
+      to: event.lockingBytecode,
+      amount: dataNftAmount,
+      token: {
+        category: categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: binToHex(event.commitment) },
+      },
+    });
+  }
   for (const commitment of genesis.commitments) {
     builder.addOutput({
       to: recordLockingBytecode,

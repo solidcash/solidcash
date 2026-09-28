@@ -58,6 +58,14 @@ const expectedCommitment = (total: bigint): Uint8Array =>
 
 type VmProgram = Parameters<ReturnType<typeof compositionMachine>['evaluate']>[0];
 
+/** The outputs a built deployment transaction carries, as the handle exposes them for reading back. */
+type DeployedTransaction = {
+  readonly outputs: readonly {
+    readonly lockingBytecode: Uint8Array;
+    readonly token?: { readonly nft?: { readonly capability?: string; readonly commitment?: Uint8Array } };
+  }[];
+};
+
 /** The machine's verdict on a derivation program. */
 function accepted(program: VmProgram | undefined): boolean {
   if (program === undefined) throw new Error('the derivation published no program');
@@ -171,9 +179,9 @@ const EMITTING_SOURCE = 'pragma solidcash ^0.13.0;'
 const emittingArtifact = compileString(EMITTING_SOURCE, { composition: 'per-call' });
 const emittingLayout = emittingArtifact.stateLayout!;
 
-/** The lock an event output carries: the P2SH32 of the covenant the body rebuilds from the category and signature. */
-function eventCovenantLock(signature: string): Uint8Array {
-  const covenant = scriptToBytecode(buildEventNftCovenantScript(CATEGORY, computeEventNameHash(signature)));
+/** The lock an event output carries under `category`: the P2SH32 of the covenant the body rebuilds. */
+function eventCovenantLockFor(category: Uint8Array, signature: string): Uint8Array {
+  const covenant = scriptToBytecode(buildEventNftCovenantScript(category, computeEventNameHash(signature)));
   return encodeLockingBytecodeP2sh32(hash256(covenant));
 }
 
@@ -194,7 +202,7 @@ describe('a per-call genesis whose constructor emits an event', () => {
   });
   const registered = emittingArtifact.events!.find((definition) => definition.name === 'Registered')!;
   const eventOutputIndex = (program: VmProgram): number => program.transaction.outputs.findIndex((output) => (
-    bytesEqual(output.lockingBytecode, eventCovenantLock(registered.signature))
+    bytesEqual(output.lockingBytecode, eventCovenantLockFor(CATEGORY, registered.signature))
   ));
 
   it('carries the payload the constructor body computed at the output the block lists', () => {
@@ -218,6 +226,48 @@ describe('a per-call genesis whose constructor emits an event', () => {
     const genesis = emittingGenesis();
     const expected = new Uint8Array(Buffer.from(buildPushdataCommitment(emittingLayout, { count: 6n }, 0), 'hex'));
     expect(genesis.commitments[0]).toBe(Buffer.from(expected).toString('hex'));
+  });
+
+  it('publishes the event with the covenant lock and the commitment the body computed', () => {
+    const genesis = emittingGenesis();
+    expect(genesis.events.map((event) => event.eventSignature)).toStrictEqual([registered.signature]);
+    const event = genesis.events[0]!;
+    const expectedLock = eventCovenantLockFor(CATEGORY, registered.signature);
+    expect(Array.from(event.lockingBytecode)).toStrictEqual(Array.from(expectedLock));
+    const expected = encodeEventCommitment(registered.parameters, [5n, 'alpha']);
+    expect(Array.from(event.commitment)).toStrictEqual(Array.from(expected));
+  });
+
+  it('materializes the event and the record in the deployment transaction the SDK builds', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '22'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { tx } = await StatefulContract.deploy(emittingArtifact, [5n], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+    const outputs = (tx as unknown as DeployedTransaction).outputs;
+    const category = new Uint8Array(Buffer.from(fundingUtxo.txid, 'hex'));
+
+    // The event output sits at the covenant the body rebuilt and carries the payload it computed.
+    const eventOutput = outputs.find(
+      (output) => bytesEqual(output.lockingBytecode, eventCovenantLockFor(category, registered.signature)),
+    );
+    expect(eventOutput).toBeDefined();
+    expect(eventOutput!.token?.nft?.capability).toBe('none');
+    const expectedPayload = encodeEventCommitment(registered.parameters, [5n, 'alpha']);
+    expect(Array.from(eventOutput!.token?.nft?.commitment ?? new Uint8Array()))
+      .toStrictEqual(Array.from(expectedPayload));
+
+    // The state the constructor wrote is minted at the same deployment, through the shipped encoder.
+    const recordCommitment = buildPushdataCommitment(emittingLayout, { count: 6n }, 0);
+    expect(outputs.some((output) => output.token?.nft?.commitment !== undefined
+      && Buffer.from(output.token.nft.commitment).toString('hex') === recordCommitment)).toBe(true);
   });
 
   it('serves an anonymous event, whose covenant embeds no signature hash', () => {
@@ -245,6 +295,80 @@ describe('a per-call genesis whose constructor emits an event', () => {
     const output = genesis.program!.transaction.outputs[index]!;
     const expected = encodeEventCommitment(definition.parameters, [7n]);
     expect(Array.from(output.token!.nft!.commitment)).toStrictEqual(Array.from(expected));
+  });
+});
+
+/**
+ * A constructor that emits without writing state.
+ *
+ * The event output is still the body's own even when the constructor leaves the state alone: it is materialized
+ * beside the record outputs, whose commitments stay at the pre-state. The control mutates the payload off the value
+ * the body computed and the machine refuses the transaction.
+ */
+const ANNOUNCE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Announcer {'
+  + '   int public seq;'
+  + '   event Announced(int value);'
+  + '   constructor(int value) { emit Announced(value); }'
+  + '   function check() { require(true); }'
+  + ' }';
+
+const announceArtifact = compileString(ANNOUNCE_SOURCE, { composition: 'per-call' });
+const announced = announceArtifact.events!.find((definition) => definition.name === 'Announced')!;
+
+describe('a per-call genesis whose constructor emits without writing state', () => {
+  const announceGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+    artifact: announceArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [9n], senderLockingBytecode: OWNER_LOCK,
+  });
+
+  it('accepts the derivation and publishes the event the body emitted', () => {
+    const genesis = announceGenesis();
+    expect(accepted(genesis.program)).toBe(true);
+    expect(genesis.events.map((event) => event.eventSignature)).toStrictEqual([announced.signature]);
+    const expected = encodeEventCommitment(announced.parameters, [9n]);
+    expect(Array.from(genesis.events[0]!.commitment)).toStrictEqual(Array.from(expected));
+  });
+
+  it('refuses an event payload off the value the frame computed', () => {
+    const genesis = announceGenesis();
+    const program = genesis.program!;
+    const index = program.transaction.outputs.findIndex(
+      (output) => bytesEqual(output.lockingBytecode, eventCovenantLockFor(CATEGORY, announced.signature)),
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    const offValue = encodeEventCommitment(announced.parameters, [10n]);
+    expect(accepted(withMutatedEventPayload(program, index, offValue))).toBe(false);
+  });
+
+  it('mints the event beside the unchanged record in the deployment transaction', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '23'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { tx } = await StatefulContract.deploy(announceArtifact, [9n], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+    const outputs = (tx as unknown as DeployedTransaction).outputs;
+    const category = new Uint8Array(Buffer.from(fundingUtxo.txid, 'hex'));
+
+    const eventOutput = outputs.find(
+      (output) => bytesEqual(output.lockingBytecode, eventCovenantLockFor(category, announced.signature)),
+    );
+    expect(eventOutput).toBeDefined();
+    const expectedPayload = encodeEventCommitment(announced.parameters, [9n]);
+    expect(Array.from(eventOutput!.token?.nft?.commitment ?? new Uint8Array()))
+      .toStrictEqual(Array.from(expectedPayload));
+
+    // The state the constructor never wrote is minted unchanged, at the pre-state commitment.
+    const [preState] = announceGenesis().commitments;
+    expect(outputs.some((output) => output.token?.nft?.commitment !== undefined
+      && Buffer.from(output.token.nft.commitment).toString('hex') === preState)).toBe(true);
   });
 });
 

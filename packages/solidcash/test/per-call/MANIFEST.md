@@ -33,18 +33,18 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 98 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 103 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 93 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 92 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 34 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1292 tests passed (115 + 421 + 756), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1296 tests passed (115 + 421 + 760), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 421 is the four rows above it, and `solidcash` 756 is the fifteen rows above
+`vitest.per-call.config.ts`: `solidc` 421 is the four rows above it, and `solidcash` 760 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.

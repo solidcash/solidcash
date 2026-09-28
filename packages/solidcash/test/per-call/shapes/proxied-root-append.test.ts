@@ -59,8 +59,7 @@ import {
  * address, so the store proxy's fallback is entered with the root proxy's address as its sender; a delegate frame
  * inherits its caller's sender and takes the caller's address as `address(this)`. The store's `append` therefore
  * runs with `self` the store proxy's address and observes `msg.sender` as the root proxy's address, which is what
- * its gate names: the same address the entry saw when it was called at its own address, now presented through the
- * store's proxy.
+ * its gate names.
  *
  * Every coordinate comes from `layoutTransaction`/`participant`, the store's log from `planChunkRun`/
  * `layOutChunkRun`, and every commitment from the shipped encoders (`buildPushdataCommitment`,
@@ -120,7 +119,7 @@ const BIG_BLOB = new Uint8Array(150).fill(0xab);
 /**
  * The store: each entry appends one element to its log, gates on the root proxy's address and emits.
  *
- * It declares the address its generated proxy forwards to, so the proxy can mirror the store's record exactly.
+ * It declares the address its generated proxy delegates to, so the proxy can mirror the store's record exactly.
  */
 const STORE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Store {'
@@ -391,7 +390,7 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
     argumentPushes: [...setup.implPushes],
   });
 
-  /** The store proxy's fallback: it reads the forwarding argument and delegates into the store's code. */
+  /** The store proxy's fallback: it materializes its input from the frame's call-data band and delegates. */
   const storeProxyMaster = (frame: number): DraftMaster => master({
     master: STORE_PROXY_MASTERS[frame]!, contract: STORE_PROXY_CONTRACT, entry: '__fallback',
     program: STORE_PROXY.program,
@@ -500,7 +499,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
 
     expect(refused(outcome)).toStrictEqual([]);
-    // Each store entry completes before the store proxy fallback that forwarded to it, in call order; the root
+    // Each store entry completes before the store proxy fallback that delegated to it, in call order; the root
     // implementation completes after both hops and the root proxy after the implementation.
     expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
       STORE_IMPL_MASTERS[0], STORE_PROXY_MASTERS[0], STORE_IMPL_MASTERS[1], STORE_PROXY_MASTERS[1],
@@ -548,7 +547,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
     expect(bytesToHex(built.recordAfter)).toBe(bytesToHex(recordOf(built.setup, COUNT_AFTER)));
     expect(bytesToHex(built.recordAfter)).not.toBe(bytesToHex(recordOf(built.setup, COUNT_BEFORE)));
 
-    // The store proxy's header carries the address its fallback forwards to and the length of the whole element
+    // The store proxy's header carries the address its fallback delegates to and the length of the whole element
     // stream, from the shipped encoder.
     expect(bytesToHex(outputs[built.headerIndex]!.token!.nft!.commitment)).toBe(bytesToHex(built.headers[2]!));
 
@@ -889,10 +888,12 @@ describe('the token pull and the shapes that stay open', () => {
         + 'which a per-call body does not emit',
     }]);
   });
+});
 
-  it('settles a root entry whose run-time arguments are the frames it forwards to the store', () => {
-    // The store proxy's fallback forwards the bytes it received verbatim, so the store's call data can be a run-time
-    // argument: the entry forwards the frame it was given and the store appends what that frame names.
+describe('a root whose store appends carry run-time arguments', () => {
+  it('settles appends whose items are run-time scalars, and the log grows', () => {
+    // The typed call is the caller's own site, so a run-time item is framed by the compiler's canonical push and
+    // the store's dispatcher reads it: the run reaches the store and the log grows in the store proxy's records.
     const built = buildAppend(RUNTIME_SETUP);
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
     expect(refused(outcome)).toStrictEqual([]);
@@ -900,22 +901,12 @@ describe('the token pull and the shapes that stay open', () => {
       STORE_IMPL_MASTERS[0], STORE_PROXY_MASTERS[0], STORE_IMPL_MASTERS[1], STORE_PROXY_MASTERS[1],
       IMPL_MASTER, PROXY_MASTER,
     ]);
-    // The store's header and chunk carry the run the forwarded frames named, from the shipped encoders.
+    // The store's header and chunk carry the run the run-time items named, from the shipped encoders.
     expect(bytesToHex(outcome.transaction.outputs[built.headerIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(built.headers[2]!));
     const finalChunk = splitValueIntoChunks(built.stages[2]!).map((piece, index) => chunkOf(index, piece));
     expect(bytesToHex(outcome.transaction.outputs[built.chunkIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(finalChunk[0]!));
-  });
-
-  it('settles a caller whose store items are run-time scalars, and the log grows', () => {
-    // The typed call is the caller's own site, so a run-time item is framed by the compiler's canonical push and
-    // the store's dispatcher reads it: the call reaches the store and the header carries the run it wrote.
-    const built = buildAppend(RUNTIME_SETUP);
-    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
-    expect(refused(outcome)).toStrictEqual([]);
-    expect(bytesToHex(outcome.transaction.outputs[built.headerIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(built.headers[2]!));
   });
 });
 

@@ -119,6 +119,22 @@ export interface PerCallGenesisEntry {
   readonly commitment: string;
 }
 
+/**
+ * One event output the constructor's body emits: the covenant lock the body rebuilt at run time and the
+ * commitment it computed for the payload.
+ *
+ * The payload is what the body computed, so it cannot be declared in advance; the genesis transaction mints the
+ * output with this commitment at this lock, which is the event the deployment carries.
+ */
+export interface PerCallGenesisEvent {
+  readonly eventName: string;
+  readonly eventSignature: string;
+  /** The event covenant's P2SH32 lock, which the body rebuilds from the category and the signature. */
+  readonly lockingBytecode: Uint8Array;
+  /** The commitment the body computed for the event's fields. */
+  readonly commitment: Uint8Array;
+}
+
 /** The derived genesis: the filled master, the committed state, and the transaction the machine accepted. */
 export interface PerCallGenesis {
   readonly master: DeployedMaster;
@@ -126,6 +142,8 @@ export interface PerCallGenesis {
   readonly commitments: readonly string[];
   /** The entry-NFT nodes the genesis mints, in write order: the head sentinel and the node the write created. */
   readonly entries: readonly PerCallGenesisEntry[];
+  /** The event outputs the constructor's body emits, in emit order. */
+  readonly events: readonly PerCallGenesisEvent[];
   /** The derivation transaction the machine accepted. Absent for a contract with no constructor body. */
   readonly program?: VirtualMachineProgram;
 }
@@ -193,7 +211,7 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
   if (constructorAbi === undefined) {
-    return { master, commitments: zeroCommitments, entries: [] };
+    return { master, commitments: zeroCommitments, entries: [], events: [] };
   }
 
   refuseUnservedShape(artifact, constructorAbi);
@@ -400,6 +418,8 @@ function probeLayout(dataNftCount: number, eventCount: number, hasMapping: boole
 
 /** One event the constructor's body emits: the output the block lists for it. */
 interface EventShape {
+  readonly eventName: string;
+  readonly eventSignature: string;
   /** The event covenant lock the body rebuilds from the contract's category and the event's signature. */
   readonly lockingBytecode: Uint8Array;
 }
@@ -486,7 +506,11 @@ function deriveConstructorFrame(
   const eventCategory = Uint8Array.from(options.category);
   const eventShapes: readonly EventShape[] = (constructorAbi.emits ?? []).map((emit) => {
     const anonymous = eventDefinitions.get(emit.eventSignature)?.anonymous === true;
-    return { lockingBytecode: eventLockingBytecode(eventCategory, emit.eventSignature, anonymous) };
+    return {
+      eventName: emit.eventName,
+      eventSignature: emit.eventSignature,
+      lockingBytecode: eventLockingBytecode(eventCategory, emit.eventSignature, anonymous),
+    };
   });
   const layout = probeLayout(dataNftCount, eventShapes.length, mapping !== undefined);
 
@@ -561,6 +585,13 @@ function deriveConstructorFrame(
         { collection: mapping.collection, commitment: binToHex(mapping.write.written[0]!.after) },
         { collection: mapping.collection, commitment: binToHex(mapping.created) },
       ],
+    // The event payloads are the ones the loop learned from the body's own comparisons, in emit order.
+    events: eventShapes.map((shape, index) => ({
+      eventName: shape.eventName,
+      eventSignature: shape.eventSignature,
+      lockingBytecode: shape.lockingBytecode,
+      commitment: eventOuts[index]!,
+    })),
     program: build(viewOuts, eventOuts),
   };
 }

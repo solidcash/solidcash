@@ -21,28 +21,30 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 354 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 364 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 153 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 72 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 4 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 89 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 88 |
+| `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 15 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 23 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 85 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1135 tests (115 + 395 + 625), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 395 is the four rows above it, and `solidcash` 625 is the twelve rows above it.
-An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
-from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
+Total: 1149 tests (115 + 405 + 629), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 629 is the thirteen rows above
+it.
+total here counted rows that had gone stale rather than re-running them; the numbers above were taken from the
+per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
 
 ## What each directory covers
@@ -183,6 +185,12 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   middle to tail, tail back to the middle, middle back to the head) settles with every contract input and the one
   validator accepted, and the plan that leaves the user-entered multi-entry root without the selector its dispatcher
   consumes is pinned as the stall it produces.
+- **`solidcash/test/per-call/time/`** — time as the transaction's own field: a `require(tx.time >= n)` gate compiled
+  per-call and driven from a payment's block time, read through the mock chain's strictly-advancing clock and the
+  deployment layer's `providerUnixLocktime`. The earlier and the later transaction settle with every frame reading
+  the one locktime the plan fixed before any derivation ran, the payment's own block is refused by the machine under
+  the name of the check, a plan whose locktime is already too early stalls the derivation, a final sequence disables
+  the gate, and a genesis whose constructor gates on time is refused by the constructor probe.
 
 ## Which refusals cover which attack
 

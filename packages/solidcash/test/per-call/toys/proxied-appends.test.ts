@@ -20,13 +20,13 @@ import { compositionMachine } from '../../../../solidc/test/per-call/machine.js'
 import {
   deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode, type DeployedMaster,
 } from '../../../src/per-call/deploy/index.js';
-import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
+import { buildProxyArtifact, generateProxySource } from '../../../src/per-call/proxy/index.js';
 import {
   EMPTY, USER_LOCK, VALIDATOR_PROGRAM, composeAndDerive, entryName, master, masterInput, rootOf, selectorOf, token,
   userInput, userInputs, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import {
-  chunkRecordId, createComposedDerivationHost, deriveComposition, layoutTransaction, layOutChunkRun, participant,
+  chunkRecordId, createComposedDerivationHost, layoutTransaction, layOutChunkRun, participant,
   planChunkRun, type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -45,10 +45,9 @@ import {
  * category. The writer's own body touches the dynamic value and makes no call — the hop is the proxy's body — so the
  * shape the compiler refuses by name is not the one under test.
  *
- * The static hop settles end to end (the generated proxy is admitted and the composer drives the delegate edge).
- * The dynamic hop does not: the derivation reaches the implementation's frame, and that frame's own program
- * reverts in its tail, while it walks the event list the frame declares. The last case pins that wall, naming the
- * frame, the site, the machine's error and the failing instruction as measured today.
+ * Both hops settle end to end. The dynamic one is the interesting shape: the implementation's segment declares the
+ * run its own `append` writes — the chunk it keeps and the one it creates beside the event — and the machine
+ * accepts every contract input of the settled transaction.
  *
  * Coordinates come from `layoutTransaction`/`participant`, frame references from `entryName`, and every commitment
  * from the shipped encoders; no coordinate in the plan is a literal.
@@ -118,6 +117,17 @@ function deployed(name: string, category: Uint8Array, held: DeployedMaster): Dep
   };
 }
 
+/** The generated proxy of an implementation, compiled by this suite's compiler from the shipped generator's source. */
+function buildProxyFromSource(implementationArtifact: NonNullable<ReturnType<typeof compileStringMulti>['Impl']>):
+ReturnType<typeof buildProxyArtifact> {
+  const generated = compileStringMulti(generateProxySource(implementationArtifact), {
+    composition: 'per-call', commitmentLimit: implementationArtifact.stateLayout!.commitmentLimit,
+  });
+  const artifact = generated[`${implementationArtifact.contractName}Proxy`];
+  if (artifact === undefined) throw new Error('the generated proxy source did not compile to a contract');
+  return artifact;
+}
+
 /** Compiles the implementation, generates the proxy from its layout, and deploys both at seeded categories. */
 function compileAndDeployHalf(): {
   readonly implementationArtifact: ReturnType<typeof compileStringMulti>['Impl'];
@@ -127,7 +137,10 @@ function compileAndDeployHalf(): {
 } {
   const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
   const implementationArtifact = artifacts.Impl!;
-  const proxyArtifact = buildProxyArtifact(implementationArtifact);
+  // The generated proxy source, compiled by the same compiler this suite imports, so the composition, the
+  // implementation it drives and the generated proxy are one build. `buildProxyArtifact` compiles exactly this
+  // source with exactly these options through the package's emitted bundle.
+  const proxyArtifact = buildProxyFromSource(implementationArtifact);
   const proxy = deployed(proxyArtifact.contractName, PROXY_CATEGORY,
     deployMaster(proxyArtifact, PROXY_CATEGORY, VALIDATOR_PROGRAM));
   const impl = deployed(implementationArtifact.contractName, IMPL_CATEGORY,
@@ -473,49 +486,32 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     expect(reasons).toContain('reads or writes a dynamic value and makes an external call');
   });
 
-  it('does NOT settle the append behind the proxy: the implementation master\'s frame tail reverts', () => {
-    // This is the wall, pinned. The composition is laid out and assembled correctly, the proxy hop itself is sound
-    // (the fallback forwards the callee's own call data and the composer drives the delegate edge), and the
-    // derivation reaches the implementation's frame. It stalls there: the implementation master's own program
-    // reverts in its frame tail, walking the event list the frame declares, so the implementation's segment close
-    // can never be filled.
-    //
-    // The failing instruction is the tail's category check on a listed event (`frame-tail.ts`'s `eventSection`,
-    // through `immutableCategoryScript`): an OP_EQUALVERIFY that compares the listed output's category
-    // (`OP_OUTPUTTOKENCATEGORY`) with the *executing* input's (`OP_INPUTINDEX OP_UTXOTOKENCATEGORY`). The frame is
-    // a DELEGATE, so the event belongs to the contract whose records the frame uses - the proxy's category, which
-    // is what the frame's body pins its record writes and its own event check to (through the head's category-owner
-    // slot) and what the validator's context-category walk attributes the frame's events to. The tail is the one
-    // emitter that reads the executing input instead, so no category the event output can carry satisfies both it
-    // and the body: measured, the proxy's category reverts the tail, and the implementation's reverts the body
-    // later.
+  it('settles the append behind the proxy: the implementation writes the run and every input is accepted', () => {
+    // The positive control on the dynamic shape. The fallback forwards the callee's own call data and the composer
+    // drives the delegate edge, so the implementation runs as a `DELEGATE` frame on the proxy's records. The frame
+    // uses the contract whose records it runs on for everything the records' category decides: the head leaves the
+    // owner's input index for the event walk, and the body derives the collection addresses and the event covenant
+    // from it. The machine accepts every contract input of the settled transaction.
     const built = build();
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: [built.proxyArtifact, built.implementationArtifact], plan: built.plan,
-    });
-
-    // The whole derivation: it fills the proxy's call site - the implementation is reached - and stops at the
-    // implementation's own frame, which cannot close against the run it declares.
-    let stalled: Error | undefined;
-    try {
-      deriveComposition([rootRequest(built)], host);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toMatch(/PER_CALL_DERIVATION_STALLED.*impl-1.*Impl\.append/);
-
-    // The machine's verdict on the implementation master's own program: the frame tail reverts at the listed
-    // event's category check. Its instruction pointer is 413, so the failing instruction is the OP_EQUALVERIFY at
-    // instruction index 412, byte offset 473 of the program bytes.
-    const program = draft.programFor(IMPL_MASTER);
-    const state = compositionMachine().evaluate({
-      inputIndex: participant(draft.layout, IMPL_MASTER).index,
-      sourceOutputs: program.sourceOutputs,
-      transaction: program.transaction,
-    });
-    expect(compositionMachine().stateSuccess(state)).not.toBe(true);
-    expect(String((state as { readonly error?: string }).error)).toContain('failed an OP_VERIFY operation');
-    expect((state as unknown as { readonly ip?: number }).ip).toBe(413);
+    const outcome = composeAndDerive(
+      built.plan, [built.proxyArtifact, built.implementationArtifact], [rootRequest(built)],
+    ) as ReturnType<typeof composeAndDerive>;
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName(built.implementationContract, 'append'),
+      entryName(built.proxyContract, '__fallback'),
+    ]);
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    // Every participant of the composition is asked: the proxy's master, the implementation's master, the
+    // validator, the record and the run's kept chunk. The user and the created chunk are not contract inputs of
+    // the participant graph; the created chunk is a trailing output.
+    const asked = new Set(outcome.verdicts.map((verdict) => verdict.participant));
+    const keptChunkIds = built.records.filter((record) => record.role === 'kept').map((record) => record.id);
+    expect(keptChunkIds.length).toBeGreaterThan(0);
+    expect([...asked].sort()).toStrictEqual(
+      [PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID, ...keptChunkIds].sort(),
+    );
   });
 
   it('refuses a record output no frame computed, on the same composition', () => {

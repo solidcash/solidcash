@@ -669,6 +669,25 @@ risk. Take the slices in order, each with its own tests.
     stays refused, since the frame fixes no value for it.
 - [ ] R4 Long mapping values: the value arrives as a witness bound by the root, and each writing frame mints its
   version's chunks.
+  **Measured, and it splits into three pieces rather than one.** The per-call head derives exactly one dynamic
+  coordinate (`__internal__dynamicChunkInputBase`) and nothing for the *value-witness* family: a
+  `mapping(string => string)` write carries four hidden operands (`__internal__valueWitness_0`,
+  `__internal__leadingPushValue_0`, `__internal__valueChunkOutputBase`, `__internal__completePushValue_0`). For a
+  **write-only** access they are dead — stripping them compiles a 21,314-byte master that reads none of them — but
+  any access that **reads** the node's value (a read-modify-write, or an array push into it, which is the
+  marketplace's own `jobEvents[jobId].push`) needs the witness itself, and the **witness-block wire format has no
+  variable-length value field**: supplying it takes either a wire-format change (version bump, validator V2,
+  composer, machine) or materializing the value on chain from co-spent chunks, which the emitted body does not do.
+  The composer is missing the other half — `planMappingWrite`/`layOutMappingWrites` place a node with a
+  fixed-width tail, and the shipped chunk planner is for dynamic *state variables* while a long mapping value uses
+  the root-addressed **value-chunk** form (`splitValueIntoValueChunks`, `buildValueChunkCommitment`,
+  `valueChunkSignature`) that nothing lays out; the emitted body requires exactly `ceil(size/126)` value-chunk NFTs
+  at the derived address (`emitSortedValueChunkPin`), so a long write would be refused by the machine rather than
+  by name. **The delete half is a different and small shape**: codegen already lowers a sorted delete to an upsert
+  of the default (`visitMappingDelete`, because `sortedValueKind('string') === 'rawbytes'` is non-null), so only the
+  per-call admission — `isOneWrite` refusing `['delete']` — and the composer's splice-removal plan stand in the
+  way. And a `put(string, string)` master that emits at all is 21,314 bytes, past the 10,000-byte P2SH per-input
+  limit, so this shape needs the code split on a real chain whatever else is done (D3).
 - [ ] R5 Dynamic `string`, `bytes`, `T[]`: consume every old chunk and create every new one. (partial: the master
   head now derives a body's chunk-run coordinate from the record block its own frame declares, and the machine
   accepts a compiled master whose entry appends to a `string` value — the old chunk consumed, the new one written,

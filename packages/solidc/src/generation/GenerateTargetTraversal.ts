@@ -22760,7 +22760,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's input coordinate
         this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
         this.emit(Op.OP_IF, loc);
-        this.emit(encodeInt(BigInt(-(declaredOrdinal + 1))), loc);
+        this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 0, loc);
         this.emit(Op.OP_ELSE, loc);
         this.emitPerCallEntryIndex('out', slotIndex, loc);
         this.emit(Op.OP_ENDIF, loc);
@@ -22781,7 +22781,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
       this.emit(Op.OP_ENDIF, loc);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
-      this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      if (declaredOrdinal !== undefined) {
+        // The created node is the record after the target's own in the segment's declared list, so it is named by
+        // the next position, in the negative form the shared close reads as a position rather than a coordinate.
+        this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 1, loc);
+      } else {
+        this.emitBlockSlotIndex('entry', slotIndex, loc, 0);
+      }
       this.emit(Op.OP_ENDIF, loc);
 
       // Proof fields are used again by the function-level transition verifier; this write only pins its target node
@@ -30226,18 +30232,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * The position in the segment's declared list of the record group a batch target writes.
    *
    * A segment declares one record group per target, the collections in the order the body writes them, so a
-   * target's group sits after every target of the batches that precede it, one record each. This ordinal is read
-   * only for a record the transaction creates; a target the frame's inventory does not hold takes two records and
-   * shifts the groups after it, which this count alone does not see.
+   * target's group sits after every target of the batches that precede it. A group a target the inventory holds
+   * occupies one record and one a target it does not occupies two, so this counts targets, not records; the write
+   * adds a record for each earlier target that inserted, which only the running frame knows.
    */
   private batchTargetOrdinal(slotIndex: number): number | undefined {
-    let ordinal = 0;
-    for (const batch of this.currentFunction.sortedBatchInfo ?? []) {
-      const index = batch.slotIndices.indexOf(slotIndex);
-      if (index >= 0) return ordinal + index;
-      ordinal += batch.slotIndices.length;
+    const ordinal = this.batchTargetSlots().indexOf(slotIndex);
+    return ordinal < 0 ? undefined : ordinal;
+  }
+
+  /** Every batch target of the body, in the order the segments declare their record groups. */
+  private batchTargetSlots(): number[] {
+    return (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
+  }
+
+  /**
+   * Leaves the position in the segment's declared list of the record `recordOffset` records after a target's group
+   * start, as the negative index the shared close reads as a position rather than a coordinate.
+   *
+   * A group occupies one record when the inventory held the target and two when it did not, so a record's position
+   * is the target's own ordinal, plus one for every earlier target that inserted, plus the record's offset inside
+   * the group. Which earlier targets inserted is a fact about the running frame: a target's `PredOut` operand is
+   * non-negative exactly when it rewrote a predecessor, so its group declared an extra record.
+   */
+  private emitDeclaredGroupRecordOrdinal(
+    declaredOrdinal: number, recordOffset: number, locationData: SingleLocationData,
+  ): void {
+    this.emit(encodeInt(BigInt(-(declaredOrdinal + recordOffset + 1))), locationData);
+    for (const prior of this.batchTargetSlots().slice(0, declaredOrdinal)) {
+      this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${prior}`, locationData);
+      this.emit(encodeInt(0n), locationData);
+      this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+      this.emit(Op.OP_SUB, locationData);
     }
-    return undefined;
   }
 
   /**

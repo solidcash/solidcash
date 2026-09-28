@@ -27,11 +27,13 @@ import type { ArtifactMap } from '../shapes/harness.js';
  * through `markClaimed` and through `pay` twice; each `pay` reaches `Token.transfer`. One transaction therefore
  * re-enters one contract and reads back a record a call higher up wrote.
  *
- * A master that makes external calls is now served a verified-mapping write: the derivation reads the segment the
+ * A master that makes external calls is served a verified-mapping write: the derivation reads the segment the
  * write's records are declared in, and a call closes the segment the code before it runs in, so a write that
  * precedes every call lands in the segment the derivation reads. The tests below settle that shape through the
- * shipped path - compile, deploy, composer, derivation, machine - for a record the transaction already holds, and
- * pin what a write that creates a fresh record still meets.
+ * shipped path - compile, deploy, composer, derivation, machine - for a record the transaction already holds and
+ * for a write that creates a fresh record, where the creating segment declares the list's head sentinel rewritten
+ * in place and the created node as a trailing output and the frame names the created node by its position in that
+ * declaration.
  *
  * A frame's `retval` holds one value, so the `claim` entry cannot return the two amounts `release` emits; the
  * compiler publishes that refusal by name and the toy pins it.
@@ -176,18 +178,22 @@ function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft
 /**
  * The write-then-call composition, driven through the shipped path.
  *
- * `Vault` runs on two masters, so its validator settles the mapping. Each executed write is an update of the
- * record the transaction spends: `release` rewrites it and then calls `Claimer.claim`, which calls back into
- * `Vault.markClaimed`, whose own rewrite closes the record. The record sits right after the validator, one index
- * before the record the body reads it from.
+ * `Vault` runs on two masters, so its validator settles the mapping. `release` writes the record and then calls
+ * `Claimer.claim`, which calls back into `Vault.markClaimed`, whose own rewrite closes the record. With `insert`
+ * the transaction starts from an empty list, so `release` creates the record and the segment declares the head
+ * sentinel rewritten in place and the created node as a trailing output; otherwise the record already exists at
+ * the index right after the validator and both writes update it in place. With `control` the created node's output
+ * is left at the value the creating frame wrote, which is not the commitment the last declaration ends at.
  */
-function driveSettled(insert = false): {
+function driveSettled(insert = false, control = false): {
   readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
   readonly completed: readonly string[];
   readonly error?: string;
   readonly verdicts: readonly string[];
   readonly written: Uint8Array;
   readonly nodeIndex: number;
+  readonly createdIndex: number;
+  readonly headIndex: number;
 } {
   const { artifacts, contracts } = compileAndDeploy(SETTLED_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
   const vault = contracts.Vault!;
@@ -301,7 +307,9 @@ function driveSettled(insert = false): {
             source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
             output: {
               lockingBytecode: entryLock, valueSatoshis: 20_000n,
-              token: token(vault.category, 'mutable', releaseRecord.after),
+              // The control leaves the created node at the value the creating frame wrote, so the declaration the
+              // frame one call higher ends at is not what the transaction writes.
+              token: token(vault.category, 'mutable', control ? releaseRecord.after : mark.written[0]!.after),
             },
             unlockingBytecode: userInput().unlockingBytecode,
           },
@@ -329,7 +337,9 @@ function driveSettled(insert = false): {
     error = (caught as Error).message;
   }
   const verdicts = ['release-1', 'markClaimed-1', 'claim-1', 'validator'].map((id) => verdictAt(draft, id));
-  return { draft, completed, error, verdicts, written: mark.written[0]!.after, nodeIndex };
+  return {
+    draft, completed, error, verdicts, written: mark.written[0]!.after, nodeIndex, createdIndex, headIndex,
+  };
 }
 
 describe('a vault whose release writes its record and calls a claimer that reads it back', () => {
@@ -393,23 +403,55 @@ describe('a vault whose release writes its record and calls a claimer that reads
     }
   });
 
-  it('pins the write that creates the record: the inserting frame is refused on chain', () => {
+  it('settles the write that creates the record: its relinked head, the created node and the call', () => {
     // A write that creates the record has no input to read it at, so the segment declares the list's head sentinel
-    // rewritten in place and the created node as a trailing output. The compiler now serves that declaration - the
-    // entry is emitted rather than refused - but the frame that runs it fails the machine's own check, so the
-    // derivation cannot fill its call and no run settles. The refusal is recorded here rather than papered over: it
-    // is the piece the shape's fresh write still needs.
-    const { error, verdicts } = driveSettled(true);
-    expect(error).toBe('PER_CALL_DERIVATION_STALLED: master "release-1" of Vault.release() '
-      + 'filled no witness at site 0 (call 0)');
-    expect(verdicts[0]).toBe('refused: Program failed an OP_VERIFY operation.');
-    expect(verdicts[1]).toBe('accepted');
+    // rewritten in place and the created node as a trailing output. The creating frame names the created node by
+    // its position in that declaration - the record after the target's own - and the frame one call higher rewrites
+    // it, so the chain ends at the commitment the transaction writes.
+    const { draft, completed, error, verdicts, written, createdIndex, headIndex } = driveSettled(true);
+
+    expect(error).toBeUndefined();
+    expect(completed).toStrictEqual(['markClaimed-1', 'claim-1', 'release-1']);
+
+    // The created node's output and the relinked head are what the transaction writes, read back through the
+    // shipped encoder; the created one carries the value the frame one call higher wrote.
+    const program = draft.programFor('release-1');
+    expect(program.transaction.outputs[createdIndex]!.token?.nft?.commitment).toStrictEqual(written);
+    expect(program.transaction.outputs[createdIndex]!.token?.nft?.commitment).toStrictEqual(releaseView(2n));
+    expect(program.transaction.outputs[headIndex]!.token?.nft?.commitment).toStrictEqual(relinkedHead());
+
+    // The creating segment declares the head rewritten in place and the created node as its second record, and the
+    // segment one call higher carries on from the value the created record ends at.
+    expect(draft.blockOf('release-1').segments[0]!.map((entry) => entry.out)).toStrictEqual([headIndex, createdIndex]);
+    expect(draft.blockOf('release-1').segments[0]![1]!.viewOut).toStrictEqual(releaseView(1n));
+    expect(draft.blockOf('markClaimed-1').segments[0]![0]!.viewIn).toStrictEqual(releaseView(1n));
+
+    for (const id of ['release-1', 'markClaimed-1', 'claim-1', 'validator']) {
+      expect(`${id}: ${verdictAt(draft, id)}`).toBe(`${id}: accepted`);
+    }
+  });
+
+  it('refuses a transaction that does not write what the last declaration ends at', () => {
+    // The control leaves the created node at the value the creating frame wrote instead of the value the frame one
+    // call higher ends it at, so the chain's last declaration is not the commitment the transaction writes. The
+    // creating frame's own input is unaffected; the validator that settles the contract refuses.
+    const { draft, verdicts } = driveSettled(true, true);
+    expect(verdicts[0]).toBe('accepted');
+    expect(verdicts[3]).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 });
 
 /** The record's commitment after `release` or `markClaimed` wrote the value, from the shipped encoder. */
 function releaseView(value: bigint): Uint8Array {
   return encodeEntryCommitment(keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(value));
+}
+
+/** The head sentinel after a write relinks it to the target slot, from the shipped encoders. */
+function relinkedHead(): Uint8Array {
+  const sentinel = headSentinelCommitment();
+  return encodeEntryCommitment(
+    sentinel.slice(0, 32), keyToSlotMulti([encodeIntegerValue(ID)]), sentinel.slice(64),
+  );
 }
 
 describe('the amounts a claim returns beside the record write', () => {

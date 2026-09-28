@@ -18,18 +18,29 @@
  * a state record or a user's signed input — so a run never rests on a caller-supplied draft.
  * `createComposedDerivationHost` is the host a caller uses: it takes the artifacts the stop-site tables live on and
  * the plan, and hands the resulting runs to the shipped derivation host.
+ *
+ * A plan need not state a commitment a frame's body computes for itself. Leaving a segment's `viewOut` unstated has
+ * the composer declare a placeholder, and the step that runs the body reads the value back from the body's own
+ * failing close (the channel `deploy/declaration.ts` reads) and writes it into the declaration. A record's own
+ * output, when the plan leaves it unstated, then carries the end of that declaration chain, so what the body wrote
+ * reaches the transaction. A commitment the plan does state is authoritative and is never learned over.
  */
 
+import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   argsHash,
   buildMasterUnlockingBytecode,
+  bytesEqual,
+  bytesToHex,
   encodeArgumentList,
+  sha256,
   type CallRecord,
   type FrameKindValue,
   type RecordEntry,
   type WitnessBlock,
 } from '@solidcash/utils';
+import { readComputedDeclaration } from '../deploy/declaration.js';
 import {
   assembleComposition,
   bindContractValidators,
@@ -63,6 +74,50 @@ export class CompositionDraftError extends Error {
   public constructor(message: string) {
     super(message);
   }
+}
+
+/** The BCH-2026 machine a derivation runs and learns on. */
+type DraftVirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
+
+/** The documented NFT commitment limit, the default bound on a value a derivation will learn. */
+const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 128;
+
+/**
+ * One record entry as a plan states it.
+ *
+ * A plan states the record's whole commitment at the segment's start and its end commitment whenever it can. A
+ * write whose value the body itself computes is left unstated: the composer declares a placeholder for it and the
+ * derivation replaces that placeholder with the value the body's own close hands back. A stated end commitment is
+ * never a placeholder, so a plan that states one is authoritative.
+ */
+export interface DraftRecordEntry {
+  /** Input index holding the record, or `INDEX_NONE` when the segment creates it. */
+  readonly in: number;
+  /** Output index recreating the record, or `INDEX_NONE` when the segment deletes it. */
+  readonly out: number;
+  /** The record's whole commitment at the segment's start. */
+  readonly viewIn: Uint8Array;
+  /** The record's end commitment, or omitted when the body computes it and the derivation learns it. */
+  readonly viewOut?: Uint8Array;
+}
+
+/** A segment entry the plan leaves unstated, and the placeholder the composer declared in its place. */
+interface UnstatedView {
+  readonly master: string;
+  readonly segmentIndex: number;
+  readonly entryIndex: number;
+}
+
+/**
+ * The placeholder declared for a write the plan leaves unstated.
+ *
+ * The body's own close compares the commitment it computed with this declaration, so the placeholder only has to
+ * be a value the body never computes. It is domain-separated by the master, the segment and the entry, which keeps
+ * every unstated write distinct and lets a run name the declaration it closed against.
+ */
+function unstatedViewPlaceholder(master: string, segmentIndex: number, entryIndex: number): Uint8Array {
+  const tag = new TextEncoder().encode(`per-call unstated view\u0000${master}\u0000${segmentIndex}\u0000${entryIndex}`);
+  return sha256(tag);
 }
 
 /**
@@ -143,7 +198,7 @@ export interface DraftMaster {
   readonly origin: string;
   readonly calls: readonly DraftCall[];
   readonly retval: Uint8Array;
-  readonly segments: readonly (readonly RecordEntry[])[];
+  readonly segments: readonly (readonly DraftRecordEntry[])[];
   readonly events: readonly number[];
   readonly sends: readonly number[];
   readonly argumentPushes: readonly Uint8Array[];
@@ -209,7 +264,10 @@ function callResultOf(call: DraftCall, retvals: Map<string, Uint8Array>): Uint8A
 }
 
 /** Turns the draft plan into the plan assembly consumes: the calls' results are what the derivation still owes. */
-function toCompositionPlan(plan: CompositionDraftPlan): CompositionPlan {
+function toCompositionPlan(
+  plan: CompositionDraftPlan,
+  segments: ReadonlyMap<string, readonly (readonly RecordEntry[])[]>,
+): CompositionPlan {
   const retvals = retvalsByMaster(plan);
   return {
     blocks: plan.blocks,
@@ -230,7 +288,7 @@ function toCompositionPlan(plan: CompositionDraftPlan): CompositionPlan {
         result: callResultOf(call, retvals),
       })),
       retval: master.retval,
-      segments: master.segments,
+      segments: segments.get(master.master)!,
       events: master.events,
       sends: master.sends,
       argumentPushes: master.argumentPushes,
@@ -255,15 +313,51 @@ function requireIndex(indices: Map<string, number>, id: string, what: string): n
   return index;
 }
 
+/** Options for composing a draft: the machine a plan's unstated writes are learned on. */
+export interface ComposeDraftOptions {
+  /** The BCH-2026 machine the derivation runs. The same machine reads a plan's unstated writes back. */
+  readonly vm?: DraftVirtualMachine;
+  /**
+   * The largest value a derivation will accept as a learned commitment. Defaults to the documented NFT commitment
+   * limit; a contract compiled with a larger `commitmentLimit` raises it.
+   */
+  readonly maximumCommitmentBytes?: number;
+}
+
 /**
  * Lays out and assembles a plan, then builds the witness block and VM program of every execution.
  *
  * The blocks start with each call's callee unset and the derivation's steps fill them. The layout and the assembly
  * are the only source of coordinates: a block's frame references, the calls' indices and the validator's transcript
  * all come from them, never from the plan.
+ *
+ * A plan may leave a segment's written view unstated. The composer declares a placeholder in its place and the
+ * derivation learns the value the body's own close hands back, so a plan-level caller need not compute what the
+ * body computes. A stated view is carried through unchanged and remains authoritative.
  */
-export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
-  const assembly = assembleComposition(toCompositionPlan(plan));
+export function composeDraft(
+  plan: CompositionDraftPlan,
+  options: ComposeDraftOptions = {},
+): CompositionDraft {
+  // Replace every unstated written view with a distinct placeholder, and remember which entry each placeholder
+  // stands for so a run that closes against one names the write it learned.
+  const unstatedByMaster = new Map<string, Map<string, UnstatedView>>();
+  const normalizedSegments = new Map<string, RecordEntry[][]>();
+  for (const master of plan.masters) {
+    const byPlaceholder = new Map<string, UnstatedView>();
+    const segments = master.segments.map((segment, segmentIndex) => segment.map((entry, entryIndex) => {
+      if (entry.viewOut !== undefined) {
+        return { in: entry.in, out: entry.out, viewIn: entry.viewIn, viewOut: entry.viewOut };
+      }
+      const placeholder = unstatedViewPlaceholder(master.master, segmentIndex, entryIndex);
+      byPlaceholder.set(bytesToHex(placeholder), { master: master.master, segmentIndex, entryIndex });
+      return { in: entry.in, out: entry.out, viewIn: entry.viewIn, viewOut: placeholder };
+    }));
+    normalizedSegments.set(master.master, segments);
+    unstatedByMaster.set(master.master, byPlaceholder);
+  }
+
+  const assembly = assembleComposition(toCompositionPlan(plan, normalizedSegments));
   const { layout } = assembly;
 
   const indices = new Map<string, number>();
@@ -304,7 +398,7 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
       value: master.frame.value,
       retval: master.retval,
       calls,
-      segments: master.segments.map((segment) => [...segment]),
+      segments: normalizedSegments.get(master.master)!.map((segment) => [...segment]),
       events: [...master.events],
       sends: [...master.sends],
     });
@@ -339,6 +433,49 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   /** The output an input recreates: the plan's, or the input unchanged. */
   const outputOf = (id: string): DraftSourceOutput => plan.inputs[id]?.output ?? sourceOf(id);
 
+  const stateIds = new Set(
+    layout.participants.filter((placed) => placed.kind === 'state').map((placed) => placed.id),
+  );
+
+  /**
+   * The commitment a record's declaration chain ends at, across every block as it currently stands.
+   *
+   * The chain is linear, so the end is the declaration no other one carries on from. Reading it from the blocks
+   * rather than from the plan is what lets a record's own output follow a written view the derivation learned.
+   */
+  const declaredChainEnd = (recordIndex: number): Uint8Array | undefined => {
+    const entries: RecordEntry[] = [];
+    for (const block of blocks.values()) {
+      for (const segment of block.segments) {
+        for (const entry of segment) {
+          if (entry.in === recordIndex || entry.out === recordIndex) entries.push(entry);
+        }
+      }
+    }
+    const written = entries.filter((entry) => entry.out !== INDEX_NONE);
+    const end = written.find((candidate) =>
+      !entries.some((other) => other !== candidate && bytesEqual(other.viewIn, candidate.viewOut)));
+    return (end ?? written[written.length - 1])?.viewOut;
+  };
+
+  /**
+   * The output a state record recreates.
+   *
+   * A record whose output the plan states keeps it. A record the plan leaves unstated carries the end of its own
+   * declaration chain, so a written view the derivation learned reaches the transaction's output. A record no
+   * segment declares, and an input that is not a state record, recreate unchanged.
+   */
+  const participantOutput = (id: string): DraftSourceOutput => {
+    const stated = plan.inputs[id]?.output;
+    if (stated !== undefined) return stated;
+    const source = sourceOf(id);
+    const recordIndex = stateIds.has(id) ? indices.get(id) : undefined;
+    const end = recordIndex === undefined ? undefined : declaredChainEnd(recordIndex);
+    const token = source.token;
+    if (end === undefined || token?.nft === undefined) return source;
+    return { ...source, token: { ...token, nft: { ...token.nft, commitment: end } } };
+  };
+
   // Every participant recreates at its own index; the plan's trailing outputs take the indices past the
   // participants, which no input recreates; the funders' recreations follow the trailing outputs.
   const trailing = placeTrailingOutputs(layout, plan.trailingOutputs ?? []);
@@ -346,8 +483,9 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
   const participantSet = new Set(participantIds);
   const funderIds = orderedIds.filter((id) => !participantSet.has(id));
   const sourceOutputs = orderedIds.map(sourceOf) as unknown as ShippedVmProgram['sourceOutputs'];
-  const outputs = [
-    ...participantIds.map(outputOf),
+  // Rebuilt on every run, so a record's output follows a written view the derivation learned.
+  const transactionOutputs = (): ShippedVmProgram['transaction']['outputs'] => [
+    ...participantIds.map(participantOutput),
     ...trailing.map((placed) => placed.output),
     ...funderIds.map(outputOf),
   ] as unknown as ShippedVmProgram['transaction']['outputs'];
@@ -378,9 +516,58 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
         sequenceNumber: 0xffffffff,
         unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
       })),
-      outputs,
+      outputs: transactionOutputs(),
       locktime: 0,
     });
+
+  // Built on first use: a plan that states every view never needs a machine of its own.
+  let learningVm = options.vm;
+  const learningMachine = (): DraftVirtualMachine => {
+    learningVm ??= createVirtualMachineBch2026(false);
+    return learningVm;
+  };
+  const maximumCommitmentBytes = options.maximumCommitmentBytes ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
+
+  const programOf = (master: string, block: WitnessBlock): ShippedVmProgram => ({
+    inputIndex: requireIndex(indices, master, 'master'),
+    sourceOutputs,
+    transaction: transactionFor({ master, block }),
+  });
+
+  /**
+   * Replaces every unstated written view the running program closes against with the value it computed.
+   *
+   * A plan that leaves a segment's `viewOut` unstated has the composer declare a placeholder there, so the body's
+   * own close compares the commitment it computed with that placeholder and fails, leaving both operands on the
+   * machine's stack. The close names its operands by position, and which side the declaration sits on depends on
+   * which of the run's checks the placeholder reached first, so both are matched against the placeholders and the
+   * other one is the computed value. A declaration the plan stated is never a placeholder, so a stated view that
+   * disagrees with the body is left as it is: the run makes no progress and the driver refuses.
+   */
+  const learnUnstatedViews = (master: string, current: WitnessBlock): void => {
+    const byPlaceholder = unstatedByMaster.get(master);
+    if (byPlaceholder === undefined || byPlaceholder.size === 0) return;
+    // Each iteration learns at most one write, so the count taken now bounds the walk even as the map shrinks.
+    const attempts = byPlaceholder.size;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const reading = readComputedDeclaration({
+        vm: learningMachine(), program: programOf(master, current), maximumCommitmentBytes,
+      });
+      if (!reading.ok) return;
+      const declared = bytesToHex(reading.declared);
+      const computed = bytesToHex(reading.computed);
+      const declaredIsPlaceholder = byPlaceholder.get(declared);
+      const computedIsPlaceholder = byPlaceholder.get(computed);
+      // A close names a declaration and the value it was compared with; both being placeholders is no close at all.
+      if ((declaredIsPlaceholder === undefined) === (computedIsPlaceholder === undefined)) return;
+      const unstated = declaredIsPlaceholder ?? computedIsPlaceholder!;
+      const learned = declaredIsPlaceholder === undefined ? reading.declared : reading.computed;
+      const entry = current.segments[unstated.segmentIndex]?.[unstated.entryIndex];
+      if (entry === undefined) return;
+      entry.viewOut = Uint8Array.from(learned);
+      byPlaceholder.delete(declaredIsPlaceholder === undefined ? computed : declared);
+    }
+  };
 
   const runs = plan.masters.map((master): ShippedMasterRun => {
     const index = requireIndex(indices, master.master, 'master');
@@ -405,6 +592,9 @@ export function composeDraft(plan: CompositionDraftPlan): CompositionDraft {
         transaction: transactionFor({ master: master.master, block: current }),
       }),
       fill: (site, current) => {
+        // A run may stop on a written view the plan left unstated before it ever reaches this site. Learning it
+        // first is what lets the site be filled: the probe closes before the call the site names.
+        learnUnstatedViews(master.master, current);
         if (site.kind !== 'call') return {};
         const visit = site.repeated === true ? visits.get(site.site) ?? 0 : 0;
         const callIndex = site.repeated === true ? visit : site.callIndex;
@@ -459,9 +649,13 @@ export function createComposedDerivationHost(options: {
   readonly artifacts: readonly { readonly composition?: unknown }[];
   readonly plan: CompositionDraftPlan;
   readonly vm?: ShippedHostOptions['vm'];
+  readonly maximumCommitmentBytes?: number;
   readonly onRun?: ShippedHostOptions['onRun'];
 }): { readonly host: ReturnType<typeof createShippedDerivationHost>; readonly draft: CompositionDraft } {
-  const draft = composeDraft(options.plan);
+  const draft = composeDraft(options.plan, {
+    ...(options.vm === undefined ? {} : { vm: options.vm }),
+    ...(options.maximumCommitmentBytes === undefined ? {} : { maximumCommitmentBytes: options.maximumCommitmentBytes }),
+  });
   const host = createShippedDerivationHost({
     artifacts: options.artifacts,
     runs: draft.runs,

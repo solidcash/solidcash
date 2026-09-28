@@ -15,7 +15,6 @@ import {
   computeFunctionSignature,
   validatorAddress,
   type Artifact,
-  type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
@@ -28,6 +27,7 @@ import {
   type DraftCall,
   type DraftInput,
   type DraftMaster,
+  type DraftRecordEntry,
   type DraftSourceOutput,
   type EntryFacts,
   type FrameRequest,
@@ -135,7 +135,7 @@ export interface MasterSpec {
   readonly enteredBy: string;
   readonly origin: string;
   readonly calls?: readonly DraftCall[];
-  readonly segments?: readonly (readonly RecordEntry[])[];
+  readonly segments?: readonly (readonly DraftRecordEntry[])[];
   readonly argumentPushes?: readonly Uint8Array[];
   readonly dispatches?: boolean;
 }

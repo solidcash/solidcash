@@ -440,6 +440,8 @@ export async function deployPerCallProxy(
 
 /** Everything the initialize plan is built from. */
 interface InitializePlanOptions extends PerCallProxyDeployOptions {
+  /** The proxy to plan the hop for: the caller's, or the one generated for the implementation. */
+  readonly proxyArtifact: Artifact;
   readonly implementationMaster: DeployedMaster;
   readonly proxyMaster: DeployedMaster;
   readonly proxyCategory: Uint8Array;

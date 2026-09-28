@@ -4,8 +4,9 @@ import {
   computeEventNameHash,
 } from '@solidcash/utils';
 import {
-  ContractFactory, DeployedContract, DeployContractOptions,
+  ContractFactory, DeployedContract, DeployContractOptions, selectGenesisFundingUtxo,
 } from './ContractFactory.js';
+import type { PerCallProxyDeployHalf, PerCallProxyDeployment } from '../per-call/proxy/deploy.js';
 import {
   StatefulContract, StatefulFunctionCall, ContractRunner, type ContractEventName, type EventListener,
   type EventLog, type StatefulContractEvent,
@@ -652,11 +653,110 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   } as Artifact;
 }
 
+/** A stateful implementation the compiler marked as compiled for the per-call convention. */
+export type PerCallArtifact = Artifact & { composition: { convention: 'per-call' } };
+
+/** The per-call deployment `deployProxy` returns for a per-call implementation. */
+export type { PerCallProxyDeployment };
+
+/** One genesis's funding: the caller's override, or a fresh vout-0 coin the Signer fans out and pays. */
+async function perCallGenesisHalf(
+  overrides: DeployContractOptions | undefined,
+  artifact: Artifact,
+  signer: Signer,
+  excluded: ReadonlySet<string>,
+): Promise<PerCallProxyDeployHalf> {
+  const { fundingUtxo, funder, changeAddress, initialState: _seed, ...rest } = overrides ?? {};
+  const selected = fundingUtxo ?? await selectGenesisFundingUtxo(signer, artifact, excluded, 1);
+  return {
+    ...rest,
+    fundingUtxo: selected,
+    funder: funder ?? signer.unlockP2PKH(),
+    changeAddress: changeAddress ?? signer.getAddress(),
+  };
+}
+
+/**
+ * Routes a `deployProxy` of a per-call implementation onto the per-call deployment.
+ *
+ * Two geneses (the implementation's, then the proxy's with a record naming the implementation's address) and an
+ * `initialize` hop through the proxy. The proxy is the caller's `options.proxy`, or generated from the
+ * implementation's own declaration when none is given. The hop is entered by the deployer, so the Signer's own
+ * P2PKH lock is the `callerLockingBytecode` the per-call deployment takes.
+ */
+async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
+  factory: ContractFactory<TImpl>,
+  initialState: ProxyInitialState | undefined,
+  options: DeployProxyOptions,
+): Promise<PerCallProxyDeployment> {
+  const implementationArtifact = factory.artifact;
+  const runner = options.runner ?? factory.runner;
+  const signer = runner instanceof Signer ? runner : undefined;
+  if (!signer) {
+    throw new Error(
+      `A per-call implementation ('${implementationArtifact.contractName}') routes deployProxy through the per-call `
+      + 'deployment, which needs a Signer runner: the initialize hop is entered by the deployer, whose own P2PKH '
+      + 'lock is the caller the hop runs as.',
+    );
+  }
+  // The hop always runs: the per-call record belongs to the proxy, so state seeded at the implementation's genesis
+  // would sit in a record the proxy's delegate frames never read.
+  if (options.initializer === false) {
+    throw new Error(
+      'A per-call deployment always runs one initialize hop through the proxy; `initializer: false` (seed state at '
+      + 'genesis) has no per-call equivalent.',
+    );
+  }
+  const initializer = typeof options.initializer === 'string' ? options.initializer : 'initialize';
+  if (!implementationArtifact.abi.some((entry) => entry.name === initializer)) {
+    throw new Error(
+      `Implementation '${implementationArtifact.contractName}' publishes no entry '${initializer}' to run through `
+      + 'the proxy.',
+    );
+  }
+  // The hop's arguments are positional, as they are for the direct convention's initializer.
+  if (initialState !== undefined && !Array.isArray(initialState)) {
+    throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array.`);
+  }
+
+  const { buildProxyArtifact, deployPerCallProxy } = await import('../per-call/proxy/index.js');
+  const proxyArtifact = options.proxy ?? buildProxyArtifact(implementationArtifact);
+  const implementationDeploy = await perCallGenesisHalf(
+    options.implementationOverrides, implementationArtifact, signer, new Set(),
+  );
+  const proxyDeploy = await perCallGenesisHalf(
+    options.proxyOverrides, proxyArtifact, signer,
+    new Set([`${implementationDeploy.fundingUtxo.txid}:${implementationDeploy.fundingUtxo.vout}`]),
+  );
+
+  return deployPerCallProxy({
+    provider: signer.provider,
+    implementationArtifact,
+    implementationDeploy,
+    proxyArtifact,
+    proxyDeploy,
+    initialize: { functionName: initializer, args: (initialState ?? []) as FunctionArgument[] },
+    callerLockingBytecode: signer.getLockingBytecode(),
+  });
+}
+
 /**
  * ethers/hardhat `upgrades.deployProxy(ImplFactory, initialState?, options)`: deploy the implementation + a
  * state-holding proxy, seed the state, and return a handle whose method calls forward to the implementation
  * through the pinned delegatecall. Uses the built-in SolidCashProxy unless `options.proxy` is given.
+ *
+ * An implementation artifact compiled for the per-call convention is routed to the per-call deployment instead,
+ * because the direct builder below - implementation beside a proxy whose data NFTs sit at a category-derived
+ * address, one `initialize` forwarded through the pinned delegatecall - has nothing to spend for a master program.
+ * That route is a different three-transaction shape (both geneses and an `initialize` hop) and its result is a
+ * `PerCallProxyDeployment`, not a `ProxyContract`: it reports the proxy's category and address, the implementation
+ * it forwards to, the derived hop and the machine's verdict on every participant. It needs a Signer runner to name
+ * the hop's caller and to fund the geneses, and it always runs the hop, so `initializer: false` is refused.
  */
+export function deployProxy(
+  implementationFactory: ContractFactory<PerCallArtifact>, initialState?: ProxyInitialState,
+  options?: DeployProxyOptions,
+): Promise<PerCallProxyDeployment>;
 export function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
@@ -669,7 +769,7 @@ export async function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl> | SplitContractBundle,
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
-): Promise<ProxyContract<TImpl> | SplitContract> {
+): Promise<ProxyContract<TImpl> | SplitContract | PerCallProxyDeployment> {
   // Hardhat-compatible factories wrap SplitContractBundle to provide positional `.deploy(...)`. Accept that
   // transparent facade here too, otherwise it falls through the ordinary implementation+proxy path, reserves a
   // nonce, and then attempts a nested split deployment which reserves the same nonce again.
@@ -706,6 +806,11 @@ export async function deployProxy<TImpl extends Artifact>(
     });
   }
   const ordinaryFactory = implementationFactory as ContractFactory<TImpl>;
+  // A per-call artifact's entries read their frame from a witness block, so the direct builder has nothing to
+  // spend; route the whole deployment through the per-call path, which returns that deployment.
+  if (ordinaryFactory.artifact.composition?.convention === 'per-call') {
+    return deployPerCallProxyThroughFactory(ordinaryFactory, initialState, options);
+  }
   const runner = options.runner ?? ordinaryFactory.runner;
   const deploymentSigner = runner instanceof Signer ? runner : undefined;
   const nonceReservation = deploymentSigner?.reserveTransactionNonce();

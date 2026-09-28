@@ -6479,8 +6479,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let sub = this._eventSubs.get(key);
     if (!sub) {
       const current = await this.queryFilter(event);
-      sub = { event, listeners: new Set(), seen: new Set(current.map(StatefulContract._logKey)) };
-      this._eventSubs.set(key, sub);
+      // Another subscription may have completed its initial query while this one was pending. Join that
+      // subscription instead of replacing its listener set and losing callbacks registered concurrently.
+      sub = this._eventSubs.get(key);
+      if (!sub) {
+        sub = { event, listeners: new Set(), seen: new Set(current.map(StatefulContract._logKey)) };
+        this._eventSubs.set(key, sub);
+      }
     }
     sub.listeners.add(listener);
     this._ensurePolling();

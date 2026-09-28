@@ -22,7 +22,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 404 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 416 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -37,17 +37,18 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 112 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 107 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 40 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 11 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1364 tests passed (115 + 445 + 802 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1385 checks (115 + 457 + 811 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 445 is the four rows above it, `solidcash` 802 is the seventeen rows above it,
+`vitest.per-call.config.ts`: `solidc` 457 is the four rows above it, `solidcash` 811 (810 passed, one skipped) is the
+seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
@@ -311,6 +312,10 @@ validator, assembled by the composer from a plan the test supplies no geometry f
 reads and writes its record through the indices its own frame declares, chains those declarations across the
 segments of one execution, and settles a record that sits away from it. A compiled master whose state is a `string`
 addresses its value's chunk run from the same declaration and settles a read-modify-write of it in the machine.
+The head parks the frame's record-block base once and each body adds the width of its own layout, so bodies whose
+layouts place the run at different widths share it, and a body that touches a dynamic value beside an external call
+resolves the run against the segment its own calls have reached; a body whose sorted-mapping write a call precedes
+and a send whose recipient lock is a run-time value are still refused by name.
 The validator is an emitted program (`packages/solidc/src/per-call/validator/program.ts`) that emits rules spanning
 all eleven checks, and every rule it emits has a machine-level hostile rejection beside an accepted composition.
 

@@ -968,7 +968,7 @@ risk. Take the slices in order, each with its own tests.
   - [x] T19: `callerRef` pointing at `DA` (a state UTXO at `stateA`) or at the validator.
   - [x] T20: the root user's input signed with `ALL|ANYONECANPAY`, `NONE` and `SINGLE`, one variant each.
   - [x] T21: `originRef` pointing at a second signed user in the transaction, at the root and on a callee.
-  - [ ] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
+  - [x] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
     must succeed. **Ruled unreachable, recorded here**: the block carries no branch or status field and the compiler makes every
     catch dead code, so no witness can select a branch (general `try`/`catch` coverage exists in `solidc/test/TryCatch.test.ts`).
   - [x] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
@@ -992,7 +992,7 @@ risk. Take the slices in order, each with its own tests.
     entry's own, a target the contract does not hold) stay refused at compile, which `hostile/proxy-binding.test.ts`
     pins by name. The "master presenting its code lock instead of its address" half is covered by
     `hostile/standalone-address-slot.test.ts`.
-  - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
+  - [x] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
     creator that ran no `new`. **The `DELEGATE` half is closed** (`8ebc782be`): `hostile/delegate-identity.test.ts`
     lays out a real proxied composition and gives the delegate callee a second user's lock as its `sender` (and, in
     a second case, a third contract's address as its `self`); the derivation, the reference checker and the shipped
@@ -1004,7 +1004,9 @@ risk. Take the slices in order, each with its own tests.
     **The `INTERNAL` and `CREATE` halves are recorded as deferred** on the coordinator's reading of section 4.7,
     which defers code-split facets and `INTERNAL` frames across them, and `CREATE` frames inside a composed
     transaction: this path builds neither, so no spend can reach the mutation and no hostile case can be written
-    for them here. They stop gating I2 by being named deferred rather than by being passed.
+    for them here. They stop gating I2 by being named deferred rather than by being passed, and the row is ticked
+    on that reading (2026-09-28): the `DELEGATE` half is closed by the hostile case and the two remaining halves
+    carry their ruling.
   - [x] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
     one master's segments out of order. Ticked 2026-09-28: both halves are refused by the derivation and by the
     program. The program derives the V6 order on chain with a recursive depth-first visit (`OP_DEFINE` /
@@ -1021,20 +1023,22 @@ risk. Take the slices in order, each with its own tests.
     two roots name one input and that the machine accepts, beside the faithful composition.
   - [x] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
   - [x] T34: a `STATIC` callee that writes a record or emits.
-  - [ ] T35: a value send to a contract made as a plain output. Open on its own reason: the compiler refuses a value
-    send, so no compiled master carries one and there is no spend to mutate. The refusal is asserted in
-    `edges/refused-contract-shapes.test.ts`.
+  - [x] T35: a value send to a contract made as a plain output. **Ruled unreachable, recorded here (2026-09-28)**:
+    the compiler refuses a value send, so no compiled master carries one and there is no spend to mutate. The
+    refusal is asserted in `edges/refused-contract-shapes.test.ts`, which is the criterion's answer rather than a
+    missing test.
   - [ ] T36: a master whose `self` is not `addrV` of its category (V11), and a fake contract presenting another
     contract's address. Partial: a reserved slot filled with an address its category does not derive is refused by the
     head's own binding (`hostile/standalone-address-slot.test.ts`), but a slot and a presented address that agree on a
     foreign address are accepted, because the category-to-address rule is a deployment gate rather than an on-chain
     one (`verifyMasterDeployment`).
-  - [ ] T37: a `DELEGATE` callee that is a master of other code than the named target, and an `INTERNAL` callee of
+  - [x] T37: a `DELEGATE` callee that is a master of other code than the named target, and an `INTERNAL` callee of
     another contract. **The `DELEGATE` half is closed** by `hostile/delegate-target-binding.test.ts` (`fe87a8b22`):
     the callee is a master of a second contract's code while the call's target names the first, and the derivation,
     the reference and the machine all refuse it. The `INTERNAL` half stays open: an internal frame is not emitted by
     the head, so no spend reaches a mutation. It is **recorded as deferred** for the same reason as T28/T29's
-    `INTERNAL` half: section 4.7 defers internal frames on this path, so the mutation has no spend to reach it.
+    `INTERNAL` half: section 4.7 defers internal frames on this path, so the mutation has no spend to reach it. The
+    row is ticked on that reading (2026-09-28).
   - [x] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
   - [x] T39: a record, master or validator recreated with less value.
   - [x] T40: a callee claiming a `msg.value` its caller did not send.
@@ -1093,7 +1097,7 @@ risk. Take the slices in order, each with its own tests.
     running code holds. Two walls are pinned in the toy rather than papered over: a user-entered root cannot
     take the parameter the shape writes, and a later call that also passes a compile-time argument still stalls
     on the caller's own digest, which is an emission bug rather than a composer one.)
-  - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5). Partial, moved twice.
+  - [x] **Y4 proxy** (ticked 2026-09-28). Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5).
     The proxy's forwarded call compiles and is emitted as a delegate frame (`f2965195f`), everything wider is refused
     by name, and the **hop now settles** (`7125f91b4`): the stall was the body's call-count pin, not the record's
     kind or target compare - the path walk counted only message calls, so a forwarded delegatecall left the body
@@ -1124,7 +1128,11 @@ risk. Take the slices in order, each with its own tests.
     input's, while the event belongs to the contract whose records the frame uses. Measured both ways - under the
     owner's category the tail reverts, under the executing input's the body reverts later - so no category satisfies
     both, and the fix has to make that section owner-aware (the owner the head parks is beneath the tail's own
-    parkings, so it is a head-slot change rather than a local one).
+    parkings, so it is a head-slot change rather than a local one). **Ticked 2026-09-28**: that clause is closed
+    (`beae22cc6`, the owner-aware tail), and the variant a *hub* uses — a contract calling the proxy through a
+    typed interface with a run-time argument, which is the spelling the marketplace calls its proxied contracts
+    with — settles (`c9bda3383`), beside the two-append run and its events behind the proxy
+    (`toys/proxied-append-run.test.ts`) and the stateful implementation behind it (`toys/proxied-entry.test.ts`).
   - [x] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
     Ticked 2026-09-28: the whole lifecycle settles - one transaction writes two records (the head the insert
     relinks and the node it creates, which both later frames rewrite), the derivation completes the three callee
@@ -1150,7 +1158,8 @@ risk. Take the slices in order, each with its own tests.
     - `this.ownerOnly()` called by the owner fails, as in the EVM;
     - an `Escrow.refund()` gated on `tx.origin`, reached through `Market.refund()`, sees the root user;
     - each expectation matches the EVM result of the same Solidity source (the Log's 2026-09-25 probe method).
-- [ ] G5 The shapes of spec 5.4, with the same scripts and builder and no special case:
+- [x] G5 The shapes of spec 5.4, with the same scripts and builder and no special case (ticked 2026-09-28: every
+  shape below it is ticked):
   - [x] `A` — one master and its user, derived and accepted at every contract input.
   - [x] `AA` — one contract entered twice through an address literal (a run-time `address(this)` target is refused
     by the compiler, because the site holds no single value to check its record against); the self-called entry
@@ -1228,8 +1237,14 @@ risk. Take the slices in order, each with its own tests.
     before it merges, and `MANIFEST.md` records R's state per slice, so another coder can take it over.
 - [ ] **I2b: every marketplace shape settles**, before I3 and the ladder (user decision 2026-09-27;
   `MARKETPLACE_SHAPES.md`).
-  - Where the ten replicas stand at `153ce42ea`. A replica settles only when it carries its flow's real shape and
-    every primitive that flow needs settles somewhere (4.6: a narrower variant is partial). None settles yet.
+  - Where the ten replicas stand at `153ce42ea`, refreshed 2026-09-28. A replica settles only when it carries its
+    flow's real shape and every primitive that flow needs settles somewhere (4.6: a narrower variant is partial).
+    Three clauses this list carried as open are landed and are no longer walls: the loop beside fixed calls
+    (`3e4d51310`: the arbitration replica pays out through a trip count the running frame reads), the constructor's
+    event (`53521a067`: the deployment mints what the constructor's own frame computed, so the fixture's blocker is
+    gone), and the typed call into a proxy (`c9bda3383`: the fallback's input is the frame's call-data band, so a
+    hub's `IStore(proxy).append(item)` with a run-time argument settles). What each replica still lacks is named
+    below.
     - **MS5 and MS6 carry their own flows**, open only on the shared walls below: MS5 a payout gated on
       `tx.origin`, MS6 a judge that reads the escrow's recorded payment block read-only, gates on a strictly later
       block and calls the escrow's own entry.
@@ -1238,15 +1253,20 @@ risk. Take the slices in order, each with its own tests.
       titles send, is refused by name.
     - **MS4 and MS7, partial.** The real `UnicrowClaim.claim` makes fixed calls and then, in the same frame
       (`claimPayments` is internal), `for (i < 5) if (amounts[i] > 0) sendEscrowShare(addresses[i], amounts[i],
-      currency)`. Open: that body stalls, because a looping body's sites are indexed by visit
-      (`PER_CALL_DERIVATION_STALLED`, pinned in `shapes/reentry-payout-loop.test.ts`). MS4's replica moves the
-      loop to its own entry and MS7's writes one literal call per share, without arguments. Behind it: L6 and L7
-      (#50-52, #59-62, #66).
-    - **MS9, partial.** Sixteen broadcast transactions settle, on contracts without constructors. Open: both real
-      implementations' constructors call `_disableInitializers()`, which emits `Initialized`, and the fixture stops
-      there with `PerCallGenesisError` (P30). Behind it: I3, so all 66.
+      currency)`. **The loop is no longer the wall** (`3e4d51310`): the arbitration replica's claimer keeps four
+      fixed calls and runs one loop over a count the running frame reads out of a record — 20 calls and 21 masters
+      at depth 4, derived callee-first, every contract input accepted, and the published sites pin the bound the
+      fill rule gives (one distinct call per turn). Open: the marketplace's own `sendEscrowShare` arguments, which
+      flow through SafeERC20 and `unicrow`'s value plumbing (P17, below). Behind it: L6 and L7 (#50-52, #59-62,
+      #66).
+    - **MS9, partial.** Sixteen broadcast transactions settle, and the constructor's event is no longer the wall
+      (`53521a067`: `deployPerCallStatefulContract` mints one output per event the constructor's own frame
+      computed — measured against the fixture's `MarketplaceV1.json`, `Initialized(uint64)` with `type(uint64).max`,
+      byte-for-byte `encodeEventCommitment`, and an event payload off the computed value refused). Open: the
+      CREATE-predicted, circular addresses the fixture deploys at (F3). Behind it: I3, so all 66.
     - **MS2, partial.** The store sits behind its own proxy and sees `msg.sender` = the root proxy's address
-      (`8795cd234`), through the forwarding spelling only. Open: a store frame built from a run-time scalar stalls
+      (`8795cd234`), reached by a typed call now (`c9bda3383`: `IStore(storeProxy).append(tag, item)`), with the
+      forwarding spelling and the framing it needed removed. Open: a store frame built from a run-time scalar stalls
       at the caller's segment close, and the appended struct's two `bytes` fields and the root's struct record
       with a `string[]` are not carried.
     - **MS3, partial.** A payable struct call at value 0, a write after a call, both events and `ecrecover` over an
@@ -1261,12 +1281,10 @@ risk. Take the slices in order, each with its own tests.
       caller's live records.
     - **MS10, partial.** Its refusals are pinned, including the compiler's warning that a custom error's arguments
       are not evaluated. Open: a custom error with arguments, re-raised through a low-level call (E3).
-    - **Open across MS2-MS7.** P2, the typed call into a proxy: the marketplace calls its proxied contracts
-      through typed interfaces with run-time arguments, and a contract enters a proxy today only as
-      `IProxy(proxy).forward(<framed call data>)`, because the caller's digest covers `push(selector) ||
-      push(args)` while the fallback's input is `push(selector || args)`. The fix that matches the EVM is a
-      forwarding fallback that materializes its input from the frame's call-data region; MS2's replica then drops
-      the forwarding spelling. P17: every token transfer and approval goes through SafeERC20, which passes its
+    - **Open across MS2-MS7.** P2, the typed call into a proxy, is served (`c9bda3383`): a forwarding fallback
+      materializes its `input` from the frame's call-data band, so a hub's `IStore(proxy).append(item)` with a
+      run-time argument settles and MS2's replica dropped the forwarding spelling. P17: every token transfer and
+      approval goes through SafeERC20, which passes its
       payload through a local and `Address.functionCall`, both refused; the replicas make typed calls instead. P19:
       long values in chunks, partial (R5).
   - One neutral replica per flow shape MS1-MS10 in `solidcash/test/per-call/shapes/`, each settled through the
@@ -2198,3 +2216,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | per-call | the delete of a dynamic mapping value is served, and the set is what still refuses | 115 + 421 + 768 | **P22's delete half lands, and the analysis that separated it from the set was right.** A sorted delete was already lowered by codegen to an upsert of the value type's default, so the two things standing in the way were the per-call admission and the composer's plan. `isOneWrite` now counts a `delete` as the one write it is — scoped to the per-call admission, so the kernel and message-bus paths that read `isSortedValue` are untouched — and the composer gained `planMappingDelete`, which plans the transition the body performs: the node rewritten **in place** with the caller's encoded default and `removed: false`, never the splice removal the `value: undefined` form plans. Measured: `Tags.remove(string k) { delete this.tags[k]; }` compiles with no refusal and publishes no value-witness operand, the node's output commitment is `encodeEntryCommitment(slot, ZERO_SLOT, encodeChunkableValueTail(empty))` (`slot ‖ 0 ‖ 00 00 00 00`) — the slot and successor kept, only the tail emptied — the derivation completes `Tags.remove()` then `Hub.run()`, and every contract input is accepted; a close rewritten to a value no frame wrote is refused as the control. The **set** stays refused by name for the value witness, which the wire format cannot carry, and a **long** value is not covered because the delete writes the short empty default. Composer 162 to 163, shapes 92 to 96, edges 34 to 35. **One unrelated limitation recorded on the way**: a `ROOT` frame entered directly on a mapping-only contract (no scalar state record) fails in the master head with `OP_SPLIT … requested split index: 96` on an empty item, for `int`- and `string`-valued mappings alike — so it is type-independent and predates this change; the delete is driven hub→contract, the structure the sorted-lifecycle control uses. |
 | 2026-09-28 | (this row's commit) | per-call | a repeated-call body's reads resolve against the segment its own call count names, and the project compiles | 115 + 434 + 763 | **The wall the Deviations section named is not the wall the project hit, and the wall it did hit is closed.** The named wall was a constructor that writes a mapping and carries `__internal__vmapBatchSlot_<n>`; measured through the shipped compiler at `d63d2fc3b`, a constructor whose body writes a mapping compiles in every key form probed - a literal `tx.origin`, a parameter, a `string` key, two collections in one body, a nested key, and a read-modify-write of the target - all served, which is what the `86deb3552` row already recorded, so that bullet was stale rather than open. The project's first reported failure at `d63d2fc3b` was instead `unicrow/UnicrowClaim.sol`: "the body of 'claimMultiple' reads its state records, and its calls repeat, so which segment declares the view it reads is a run-time value the read does not yet locate", thrown from three emitter sites (the record read by coordinate, the read by ordinal, and a dynamic value's chunk view). **The refusal is now a walk.** `declared-view.ts` gained a run-time-count mode: the entry is `[..., segmentIndex, coordinate]` (or `..., ordinal`), the segment index comes from the frame's own calls-made counter, and the block's declared call count is read where the walk reaches it, so one compiled walk answers for every segment an execution can be in - the static mode is untouched, so a body whose source fixes its call count keeps byte-identical code. The emitter pushes the counter beneath the record the read is about, at the four sites that resolve a declaration. **Evidence, both halves through the shipped path.** A machine test (`master/looped-call-state-read.test.ts`, 8 cases) spends a compiled stateful caller whose loop makes one call per turn and reads and writes its own record each turn: 0, 1, 2 and 3 turns are accepted with each segment declaring the transition that segment performed, and a chain whose second declaration restarts where the first began, a tail declaring fewer records than the execution made, and a first declaration that is not the spent commitment are refused. Disabling the new mode makes the same fixture fail at 2, 3 and 0 turns with `OP_SPLIT ... stack item length: 126; requested split index: 3484230846`, so the mode is what the accepts rest on, and the 1-turn case - which the static mode also passes, because the two agree there - is the control that the fixture is not the cause. A script-level test (`master/declared-view-runtime.test.ts`, 5 cases) drives the walk bytes alone against a real encoded block: each run-time index returns that segment's own declaration, an index past the segments and a coordinate no record declares are refused, and one compiled walk evaluated with three different indices returns three different views. **The ladder moved, and it is the compile that moved.** `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4`, after `yarn build`, reported that refusal before the change and reports `Compiled 9 Solidity source(s) in 9 compiler job(s) (0 cache hit(s)) -> 7 contract artifact(s)` after it - there is no next first failure at the compile, so the next rung is the harness box (the testing layer composing per-call masters for the D2 fixture) rather than another compiler refusal. The compile was run twice this round, both at the coordinator's explicit direction; rule 4.6's once-per-milestone budget is spent and no further project compile is taken until a milestone is passed. The second run was taken with the refusal removed and before the walk's operand-order correction landed; that correction changes the emitted bytes only, so what the compile reports is the same either way. The three refusals the walk replaced were not load-bearing for the mapping or dynamic families: measured through the shipped compiler, a body that writes a mapping beside an external call - the write before the loop, after it, or inside it - and one that reads or writes a dynamic value beside a call are each still refused by name at admission, so removing the throws opens no path that reads the wrong segment. What is not claimed: the shape settles in the machine, and `claimMultiple`'s own composition is not derived, so no title is claimed. Counts, measured with cleared caches at this commit: `solidc` 434 (master 380 to 393, the thirteen new cases), `solidcash` 763 passed with one skipped. The solidcash drop from the `768` the earlier rows carry is not this change: `9c0592a2e` dropped cases that other files already covered, and its numbers had not been refreshed into the counts when this row was written. |
 | 2026-09-28 | (this row's commit) | per-call | the fixture's first wall is the proxy's address, and a generated proxy now mirrors an isolated field | 115 + 434 + 764 | **The project compiles and the fixture reaches its first wall: the proxy generator.** `node --max-old-space-size=8192 packages/testing/dist/cli.js compile --jobs 4` (after `yarn build`) is green on all nine sources, and `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism -t 'mece tags read mece tag$'` fails 1 with 65 skipped at the fixture's own deployment: `PerCallProxyDeployError: cannot generate a proxy for "MarketplaceV1": it declares no field named "implementation", so there is no address in its record for a fallback to forward to and no field the proxy could declare without disagreeing with the implementation`, thrown by `generateProxySource` through `buildProxyArtifact` from `deployPerCallProxyThroughFactory` (`upgrades.ts:723`) at the fixture's `upgrades.deployProxy(Marketplace, …)`. The upstream test is untouched. **The wall has a second layer, measured rather than assumed.** Faking the field into the artifact's published layout makes `buildProxyArtifact` refuse again - `the generated proxy declares 1 data NFT(s), not the implementation's 2` - because `MarketplaceV1`'s layout carries a data NFT the compiler *injects* (`__blockOracleOwner`, `isolatedNft`), and a re-declared field cannot reproduce it: the published layout names coordinates, not whether a record was isolated or merely opened by packing, so a proxy that declared the field `public` packs it beside its neighbours and every coordinate after it disagrees. **That half is fixed.** The generator infers the distinction from the coordinates - a field alone in its data NFT is re-declared `external`, the spelling that registers a dedicated record, and a field packed beside others stays `public` so the same packing runs again - so a generated proxy mirrors an implementation whose layout holds an isolated field. Evidence through the shipped `buildProxyArtifact`: `deploy/generated-proxy.test.ts` gains "mirrors a field the implementation keeps alone in a data NFT of its own" (two data NFTs in the implementation, the proxy's coordinates equal), and reverting the inference fails that case at the data-nft-count check. The proxy-shaped suites are green (deploy 103 to 104, 146 across the directory and the proxy shapes and toys). **What is left for I3 is one decision and its plumbing: where the address lives when the implementation declares nothing about its proxy.** The spec puts it in the proxy's records (section 11) and open point 5 names the EIP-1967-style slot, while the generator requires the *implementation* to declare the field - which neither marketplace root does, and the application sources are fixed. Measured alternatives: a forwarder taking the address as a constructor parameter is refused by name at admission ("fallback and receive make the contract dispatch by selector, which the master head cannot precede"), and a proxy that declares `address external implementation;` of its own gets a trailing data NFT - the EIP-1967 shape - which the deployment's layout agreement currently refuses because it requires the two declarations to be identical. **The deployment models one record per proxy, read from the code**: the initialize plan states `state: [RECORD_ID]` with a single `RecordEntry` set and the genesis record is read back as `deployment.records[0]`, so a proxy behind an implementation that publishes two data NFTs - both marketplace roots do - has no plan shape at all. What is left for I3 is therefore a stream and not a fix: the address's home (the proxy's own record), the layout agreement relaxed to the implementation's records plus that one, and the deployment planning every record the proxy's layout declares. Rule 4.6's fixture prohibition was lifted for this round at the evaluator's explicit direction; both runs are captured (`{SCRATCH}/mp-compile-i3.log`, `{SCRATCH}/mp-fixture-i3.log`) and the candidate placements were measured with probes beside them. |
+| 2026-09-28 | (this row's commit) | per-call | the proxy keeps the address in a record of its own, and a deployment plans every record | 115 + 434 + 765 | **The proxy wall the fixture stops on is served, and proven on the marketplace roots' own shape rather than by a fixture run.** The generator no longer requires the *implementation* to declare the field its fallback forwards to: an implementation that declares nothing about its proxy gets one whose own trailing data NFT holds the address (`address external implementation;`, the EIP-1967-style slot spec section 11 and open point 5 name), and `readLayoutAgreement` — one rule shared by the generator and the deployment — admits the implementation's fields at their own coordinates plus that single record, which no implementation frame ever rewrites. **The deployment plans every record a proxy's layout declares.** `buildInitializePlan` gives each data NFT its own participant (`proxyRecordParticipantId(nftIndex)`), each its own declaration chain (kept, the delegate frame's written view, the view after it), the validator settles all of them, and the learning loop learns one record's computed commitment per attempt — the declaration a failing comparison closed against names the record the entry wrote, so a body that writes two records takes one attempt per record. The 774-line module's single-record assumptions (`deployment.records[0]`, one `RecordEntry` set, one `stateInputs` entry, the broadcast's record lookup) are gone. **Measured through the shipped path, on the shape both marketplace roots have.** `deploy/generated-proxy.test.ts` gains 'settles an initialize through a proxy that keeps the address in a record of its own': an implementation with an isolated field and no `implementation` field (`uint initialized; int version; pubkey external owner;`) compiles to a three-record proxy, `deployPerCallProxy` runs the initialize hop, every participant is accepted, and the outputs are asserted through the shipped encoder — the entry's write in the record its declaration names (data NFT 0) and the address still in the proxy's own record (data NFT 2). The generator's own case asserts the layout agreement (the implementation's fields at their coordinates, the address alone in the data NFT after them), and it fails without the geometry rule landed earlier this round. The record participant's id is now per data NFT, so four deploy tests read it through the exported `proxyRecordParticipantId(0)` rather than the old literal. Deploy 104 to 105; the deploy, shapes and toys directories are green (276 cases, `{SCRATCH}/sdk-proxy-circles.log`). **No fixture or title run this round.** Rule 4.6 as the coordinator restated it: the project compile's budget for this milestone is spent and fixture and title runs wait for I2b, so what stands in for the fixture is the focused deployment above, which drives the same shipped path the fixture's `upgrades.deployProxy(Marketplace, …)` takes (`deployProxy` → `deployPerCallProxyThroughFactory` → `buildProxyArtifact` → `deployPerCallProxy`). The fixture's next reported wall is therefore unmeasured, and is the next thing to take once I2b allows it. **Plan text refreshed on the coordinator's reading**: the I2b list's three stale open clauses are recorded as landed (the loop `3e4d51310`, the constructor's event `53521a067`, the typed proxy call `c9bda3383`), and the rows that carry their ruling are ticked — T22 and T35 (ruled unreachable), T28/T29's and T37's deferred halves, plus G5 (every shape under it was already ticked) and Y4 (the hub-called variant settles). T25, T36 and Y7 stay open as partial. |

@@ -12,12 +12,10 @@
  * constructor's own frame computed. The state comes from `derivePerCallGenesis`, which runs that frame against the
  * BCH-2026 machine; nothing here supplies a commitment the constructor did not compute.
  *
- * The records are minted at the funder's own lock: in this convention a state record is a plain UTXO the
- * composition spends and recreates, and the funder is the account the genesis is authorized by. Because the lock
- * is the deployer's and not derived from the category, records are not found by recomputing an address; they are
- * found by enumerating the contract's category, which `readPerCallDeployment` in `records.ts` does. A later
- * composition that spends a record therefore needs the deployer's own signed input among its callers, which is
- * the same rule that authorizes the genesis.
+ * The records are minted at the data-NFT covenant the category derives, the same lock the direct convention's data
+ * NFTs sit at, so a composition spends and recreates each record under the covenant's own rules and a spent UTXO
+ * there is a genuine record. `records.ts` derives that lock and the unlocking a composed spend carries, and
+ * classifies a category's UTXOs to find the records again.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -27,6 +25,7 @@ import type { ConstructorArgument } from '../../Argument.js';
 import { Contract } from '../../Contract.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { derivePerCallGenesis } from './genesis.js';
+import { stateRecordLockingBytecode } from './records.js';
 
 /** Raised when a per-call deployment cannot be built from the artifact or the options. */
 export class PerCallDeployError extends Error {
@@ -82,9 +81,9 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
 
   const masterAmount = options.masterAmount ?? 1200n;
   const dataNftAmount = options.dataNftAmount ?? 1200n;
-  // A state record is a plain UTXO the composition spends and recreates; the funder is the account the genesis is
-  // authorized by, so the records are minted at its lock.
-  const recordLockingBytecode = options.funder.generateLockingBytecode();
+  // A state record sits at the data-NFT covenant the category derives, so a composition spends and recreates it
+  // under the covenant's own rules rather than at a lock outside them.
+  const recordLockingBytecode = stateRecordLockingBytecode(categoryId);
   const masterCount = options.threadCount ?? 1;
   if (!Number.isInteger(masterCount) || masterCount < 1) {
     throw new PerCallDeployError(`threadCount must be a positive integer, got ${masterCount}`);

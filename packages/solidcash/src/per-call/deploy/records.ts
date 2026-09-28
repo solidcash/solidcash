@@ -1,27 +1,31 @@
 /**
- * Finding a per-call deployment's records.
+ * A per-call deployment's state records: where they sit, how they are spent, and how they are found.
  *
- * A per-call deployment mints its records at the funder's own lock — the account that authorized the genesis —
- * not at a category-derived covenant address. Each record is a plain UTXO carrying the contract's category with a
- * mutable NFT whose commitment is the state the constructor's frame computed. Because the lock is the deployer's
- * and not derived from the category, a reader cannot compute where the records sit; what makes them findable is
- * the category itself, which an indexer can enumerate globally. The direct convention's `StateReader` instead
- * looks for data NFTs at a data-NFT covenant address that a per-call genesis never mints at, so per-call state
- * must be read through this module rather than through that address.
+ * A data-NFT record is minted at the data-NFT covenant the contract's category derives, the same lock the direct
+ * convention's data NFTs sit at: a P2SH32 of `buildDataNftCovenantScript(category)`. It carries the contract's
+ * category with a mutable NFT whose commitment is the state the constructor's frame computed. Because the lock is
+ * derived from the category, a reader can both recompute the address and enumerate the category; the classification
+ * below reads a category's live UTXOs, so it finds the records whichever way the caller reached it.
  *
- * The recorded state is still the shipped encoding: each commitment parses with `parsePushdataCommitment` at its
+ * The recorded state is the shipped encoding: each commitment parses with `parsePushdataCommitment` at its
  * data-NFT index, so a caller reads the same values the constructor wrote, through the same decoder the direct
  * path uses.
  */
 
+import { hexToBin } from '@bitauth/libauth';
 import {
+  buildDataNftCovenantScript,
   isMultiDataNftLayout,
   parsePushdataCommitment,
+  scriptToBytecode,
   type StateLayout,
   type StateValue,
 } from '@solidcash/utils';
+import { encodeFunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
+import { createUnlockingBytecode } from '../../utils.js';
 
 /** Raised when a per-call deployment's records cannot be read. */
 export class PerCallRecordError extends Error {
@@ -30,6 +34,35 @@ export class PerCallRecordError extends Error {
   public constructor(message: string) {
     super(message);
   }
+}
+
+/**
+ * The lock a per-call state record sits at: the data-NFT covenant the contract's category derives.
+ *
+ * A genesis mints every data NFT at this lock, and a composition spends and recreates the record at it, so the
+ * record's input and output carry the same lock. The covenant pins the record's own category and capability, so a
+ * UTXO at this lock holding the contract's mutable token is a genuine record.
+ */
+export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
+  return getDataNftLockingBytecode(categoryId);
+}
+
+/**
+ * The unlocking a per-call state record carries: the data-NFT covenant's `<masterInputIndex> <flag>` shape.
+ *
+ * `flag = 1` is the covenant's write path, which authorizes the spend by the minting NFT of `categoryId` at
+ * `masterInputIndex`; a composition passes the index its own master sits at. `flag = 0` is the read-only path,
+ * which needs no master and preserves the record's commitment, for a record a segment only reads.
+ */
+export function stateRecordUnlockingBytecode(
+  categoryId: string,
+  masterInputIndex: number,
+  flag: 0 | 1,
+): Uint8Array {
+  const bytecode = scriptToBytecode(buildDataNftCovenantScript(hexToBin(categoryId)));
+  const args = [BigInt(flag), BigInt(masterInputIndex)]
+    .map((value) => encodeFunctionArgument(value, 'bigint') as Uint8Array);
+  return createUnlockingBytecode('p2sh32', bytecode, args);
 }
 
 /** What a category's live UTXOs are, classified the way a per-call deployment mints them. */
@@ -45,8 +78,8 @@ export interface PerCallDeploymentSet {
 /**
  * Every live UTXO of a category, or `undefined` when the provider cannot enumerate by category.
  *
- * A provider that lists by category is what makes a per-call deployment's records findable at all: the deployer's
- * lock is not derivable from the category, so a reader that only knew addresses could not find them.
+ * A provider that lists by category reaches every pool in one call: the master pool, the validator pool and the
+ * records, wherever the records' own lock sits.
  */
 async function utxosOfCategory(
   provider: NetworkProvider,
@@ -108,8 +141,8 @@ export function classifyPerCallDeployment(
 /**
  * Reads a deployed per-call contract's pools and records from the chain, by category.
  *
- * Refuses rather than guessing when the provider cannot enumerate a category, since the records sit at a lock the
- * category does not derive.
+ * Refuses rather than guessing when the provider cannot enumerate a category, since classifying the pools needs
+ * every live UTXO of the category to tell a master from a validator from a record.
  */
 export async function readPerCallDeployment(
   provider: NetworkProvider,
@@ -119,8 +152,8 @@ export async function readPerCallDeployment(
   const utxos = await utxosOfCategory(provider, categoryId);
   if (utxos === undefined) {
     throw new PerCallRecordError(
-      `the provider cannot enumerate UTXOs by category, and category ${categoryId} carries the only link to the `
-      + "per-call records (they sit at the deployer's lock, which the category does not derive)",
+      `the provider cannot enumerate UTXOs by category ${categoryId}, which is how the master pool, the validator `
+      + 'pool and the records are told apart',
     );
   }
   return classifyPerCallDeployment(utxos, layout);

@@ -37,7 +37,9 @@ import {
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
-import { readPerCallDeployment } from '../deploy/records.js';
+import {
+  readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../deploy/records.js';
 
 /** Raised when a proxy deployment cannot be built from the artifacts or the options. */
 export class PerCallProxyDeployError extends Error {
@@ -206,11 +208,6 @@ function mutableSource(
   };
 }
 
-/** A placeholder unlocking for a record's own lock: its spend is the caller's, not the convention's. */
-function placeholderUnlocking(): Uint8Array {
-  return encodeDataPush(new Uint8Array([1]));
-}
-
 /** A root caller's unlocking: a filler signature ending in `SIGHASH_ALL`, then a filler pubkey. */
 function callerUnlocking(): Uint8Array {
   const signature = new Uint8Array(65).fill(0x30);
@@ -262,8 +259,8 @@ export async function deployPerCallProxy(
     initialState: { implementation: implementationMaster.address },
   });
 
-  // The proxy's records are read back through the category, the only link to the deployer's lock they were
-  // minted at, and through the shipped pushdata decoder.
+  // The proxy's records are read back by enumerating the proxy's category and decoding the commitment through the
+  // shipped pushdata decoder.
   const deployment = await readPerCallDeployment(provider, proxy.categoryId, proxyArtifact.stateLayout!);
   const record = deployment.records[0];
   const commitment = record?.token?.nft?.commitment;
@@ -276,7 +273,7 @@ export async function deployPerCallProxy(
   const plan = buildInitializePlan({
     ...options, implementationArtifact, proxyArtifact, implementationMaster, proxyMaster,
     proxyCategory, implementationCategory, recordCommitment,
-    recordLockingBytecode: options.proxyDeploy.funder.generateLockingBytecode(),
+    recordLockingBytecode: stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid),
   });
 
   const vm = options.vm ?? await providerMachine(provider);
@@ -300,9 +297,9 @@ export async function deployPerCallProxy(
       ? { id: placed.id, index: placed.index, accepted: true }
       : { id: placed.id, index: placed.index, accepted: false, objection: String(state.error) };
   });
-  // The convention's own inputs are the masters and the validator; a state record's own lock is the deployer's
-  // wallet lock, whose spend the caller makes, not a check the convention runs.
-  const accepted = verdicts.filter((verdict) => verdict.id !== RECORD_ID).every((verdict) => verdict.accepted);
+  // Every participant is a convention input: the masters, the validator and the proxy's record, each spent under
+  // the lock it was minted at.
+  const accepted = verdicts.every((verdict) => verdict.accepted);
 
   return {
     implementation: {
@@ -327,7 +324,7 @@ interface InitializePlanOptions extends PerCallProxyDeployOptions {
   readonly proxyCategory: Uint8Array;
   readonly implementationCategory: Uint8Array;
   readonly recordCommitment: Uint8Array;
-  /** The lock the proxy's genesis minted its records at: the proxy funder's own. */
+  /** The lock the proxy's genesis minted its record at: the data-NFT covenant the proxy's category derives. */
   readonly recordLockingBytecode: Uint8Array;
 }
 
@@ -429,7 +426,12 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
       [VALIDATOR_ID]: {
         source: mutableSource(proxyMaster.address, proxyRecordAmount, options.proxyCategory, new Uint8Array(0)),
       },
-      [RECORD_ID]: { source: recordSource, output: recordSource, unlockingBytecode: placeholderUnlocking() },
+      [RECORD_ID]: {
+        source: recordSource,
+        output: recordSource,
+        // The record is kept unchanged, so the covenant's read-only path authorizes its spend.
+        unlockingBytecode: stateRecordUnlockingBytecode(options.proxyDeploy.fundingUtxo.txid, 0, 0),
+      },
       [USER_ID]: {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.proxyDeploy.fundingUtxo.satoshis },
         unlockingBytecode: callerUnlocking(),

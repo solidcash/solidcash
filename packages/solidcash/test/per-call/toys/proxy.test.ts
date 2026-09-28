@@ -7,6 +7,9 @@ import {
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
+  stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
+import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, master, masterInput, rootOf, selectorOf,
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
@@ -102,8 +105,11 @@ function compose(): Composition {
     argumentPushes: [answerSelector],
   });
 
+  // The record is kept unchanged, so it sits at the proxy's data-NFT covenant and its spend carries the
+  // covenant's read-only path.
+  const proxyCategoryHex = bytesToHex(proxyContract.category);
   const recordSource = {
-    lockingBytecode: proxyContract.lockingBytecode, valueSatoshis: 20_000n,
+    lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
     token: token(proxyContract.category, 'mutable', record),
   };
   const plan: CompositionDraftPlan = {
@@ -123,7 +129,7 @@ function compose(): Composition {
       record: {
         source: recordSource,
         output: recordSource,
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(proxyCategoryHex, 0, 0),
       },
       user: userInput(),
     },

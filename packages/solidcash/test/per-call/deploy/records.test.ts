@@ -1,19 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { buildPushdataCommitment, type StateLayout } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import {
+  buildDataNftCovenantScript, buildPushdataCommitment, scriptToBytecode, type StateLayout,
+} from '@solidcash/utils';
 import type { Utxo } from '../../../src/interfaces.js';
 import type NetworkProvider from '../../../src/network/NetworkProvider.js';
 import {
   PerCallRecordError, classifyPerCallDeployment, readPerCallDeployment, readPerCallState,
+  stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/records.js';
+import { scriptToLockingBytecode } from '../../../src/utils.js';
 
 /**
- * Where a per-call deployment's records sit, and what makes them findable.
+ * Classifying a per-call deployment's live UTXOs, and what makes its records findable.
  *
- * A per-call genesis mints its records at the deployer's own lock, so they are not found by recomputing an
- * address. They are found by enumerating the contract's category: a master is the category's minting NFT, a
- * validator is a mutable NFT with no commitment, and a record is a mutable NFT whose commitment decodes as the
- * layout's state encoding. These cases pin that classification, and the refusal when a provider cannot enumerate a
- * category at all — the one link the deployer's lock does not provide.
+ * A per-call genesis mints its records at the data-NFT covenant its category derives, but a reader reaches every
+ * pool the same way: by enumerating the contract's category. A master is the category's minting NFT, a validator
+ * is a mutable NFT with no commitment, and a record is a mutable NFT whose commitment decodes as the layout's
+ * state encoding. These cases pin that classification, and the refusal when a provider cannot enumerate a category
+ * at all — which is what tells the three kinds apart.
  */
 
 const LAYOUT: StateLayout = {
@@ -40,6 +45,16 @@ function categoryProvider(utxos: readonly Utxo[]): NetworkProvider {
     ),
   } as unknown as NetworkProvider;
 }
+
+describe('a per-call state record\'s lock and spend', () => {
+  it('derives the lock from the data-NFT covenant the category seeds', () => {
+    const covenant = scriptToBytecode(buildDataNftCovenantScript(hexToBin(CATEGORY)));
+    expect([...stateRecordLockingBytecode(CATEGORY)])
+      .toStrictEqual([...scriptToLockingBytecode(buildDataNftCovenantScript(hexToBin(CATEGORY)), 'p2sh32')]);
+    // The spend pushes the covenant as its redeem script, so the record's own lock is what the covenant hashes to.
+    expect([...stateRecordUnlockingBytecode(CATEGORY, 0, 1).slice(-covenant.length)]).toStrictEqual([...covenant]);
+  });
+});
 
 describe('classifying a per-call deployment by category', () => {
   it('separates the master pool, the validator pool and the state records', () => {

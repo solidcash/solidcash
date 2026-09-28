@@ -1,7 +1,7 @@
-import { encodeDataPush } from '@bitauth/libauth';
-import { FrameKind, buildPushdataCommitment, type RecordEntry } from '@solidcash/utils';
+import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, entryName, hexOf, master, masterInput, rootOf, seededAddress,
@@ -170,10 +170,18 @@ function singlePlan(
     inputs: {
       'tok-1': { source: masterInput(contract) },
       ...(segments === undefined ? {} : {
+        // The record is a data NFT at the contract's own covenant lock, rewritten in place by a stated segment,
+        // so its spend carries the covenant's write path with the index of the master that authorizes it.
         record: {
-          source: { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(contract.category, 'mutable', segments[0]![0]!.viewIn) },
-          output: { lockingBytecode: USER_LOCK, valueSatoshis: 20_000n, token: token(contract.category, 'mutable', segments[0]![0]!.viewOut) },
-          unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+          source: {
+            lockingBytecode: stateRecordLockingBytecode(bytesToHex(contract.category)), valueSatoshis: 20_000n,
+            token: token(contract.category, 'mutable', segments[0]![0]!.viewIn),
+          },
+          output: {
+            lockingBytecode: stateRecordLockingBytecode(bytesToHex(contract.category)), valueSatoshis: 20_000n,
+            token: token(contract.category, 'mutable', segments[0]![0]!.viewOut),
+          },
+          unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(contract.category), 0, 1),
         },
       }),
       user: userInput(),

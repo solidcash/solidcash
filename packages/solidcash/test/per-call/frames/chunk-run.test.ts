@@ -3,6 +3,7 @@ import { createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh
 import {
   FrameKind,
   INDEX_NONE,
+  bytesToHex,
   encodeInt,
   validatorAddress,
   type RecordEntry,
@@ -10,7 +11,9 @@ import {
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import {
   chunkRecordId,
   createComposedDerivationHost,
@@ -45,8 +48,8 @@ const CATEGORY = seededCategory('chunk run');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS = validatorAddress(CATEGORY, VALIDATOR_PROGRAM);
 const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
-/** The data NFT's lock: the entry only requires the input and the output to agree, so any lock serves. */
-const STATE_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
+/** The data NFT's lock: the data-NFT covenant the contract's category derives. */
+const STATE_LOCK = stateRecordLockingBytecode(bytesToHex(CATEGORY));
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Named {'
@@ -108,6 +111,7 @@ function build(options: {
     contract: 'Named', masters: [MASTER_ID], state: options.filler === true ? ['name', fillerId] : ['name'],
   }]);
   const stateIndex = participant(opened, 'name').index;
+  const masterIndex = participant(opened, MASTER_ID).index;
   const base = stateIndex + stateLayout.dataNftCount;
 
   const run = planChunkRun({ layout: stateLayout, variable: 'name', spent: spentBytes, written: writtenBytes });
@@ -166,7 +170,8 @@ function build(options: {
         output: {
           lockingBytecode: STATE_LOCK, valueSatoshis: VALUE, token: token(CATEGORY, 'mutable', run.written.header),
         },
-        unlockingBytecode: encodeDataPush(encodeInt(1n)),
+        // The header is a data NFT rewritten in place, so its spend carries the covenant's write path.
+        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(CATEGORY), masterIndex, 1),
       },
       ...Object.fromEntries(chunkInputs.map((record) => [record.id, record.input!])),
       ...(options.filler === true
@@ -218,6 +223,18 @@ function verdictAt(
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
+/** The machine's verdict on the data NFT's own input, spent under the contract's covenant lock. */
+function stateVerdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft']): string {
+  const program = draft.programFor(MASTER_ID);
+  const vm = machine();
+  const state = vm.evaluate({
+    inputIndex: participant(draft.layout, 'name').index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
+}
+
 describe('a state whose value lives in chunks', () => {
   it('derives the run the chunk plan states', () => {
     const { host, draft, built } = compose();
@@ -232,6 +249,8 @@ describe('a state whose value lives in chunks', () => {
   it('accepts the master that wrote it, with the run written where the plan stated it', () => {
     const { draft, built } = compose();
     expect(verdictAt(draft)).toBe('accepted');
+    // The header data NFT is spent under the contract's covenant, whose script the machine evaluates.
+    expect(stateVerdictAt(draft)).toBe('accepted');
 
     const program = draft.programFor(MASTER_ID);
     const chunk = program.transaction.outputs[built.base]!;
@@ -255,6 +274,7 @@ describe('a state whose value lives in chunks', () => {
     const { host, draft, built } = compose({ spent: spentBytes, written: writtenBytes });
     expect(deriveDepthFirst(ROOT, host).completed.map((frame) => frame.master)).toStrictEqual([MASTER_ID]);
     expect(verdictAt(draft)).toBe('accepted');
+    expect(stateVerdictAt(draft)).toBe('accepted');
 
     const run = planChunkRun({ layout: built.layout, variable: 'name', spent: spentBytes, written: writtenBytes });
     const program = draft.programFor(MASTER_ID);
@@ -282,6 +302,7 @@ describe('a state whose value lives in chunks', () => {
     const { host, draft, built } = compose({ source: shrinkSource, spent: spentBytes, written: writtenBytes });
     expect(deriveDepthFirst(ROOT, host).completed.map((frame) => frame.master)).toStrictEqual([MASTER_ID]);
     expect(verdictAt(draft)).toBe('accepted');
+    expect(stateVerdictAt(draft)).toBe('accepted');
 
     const run = planChunkRun({ layout: built.layout, variable: 'name', spent: spentBytes, written: writtenBytes });
     expect(run.spent.chunks).toHaveLength(2);

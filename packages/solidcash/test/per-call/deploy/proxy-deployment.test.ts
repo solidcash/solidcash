@@ -5,7 +5,9 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, readPerCallDeployment, readPerCallState } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, readPerCallDeployment, readPerCallState, stateRecordLockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -20,9 +22,8 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
  * per-call genesis from the artifact; the initialize hop goes through the shipped composer and derivation. The
  * machine is then asked about every participant of the composition.
  *
- * The tests also pin where a per-call deployment mints its records and what makes them findable: the records sit at
- * the deployer's own lock, not at a category-derived address, so they are found by enumerating the contract's
- * category rather than by recomputing a lock.
+ * The tests also pin where a per-call deployment mints its records: each sits at the data-NFT covenant its category
+ * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator.
  */
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -110,13 +111,13 @@ describe('a per-call proxy deployment', () => {
     );
   });
 
-  it('mints the records at the deployer\'s lock, which the category does not derive', async () => {
+  it('mints the records at the data-NFT covenant, which the category derives', async () => {
     const { artifacts, deployment, provider, proxyCategory } = await deploy();
-    // The record sits at the funder's own lock, and the funder's lock is not the contract's address.
-    const proxyAddress = bytesToHex(deployment.proxy.address);
+    // The record sits at the data-NFT covenant the category derives, not at the contract's address or the
+    // deployer's wallet lock.
     const recordOut = deployment.proxy.tx.outputs[2]!;
-    expect(bytesToHex(recordOut.lockingBytecode)).not.toBe(proxyAddress);
-    // What makes it findable is the category: enumerating by category reaches the funder's lock.
+    expect([...recordOut.lockingBytecode]).toStrictEqual([...stateRecordLockingBytecode(proxyCategory)]);
+    // The covenant pins the record's own category and capability, so it is findable by address and by category.
     const discovery = await readPerCallDeployment(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
     expect(discovery.records.length).toBe(1);
     expect(discovery.records[0]!.token!.nft!.commitment).toBe(bytesToHex(recordOut.token!.nft!.commitment));
@@ -199,16 +200,15 @@ describe('a per-call proxy deployment', () => {
       .toBe(bytesToHex(sourceOutputs[recordIndex]!.token!.nft!.commitment));
   });
 
-  it('leaves the record\'s own lock to the deployer rather than to the convention', async () => {
+  it('spends the record under its covenant lock, accepted by the machine', async () => {
     const { deployment } = await deploy();
     const record = deployment.initialize.verdicts.find((verdict) => verdict.id === 'proxy-record')!;
 
-    // The record is a plain UTXO at the deployer's wallet lock, so the machine refuses the placeholder unlocking
-    // the plan gives it. That is not a convention check: the master binds the record's commitment through its own
-    // segment, and the convention's inputs are the masters and the validator.
-    expect(record.accepted).toBe(false);
-    expect(deployment.initialize.verdicts.filter((verdict) => verdict.id !== 'proxy-record')
-      .every((verdict) => verdict.accepted)).toBe(true);
+    // The record is spent with the data-NFT covenant's own unlocking, so the machine evaluates its script and
+    // accepts the read-only spend. Every convention input is accepted, the record among them.
+    expect(record.accepted, record.objection ?? 'not placed').toBe(true);
+    expect(deployment.initialize.verdicts.every((verdict) => verdict.accepted)).toBe(true);
+    expect(deployment.initialize.accepted).toBe(true);
   });
 
   it('settles the delegate call against the transaction\'s own record output', async () => {

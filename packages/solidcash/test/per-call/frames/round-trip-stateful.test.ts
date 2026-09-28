@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
   buildMasterUnlockingBytecode,
   buildPushdataCommitment,
+  bytesToHex,
   computeFunctionSelector,
   computeFunctionSignature,
   encodeEventCommitment,
@@ -17,7 +18,9 @@ import {
   decideValidator, type PerCallTransaction, type TokenShape,
 } from '../../../../solidc/src/per-call/validator/index.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -62,6 +65,8 @@ const CATEGORY_B = seededCategory('round trip stateful B');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_A = validatorAddress(CATEGORY_A, VALIDATOR_PROGRAM);
 const ADDRESS_B = validatorAddress(CATEGORY_B, VALIDATOR_PROGRAM);
+const CATEGORY_A_HEX = bytesToHex(CATEGORY_A);
+const CATEGORY_B_HEX = bytesToHex(CATEGORY_B);
 const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
 const ENTRY_F = 'A.f()';
@@ -77,6 +82,8 @@ const USER_ID = 'user';
 
 // The layout is one block per contract: `A`'s masters, its validator and its record, then `B`'s master and its
 // record, then the user. A participant recreates at its own index, so these are also the output indices.
+const A_FIRST_INDEX = 0;
+const B_MASTER_INDEX = 4;
 const RECORD_A_INDEX = 3;
 const RECORD_B_INDEX = 5;
 const USER_INDEX = 6;
@@ -274,21 +281,29 @@ function buildComposition(options: {
       [VALIDATOR_ID]: {
         source: { lockingBytecode: validator.lock, valueSatoshis: VALUE, token: token(CATEGORY_A, 'mutable') },
       },
+      // Each record sits at its own contract's data-NFT covenant; the composed spend carries that covenant's
+      // write-path unlocking with the index of a master of its category.
       [RECORD_A]: {
-        source: { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_A, 'mutable', A_SPENT) },
+        source: {
+          lockingBytecode: stateRecordLockingBytecode(CATEGORY_A_HEX), valueSatoshis: VALUE,
+          token: token(CATEGORY_A, 'mutable', A_SPENT),
+        },
         output: {
-          lockingBytecode: USER_LOCK, valueSatoshis: VALUE,
+          lockingBytecode: stateRecordLockingBytecode(CATEGORY_A_HEX), valueSatoshis: VALUE,
           token: token(CATEGORY_A, 'mutable', options.recordAWritten ?? A_WRITTEN),
         },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(CATEGORY_A_HEX, A_FIRST_INDEX, 1),
       },
       [RECORD_B]: {
-        source: { lockingBytecode: USER_LOCK, valueSatoshis: VALUE, token: token(CATEGORY_B, 'mutable', B_SPENT) },
+        source: {
+          lockingBytecode: stateRecordLockingBytecode(CATEGORY_B_HEX), valueSatoshis: VALUE,
+          token: token(CATEGORY_B, 'mutable', B_SPENT),
+        },
         output: {
-          lockingBytecode: USER_LOCK, valueSatoshis: VALUE,
+          lockingBytecode: stateRecordLockingBytecode(CATEGORY_B_HEX), valueSatoshis: VALUE,
           token: token(CATEGORY_B, 'mutable', B_WRITTEN),
         },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(CATEGORY_B_HEX, B_MASTER_INDEX, 1),
       },
       [USER_ID]: {
         source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
@@ -440,6 +455,9 @@ describe('a two-contract round trip where both contracts keep records', () => {
     expect(at(A_FIRST).objection ?? 'accepted').toBe('accepted');
     expect(at(A_SECOND).objection ?? 'accepted').toBe('accepted');
     expect(at(B_MASTER).objection ?? 'accepted').toBe('accepted');
+    // Each record is spent under its own contract's data-NFT covenant, whose script the machine evaluates.
+    expect(at(RECORD_A).objection ?? 'accepted').toBe('accepted');
+    expect(at(RECORD_B).objection ?? 'accepted').toBe('accepted');
   });
 
   it('is accepted at the validator input on the composition profile', () => {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   FrameKind,
   buildPushdataCommitment,
+  bytesToHex,
   computeFunctionSelector,
   computeFunctionSignature,
   sha256,
@@ -11,7 +12,9 @@ import {
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { deployMaster } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveDepthFirst,
@@ -43,6 +46,7 @@ const CATEGORY_CALLEE = seededCategory('records composition callee');
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 const ADDRESS_LEDGER = validatorAddress(CATEGORY_LEDGER, VALIDATOR_PROGRAM);
 const ADDRESS_CALLEE = validatorAddress(CATEGORY_CALLEE, VALIDATOR_PROGRAM);
+const LEDGER_CATEGORY_HEX = bytesToHex(CATEGORY_LEDGER);
 const USER_LOCK = new Uint8Array([0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x22), 0x88, 0xac]);
 
 const LEDGER_ENTRY = 'Ledger.bump()';
@@ -103,6 +107,8 @@ const kept = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry =>
  */
 function buildComposition(options: {
   readonly segments?: readonly (readonly RecordEntry[])[];
+  /** Overrides the record's lock, for the control that spends it somewhere the covenant does not authorize. */
+  readonly recordLockingBytecode?: Uint8Array;
 } = {}): { plan: CompositionDraftPlan; artifacts: ReturnType<typeof compileStringMulti> } {
   const ledger = deployMaster(ledgerArtifact, CATEGORY_LEDGER, VALIDATOR_PROGRAM);
   const callee = deployMaster(artifacts.Callee!, CATEGORY_CALLEE, VALIDATOR_PROGRAM);
@@ -162,8 +168,10 @@ function buildComposition(options: {
     redeemScript: callee.script,
   };
 
+  // The record sits at the data-NFT covenant its category derives, and the composed spend carries the covenant's
+  // write-path unlocking with the master's own index.
   const recordSource = {
-    lockingBytecode: USER_LOCK,
+    lockingBytecode: options.recordLockingBytecode ?? stateRecordLockingBytecode(LEDGER_CATEGORY_HEX),
     valueSatoshis: VALUE,
     token: token(CATEGORY_LEDGER, 'mutable', BEFORE),
   };
@@ -194,7 +202,7 @@ function buildComposition(options: {
         source: recordSource,
         // The execution wrote a new commitment, so the input does not describe the output it recreates.
         output: { ...recordSource, token: token(CATEGORY_LEDGER, 'mutable', AFTER) },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(LEDGER_CATEGORY_HEX, 0, 1),
       },
       [USER_ID]: {
         source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
@@ -229,17 +237,44 @@ function masterVerdict(draft: ReturnType<typeof createComposedDerivationHost>['d
   return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
 }
 
-/** Runs the whole shipped path and asks the machine for a verdict on the ledger master's own input. */
+/** The machine's verdict on the state record's own input, under the covenant lock the plan spends it at. */
+function recordVerdict(draft: ReturnType<typeof createComposedDerivationHost>['draft']): {
+  accepted: boolean;
+  objection?: string;
+} {
+  const program = draft.programFor(LEDGER_MASTER);
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: participant(draft.layout, RECORD_ID).index,
+    sourceOutputs: program.sourceOutputs,
+    transaction: program.transaction,
+  });
+  return vm.stateSuccess(state) === true ? { accepted: true } : { accepted: false, objection: String(state.error) };
+}
+
+/** One input's machine verdict. */
+interface InputVerdict {
+  readonly accepted: boolean;
+  readonly objection?: string;
+}
+
+/** The ledger master's and the record's verdicts from one run. */
+interface RunVerdict extends InputVerdict {
+  readonly record: InputVerdict;
+  readonly recordIndex: number;
+}
+
+/** Runs the whole shipped path and asks the machine for a verdict on the ledger master's and the record's inputs. */
 function verdict(options: {
   readonly segments?: readonly (readonly RecordEntry[])[];
-} = {}): { accepted: boolean; objection?: string; recordIndex: number } {
+} = {}): RunVerdict {
   const { plan, artifacts: compiled } = buildComposition(options);
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
   deriveDepthFirst(ROOT, host);
 
   const recordIndex = participant(draft.layout, RECORD_ID).index;
-  return { ...masterVerdict(draft), recordIndex };
+  return { ...masterVerdict(draft), record: recordVerdict(draft), recordIndex };
 }
 
 describe('a stateful composition whose record sits away from its master', () => {
@@ -267,6 +302,20 @@ describe('a stateful composition whose record sits away from its master', () => 
     const outcome = verdict();
     expect(outcome.objection ?? 'accepted').toBe('accepted');
     expect(outcome.recordIndex).toBe(RECORD_INDEX);
+    // The record's own input is spent under the data-NFT covenant, so the machine evaluates its script and
+    // accepts the spend, not just the master that reads its commitment.
+    expect(outcome.record.objection ?? 'accepted').toBe('accepted');
+  });
+
+  it('refuses the record\'s spend under a lock that does not pin the category', () => {
+    // The composed spend is the covenant's: the same unlocking on a plain user lock is refused, which is what
+    // makes the accept above the covenant's rule and not an input the machine never evaluated.
+    const { plan, artifacts: compiled } = buildComposition({ recordLockingBytecode: USER_LOCK });
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+    deriveDepthFirst(ROOT, host);
+    expect(masterVerdict(draft).objection ?? 'accepted').toBe('accepted');
+    expect(recordVerdict(draft).accepted).toBe(false);
   });
 
   it('refuses the same transaction when the segments declare no record', () => {

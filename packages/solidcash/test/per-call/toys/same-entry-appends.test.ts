@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { encodeDataPush } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
   buildChunkCommitment,
   buildPushdataCommitment,
+  bytesToHex,
   encodeEventCommitment,
   encodeIntegerValue,
   packFixedWidthElement,
@@ -13,6 +13,9 @@ import {
   type StateLayout,
 } from '@solidcash/utils';
 import { seededCategory } from '../../../../solidc/test/per-call/master/validator-input.js';
+import {
+  stateRecordLockingBytecode, stateRecordUnlockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
@@ -283,16 +286,19 @@ function build(initial: readonly bigint[], appends: readonly bigint[], withEvent
           lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(HUB_CATEGORY, 'mutable'),
         },
       },
+      // The header is the log's data NFT, so it sits at the covenant its category derives; the composed spend
+      // carries that covenant's write path with a log master's index (the hub's master and validator precede the
+      // log's masters, so `log-1` is at index 2).
       [HEADER_ID]: {
         source: {
-          lockingBytecode: USER_LOCK, valueSatoshis: 20_000n,
+          lockingBytecode: stateRecordLockingBytecode(bytesToHex(LOG_CATEGORY)), valueSatoshis: 20_000n,
           token: token(LOG_CATEGORY, 'mutable', headers[0]!),
         },
         output: {
-          lockingBytecode: USER_LOCK, valueSatoshis: 20_000n,
+          lockingBytecode: stateRecordLockingBytecode(bytesToHex(LOG_CATEGORY)), valueSatoshis: 20_000n,
           token: token(LOG_CATEGORY, 'mutable', headers[frames]!),
         },
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+        unlockingBytecode: stateRecordUnlockingBytecode(bytesToHex(LOG_CATEGORY), 2, 1),
       },
       ...Object.fromEntries(run.records.filter((record) => record.input !== undefined)
         .map((record) => [record.id, record.input!])),
@@ -403,6 +409,8 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-1')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    // The header is spent under the log's data-NFT covenant, whose script the machine evaluates.
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     // The run's output carries the appended element stream, and the log's header the value's byte length.
     const program = draft.programFor('hub-1');
@@ -428,6 +436,7 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-2')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     // The run's chunk carries the whole element stream, and the log's header the value's byte length, both read
     // back from the encoders the composer shipped.
@@ -456,6 +465,7 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-3')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     // The run's chunks hold the whole element stream and the log's header its byte length, all read back through
     // the encoders the composer shipped. The kept chunk recreates in place; the last append creates the next.
@@ -491,6 +501,7 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-3')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     const values = APPENDS.map((append) => append.item);
     const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));
@@ -521,6 +532,7 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-2')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     // One event per append, each at the trailing output the plan placed it at, carrying the payload the body
     // computed.
@@ -555,6 +567,7 @@ describe('one entry appending to one log three times', () => {
     expect(verdictAt(draft, 'log-3')).toBe('accepted');
     expect(verdictAt(draft, 'hub-1')).toBe('accepted');
     expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
+    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
 
     const values = APPENDS.map((append) => append.item);
     const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));

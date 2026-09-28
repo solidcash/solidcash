@@ -754,6 +754,18 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if ('reason' in forward) refuseBody(fn, forward.reason);
     const batchShape = unsupportedBatchWriteShape(fn, constants);
     if (batchShape !== undefined) refuseBody(fn, batchShape);
+    // A dynamic value is not held in its record: its bytes live in a run of chunk NFTs whose first coordinate the
+    // head derives from the record block the frame declares. A call ends the segment the code before it runs in,
+    // so a body that makes one declares its records per segment, and a frame that both touches a dynamic value and
+    // makes a call has no single declaration the head can locate the run from. The body is refused by name rather
+    // than emitted with a coordinate that addresses another segment's records; a read addresses the same run, so it
+    // is refused with a write.
+    if (fn.usesDynamicChunkInputBase === true
+      && ((fn.externalCalls?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0)) {
+      refuseBody(fn, 'the body reads or writes a dynamic value and makes an external call, so the value\'s chunk '
+        + 'run and the call\'s blocks share the frame\'s records, which the master cannot locate from one '
+        + 'declaration');
+    }
     const hidden = fn.parameters.filter((parameter) =>
       isUndeclaredHiddenParameter(fn, parameter.name, constants));
     if (hidden.length > 0) {

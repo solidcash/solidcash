@@ -6,8 +6,9 @@ import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { participant } from '../../../src/per-call/composer/index.js';
 import {
-  PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy,
+  PerCallProxyDeployError, buildProxyArtifact, deployPerCallProxy, proxyRecordParticipantId,
 } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -143,7 +144,7 @@ describe('a generated proxy', () => {
     });
     expect(bytesToHex(deployment.initialize.writtenRecordCommitment)).toBe(bytesToHex(written));
     const recordIndex = deployment.initialize.draft.layout.participants
-      .find((placed) => placed.id === 'proxy-record')!.index;
+      .find((placed) => placed.id === proxyRecordParticipantId(0))!.index;
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
 
@@ -197,11 +198,76 @@ describe('a generated proxy', () => {
     expect(proxy.stateLayout!.dataNftCount).toBe(implementationLayout.dataNftCount);
   });
 
-  it('refuses an implementation that declares no "implementation" field, naming the field', () => {
+  it('settles an initialize through a proxy that keeps the address in a record of its own', async () => {
+    // The shape both marketplace roots have: the implementation declares its state and nothing about its proxy,
+    // and one of its own records is one the compiler isolated. The proxy declares the implementation's records
+    // plus one for the address, and the deployment plans every one of them.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   uint public initialized;'
+      + '   int public version;'
+      + '   pubkey external owner;'
+      + '   function initialize(address expected) {'
+      + '     require(msg.sender == expected);'
+      + '     require(this.initialized == 0);'
+      + '     this.initialized = 1;'
+      + '     this.version = 7;'
+      + '   }'
+      + ' }';
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const generated = buildProxyArtifact(artifacts.Impl!);
+
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [deployerLock] },
+      callerLockingBytecode: deployerLock,
+      vm: compositionMachine(),
+    });
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual([`${artifacts.Impl!.contractName}.initialize()`, `${generated.contractName}.__fallback()`]);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // Every record of the proxy's layout is a participant, and each ends where the execution left it: the entry's
+    // write in the records its own declaration names, and the address in the record the proxy keeps of its own.
+    const layout = generated.stateLayout!;
+    expect(layout.dataNftCount).toBe(3);
+    const recordOutput = (nftIndex: number): Uint8Array => {
+      const index = participant(deployment.initialize.draft.layout, proxyRecordParticipantId(nftIndex)).index;
+      return Uint8Array.from(deployment.initialize.transaction.outputs[index]!.token!.nft!.commitment);
+    };
+    const encode = (at: StateLayout, state: Record<string, bigint | Uint8Array>, nftIndex: number): Uint8Array =>
+      new Uint8Array(Buffer.from(buildPushdataCommitment(at, state, nftIndex), 'hex'));
+    expect(bytesToHex(recordOutput(0))).toBe(bytesToHex(
+      encode(artifacts.Impl!.stateLayout!, { initialized: 1n, version: 7n }, 0),
+    ));
+    expect(bytesToHex(recordOutput(2))).toBe(bytesToHex(
+      encode(layout, { implementation: deployment.implementation.address }, 2),
+    ));
+  });
+
+  it('keeps the address in a record of its own when the implementation declares nothing about its proxy', () => {
+    // A field the implementation does not declare is never rewritten by its frames, so the proxy keeps the address
+    // it forwards to in a data NFT past the implementation's rather than among the implementation's fields.
     const artifacts = compileStringMulti(NO_IMPLEMENTATION_FIELD, { composition: 'per-call' });
-    expect(() => buildProxyArtifact(artifacts.Impl!)).toThrowError(
-      /declares no field named "implementation"/,
-    );
+    const implementationLayout = artifacts.Impl!.stateLayout!;
+    const proxy = buildProxyArtifact(artifacts.Impl!);
+    const proxyLayout = proxy.stateLayout!;
+
+    expect(proxyLayout.dataNftCount).toBe(implementationLayout.dataNftCount + 1);
+    const implementationLines = fieldCoordinates(implementationLayout).split('\n');
+    expect(fieldCoordinates(proxyLayout).split('\n').slice(0, implementationLines.length))
+      .toStrictEqual(implementationLines);
+    const own = proxyLayout.variables.find((variable) => variable.name === 'implementation')!;
+    expect({ type: own.type, nftIndex: own.nftIndex, fieldIndex: own.fieldIndex }).toStrictEqual({
+      type: 'address', nftIndex: implementationLayout.dataNftCount, fieldIndex: 0,
+    });
   });
 
   it('refuses a field whose type it cannot name, naming the field', () => {

@@ -8,7 +8,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   deployMaster, readPerCallDeployment, readPerCallState, stateRecordLockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
@@ -193,7 +193,7 @@ describe('a per-call proxy deployment', () => {
     const { transaction, sourceOutputs, draft } = deployment.initialize;
     const at = (id: string): number => draft.layout.participants.find((placed) => placed.id === id)!.index;
     const [proxyIndex, validatorIndex, recordIndex, implementationIndex]
-      = [at('proxy-master'), at('validator'), at('proxy-record'), at('implementation-master')];
+      = [at('proxy-master'), at('validator'), at(proxyRecordParticipantId(0)), at('implementation-master')];
 
     // Every participant recreates at the index it was spent at, and the deployer's signed input follows them.
     expect(transaction.inputs.length).toBe(5);
@@ -214,7 +214,7 @@ describe('a per-call proxy deployment', () => {
 
   it('spends the record under its covenant lock, accepted by the machine', async () => {
     const { deployment } = await deploy();
-    const record = deployment.initialize.verdicts.find((verdict) => verdict.id === 'proxy-record')!;
+    const record = deployment.initialize.verdicts.find((verdict) => verdict.id === proxyRecordParticipantId(0))!;
 
     // The record is spent with the data-NFT covenant's own unlocking, so the machine evaluates its script and
     // accepts the read-only spend. Every convention input is accepted, the record among them.
@@ -226,7 +226,7 @@ describe('a per-call proxy deployment', () => {
   it('settles the delegate call against the transaction\'s own record output', async () => {
     const { deployment } = await deploy();
     const { transaction, draft } = deployment.initialize;
-    const recordIndex = draft.layout.participants.find((placed) => placed.id === 'proxy-record')!.index;
+    const recordIndex = draft.layout.participants.find((placed) => placed.id === proxyRecordParticipantId(0))!.index;
 
     // One input and one output per participant, then the deployer's own input and change.
     expect(transaction.inputs.length).toBe(5);

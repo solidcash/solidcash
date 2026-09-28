@@ -12,7 +12,9 @@ import {
   createComposedDerivationHost, layoutTransaction, participant,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
+import {
+  deployPerCallProxy, PerCallProxyDeployError, proxyRecordParticipantId,
+} from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import {
@@ -139,7 +141,7 @@ describe('a proxied initialize that writes state', () => {
     // The state the entry itself computed: the flag set and the version written, with the address still there.
     const written = commitment(artifacts, deployment.implementation.address, 1n, 7n);
     expect(bytesToHex(deployment.initialize.writtenRecordCommitment)).toBe(bytesToHex(written));
-    const recordIndex = participant(deployment.initialize.draft.layout, 'proxy-record').index;
+    const recordIndex = participant(deployment.initialize.draft.layout, proxyRecordParticipantId(0)).index;
     expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(written));
   });

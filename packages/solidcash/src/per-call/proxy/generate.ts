@@ -15,7 +15,9 @@
  */
 
 import { compileStringMulti } from 'solidc';
-import { parseType, type Artifact, type StateVariableInfo, type StructDefinitionInfo } from '@solidcash/utils';
+import {
+  parseType, type Artifact, type StateLayout, type StateVariableInfo, type StructDefinitionInfo,
+} from '@solidcash/utils';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** The field the fallback forwards to; both the implementation and the generated proxy must declare it. */
@@ -100,20 +102,13 @@ export function generateProxySource(implementationArtifact: Artifact): string {
 
   // A frame's write rebuilds the record from the fields its own declaration names, and the delegate frame that
   // runs through the proxy is the implementation's, so the proxy has to declare the implementation's fields
-  // exactly. The address the fallback forwards to must be one of them: a field the implementation did not declare
-  // would be dropped by the implementation's own write.
-  const field = layout.variables.find((variable) => variable.name === IMPLEMENTATION_FIELD);
-  if (field === undefined) {
-    throw new PerCallProxyDeployError(
-      `cannot generate a proxy for "${implementationArtifact.contractName}": it declares no field named `
-      + `"${IMPLEMENTATION_FIELD}", so there is no address in its record for a fallback to forward to and no field `
-      + 'the proxy could declare without disagreeing with the implementation',
-    );
-  }
-  if (field.type !== 'address') {
+  // exactly. The address the fallback forwards to is either one of them — an implementation that names its own
+  // proxy — or a record of the proxy's own, past the implementation's, which no implementation frame rewrites.
+  const declared = layout.variables.find((variable) => variable.name === IMPLEMENTATION_FIELD);
+  if (declared !== undefined && declared.type !== 'address') {
     throw new PerCallProxyDeployError(
       `cannot generate a proxy for "${implementationArtifact.contractName}": its "${IMPLEMENTATION_FIELD}" field `
-      + `has type "${field.type}", but a fallback forwards to an address`,
+      + `has type "${declared.type}", but a fallback forwards to an address`,
     );
   }
 
@@ -143,6 +138,12 @@ export function generateProxySource(implementationArtifact: Artifact): string {
       .filter((modifier) => modifier !== '').join(' ');
     lines.push(`  ${variable.type} ${visibility} ${modifiers === '' ? '' : `${modifiers} `}${variable.name};`);
   }
+  if (declared === undefined) {
+    // The implementation declares nothing about its proxy, so the address lives in a record the proxy keeps of its
+    // own, past the implementation's: `external` is what registers a data NFT of its own, and no implementation
+    // frame writes past its own declaration.
+    lines.push(`  address external ${IMPLEMENTATION_FIELD};`);
+  }
   lines.push(
     `  fallback(bytes input) external { this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(true); }`,
   );
@@ -164,6 +165,69 @@ function aloneFieldsOf(variables: readonly StateVariableInfo[]): ReadonlySet<Sta
 }
 
 /**
+ * The agreement between an implementation's declaration and a proxy's, read field by field.
+ *
+ * A frame's write rebuilds a record from the fields its own declaration names, and the delegate frames that run
+ * through a proxy are the implementation's, so the implementation's fields have to appear in the proxy at the same
+ * coordinates. Past them a proxy may declare one record of its own: the address its fallback forwards to, alone in
+ * a data NFT after the implementation's, which no implementation frame rewrites.
+ */
+export type LayoutAgreement =
+  | { readonly ok: true; readonly ownAddressRecord: number | undefined }
+  | { readonly ok: false; readonly reason: string };
+
+/** The fields of a layout in coordinate order, which is the order a record is written in. */
+function fieldsInCoordinateOrder(layout: StateLayout): readonly StateVariableInfo[] {
+  return [...(layout.variables ?? [])]
+    .sort((left, right) => left.nftIndex - right.nftIndex || left.fieldIndex - right.fieldIndex);
+}
+
+/** Reads the agreement between an implementation's declaration and a proxy's, or why they disagree. */
+export function readLayoutAgreement(implementationArtifact: Artifact, proxyArtifact: Artifact): LayoutAgreement {
+  const implementation = implementationArtifact.stateLayout;
+  const proxy = proxyArtifact.stateLayout;
+  if (implementation === undefined || proxy === undefined) {
+    return { ok: false, reason: 'both the implementation and the proxy must be stateful contracts' };
+  }
+  const implementationFields = fieldsInCoordinateOrder(implementation).map(coordinate);
+  const proxyFields = fieldsInCoordinateOrder(proxy);
+  const mirrored = implementationFields.every((line, index) => proxyFields[index] !== undefined
+    && coordinate(proxyFields[index]!) === line);
+  if (!mirrored) {
+    return {
+      ok: false,
+      reason: `the implementation "${implementationArtifact.contractName}" and the proxy `
+        + `"${proxyArtifact.contractName}" must declare the same record fields, because the implementation's write `
+        + `rebuilds the record from its own declaration: the implementation declares `
+        + `[${implementationFields.join(', ')}] and the proxy declares [${proxyFields.map(coordinate).join(', ')}]`,
+    };
+  }
+  const own = proxyFields.slice(implementationFields.length);
+  if (own.length === 0) {
+    if (implementation.dataNftCount === proxy.dataNftCount) return { ok: true, ownAddressRecord: undefined };
+    return {
+      ok: false,
+      reason: `the implementation "${implementationArtifact.contractName}" declares `
+        + `${implementation.dataNftCount} data NFT(s) and the proxy "${proxyArtifact.contractName}" declares `
+        + `${proxy.dataNftCount}; a delegate frame's write rebuilds the record from its own fields, so the two must `
+        + 'declare the same records',
+    };
+  }
+  const ownRecord = own[0]!;
+  if (own.length > 1 || ownRecord.name !== IMPLEMENTATION_FIELD || ownRecord.type !== 'address'
+    || ownRecord.nftIndex !== implementation.dataNftCount || ownRecord.fieldIndex !== 0
+    || proxy.dataNftCount !== implementation.dataNftCount + 1) {
+    return {
+      ok: false,
+      reason: `the proxy "${proxyArtifact.contractName}" may keep one record of its own beside the `
+        + `implementation's — an "address ${IMPLEMENTATION_FIELD}" alone in the data NFT after them — and it `
+        + `declares [${proxyFields.map(coordinate).join(', ')}]`,
+    };
+  }
+  return { ok: true, ownAddressRecord: ownRecord.nftIndex };
+}
+
+/**
  * Checks the compiled proxy against the implementation's declaration field by field.
  *
  * The generated source is produced from the implementation's layout, so this normally holds by construction; the
@@ -171,36 +235,16 @@ function aloneFieldsOf(variables: readonly StateVariableInfo[]): ReadonlySet<Sta
  * surfaces as the field it concerns rather than as a deployment that cannot be called after its first write.
  */
 function requireMirroredLayout(implementation: Artifact, generated: Artifact): void {
-  const implementationLayout = implementation.stateLayout!;
-  const generatedLayout = generated.stateLayout;
-  if (generatedLayout === undefined) {
+  if (generated.stateLayout === undefined) {
     throw new PerCallProxyDeployError(
       `the generated proxy for "${implementation.contractName}" compiled to a non-stateful contract`,
     );
   }
-  if (implementationLayout.dataNftCount !== generatedLayout.dataNftCount) {
+  const agreement = readLayoutAgreement(implementation, generated);
+  if (!agreement.ok) {
     throw new PerCallProxyDeployError(
-      `cannot generate a proxy for "${implementation.contractName}": the generated proxy declares `
-      + `${generatedLayout.dataNftCount} data NFT(s), not the implementation's `
-      + `${implementationLayout.dataNftCount}`,
+      `cannot generate a proxy for "${implementation.contractName}": ${agreement.reason}`,
     );
-  }
-  const generatedFields = new Map(generatedLayout.variables.map((variable) => [variable.name, variable]));
-  for (const variable of implementationLayout.variables) {
-    const mirror = generatedFields.get(variable.name);
-    if (mirror === undefined) {
-      throw new PerCallProxyDeployError(
-        `cannot generate a proxy for "${implementation.contractName}": the generated proxy does not declare field `
-        + `"${variable.name}"`,
-      );
-    }
-    if (mirror.type !== variable.type || mirror.nftIndex !== variable.nftIndex
-      || mirror.fieldIndex !== variable.fieldIndex) {
-      throw new PerCallProxyDeployError(
-        `cannot generate a proxy for "${implementation.contractName}": field "${variable.name}" is `
-        + `${coordinate(variable)} in the implementation and ${coordinate(mirror)} in the generated proxy`,
-      );
-    }
   }
 }
 

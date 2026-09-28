@@ -7,7 +7,7 @@ import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { readPerCallState } from '../../../src/per-call/deploy/index.js';
 import { participant } from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { deployPerCallProxy, proxyRecordParticipantId } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -140,7 +140,7 @@ describe('a broadcast per-call proxy initialization', () => {
     const hop = deployment.initialize.broadcast!;
 
     // The record the hop writes is the commitment the entry itself computed.
-    const recordIndex = participant(deployment.initialize.draft.layout, 'proxy-record').index;
+    const recordIndex = participant(deployment.initialize.draft.layout, proxyRecordParticipantId(0)).index;
     expect(bytesToHex(hop.outputs[recordIndex]!.token!.nft!.commitment))
       .toBe(bytesToHex(deployment.initialize.writtenRecordCommitment));
 

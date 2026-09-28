@@ -33,7 +33,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 104 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 105 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 91 |
@@ -42,9 +42,9 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1313 tests passed (115 + 434 + 764), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1314 tests passed (115 + 434 + 765), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 434 is the four rows above it, and `solidcash` 764 is the fifteen rows above
+`vitest.per-call.config.ts`: `solidc` 434 is the four rows above it, and `solidcash` 765 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -309,8 +309,11 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 ## What is not covered
 
 - The marketplace harness is pointed at `composition: 'per-call'`, and the project compiles there. The fixture runs
-  to its own deployment and stops at the proxy: the deployment generates a proxy from the implementation's
-  declaration, and `MarketplaceV1` declares no `implementation` field. A compiled unit whose own bodies, or whose
+  to its own deployment; the proxy that deployment generates keeps its address in a record of the proxy's own (the
+  EIP-1967-style slot the spec's open point 5 names) rather than among the implementation's fields, and the
+  deployment plans every record a proxy's layout declares — driven end to end on the marketplace roots' shape (an
+  isolated field beside an implementation that declares nothing about its proxy) by
+  `deploy/generated-proxy.test.ts`. The fixture itself is not run until I2b, per rule 4.6. A compiled unit whose own bodies, or whose
   reached definitions, carry inline assembly is still refused by name, and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame — a frame that keeps
   a data-NFT record and writes a mapping batch settles, as a user-entered root and behind a proxy hop. One target written

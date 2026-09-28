@@ -36,14 +36,14 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 38 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 39 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1186 tests (115 + 405 + 666), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 666 is the fifteen rows above
+Total: 1187 tests (115 + 405 + 667), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 667 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -164,8 +164,9 @@ and the binding of a delegate callee to the implementation the record names by `
   the shipped derivation completes callee first. `time-gated-challenge.test.ts` is a flow replica: a root whose
   judge reads the escrow's recorded payment block in a read-only frame, gates on a strictly later block and calls the
   escrow's own entry — every contract input accepted, the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the payment's
-  own block pinned, and the same composition over one data-NFT state record refused at the reading frame's own close
-  (pinned, with the derivation's stall and the machine's own objection for that frame). `revert-partway.test.ts` is the other one: a root
+  own block pinned. The same composition over one data-NFT state record settles too: the frame that only reads it
+  closes against its own declaration rather than the transaction's output, so a frame that reads a record another
+  frame writes in the same transaction is served (with a record output no frame computed refused by the validator). `revert-partway.test.ts` is the other one: a root
   whose own check fails after an earlier call succeeded, a nested callee's failing check reported as the innermost
   frame with its source line, and a revert with a declared error, whose arguments the compiler type-checks and does
   not evaluate (its own warning is asserted).

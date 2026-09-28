@@ -76,7 +76,10 @@ operand a derivation leaves is measured from that same input. P1's status above 
 settles in its own shape**: the outer hop of a user call into a proxied contract, the state write the implementation
 inherits, two appends through the proxy with their events, and a registration-style mapping batch. The primitives
 P3, P5, P6, P7, P9, P15, P20, P24, P27 and P28 were re-read against the tree and their statuses follow the tests
-that hold them. Two further flow shapes have neutral replicas: **MS6** (a root whose judge reads the escrow's
+that hold them. A record that one frame reads read-only and another writes in the same transaction is served: a per-call frame's
+commitment-preservation check holds the frame to its own segment's declaration rather than to the transaction's
+input/output pair, which another frame's later write would move. Two further flow shapes have neutral replicas:
+**MS6** (a root whose judge reads the escrow's
 recorded payment block `STATIC`, gates on a strictly later block, then calls the escrow's own entry — accepted at
 every contract input, with the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the payment's own block pinned) and
 **MS10** (a root whose own check fails after an earlier call succeeded, a nested callee's failing check reported as

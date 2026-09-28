@@ -11,12 +11,12 @@ import {
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
-  readComputedDeclaration,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
-  composeDraft,
+  createComposedDerivationHost,
+  deriveComposition,
   layoutTransaction,
   layOutMappingWrites,
   participant,
@@ -543,38 +543,57 @@ function buildSingleRecordPlan(locktime: number): CompositionDraftPlan {
 }
 
 describe('the same composition over one data-NFT state record', () => {
-  it('is refused at the read frame\'s own close, surfaced by the derivation as a stall', () => {
-    // The read frame leaves the record it reads, but a frame's segment close compares the record commitment it
-    // computed with the commitment the transaction writes, and here the `challenge` frame writes the counted
-    // value. The two disagree, so the close fails and the derivation — which needs that close to fill a witness —
-    // reports the stalled step. The layer is the read frame's close inside the BCH-2026 machine; the driver only
-    // names it.
+  it('settles: the frame that only reads the record closes against its own declaration', () => {
+    // One record, read by the read-only frame and written by the `challenge` frame. The reading frame's segment
+    // declares the record kept, and its close holds it to that declaration: the transaction's own output carries
+    // the value the other frame writes, so a close that read the transaction would refuse a spend the design
+    // wants. Every contract input is accepted, and the record's output carries what `challenge` computed.
     const plan = buildSingleRecordPlan(LOCKTIME_AFTER_PAYMENT);
-    let message = '';
-    try {
-      composeAndDerive(plan, SINGLE_ARTIFACTS, [rootOf('Root', 'enter', ROOT_MASTER)]);
-    } catch (error) {
-      message = String((error as Error).message);
-    }
-    expect(message).toBe('PER_CALL_DERIVATION_STALLED: master "paidAt-1" of Escrow.paidAt() '
-      + 'filled no witness at site 0 (close of segment 0)');
+    const outcome = composeAndDerive(plan, SINGLE_ARTIFACTS, [rootOf('Root', 'enter', ROOT_MASTER)]);
 
-    // The same plan, composed but not derived, shows the machine's own refusal and the two commitments the close
-    // compared: the challenge frame's output against the record the read frame left untouched.
-    const draft = composeDraft(plan, { vm: compositionMachine() });
-    const program = draft.programFor(PAID_AT_MASTER);
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('Escrow', 'paidAt'), entryName('Escrow', 'challenge'),
+      entryName('Judge', 'gate'), entryName('Root', 'enter'),
+    ]);
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    expect(outcome.verdicts.filter((verdict) => verdict.accepted)
+      .map((verdict) => verdict.participant).sort())
+      .toStrictEqual([ROOT_MASTER, JUDGE_MASTER, PAID_AT_MASTER, CHALLENGE_MASTER, VALIDATOR_ID,
+        RECORD_ID].sort());
+
+    // The record the reading frame left carries the counted value the writing frame computed.
+    const written = outcome.transaction.outputs[planRecordIndex(plan)]!.token!.nft!.commitment;
+    expect(bytesToHex(written)).toBe(bytesToHex(SINGLE_RECORD_AFTER));
+    expect(bytesToHex(written)).not.toBe(bytesToHex(SINGLE_RECORD_BEFORE));
+  });
+
+  it('refuses a record output no frame computed, on the same composition', () => {
+    const plan = buildSingleRecordPlan(LOCKTIME_AFTER_PAYMENT);
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: SINGLE_ARTIFACTS, plan,
+    });
+    deriveComposition([rootOf('Root', 'enter', ROOT_MASTER)], host);
+    const recordIndex = planRecordIndex(plan);
+    const program = draft.programFor(CHALLENGE_MASTER);
+    const wrong = singleRecordOf(PAYMENT_BLOCK + 100n);
+    const transaction = {
+      ...program.transaction,
+      outputs: program.transaction.outputs.map((output, index) => (index === recordIndex
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
+        : output)),
+    };
     const vm = compositionMachine();
     const state = vm.evaluate({
-      inputIndex: participant(draft.layout, PAID_AT_MASTER).index,
-      sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      sourceOutputs: program.sourceOutputs, transaction,
     });
     expect(vm.stateSuccess(state)).not.toBe(true);
-    expect(String((state as { error?: unknown }).error)).toBe('Program failed an OP_VERIFY operation.');
-    const reading = readComputedDeclaration({ vm, program, maximumCommitmentBytes: 128 });
-    expect(reading.ok).toBe(true);
-    if (reading.ok) {
-      expect(bytesToHex(reading.declared)).toBe(bytesToHex(SINGLE_RECORD_AFTER));
-      expect(bytesToHex(reading.computed)).toBe(bytesToHex(SINGLE_RECORD_BEFORE));
-    }
   });
 });
+
+/** The layout index the plan's single record sits at. */
+function planRecordIndex(plan: CompositionDraftPlan): number {
+  return participant(layoutTransaction(plan.blocks), RECORD_ID).index;
+}

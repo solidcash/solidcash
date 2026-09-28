@@ -30469,7 +30469,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     delegate: boolean = false,
   ): void {
     const emitIndex = (side: 'in' | 'out'): void => {
-      if (delegate) this.emitMasterInputIndex(loc);
+      // A per-call frame addresses its records by its own segment's declaration, so the delegate executor's
+      // adjacent block is a base for the direct convention only.
+      if (delegate && !this.readsRecordsFromFrame) this.emitMasterInputIndex(loc);
       else this.emitRecordBlockBase(side, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
@@ -30516,15 +30518,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     delegate: boolean = false,
   ): void {
     const emitIndex = (side: 'in' | 'out'): void => {
-      if (delegate) this.emitMasterInputIndex(loc);
+      if (delegate && !this.readsRecordsFromFrame) this.emitMasterInputIndex(loc);
       else this.emitRecordBlockBase(side, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
     };
+    /** Leaves the record's commitment for this side: the frame's own declaration, or the transaction's own UTXO. */
+    const emitCommitment = (side: 'in' | 'out'): void => {
+      // A per-call frame answers from the segment it is running in. Another frame of the same transaction may write
+      // this record later, so the transaction's output carries that frame's value rather than this one's, and the
+      // record's input carries whatever the frame before declared; the declaration is the only side this frame's
+      // own settlement accounts for.
+      if (this.readsRecordsFromFrame) this.emitRecordCommitmentRead(side, loc);
+      else this.emit(side === 'in' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    };
     emitIndex('in');
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+    emitCommitment('in');
     emitIndex('out');
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
+    emitCommitment('out');
     this.emit(Op.OP_EQUALVERIFY, loc);
   }
 

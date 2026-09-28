@@ -395,3 +395,80 @@ function minimalNumber(value: number): Uint8Array {
   if ((result[result.length - 1]! & 0x80) !== 0) result.push(0x00);
   return new Uint8Array(result);
 }
+
+/**
+ * Builds the script that requires every segment but the write's to declare the record at the coordinate kept.
+ *
+ * Entry `[..., coordinate]`, exit `[...]`. In each segment other than `writeSegment`, a record naming the coordinate on
+ * either side must read and recreate it there with its view unchanged. A frame's code writes a mapping node in one
+ * segment only, so a view changed in any other, or a chain restarted by creating the node there, is one no write
+ * made, and a callee running between the segments would read it. Every declared segment is walked, so only the call
+ * records are stepped by a count the source may fix.
+ */
+export function declaredRecordsKeptScript(
+  options: { readonly writeSegment: number } & ({ readonly callCount: number } | { readonly runtimeCounts: true }),
+): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { bytes.push(...script); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
+
+  op(Opcodes.OP_TOALTSTACK); // the coordinate, compared against each record
+  raw(readOwnWitnessBlockScript());
+  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
+  skipField(takeLengthPrefixedField()); // sender
+  skipField(takeLengthPrefixedField()); // self
+  skipField(takeFixedWidthField(8)); // value
+  skipField(takeLengthPrefixedField32()); // retval
+  const counts: DeclaredViewCounts = 'callCount' in options
+    ? { segmentIndex: options.writeSegment, callCount: options.callCount }
+    : { runtimeCounts: true };
+  stepDeclaredCallRecords(bytes, counts, op, raw, num);
+  raw(takeFixedWidthField(2)); // [segmentCountBytes, rest]
+  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_ROT); // [segments, segment, rest]
+
+  op(Opcodes.OP_BEGIN);
+  num(1); op(Opcodes.OP_PICK); num(options.writeSegment); op(Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  skipSegment(op, raw, num);
+  op(Opcodes.OP_ELSE);
+  raw(takeFixedWidthField(2)); // [countBytes, rest]
+  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_ROT); // [count, cursor, rest]
+  num(2); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  {
+    raw(takeFixedWidthField(2)); // in
+    raw(takeFixedWidthField(2)); // out
+    raw(takeLengthPrefixedField32()); // viewIn
+    raw(takeLengthPrefixedField32()); // viewOut: [count, cursor, in, out, viewIn, viewOut, rest]
+    op(Opcodes.OP_TOALTSTACK, Opcodes.OP_EQUAL); // [count, cursor, in, out, sameView]
+    op(Opcodes.OP_ROT, Opcodes.OP_BIN2NUM, Opcodes.OP_ROT, Opcodes.OP_BIN2NUM); // [count, cursor, sameView, in, out]
+    op(Opcodes.OP_2DUP, Opcodes.OP_NUMEQUAL);
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BOOLAND); // [count, cursor, in, out, kept]
+    op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
+    op(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // [count, cursor, in, out, kept, coordinate]
+    num(3); op(Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_NUMEQUAL, Opcodes.OP_SWAP);
+    num(3); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL, Opcodes.OP_BOOLOR); // [count, cursor, in, out, kept, named]
+    op(Opcodes.OP_NOT, Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY, Opcodes.OP_2DROP);
+    op(Opcodes.OP_FROMALTSTACK); // [count, cursor, rest]
+    op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
+    num(1); op(Opcodes.OP_PICK);
+    num(3); op(Opcodes.OP_PICK);
+    op(Opcodes.OP_GREATERTHANOREQUAL);
+  }
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_NIP, Opcodes.OP_NIP); // count, cursor
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP); // [segments, segment + 1, rest]
+  num(1); op(Opcodes.OP_PICK);
+  num(3); op(Opcodes.OP_PICK);
+  op(Opcodes.OP_GREATERTHANOREQUAL);
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_2DROP, Opcodes.OP_DROP); // segments, segment, the rest of the block
+  op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP); // the coordinate
+  return new Uint8Array(bytes);
+}

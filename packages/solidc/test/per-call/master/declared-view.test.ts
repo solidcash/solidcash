@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32,
-  hash256,
+  encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hash256,
 } from '@bitauth/libauth';
-import { encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
-import { declaredRecordOrdinalViewScript, declaredRecordViewScript } from '../../../src/per-call/master/declared-view.js';
+import { INDEX_NONE, encodeWitnessBlock, type RecordEntry, type WitnessBlock } from '@solidcash/utils';
+import {
+  declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
+} from '../../../src/per-call/master/declared-view.js';
 import { compositionMachine } from '../machine.js';
 
 /**
@@ -24,10 +25,70 @@ const USER_INDEX = 1;
 
 const bytes = (fill: number, length = 40): Uint8Array => new Uint8Array(length).fill(fill);
 
-type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
-
 function kept(index: number, viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry {
   return { in: index, out: index, viewIn, viewOut };
+}
+
+/** Runs `script` as the master's program over a block declaring `segments`, one call between each two. */
+function runOnBlock(
+  segments: readonly (readonly RecordEntry[])[],
+  script: Uint8Array,
+): { accepted: boolean; objection?: string } {
+  const block: WitnessBlock = {
+    kind: 0,
+    callerRef: USER_INDEX,
+    originRef: USER_INDEX,
+    validatorRef: 0xffff,
+    sender: USER_LOCK,
+    self: SELF,
+    value: 0n,
+    retval: new Uint8Array(0),
+    calls: Array.from({ length: Math.max(0, segments.length - 1) }, () => ({
+      kind: 1,
+      target: SELF,
+      value: 0n,
+      calleeRef: USER_INDEX,
+      argsHash: new Uint8Array(32),
+      result: new Uint8Array(0),
+    })),
+    segments: segments.map((segment) => [...segment]),
+    events: [],
+    sends: [],
+  };
+  const lock = encodeLockingBytecodeP2sh32(hash256(script));
+  const masterSource = { lockingBytecode: lock, valueSatoshis: 20_000n };
+  const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
+  const transaction = {
+    version: 2,
+    inputs: [
+      {
+        outpointIndex: 0,
+        outpointTransactionHash: new Uint8Array(32).fill(1),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: new Uint8Array([
+          ...encodeDataPush(encodeWitnessBlock(block)),
+          ...encodeDataPush(script),
+        ]),
+      },
+      {
+        outpointIndex: 0,
+        outpointTransactionHash: new Uint8Array(32).fill(2),
+        sequenceNumber: 0xffffffff,
+        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+      },
+    ],
+    outputs: [masterSource, userSource],
+    locktime: 0,
+  };
+  const vm = compositionMachine();
+  const state = vm.evaluate({
+    inputIndex: MASTER_INDEX,
+    sourceOutputs: [masterSource, userSource],
+    transaction,
+  });
+  return vm.stateSuccess(state) === true
+    ? { accepted: true }
+    : { accepted: false, objection: String(state.error) };
 }
 
 /**
@@ -42,28 +103,7 @@ function read(options: {
   readonly segments: readonly (readonly RecordEntry[])[];
   readonly side?: 'in' | 'out';
 }): { accepted: boolean; objection?: string } {
-  const block: WitnessBlock = {
-    kind: 0,
-    callerRef: USER_INDEX,
-    originRef: USER_INDEX,
-    validatorRef: 0xffff,
-    sender: USER_LOCK,
-    self: SELF,
-    value: 0n,
-    retval: new Uint8Array(0),
-    calls: Array.from({ length: Math.max(0, options.segments.length - 1) }, () => ({
-      kind: 1,
-      target: SELF,
-      value: 0n,
-      calleeRef: USER_INDEX,
-      argsHash: new Uint8Array(32),
-      result: new Uint8Array(0),
-    })),
-    segments: options.segments.map((segment) => [...segment]),
-    events: [],
-    sends: [],
-  };
-  const script = new Uint8Array([
+  return runOnBlock(options.segments, new Uint8Array([
     ...encodeDataPush(new Uint8Array([options.coordinate])),
     ...declaredRecordViewScript({
       segmentIndex: options.segmentIndex,
@@ -74,42 +114,7 @@ function read(options: {
     0x77, // OP_NIP: drop the unlocking bytecode's own copy of the block
     ...encodeDataPush(options.expected),
     0x87, // OP_EQUAL
-  ]);
-  const lock = encodeLockingBytecodeP2sh32(hash256(script));
-  const masterSource = { lockingBytecode: lock, valueSatoshis: 20_000n };
-  const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
-  const transaction = {
-    version: 2,
-    inputs: [
-      {
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(1),
-        sequenceNumber: 0xffffffff,
-        unlockingBytecode: new Uint8Array([
-          ...encodeDataPush(encodeWitnessBlock(block)),
-          ...encodeDataPush(script),
-        ]),
-      },
-      {
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(2),
-        sequenceNumber: 0xffffffff,
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
-      },
-    ],
-    outputs: [masterSource, userSource],
-    locktime: 0,
-  };
-  const vm = compositionMachine();
-  const state = vm.evaluate({
-    inputIndex: MASTER_INDEX,
-    sourceOutputs: [masterSource, userSource],
-    transaction,
-  });
-  if (vm.stateSuccess(state) !== true) console.error('objection:', String(state.error));
-  return vm.stateSuccess(state) === true
-    ? { accepted: true }
-    : { accepted: false, objection: String(state.error) };
+  ]));
 }
 
 /**
@@ -124,28 +129,7 @@ function readOrdinal(options: {
   readonly segments: readonly (readonly RecordEntry[])[];
   readonly side?: 'in' | 'out';
 }): { accepted: boolean; objection?: string } {
-  const block: WitnessBlock = {
-    kind: 0,
-    callerRef: USER_INDEX,
-    originRef: USER_INDEX,
-    validatorRef: 0xffff,
-    sender: USER_LOCK,
-    self: SELF,
-    value: 0n,
-    retval: new Uint8Array(0),
-    calls: Array.from({ length: Math.max(0, options.segments.length - 1) }, () => ({
-      kind: 1,
-      target: SELF,
-      value: 0n,
-      calleeRef: USER_INDEX,
-      argsHash: new Uint8Array(32),
-      result: new Uint8Array(0),
-    })),
-    segments: options.segments.map((segment) => [...segment]),
-    events: [],
-    sends: [],
-  };
-  const script = new Uint8Array([
+  return runOnBlock(options.segments, new Uint8Array([
     ...encodeDataPush(options.ordinal === 0 ? new Uint8Array(0) : new Uint8Array([options.ordinal])),
     ...declaredRecordOrdinalViewScript({
       segmentIndex: options.segmentIndex,
@@ -155,42 +139,27 @@ function readOrdinal(options: {
     0x77, // OP_NIP: drop the unlocking bytecode's own copy of the block
     ...encodeDataPush(options.expected),
     0x87, // OP_EQUAL
-  ]);
-  const lock = encodeLockingBytecodeP2sh32(hash256(script));
-  const masterSource = { lockingBytecode: lock, valueSatoshis: 20_000n };
-  const userSource = { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n };
-  const transaction = {
-    version: 2,
-    inputs: [
-      {
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(1),
-        sequenceNumber: 0xffffffff,
-        unlockingBytecode: new Uint8Array([
-          ...encodeDataPush(encodeWitnessBlock(block)),
-          ...encodeDataPush(script),
-        ]),
-      },
-      {
-        outpointIndex: 0,
-        outpointTransactionHash: new Uint8Array(32).fill(2),
-        sequenceNumber: 0xffffffff,
-        unlockingBytecode: encodeDataPush(new Uint8Array([1])),
-      },
-    ],
-    outputs: [masterSource, userSource],
-    locktime: 0,
-  };
-  const vm = compositionMachine();
-  const state = vm.evaluate({
-    inputIndex: MASTER_INDEX,
-    sourceOutputs: [masterSource, userSource],
-    transaction,
-  });
-  if (vm.stateSuccess(state) !== true) console.error('ordinal objection:', String(state.error));
-  return vm.stateSuccess(state) === true
-    ? { accepted: true }
-    : { accepted: false, objection: String(state.error) };
+  ]));
+}
+
+/**
+ * Runs the kept check for the record at `coordinate`, with `writeSegment` the one segment it may change in, under
+ * the call count the source fixes and the one the block declares; the two verdicts must agree.
+ */
+function keptOutside(
+  coordinate: number,
+  writeSegment: number,
+  segments: readonly (readonly RecordEntry[])[],
+): boolean {
+  const [fixed, runtime] = [{ callCount: segments.length - 1 }, { runtimeCounts: true as const }].map((counts) =>
+    runOnBlock(segments, new Uint8Array([
+      ...encodeDataPush(new Uint8Array([coordinate])),
+      ...declaredRecordsKeptScript({ writeSegment, ...counts }),
+      0x75, // OP_DROP: the unlocking bytecode's own copy of the block
+      0x51, // OP_1
+    ])).accepted);
+  expect(runtime).toBe(fixed);
+  return fixed!;
 }
 
 describe('the walk a body uses to read its segment\'s declared record view', () => {
@@ -273,4 +242,20 @@ describe('the walk a body uses to read its segment\'s declared record view', () 
       ordinal: 1, expected: big, segmentIndex: 0, callCount: 0, segments: [[bigFirst, bigSecond]],
     }).accepted).toBe(true);
   });
+
+  it('requires the record kept in every segment but the one it is written in', () => {
+    const node = RECORD_INDEX;
+    const other = kept(RECORD_INDEX + 1, BEFORE, AFTER);
+    expect(keptOutside(node, 1, [[RECORD(BEFORE, BEFORE)], [RECORD(BEFORE, MIDDLE), RECORD(MIDDLE, AFTER)],
+      [RECORD(AFTER, AFTER), other]])).toBe(true);
+    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [], [other]])).toBe(true);
+    // Changed before the write, changed after it, created there, or deleted there.
+    expect(keptOutside(node, 1, [[RECORD(BEFORE, MIDDLE)], [RECORD(MIDDLE, AFTER)], []])).toBe(false);
+    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [], [RECORD(AFTER, MIDDLE)]])).toBe(false);
+    expect(keptOutside(node, 1, [[{ in: INDEX_NONE, out: node, viewIn: new Uint8Array(0), viewOut: BEFORE }],
+      [RECORD(BEFORE, AFTER)]])).toBe(false);
+    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [{ in: node, out: INDEX_NONE, viewIn: AFTER,
+      viewOut: AFTER }]])).toBe(false);
+  });
+
 });

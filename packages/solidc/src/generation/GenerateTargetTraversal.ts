@@ -281,7 +281,7 @@ import {
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
 import {
-  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
+  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
   type DeclaredViewCounts, type RecordSide,
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
@@ -24339,6 +24339,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
+    if (this.perCallMaster) this.emitPerCallBatchNodesKept(node, loc);
     const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);
@@ -24663,6 +24664,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_FROMALTSTACK, loc);
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_TOALTSTACK, loc);
+  }
+
+  /**
+   * Requires a per-call frame to declare its batch's nodes kept in every segment but the one its writes land in.
+   *
+   * The body verifies the transition only in the write's segment, and settlement chains whatever views the others
+   * declare, so a node declared changed there - before the write, or after it and back - would be read by a callee
+   * between those segments without any write having made it. A spent node is named by its proof's input; a created
+   * node by the output its group declares in the write's segment.
+   */
+  private emitPerCallBatchNodesKept(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    const callCount = this.perCallExecutionCallCount();
+    if (callCount === 0) return;
+    const write = this.perCallBatchWriteSegment;
+    // A body whose calls are not a fixed set reads its call count from the block.
+    const counts = this.perCallCallsMadeActive ? { runtimeCounts: true as const } : { callCount };
+    const kept = (): void => {
+      this.emit(bytecodeToScript(declaredRecordsKeptScript({ writeSegment: write, ...counts })), loc);
+    };
+    const targets = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
+    for (const [ordinal, slot] of targets.entries()) {
+      this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
+      this.emitMasterInputIndex(loc, 1);
+      this.emit(Op.OP_ADD, loc);
+      kept();
+      // An insert's created node is its group's second record, past each earlier insert's extra record.
+      this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${slot}`, loc);
+      this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      if (this.perCallCallsMadeActive) this.emit(encodeInt(BigInt(write)), loc);
+      const above = this.perCallCallsMadeActive ? 2 : 1;
+      this.emit(encodeInt(BigInt(this.dataNftCount + ordinal + 1)), loc);
+      for (const prior of targets.slice(0, ordinal)) {
+        this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${prior}`, loc, above);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
+      this.emit(bytecodeToScript(declaredRecordOrdinalIndexScript(this.perCallCallsMadeActive
+        ? { runtimeCounts: true, side: 'out' }
+        : { segmentIndex: write, callCount, side: 'out' })), loc);
+      kept();
+      this.emit(Op.OP_ENDIF, loc);
+    }
   }
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {

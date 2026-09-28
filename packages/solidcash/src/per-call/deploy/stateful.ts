@@ -13,9 +13,11 @@
  * BCH-2026 machine; nothing here supplies a commitment the constructor did not compute.
  *
  * The records are minted at the funder's own lock: in this convention a state record is a plain UTXO the
- * composition spends and recreates, and the funder is the account the genesis is authorized by. Which lock a
- * deployment should use for records — and how a caller other than the deployer spends them — is a later item; the
- * transaction this module builds is the one the derivation above proved.
+ * composition spends and recreates, and the funder is the account the genesis is authorized by. Because the lock
+ * is the deployer's and not derived from the category, records are not found by recomputing an address; they are
+ * found by enumerating the contract's category, which `readPerCallDeployment` in `records.ts` does. A later
+ * composition that spends a record therefore needs the deployer's own signed input among its callers, which is
+ * the same rule that authorizes the genesis.
  */
 
 import { hexToBin } from '@bitauth/libauth';

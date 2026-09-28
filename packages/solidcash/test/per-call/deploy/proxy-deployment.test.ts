@@ -1,0 +1,227 @@
+import { describe, expect, it } from 'vitest';
+import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { FrameKind, buildPushdataCommitment, bytesEqual, bytesToHex } from '@solidcash/utils';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { deployMaster, readPerCallDeployment, readPerCallState } from '../../../src/per-call/deploy/index.js';
+import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
+
+/**
+ * A proxy deployment on the per-call path: two genesis transactions and one initialize hop.
+ *
+ * The implementation is a real contract with an `initialize` entry; the proxy is the one shape the convention
+ * compiles for a forwarder — a single `address implementation` field and a fallback that delegatecalls it with the
+ * call data it received. Both genesis transactions go through the shipped deployment entry point, which selects the
+ * per-call genesis from the artifact; the initialize hop goes through the shipped composer and derivation. The
+ * machine is then asked about every participant of the composition.
+ *
+ * The tests also pin where a per-call deployment mints its records and what makes them findable: the records sit at
+ * the deployer's own lock, not at a category-derived address, so they are found by enumerating the contract's
+ * category rather than by recomputing a lock.
+ */
+
+const SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   int public version;'
+  + '   function initialize(address expected) { require(msg.sender == expected); }'
+  + ' }'
+  + ' contract Proxy {'
+  + '   address implementation;'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+
+const ENTRY = 'initialize';
+
+/** The deployed proxy and implementation, driven through the shipped module. */
+async function deploy(): Promise<{
+  readonly provider: MockNetworkProvider;
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+  readonly implCategory: string;
+  readonly proxyCategory: string;
+}> {
+  const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const implFunding = { txid: '11'.repeat(32), vout: 0, satoshis: 500_000n };
+  const proxyFunding = { txid: '22'.repeat(32), vout: 0, satoshis: 500_000n };
+  await provider.addUtxo(funding.address, implFunding);
+  await provider.addUtxo(funding.address, proxyFunding);
+  const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+
+  const deployment = await deployPerCallProxy({
+    provider,
+    implementationArtifact: artifacts.Impl!,
+    proxyArtifact: artifacts.Proxy!,
+    implementationDeploy: {
+      fundingUtxo: implFunding, funder: funding.unlock.spend(alicePub, signature), changeAddress: funding.address,
+    },
+    proxyDeploy: {
+      fundingUtxo: proxyFunding, funder: funding.unlock.spend(alicePub, signature), changeAddress: funding.address,
+    },
+    initialize: { functionName: ENTRY, args: [deployerLock] },
+    callerLockingBytecode: deployerLock,
+    vm: compositionMachine(),
+  });
+  return { provider, artifacts, deployment, implCategory: implFunding.txid, proxyCategory: proxyFunding.txid };
+}
+
+describe('a per-call proxy deployment', () => {
+  it('deploys the implementation first: its master, its validator and its own record', async () => {
+    const { artifacts, deployment, implCategory } = await deploy();
+    const layout = artifacts.Impl!.stateLayout!;
+    const master = deployMaster(artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM);
+
+    expect(deployment.implementation.categoryId).toBe(implCategory);
+    expect([...deployment.implementation.address]).toStrictEqual([...master.address]);
+    expect(deployment.implementation.tx.inputs.length).toBe(1);
+    // master (minting), validator (mutable, empty), the initial-state record, then change.
+    expect(deployment.implementation.tx.outputs.length).toBe(4);
+    const [masterOut, validatorOut, recordOut] = deployment.implementation.tx.outputs.map((output) => output!);
+    expect([...masterOut!.lockingBytecode]).toStrictEqual([...master.lockingBytecode]);
+    expect(masterOut!.token!.nft!.capability).toBe('minting');
+    expect([...validatorOut!.lockingBytecode]).toStrictEqual([...master.address]);
+    expect(validatorOut!.token!.nft!.capability).toBe('mutable');
+    expect(validatorOut!.token!.nft!.commitment.length).toBe(0);
+    expect(recordOut!.token!.nft!.capability).toBe('mutable');
+    expect(bytesToHex(recordOut!.token!.nft!.commitment)).toBe(buildPushdataCommitment(layout, { version: 0n }, 0));
+  });
+
+  it('deploys the proxy second with a record carrying the implementation\'s address', async () => {
+    const { artifacts, deployment, proxyCategory, implCategory } = await deploy();
+    const implMaster = deployMaster(
+      artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM,
+    );
+    const proxyLayout = artifacts.Proxy!.stateLayout!;
+
+    expect(deployment.proxy.categoryId).toBe(proxyCategory);
+    expect(deployment.proxy.tx.outputs.length).toBe(4);
+    const recordOut = deployment.proxy.tx.outputs[2]!;
+    expect(recordOut.token!.nft!.capability).toBe('mutable');
+    // The record the shipped encoder materializes from the implementation's address.
+    expect(bytesToHex(recordOut.token!.nft!.commitment)).toBe(
+      buildPushdataCommitment(proxyLayout, { implementation: implMaster.address }, 0),
+    );
+  });
+
+  it('mints the records at the deployer\'s lock, which the category does not derive', async () => {
+    const { artifacts, deployment, provider, proxyCategory } = await deploy();
+    // The record sits at the funder's own lock, and the funder's lock is not the contract's address.
+    const proxyAddress = bytesToHex(deployment.proxy.address);
+    const recordOut = deployment.proxy.tx.outputs[2]!;
+    expect(bytesToHex(recordOut.lockingBytecode)).not.toBe(proxyAddress);
+    // What makes it findable is the category: enumerating by category reaches the funder's lock.
+    const discovery = await readPerCallDeployment(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
+    expect(discovery.records.length).toBe(1);
+    expect(discovery.records[0]!.token!.nft!.commitment).toBe(bytesToHex(recordOut.token!.nft!.commitment));
+    expect(discovery.masters.length).toBe(1);
+    expect(discovery.validators.length).toBe(1);
+  });
+
+  it('reads the implementation\'s address back through the shipped decoder', async () => {
+    const { provider, artifacts, deployment, proxyCategory, implCategory } = await deploy();
+    const implMaster = deployMaster(
+      artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM,
+    );
+
+    const state = await readPerCallState(provider, proxyCategory, artifacts.Proxy!.stateLayout!);
+
+    expect(state.byNft.length).toBe(1);
+    expect([...state.byNft[0]!.implementation as Uint8Array]).toStrictEqual([...implMaster.address]);
+  });
+
+  it('derives the initialize hop: the implementation frame completes, then the proxy that forwarded to it', async () => {
+    const { deployment } = await deploy();
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual([`Impl.${ENTRY}()`, 'Proxy.__fallback()']);
+  });
+
+  it('accepts the proxy master, the validator and the implementation master', async () => {
+    const { deployment } = await deploy();
+    const verdicts = new Map(deployment.initialize.verdicts.map((verdict) => [verdict.id, verdict]));
+
+    for (const id of ['proxy-master', 'validator', 'implementation-master']) {
+      const verdict = verdicts.get(id);
+      expect(verdict?.accepted, `${id}: ${verdict?.objection ?? 'not placed'}`).toBe(true);
+    }
+    expect(deployment.initialize.accepted).toBe(true);
+  });
+
+  it('binds the delegate edge to the address the proxy\'s record holds', async () => {
+    const { deployment, artifacts, implCategory } = await deploy();
+    const implMaster = deployMaster(
+      artifacts.Impl!, new Uint8Array(Buffer.from(implCategory, 'hex')), VALIDATOR_PROGRAM,
+    );
+    const { draft } = deployment.initialize;
+    const call = draft.blockOf('proxy-master').calls[0]!;
+
+    expect(call.kind).toBe(FrameKind.DELEGATE);
+    expect([...call.target]).toStrictEqual([...implMaster.address]);
+    expect(call.calleeRef).toBe(
+      draft.layout.participants.find((placed) => placed.id === 'implementation-master')!.index,
+    );
+    // The implementation runs as a delegate frame: the proxy's sender and address(this) are its own.
+    const proxyFrame = draft.blockOf('proxy-master');
+    const implFrame = draft.blockOf('implementation-master');
+    expect(implFrame.kind).toBe(FrameKind.DELEGATE);
+    expect(bytesEqual(implFrame.sender, proxyFrame.sender)).toBe(true);
+    expect(bytesEqual(implFrame.self, proxyFrame.self)).toBe(true);
+  });
+
+  it('lays the initialize transaction out: the proxy, its record, the implementation, then the deployer', async () => {
+    const { deployment } = await deploy();
+    const { transaction, sourceOutputs, draft } = deployment.initialize;
+    const at = (id: string): number => draft.layout.participants.find((placed) => placed.id === id)!.index;
+    const [proxyIndex, validatorIndex, recordIndex, implementationIndex]
+      = [at('proxy-master'), at('validator'), at('proxy-record'), at('implementation-master')];
+
+    // Every participant recreates at the index it was spent at, and the deployer's signed input follows them.
+    expect(transaction.inputs.length).toBe(5);
+    expect(transaction.outputs.length).toBe(5);
+    // The token each input spends: the proxy's minting NFT, its validator and record as mutable NFTs, the
+    // implementation's minting NFT, and the deployer's plain funding.
+    expect(sourceOutputs[proxyIndex]!.token!.nft!.capability).toBe('minting');
+    expect(sourceOutputs[validatorIndex]!.token!.nft!.capability).toBe('mutable');
+    expect(sourceOutputs[recordIndex]!.token!.nft!.capability).toBe('mutable');
+    expect(sourceOutputs[implementationIndex]!.token!.nft!.capability).toBe('minting');
+    expect(sourceOutputs[4]!.token).toBeUndefined();
+    // And the outputs recreate the same tokens; only the record carries state, and it is kept unchanged.
+    expect(transaction.outputs[proxyIndex]!.token!.nft!.capability).toBe('minting');
+    expect(transaction.outputs[validatorIndex]!.token!.nft!.commitment.length).toBe(0);
+    expect(bytesToHex(transaction.outputs[recordIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(sourceOutputs[recordIndex]!.token!.nft!.commitment));
+  });
+
+  it('leaves the record\'s own lock to the deployer rather than to the convention', async () => {
+    const { deployment } = await deploy();
+    const record = deployment.initialize.verdicts.find((verdict) => verdict.id === 'proxy-record')!;
+
+    // The record is a plain UTXO at the deployer's wallet lock, so the machine refuses the placeholder unlocking
+    // the plan gives it. That is not a convention check: the master binds the record's commitment through its own
+    // segment, and the convention's inputs are the masters and the validator.
+    expect(record.accepted).toBe(false);
+    expect(deployment.initialize.verdicts.filter((verdict) => verdict.id !== 'proxy-record')
+      .every((verdict) => verdict.accepted)).toBe(true);
+  });
+
+  it('settles the delegate call against the transaction\'s own record output', async () => {
+    const { deployment } = await deploy();
+    const { transaction, draft } = deployment.initialize;
+    const recordIndex = draft.layout.participants.find((placed) => placed.id === 'proxy-record')!.index;
+
+    // One input and one output per participant, then the deployer's own input and change.
+    expect(transaction.inputs.length).toBe(5);
+    expect(transaction.outputs.length).toBe(5);
+    // The record is kept: the output carries exactly the commitment the proxy's genesis minted.
+    const proxyRecord = deployment.proxy.tx.outputs[2]!;
+    expect(bytesToHex(transaction.outputs[recordIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(proxyRecord.token!.nft!.commitment));
+  });
+});

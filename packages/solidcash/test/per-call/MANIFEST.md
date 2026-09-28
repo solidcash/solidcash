@@ -173,7 +173,9 @@ listed under the table, and none of those is claimed anywhere else.
 | A standalone master whose reserved address slot is filled with an address its category does not derive | `standalone-address-slot.test.ts` (one case refused; a slot and a presented address that agree on a foreign address are accepted there, which is the residual only the deployment gate recomputes) |
 | One contract's masters split across two validators | `validator-split-view.test.ts` (one case, with a second validator input beside the first) |
 | An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |
-| A proxy: a fallback that dispatches, or a body that issues a delegatecall | `proxy-binding.test.ts` (refused at compile by name; there is no spend to mutate) |
+| A proxy's call the contract does not hold the target for: a fallback beside ordinary entries, a receive, a delegatecall whose data is not the entry's own received call data, a target the contract does not hold | `proxy-binding.test.ts` (each refused at compile by name) |
+| A standalone master entered by a contract's input rather than a user's | `standalone-caller-contract.test.ts` (refused, with the attribution controls: the same forge is refused whether the frame claims that lock or the user, and a token behind a user lock is accepted) |
+| A proxied call whose delegate callee is not the implementation the proxy's own record names | owed, and now testable: the forwarded hop settles in the machine (`toys/proxy.test.ts`), so the record's target can be mutated against it — no case yet |
 
 Not covered by `hostile/`, and not claimed by any other directory: reordered segments, which the machine accepts —
 its chain walk is order-free, so a master whose segment declarations are reordered is refused by the derivation as

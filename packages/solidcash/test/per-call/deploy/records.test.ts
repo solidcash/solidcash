@@ -1,0 +1,99 @@
+import { describe, expect, it } from 'vitest';
+import { buildPushdataCommitment, type StateLayout } from '@solidcash/utils';
+import type { Utxo } from '../../../src/interfaces.js';
+import type NetworkProvider from '../../../src/network/NetworkProvider.js';
+import {
+  PerCallRecordError, classifyPerCallDeployment, readPerCallDeployment, readPerCallState,
+} from '../../../src/per-call/deploy/records.js';
+
+/**
+ * Where a per-call deployment's records sit, and what makes them findable.
+ *
+ * A per-call genesis mints its records at the deployer's own lock, so they are not found by recomputing an
+ * address. They are found by enumerating the contract's category: a master is the category's minting NFT, a
+ * validator is a mutable NFT with no commitment, and a record is a mutable NFT whose commitment decodes as the
+ * layout's state encoding. These cases pin that classification, and the refusal when a provider cannot enumerate a
+ * category at all — the one link the deployer's lock does not provide.
+ */
+
+const LAYOUT: StateLayout = {
+  variables: [{ name: 'implementation', type: 'address', nftIndex: 0, fieldIndex: 0 }],
+  dataNftCount: 1,
+  commitmentLimit: 128,
+};
+
+const CATEGORY = '33'.repeat(32);
+const RECORD_COMMITMENT = buildPushdataCommitment(LAYOUT, { implementation: new Uint8Array(35).fill(0xab) }, 0);
+
+const utxo = (vout: number, token?: Utxo['token']): Utxo =>
+  ({ txid: 'aa'.repeat(32), vout, satoshis: 1200n, ...(token === undefined ? {} : { token }) });
+const nft = (
+  category: string, capability: 'none' | 'mutable' | 'minting', commitment: string,
+): NonNullable<Utxo['token']> => ({ category, amount: 0n, nft: { capability, commitment } });
+
+/** A provider that answers one category, and only when it is asked for it. */
+function categoryProvider(utxos: readonly Utxo[]): NetworkProvider {
+  return {
+    getUtxos: async () => [],
+    getUtxosByTokenCategory: async (categoryId: string) => (
+      categoryId === CATEGORY ? [...utxos] : []
+    ),
+  } as unknown as NetworkProvider;
+}
+
+describe('classifying a per-call deployment by category', () => {
+  it('separates the master pool, the validator pool and the state records', () => {
+    const set = classifyPerCallDeployment([
+      utxo(0, nft(CATEGORY, 'minting', '')),
+      utxo(1, nft(CATEGORY, 'mutable', '')),
+      utxo(2, nft(CATEGORY, 'mutable', RECORD_COMMITMENT)),
+      utxo(3),
+    ], LAYOUT);
+
+    expect(set.masters.map((entry) => entry.vout)).toStrictEqual([0]);
+    expect(set.validators.map((entry) => entry.vout)).toStrictEqual([1]);
+    expect(set.records.map((entry) => entry.vout)).toStrictEqual([2]);
+  });
+
+  it('orders the records by data-NFT index, not by outpoint', () => {
+    const multi: StateLayout = {
+      variables: [
+        { name: 'a', type: 'int256', nftIndex: 0, fieldIndex: 0 },
+        { name: 'b', type: 'int256', nftIndex: 1, fieldIndex: 0 },
+      ],
+      dataNftCount: 2,
+      commitmentLimit: 128,
+    };
+    const zero = buildPushdataCommitment(multi, { a: 0n }, 0);
+    const one = buildPushdataCommitment(multi, { b: 0n }, 1);
+
+    // The tags are what disambiguate the two records, so outpoint order must not decide the index.
+    const set = classifyPerCallDeployment([
+      utxo(9, nft(CATEGORY, 'mutable', one)),
+      utxo(2, nft(CATEGORY, 'mutable', zero)),
+    ], multi);
+
+    expect(set.records.map((entry) => entry.vout)).toStrictEqual([2, 9]);
+  });
+
+  it('refuses when the provider cannot enumerate the category the records are found by', async () => {
+    const addressOnly = { getUtxos: async () => [] } as unknown as NetworkProvider;
+    await expect(readPerCallDeployment(addressOnly, CATEGORY, LAYOUT)).rejects.toBeInstanceOf(PerCallRecordError);
+  });
+});
+
+describe('reading a per-call deployment\'s state by category', () => {
+  it('decodes each data NFT through the shipped decoder', async () => {
+    const state = await readPerCallState(categoryProvider([
+      utxo(2, nft(CATEGORY, 'mutable', RECORD_COMMITMENT)),
+    ]), CATEGORY, LAYOUT);
+
+    expect(state.byNft.length).toBe(1);
+    expect([...(state.byNft[0]!.implementation as Uint8Array)]).toStrictEqual([...new Uint8Array(35).fill(0xab)]);
+  });
+
+  it('refuses rather than defaulting when a record is missing', async () => {
+    await expect(readPerCallState(categoryProvider([]), CATEGORY, LAYOUT)).rejects
+      .toBeInstanceOf(PerCallRecordError);
+  });
+});

@@ -4,9 +4,15 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
 
 ## Current state
 
-- The last one-shot build, source-tree guard, and focused compiler/SDK/BCH-2026 regressions passed. A fresh
-  four-job Marketplace compile completed all 22 sources with zero cache hits; this is not a full-suite or release
-  result, and there is no current 66-title result or clean-env legacy/kernel timing comparison to claim.
+- 2026-09-28 integration checkpoint: `grok/message-bus-kernel-beta` contains the `solidcash_v0.13.1` tip and
+  builds with `yarn build`. It has **not** been merged back into `solidcash_v0.13.1`.
+- The formal `yarn test:kernel-beta` gate stops at its application-name fence before running tests: the production
+  diff since the manifest census still contains application-specific planning names and literals. This requires a
+  semantic generalization of the legacy adapter boundary, not a waiver or a test-only rename.
+- Focused compiler tests still fail two selection/layout assertions, and the repeated mixed-route BCH-2026 proof
+  fails at input 2 with `OP_VERIFY`. The merged Chai event/revert test file passes all 14 tests. Root lint is red:
+  `@solidcash/utils` reports 15 errors, `solidc` 401, and `solidcash` 11,446. These are release blockers, not
+  beta-gate passes. There is no current 66-title result or clean-env legacy/kernel timing comparison to claim.
 - Useful `SOLIDC_*` probes remain available under the [diagnostic policy](kernel-diagnostics.md). Observation-only tracing must leave bytecode unchanged (covered for route-argument tracing). Flags that alter emitted code, witnesses, outlining, or optimisation are experiments, **not production measurements**. The cold gate now strips inherited switches. `SOLIDC_ROUTE_ABI_TAIL` is default-on behavior; `=0` is an A/B escape hatch.
 - Focused self/foreign/proxy compose proofs cover mappings, dynamic values, events, sidecars, returns, and lifecycle operations. These are fixture evidence, not an expanded beta manifest. Fixed-state read-bearing split/merge and modifier-only fixed-state selfdestruct now publish explicit resource topology. Wider dynamic lifecycle layouts and detached `sig` leaves remain fenced.
 - Source-tree build sidecars are removed; authored JavaScript and ambient declarations remain. Build into `dist/` and run `yarn check:source-tree` before committing.

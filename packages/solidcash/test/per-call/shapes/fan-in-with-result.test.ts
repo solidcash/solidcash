@@ -1188,6 +1188,430 @@ function buildReadAfterWritePlan(): { readonly plan: CompositionDraftPlan; reado
   return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Token!] };
 }
 
+/**
+ * The flow's natural pull on its own: one `transferFrom`-style entry that writes the token's allowance record
+ * and both balance nodes in one execution, reached the way the flow reaches it (root reads a fee, approves the
+ * escrow, then the escrow reads the balance, pulls, and reads the balance again).
+ *
+ * The two balance nodes are one real sorted list built through the shipped planner: the lower slot's node carries
+ * the higher slot as its successor and the higher node the zero sentinel, and each write is an update against the
+ * whole two-node inventory. Neither node carries `next == 0`.
+ */
+function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
+  const rootLabel = 'fan in with result one pull root';
+  const storeLabel = 'fan in with result one pull store';
+  const escrowLabel = 'fan in with result one pull escrow';
+  const tokenLabel = 'fan in with result one pull token';
+  const rootAddress = seededAddress(rootLabel);
+  const storeAddress = seededAddress(storeLabel);
+  const escrowAddress = seededAddress(escrowLabel);
+  const tokenAddress = seededAddress(tokenLabel);
+
+  const source = 'pragma solidcash ^0.13.0;'
+    + ' interface IStore { function getFee() view returns (int); }'
+    + ' interface IToken {'
+    + '   function approve(address spender, int amount);'
+    + '   function balanceOf(address who) view returns (int);'
+    + '   function transferFrom(address holder, address recipient, int amount);'
+    + ' }'
+    + ' interface IEscrow { function run(int fee); }'
+    + ' contract Store { int public fee; function getFee() view returns (int) { return this.fee; } }'
+    + ' contract Token {'
+    + '   int public allowance;'
+    + '   mapping(address => int) balances;'
+    + '   function approve(address spender, int amount) { this.allowance = amount; require(true); }'
+    + '   function balanceOf(address who) view returns (int) { return this.balances[who]; }'
+    + '   function transferFrom(address holder, address recipient, int amount) {'
+    + '     require(this.allowance >= amount);'
+    + '     this.allowance = this.allowance - amount;'
+    + '     this.balances[holder] = this.balances[holder] - amount;'
+    + '     this.balances[recipient] = this.balances[recipient] + amount;'
+    + '     require(true);'
+    + '   }'
+    + ' }'
+    + ' contract Escrow { function run(int fee) {'
+    + `   int before = IToken(0x${hexOf(tokenAddress)}).balanceOf(0x${hexOf(escrowAddress)});`
+    + `   IToken(0x${hexOf(tokenAddress)}).transferFrom(0x${hexOf(rootAddress)}, 0x${hexOf(escrowAddress)}, fee);`
+    + `   int after = IToken(0x${hexOf(tokenAddress)}).balanceOf(0x${hexOf(escrowAddress)});`
+    + '   require(after == before + fee); } }'
+    + ' contract Root { function run() {'
+    + `   int fee = IStore(0x${hexOf(storeAddress)}).getFee();`
+    + `   IToken(0x${hexOf(tokenAddress)}).approve(0x${hexOf(escrowAddress)}, fee);`
+    + `   IEscrow(0x${hexOf(escrowAddress)}).run(fee);`
+    + '   require(true); } }';
+  const raw = compileAndDeploy(source, {
+    Root: rootLabel, Store: storeLabel, Escrow: escrowLabel, Token: tokenLabel,
+  });
+  const root = raw.contracts.Root!, store = raw.contracts.Store!;
+  const escrow = raw.contracts.Escrow!, tokenContract = raw.contracts.Token!;
+
+  const rootSlot = keyToSlotMulti([rootAddress]);
+  const escrowSlot = keyToSlotMulti([escrowAddress]);
+  const rootIsLow = bytesToSlotValue(rootSlot) < bytesToSlotValue(escrowSlot);
+  const lowSlot = rootIsLow ? rootSlot : escrowSlot;
+  const highSlot = rootIsLow ? escrowSlot : rootSlot;
+  const lowBefore = encodeEntryCommitment(lowSlot, highSlot, encodeIntegerValue(rootIsLow ? ROOT_BALANCE : 0n));
+  const highBefore = encodeEntryCommitment(highSlot, ZERO_SLOT, encodeIntegerValue(rootIsLow ? 0n : ROOT_BALANCE));
+  const inventory = [lowBefore, highBefore];
+  const rootBefore = rootIsLow ? lowBefore : highBefore;
+  const escrowBefore = rootIsLow ? highBefore : lowBefore;
+  const pullRoot = planMappingWrite({
+    keys: [rootAddress], value: ROOT_BALANCE - FEE, inventory, encodeValue: (n) => encodeIntegerValue(n),
+  });
+  const pullEscrow = planMappingWrite({
+    keys: [escrowAddress], value: FEE, inventory, encodeValue: (n) => encodeIntegerValue(n),
+  });
+
+  const blocks: CompositionDraftPlan['blocks'] = [
+    { contract: 'Root', masters: ['root-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+    { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
+    { contract: 'Escrow', masters: ['escrow-1'], state: [] },
+    {
+      contract: 'Token',
+      masters: ['approve-1', 'balanceBefore-1', 'pull-1', 'balanceAfter-1'],
+      state: ['tokenRecord', 'rootNode', 'escrowNode'],
+    },
+  ];
+  const layout = layoutTransaction(blocks);
+  const indexOf = (id: string): number => participant(layout, id).index;
+  const mk = (fields: Record<string, bigint | Uint8Array>): Uint8Array => new Uint8Array(Buffer.from(
+    buildPushdataCommitment(raw.artifacts.Token!.stateLayout!, fields, 0), 'hex'));
+  const record = (viewIn: Uint8Array, viewOut: Uint8Array): RecordEntry => ({
+    in: indexOf('tokenRecord'), out: indexOf('tokenRecord'), viewIn, viewOut,
+  });
+  const balanceRead = (view: Uint8Array): RecordEntry => ({
+    in: indexOf('escrowNode'), out: indexOf('escrowNode'), viewIn: view, viewOut: view,
+  });
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(rootSlot), { in: indexOf('rootNode'), out: indexOf('rootNode') }],
+    [bytesToHex(escrowSlot), { in: indexOf('escrowNode'), out: indexOf('escrowNode') }],
+  ]);
+  // The segment declares the batch's targets in the body's write order: `holder` then `recipient`, so the root's
+  // node leads the escrow's. The compiler publishes the reverse order (`[recipient, holder]`) for this signature.
+  const pullEntries = layOutMappingWrites([[pullRoot, pullEscrow]], {
+    placementOf: (slot) => placements.get(bytesToHex(slot)),
+  })[0]!;
+  const storeRecord = new Uint8Array(Buffer.from(
+    buildPushdataCommitment(raw.artifacts.Store!.stateLayout!, { fee: FEE }, 0), 'hex'));
+  const ledgerCollection = raw.artifacts.Token!.stateLayout!.collections![0]!;
+  const ledgerRedeem = scriptToBytecode(buildEntryNftCovenantScript(
+    tokenContract.category, computeCollectionHash(ledgerCollection.signature),
+  ));
+  const ledgerLock = scriptToLockingBytecode(ledgerRedeem, 'p2sh32');
+  const unlock = createUnlockingBytecode('p2sh32', ledgerRedeem, [
+    encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+    encodeFunctionArgument(BigInt(indexOf('pull-1')), 'bigint') as Uint8Array,
+  ]);
+
+  const getFeeSelector = selectorOf(raw.artifacts, 'Store', 'getFee');
+  const approveSelector = selectorOf(raw.artifacts, 'Token', 'approve');
+  const balanceSelector = selectorOf(raw.artifacts, 'Token', 'balanceOf');
+  const pullSelector = selectorOf(raw.artifacts, 'Token', 'transferFrom');
+  const runSelector = selectorOf(raw.artifacts, 'Escrow', 'run');
+  const feePush = encodeIntegerValue(FEE);
+  const approvePushes = [approveSelector, feePush, escrowAddress];
+  const balancePushes = [balanceSelector, escrowAddress];
+  const pullPushes = [pullSelector, feePush, escrowAddress, rootAddress];
+
+  const escrowAfterValue = pullEscrow.written[0]!.after;
+
+  const masters: DraftMaster[] = [
+    master({
+      master: 'root-1', contract: 'Root', entry: 'run', program: root.program,
+      facts: facts('Root', 'run', FrameKind.ROOT, true),
+      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: root.address, value: 0n },
+      enteredBy: USER_ID, origin: USER_ID,
+      calls: [
+        { kind: FrameKind.STATIC, callee: 'store-1', target: store.address, value: 0n,
+          argumentPushes: [getFeeSelector] },
+        { kind: FrameKind.CALL, callee: 'approve-1', target: tokenContract.address, value: 0n,
+          argumentPushes: approvePushes },
+        { kind: FrameKind.CALL, callee: 'escrow-1', target: escrow.address, value: 0n,
+          argumentPushes: [runSelector, feePush] },
+      ],
+    }),
+    {
+      ...master({
+        master: 'store-1', contract: 'Store', entry: 'getFee', program: store.program,
+        facts: facts('Store', 'getFee', FrameKind.STATIC, false),
+        frame: { kind: FrameKind.STATIC, sender: root.address, self: store.address, value: 0n },
+        enteredBy: 'root-1', origin: USER_ID, argumentPushes: [getFeeSelector],
+        segments: [[{
+          in: indexOf('storeRecord'), out: indexOf('storeRecord'), viewIn: storeRecord, viewOut: storeRecord,
+        }]],
+      }),
+      retval: encodeResultList([feePush]),
+    },
+    master({
+      master: 'escrow-1', contract: 'Escrow', entry: 'run', program: escrow.program,
+      facts: facts('Escrow', 'run', FrameKind.CALL, true),
+      frame: { kind: FrameKind.CALL, sender: root.address, self: escrow.address, value: 0n },
+      enteredBy: 'root-1', origin: USER_ID, argumentPushes: [runSelector, feePush],
+      calls: [
+        { kind: FrameKind.STATIC, callee: 'balanceBefore-1', target: tokenContract.address, value: 0n,
+          argumentPushes: balancePushes },
+        { kind: FrameKind.CALL, callee: 'pull-1', target: tokenContract.address, value: 0n,
+          argumentPushes: pullPushes },
+        { kind: FrameKind.STATIC, callee: 'balanceAfter-1', target: tokenContract.address, value: 0n,
+          argumentPushes: balancePushes },
+      ],
+    }),
+    {
+      ...master({
+        master: 'approve-1', contract: 'Token', entry: 'approve', program: tokenContract.program,
+        facts: facts('Token', 'approve', FrameKind.CALL, false, 4),
+        frame: { kind: FrameKind.CALL, sender: root.address, self: tokenContract.address, value: 0n },
+        enteredBy: 'root-1', origin: USER_ID, argumentPushes: approvePushes,
+        segments: [[record(mk({ allowance: 0n }), mk({ allowance: FEE }))]],
+      }),
+      dispatches: true,
+    },
+    {
+      ...master({
+        master: 'balanceBefore-1', contract: 'Token', entry: 'balanceOf', program: tokenContract.program,
+        facts: facts('Token', 'balanceOf', FrameKind.STATIC, false, 4),
+        frame: { kind: FrameKind.STATIC, sender: escrow.address, self: tokenContract.address, value: 0n },
+        enteredBy: 'escrow-1', origin: USER_ID, argumentPushes: balancePushes,
+        segments: [[balanceRead(escrowBefore)]],
+      }),
+      retval: encodeResultList([encodeIntegerValue(0n)]),
+      dispatches: true,
+    },
+    {
+      ...master({
+        master: 'pull-1', contract: 'Token', entry: 'transferFrom', program: tokenContract.program,
+        facts: facts('Token', 'transferFrom', FrameKind.CALL, false, 4),
+        frame: { kind: FrameKind.CALL, sender: escrow.address, self: tokenContract.address, value: 0n },
+        enteredBy: 'escrow-1', origin: USER_ID, argumentPushes: pullPushes,
+        segments: [[record(mk({ allowance: FEE }), mk({ allowance: 0n })), ...pullEntries]],
+      }),
+      dispatches: true,
+    },
+    {
+      ...master({
+        master: 'balanceAfter-1', contract: 'Token', entry: 'balanceOf', program: tokenContract.program,
+        facts: facts('Token', 'balanceOf', FrameKind.STATIC, false, 4),
+        frame: { kind: FrameKind.STATIC, sender: escrow.address, self: tokenContract.address, value: 0n },
+        enteredBy: 'escrow-1', origin: USER_ID, argumentPushes: balancePushes,
+        segments: [[balanceRead(escrowAfterValue)]],
+      }),
+      retval: encodeResultList([feePush]),
+      dispatches: true,
+    },
+  ];
+
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: userInputs([USER_ID], layout.funderInputBase),
+    masters,
+    inputs: {
+      'root-1': { source: masterInput(root) },
+      'store-1': { source: masterInput(store) },
+      'escrow-1': { source: masterInput(escrow) },
+      'approve-1': { source: masterInput(tokenContract) },
+      'balanceBefore-1': { source: masterInput(tokenContract) },
+      'pull-1': { source: masterInput(tokenContract) },
+      'balanceAfter-1': { source: masterInput(tokenContract) },
+      [VALIDATOR_ID]: validatorInput(root.category),
+      storeRecord: stateRecord(store.category, storeRecord, storeRecord, indexOf('store-1'), 0),
+      tokenRecord: stateRecord(tokenContract.category, mk({ allowance: 0n }), mk({ allowance: 0n }), indexOf('pull-1'), 1),
+      rootNode: nodeRecordInput(ledgerLock, tokenContract.category, rootBefore, pullRoot.written[0]!.after, unlock),
+      escrowNode: nodeRecordInput(ledgerLock, tokenContract.category, escrowBefore, escrowAfterValue, unlock),
+      [USER_ID]: userInput(),
+    },
+    validator: {
+      id: VALIDATOR_ID, covers: ['Store', 'Escrow', 'Token'],
+      settles: [
+        { category: store.category, stateInputs: ['storeRecord'] },
+        { category: tokenContract.category, stateInputs: ['tokenRecord', 'rootNode', 'escrowNode'] },
+      ],
+      redeemScript: validatorFor(root.category).redeem,
+    },
+  };
+  return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Escrow!, raw.artifacts.Token!] };
+}
+
+/** The derivation's refusal for a plan, and the machine's own stop at the named frame's failing site. */
+function derivationRefusal(
+  plan: CompositionDraftPlan, artifacts: readonly Artifact[], master: string,
+): { readonly message: string; readonly objection: string } {
+  const objections: string[] = [];
+  const { host } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts, plan,
+    onRun: (name, _site, stop) => {
+      if (name === master && stop.error !== undefined) objections.push(stop.error);
+    },
+  });
+  let message = '';
+  try {
+    deriveComposition([rootOf('Root', 'run', 'root-1')], host);
+  } catch (error) {
+    message = (error as Error).message;
+  }
+  return { message, objection: objections.length > 0 ? objections[objections.length - 1]! : '' };
+}
+
+/**
+ * A read-only frame that reads a balance node an earlier frame moved in the same transaction, with the mover
+ * touching both nodes of the one ledger. This is the flow's second `balanceOf` as a plan of its own.
+ */
+function buildReadAfterPullPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
+  const rootLabel = 'fan in with result read after pull root';
+  const storeLabel = 'fan in with result read after pull store';
+  const tokenLabel = 'fan in with result read after pull token';
+  const storeAddress = seededAddress(storeLabel);
+  const key1 = new Uint8Array(32).fill(0xb1);
+  const key2 = new Uint8Array(32).fill(0xb2);
+  const fee = 5n;
+
+  const source = 'pragma solidcash ^0.13.0;'
+    + ' interface IStore { function getFee() view returns (int); }'
+    + ' interface IToken { function move(int amount); function read() view returns (int); }'
+    + ' contract Store { int public fee; function getFee() view returns (int) { return this.fee; } }'
+    + ' contract Token {'
+    + '   mapping(bytes32 => int) ledger;'
+    + `   function move(int amount) { this.ledger[hex"${hexOf(key1)}"] = amount; `
+    + `   this.ledger[hex"${hexOf(key2)}"] = amount; require(true); }`
+    + `   function read() view returns (int) { return this.ledger[hex"${hexOf(key2)}"]; }`
+    + ' }'
+    + ' contract Root { function run() {'
+    + `   int fee = IStore(0x${hexOf(storeAddress)}).getFee();`
+    + `   IToken(0x${hexOf(seededAddress(tokenLabel))}).move(fee);`
+    + `   int got = IToken(0x${hexOf(seededAddress(tokenLabel))}).read();`
+    + '   require(got >= 0); } }';
+  const raw = compileAndDeploy(source, { Root: rootLabel, Store: storeLabel, Token: tokenLabel });
+  const root = raw.contracts.Root!, store = raw.contracts.Store!, tokenContract = raw.contracts.Token!;
+
+  const slot1 = keyToSlotMulti([key1]);
+  const slot2 = keyToSlotMulti([key2]);
+  const key1IsLow = bytesToSlotValue(slot1) < bytesToSlotValue(slot2);
+  const lowSlot = key1IsLow ? slot1 : slot2;
+  const highSlot = key1IsLow ? slot2 : slot1;
+  const lowBefore = encodeEntryCommitment(lowSlot, highSlot, encodeIntegerValue(0n));
+  const highBefore = encodeEntryCommitment(highSlot, ZERO_SLOT, encodeIntegerValue(0n));
+  const node1Before = key1IsLow ? lowBefore : highBefore;
+  const node2Before = key1IsLow ? highBefore : lowBefore;
+  const inventory = [lowBefore, highBefore];
+  const write1 = planMappingWrite({
+    keys: [key1], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
+  });
+  const write2 = planMappingWrite({
+    keys: [key2], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
+  });
+
+  const blocks: CompositionDraftPlan['blocks'] = [
+    { contract: 'Root', masters: ['root-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
+    { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
+    { contract: 'Token', masters: ['move-1', 'read-1'], state: ['node1', 'node2'] },
+  ];
+  const layout = layoutTransaction(blocks);
+  const indexOf = (id: string): number => participant(layout, id).index;
+  const storeRecord = new Uint8Array(Buffer.from(
+    buildPushdataCommitment(raw.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(slot1), { in: indexOf('node1'), out: indexOf('node1') }],
+    [bytesToHex(slot2), { in: indexOf('node2'), out: indexOf('node2') }],
+  ]);
+  // The segment declares the batch's targets in the body's write order: key1 then key2.
+  const moveEntries = layOutMappingWrites([[write1, write2]], {
+    placementOf: (s) => placements.get(bytesToHex(s)),
+  })[0]!;
+  const node2After = write2.written[0]!.after;
+  // The read frame declares the second node at the value the move left, which the transaction's input does not hold.
+  const readEntry: RecordEntry = {
+    in: indexOf('node2'), out: indexOf('node2'), viewIn: node2After, viewOut: node2After,
+  };
+
+  const ledgerCollection = raw.artifacts.Token!.stateLayout!.collections![0]!;
+  const ledgerRedeem = scriptToBytecode(
+    buildEntryNftCovenantScript(tokenContract.category, computeCollectionHash(ledgerCollection.signature)),
+  );
+  const ledgerLock = scriptToLockingBytecode(ledgerRedeem, 'p2sh32');
+  const unlock = createUnlockingBytecode('p2sh32', ledgerRedeem, [
+    encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+    encodeFunctionArgument(BigInt(indexOf('move-1')), 'bigint') as Uint8Array,
+  ]);
+
+  const getFeeSelector = selectorOf(raw.artifacts, 'Store', 'getFee');
+  const moveSelector = selectorOf(raw.artifacts, 'Token', 'move');
+  const readSelector = selectorOf(raw.artifacts, 'Token', 'read');
+  const feePush = encodeIntegerValue(fee);
+  const movePushes = [moveSelector, feePush];
+  const readPushes = [readSelector];
+
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: userInputs([USER_ID], layout.funderInputBase),
+    masters: [
+      master({
+        master: 'root-1', contract: 'Root', entry: 'run', program: root.program,
+        facts: facts('Root', 'run', FrameKind.ROOT, true),
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: root.address, value: 0n },
+        enteredBy: USER_ID, origin: USER_ID,
+        calls: [
+          { kind: FrameKind.STATIC, callee: 'store-1', target: store.address, value: 0n,
+            argumentPushes: [getFeeSelector] },
+          { kind: FrameKind.CALL, callee: 'move-1', target: tokenContract.address, value: 0n,
+            argumentPushes: movePushes },
+          { kind: FrameKind.STATIC, callee: 'read-1', target: tokenContract.address, value: 0n,
+            argumentPushes: readPushes },
+        ],
+      }),
+      {
+        ...master({
+          master: 'store-1', contract: 'Store', entry: 'getFee', program: store.program,
+          facts: facts('Store', 'getFee', FrameKind.STATIC, false),
+          frame: { kind: FrameKind.STATIC, sender: root.address, self: store.address, value: 0n },
+          enteredBy: 'root-1', origin: USER_ID, argumentPushes: [getFeeSelector],
+          segments: [[{
+            in: indexOf('storeRecord'), out: indexOf('storeRecord'), viewIn: storeRecord, viewOut: storeRecord,
+          }]],
+        }),
+        retval: encodeResultList([feePush]),
+      },
+      {
+        ...master({
+          master: 'move-1', contract: 'Token', entry: 'move', program: tokenContract.program,
+          facts: facts('Token', 'move', FrameKind.CALL, false, 2),
+          frame: { kind: FrameKind.CALL, sender: root.address, self: tokenContract.address, value: 0n },
+          enteredBy: 'root-1', origin: USER_ID, argumentPushes: movePushes, segments: [moveEntries],
+        }),
+        dispatches: true,
+      },
+      {
+        ...master({
+          master: 'read-1', contract: 'Token', entry: 'read', program: tokenContract.program,
+          facts: facts('Token', 'read', FrameKind.STATIC, false, 2),
+          frame: { kind: FrameKind.STATIC, sender: root.address, self: tokenContract.address, value: 0n },
+          enteredBy: 'root-1', origin: USER_ID, argumentPushes: readPushes, segments: [[readEntry]],
+        }),
+        retval: encodeResultList([feePush]),
+        dispatches: true,
+      },
+    ],
+    inputs: {
+      'root-1': { source: masterInput(root) },
+      'store-1': { source: masterInput(store) },
+      'move-1': { source: masterInput(tokenContract) },
+      'read-1': { source: masterInput(tokenContract) },
+      [VALIDATOR_ID]: validatorInput(root.category),
+      storeRecord: stateRecord(store.category, storeRecord, storeRecord, indexOf('store-1'), 0),
+      node1: nodeRecordInput(ledgerLock, tokenContract.category, node1Before, write1.written[0]!.after, unlock),
+      node2: nodeRecordInput(ledgerLock, tokenContract.category, node2Before, node2After, unlock),
+      [USER_ID]: userInput(),
+    },
+    validator: {
+      id: VALIDATOR_ID, covers: ['Store', 'Token'],
+      settles: [
+        { category: store.category, stateInputs: ['storeRecord'] },
+        { category: tokenContract.category, stateInputs: ['node1', 'node2'] },
+      ],
+      redeemScript: validatorFor(root.category).redeem,
+    },
+  };
+  return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Token!] };
+}
+
 describe('the obstacles this flow replica works around', () => {
   it('pins an inline struct literal built from a run-time member: the compiler cannot emit its digest', () => {
     // A struct argument is admitted when it is bound to a local first, and when it is written inline from
@@ -1306,6 +1730,39 @@ describe('the obstacles this flow replica works around', () => {
     expect(bytesToHex(written)).toBe(bytesToHex(node(slot, FEE)));
     // The read frame returns the value it read from its declaration; the head holds the body's answer to it.
     expect(outcome.draft.blockOf('read-1').retval).toStrictEqual(encodeResultList([encodeIntegerValue(FEE)]));
+  });
+
+  it('pins the one-call pull: the frame that writes its record and both balance nodes stalls', () => {
+    // The flow's token keeps each write to one key, so an entry that writes the allowance record and both
+    // balance nodes in one execution is not driven there. This plan drives it, and the frame stalls at its first
+    // segment close.
+    //
+    // The ledger is not the fault. Decoding this frame's witness block with the shipped codecs shows both written
+    // nodes form one real sorted list: the lower slot's node carries the higher slot as its successor and the
+    // higher node carries the zero sentinel, and neither carries `next == 0`. Each write is an update against the
+    // whole two-node inventory. A smaller flow of the same shape settles (the two-mapping-nodes case above), and
+    // this plan stalls in both node orders, so the stall is an interaction rather than the ledger, the depth or
+    // the entry count. The order only picks the machine's objection: the body's write order fails early with the
+    // `OP_SPLIT` below, while the compiler's published order fails at the batch topology check with
+    // `Program failed an OP_VERIFY operation.`
+    const one = buildOnePullPlan();
+    expect(derivationRefusal(one.plan, one.artifacts, 'pull-1')).toStrictEqual({
+      message: 'PER_CALL_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
+        + '(close of segment 0)',
+      objection: 'Program called an OP_SPLIT operation with an invalid index. '
+        + 'stack item length: 0; requested split index: 4.',
+    });
+  });
+
+  it('settles: a read-only frame reads a balance node a two-node move wrote', () => {
+    // The flow's second `balanceOf` reads the balance the pull just moved. The read-only frame closes the node
+    // against the view its own segment declares, so the write another frame made in the same transaction does
+    // not hide it, and the read returns the value it read: every contract input is accepted.
+    const after = buildReadAfterPullPlan();
+    const outcome = composeAndDerive(after.plan, after.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.draft.blockOf('read-1').retval)
+      .toStrictEqual(encodeResultList([encodeIntegerValue(FEE)]));
   });
 
   it('pins a recovery whose digest the body computes: the composer cannot read it from the arguments', () => {

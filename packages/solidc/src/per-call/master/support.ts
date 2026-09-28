@@ -14,7 +14,6 @@ import {
   ArrayType,
   FixedType,
   FrameKind,
-  blockInputSize,
   FunctionType,
   IntType,
   MappingType,
@@ -31,6 +30,7 @@ import {
 import type { Type } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import {
+  ArrayAccessNode,
   AssignNode,
   BinaryOpNode,
   BlockNode,
@@ -44,6 +44,7 @@ import {
   ExternalCallMode,
   ExternalFunctionCallNode,
   ExternalCallSlot,
+  FieldAccessNode,
   FunctionCallNode,
   FunctionDefinitionNode,
   HexLiteralNode,
@@ -53,6 +54,7 @@ import {
   LiteralNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
+  MappingAccessNode,
   MappingAssignNode,
   Node,
   NullaryOpNode,
@@ -64,6 +66,7 @@ import {
   StateAssignNode,
   StringLiteralNode,
   SwitchNode,
+  TernaryOpNode,
   TryCatchNode,
   UnaryOpNode,
   VariableDefinitionNode,
@@ -214,15 +217,16 @@ export const ORIGIN_FRAME_SLOT = '__internal__frameOrigin';
  * How a derivable target's key is held where the master derives the target slot.
  *
  * One of the three fields is set. A parameter the body holds and a frame value the head left are already on the
- * stack at their own depths. A compile-time expression is a value the body only computes at its start, so the
- * master emits it there and hashes it, which is why the shape admits nothing that reads a local computed later.
+ * stack at their own depths. An expression is a value whose every operand the body already holds where it starts,
+ * so the master emits it there and hashes it, which is why the shape admits nothing that reads a local the body
+ * only computes later.
  */
 export interface PerCallBatchKey {
   /** A parameter the body holds, read at its own stack depth. */
   readonly paramName?: string;
   /** A tracked frame value the head left: the frame's sender for `msg.sender`, the origin for `tx.origin`. */
   readonly frameSlot?: string;
-  /** A compile-time expression the body holds at its start, which the master emits for the derivation. */
+  /** An expression whose operands the body holds at its start, which the master emits for the derivation. */
   readonly expression?: ExpressionNode;
 }
 
@@ -246,8 +250,9 @@ type BatchKeysResolution =
  *
  * A bare parameter is the body's own argument, and `msg.sender`/`tx.origin` are frame values the head leaves
  * tracked, so both are already on the stack. Any other key is derivable only when the body's own write carries an
- * expression whose every operand is a literal or a compile-time constant: such a value exists at the top of the
- * body, where the derivation runs, whereas a value the body computes later does not.
+ * expression whose every leaf is such a value, a compile-time constant, a state field the frame's record holds, or
+ * a collection element whose address is fixed: such a value exists at the top of the body, where the derivation
+ * runs, whereas a value the body only computes later does not.
  */
 function resolveBatchKey(
   entry: FunctionDefinitionNode,
@@ -302,7 +307,7 @@ function resolveBatchKey(
         + `'${identifier?.name ?? '?'}', which is not bound to a single compile-time value`,
     };
   }
-  const unavailable = keyOperandUnavailable(expression, constants);
+  const unavailable = keyOperandUnavailable(expression, constants, entry);
   if (unavailable !== undefined) {
     return {
       kind: 'refusal',
@@ -396,29 +401,69 @@ function resolveKeyIdentifier(
 /**
  * The operand of a key expression that is not one the shape admits, or undefined when the expression is one.
  *
- * A literal and a compile-time constant exist at compile time. A cast, a unary operator and a binary operator are
- * pure, so they are admitted exactly when their operands are. A `msg.sender`/`tx.origin` read is a frame value the
- * head left. Every other node — a local, a state read, a call — is a value the shape does not derive from, and the
- * returned phrase names it so the refusal says which operand stopped it.
+ * A literal and a compile-time constant exist at compile time. A cast, a unary operator, a binary operator and a
+ * ternary are pure, so they are admitted exactly when their operands are, and a field read is admitted exactly when
+ * the value it reads through is. A `msg.sender`/`tx.origin` read and a bare parameter are stack values the body
+ * holds where the derivation runs; a local resolves to the single expression that binds it. A state value is only
+ * reachable as the record its field is read through, and a mapping or array element is a value the body holds only
+ * where its address is fixed. Every other node — a call, an environment value — is a value the shape does not
+ * derive from, and the returned phrase names it so the refusal says which operand stopped it.
  */
-function keyOperandUnavailable(node: ExpressionNode, constants: ReadonlySet<string>): string | undefined {
-  if (node instanceof LiteralNode) return undefined;
-  if (node instanceof CastNode) return keyOperandUnavailable(node.expression, constants);
-  if (node instanceof UnaryOpNode) return keyOperandUnavailable(node.expression, constants);
-  if (node instanceof BinaryOpNode) {
-    return keyOperandUnavailable(node.left, constants) ?? keyOperandUnavailable(node.right, constants);
-  }
-  if (node instanceof NullaryOpNode) {
-    return node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN
-      ? undefined
-      : `the ${node.operator} value`;
-  }
-  if (node instanceof IdentifierNode) {
-    return constants.has(node.name) ? undefined : `the value '${node.name}'`;
-  }
-  if (node instanceof StateAccessNode) return `the state value '${node.name}'`;
-  if (node instanceof FunctionCallNode) return `the value computed by '${node.identifier.name}'`;
-  return `an ${node.constructor.name}`;
+function keyOperandUnavailable(
+  node: ExpressionNode,
+  constants: ReadonlySet<string>,
+  entry: FunctionDefinitionNode,
+): string | undefined {
+  const params = new Set(entry.parameters.map((parameter) => parameter.name));
+  const seen = new Set<string>();
+  const walk = (current: ExpressionNode, underField: boolean): string | undefined => {
+    if (current instanceof LiteralNode) return undefined;
+    if (current instanceof CastNode) return walk(current.expression, underField);
+    if (current instanceof UnaryOpNode) return walk(current.expression, underField);
+    if (current instanceof BinaryOpNode) return walk(current.left, underField) ?? walk(current.right, underField);
+    if (current instanceof TernaryOpNode) {
+      return walk(current.condition, underField)
+        ?? walk(current.ifTrue, underField)
+        ?? walk(current.ifFalse, underField);
+    }
+    if (current instanceof FieldAccessNode) return walk(current.expression, true);
+    if (current instanceof MappingAccessNode) {
+      // A packed state array's element run is addressed from the frame, so the body holds the element; a verified
+      // mapping's entry is a value only when the body's own plan allocated the slot it is read through. A read with
+      // neither address is not a value the derivation can produce.
+      if (current.isPackedStateArrayAccess !== true && current.entrySlotIndex < 0) {
+        return `the mapping entry '${current.name}'`;
+      }
+      for (const key of current.keys) {
+        const inner = walk(key, underField);
+        if (inner !== undefined) return inner;
+      }
+      return undefined;
+    }
+    if (current instanceof ArrayAccessNode) return walk(current.array, underField) ?? walk(current.index, underField);
+    if (current instanceof NullaryOpNode) {
+      return current.operator === NullaryOperator.MSG_SENDER || current.operator === NullaryOperator.TX_ORIGIN
+        ? undefined
+        : `the ${current.operator} value`;
+    }
+    if (current instanceof IdentifierNode) {
+      if (constants.has(current.name) || params.has(current.name)) return undefined;
+      if (seen.has(current.name)) return `the value '${current.name}'`;
+      const definition = resolveKeyIdentifier(current.name, entry, new Set(seen));
+      if (definition === undefined) return `the value '${current.name}'`;
+      seen.add(current.name);
+      const inner = walk(definition, underField);
+      seen.delete(current.name);
+      return inner;
+    }
+    // A field the body reads out of a state record is a value it holds; the bare state read is not addressable.
+    if (current instanceof StateAccessNode) {
+      return underField ? undefined : `the state value '${current.name}'`;
+    }
+    if (current instanceof FunctionCallNode) return `the value computed by '${current.identifier.name}'`;
+    return `an ${current.constructor.name}`;
+  };
+  return walk(node, false);
 }
 
 /**
@@ -808,18 +853,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if ('reason' in forward) refuseBody(fn, forward.reason);
     const batchShape = unsupportedBatchWriteShape(fn, constants);
     if (batchShape !== undefined) refuseBody(fn, batchShape);
-    // A dynamic value is not held in its record: its bytes live in a run of chunk NFTs whose first coordinate the
-    // head derives from the record block the frame declares. A call ends the segment the code before it runs in,
-    // so a body that makes one declares its records per segment, and a frame that both touches a dynamic value and
-    // makes a call has no single declaration the head can locate the run from. The body is refused by name rather
-    // than emitted with a coordinate that addresses another segment's records; a read addresses the same run, so it
-    // is refused with a write.
-    if (fn.usesDynamicChunkInputBase === true
-      && ((fn.externalCalls?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0)) {
-      refuseBody(fn, 'the body reads or writes a dynamic value and makes an external call, so the value\'s chunk '
-        + 'run and the call\'s blocks share the frame\'s records, which the master cannot locate from one '
-        + 'declaration');
-    }
     // A loop that reads a long value once per turn takes a list of values for one slot, and the block lists one.
     const perTurnValue = fn.parameters.find((parameter) =>
       VALUE_WITNESS_PARAMETER.test(parameter.name) && parameter.type instanceof ArrayType);
@@ -866,39 +899,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if ((fn.externalCalls?.length ?? 0) > 0 && invoked.has(fn.name)) {
       refuseBody(fn, 'the body makes an external call and is invoked as its own subroutine, so the call sites it '
         + 'makes have no entry to bind their records to');
-    }
-  }
-  // A body that reads or writes a dynamic value addresses its chunk run one layout width past the block's declared
-  // records, and the head leaves that one coordinate for every body it serves. Bodies whose layouts place the run at
-  // different widths therefore cannot share the coordinate: the master serves the width most of them use and refuses
-  // the rest by name, each with the width its own layout needs, rather than approximating a coordinate that would
-  // address the wrong bytes for one of them.
-  const dynamicBodies = [
-    ...(contract.constructorDef ? [contract.constructorDef] : []),
-    ...entryBodies,
-  ].filter((fn) => fn.usesDynamicChunkInputBase === true);
-  if (dynamicBodies.length > 1) {
-    const widthOf = (fn: FunctionDefinitionNode): number | undefined =>
-      fn.blockLayout === undefined ? undefined : blockInputSize(fn.blockLayout);
-    const counts = new Map<number, number>();
-    for (const fn of dynamicBodies) {
-      const width = widthOf(fn);
-      if (width !== undefined) counts.set(width, (counts.get(width) ?? 0) + 1);
-    }
-    let preferred: number | undefined;
-    for (const fn of dynamicBodies) {
-      const width = widthOf(fn);
-      if (width === undefined) continue;
-      if (preferred === undefined || (counts.get(width) ?? 0) > (counts.get(preferred) ?? 0)) {
-        preferred = width;
-      }
-    }
-    for (const fn of dynamicBodies) {
-      const width = widthOf(fn);
-      if (width === preferred) continue;
-      refuseBody(fn, `the body's layout places the dynamic-value chunk run at ${width ?? 'an unknown'} slot(s) `
-        + `past the block's declared records, and the master leaves one coordinate for the bodies it serves, which `
-        + `is the width most of them use (${preferred ?? 'unknown'})`);
     }
   }
   // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value

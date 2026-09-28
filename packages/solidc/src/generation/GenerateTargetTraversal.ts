@@ -3161,46 +3161,73 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(categoryOwnerSlotName());
     // A body that reads or writes a dynamic value addresses its chunk run from the frame's declared record block,
     // one layout width past it, exactly as the direct convention addresses the run from the input its frame runs
-    // on. Derived here rather than taken as an argument, and registered above the record indices the derivation
-    // reads, so a body finds the coordinate where it would find the direct path's operand.
-    const dynamicChunkWidth = this.perCallDynamicChunkWidth(node);
-    if (dynamicChunkWidth !== undefined) {
+    // on. The width is a constant of each body's own layout, so the head parks the block's base once and each body
+    // adds its own width; that lets bodies whose layouts place the run at different widths share the base.
+    // Registered above the record indices the base is copied from, so a body finds it where it would find the
+    // direct path's operand.
+    if (this.perCallServesDynamicChunkBase(node)) {
       this.emit(encodeInt(BigInt(this.getStackIndex(recordInputIndexSlotName()))), loc);
       this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(dynamicChunkWidth)), loc);
-      this.emit(Op.OP_ADD, loc);
       this.pushToStack(DYNAMIC_CHUNK_BASE_PARAMETER);
     }
   }
 
   /**
-   * The layout width from the frame's declared record block to the first dynamic-value chunk, or undefined when no
-   * body behind the head reads or writes dynamic state.
+   * True when some body behind the head reads or writes dynamic state, so the head has to park the base of the
+   * record block the bodies add their own layout widths to.
    *
-   * The width is measured in input-consuming slots, so a coordinate an output-only slot reserves does not shift it:
-   * a body that returns a value and one that does not still agree on where the run sits. The bodies this counts are
-   * the ones the master serves: a body whose own layout places the run elsewhere is refused by name before the head
-   * is emitted, so a disagreement here is a bug in that decision rather than a shape, and it still refuses.
+   * A body's width is a constant of its own layout, so bodies whose layouts place the chunk run at different
+   * widths share the one parked base. A served body with no layout cannot be addressed at all, which is a bug in
+   * the shape assessment rather than a shape, so it still refuses.
    */
-  private perCallDynamicChunkWidth(node: ContractNode): number | undefined {
+  private perCallServesDynamicChunkBase(node: ContractNode): boolean {
     const bodies = [node.constructorDef, ...node.functions].filter(
       (fn): fn is FunctionDefinitionNode => fn !== undefined && fn.usesDynamicChunkInputBase === true
         && !this.perCallRefusedEntries.has(fn.name),
     );
-    if (bodies.length === 0) return undefined;
-    const widths = new Set(bodies.map((fn) => {
-      const layout = fn.blockLayout;
-      return layout === undefined ? undefined : blockInputSize(layout);
-    }));
-    if (widths.size !== 1 || widths.has(undefined)) {
+    for (const fn of bodies) {
+      if (fn.blockLayout === undefined) {
+        throw new SolidcDiagnosticError(
+          'PER_CALL_CODEGEN_UNAVAILABLE',
+          `the per-call master cannot locate the chunk run of a dynamic value in '${fn.name}', which has no layout`,
+          { contract: node.name, function: fn.name },
+        );
+      }
+    }
+    return bodies.length > 0;
+  }
+
+  /**
+   * The layout width from this body's declared record block to the first dynamic-value chunk.
+   *
+   * The head parks the block's base once for every body it serves, so each body adds its own width; that is what
+   * lets bodies whose layouts differ share the one parked base.
+   */
+  private perCallDynamicChunkWidth(): number {
+    const layout = this.currentFunction.blockLayout;
+    if (layout === undefined) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
-        'the per-call master cannot leave one dynamic-state coordinate for bodies whose layouts place the chunk '
-        + 'run at different widths past the frame\'s declared records',
-        { contract: node.name, widths: [...widths].map((width) => width ?? -1) },
+        `the per-call body '${this.currentFunction.name}' has no layout to place its dynamic-value chunk run`,
+        { function: this.currentFunction.name },
       );
     }
-    return [...widths][0]!;
+    return blockInputSize(layout);
+  }
+
+  /**
+   * Copies the frame's parked record block base and adds this body's layout width, leaving the coordinate of the
+   * first dynamic-value chunk.
+   *
+   * The direct convention takes that coordinate as an SDK-supplied argument, so the width is only added for a
+   * per-call frame, whose parked base is the raw record block base.
+   */
+  private emitDynamicChunkBasePick(loc: SingleLocationData, extraStackOffset = 0): void {
+    this.emitPickCompilerRouteFrameValue(DYNAMIC_CHUNK_BASE_PARAMETER, loc, extraStackOffset);
+    if (this.perCallMaster) {
+      this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
+      this.emit(Op.OP_ADD, loc);
+    }
   }
 
   /**
@@ -7482,9 +7509,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // has made: the record a site binds, the segment a read resolves against and the count the body pins are all
     // that one number. Allocated before the body's own control flow, and only for such a body, so a shape whose
     // positions are fixed keeps byte-identical code and no slot.
+    // A body that touches a dynamic value and makes a call resolves the value's chunk run against the segment the
+    // access lands in, which is the one its own calls have reached: the count is carried for it too.
+    const resolvesDynamicRunByCalls = this.currentFunction.usesDynamicChunkInputBase === true
+      && ((this.currentFunction.externalCalls?.length ?? 0) > 0
+        || (this.currentFunction.lowLevelCalls?.length ?? 0) > 0);
     this.perCallCallsMadeActive = this.perCallMaster && !this.isDefineSubTraversal
       && this.stack.includes(callCountSlotName())
-      && callsRepeat(this.currentFunction.body);
+      && (callsRepeat(this.currentFunction.body) || resolvesDynamicRunByCalls);
     if (this.perCallCallsMadeActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
@@ -8977,6 +9009,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * program the execution does not run: the compile stops instead of emitting one.
    */
   private joinPerCallPosition(node: BranchNode, segmentAfterIf: number, ordinalAfterIf: number): void {
+    // A body whose calls repeat reads the position it has reached from the frame's calls-made counter, so the
+    // static positions the two arms ended at do not describe the records the execution binds and there is nothing
+    // to join. A body that fixes its own calls still has to agree, because there its site indices are the records.
+    if (this.perCallCallsMadeActive) return;
+    // An arm that reverts never reaches the join: the records of the arm that falls through are the execution's.
+    if (this.blockEndsWithRevert(node.ifBlock)) return;
+    if (node.elseBlock && this.blockEndsWithRevert(node.elseBlock)) return;
     if (this.perCallSegmentIndex !== segmentAfterIf || this.perCallOrdinal !== ordinalAfterIf) {
       throw new SolidcDiagnosticError(
         'PER_CALL_CODEGEN_UNAVAILABLE',
@@ -23048,7 +23087,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const explicitInsertBase = preferAbsoluteDynBase
       ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
     if (explicitInsertBase >= 0) {
-      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emitDynamicChunkBasePick(loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -25630,7 +25669,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // participant-owner pick differ from the authenticated trailing coordinate by one. The explicit witness is
       // already absolute (and already includes collection-iteration inputs), so use it as the stable base and add
       // only the dynamic runs which physically follow it. Negative sentinel → reconstruct (first-chunk push).
-      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emitDynamicChunkBasePick(loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -29822,7 +29861,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
     if (guardInactiveRoute && dynamicBaseIndex >= 0) {
       const stackBefore = [...this.stack];
-      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      this.emitDynamicChunkBasePick(loc);
       this.emit(encodeInt(-1n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
       this.emit(Op.OP_IF, loc);
@@ -29985,11 +30024,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(encodeInt(BigInt(CHUNK)), loc); this.emit(Op.OP_DIV, loc);
           this.emit(Op.OP_SUB, loc);
         }
-      } else if (returningExternalSlots.length > 0) {
+      } else if (returningExternalSlots.length > 0 && !this.perCallMaster) {
         // Returning co-spends publish their event after every callee block and before this caller's dynamic
         // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
         // callee widths: an interface may legally under-declare state, so only the runtime index reflects the
-        // physical transaction footprint.
+        // physical transaction footprint. A per-call frame locates the run from its own record block instead, so
+        // it takes the branch below even when a call returns a value.
         const lastReturnSlot = returningExternalSlots[returningExternalSlots.length - 1];
         const returnParamName = returningExternalSlots.length === 1
           ? '__internal__externalReturnOutputIdx'
@@ -30016,7 +30056,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // trailingBase shifts the whole chunk run by one. The witness already includes collection-iteration
           // inputs; the offsets below must not add them a second time. A negative sentinel means this invocation
           // has no old chunk input (for example a first push), so reconstruct its output coordinate normally.
-          this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+          this.emitDynamicChunkBasePick(loc);
           this.emit(Op.OP_DUP, loc);
           this.emit(encodeInt(0n), loc);
           this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -30208,6 +30248,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // A value marked for an array-external-call co-spend is kept on the stack and dropped by
       // emitExternalCallVerification after the co-spend loop reads the array from it.
       if (this.coSpendPreservedDynValues.has(tmp)) continue;
+      // The sorted-batch settlement runs after this verification and reads the trailing chunk count to hold the
+      // segment's extra records to the chunks the body pinned, so the slot outlives the write that parked it.
+      if (tmp === GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT
+        && this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0) continue;
       const idx = this.getStackIndex(tmp);
       this.emit(encodeInt(BigInt(idx)), loc);
       this.emit(Op.OP_ROLL, loc);
@@ -31176,8 +31220,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Adding one here asks OP_PICK for exactly one item below the runtime stack when the witness is the oldest
       // value in the frame (e.g. a compact direct delegate). The outlined branch below first pushes the master
       // index, so its +1 remains required.
+      // A per-call frame parks the raw record block base, so its own layout width turns it into the run's first
+      // chunk coordinate; the direct convention's argument already carries that width.
       this.emit(encodeInt(BigInt(explicitBase)), loc);
       this.emit(Op.OP_PICK, loc);
+      if (this.perCallMaster) {
+        this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
       // encoded = -(base + 3). Decode before applying read-loop offsets.
       this.emit(Op.OP_DUP, loc);

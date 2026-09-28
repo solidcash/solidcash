@@ -1,24 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { isServed, publishedRefusals, refusalMessageOf } from './refused-entry.js';
+import { isServed, publishedRefusals } from './refused-entry.js';
 
 /**
- * A body that touches a dynamic value and makes an external call is refused by name.
+ * A body that touches a dynamic value and makes an external call is served.
  *
- * A dynamic value's bytes live in a run of chunk NFTs whose first coordinate the head derives from the record block
- * the frame declares. A call ends the segment the code before it runs in, so a body that makes one declares its
- * records per segment — and a frame that both touches a dynamic value and makes a call has no one declaration the
- * head can locate the run from. The body is published as a refusal rather than emitted; before this, the emitted
- * body crashed code generation when the call returned a value, and it produced a program that could not settle
- * when the call did not.
+ * A dynamic value's bytes live in a run of chunk NFTs whose first coordinate lies one layout width past the
+ * frame's declared record block. The head parks that block's base and each body adds its own width, so a body
+ * whose records are split into one segment per call still locates the run: the read resolves against the segment
+ * its own calls have reached. The bodies below would each have been refused by name before, either because the
+ * value's chunk run and the call's records shared one declaration, or because the width they need disagreed with
+ * their siblings'.
  */
 
 /** The callee address every source calls, a compile-time bytes20. */
 const TARGET = '0x' + '11'.repeat(20);
-
-/** The refusal every such body publishes, as the shipped compiler writes it. */
-const REFUSAL = 'the body reads or writes a dynamic value and makes an external call, so the value\'s chunk run '
-  + 'and the call\'s blocks share the frame\'s records, which the master cannot locate from one declaration';
 
 const returningInterface = ' interface IAnswer { function answer() returns (int); }';
 const voidInterface = ' interface IPing { function ping(); }';
@@ -66,29 +62,36 @@ const CALL_WITHOUT_DYNAMIC = 'pragma solidcash ^0.13.0;'
   + `   function callIt() { IPing(${TARGET}).ping.call(); require(true); }`
   + ' }';
 
+/** The entries one contract's artifact publishes in its ABI, in declaration order. */
+function abiNames(source: string, contract: string): string[] {
+  const artifacts = compileStringMulti(source, { composition: 'per-call' }) as
+    Record<string, { abi: { name: string }[] }>;
+  return (artifacts[contract]?.abi ?? []).map((entry) => entry.name);
+}
+
 describe('a body that touches a dynamic value and makes an external call', () => {
-  it('no longer crashes code generation for the write with a returning call', () => {
-    // The compile publishes the refusal; it does not throw a stack-variable error from the emitter.
+  it('serves the write with a returning call rather than crashing code generation', () => {
     expect(() => compileString(WRITE_WITH_RETURNING_CALL, { composition: 'per-call' })).not.toThrow();
-    expect(refusalMessageOf(WRITE_WITH_RETURNING_CALL)).toContain(REFUSAL);
+    expect(isServed(WRITE_WITH_RETURNING_CALL)).toBe(true);
   });
 
-  it('names the entry the refusal belongs to', () => {
+  it('publishes no refusal for the write with a returning call', () => {
     const refusals = publishedRefusals(compileStringMulti(WRITE_WITH_RETURNING_CALL, { composition: 'per-call' }) as
       Record<string, { composition?: unknown }>);
-    expect(refusals).toStrictEqual([{ functionName: 'A.push()', reason: REFUSAL }]);
+    expect(refusals).toStrictEqual([]);
+    expect(abiNames(WRITE_WITH_RETURNING_CALL, 'A')).toStrictEqual(['push']);
   });
 
-  it('refuses the write whatever the call returns', () => {
-    expect(refusalMessageOf(WRITE_WITH_VOID_CALL)).toContain(REFUSAL);
+  it('serves the write whatever the call returns', () => {
+    expect(isServed(WRITE_WITH_VOID_CALL)).toBe(true);
   });
 
-  it('refuses a record-shaped dynamic array the same way', () => {
-    expect(refusalMessageOf(RECORD_ARRAY_WITH_CALL)).toContain(REFUSAL);
+  it('serves a record-shaped dynamic array the same way', () => {
+    expect(isServed(RECORD_ARRAY_WITH_CALL)).toBe(true);
   });
 
-  it('refuses a read of a dynamic value as well as a write', () => {
-    expect(refusalMessageOf(READ_WITH_CALL)).toContain(REFUSAL);
+  it('serves a read of a dynamic value as well as a write', () => {
+    expect(isServed(READ_WITH_CALL)).toBe(true);
   });
 
   it('serves the write when the body makes no call', () => {

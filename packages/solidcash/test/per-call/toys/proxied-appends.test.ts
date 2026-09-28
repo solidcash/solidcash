@@ -463,10 +463,10 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     expect(rejected).toStrictEqual([]);
   });
 
-  it('REFUSES to serve an implementation whose entry both writes the dynamic value and calls', () => {
-    // The control on the same shape: the implementation the proxy forwards to is the writer, and the compiler
-    // refuses it by name when its own body also makes a call. The refusal is the one the append shape stays clear
-    // of, because the call it would make lives in the proxy's body instead.
+  it('serves an implementation whose entry both writes the dynamic value and calls', () => {
+    // The same shape with the call inside the writer's own body rather than the proxy's: the entry touches a
+    // dynamic value and makes an external call, and the head parks the record block's base so the body's own
+    // layout width turns it into the run's coordinate against the segment its call has reached.
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface IPing { function ping(); }'
       + ' contract Impl {'
@@ -476,9 +476,9 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
       + ' require(true); }'
       + ' }';
     const artifact = compileStringMulti(source, { composition: 'per-call' }).Impl!;
-    const refused = artifact.composition?.refusedEntries ?? [];
-    const reasons = refused.map((entry) => `${entry.functionName}: ${entry.reason}`).join(' | ');
-    expect(reasons).toContain('reads or writes a dynamic value and makes an external call');
+    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.composition?.refusedEntries).toBeUndefined();
+    expect(artifact.abi.map((entry) => entry.name)).toStrictEqual(['append']);
   });
 
   it('settles the append behind the proxy: the implementation writes the run and every input is accepted', () => {

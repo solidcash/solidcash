@@ -4,10 +4,11 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  buildEntryNftCovenantScript, computeCollectionHash, encodeWitnessBlock, scriptToBytecode,
+  buildEntryNftCovenantScript, buildPushdataCommitment, computeCollectionHash, encodeWitnessBlock, scriptToBytecode,
   type RecordEntry, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
+import { refusalMessageOf } from './refused-entry.js';
 import { deployMaster, verifyMasterDeployment } from '../../../../solidcash/src/per-call/deploy/index.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../../solidcash/src/stateful/SortedList.js';
 import { scriptToLockingBytecode } from '../../../../solidcash/src/utils.js';
@@ -216,5 +217,251 @@ describe('a per-call master keyed by a compile-time expression', () => {
     const slot = keyToSlot(ZERO_KEY);
     const tampered = encodeEntryCommitment(slot, new Uint8Array(32), new Uint8Array([AMOUNT + 1]));
     expect(evaluateInsert(env, [VALUE_TAIL], ZERO_KEY, { nodeCommitment: tampered }).accepted).toBe(false);
+  });
+});
+
+/**
+ * A ternary whose branches are both values the frame already holds at the top of the body.
+ *
+ * `(1 == 1) ? msg.sender : address(0)` takes the caller's lock, which the head leaves as the frame's sender, and
+ * the other branch is a cast of a literal. The derivation emits the whole ternary there, so the slot is the one the
+ * taken branch's value names rather than a constant.
+ */
+const TERNARY_SENDER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract TernaryBalances {'
+  + '   mapping(address => uint) balances;'
+  + '   function set(uint amount) {'
+  + '     balances[(1 == 1) ? msg.sender : address(0)] = amount;'
+  + '   }'
+  + ' }';
+
+describe('a per-call master keyed by a ternary over the frame values', () => {
+  const env = envFor(TERNARY_SENDER_SOURCE);
+
+  it('publishes a per-call master whose write witness is derived from the frame', () => {
+    expect(env.artifact.composition?.convention).toBe('per-call');
+    expect(env.artifact.abi.find((entry) => entry.name === 'set')?.inputs?.map((input) => input.name))
+      .toStrictEqual(['amount']);
+  });
+
+  it('derives the key from the taken branch and is accepted by the machine', () => {
+    expect(evaluateInsert(env, [VALUE_TAIL], USER_LOCK)).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the created node carries a value the code did not compute', () => {
+    const slot = keyToSlot(USER_LOCK);
+    const tampered = encodeEntryCommitment(slot, new Uint8Array(32), new Uint8Array([AMOUNT + 1]));
+    expect(evaluateInsert(env, [VALUE_TAIL], USER_LOCK, { nodeCommitment: tampered }).accepted).toBe(false);
+  });
+});
+
+/**
+ * An entry keyed by a field the body reads out of its own state record.
+ *
+ * `escrows[next.value] = amount` carries no argument for the key: `next` is a struct in the data NFT, so the value
+ * the slot is derived from is the record the frame declares for it. The derivation reads that record at the top of
+ * the body, and the write is keyed by the field it holds.
+ */
+const STATE_FIELD_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' struct Id { uint value; }'
+  + ' contract Escrow {'
+  + '   Id next;'
+  + '   mapping(uint => uint) escrows;'
+  + '   function open(uint amount) { escrows[next.value] = amount; }'
+  + ' }';
+
+const STATE_ARTIFACT = compileString(STATE_FIELD_SOURCE, { composition: 'per-call' });
+const STATE_DEPLOYED = deployMaster(STATE_ARTIFACT, CATEGORY, VALIDATOR_PROGRAM);
+verifyMasterDeployment(STATE_DEPLOYED, STATE_ARTIFACT, CATEGORY, VALIDATOR_PROGRAM);
+const STATE_MASTER_LOCK = encodeLockingBytecodeP2sh32(hash256(STATE_DEPLOYED.script));
+const STATE_ENTRY_LOCK = scriptToLockingBytecode(
+  buildEntryNftCovenantScript(
+    CATEGORY,
+    computeCollectionHash(STATE_ARTIFACT.stateLayout!.collections![0]!.signature),
+  ),
+  'p2sh32',
+);
+
+/** The field value the key hashes, and the value the entry stores against it. */
+const STATE_FIELD_VALUE = 7;
+const STATE_SLOT = keyToSlot(new Uint8Array([STATE_FIELD_VALUE]));
+const STATE_NODE_VALUE = new Uint8Array([AMOUNT]);
+
+/** The data NFT's commitment for a record whose `next` field holds `value`, as the shipped encoder writes it. */
+const stateCommitment = (value: number): Uint8Array => new Uint8Array(Buffer.from(
+  buildPushdataCommitment(STATE_ARTIFACT.stateLayout!, { next: { value: BigInt(value) } }, 0), 'hex',
+));
+const STATE_RECORD = stateCommitment(STATE_FIELD_VALUE);
+
+const STATE_MASTER_INDEX = 0;
+const STATE_USER_INDEX = 1;
+const STATE_RECORD_INDEX = 2;
+const STATE_SENTINEL_INDEX = 3;
+/** The created node's output index, which the entry slot's block offset fixes. */
+const STATE_NODE_INDEX = 1;
+
+/** Evaluates the master's own input for an insert keyed by the state record's field. */
+function evaluateStateKey(options: { readonly recordField?: number } = {}): {
+  accepted: boolean;
+  objection?: string;
+} {
+  const record = options.recordField === undefined ? STATE_RECORD : stateCommitment(options.recordField);
+  const zeroSlot = new Uint8Array(32);
+  const headBefore = encodeEntryCommitment(zeroSlot, zeroSlot);
+  const headAfter = encodeEntryCommitment(zeroSlot, STATE_SLOT);
+  const nodeCommitment = encodeEntryCommitment(STATE_SLOT, zeroSlot, STATE_NODE_VALUE);
+  const block: WitnessBlock = {
+    kind: 0,
+    callerRef: STATE_USER_INDEX,
+    originRef: STATE_USER_INDEX,
+    validatorRef: 0xffff,
+    sender: USER_LOCK,
+    self: STATE_DEPLOYED.address,
+    value: 0n,
+    retval: EMPTY,
+    calls: [],
+    segments: [[
+      { in: STATE_RECORD_INDEX, out: STATE_RECORD_INDEX, viewIn: record, viewOut: record },
+      { in: STATE_SENTINEL_INDEX, out: STATE_SENTINEL_INDEX, viewIn: headBefore, viewOut: headAfter },
+      { in: 0xffff, out: STATE_NODE_INDEX, viewIn: EMPTY, viewOut: nodeCommitment },
+    ]],
+    events: [],
+    sends: [],
+  };
+  const masterInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(1),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: new Uint8Array([
+      ...encodeDataPush(encodeWitnessBlock(block)),
+      ...encodeDataPush(STATE_NODE_VALUE),
+      ...encodeDataPush(STATE_DEPLOYED.script),
+    ]),
+  };
+  const userInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(4),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: callerUnlockingBytecode(),
+  };
+  const recordInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(6),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  };
+  const sentinelInput = {
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(5),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: encodeDataPush(new Uint8Array([1])),
+  };
+  const transaction: VmTransaction = {
+    version: 2,
+    inputs: [masterInput, userInput, recordInput, sentinelInput],
+    outputs: [
+      { lockingBytecode: STATE_MASTER_LOCK, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
+      { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', nodeCommitment) },
+      { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
+      { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', headAfter) },
+    ],
+    locktime: 0,
+  };
+  const sourceOutputs = [
+    { lockingBytecode: STATE_MASTER_LOCK, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+    { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', record) },
+    { lockingBytecode: STATE_ENTRY_LOCK, valueSatoshis: 20_000n, token: token('mutable', headBefore) },
+  ];
+  const vm = compositionMachine();
+  const state = vm.evaluate({ inputIndex: STATE_MASTER_INDEX, sourceOutputs, transaction });
+  return vm.stateSuccess(state) === true
+    ? { accepted: true }
+    : { accepted: false, objection: String(state.error) };
+}
+
+describe('a per-call master keyed by a field of its state record', () => {
+  it('publishes a per-call master with the entry point it was asked for', () => {
+    expect(STATE_ARTIFACT.composition?.convention).toBe('per-call');
+    expect(STATE_ARTIFACT.abi.find((entry) => entry.name === 'open')?.inputs?.map((input) => input.name))
+      .toStrictEqual(['amount']);
+  });
+
+  it('derives the slot from the field and is accepted by the machine', () => {
+    expect(evaluateStateKey()).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the record declares a field the write did not hash', () => {
+    // The record the frame declares fixes the value the write is keyed by, so a record holding another value names
+    // no node the segment's declaration reads.
+    expect(evaluateStateKey({ recordField: STATE_FIELD_VALUE + 1 }).accepted).toBe(false);
+    expect(evaluateStateKey({ recordField: STATE_FIELD_VALUE }).accepted).toBe(true);
+  });
+});
+
+/**
+ * The shape the harness kept refusing: a ternary over a field read through a collection, and a cast of a literal.
+ *
+ * `whitelistWorkers[jobId][(0 == 0) ? job.roles.worker : address(0)] = false` takes the field's value as the key,
+ * and the field's base is the element the entry's own code writes: the derivation already holds that element where
+ * the slot is computed, so the branch is a value the body holds at its start rather than one it computes later.
+ */
+const COLLECTION_FIELD_TERNARY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' struct Roles { address worker; }'
+  + ' struct JobPost { Roles roles; int state; }'
+  + ' contract JobList {'
+  + '   JobPost[] jobs;'
+  + '   mapping(uint => mapping(address => bool)) whitelistWorkers;'
+  + '   function refund(uint jobId) {'
+  + '     JobPost storage job = jobs[jobId];'
+  + '     whitelistWorkers[jobId][(0 == 0) ? job.roles.worker : address(0)] = false;'
+  + '     job.state = 1;'
+  + '   }'
+  + ' }';
+
+/** The refusals a per-call compile publishes, or the empty list when it serves every body. */
+function publishedRefusals(source: string, options: Record<string, unknown> = {}): string[] {
+  const artifact = compileString(source, { composition: 'per-call', ...options });
+  const composition = artifact.composition as { refusedEntries?: { reason: string }[] } | undefined;
+  return (composition?.refusedEntries ?? []).map((refused) => refused.reason);
+}
+
+describe('a per-call master keyed by a ternary over a field read through a collection', () => {
+  it('serves the write and publishes no refusal for the entry', () => {
+    expect(publishedRefusals(COLLECTION_FIELD_TERNARY_SOURCE)).toStrictEqual([]);
+    const artifact = compileString(COLLECTION_FIELD_TERNARY_SOURCE, { composition: 'per-call' });
+    expect(artifact.composition?.convention).toBe('per-call');
+    expect(artifact.abi.find((entry) => entry.name === 'refund')?.inputs?.map((input) => input.name))
+      .toStrictEqual(['jobId']);
+  });
+});
+
+describe('a per-call master keyed by a value the body does not hold where it derives the slot', () => {
+  it('refuses a key the body computes with a call', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Hashed {'
+      + '   mapping(bytes20 => uint) balances;'
+      + '   function set(pubkey pk, uint amount) { balances[hash160(pk)] = amount; }'
+      + ' }';
+    expect(refusalMessageOf(source)).toContain("reads the value computed by 'hash160'");
+  });
+
+  it('refuses a ternary over an entry whose read has no allocated slot', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Foreign {'
+      + '   mapping(uint => address) owners;'
+      + '   mapping(address => uint) balances;'
+      + '   function set(uint id, uint amount) { balances[(1 == 1) ? owners[id] : address(0)] = amount; }'
+      + ' }';
+    expect(refusalMessageOf(source)).toContain("reads the mapping entry 'owners'");
+  });
+
+  it('refuses a bare environment value inside a ternary', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Times {'
+      + '   mapping(int => uint) balances;'
+      + '   function set(uint amount) { balances[(1 == 1) ? tx.locktime : 0] = amount; }'
+      + ' }';
+    expect(refusalMessageOf(source)).toContain('the tx.locktime value');
   });
 });

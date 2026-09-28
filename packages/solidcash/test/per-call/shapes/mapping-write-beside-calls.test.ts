@@ -39,7 +39,8 @@ import {
 
 /**
  * A mapping write beside calls: the arbitration shape, where the entry records the award, then reads a value through
- * a static call and settles through a second call, and the same award recorded after both calls.
+ * a static call and settles through a second call, the same award recorded after both calls, and an entry that
+ * makes the calls without touching the mapping.
  *
  * A call closes the segment the code before it runs in, so the write's records are declared in the segment it lands
  * in and the batch walk reads the groups there. In every other segment the frame declares the node kept: its code
@@ -60,6 +61,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   mapping(int => int) awarded;'
   + '   function arbitrate(int id) {'
   + '     this.awarded[id] = id + 100;'
+  + `     IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf(id);`
+  + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(id);`
+  + '     require(true);'
+  + '   }'
+  + '   function ping(int id) {'
   + `     IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf(id);`
   + `     IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(id);`
   + '     require(true);'
@@ -111,7 +117,7 @@ const updateShape = (views: readonly (readonly [Uint8Array, Uint8Array])[]): Nod
   segments: (node) => views.map(([viewIn, viewOut]) => [{ in: node, out: node, viewIn, viewOut }]),
 });
 
-type Entry = 'arbitrate' | 'arbitrateLate';
+type Entry = 'arbitrate' | 'arbitrateLate' | 'ping';
 
 /** The composition: `entry` runs on the arbiter, whose mapping has the shape `shape` gives it. */
 function buildPlan(entry: Entry, shape: NodeShape): CompositionDraftPlan {
@@ -265,5 +271,12 @@ describe('a mapping write beside two calls', () => {
     expect(() => compose(insertShape((head, node) => [[kept(head, SENTINEL), creates(node, FAKE)],
       [kept(head, SENTINEL), kept(node, FAKE)], [relinks(head), { in: node, out: node, viewIn: FAKE, viewOut: CREATED }],
     ]), 'arbitrateLate')).toThrow(/PER_CALL_DERIVATION_STALLED/);
+  });
+
+  it('refuses a node declared changed by an entry that never touches the mapping', () => {
+    const untouched = updateShape([[BEFORE, BEFORE], [BEFORE, BEFORE], [BEFORE, BEFORE]]);
+    expect(refusals(compose({ ...untouched, after: BEFORE }, 'ping'))).toStrictEqual([]);
+    const rewritten = updateShape([[BEFORE, FAKE], [FAKE, FAKE], [FAKE, FAKE]]);
+    expect(() => compose({ ...rewritten, after: FAKE }, 'ping')).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });

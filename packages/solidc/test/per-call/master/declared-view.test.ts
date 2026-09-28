@@ -143,21 +143,29 @@ function readOrdinal(options: {
 }
 
 /**
- * Runs the kept check for the record at `coordinate`, with `writeSegment` the one segment it may change in, under
- * the call count the source fixes and the one the block declares; the two verdicts must agree.
+ * Runs the kept check over one segment, with `exempt` the input and output index pairs the code wrote there and
+ * `leading` the position a write's own records start at, under the call count the source fixes and the one the
+ * block declares; the two verdicts must agree.
  */
-function keptOutside(
-  coordinate: number,
-  writeSegment: number,
+function keptIn(
+  segment: number,
   segments: readonly (readonly RecordEntry[])[],
+  exempt: readonly (readonly [number, number])[] = [],
+  leading?: number,
 ): boolean {
-  const [fixed, runtime] = [{ callCount: segments.length - 1 }, { runtimeCounts: true as const }].map((counts) =>
-    runOnBlock(segments, new Uint8Array([
-      ...encodeDataPush(new Uint8Array([coordinate])),
-      ...declaredRecordsKeptScript({ writeSegment, ...counts }),
-      0x75, // OP_DROP: the unlocking bytecode's own copy of the block
-      0x51, // OP_1
-    ])).accepted);
+  const pairs = exempt.flatMap(([input, output]) => [input, output])
+    .map((index) => encodeDataPush(index === 0 ? new Uint8Array(0) : new Uint8Array([index])));
+  const options = { exempt: exempt.length, ...(leading === undefined ? {} : { leading }) };
+  const [fixed, runtime] = [
+    { counts: { segmentIndex: segment, callCount: segments.length - 1 }, index: [] as Uint8Array[] },
+    { counts: { runtimeCounts: true as const }, index: [encodeDataPush(new Uint8Array(segment === 0 ? [] : [segment]))] },
+  ].map(({ counts, index }) => runOnBlock(segments, new Uint8Array([
+    ...pairs.flatMap((push) => [...push]),
+    ...index.flatMap((push) => [...push]),
+    ...declaredRecordsKeptScript({ ...counts, ...options }),
+    0x75, // OP_DROP: the unlocking bytecode's own copy of the block
+    0x51, // OP_1
+  ])).accepted);
   expect(runtime).toBe(fixed);
   return fixed!;
 }
@@ -243,19 +251,25 @@ describe('the walk a body uses to read its segment\'s declared record view', () 
     }).accepted).toBe(true);
   });
 
-  it('requires the record kept in every segment but the one it is written in', () => {
+  it('requires every record a segment declares kept unless its code wrote it there', () => {
     const node = RECORD_INDEX;
     const other = kept(RECORD_INDEX + 1, BEFORE, AFTER);
-    expect(keptOutside(node, 1, [[RECORD(BEFORE, BEFORE)], [RECORD(BEFORE, MIDDLE), RECORD(MIDDLE, AFTER)],
-      [RECORD(AFTER, AFTER), other]])).toBe(true);
-    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [], [other]])).toBe(true);
-    // Changed before the write, changed after it, created there, or deleted there.
-    expect(keptOutside(node, 1, [[RECORD(BEFORE, MIDDLE)], [RECORD(MIDDLE, AFTER)], []])).toBe(false);
-    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [], [RECORD(AFTER, MIDDLE)]])).toBe(false);
-    expect(keptOutside(node, 1, [[{ in: INDEX_NONE, out: node, viewIn: new Uint8Array(0), viewOut: BEFORE }],
-      [RECORD(BEFORE, AFTER)]])).toBe(false);
-    expect(keptOutside(node, 0, [[RECORD(BEFORE, AFTER)], [{ in: node, out: INDEX_NONE, viewIn: AFTER,
-      viewOut: AFTER }]])).toBe(false);
+    const created = { in: INDEX_NONE, out: node, viewIn: new Uint8Array(0), viewOut: BEFORE };
+    const deleted = { in: node, out: INDEX_NONE, viewIn: AFTER, viewOut: AFTER };
+    const segments = [[RECORD(BEFORE, BEFORE), other], [RECORD(BEFORE, AFTER)], []];
+    expect(keptIn(1, segments, [[node, node]])).toBe(true);
+    expect(keptIn(2, segments)).toBe(true);
+    expect(keptIn(0, [[RECORD(BEFORE, BEFORE), other]], [[node + 1, node + 1]])).toBe(true);
+    expect(keptIn(0, [[RECORD(BEFORE, BEFORE), other]], [], 1)).toBe(true);
+    expect(keptIn(0, [[created]], [[100, node]])).toBe(true);
+    // Changed without a write, changed past no exemption, created there, or deleted there.
+    expect(keptIn(0, segments)).toBe(false);
+    expect(keptIn(1, segments)).toBe(false);
+    expect(keptIn(0, [[RECORD(BEFORE, BEFORE), other]], [[node, node]])).toBe(false);
+    expect(keptIn(0, [[other, RECORD(BEFORE, BEFORE)]], [], 1)).toBe(false);
+    expect(keptIn(0, [[created]])).toBe(false);
+    expect(keptIn(0, [[deleted]])).toBe(false);
   });
+
 
 });

@@ -37,17 +37,17 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 112 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 76 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 111 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 79 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 112 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 41 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1417 checks (115 + 484 + 816 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1421 checks (115 + 484 + 820 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 484 is the four rows above it, `solidcash` 816 (815 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 484 is the four rows above it, `solidcash` 820 (819 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -96,7 +96,7 @@ and the binding of a delegate callee to the implementation the record names by `
   offsets, the frame checks the machine enforces on a real spend (ownership, recreation, hash type, `msg.sender`,
   `tx.origin`, `address(this)`), the witness-block reader, dispatch over one master's entry points, state read and
   written through the frame's declared record views — the walk that recovers them from the witness block, and the
-  one that requires a batch's nodes kept in every segment but the write's, is
+  one that requires every record a segment declares kept unless its code wrote it there, is
   `declared-view.test.ts`, and its run-time-count variant, which resolves a read against the segment the execution's
   own call count names, is `declared-view-runtime.test.ts` and `looped-call-state-read.test.ts` — record settlement across the segments of one execution, the
   returns an entry settles against the frame's `retval`, one head serving bodies that make different numbers of
@@ -215,7 +215,8 @@ and the binding of a delegate callee to the implementation the record names by `
   or non-recreated validator output, a covered witness block with a trailing byte or cut short, and a read-only
   frame that changes a record, emits, or calls with value or into a frame that is not read-only, a proxied call
   whose delegate callee is not the contract the caller's record names (refused by the derivation, by the reference
-  checker and by the shipped validator program). The validator
+  checker and by the shipped validator program), and a record declared changed in a segment its frame's code
+  does not write it in. The validator
   program's per-rule refusals are `validator/script.test.ts`'s, one per rule it emits; the table below maps each
   attack to the file that refuses it.
 - **`solidcash/test/per-call/primitives/`** — one case per primitive a flow shape is made of, driven on the shipped
@@ -262,7 +263,8 @@ and the binding of a delegate callee to the implementation the record names by `
   sorted batch (a chain that skips the other keys stalls, and so does a created record no write made), and
   `mapping-write-beside-calls.test.ts` an award written before two calls and one written after them, each as an
   update and as an insert, with the node kept in the segments the write is not in (a node declared changed and
-  back between the calls, changed before the write, or created before the write it belongs to stalls).
+  back between the calls, changed before the write, or created before the write it belongs to stalls), and an
+  entry that never touches the mapping stalls with another node declared rewritten.
 - **`solidcash/test/per-call/time/`** — time as the transaction's own field: a `require(tx.time >= n)` gate compiled
   per-call and driven from a payment's block time, read through the mock chain's strictly-advancing clock and the
   deployment layer's `providerUnixLocktime`. The earlier and the later transaction settle with every frame reading
@@ -295,6 +297,7 @@ listed under the table, and none of those is claimed anywhere else.
 | A contract settled twice, or a read-only frame changing a record, emitting or paying an output | `validator/script.test.ts` (settled twice, paying) and `validator-settlement.test.ts` (changing a record, emitting) |
 | A read-only frame whose call carries value or names a frame that is not read-only | `validator-read-only-calls.test.ts` (three cases) |
 | A record declaration that reads a view an intervening write has already passed (a stale read) | `stale-view.test.ts` (one case) |
+| A record declared changed in a segment its frame's code does not write it in: a data record, another key's mapping node, a batch node outside its write's segment, or a guard shown unset between its two writes (T43, T44) | `unwritten-record-change.test.ts` (five cases) and `shapes/mapping-write-beside-calls.test.ts` (five cases) |
 | A standalone master whose reserved address slot is filled with an address its category does not derive | `standalone-address-slot.test.ts` (one case refused; a slot and a presented address that agree on a foreign address are accepted there, which is the residual only the deployment gate recomputes) |
 | One contract's masters split across two validators | `validator-split-view.test.ts` (one case, with a second validator input beside the first) |
 | An extra call naming an already-used signed input (the call-receipt residual) | `reused-signature.test.ts` (recorded as accepted, so adopting receipts flips it) |

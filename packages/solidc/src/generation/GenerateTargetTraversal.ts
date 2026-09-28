@@ -7991,6 +7991,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.functionHasDelegatecall && (node.sortedBatchInfo?.length ?? 0) > 0) {
         this.emitGuardedSortedBatchTransitionVerification(node);
       }
+      if (this.perCallMaster && !isSelfdestruct) {
+        this.emitPerCallSegmentClose({ location: node.body.location, positionHint: PositionHint.END }, true);
+      }
       // Read-only entry preservation: verify entries not written/deleted are preserved
       // Selfdestruct functions skip - all entries are destroyed
       if (!this.functionHasDelegatecall && hasEntryAccess && !isSelfdestruct) {
@@ -20023,6 +20026,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // says, then takes the call's result from the record. The head no longer checks the record; it only walks
     // past the call section to reach the segments, events and sends.
     if (this.perCallMaster) {
+      this.emitPerCallSegmentClose({ location: node.location, positionHint: PositionHint.START }, false);
       this.emitPerCallCallSite(node, { location: node.location, positionHint: PositionHint.START });
       // The call closes this segment; the code that follows runs in the next one, whose record views differ. Any
       // value written before the call is the closed segment's, so a later read resolves from the declaration.
@@ -21705,6 +21709,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A per-call master's forwarded delegatecall leaves the two values its source reads, `(success, data)`, with
     // the data being the record's result: the call is checked where the source makes it, like the statement form.
     if (this.perCallMaster && node.callMode === 'delegatecall') {
+      this.emitPerCallSegmentClose(locationData, false);
       this.emitPerCallForwardCallSite(node, locationData, true);
       this.perCallSegmentIndex += 1;
       this.perCallOrdinal += 1;
@@ -21757,6 +21762,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // its own received call data to an address it holds, so the record states the frame kind and the target and
     // the site hashes the forwarded bytes. The call closes this segment, exactly as a typed external call does.
     if (this.perCallMaster && node.callMode === 'delegatecall') {
+      this.emitPerCallSegmentClose(locationData, false);
       this.emitPerCallForwardCallSite(node, locationData, false);
       this.perCallSegmentIndex += 1;
       this.perCallOrdinal += 1;
@@ -24337,7 +24343,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
-    if (this.perCallMaster) this.emitPerCallBatchNodesKept(node, loc);
     const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);
@@ -24665,46 +24670,117 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Requires a per-call frame to declare its batch's nodes kept in every segment but the one its writes land in.
+   * Closes the running segment: every record it declares must be kept unless this code accounts for it there.
    *
-   * The body verifies the transition only in the write's segment, and settlement chains whatever views the others
-   * declare, so a node declared changed there - before the write, or after it and back - would be read by a callee
-   * between those segments without any write having made it. A spent node is named by its proof's input; a created
-   * node by the output its group declares in the write's segment.
+   * Settlement chains whatever views a frame declares, so a record its code does not write in a segment is one the
+   * frame must declare kept there, whatever record it is: its own data record, or a mapping node its code never
+   * touches. A data record written in the segment is rebuilt from the fields the body holds and compared with the
+   * declaration at a call; at the body's end the record close does that. The batch's write segment leaves its
+   * groups and value chunks to the batch walk, and the segment a dynamic write pins its chunk run in leaves the run
+   * to the pins, so both check only the records before them.
    */
-  private emitPerCallBatchNodesKept(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    const callCount = this.perCallExecutionCallCount();
-    if (callCount === 0) return;
-    const write = this.perCallBatchWriteSegment;
-    // A body whose calls are not a fixed set reads its call count from the block.
-    const counts = this.perCallCallsMadeActive ? { runtimeCounts: true as const } : { callCount };
-    const kept = (): void => {
-      this.emit(bytecodeToScript(declaredRecordsKeptScript({ writeSegment: write, ...counts })), loc);
-    };
-    const targets = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
-    for (const [ordinal, slot] of targets.entries()) {
-      this.emitPickVMapWitness(`__internal__vmapBatchProof_${slot}`, loc);
-      this.emitMasterInputIndex(loc, 1);
-      this.emit(Op.OP_ADD, loc);
-      kept();
-      // An insert's created node is its group's second record, past each earlier insert's extra record.
-      this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${slot}`, loc);
-      this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      if (this.perCallCallsMadeActive) this.emit(encodeInt(BigInt(write)), loc);
-      const above = this.perCallCallsMadeActive ? 2 : 1;
-      this.emit(encodeInt(BigInt(this.dataNftCount + ordinal + 1)), loc);
-      for (const prior of targets.slice(0, ordinal)) {
-        this.emitPickVMapWitness(`__internal__vmapBatchPredOut_${prior}`, loc, above);
-        this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+  private emitPerCallSegmentClose(loc: SingleLocationData, atEnd: boolean): void {
+    // A contract with no state has no records, so its frames have none to keep.
+    if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
+    const node = this.currentFunction;
+    const written = this.readsRecordsFromFrame ? this.perCallRecordsWrittenHere(atEnd) : [];
+    if (!atEnd) for (const [nftIdx, offset] of written) this.emitPerCallRecordRebuildCheck(nftIdx, offset, loc);
+    for (const [, offset] of written) {
+      for (const side of ['in', 'out'] as const) {
+        this.emitRecordBlockBase(side, loc);
+        this.emit(encodeInt(BigInt(offset)), loc);
         this.emit(Op.OP_ADD, loc);
+        this.pushToStack('(kept_exempt)');
       }
-      this.emit(bytecodeToScript(declaredRecordOrdinalIndexScript(this.perCallCallsMadeActive
-        ? { runtimeCounts: true, side: 'out' }
-        : { segmentIndex: write, callCount, side: 'out' })), loc);
-      kept();
-      this.emit(Op.OP_ENDIF, loc);
     }
+    const leadings: number[] = [];
+    if ((node.sortedBatchInfo?.length ?? 0) > 0 && this.perCallSegmentIndex === this.perCallBatchWriteSegment) {
+      leadings.push(this.dataNftCount);
+    }
+    if (atEnd && this.perCallWritesDynamicField()) leadings.push(this.perCallDynamicChunkWidth() - 1);
+    const leading = leadings.length === 0 ? {} : { leading: Math.min(...leadings) };
+    if (this.perCallCallsMadeActive) {
+      // The segment is the one the execution's own calls have reached.
+      this.emit(encodeInt(BigInt(this.getStackIndex(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: written.length, ...leading })),
+        loc);
+    } else {
+      this.emit(bytecodeToScript(declaredRecordsKeptScript({
+        segmentIndex: this.perCallSegmentIndex, callCount: this.perCallExecutionCallCount(), exempt: written.length,
+        ...leading,
+      })), loc);
+    }
+    this.popFromStack(2 * written.length);
+  }
+
+  /**
+   * The data records the body wrote in the segment it is closing, as their data-NFT index and block offset.
+   *
+   * A write since the segment's last call is the segment's own; one made before it was closed at that call. A
+   * dynamic field's write lands where the epilogue pins its chunk run, the body's last segment, and takes its record
+   * with it.
+   */
+  private perCallRecordsWrittenHere(atEnd: boolean): [number, number][] {
+    const written: [number, number][] = [];
+    for (const [nftIdx, offset] of this.compactOffsetMap) {
+      const keys = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
+        .map((sv) => ({ key: `${sv.nftIndex}:${sv.fieldIndex}`, dynamic: sv.isDynamic === true }))
+        .filter(({ key }) => this.pendingStateWrites.has(key));
+      const dynamic = keys.some((field) => field.dynamic);
+      const fresh = keys.some(({ key }) => !this.perCallStaleWrites.has(key));
+      if (atEnd ? dynamic || fresh : fresh && !dynamic) written.push([nftIdx, offset]);
+    }
+    return written;
+  }
+
+  /** True when the body writes a dynamic field, whose chunk run the epilogue pins in the body's last segment. */
+  private perCallWritesDynamicField(): boolean {
+    return this.stateVariables.some((sv) => sv.isDynamic === true
+      && this.pendingStateWrites.has(`${sv.nftIndex}:${sv.fieldIndex}`));
+  }
+
+  /**
+   * Rebuilds a data record from the fields as the running segment leaves them and requires its declaration there.
+   *
+   * A field written since the segment's last call comes from the body's slot, any other from the segment's own
+   * declared view, so the record is the one the segment's code computed.
+   */
+  private emitPerCallRecordRebuildCheck(nftIdx: number, offset: number, loc: SingleLocationData): void {
+    const fields = this.stateVariables.filter((sv) => sv.nftIndex === nftIdx)
+      .sort((a, b) => a.fieldIndex - b.fieldIndex);
+    const previousReadSegment = this.perCallReadSegment;
+    this.perCallReadSegment = this.perCallSegmentIndex;
+    let firstField = true;
+    if (this.isMultiDataNft()) {
+      this.emit(encodeNftIndexTag(nftIdx), loc);
+      this.pushToStack('(value)');
+      firstField = false;
+    }
+    for (const sv of fields) {
+      const key = `${sv.nftIndex}:${sv.fieldIndex}`;
+      const stackName = this.pendingStateWrites.get(key);
+      if (stackName !== undefined && !this.perCallStaleWrites.has(key)) {
+        this.emitPickSettlementValue(stackName, loc, this.currentFunction);
+        this.pushToStack('(value)');
+      } else {
+        const fieldType = this.physicalFieldType(sv);
+        this.emitStateFieldRead(sv, fieldType, fields, loc);
+        this.pushToStack('(value)');
+        this.emitPushdataEncode(fieldType, loc);
+      }
+      if (!firstField) {
+        this.emit(Op.OP_CAT, loc);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+      }
+      firstField = false;
+    }
+    this.emitDataNftOutputCommitment(offset, loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, loc);
+    this.popFromStack(2);
+    this.perCallReadSegment = previousReadSegment;
   }
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {

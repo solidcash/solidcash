@@ -29,6 +29,9 @@ import {
   takeLengthPrefixedField32,
 } from './witness-reader.js';
 
+/** The u16 index the codec reserves for a record with no input or no output. */
+const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]);
+
 /** Which side of a record a read addresses. */
 export type RecordSide = 'in' | 'out';
 
@@ -412,43 +415,55 @@ function minimalNumber(value: number): Uint8Array {
   return new Uint8Array(result);
 }
 
+/** Options for the walk that requires a segment's records kept unless its code accounts for them. */
+export type DeclaredRecordsKeptOptions = DeclaredViewCounts & {
+  /** How many coordinate pairs lie beneath the walk's entry, each an input index then an output index. */
+  readonly exempt: number;
+  /** When set, only the records before this position are checked: the ones past it are a write's own. */
+  readonly leading?: number;
+};
+
 /**
- * Builds the script that requires every segment but the write's to declare the record at the coordinate kept.
+ * Builds the script that requires every record the running segment declares kept, unless the code accounts for it.
  *
- * Entry `[..., coordinate]`, exit `[...]`. In each segment other than `writeSegment`, a record naming the coordinate on
- * either side must read and recreate it there with its view unchanged. A frame's code writes a mapping node in one
- * segment only, so a view changed in any other, or a chain restarted by creating the node there, is one no write
- * made, and a callee running between the segments would read it. Every declared segment is walked, so only the call
- * records are stepped by a count the source may fix.
+ * Entry `[..., in_1, out_1, ..., in_n, out_n]` (with the segment index above them for run-time counts), exit
+ * `[...]`. A record is kept when it reads and recreates one index with its view unchanged, or, beside another master of
+ * the frame's contract under a validator, when it names a record another frame created at its output alone with its
+ * view unchanged: the validator settles the contract then, and holds a created record's first view to nothing. A
+ * record naming an exempt pair's input or output index is one the code wrote and verifies itself, and so is a
+ * record at or past `leading`. Any other record changed in the segment is one no code computed: settlement would
+ * chain it to the transaction's outputs and a callee between two segments would read it.
  */
-export function declaredRecordsKeptScript(
-  options: { readonly writeSegment: number } & ({ readonly callCount: number } | { readonly runtimeCounts: true }),
-): Uint8Array {
+export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): Uint8Array {
   const bytes: number[] = [];
   const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
   const raw = (script: Uint8Array): void => { bytes.push(...script); };
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
   const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
-  op(Opcodes.OP_TOALTSTACK); // the coordinate, compared against each record
+  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK); // the segment index, taken as the walk reaches it
   raw(readOwnWitnessBlockScript());
+  // Whether the frame shares a validator-settled transaction with another master of its contract: a validator is
+  // referenced and another input holds the category's minting token.
+  op(Opcodes.OP_DUP); num(WITNESS_BLOCK_HEADER_LENGTH - 2); op(Opcodes.OP_SPLIT, Opcodes.OP_NIP);
+  num(2); op(Opcodes.OP_SPLIT, Opcodes.OP_DROP);
+  raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_EQUAL, Opcodes.OP_NOT);
+  op(Opcodes.OP_IF, Opcodes.OP_0, Opcodes.OP_0, Opcodes.OP_BEGIN);
+  op(Opcodes.OP_DUP, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY, Opcodes.OP_EQUAL);
+  op(Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP, Opcodes.OP_1ADD);
+  op(Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_UNTIL);
+  op(Opcodes.OP_DROP); num(2); op(Opcodes.OP_GREATERTHANOREQUAL);
+  op(Opcodes.OP_ELSE, Opcodes.OP_0, Opcodes.OP_ENDIF);
+  op(Opcodes.OP_SWAP); // [shared, block]
   raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
   skipField(takeLengthPrefixedField()); // sender
   skipField(takeLengthPrefixedField()); // self
   skipField(takeFixedWidthField(8)); // value
   skipField(takeLengthPrefixedField32()); // retval
-  const counts: DeclaredViewCounts = 'callCount' in options
-    ? { segmentIndex: options.writeSegment, callCount: options.callCount }
-    : { runtimeCounts: true };
-  stepDeclaredCallRecords(bytes, counts, op, raw, num);
-  raw(takeFixedWidthField(2)); // [segmentCountBytes, rest]
-  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_ROT); // [segments, segment, rest]
+  stepDeclaredCallRecords(bytes, options, op, raw, num);
+  skipField(takeFixedWidthField(2)); // declared segment count
+  stepDeclaredSegments(options, op, raw, num);
 
-  op(Opcodes.OP_BEGIN);
-  num(1); op(Opcodes.OP_PICK); num(options.writeSegment); op(Opcodes.OP_NUMEQUAL);
-  op(Opcodes.OP_IF);
-  skipSegment(op, raw, num);
-  op(Opcodes.OP_ELSE);
   raw(takeFixedWidthField(2)); // [countBytes, rest]
   op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_ROT); // [count, cursor, rest]
   num(2); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
@@ -459,16 +474,28 @@ export function declaredRecordsKeptScript(
     raw(takeFixedWidthField(2)); // in
     raw(takeFixedWidthField(2)); // out
     raw(takeLengthPrefixedField32()); // viewIn
-    raw(takeLengthPrefixedField32()); // viewOut: [count, cursor, in, out, viewIn, viewOut, rest]
-    op(Opcodes.OP_TOALTSTACK, Opcodes.OP_EQUAL); // [count, cursor, in, out, sameView]
-    op(Opcodes.OP_ROT, Opcodes.OP_BIN2NUM, Opcodes.OP_ROT, Opcodes.OP_BIN2NUM); // [count, cursor, sameView, in, out]
-    op(Opcodes.OP_2DUP, Opcodes.OP_NUMEQUAL);
-    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BOOLAND); // [count, cursor, in, out, kept]
-    op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK, Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK);
-    op(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK); // [count, cursor, in, out, kept, coordinate]
-    num(3); op(Opcodes.OP_PICK, Opcodes.OP_OVER, Opcodes.OP_NUMEQUAL, Opcodes.OP_SWAP);
-    num(3); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL, Opcodes.OP_BOOLOR); // [count, cursor, in, out, kept, named]
-    op(Opcodes.OP_NOT, Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY, Opcodes.OP_2DROP);
+    raw(takeLengthPrefixedField32()); // viewOut: [shared, count, cursor, in, out, viewIn, viewOut, rest]
+    op(Opcodes.OP_TOALTSTACK);
+    op(Opcodes.OP_OVER, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0NOTEQUAL); // whether the view is a record's
+    op(Opcodes.OP_ROT, Opcodes.OP_ROT, Opcodes.OP_EQUAL); // [shared, count, cursor, in, out, viewed, sameView]
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM);
+    op(Opcodes.OP_2DUP, Opcodes.OP_NUMEQUAL); // [shared, count, cursor, viewed, sameView, in, out, sameIndex]
+    num(2); op(Opcodes.OP_PICK); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL);
+    num(5); op(Opcodes.OP_PICK, Opcodes.OP_BOOLAND);
+    num(8); op(Opcodes.OP_PICK, Opcodes.OP_BOOLAND, Opcodes.OP_BOOLOR);
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BOOLAND);
+    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); // [shared, count, cursor, in, out, kept]
+    if (options.leading !== undefined) {
+      num(3); op(Opcodes.OP_PICK); num(options.leading); op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_BOOLOR);
+    }
+    for (let pair = 1; pair <= options.exempt; pair += 1) {
+      // Beneath [shared, count, cursor, in, out, kept] the pairs sit deepest first; one copy is on top as each is read.
+      const depth = 8 + 2 * (options.exempt - pair);
+      num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's input
+      num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's output
+      op(Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR);
+    }
+    op(Opcodes.OP_VERIFY, Opcodes.OP_2DROP);
     op(Opcodes.OP_FROMALTSTACK); // [count, cursor, rest]
     op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
     num(1); op(Opcodes.OP_PICK);
@@ -477,14 +504,7 @@ export function declaredRecordsKeptScript(
   }
   op(Opcodes.OP_UNTIL);
   op(Opcodes.OP_ENDIF);
-  op(Opcodes.OP_NIP, Opcodes.OP_NIP); // count, cursor
-  op(Opcodes.OP_ENDIF);
-  op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP); // [segments, segment + 1, rest]
-  num(1); op(Opcodes.OP_PICK);
-  num(3); op(Opcodes.OP_PICK);
-  op(Opcodes.OP_GREATERTHANOREQUAL);
-  op(Opcodes.OP_UNTIL);
-  op(Opcodes.OP_2DROP, Opcodes.OP_DROP); // segments, segment, the rest of the block
-  op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP); // the coordinate
+  op(Opcodes.OP_2DROP, Opcodes.OP_2DROP); // count, cursor, the rest of the block, shared
+  for (let pair = 0; pair < options.exempt; pair += 1) op(Opcodes.OP_2DROP);
   return new Uint8Array(bytes);
 }

@@ -100,7 +100,7 @@ interface Built {
 }
 
 /** Lays out the proxied entry: the fallback delegatecalls the implementation, which writes and then calls Ping. */
-function build(overrides: { readonly proxyAfterViewIn?: Uint8Array } = {}): Built {
+function build(overrides: { readonly proxyAfter?: Uint8Array } = {}): Built {
   const { artifacts, contracts } = compileAndDeploy(source(), {
     Proxy: PROXY_LABEL, Impl: IMPL_LABEL, Ping: PING_LABEL,
   });
@@ -129,10 +129,9 @@ function build(overrides: { readonly proxyAfterViewIn?: Uint8Array } = {}): Buil
   const recordRead: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: before, viewOut: before };
   const recordWritten: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: before, viewOut: after };
   const recordHeld: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: after, viewOut: after };
-  // The proxy's post-call segment, whose declared input a control moves off the written view.
-  const recordResumed: RecordEntry = {
-    in: recordIndex, out: recordIndex, viewIn: overrides.proxyAfterViewIn ?? after, viewOut: after,
-  };
+  // The proxy's post-call segment, which a control declares kept at another view, with the output carrying it.
+  const resumed = overrides.proxyAfter ?? after;
+  const recordResumed: RecordEntry = { in: recordIndex, out: recordIndex, viewIn: resumed, viewOut: resumed };
 
   const proxyMaster: DraftMaster = master({
     master: PROXY_MASTER, contract: 'Proxy', entry: '__fallback', program: proxy.program,
@@ -190,7 +189,7 @@ function build(overrides: { readonly proxyAfterViewIn?: Uint8Array } = {}): Buil
       },
       [RECORD_ID]: {
         source: recordSource,
-        output: { ...recordSource, token: token(proxy.category, 'mutable', after) },
+        output: { ...recordSource, token: token(proxy.category, 'mutable', resumed) },
         // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
         unlockingBytecode: stateRecordUnlockingBytecode(proxyCategoryHex, proxyIndex, 1),
       },
@@ -331,10 +330,10 @@ describe('the proxied entry\'s refusals', () => {
 
   it('refuses a frame whose declaration does not chain from the frame before it', () => {
     const chained = build();
-    // The proxy's post-call segment continues from the read view rather than from the implementation's write, so its
-    // declaration does not chain. The same composition with the written view chains, so the refusal is the one
-    // declaration changed.
-    const broken = build({ proxyAfterViewIn: chained.before });
+    // The proxy's post-call segment keeps the read view rather than the implementation's write, and the output
+    // carries it, so every frame's own declarations hold and only the chain between them breaks. The same composition
+    // with the written view chains, so the refusal is the one declaration changed.
+    const broken = build({ proxyAfter: chained.before });
     expect(bytesToHex(broken.before)).toBe(bytesToHex(chained.before));
     expect(settle(chained).verdicts.find((verdict) => verdict.participant === VALIDATOR_ID)!.accepted).toBe(true);
     expect(VALIDATOR_PROGRAM_REASONS).toContain('V7_CHAIN_BROKEN');

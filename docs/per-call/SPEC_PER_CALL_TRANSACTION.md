@@ -644,9 +644,10 @@ exactly the witness block the master executed with (section 4).
     sees `msg.sender = address(this)`;
   - require `H(selector || args) == calls[k].argsHash`;
   - the call returns `calls[k].result`;
-  - close the segment: the computed records must equal its `viewOut`. The code writes a mapping node in one
-    segment only, so every other segment that declares the node declares it kept: read and recreated in place
-    with its view unchanged (T43);
+  - close the segment: the computed records must equal its `viewOut`. A record the code wrote in the segment is
+    rebuilt and compared; every other record the segment declares is one the code left, so it is declared kept:
+    read and recreated in place with its view unchanged, or, for a record another frame of the same contract
+    created, named at its output with its view unchanged (T43, T44);
   - the next segment reads from its own `viewIn`.
 - At return: close the last segment the same way, and require the computed return value to equal `retval`.
 - A failing `require` fails the input. The SDK reports the revert reason.
@@ -917,7 +918,8 @@ by the code that produces it, by the validator program, or against real state.
 | T39 | Drain the value of a record, master or validator while keeping its commitment | P2, V1, S4, D2 | Yes |
 | T40 | A callee claims a `msg.value` its caller did not send | V5 (`e.value == calls[k].value`); value accounting (open point 10) | Yes |
 | T42 | Mint a state UTXO no write made, by declaring it as a created record of a frame that does write (a forged mapping node beside a sorted batch) | W: a frame declares exactly the records its code wrote (the batch walk counts them); census | Yes |
-| T43 | Show a callee a view no write made, by declaring a mapping node changed in a segment its frame does not write it in (changed and back between two calls, or created before the write) | W2: outside its write's segment a frame declares its batch's nodes kept (every record naming a node's index reads and recreates it in place, view unchanged) | Yes |
+| T43 | Show a callee a view no write made, by declaring a mapping node changed in a segment its frame does not write it in (changed and back between two calls, or created before the write) | W2: the segment close (T44) requires a batch's nodes kept outside the segment they are written in | Yes |
+| T44 | Rewrite any record of a contract through any of its entries, by declaring it changed in a segment the frame's code does not write it in (its data record, another key's mapping node, or a guard written before and after a call shown unset between) | W2: at every segment close a frame rebuilds and compares the records its code wrote there and requires every other record it declares kept | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
 
 **Residual risks:**

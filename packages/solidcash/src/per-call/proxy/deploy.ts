@@ -17,9 +17,11 @@
  * The first two transactions are broadcast through the shipped deployment entry point, which selects the per-call
  * genesis from the artifact. The third is built by the shipped composer: the plan names the deployed masters, the
  * proxy's record and validator, and the delegate edge, and the shipped derivation resolves the callee reference
- * and fills the witnesses. The result is the transaction the machine accepts; it is not broadcast here, because
- * the composer lays participants out on synthetic outpoints — a caller that wants it on chain rebuilds it with the
- * deployment's real outpoints and the same unlocking bytecodes.
+ * and fills the witnesses. That derived transaction is the specification of the hop. When the caller supplies its
+ * own funding (`callerFunding`), the hop is rebuilt on the outpoints the two geneses actually created — the two
+ * masters, the validator, the proxy's record and the caller's own coin — signed by the caller, and broadcast, so
+ * the deployment comes out as three broadcast transactions. When it does not, the hop is only derived, which is
+ * what a caller that wants the shape without broadcasting it takes.
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
@@ -28,9 +30,11 @@ import { perCallValidator } from 'solidc';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
 } from '../../Argument.js';
+import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
+import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   createComposedDerivationHost, deriveComposition, layoutTransaction, participant,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
@@ -46,6 +50,16 @@ import { buildProxyArtifact } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
 export type PerCallProxyDeployHalf = Omit<DeployOptions, 'provider' | 'initialState'>;
+
+/** The caller's own funding for the initialize hop: the coin the root frame's caller input spends. */
+export interface PerCallProxyCallerFunding {
+  /** A UTXO at `callerLockingBytecode`; a root frame binds `msg.sender` to the lock of the input it names. */
+  readonly utxo: Utxo;
+  /** The caller's own unlocker over `callerLockingBytecode`, which signs the hop over the real transaction. */
+  readonly funder: Unlocker;
+  /** Where the caller's leftover satoshis go. Defaults to `callerLockingBytecode`. */
+  readonly changeAddress?: string | Uint8Array;
+}
 
 type Machine = ReturnType<typeof createVirtualMachineBch2026>;
 
@@ -69,6 +83,15 @@ export interface PerCallProxyDeployOptions {
   readonly initialize: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
   /** The deployer's own 25-byte P2PKH lock: the root frame's caller, and the `initialize` frame's `msg.sender`. */
   readonly callerLockingBytecode: Uint8Array;
+  /**
+   * The caller's own funding for the initialize hop, or absent to leave the hop derived.
+   *
+   * Supplying it is what makes the hop real: the derived hop is rebuilt on the outpoints the two geneses actually
+   * created, the caller input is signed by `funder` over that transaction, and the result is broadcast, so the
+   * deployment comes out as three broadcast transactions. The caller's input is the deployer's own — the frame's
+   * root caller — so the UTXO must sit at `callerLockingBytecode`, the same lock the witness sender is bound to.
+   */
+  readonly callerFunding?: PerCallProxyCallerFunding;
   /** The machine the initialize transaction is evaluated on. Defaults to the provider's BCH-2026 machine. */
   readonly vm?: Machine;
 }
@@ -107,6 +130,14 @@ export interface PerCallProxyDeployment {
     readonly accepted: boolean;
     /** The record's commitment after the entry ran: the value the entry itself computed for it. */
     readonly writtenRecordCommitment: Uint8Array;
+    /**
+     * The provider's receipt for the hop, present only when the caller supplied `callerFunding`.
+     *
+     * The hop's outputs carry what `transaction` describes — the same participants recreated, the record at the
+     * commitment the entry computed — placed on the outpoints the geneses created. `transaction` remains the
+     * derived specification either way.
+     */
+    readonly broadcast?: TransactionDetails;
   };
 }
 
@@ -420,6 +451,20 @@ export async function deployPerCallProxy(
   // the lock it was minted at.
   const accepted = verdicts.every((verdict) => verdict.accepted);
 
+  // The hop is the derived transaction until the caller offers its own coin; then it is rebuilt on the geneses'
+  // outpoints, signed and broadcast.
+  const broadcast = options.callerFunding === undefined ? undefined : await broadcastInitializeHop({
+    provider,
+    callerFunding: options.callerFunding,
+    callerLockingBytecode: options.callerLockingBytecode,
+    proxyArtifact,
+    implementationArtifact,
+    proxyCategoryId: proxy.categoryId,
+    implementationCategoryId: implementation.categoryId,
+    program,
+    draft,
+  });
+
   return {
     implementation: {
       contract: implementation.contract, categoryId: implementation.categoryId,
@@ -434,6 +479,7 @@ export async function deployPerCallProxy(
       draft, completed: derived.completed, verdicts, accepted,
       // The commitment every record of the hop ends at, which the entry's own write computed.
       writtenRecordCommitment: writtenCommitment,
+      ...(broadcast === undefined ? {} : { broadcast }),
     },
   };
 }
@@ -593,4 +639,132 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
 async function providerMachine(provider: NetworkProvider): Promise<Machine> {
   const { createVirtualMachineBch2026ForProvider } = await import('../../network/createVirtualMachine.js');
   return createVirtualMachineBch2026ForProvider(provider);
+}
+
+/** An input the composer already assembled: its lock and unlocking bytecode are the hop's, not re-derived here. */
+function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array): Unlocker {
+  return {
+    generateLockingBytecode: () => lockingBytecode,
+    generateUnlockingBytecode: () => unlockingBytecode,
+  };
+}
+
+/** Everything the hop's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */
+interface BroadcastInitializeOptions {
+  readonly provider: NetworkProvider;
+  readonly callerFunding: PerCallProxyCallerFunding;
+  readonly callerLockingBytecode: Uint8Array;
+  readonly proxyArtifact: Artifact;
+  readonly implementationArtifact: Artifact;
+  readonly proxyCategoryId: string;
+  readonly implementationCategoryId: string;
+  /** The derived hop: the specification every input's unlocking bytecode and every output is taken from. */
+  readonly program: ShippedVmProgram;
+  readonly draft: CompositionDraft;
+}
+
+/** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
+function participantUtxo(pools: { masters: readonly Utxo[]; validators: readonly Utxo[]; records: readonly Utxo[] },
+  id: string): Utxo | undefined {
+  const pool = id === PROXY_MASTER_ID || id === IMPLEMENTATION_MASTER_ID ? pools.masters
+    : id === VALIDATOR_ID ? pools.validators
+      : id === RECORD_ID ? pools.records
+        : undefined;
+  return pool?.[0];
+}
+
+/**
+ * Rebuilds the derived hop on the outpoints the two geneses created, signs the caller's input, and broadcasts it.
+ *
+ * The derived hop is the specification: each participant input keeps the unlocking bytecode the composer
+ * assembled, each participant output is recreated as it was, and the record ends at the commitment the entry
+ * computed. What changes is where the inputs sit — the implementation's and proxy's masters, the validator pool,
+ * the record the proxy's genesis minted, and the caller's own coin, at the outpoints the geneses actually
+ * created — and, with them, where the caller's leftover satoshis go: the change is a single output to the caller,
+ * leaving room for the relay fee the derived hop did not carry.
+ *
+ * Supplying the caller's funding is what makes this the real hop; the derived transaction stays the answer when
+ * it is absent.
+ */
+async function broadcastInitializeHop(options: BroadcastInitializeOptions): Promise<TransactionDetails> {
+  const { provider, callerFunding, program, draft } = options;
+  const callerLock = callerFunding.funder.generateLockingBytecode();
+  if (!bytesEqual(callerLock, options.callerLockingBytecode)) {
+    throw new PerCallProxyDeployError(
+      'the caller funding unlocker signs for a lock that is not the hop\'s caller lock, so the root frame\'s '
+      + '`msg.sender` binding would not hold',
+    );
+  }
+
+  // The pools the two geneses published, read back by category and classified the way a per-call deployment mints
+  // them, so a participant is placed on the outpoint it actually sits on rather than a genesis output index.
+  const proxyPools = await readPerCallDeployment(
+    provider, options.proxyCategoryId, options.proxyArtifact.stateLayout!);
+  const implementationPools = await readPerCallDeployment(
+    provider, options.implementationCategoryId, options.implementationArtifact.stateLayout!);
+
+  const { TransactionBuilder } = await import('../../TransactionBuilder.js');
+  // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
+  // to co-spend - so the builder must not append anything.
+  const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
+  for (const placed of draft.layout.participants) {
+    const source = program.sourceOutputs[placed.index];
+    const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
+    const real = participantUtxo(
+      placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id);
+    if (source === undefined || unlockingBytecode === undefined) {
+      throw new PerCallProxyDeployError(
+        `the derived hop carries no input for participant "${placed.id}"`);
+    }
+    if (real === undefined) {
+      throw new PerCallProxyDeployError(
+        `the deployment holds no live UTXO for the initialize hop's "${placed.id}"`);
+    }
+    if (real.satoshis !== source.valueSatoshis) {
+      throw new PerCallProxyDeployError(
+        `the initialize hop's "${placed.id}" holds ${real.satoshis} satoshis, but the derived hop spends `
+        + `${source.valueSatoshis}`,
+      );
+    }
+    const token = source.token === undefined
+      ? {}
+      : { token: libauthTokenDetailsToSolidCashTokenDetails(source.token) };
+    const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
+    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
+  }
+  // The deployer's own coin funds the hop and is the frame's root caller; its signature is a real one over the
+  // real transaction, which is what the root's `msg.sender` binding and the provider both check.
+  builder.addInput(callerFunding.utxo, callerFunding.funder);
+
+  // Every participant recreates in place, so its output index is its input index; anything the composer placed
+  // after them (events, sends, created records) is trailing. The funders' recreations are replaced by the
+  // caller's change below, which is the only non-participant the plan has.
+  const settled = draft.layout.participantCount + draft.trailingOutputs.length;
+  for (const output of program.transaction.outputs.slice(0, settled)) {
+    builder.addOutput(libauthOutputToSolidCashOutput(output));
+  }
+  builder.addBchChangeOutputIfNeeded({
+    to: callerFunding.changeAddress ?? options.callerLockingBytecode, feeRate: 1,
+  });
+
+  // A composition's assembled unlocking bytecodes are wider than the production per-input ceiling (the validator's
+  // alone is over 10,000 bytes), which the composition profile the hop runs under widens. `TransactionBuilder.send`
+  // judges its bytes against the production ceiling and would refuse the hop the provider's own profile accepts, so
+  // the hop is materialized by the builder and handed to the provider directly. The provider stays the decider.
+  const transaction = builder.buildLibauthTransaction();
+  const { binToHex, encodeTransaction, hash256 } = await import('@bitauth/libauth');
+  const rawBytes = encodeTransaction(transaction);
+  const rawHex = binToHex(rawBytes);
+  const submitPrepared = provider.sendPreparedTransaction?.bind(provider);
+  const txid = submitPrepared !== undefined
+    ? await submitPrepared({ rawHex, rawBytes, transaction })
+    : await provider.sendRawTransaction(rawHex);
+  const expected = binToHex(hash256(rawBytes).reverse());
+  if (txid !== expected) {
+    throw new PerCallProxyDeployError(
+      `the provider returned txid ${txid} for the initialize hop, not the ${expected} its bytes hash to`,
+    );
+  }
+  const { attachWait } = await import('../../wait.js');
+  return attachWait({ ...transaction, txid, hex: rawHex } as TransactionDetails, provider);
 }

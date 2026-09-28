@@ -1442,9 +1442,12 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
-  - **Claimed by the parallel worker, from `4eb0915ca`:** a composer helper that fills a frame's value list, the
-    first item `4eb0915ca` names as not covered. Not claimed: the fixture, the proxy hop, I2's security items and
-    every other replica. (The batch planner and R4's write half landed; their rows are in the Log.)
+  - **Claimed by the parallel worker, from `539e09825`:** the two sorted-batch walls of the project census - a
+    verified-mapping write a call precedes (`UnicrowArbitrator` 3, `UnicrowDispute` 1; MS4 and MS7's arbitration)
+    and a mapping write whose key is a field access (`Unicrow.pay`, MS3's pull). Released: the composer helper
+    that fills a frame's value list, which needs compiler metadata naming each slot's read. Not claimed: the
+    fixture, the proxy hop, the dynamic-value walls, I2's security items and every other replica. (The batch
+    planner and R4's write half landed; their rows are in the Log.)
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

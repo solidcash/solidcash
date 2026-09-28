@@ -12,6 +12,7 @@ import {
   type PreparedAtomicMessageBusCall,
 } from './compose-prepared-invocation.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { AuthenticatedProducerResults } from './authenticated-producer-results.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type PlannedInvocation = CompiledGraphPlan['invocations'][number];
@@ -38,8 +39,8 @@ export function hasResultDependentAncestor(
 export function decodeResultsByParent(
   ctx: ResultPropagationContext,
   results: Readonly<Record<number, string>>,
-): Map<number, Map<number, FunctionArgument>> {
-  const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+): Map<number, AuthenticatedProducerResults> {
+  const resultsByParent = new Map<number, AuthenticatedProducerResults>();
   for (const invocation of ctx.returning) {
     if (invocation.parent === null || invocation.consumerCallsiteId === undefined) continue;
     const resultHex = results[invocation.index];
@@ -54,13 +55,33 @@ export function decodeResultsByParent(
       ? undefined
       : (decoded.length === 1 ? decoded[0] : decoded) as FunctionArgument;
     if (value === undefined) continue;
-    const siblings = resultsByParent.get(invocation.parent) ?? new Map<number, FunctionArgument>();
+    const siblings = resultsByParent.get(invocation.parent) ?? new AuthenticatedProducerResults(invocation.parent);
     if (siblings.has(invocation.consumerCallsiteId)) {
-      throw new Error(
-        `Atomic graph has duplicate authenticated producer lane ${invocation.parent}:${invocation.consumerCallsiteId}.`,
-      );
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_RESULT_PROPAGATION === '1') {
+        console.error('atomic-repeated-producer-lane', JSON.stringify({
+          parent: invocation.parent,
+          callsite: invocation.consumerCallsiteId,
+          producers: ctx.returning.filter((candidate) => candidate.parent === invocation.parent
+            && candidate.consumerCallsiteId === invocation.consumerCallsiteId).slice(0, 24).map((candidate) => ({
+            index: candidate.index,
+            function: candidate.function,
+            callee: candidate.callee,
+            callsiteId: ctx.descriptors[candidate.index]?.callsiteId,
+            sourceCallsiteId: ctx.descriptors[candidate.index]?.sourceCallsiteId,
+            sourceLogicalIndex: ctx.descriptors[candidate.index]?.sourceLogicalIndex,
+            batchLogicalIndex: ctx.descriptors[candidate.index]?.batchLogicalIndex,
+            occurrenceIndex: candidate.occurrenceIndex,
+          })),
+        }));
+      }
     }
-    siblings.set(invocation.consumerCallsiteId, value);
+    siblings.add({
+      callsiteId: invocation.consumerCallsiteId,
+      sourceCallsiteId: invocation.sourceCallsiteId,
+      sourceLogicalIndex: invocation.sourceLogicalIndex,
+      occurrenceIndex: invocation.occurrenceIndex,
+    }, value);
     resultsByParent.set(invocation.parent, siblings);
   }
   return resultsByParent;

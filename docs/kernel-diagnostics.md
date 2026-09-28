@@ -61,6 +61,10 @@ or production bytecode. Verify any proposed identity fix again with the switch u
 it also reports `atomic-semantic-claims` with bounded per-domain counts/digests, pass number, local-repeat status,
 and changed observation indices (computed chunks, resources, values, tokens, sidecars). These records contain
 no claim value bytes and distinguish local claim cycles from a repeated active-session fingerprint.
+`SOLIDC_DEBUG_RESULT_PROPAGATION=1` reports result-dependent argument resolution and, on a repeated producer lane,
+`atomic-repeated-producer-lane` lists at most 24 matching producer indices and source/batch/occurrence coordinates, without
+argument or result bytes. Use one named title to distinguish repeated source callsites from duplicate graph rows;
+this observational probe does not alter validation or emitted bytecode.
 `SOLIDC_DEBUG_VMAP_PROOF=1` traces sorted-entry proof and predecessor-output rebinding;
 `SOLIDC_DEBUG_VALUE_WITNESS=1` traces chunked-entry witness selection across nested calls. These are opt-in
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named

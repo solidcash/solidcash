@@ -15,6 +15,7 @@ import {
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
+import { AuthenticatedProducerResults } from '../message-bus/authenticated-producer-results.js';
 
 export type MaterializeCreateBuilderReturnEmitHost = {
   readonly categoryId: string;
@@ -294,7 +295,7 @@ if (preparedAtomicNodes?.length) {
 
   if (preparedAtomicNodes.some((node) => node.refreshArgsFromResults !== undefined)) {
     builder._setResultDependentArgumentRefresher((transactionBuilder) => {
-      const resultsByParent = new Map<number, Map<number, FunctionArgument>>();
+      const resultsByParent = new Map<number, AuthenticatedProducerResults>();
       for (const [groupIndex, nodeIndex] of preparedAtomicNodeByExternalGroup) {
         const node = preparedAtomicNodes![nodeIndex];
         if (node?.parent === null || node?.callsiteId === undefined) continue;
@@ -324,13 +325,13 @@ if (preparedAtomicNodes?.length) {
         );
         if (!values) continue;
         const value = (values.length === 1 ? values[0] : values) as FunctionArgument;
-        const siblings = resultsByParent.get(node.parent) ?? new Map<number, FunctionArgument>();
-        if (siblings.has(node.callsiteId)) {
-          throw new Error(
-            `Atomic graph has duplicate authenticated producer lane ${node.parent}:${node.callsiteId}.`,
-          );
-        }
-        siblings.set(node.callsiteId, value);
+        const siblings = resultsByParent.get(node.parent) ?? new AuthenticatedProducerResults(node.parent);
+        siblings.add({
+          callsiteId: node.callsiteId,
+          sourceCallsiteId: node.sourceCallsiteId,
+          sourceLogicalIndex: node.sourceLogicalIndex ?? node.batchLogicalIndex,
+          occurrenceIndex: node.occurrenceIndex ?? node.batchOccurrenceIndex,
+        }, value);
         resultsByParent.set(node.parent, siblings);
       }
       let changed = false;

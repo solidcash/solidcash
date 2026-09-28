@@ -28,7 +28,9 @@ describe('computed stored-value result propagation', () => {
     const result = propagateResultDependentArguments(context, {
       1: '0b'.padStart(64, '0'), 2: '16'.padStart(64, '0'), 3: '21'.padStart(64, '0'),
     });
-    expect(refresh).toHaveBeenCalledExactlyOnceWith([7n], new Map([[0, 33n]]));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh.mock.calls[0][0]).toEqual([7n]);
+    expect([...refresh.mock.calls[0][1]]).toEqual([[0, 33n]]);
     expect(result.calls[1].valueChunkProductions).toEqual([]);
     expect(result.propagated).toBe(false);
   });

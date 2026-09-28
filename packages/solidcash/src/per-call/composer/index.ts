@@ -11,6 +11,7 @@ export * from './draft.js';
 export * from './composition.js';
 export * from './pools.js';
 export * from './layout.js';
+export * from './recovery.js';
 export * from './witness.js';
 export * from './need-test.js';
 export * from './assemble.js';

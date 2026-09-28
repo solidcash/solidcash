@@ -126,6 +126,25 @@ describe('block layout', () => {
     expect(regions.changeIndex).toBe(10);
   });
 
+  it('places a master\'s recovery side-cars immediately after its own input', () => {
+    // The pair follows the master it belongs to, not the block, so every later participant shifts by its width.
+    const layout = layoutTransaction([{
+      contract: 'A',
+      masters: ['A m1', 'A m2'],
+      state: ['DA'],
+      recovery: { 'A m1': ['A m1/A', 'A m1/B'] },
+    }]);
+
+    expect(layout.participants.map((placed) => [placed.id, placed.index, placed.kind])).toStrictEqual([
+      ['A m1', 0, 'master'],
+      ['A m1/A', 1, 'recovery'],
+      ['A m1/B', 2, 'recovery'],
+      ['A m2', 3, 'master'],
+      ['DA', 4, 'state'],
+    ]);
+    expect(layout.funderInputBase).toBe(5);
+  });
+
   it('refuses a duplicate participant and a second block for one contract', () => {
     expect(() => layoutTransaction([
       { contract: 'A', masters: ['A m1'], state: ['DA'] },

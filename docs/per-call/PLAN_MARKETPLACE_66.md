@@ -1465,12 +1465,21 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
-  - **Claimed by the parallel worker, from `27a77f579`:** (1) the write-after-call cases of
-    `shapes/mapping-write-beside-calls.test.ts` (a node declared changed before the write, and a node created
-    before the write it belongs to), added once the implementer's write-after-call change lands; the kept check
-    is in and needs no change for it. (2) The keccak compute side-car (`MarketplaceV1.takeJob`). **Handed back**:
-    the verified-mapping write a call precedes, which the implementer's round is serving, and the field-access
-    key, served in `ed072744e`. Released earlier: the composer's value-list helper. Not claimed: everything else.
+  - **Claimed by the parallel worker, from `98fafd513`:** (1) **Open soundness hole, found probing the data
+    record side of T43 (T44):** a frame's data-NFT record is checked against its code only where the code writes
+    it, so a frame can declare it changed in any segment its code does not write it in, and the transaction
+    settles that commitment. Probed on a one-field `Ledger` (`int count`, a composition like
+    `shapes/mapping-write-beside-calls.test.ts`): a body that never touches `count` - with no call, or with one -
+    settles its record rewritten to a value no code computed; a body that writes `count` before a call settles
+    the record changed after the write, final output included; every contract input is accepted, the validator
+    included. So an entry of a per-call contract lets whoever composes the transaction rewrite that contract's
+    data record. The fix, claimed: every segment that declares a data record its code does not write in that
+    segment declares it kept (the T43 walk, per record); a record written in more than one segment, or in one
+    the source does not fix, is closed per segment or refused by name. (2) The write-after-call cases of
+    `shapes/mapping-write-beside-calls.test.ts`, now that `6dd0bdfd8` serves that write.
+    (3) The keccak compute side-car (`MarketplaceV1.takeJob`). **Handed back**: the verified-mapping write a call
+    precedes, served in `6dd0bdfd8`, and the field-access key, served in `ed072744e`.
+    Released earlier: the composer's value-list helper. Not claimed: everything else.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

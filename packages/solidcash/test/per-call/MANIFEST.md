@@ -21,23 +21,23 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 336 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 341 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 149 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
-| `packages/solidcash/test/per-call/records/` | `solidcash` | 5 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 67 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 54 |
+| `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 72 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 58 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 13 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 58 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1032 tests (115 + 377 + 540), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 377 is the four rows above it, and `solidcash` 540 is the nine rows above it.
+Total: 1048 tests (115 + 382 + 551), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 382 is the four rows above it, and `solidcash` 551 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.

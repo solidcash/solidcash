@@ -682,36 +682,37 @@ risk. Take the slices in order, each with its own tests.
 - [ ] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
 - [ ] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
   result unchanged.
-- [ ] F6 `deployProxy` in three transactions; `initialize` through the proxy; the `Initializable` flag in the proxy's
-  records (title #8). Moved (`23a89c66b`): the SDK builds the three transactions on the per-call path
-  (`packages/solidcash/src/per-call/proxy/deploy.ts`) - the implementation's genesis, the proxy's genesis with
-  the implementation's address in its own record, and `initialize` through the proxy as a delegate hop, planned
-  by the composer and derived by the shipped host, with the proxy master, the implementation master and the
-  validator accepted and the delegate record binding to the address the proxy's record holds. The state
-  discovery the fixture failed on is answered: per-call records are minted at the funder's lock and found by
-  enumerating the token category (`deploy/records.ts`), which is why the direct reader found none. Still open:
-  broadcasting the initialize transaction (its participants sit on synthetic outpoints), and routing the SDK's
-  `upgrades.deployProxy` here, which needs a slot for the compiled proxy contract. **The record lock is a
-  deviation, recorded below**: the genesis mints the state record at the deployer's lock, while the spec's
-  record table says a category-derived covenant; reconciled by `c67d9ec73`.
-  Still open, with the walls measured (`b24622454` pins each, `deploy/proxy-initialize-write.test.ts`): a
-  state-writing `initialize` through the proxy stalls at the implementation master, for four reasons the pin
-  records from the shipped compiler and machine rather than by reading the sources -
-  (i) a body that reads or writes a record verifies the accessed record's token category against the input that
-  executes (`emitVerifyCatBaseEqMaster`, called from the state read/write emission), while a delegate frame's
-  records belong to its caller, so the comparison fails on the proxy's category before the write is reached
-  (measured: the two operands at the failing instruction are `chainCategory(impl)` and `chainCategory(proxy)`);
-  (ii) the admission binds a forwarded fallback's target to a value the contract holds as a state variable, so a
-  proxy whose implementation address is a deployment-filled constant is refused at compile time;
-  (iii) a body marked `delegate` is refused for the hidden `__internal__proxyMasterIndex` the master head does
-  not supply;
-  (iv) a second address placeholder slot needs positional discrimination in `placeholders.ts` /
-  `master-program.ts:findPlaceholderOffsets`.
-  **Option A is chosen** for (i)-(iv): bake the implementation address as a deployment-filled constant and graft
-  the implementation's layout onto the proxy, the way the direct convention's `graftDefaultProxy` already does,
-  rather than teach the per-call head to serve a delegate frame's own caller records. A second open point the
-  same pin measured: `composer/draft.ts`'s `fill` returns `{}` for non-call sites, so a segment's `viewOut` is
-  never learned from the running machine - the genesis `learnDeclaration` pattern is the model for that half.
+- [x] F6 `deployProxy` in three transactions; `initialize` through the proxy; the `Initializable` flag in the proxy's
+  records (title #8). Landed across `23a89c66b`..`39deb3656`:
+  - the SDK builds the three transactions on the per-call path (`packages/solidcash/src/per-call/proxy/deploy.ts`):
+    the implementation's genesis, the proxy's genesis carrying the implementation's address, and the proxied
+    `initialize` as a delegate hop planned by the composer and derived by the shipped host;
+  - **the write settles** (`61ef1f80b`, `39deb3656`). The state an entry leaves is not something a deployment can
+    state in advance, so the hop is planned with a candidate and the value the entry actually computed is read
+    back out of the machine - the entry closes its record against the declared view, the failed comparison leaves
+    both operands, and the plan is rebuilt with the computed one (`deploy/declaration.ts`, shared with the
+    genesis derivation). A frame's record-category check now resolves the *records' owner*: the executing input
+    for a frame that owns its records, the caller's input for a delegate frame, which the witness block names as
+    the caller reference. The head parks that index as one more tracked slot and the check reads it. Measured:
+    the three-transaction deployment derives, every participant - both masters, the validator and the record - is
+    accepted by the machine, and the record ends at the commitment the shipped encoder materializes from the
+    written state with the implementation's address still in it; a second `initialize` is refused at the entry's
+    own guard, which is the `Initializable` flag in the action;
+  - **a deviation is recorded for the record's shape**: a frame's write rebuilds the whole commitment from the
+    fields *its own source* declares, so a proxy whose record does not declare the implementation's fields loses
+    the address its fallback reads after the first call. A deployment therefore requires the two layouts to agree
+    field by field and refuses a pair that does not (`39deb3656`, `records/partial-write.test.ts` measures the
+    underlying property), and the proxy source declares the implementation's fields beside its own. The
+    spec's section 19 wording ("its records hold the implementation's state layout plus one field") is realized
+    this way; the built-in proxy of F5 is what removes the requirement by keeping the address in code;
+  - **still open**: broadcasting the initialize transaction (its participants sit on synthetic outpoints), and
+    routing the SDK's `upgrades.deployProxy` here, which needs a slot for the compiled proxy contract. The
+    composer's `fill` still returns `{}` for non-call sites, so a plan that cannot state a written view in advance
+    is not derived from the machine at the composer layer - the deployment path reads it back itself.
+- [x] (with F6) The validator program binds a delegate call's target to the callee's own code (`fe87a8b22`): the
+  reference checker and the reason list named `V5_DELEGATE_TARGET_MISMATCH` but the shipped program did not emit
+  it, so the machine accepted a delegate callee that was not the contract the caller's record named. The
+  program-versus-derivation differential run keeps both directions clean.
 - [ ] F7 The fixture's 14 transactions on the per-call path, with the predicted Unicrow addresses equal to the
   deployed ones.
 - `split` and `merge` admin functions: not needed for the 66; deferred.
@@ -783,12 +784,17 @@ risk. Take the slices in order, each with its own tests.
     `msg.sender`. Partial: the inline form now carries `msg.sender = self` and agrees with the base-cast spelling
     (`Base(this).g()`), but a call through an interface value whose runtime target equals the contract is still
     compiled as an external call and refused by the site check, so the two forms are not yet shown to agree.
-  - [ ] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
-    target), and a master presenting its code lock instead of its address. **Open, and now testable**: the forwarded
-    hop settles in the machine, so the record's target can be mutated against it, and the wider shapes (a fallback
-    beside ordinary entries, a receive, a delegatecall whose data is not the entry's own, a target the contract does
-    not hold) stay refused at compile, which `hostile/proxy-binding.test.ts` pins by name. No case yet for the
-    delegate callee that is not the implementation the proxy's record names.
+  - [x] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
+    target), and a master presenting its code lock instead of its address. **Closed for the callee half**
+    (`fe87a8b22`): `hostile/delegate-target-binding.test.ts` builds a real proxied composition whose DELEGATE callee
+    is a second implementation compiled and deployed at its own category while the record names the first, and all
+    three layers refuse it - the derivation names `V5_DELEGATE_TARGET_MISMATCH`, the reference names
+    `THE_DELEGATE_TARGET_IS_NOT_THE_CALLEES_CODE`, and the validator program, which until this round did **not**
+    enforce the rule, now refuses the same bytes; the control with the record's own implementation as callee is
+    accepted. The wider shapes (a fallback beside ordinary entries, a receive, a delegatecall whose data is not the
+    entry's own, a target the contract does not hold) stay refused at compile, which `hostile/proxy-binding.test.ts`
+    pins by name. The "master presenting its code lock instead of its address" half is covered by
+    `hostile/standalone-address-slot.test.ts`.
   - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
     creator that ran no `new`.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
@@ -800,17 +806,19 @@ risk. Take the slices in order, each with its own tests.
     two roots name one input and that the machine accepts, beside the faithful composition.
   - [x] T33: a witness block the master and the validator would read differently (trailing items, non-minimal pushes).
   - [x] T34: a `STATIC` callee that writes a record or emits.
-  - [ ] T35: a value send to a contract made as a plain output. Unticked for the same reason as T26/T27: the
-    compiler refuses a value send, so no compiled master carries one and there is no spend to mutate. The refusal
-    is asserted in `edges/refused-contract-shapes.test.ts`.
+  - [ ] T35: a value send to a contract made as a plain output. Open on its own reason: the compiler refuses a value
+    send, so no compiled master carries one and there is no spend to mutate. The refusal is asserted in
+    `edges/refused-contract-shapes.test.ts`.
   - [ ] T36: a master whose `self` is not `addrV` of its category (V11), and a fake contract presenting another
     contract's address. Partial: a reserved slot filled with an address its category does not derive is refused by the
     head's own binding (`hostile/standalone-address-slot.test.ts`), but a slot and a presented address that agree on a
     foreign address are accepted, because the category-to-address rule is a deployment gate rather than an on-chain
     one (`verifyMasterDeployment`).
   - [ ] T37: a `DELEGATE` callee that is a master of other code than the named target, and an `INTERNAL` callee of
-    another contract. Open, for the same reason as T26/T27: per-call delegate and internal frames are refused at
-    compile, so no spend reaches a mutation.
+    another contract. **The `DELEGATE` half is closed** by `hostile/delegate-target-binding.test.ts` (`fe87a8b22`):
+    the callee is a master of a second contract's code while the call's target names the first, and the derivation,
+    the reference and the machine all refuse it. The `INTERNAL` half stays open: an internal frame is not emitted by
+    the head, so no spend reaches a mutation.
   - [x] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
   - [x] T39: a record, master or validator recreated with less value.
   - [x] T40: a callee claiming a `msg.value` its caller did not send.
@@ -1748,3 +1756,8 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | e2a8e5424 | per-call | an entry returning several values is admissible | 115 + 377 + 540 | **The second half of Y2's wall.** The frame's `retval` is one byte string whether the entry returns one value or several: a tuple's canonical encoding is the concatenation of its values' own encodings, the same encoding a call's arguments go through, and the emission already built that blob and compared it as a single item. Only the admission refused the shape, on the count alone. It now refuses a composite value, which is the one encoding the frame's `retval` cannot compare a single scalar against. **Measured**: the re-entry toy's `claim` returns `(int, int)`, `release` reads both fields and requires them, the composition settles with both frames and the validator accepted, and both values read back through the shipped decoders; the control, the same pair with its values swapped, is refused. |
 | 2026-09-28 | b24622454 | per-call | the walls in front of a proxied initialize that writes | 115 + 377 + 540 | **F6's remaining blocker is measured rather than read.** `deploy/proxy-initialize-write.test.ts` pins, through the shipped compiler and machine: the minted proxy genesis record at the data-NFT covenant reads back through `readPerCallDeployment` and equals the shipped encoder's commitment for the implementation's address; a proxy whose delegatecall target is a filled constant is refused at compile time (`support.ts`'s forwarded-fallback admission wants a value the contract holds as a state variable); a `delegate`-marked body is refused by name for the hidden `__internal__proxyMasterIndex` the master head does not supply; a state-writing `initialize` through the proxy stalls the derivation at the implementation master (`PER_CALL_DERIVATION_STALLED ... filled no witness at site 0`); and the machine-level objection is a category comparison whose two operands are exactly `chainCategory(impl)` and `chainCategory(proxy)`, so a record owned by the frame's caller can never match when the frame's own input executes. Those four facts drive the Option-A decision annotated on F6. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 377 + 540 | The manifest's table is unchanged this round; the F6 annotation now carries the four measured walls and the Option-A decision instead of the single "a delegate frame writing a field would re-encode the record" line. Counts are from the touched-file runs above (solidc master 336 unchanged; solidcash composer 149, toys 58, deploy 67). |
+| 2026-09-28 | 61ef1f80b | per-call | a frame that runs on its caller's records names its records' owner | 115 + 382 + 551 | **The wall the proxy's write died on is the records' owner, and it is now the caller.** A body's category check compared the record's category against the input that executes, which is right for a frame that owns its records and wrong for a delegate frame, whose records belong to the contract whose context it runs in. The head now parks one more tracked slot - the executing input for an owning frame, the caller reference for one that borrows its records - and the check reads it; the shared helper is bypassed for a per-call body so the inlined form is what runs. Measured: reverting only the predicate makes the new delegate-frame case fail its acceptance and pass its "the executing code's own category" control, which is the wall reproduced; with it, a record the frame's caller owns is accepted and a foreign one refused. Direct-path byte identity holds (4/4). |
+| 2026-09-28 | fe87a8b22 | per-call | the validator program binds a delegate call's target | 115 + 382 + 551 | **A rule the reference and the reason list both named, but the shipped program never emitted.** A hostile case built a proxied composition whose DELEGATE callee is not the contract the caller's record names: the derivation refused it and the reference refused it, and the BCH-2026 machine **accepted** it, because `VALIDATOR_PROGRAM_REASONS` never carried `V5_DELEGATE_TARGET_MISMATCH`. The delegate-edge walk now takes the callee input's category, re-pins it as mutable, derives the address with the fragment the program already uses for the self address, and compares it with the recorded target. The hostile pin flips: all three layers refuse, the control with the record's own implementation as callee is accepted, and the program-versus-derivation differential run reports neither a missed rule nor a spurious refusal. |
+| 2026-09-28 | 39deb3656 | per-call | a proxied initialize that writes state settles | 115 + 382 + 551 | **F6's write half, and a recorded deviation about the record's shape.** The state an entry leaves is not something a deployment can state in advance, so the hop is planned with a candidate and the value the entry computed is read back out of the machine - the entry closes its record against the declared view, the failed compare leaves both operands, and the plan is rebuilt with the computed one; the reading is shared with the genesis derivation rather than written twice. A record's commitment is rebuilt from the fields *the implementation's own source* declares, so a proxy whose record omits them loses the address its fallback reads after the first call: a deployment now requires the two layouts to agree field by field and refuses a pair that does not, and the fixtures deploy the shared shape. Measured: the three transactions derive, both masters, the validator and the record are accepted, the record ends at the commitment the shipped encoder materializes from the written state with the implementation's address intact, a second `initialize` is refused at the entry's own guard, and a mismatched pair is refused by name. `records/partial-write.test.ts` measures the underlying property with a two-field record and a control that drops the untouched field. |
+| 2026-09-28 | 90def6234 | per-call tests | the last three edge fixtures carry their record at the covenant | 115 + 382 + 551 | The three fixtures that still built a record at a plain lock now build it at `stateRecordLockingBytecode(category)`, spend it on the covenant's write path with the index of the master that rewrites it (taken from the shipped layout), and assert the record input's own verdict beside the masters'. A liveness check - pointing one record back at the plain lock - fails exactly the record assertions, so the acceptance is the covenant's rule. The plain-lock control stays where it is already stated. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 382 + 551 | The manifest's table is refreshed from this round's runs (solidc master 341, solidcash deploy 72, records 7, hostile 58; 1048 in total), from `yarn build` exit 0 and the focused suites. Two ticks move: **F6**, and with it the F6-deviation line the annotation carries. Open and named: broadcasting the initialize transaction, routing `upgrades.deployProxy` to this path, the composer's `fill` still returning `{}` for non-call sites, and F5's built-in proxy (which is what removes the shared-layout requirement). |

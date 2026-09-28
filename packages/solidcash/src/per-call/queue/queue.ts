@@ -1,0 +1,105 @@
+/**
+ * Serializing the sends whose compositions could touch the same resources.
+ *
+ * A per-call send spends masters, validators and state records, and the transaction it builds has to be built
+ * against the state its predecessor left: once a send lands, the outpoints it spent are gone and the resources it
+ * touched sit at the outputs it created. Two sends whose resource sets intersect therefore have to run one after
+ * the other, while two whose sets are disjoint run concurrently.
+ *
+ * A send names the resources it consumes by the identity of the inputs its plan spends — a master, a validator, a
+ * record — or, when it knows them, by the outpoints those inputs sit on. The queue holds the latest send per
+ * resource and starts a send once every resource it names is free; the send then resolves its plan and runs its
+ * build. Reserving a resource before the send runs is what makes ordering follow arrival: a send enqueued later
+ * against a resource an earlier send still holds waits for it.
+ *
+ * A failing send releases its resources rather than holding them. A broadcast the provider refuses must not wedge
+ * the queue, so its successors run too, each built against the state that is actually live; the failure reaches the
+ * caller's own promise and no other's.
+ */
+
+import type { CompositionDraftPlan } from '../composer/index.js';
+
+/** Raised when a send cannot be queued. */
+export class CompositionQueueError extends Error {
+  public readonly name = 'CompositionQueueError';
+
+  public constructor(message: string) {
+    super(message);
+  }
+}
+
+/** The resources a send consumes, as the queue names them. */
+export type SendResources = readonly string[];
+
+/** One send: the plan to compose, and how to build and broadcast it. */
+export interface QueuedSend<Result = unknown> {
+  /** The plan to compose, or a function that resolves to one when the send's turn comes. */
+  readonly plan: CompositionDraftPlan | (() => CompositionDraftPlan | Promise<CompositionDraftPlan>);
+  /**
+   * The resources the send consumes, or a function resolving to them.
+   *
+   * Defaults to the identities of the master, validator and record inputs the plan names. A caller that knows the
+   * live outpoints names those instead, so two sends resolved from different plans still serialize on the same coin.
+   */
+  readonly resources?: SendResources | (() => SendResources);
+  /** Builds and broadcasts the send against the resolved plan, once it holds every resource it names. */
+  readonly run: (plan: CompositionDraftPlan) => Promise<Result>;
+}
+
+/** The resources a plan consumes: the identities of its masters, validators and state records. */
+export function resourcesOf(plan: CompositionDraftPlan): SendResources {
+  const resources: string[] = [];
+  for (const block of plan.blocks) {
+    for (const master of block.masters) resources.push(master);
+    if (block.validator !== undefined) resources.push(block.validator.id);
+    for (const record of block.state) resources.push(record);
+  }
+  return resources;
+}
+
+/** Resolves a send's resources, refusing one whose resources cannot be known before its turn. */
+function resolveResources(send: QueuedSend<unknown>): SendResources {
+  if (typeof send.resources === 'function') return [...new Set(send.resources())];
+  if (send.resources !== undefined) return [...new Set(send.resources)];
+  if (typeof send.plan === 'function') {
+    throw new CompositionQueueError(
+      'a send whose plan is resolved when its turn comes must name the resources it consumes',
+    );
+  }
+  return [...new Set(resourcesOf(send.plan))];
+}
+
+/** The plan a send composes, resolving one stated later. */
+async function resolvePlan(send: QueuedSend<unknown>): Promise<CompositionDraftPlan> {
+  return typeof send.plan === 'function' ? send.plan() : send.plan;
+}
+
+/** A resolved promise, the release a resource with no holder starts from. */
+const FREE: Promise<void> = Promise.resolve();
+
+/**
+ * A queue that serializes sends on the resources they consume.
+ *
+ * Every resource holds the tail of the sends that named it, and a send starts once all its resources' tails have
+ * settled. A failing send settles its hold as well, so successors proceed; only the failing send's own promise
+ * rejects.
+ */
+export class CompositionQueue {
+  private readonly held = new Map<string, Promise<void>>();
+
+  /** Enqueues one send and returns a promise for its result. */
+  public enqueue<Result>(send: QueuedSend<Result>): Promise<Result> {
+    const resources = resolveResources(send);
+    const prior = resources.map((resource) => this.held.get(resource) ?? FREE);
+    const started = Promise.all(prior).then(() => resolvePlan(send)).then((plan) => send.run(plan));
+    // Reserve each resource for the send's duration before it runs, so a later send that names one waits for it.
+    const settled = started.then(() => undefined, () => undefined);
+    for (const resource of resources) this.held.set(resource, settled);
+    return started;
+  }
+
+  /** Resolves once every send enqueued so far has settled, whether it succeeded or failed. */
+  public async drain(): Promise<void> {
+    await Promise.all([...this.held.values()]);
+  }
+}

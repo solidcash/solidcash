@@ -28,16 +28,18 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 153 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 72 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 8 |
+| `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 84 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 15 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 78 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 85 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1102 tests (115 + 389 + 598), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 598 is the nine rows above it.
+Total: 1120 tests (115 + 389 + 616), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 616 is the eleven rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -117,6 +119,19 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   header and chunk outputs carrying the commitments the plan computed and the segment declaring both records;
   moving the run one participant further on is refused, as is a chunk output carrying a commitment or a lock the
   body did not compute.
+- **`solidcash/test/per-call/reads/`** — reading a deployed contract off chain through `readPerCallEntry`: a `STATIC`
+  root is planned over the live records the deployment layer classifies, the value the entry computed is learned
+  from the frame's own return comparison, the composition is derived, and the value is returned decoded. The read
+  back is driven against a record an earlier accepted composition wrote, the provider's transaction count is
+  asserted unchanged, a refusing entry reports the machine's objection, and the validator reference's own verdict on
+  a read-only root is pinned. `nested.test.ts` drives a read whose root calls another contract's `view` entry: the
+  callee's value is learned first and written into the caller's call record, both frames and the record accept, and
+  the shipped derivation completes callee first.
+- **`solidcash/test/per-call/reverts/`** — a composition the machine refuses, reporting the *innermost* frame's
+  reason: the refusing frame is found by asking the machine for a verdict on every frame of the draft, its depth is
+  read from the assembled caller references, and its reason names the frame, the source line and the custom error the
+  artifact publishes (name and declared parameters). A nested revert reports the callee rather than the caller, both
+  frames are reported when both refuse, and the provider is asserted to have seen no transaction.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own

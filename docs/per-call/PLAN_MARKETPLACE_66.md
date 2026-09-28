@@ -1206,30 +1206,48 @@ risk. Take the slices in order, each with its own tests.
   - **Stream R's bus factor.** R is the main risk and has one coder. Every R slice gets a second coder's review
     before it merges, and `MANIFEST.md` records R's state per slice, so another coder can take it over.
 - [ ] **I2b: every marketplace shape settles**, before I3 and the ladder (user decision 2026-09-27;
-  `MARKETPLACE_SHAPES.md`). Where the ten replicas stand at `d5223266f`. **Settling in their own shape: MS1** (the
-  outer proxy hop, the state write it inherits, appends through the proxy and a registration-style mapping batch),
-  **MS4** (a re-entrant payout whose trip count is data), **MS5** (a payout gated on `tx.origin`), **MS6** (a judge
-  that reads the escrow's recorded payment block read-only, gates on a strictly later block and calls the escrow's
-  own entry), **MS7** (a root, a rater that holds its own flag and a pure calculation, a vault and a claimer
-  re-entered by the claimer: 20 calls, 21 masters, depth 4) and **MS9** (a deployment circle of sixteen broadcast
-  transactions). **MS10**'s replica is written, with its refusals pinned (including the compiler's own warning that
-  a custom error's arguments are not evaluated). **MS2**, **MS3** and **MS8** are written with their open clauses named
-  rather than faked. MS2 calls its store at its own address, appends an `int` element rather than a two-`bytes`
-  struct, and writes a scalar record rather than a struct with a `string[]`. MS3's flow settles in substance (a
-  payable struct call at value 0, a write after a call, a token pull, both events, and a second case driving
-  `ecrecover` over an EIP-191 digest through the composer's own side-car placement). The three details it first
-  carried as workarounds are resolved at `b17fa3331`: a callee frame writing **two** mapping nodes settles (the pin
-  was the plan declaring both nodes with `next == 0`, so two nodes claimed the tail of one sorted list — built as
-  one real list it derives), a **read-only frame now reads a mapping node another frame moved in the same
-  transaction** (it closes through the view its own segment declares, the mapping-node twin of the data-NFT fix
-  `e973901bd`), and a **call mixing a compile-time argument with a run-time one** settles (the run-time digest
-  emitter was running the constant's encoded push as script, so its preimage carried the value where the wire
-  carries the push). The replica is being rewritten to the natural shape those fixes allow. MS8 reads a struct with a
-  `string[]` back through the shipped decoder and runs one frame per call, but a callee getter that takes a
-  parameter is refused because a read cannot resolve an argument from the caller's live records. **A contract can
-  now enter a proxy**: the call names the fallback's own method, `IProxy(proxy).forward(bytes)`, and the framed call
-  data rides as that method's argument, which is the shape the selector-first wire format admits — so the store
-  behind a proxy is no longer a wall, only a shape MS2's replica has not been rewritten into.
+  `MARKETPLACE_SHAPES.md`).
+  - Where the ten replicas stand at `153ce42ea`. A replica settles only when it carries its flow's real shape and
+    every primitive that flow needs settles somewhere (4.6: a narrower variant is partial). None settles yet.
+    - **MS5 and MS6 carry their own flows**, open only on the shared walls below: MS5 a payout gated on
+      `tx.origin`, MS6 a judge that reads the escrow's recorded payment block read-only, gates on a strictly later
+      block and calls the escrow's own entry.
+    - **MS1, partial.** The outer proxy hop, the state write it inherits, appends through the proxy and a
+      registration-style mapping batch settle. Open: P22's `string => string` set and delete, which the MECE tag
+      titles send, is refused by name.
+    - **MS4 and MS7, partial.** The real `UnicrowClaim.claim` makes fixed calls and then, in the same frame
+      (`claimPayments` is internal), `for (i < 5) if (amounts[i] > 0) sendEscrowShare(addresses[i], amounts[i],
+      currency)`. Open: that body stalls, because a looping body's sites are indexed by visit
+      (`PER_CALL_DERIVATION_STALLED`, pinned in `shapes/reentry-payout-loop.test.ts`). MS4's replica moves the
+      loop to its own entry and MS7's writes one literal call per share, without arguments. Behind it: L6 and L7
+      (#50-52, #59-62, #66).
+    - **MS9, partial.** Sixteen broadcast transactions settle, on contracts without constructors. Open: both real
+      implementations' constructors call `_disableInitializers()`, which emits `Initialized`, and the fixture stops
+      there with `PerCallGenesisError` (P30). Behind it: I3, so all 66.
+    - **MS2, partial.** The store sits behind its own proxy and sees `msg.sender` = the root proxy's address
+      (`8795cd234`), through the forwarding spelling only. Open: a store frame built from a run-time scalar stalls
+      at the caller's segment close, and the appended struct's two `bytes` fields and the root's struct record
+      with a `string[]` are not carried.
+    - **MS3, partial.** A payable struct call at value 0, a write after a call, both events and `ecrecover` over an
+      EIP-191 digest settle, after `b17fa3331` fixed the two shipped defects its first workarounds hid (a
+      compile-time argument framed as its value instead of its push; a read-only frame closing a mapping node
+      against the transaction's pair instead of its own declared view). Open: the real pull, one `transferFrom`
+      call writing the allowance and both balance nodes, stalls at master `pull-1`'s first segment close
+      (`OP_SPLIT`, split index 4) with the ledger shown not to be the fault; it is pinned beside the settling flow
+      (`153ce42ea`).
+    - **MS8, partial.** A struct with a `string[]` reads back through the shipped decoder, one frame per call.
+      Open: a callee getter that takes a parameter is refused, because a read cannot resolve an argument from the
+      caller's live records.
+    - **MS10, partial.** Its refusals are pinned, including the compiler's warning that a custom error's arguments
+      are not evaluated. Open: a custom error with arguments, re-raised through a low-level call (E3).
+    - **Open across MS2-MS7.** P2, the typed call into a proxy: the marketplace calls its proxied contracts
+      through typed interfaces with run-time arguments, and a contract enters a proxy today only as
+      `IProxy(proxy).forward(<framed call data>)`, because the caller's digest covers `push(selector) ||
+      push(args)` while the fallback's input is `push(selector || args)`. The fix that matches the EVM is a
+      forwarding fallback that materializes its input from the frame's call-data region; MS2's replica then drops
+      the forwarding spelling. P17: every token transfer and approval goes through SafeERC20, which passes its
+      payload through a local and `Address.functionCall`, both refused; the replicas make typed calls instead. P19:
+      long values in chunks, partial (R5).
   - One neutral replica per flow shape MS1-MS10 in `solidcash/test/per-call/shapes/`, each settled through the
     shipped compile, deployment, composer, derivation and validator with exact post-state, events and balances.
   - Every primitive P1-P30 settles in its own focused test or inside a replica; the catalog's status column follows.
@@ -2135,3 +2153,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | docs(per-call) | the size bound is the user's: about 20K net | 115 + 421 + 752 | **User decision.** The I2 KILL bound on the compiler delta is raised to about 20K net lines across `packages/solidc/src`, replacing the 15K restatement recorded earlier the same day, and the user is ready to drop the bound entirely: the delta is logic, not garbage. Per-shape growth, which the bound was meant to catch, stays a KILL through the per-shape criteria. Measured at `852f3f467`: 12,698 net, of which the per-call subtree is 10,582 across 21 files. The view-mode criterion that shared the bullet is its own bullet now, with its wording unchanged. |
 | 2026-09-28 | (this row's commit) | per-call | the validator is over the real bytecode cap, and the order check cannot be derived under it | 115 + 421 + 754 | **Two findings, both measured, neither of them a fix — and one of them matters for the whole project.** A round was spent on T9/T30's reorder half, the soundness divergence where a frame's declared segments are swapped and the machine accepts while the model refuses (`V7_CHAIN_START_MISMATCH`). **It cannot be landed this round, and the reason is size.** The published-density case reports the shipped validator program at **10,484 bytes** and its own input's unlocking bytecode at **10,568** — 484 and 568 bytes past the 10,000-byte consensus bytecode cap, accepted only because the mock lifts the byte limits; at `maximumInputBytes = 10_000` the machine refuses the shipped input. That is now in 4.5 (with the per-master witness sizes: 273, 165, 17, 276, 17 and a 25-byte P2PKH) and beside the limit-profile rule, as rule 4.6 requires: measured, recorded for Phase R's A9, not fitted now — but it is the binding constraint on anything added to the validator. **The check itself is out of reach even with room**, and the round proved it rather than guessed: the model's rule is the depth-first interleaving of every frame's segments; "the chain starts in segment 0" is false (a frame whose second segment reads the spent commitment is accepted), and a per-frame monotone segment order is necessary but not sufficient (a frame whose `seg 0`, its callee's `seg 0`, then its `seg 1` declare `5→6`, `7→8`, `6→7` is refused by the model and accepted by the program). Deriving the walk needs a `(frame, segment cursor)` stack and a declaration consumer in that order — an estimated 2,000–4,000 bytes. The divergence therefore stays pinned as it is, and the honest next step for it is a size recovery first. The single-master self-settlement path does enforce segment order in the tail (`frame-tail.ts`, `selfSettlementScript`), so the gap is the validator-settled multi-master path. |
 | 2026-09-28 | (this row's commit) | per-call tests | the natural pull shape is pinned beside the flow, and the second read settles | 115 + 421 + 754 | **MS3's natural shape is now pinned where it can be, without giving up the flow's accepted composition.** The replica keeps its settling five-contract flow and gains two cases: the one-call pull — a `transferFrom`-style entry writing the allowance record **and both balance nodes in one execution** — is pinned with the derivation's own message (`PER_CALL_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 (close of segment 0)`) and the machine's own objection (`OP_SPLIT … stack item length: 0; requested split index: 4`), and the case records the evidence that the ledger is not the fault: decoded with the shipped codecs, both written nodes are **one real sorted list** (each `next` is the other's slot and then the zero sentinel), each write is an update against the whole two-node inventory, and **neither node carries `next == 0`** — the plan is well formed and the stall is an interaction, as the bisection shows (a smaller flow of the same shape settles; this plan stalls in **both** node orders, and the order only picks which objection the machine gives: the body's write order fails on the split, the compiler's published order fails on the batch topology check). The second case is a **settle**: a read-only frame reading a balance node a two-node move wrote answers the moved balance and every contract input is accepted — which is the fix `b17fa3331` made visible in this shape. Shapes 90 to 92. |
+| 2026-09-28 | (this row's commit) | docs(per-call) | the replicas are counted by the shape they carry | 115 + 421 + 754 | **Correction, accepted by the implementer.** The I2b paragraph counted narrowed replicas as settling. It now counts a replica as settling only when it carries its flow's real shape and every primitive that flow needs settles somewhere (4.6), and none does yet: MS5 and MS6 carry their own flows and are open only on the walls shared across MS2-MS7; MS1 (P22's `string => string` set and delete), MS4 and MS7 (fixed calls plus a loop of calls in one frame, the real `claim`) and MS9 (constructors that emit `Initialized`) are partial with that shape named as the open wall; MS2, MS3, MS8 and MS10 are restated as of `153ce42ea`. The shared walls are named: P2 (the typed call into a proxy), P17 (SafeERC20's payload through a local and `Address.functionCall`) and P19. The catalog's P2, P4 and P30 rows and its MS1 sentence follow. |

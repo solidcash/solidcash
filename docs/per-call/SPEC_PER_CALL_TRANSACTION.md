@@ -554,12 +554,19 @@ Frame witnesses (section 4a):
 the masters' witnesses, which each master proves about itself, so no fact exists in two places.
 
 ```text
-M = "PC7" 0x01
+M = "PC7" 0x02
     rootCount:u8     root:u8[]                    covered masters entered by users, in execution order (V4)
     masterCount:u8   master:u8[]                  covered masters (must equal the set pointing here, V3)
-    settleCount:u8   (category:32, stateInputCount:u8, stateInput:u8[])[]
-                                                  contracts this validator settles (those with 2+ masters)
+    settleCount:u8   (category:32, stateInputCount:u8, stateInput:u8[],
+                      createdCount:u8, created:u8[])[]
+                                                  contracts this validator settles (those with 2+ masters);
+                                                  `created` lists the output indices of the records the
+                                                  transaction creates for that contract, which is what tells a
+                                                  frame's `in == out` at such an index apart from a state UTXO
 ```
+
+The version byte is `0x02`: version `0x01` had no `created` list, and its `settle` entries end after the state
+inputs.
 
 `M` does not list segments. The validator derives their order from the call tree (V6), so a builder cannot choose
 an order the EVM could not produce.
@@ -1349,7 +1356,11 @@ block = "PW" 0x01                              magic; version 1, frozen with V_T
 
 - **Records.** A record entry names its input `in` and its output `out`:
   - an existing record that is kept: `in == out`, because section 5 recreates at the same index;
-  - a created record: `in = 0xFFFF`, and `out` is a trailing output;
+  - the frame that creates a record: `in = 0xFFFF`, and `out` is a trailing output. The transcript's settlement
+    lists that output (section 6, `createdOutputs`), which is how the program tells a created record's index apart
+    from a spent state UTXO's;
+  - a frame that reads or rewrites a record an earlier frame created: `in == out == that output index`, because the
+    frame resolves the record through its own declaration and the record has no input to name;
   - a deleted record: `out = 0xFFFF`. Only the record's last view in the V6 order may delete it.
 - **Counts.** `segCount == callCount + 1`.
 - **Exactness.** Lengths are exact, and nothing follows the last field (T33).
@@ -1533,7 +1544,9 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
   - A long value arrives as a witness, which the frame checks against the root in the head.
 - **Inserts across frames.**
   - A node created in the transaction can be relinked or updated by later frames.
-  - Its record entry has `in = 0xFFFF`, and its view chain starts at creation.
+  - The creating frame's record entry has `in = 0xFFFF`, and its view chain starts at creation; each later frame
+    that reads or rewrites the node declares `in == out` at the created output's index and continues from the view
+    the frame before it left.
   - V7 and S1 require the final view to equal the created output.
   - `MarketplaceData.initialize` inserts 8 MECE tags in one frame, using today's batch insert.
 - **Long values written by several frames.** This is `jobEvents[jobId]`, where each append rewrites the whole

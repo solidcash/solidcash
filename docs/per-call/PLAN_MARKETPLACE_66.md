@@ -790,14 +790,14 @@ risk. Take the slices in order, each with its own tests.
     outputs. Open; the signature-hash-type cases are the closest coverage today.
   - T17 (pool contention) is liveness only: no test; pools are sized per section 21.
 - [ ] G4 Toys (neutral names), each settling with exact post-state, events and balances:
-  - [ ] **Y1 same-entry appends.** A `Hub` calls `Log.append(id, item)` k = 3 times; `append` pushes onto `items[id]`
-    and emits. (The `publishJobEvent` shape.) Partial, moved (`068876b08`): the from-empty three-append run **settles**
-    - the derivation completes, every contract input and the validator are accepted, and the created chunk's output
-    and the log's header carry the commitments the shipped encoders produce (`toys/same-entry-appends.test.ts`). The
-    per-append events settle in the shape where the run already holds a chunk. What is still refused is the
-    combination: creating the run and emitting one event per append has no layout, because the trailing region puts
-    the events before the created records and the body reads its run band at a fixed coordinate (the toy pins that
-    with the plan-layer error), so the item stays open on its emit half.
+  - [x] **Y1 same-entry appends.** A `Hub` calls `Log.append(id, item)` k = 3 times; `append` pushes onto `items[id]`
+    and emits. (The `publishJobEvent` shape.) Ticked 2026-09-27 (`7125f91b4`): the whole shape settles - one append
+    at a time, two appends, and the three appends from an empty log **with one event per append**. Each case drives
+    real source through the shipped compile, deploy, composer, derivation and machine, and the composed transaction
+    is accepted at every contract input and the validator, with the created chunk's output, the log's header and
+    each event's commitment read back through the shipped encoders. The body resolves the run's chunk through its
+    own segment's declaration, which is what lets a created chunk sit in the trailing region after the events
+    (`toys/same-entry-appends.test.ts`).
   - [ ] **Y2 re-entry.** Built test-first and pinned (`b505d0e8d`, `toys/reentry.test.ts`), not settled: the shape's
     first step cannot compile, because a master that makes an external call is refused a verified-mapping write (its
     sorted-batch operands would have to be derived from the segment the write lands in, which a call has not fixed
@@ -814,24 +814,26 @@ risk. Take the slices in order, each with its own tests.
     running code holds. Two walls are pinned in the toy rather than papered over: a user-entered root cannot
     take the parameter the shape writes, and a later call that also passes a compile-time argument still stalls
     on the caller's own digest, which is an emission bug rather than a composer one.)
-  - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5). Partial, moved
-    (`f2965195f`): the proxy's forwarded call now compiles and is emitted as a delegate frame - a contract whose
-    fallback is its only body and forwards the call data it received to an address it holds - with everything wider
-    refused by name (a fallback beside ordinary entries, a receive, a delegatecall whose data is not the entry's own,
-    a target the contract does not hold). The toy composes the hop and asserts the assembled call record's kind,
-    target and digest. Not settled: the derivation stalls at the proxy master's call site, failing at the same
-    instruction whether the callee reference is filled or reserved, which places it at the record's kind or target
-    comparison before the reference is read. The SDK half (`deployProxy` in three transactions, `initialize` through
-    the proxy, the `Initializable` flag) is untouched.
+  - [ ] **Y4 proxy.** Y1 with `Log` behind the SolidCash upgradeable proxy (spec open point 5). Partial, moved twice.
+    The proxy's forwarded call compiles and is emitted as a delegate frame (`f2965195f`), everything wider is refused
+    by name, and the **hop now settles** (`7125f91b4`): the stall was the body's call-count pin, not the record's
+    kind or target compare - the path walk counted only message calls, so a forwarded delegatecall left the body
+    pinning zero calls against the block's declared one - and the fallback also had to bind its received call data at
+    its real depth. Measured: the derivation completes `Impl.answer()` then `Proxy.__fallback()`, the proxy master,
+    the implementation master and the validator are accepted, the record's kind is the delegate kind, its target is
+    the address the proxy's own state holds, its digest is the selector the fallback received, and the callee's
+    result returns unchanged. Still open: the toy is one hop rather than Y1's shape behind the proxy, and the SDK
+    half (`deployProxy` in three transactions, `initialize` through the proxy, the `Initializable` flag) is untouched.
   - [ ] **Y5 sorted entry lifecycle.** Insert, update, then delete of one key across three calls in one transaction.
-    Partial, moved (`57787e008`): the composer now carries a created node's declaration across the segments that
-    rewrite it (the creating declaration uses the create sentinel, every later one names that output and continues
-    from the view the segment before it left), and the **creating frame settles** - the machine accepts the insert
-    master, the head output reads back the relinked sentinel and the created output carries the node the shipped
-    encoder builds, and rewriting that frame's declared close fails the same input. What still does not settle is the
-    rewrite: the body resolves a written key's node through the single-target walk, which expects an update to be
-    declared in place or an insert to be declared as two records, and a later frame's rewrite of a created node is a
-    one-record segment with no input, which is neither.
+    Partial, moved twice. The composer laid the chain out (`57787e008`: the creating declaration uses the create
+    sentinel, every later one names that output and continues from the view the segment before it left), and the
+    **three frames of the ledger are now accepted** (`7125f91b4`): a frame rewriting a created node takes the node's
+    declared ordinal instead of deriving an output coordinate, the single-target verifier accepts it unchanged, the
+    relinked head and the created node's commitment are read back through the shipped sorted-list encoder, and a
+    mutated declaration is refused. What still does not settle is the composition as a whole: the root's own entry is
+    refused by the machine (`Program attempted to read from an invalid transaction input index ... requested index:
+    -32766`) and the validator input fails an `OP_VERIFY`, both independently of the ledger frames. The frame tail's
+    record-base parking was also fixed on the way, which the same round records.
   - [x] **Y6 fan-in.** `A.go()` calls `Token.approve(U, amt)`, then `U.pull(amt)`; `pull` calls
     `Token.transferFrom(A, U, amt)`. (The `takeJob` shape.) Ticked 2026-09-27 (`0e70219d6`): the toy settles the
     read-modify-write of one allowance node across two frames of one contract - the approval frame closes against the
@@ -1667,7 +1669,8 @@ Titles marked NEVER have not passed on any real compile to date.
   declaration keeps the sentinel. The transcript was extended to list a settled contract's created outputs (wire
   version 2, vectors regenerated) precisely so the program can tell such an index apart from a spent state UTXO: a
   touched-records check, a chain start, the value floor and the chain key all treat a listed created record as a
-  record with no input rather than as an input that happens to exist. A created index of 128 or more would not match
+  record with no input rather than as an input that happens to exist. The spec's sections 6, 16 and 20 have since
+  been corrected to this rule, including the wire version byte and the settlement's created-output list. A created index of 128 or more would not match
   the one-byte list the program searches, so the rule fails closed (it demands a state UTXO) instead of accepting
   wrongly; the toy's indices are small. The spec text should be corrected to the shipped rule.
 
@@ -1675,3 +1678,5 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | 57787e008 | per-call | a created mapping node carried across frames | 115 + 376 + 515 | **The declaration a created record has is now threaded through the plan.** The composer's mapping plan carries a created node from the segment that creates it to every segment that rewrites it: the first declares the output with the create sentinel, each later one names that output and continues from the view the segment before it left, which is the chain the emitted settlement already accepts for a created record. **Measured**: the creating frame settles (the machine accepts the insert master; the head output reads back the relinked sentinel and the created output carries the node the shipped sorted-list encoder builds; rewriting that frame's declared close fails the same input). The two frames that rewrite the created node do not settle yet: the body resolves a written key's node through the single-target walk, which expects an update declared in place or an insert declared as two records, and a later frame's rewrite of a created node is a one-record segment with no input, which is neither. That is the next change, and it is in the body's derivation rather than in the composer. |
 | 2026-09-27 | f2965195f | per-call | the proxy's forwarded call, and the shapes around it | 115 + 376 + 515 | **The proxy's shape now compiles, and nothing wider.** A contract is served when its fallback is the only body a user's call reaches and that body is a single delegatecall whose data operand is the fallback's own received call data and whose target is a value the contract holds. Such a call is emitted as a delegate frame: the head reads the frame kind, leaves the witness `self` for the body, and does not settle its own records, because a delegate frame runs on its caller's records; the call site records the kind, the target the body pushes, and a digest of the call data the caller received, with the selector equality skipped because a forwarded call carries no compile-time selector. Refused by name: a fallback beside ordinary entries, a receive, a delegatecall whose data is not the entry's own, a target the contract does not hold, and a non-delegate low-level call. **A defect was caught in review and fixed before landing**: the first implementation admitted every delegatecall (a constant payload, a sliced local, an ordinary entry's parameter all compiled) while emitting the digest of the entry's own call data, so the record would not have described what ran; the admission is now exactly the forwarded fallback, and the toy pins each refused shape through the shipped source compiler. Not settled: the derivation stalls at the proxy master's call site, failing at the same instruction whether the callee reference is filled or reserved, which places the failure at the record's kind or target comparison before the reference is read. The SDK half - `deployProxy` in three transactions, `initialize` through the proxy, the `Initializable` flag in the proxy's records - is untouched. |
 | 2026-09-27 | 5087e2ec2 | per-call | who may enter a standalone master | 115 + 376 + 515 | **T2 is closed.** A standalone master stands with no validator covering it, so its head's own rule decides who enters it: the new case names a contract's token-bearing input as the frame's caller and presents that lock as its sender, and the machine refuses it. The attribution controls are what make the case evidence rather than a coincidence - the same forge is refused whether the frame claims that lock or the user, and a token behind a user lock is accepted, so the head reads the caller's locking bytecode and not whether the input holds a token. The proxy cases now say what the convention does instead of that it does nothing, and they read the **source** compiler rather than the packaged one: the packaged `compileString` had let one of them pass against a build older than the change it pins. |
+| 2026-09-27 | 7125f91b4 | per-call | three frames answer from their own declarations | 115 + 377 + 521 | **Three mechanisms, one principle: a frame resolves a record through what its own segment declares.** *Dynamic runs*: the write verification takes the entry's declared index for the transaction checks and keeps the band coordinate only for the view close, so a chunk the transaction creates can sit in the trailing region after the events; the declared-view ordinal walk had a real defect this exposed (its input arm split the view it had just extracted and reread a non-empty view as a length prefix, and the write side computed its ordinal against the input base) and is now one shared implementation for either side. **Measured**: the append toy's from-empty run with one event per append settles - three appends, one created chunk after the events, every contract input and the validator accepted, the created chunk, the header and each event read back through the shipped encoders - which ticks Y1. *Rewritten nodes*: a frame rewriting a created mapping node takes the node's declared ordinal (pushed as a negative index) instead of an output coordinate derived from the parked base, a frame that spent its node keeps the coordinate path, and a per-call frame no longer proves the whole transaction's collection cardinality, which is not its to prove when other frames hold records of the same collection. **Measured**: the lifecycle toy's three ledger frames are accepted, the relinked head and the created node's commitment read back through the shipped encoder, a mutated declaration refused. *Delegate calls*: the proxy's stall was the body's **call-count pin**, not the record's kind or target compare - the path walk counted only message calls, so a forwarded delegatecall left the body pinning zero against the block's declared one - and the fallback binds its received call data at its real depth instead of rebuilding it from the input's bytecode. **Measured**: the hop settles with the proxy master, the implementation master and the validator accepted. **Found on the way**: the frame tail parked the first record's input index twice (the second read split the same copy after the first field was dropped, so the output base equalled the input base); the two index fields are now read from one copy, input first, which is the order the head's slot reader takes them back in. |
+| 2026-09-27 | (this row's commit) | per-call | the spec's created-record rule is corrected | 115 + 377 + 521 | **The design document now states what ships.** A created record's entry carries the create sentinel only on the frame that creates it, and a frame that reads or rewrites it names the output index (`in == out == that index`), which is what the transcript's created-output list exists to make decidable; the transcript section's codec block, its version byte (`PC7` `0x02`, with version `0x01` having no created list) and the settlement's created-output list are all stated there now, and the insert-across-frames passage says the same. Nothing else changed: the wire itself landed last round, and the focused suites are the ones above. |

@@ -28,6 +28,7 @@ import {
   persistedJobEventsWidth,
 } from './value-chunk-persist.js';
 import { legacyGroupLooksLikePublishJobEvent } from './legacy-planning-heuristics.js';
+import { groupEventSignatures, lowLevelCallStateOwnerCategory } from './value-chunk-base-writer-select.js';
 
 export interface DelegateImplEventReassertHost {
   readonly externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
@@ -176,23 +177,26 @@ export function reassertDelegateImplEvents(
       candidate.delegateCallGroupIndex === groupIndex
     ));
     const eventSlots = fn?.blockLayout?.slots.filter((slot) => slot.kind === 'event') ?? [];
+    const eventSignatures = groupEventSignatures(group, fn);
     for (const [eventOrdinal, eventSlot] of eventSlots.entries()) {
-      const emitInfo = fn?.emits?.[eventOrdinal];
-      if (!emitInfo) continue;
+      const eventSignature = eventSignatures[eventOrdinal];
+      if (!eventSignature) continue;
       const dest = implIndex + eventSlot.offset;
       const existing = builder.outputs[dest];
       // Delegate bytecode executes against its associated proxy's storage/category. Output contents are not
       // ownership evidence: a none-cap OP_TRUE return witness can legitimately occupy another delegate's same
       // relative slot. Inferring the category from that occupant promotes the witness into a duplicate event,
       // which the implementation's event-uniqueness epilogue correctly rejects.
-      const executionCategory = proxyGroup?.categoryId;
+      const executionCategory = lowLevelCallStateOwnerCategory(
+        groupIndex, group, host.externalCallUtxoGroups, host.categoryId,
+      );
       // Top-level proxy calls already project their event frame through the builder's own block layout. This
       // repair is only for a nested execution category; otherwise reserved union slots could activate
       // inactive initialization ordinals.
-      if (!executionCategory || executionCategory === host.categoryId) continue;
+      if (!proxyGroup || executionCategory === host.categoryId) continue;
       const locking = scriptToLockingBytecode(
         buildEventNftCovenantScript(
-          hexToBin(executionCategory), computeEventNameHash(emitInfo.eventSignature),
+          hexToBin(executionCategory), computeEventNameHash(eventSignature),
         ),
         group.externalContract.inner.addressType,
       );

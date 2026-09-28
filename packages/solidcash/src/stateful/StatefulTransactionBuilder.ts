@@ -954,6 +954,12 @@ import {
   materializeTrailingFrameAndPending,
   type MaterializeTrailingFrameAndPendingHost,
 } from './stb-materialize-trailing-frame-and-pending.js';
+export {
+  physicalBalancedTrailingOutputCount,
+  shouldReassertLegacyDelegateLoopEntries,
+  shouldAppendUnsegmentedLoopEntries,
+} from './stb-materialize-trailing-frame-and-pending.js';
+export { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import {
   createBuildDebugStages,
   type CreateBuildDebugStagesHost,
@@ -1248,6 +1254,8 @@ export {
   selectCompilerWriterEvent,
   externalCallEventDestinations,
   lowLevelCallImmutableEventDestinations,
+  groupEventSignatures,
+  lowLevelCallStateOwnerCategory,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
   type CompilerWriterEventSelection,
@@ -2418,6 +2426,7 @@ export class StatefulTransactionBuilder {
 
   private _materializeTrailingFrameAndPendingHost(): MaterializeTrailingFrameAndPendingHost {
     return {
+      runtimeLoopTrailingSegments: this.runtimeLoopTrailingSegments,
       loopEntriesBeforeDynamicChunks: this.loopEntriesBeforeDynamicChunks,
       delegateEntriesAfterLowLevel: this.delegateEntriesAfterLowLevel,
       loopEntryCommitments: this.loopEntryCommitments,

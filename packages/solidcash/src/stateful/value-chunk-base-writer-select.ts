@@ -406,6 +406,41 @@ export type ParticipantImmutableEventDestination = {
   destination: number;
 };
 
+/** Event signatures follow compiler-published physical slot identities when present. */
+export function groupEventSignatures(
+  group: Pick<ExternalCallUtxoGroup, 'compilerRoute'>,
+  abiFunction?: Pick<AbiFunction, 'emits'>,
+): Array<string | undefined> {
+  const published = group.compilerRoute?.eventSignaturesBySlot ?? [];
+  const declared = abiFunction?.emits ?? [];
+  return Array.from({ length: Math.max(published.length, declared.length) }, (_, index) => (
+    published[index] ?? declared[index]?.eventSignature
+  ));
+}
+
+/** Delegate execution mutates the physical proxy's state, not the implementation's. */
+export function lowLevelCallStateOwnerCategory(
+  groupIndex: number,
+  group: Pick<ExternalCallUtxoGroup, 'categoryId' | 'callMode'>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
+  rootStateOwnerCategory = group.categoryId,
+  rootDelegateGroupIndex?: number,
+): string {
+  if (group.callMode !== 'delegatecall') return group.categoryId;
+  if (groupIndex === rootDelegateGroupIndex) return rootStateOwnerCategory;
+  const ownerCategories = new Set<string>();
+  for (const [candidateIndex, candidate] of proxyGroups.entries()) {
+    const ownerIndex = candidate.sharedGroupIndex ?? candidateIndex;
+    const owner = proxyGroups[ownerIndex] ?? candidate;
+    const delegateIndex = candidate.delegateCallGroupIndex ?? owner.delegateCallGroupIndex;
+    if (delegateIndex === groupIndex) ownerCategories.add(owner.categoryId);
+  }
+  if (ownerCategories.size === 0) return rootStateOwnerCategory;
+  if (ownerCategories.size === 1) return [...ownerCategories][0];
+  throw new Error(`Delegate execution group ${groupIndex} has multiple physical state owners`);
+}
+
 /**
  * Absolute immutable-event coordinates owned by low-level execution frames.
  *
@@ -415,17 +450,15 @@ export type ParticipantImmutableEventDestination = {
 export function lowLevelCallImmutableEventDestinations(
   groups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
   'categoryId' | 'callMode' | 'blockLayout' | 'compilerRoute'>>,
-  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup, 'categoryId' | 'delegateCallGroupIndex'>>,
+  proxyGroups: ReadonlyArray<Pick<ExternalCallUtxoGroup,
+  'categoryId' | 'delegateCallGroupIndex' | 'sharedGroupIndex'>>,
   inputBaseForGroup: (groupIndex: number) => number,
 ): ParticipantImmutableEventDestination[] {
   const destinations: ParticipantImmutableEventDestination[] = [];
   for (const [groupIndex, group] of groups.entries()) {
     const base = inputBaseForGroup(groupIndex);
     if (base < 0) continue;
-    const proxyGroup = group.callMode === 'delegatecall'
-      ? proxyGroups.find((candidate) => candidate.delegateCallGroupIndex === groupIndex)
-      : undefined;
-    const categoryId = proxyGroup?.categoryId ?? group.categoryId;
+    const categoryId = lowLevelCallStateOwnerCategory(groupIndex, group, proxyGroups);
     const layout = group.blockLayout ?? group.compilerRoute?.abiFunction.blockLayout;
     for (const slot of layout?.slots ?? []) {
       if (slot.kind === 'event' || slot.kind === 'returnEvent') {

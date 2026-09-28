@@ -10,10 +10,9 @@ import { resolveBlockhashCoSpend } from '../oracle/blockhashCoSpend.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
-import { selectVisibleCallArguments } from './route-expression-key.js';
+import { argumentsForPhysicalAbiFrame } from './route-expression-key.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import { groupLayoutTrailingBase } from './writer-event-delegate-layout.js';
-import { logicalExternalCallFunction } from './writer-group-selection.js';
 
 export function selectorParamSlot(
   paramName: string,
@@ -106,12 +105,13 @@ export async function finalizeCreateBuilderNestedBasesUnlockers(
     const bAbiFunc = group.compilerRoute?.abiFunction
       ?? bAbiAll.find((f) => f.name === group.functionName);
     const bAbiInputs = bAbiFunc?.inputs ?? [];
-    const logicalAbiInputs = logicalExternalCallFunction(group)?.inputs ?? bAbiInputs;
-    const routeArgs = selectVisibleCallArguments(
-      logicalAbiInputs,
-      group.logicalFunctionArgs,
-      group.compilerRoute ? group.compilerRoute.args : group.functionArgs,
-    );
+    const routeArgs = argumentsForPhysicalAbiFrame({
+      abiFunction: bAbiFunc,
+      physicalFunctionArgs: group.functionArgs,
+      logicalFunctionName: group.logicalFunctionName ?? group.functionName,
+      logicalFunctionArgs: group.logicalFunctionArgs,
+      compilerRoute: group.compilerRoute,
+    });
     const userArgCount = routeArgs.length;
 
     // Compiler routes may interleave hidden inputs with published witnesses (for example

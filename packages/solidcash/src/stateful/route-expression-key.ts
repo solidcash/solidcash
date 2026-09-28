@@ -274,6 +274,33 @@ export function selectVisibleCallArguments<T>(
     ? logicalArguments : fallbackArguments;
 }
 
+/** Choose arguments for the ABI actually executed by a physical participant. */
+export function argumentsForPhysicalAbiFrame<T>(parts: {
+  abiFunction?: { name: string; inputs: readonly { name: string }[] };
+  physicalFunctionArgs: readonly T[];
+  logicalFunctionName?: string;
+  logicalFunctionArgs?: readonly T[];
+  compilerRoute?: {
+    abiFunction: { name: string; inputs: readonly { name: string }[] };
+    args: readonly T[];
+  };
+}): readonly T[] {
+  const visibleInputCount = parts.abiFunction?.inputs.filter(
+    (input) => !input.name.startsWith('__internal__'),
+  ).length;
+  const logicalArgs = parts.logicalFunctionArgs;
+  if (parts.abiFunction && logicalArgs !== undefined
+    && parts.logicalFunctionName === parts.abiFunction.name
+    && logicalArgs.length === visibleInputCount) {
+    return logicalArgs;
+  }
+  if (parts.abiFunction && parts.compilerRoute
+    && parts.compilerRoute.abiFunction === parts.abiFunction) {
+    return parts.compilerRoute.args;
+  }
+  return parts.physicalFunctionArgs;
+}
+
 export interface DirectMappingReadPlan {
   collection: string;
   keyArgumentIndices: readonly number[];

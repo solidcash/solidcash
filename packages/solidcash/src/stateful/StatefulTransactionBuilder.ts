@@ -1256,6 +1256,9 @@ export {
   lowLevelCallImmutableEventDestinations,
   groupEventSignatures,
   lowLevelCallStateOwnerCategory,
+  selectBuilderValueChunkOutputBase,
+  transportedContinuationLocalBase,
+  rebaseValueChunkWriteDescriptors,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
   type CompilerWriterEventSelection,
@@ -1271,6 +1274,7 @@ import {
   selectCompilerWriterEvent,
   externalCallEventDestinations,
   lowLevelCallImmutableEventDestinations,
+  selectBuilderValueChunkOutputBase,
   type ProtectedLoopEntryCollectionSelection,
   type CompilerWriterEventCandidate,
   type CompilerWriterEventSelection,
@@ -5593,7 +5597,8 @@ export class StatefulTransactionBuilder {
     return writes.map(({ write, blockSize }) => {
       const localOutputBase = blockBase > 0 && blockSize !== undefined
         && write.outputBase >= blockBase && write.outputBase < blockBase + blockSize
-        ? write.outputBase - blockBase : write.outputBase;
+        ? selectBuilderValueChunkOutputBase(write.outputBase, write.outputBase, blockBase)
+        : write.outputBase;
       return {
         ...write,
         outputBase: absoluteComposedValueChunkOutputBase(localOutputBase, blockBase),

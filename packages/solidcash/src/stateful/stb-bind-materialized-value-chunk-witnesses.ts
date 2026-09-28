@@ -11,6 +11,8 @@ import { findDisposableValueChunkOutputBase } from './early-value-chunk-helpers.
 import {
   ownsCapturedValueChunkOutputBase,
   refreshCapturedValueChunkOutputBase,
+  rebaseValueChunkWriteDescriptors,
+  transportedContinuationLocalBase,
 } from './value-chunk-base-writer-select.js';
 import {
   coherentAuthenticatedValueChunkRun,
@@ -105,6 +107,15 @@ export function bindMaterializedValueChunkWitnesses(
     let preferredLocalBase = provisionalBase === undefined || provisionalBase < 0
       ? undefined
       : provisionalBase >= coordinateBase ? provisionalBase - coordinateBase : provisionalBase;
+    const transportedClaims = aliasGroups.flatMap((group) => group?.continuationResourceClaims ?? []);
+    const canonicalLocalBases = [...resourceIdentities].flatMap((resourceIdentity) => {
+      const writeCount = aliasGroups.flatMap((group) => group?.valueChunkWrites ?? [])
+        .find((write) => valueChunkWriteResourceIdentity(write) === resourceIdentity)?.outputCount;
+      if (writeCount === undefined) return [];
+      const base = transportedContinuationLocalBase(transportedClaims, resourceIdentity, writeCount);
+      return base === undefined ? [] : [base];
+    });
+    if (canonicalLocalBases.length === 1) preferredLocalBase = canonicalLocalBases[0];
     const exactResourceStarts = [...host.derivedChunkOutputs.entries()]
       .filter(([, chunk]) => resourceIdentities.has(chunk.resourceIdentity ?? '')
         && chunk.resourcePart === 'chunk:0')
@@ -235,7 +246,17 @@ export function bindMaterializedValueChunkWitnesses(
     );
     for (const alias of physicalAliases) {
       const encoded = alias.internalArgs?.__internal__valueChunkOutputBase;
-      if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)) continue;
+      const resolvedWriteBases = (alias.valueChunkWrites ?? [])
+        .map((write) => write.outputBase)
+        .filter((base) => Number.isSafeInteger(base) && base >= 0);
+      const previousWriteBase = resolvedWriteBases.length > 0
+        ? Math.min(...resolvedWriteBases) : alias.valueChunkOutputBase;
+      const writesNeedRebase = previousWriteBase !== undefined && previousWriteBase !== absoluteStart;
+      if (alias.valueChunkOutputBase === absoluteStart && encoded === BigInt(absoluteStart)
+        && !writesNeedRebase) continue;
+      alias.valueChunkWrites = rebaseValueChunkWriteDescriptors(
+        alias.valueChunkWrites, previousWriteBase, absoluteStart,
+      );
       // Kernel sole authority: when trailing geometry is published, assign via resolve (not invent).
       const trailingBase = alias.blockLayout?.trailingBase
         ?? carrier.blockLayout?.trailingBase;

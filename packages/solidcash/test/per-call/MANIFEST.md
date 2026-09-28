@@ -165,7 +165,7 @@ and the binding of a delegate callee to the implementation the record names by `
   judge reads the escrow's recorded payment block in a read-only frame, gates on a strictly later block and calls the
   escrow's own entry — every contract input accepted, the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the payment's
   own block pinned, and the same composition over one data-NFT state record refused at the reading frame's own close
-  (pinned, with the two commitments the failing close compared). `revert-partway.test.ts` is the other one: a root
+  (pinned, with the derivation's stall and the machine's own objection for that frame). `revert-partway.test.ts` is the other one: a root
   whose own check fails after an earlier call succeeded, a nested callee's failing check reported as the innermost
   frame with its source line, and a revert with a declared error, whose arguments the compiler type-checks and does
   not evaluate (its own warning is asserted).

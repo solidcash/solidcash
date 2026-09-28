@@ -5,6 +5,7 @@ import {
   buildChunkCommitment,
   buildPushdataCommitment,
   bytesToHex,
+  computeFunctionSelector,
   encodeEventCommitment,
   encodeIntegerValue,
   encodeResultList,
@@ -51,20 +52,30 @@ import {
  *
  * The outer hop is a generated proxy's fallback, which `DELEGATE`s into the implementation. The implementation
  * writes the proxy's own record (so it runs as the proxy and rebuilds the proxy's data NFT) and then makes two
- * calls to a store, each appending one element to the store's log and emitting an event above the 128-byte
- * commitment size. The store's entry requires `msg.sender` to be the proxy's address, which is the address a
- * delegate frame's call carries, so the two calls are also the store's caller check.
+ * calls to a store. The store is itself reached through a generated proxy: each call goes to the store proxy's
+ * forwarding entry with the store entry's call data framed as its one argument, the store proxy's fallback reads
+ * that argument and `DELEGATE`s into the store's implementation, and the store entry appends one element to the
+ * store's log and emits an event above the 128-byte commitment size.
+ *
+ * The store entry requires `msg.sender` to be the root proxy's address. A call frame's sender is the caller's own
+ * address, so the store proxy's fallback is entered with the root proxy's address as its sender; a delegate frame
+ * inherits its caller's sender and takes the caller's address as `address(this)`. The store's `append` therefore
+ * runs with `self` the store proxy's address and observes `msg.sender` as the root proxy's address, which is what
+ * its gate names: the same address the entry saw when it was called at its own address, now presented through the
+ * store's proxy.
  *
  * Every coordinate comes from `layoutTransaction`/`participant`, the store's log from `planChunkRun`/
  * `layOutChunkRun`, and every commitment from the shipped encoders (`buildPushdataCommitment`,
  * `buildChunkCommitment`, `encodeEventCommitment`, `stateRecordLockingBytecode`, `stateRecordUnlockingBytecode`).
- * The whole shipped path runs: the compiler, `deployMaster`, `buildProxyArtifact`, the composer, the derivation
- * and the BCH-2026 machine.
+ * The whole shipped path runs: the compiler, `deployMaster`, `buildProxyArtifact` for both proxies, the composer,
+ * the derivation and the BCH-2026 machine.
  *
- * Two deviations from the shape this file names are pinned rather than worked around. The append case passes the
- * two call arguments as constants: a call that passes a run-time value stalls the derivation at the segment close,
- * where the caller's own digest is compared with the callee's call data. The token pull's low-level call is refused
- * by the compiler by name. Both are asserted below with the shipped code's own objection.
+ * Two deviations from the shape this file names are pinned rather than worked around. The store proxy's fallback
+ * forwards the bytes it received verbatim, so a caller states the store's call data itself: an entry can carry that
+ * frame as a run-time argument, but a caller that frames the store's scalar arguments from its own run-time values
+ * stalls at its own segment close, where the site's digest is compared with the record it committed to. The token
+ * pull's low-level call is refused by the compiler by name. Both are asserted below with the shipped code's own
+ * objection.
  *
  * The read-only hop is driven against the second contract at its own address. A read-only frame makes no calls, and
  * a generated proxy's fallback is a delegate hop, so the read of a contract *behind* its proxy is not settled here.
@@ -72,17 +83,20 @@ import {
 
 const ROOT_PROXY_LABEL = 'proxied root append proxy';
 const ROOT_IMPL_LABEL = 'proxied root append implementation';
-const STORE_LABEL = 'proxied root append store';
+const STORE_IMPL_LABEL = 'proxied root append store implementation';
+const STORE_PROXY_LABEL = 'proxied root append store proxy';
 const ROOT_PROXY_CATEGORY = seededCategory(ROOT_PROXY_LABEL);
 const ROOT_IMPL_CATEGORY = seededCategory(ROOT_IMPL_LABEL);
-const STORE_CATEGORY = seededCategory(STORE_LABEL);
+const STORE_IMPL_CATEGORY = seededCategory(STORE_IMPL_LABEL);
+const STORE_PROXY_CATEGORY = seededCategory(STORE_PROXY_LABEL);
 const ROOT_PROXY_CATEGORY_HEX = bytesToHex(ROOT_PROXY_CATEGORY);
-const STORE_CATEGORY_HEX = bytesToHex(STORE_CATEGORY);
+const STORE_PROXY_CATEGORY_HEX = bytesToHex(STORE_PROXY_CATEGORY);
 const ROOT_IMPL_ADDRESS = seededAddress(ROOT_IMPL_LABEL);
 const ROOT_PROXY_ADDRESS = seededAddress(ROOT_PROXY_LABEL);
-const STORE_ADDRESS = seededAddress(STORE_LABEL);
+const STORE_IMPL_ADDRESS = seededAddress(STORE_IMPL_LABEL);
+const STORE_PROXY_ADDRESS = seededAddress(STORE_PROXY_LABEL);
 const ROOT_PROXY_ADDRESS_HEX = hexOf(ROOT_PROXY_ADDRESS);
-const STORE_ADDRESS_HEX = hexOf(STORE_ADDRESS);
+const STORE_PROXY_ADDRESS_HEX = hexOf(STORE_PROXY_ADDRESS);
 
 const RECORD_ID = 'root-record';
 const HEADER_ID = 'store-header';
@@ -90,7 +104,8 @@ const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 const PROXY_MASTER = 'proxy-1';
 const IMPL_MASTER = 'impl-1';
-const STORE_MASTERS = ['store-1', 'store-2'] as const;
+const STORE_PROXY_MASTERS = ['store-proxy-1', 'store-proxy-2'] as const;
+const STORE_IMPL_MASTERS = ['store-impl-1', 'store-impl-2'] as const;
 
 /** The count the root's proxy record carries before and after the entry runs. */
 const COUNT_BEFORE = 0n;
@@ -108,39 +123,14 @@ const APPENDS: readonly { readonly tag: bigint; readonly item: bigint }[] = [
 /** The blob the store's event carries: 150 bytes, so the encoded payload crosses the 128-byte commitment size. */
 const BIG_BLOB = new Uint8Array(150).fill(0xab);
 
-/** The root implementation: it makes the two calls and then writes its own record. */
-const ROOT_IMPL_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IStore { function append(int tag, int item); }'
-  + ' contract RootImpl {'
-  + '   address public implementation;'
-  + '   int public count;'
-  + '   function run() {'
-  + `     IStore(0x${STORE_ADDRESS_HEX}).append.call(1, 10);`
-  + `     IStore(0x${STORE_ADDRESS_HEX}).append.call(2, 20);`
-  + '     this.count = this.count + 1;'
-  + '     require(true);'
-  + '   }'
-  + ' }';
-
-/** The same root, but its entry takes two run-time arguments and passes them to the two-argument call. */
-const ROOT_IMPL_RUNTIME_SOURCE = [
-  'pragma solidcash ^0.13.0;',
-  'interface IStore { function append(int tag, int item); }',
-  'contract RootImpl {',
-  '  address public implementation;',
-  '  int public count;',
-  '  function run(int a, int b) {',
-  `    IStore(0x${STORE_ADDRESS_HEX}).append.call(1, a);`,
-  `    IStore(0x${STORE_ADDRESS_HEX}).append.call(2, b);`,
-  '    this.count = this.count + 1;',
-  '    require(true);',
-  '  }',
-  '}',
-].join('\n');
-
-/** The store: each entry appends one element to its log, gates on the root proxy's address and emits. */
+/**
+ * The store: each entry appends one element to its log, gates on the root proxy's address and emits.
+ *
+ * It declares the address its generated proxy forwards to, so the proxy can mirror the store's record exactly.
+ */
 const STORE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Store {'
+  + '   address public implementation;'
   + '   int[] public items;'
   + '   event Appended(int indexed tag, bytes blob);'
   + '   function append(int tag, int item) {'
@@ -152,15 +142,90 @@ const STORE_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const STORE_ARTIFACT = compileStringMulti(STORE_SOURCE, { composition: 'per-call' }).Store!;
+const STORE_PROXY_ARTIFACT = buildProxyArtifact(STORE_ARTIFACT);
 const STORE_CONTRACT = STORE_ARTIFACT.contractName;
-const STORE_DEPLOYED = deployMaster(STORE_ARTIFACT, STORE_CATEGORY, REAL_VALIDATOR_PROGRAM);
+const STORE_PROXY_CONTRACT = STORE_PROXY_ARTIFACT.contractName;
+const STORE_DEPLOYED = deployMaster(STORE_ARTIFACT, STORE_IMPL_CATEGORY, REAL_VALIDATOR_PROGRAM);
+const STORE_PROXY_DEPLOYED = deployMaster(STORE_PROXY_ARTIFACT, STORE_PROXY_CATEGORY, REAL_VALIDATOR_PROGRAM);
 const STORE: DeployedContract = {
-  name: STORE_CONTRACT, category: STORE_CATEGORY, address: STORE_ADDRESS,
+  name: STORE_CONTRACT, category: STORE_IMPL_CATEGORY, address: STORE_IMPL_ADDRESS,
   program: STORE_DEPLOYED.script, lockingBytecode: STORE_DEPLOYED.lockingBytecode,
 };
+const STORE_PROXY: DeployedContract = {
+  name: STORE_PROXY_CONTRACT, category: STORE_PROXY_CATEGORY, address: STORE_PROXY_ADDRESS,
+  program: STORE_PROXY_DEPLOYED.script, lockingBytecode: STORE_PROXY_DEPLOYED.lockingBytecode,
+};
 
-const STORE_LAYOUT = STORE_ARTIFACT.stateLayout!;
+const STORE_PROXY_LAYOUT = STORE_PROXY_ARTIFACT.stateLayout!;
 const ELEMENT_WIDTH = packFixedWidthElement(1n, 'int256').length;
+
+/** The store entry's arguments as the pushes its dispatcher reads: the selector, then the last parameter first. */
+function appendPushes(frame: number): readonly Uint8Array[] {
+  return [
+    selectorOf({ Store: STORE_ARTIFACT }, 'Store', 'append'),
+    encodeIntegerValue(APPENDS[frame]!.item),
+    encodeIntegerValue(APPENDS[frame]!.tag),
+  ];
+}
+
+/** Those pushes as one byte string: the call data the store proxy's fallback forwards verbatim. */
+function framedAppend(frame: number): Uint8Array {
+  return new Uint8Array(appendPushes(frame).flatMap((push) => [...encodeDataPush(push)]));
+}
+
+/** The selector of the forwarding entry a caller enters a proxy by. */
+const FORWARD_SELECTOR = computeFunctionSelector('forward(bytes)');
+
+/** The root implementation: it forwards the two framed calls to the store's proxy, then writes its own record. */
+const ROOT_IMPL_SOURCE = ((): string => {
+  const forwards = APPENDS.map((_append, frame) =>
+    `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(hex"${hexOf(framedAppend(frame))}");`).join('\n');
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IStoreProxy { function forward(bytes input); }'
+    + ' contract RootImpl {'
+    + '   address public implementation;'
+    + '   int public count;'
+    + '   function run() {'
+    + `\n${forwards}\n`
+    + '     this.count = this.count + 1;'
+    + '     require(true);'
+    + '   }'
+    + ' }';
+})();
+
+/** The same root, but its entry forwards framed calls it receives as run-time arguments rather than stating them. */
+const ROOT_IMPL_RUNTIME_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IStoreProxy { function forward(bytes input); }'
+  + ' contract RootImpl {'
+  + '   address public implementation;'
+  + '   int public count;'
+  + '   function run(bytes first, bytes second) {'
+  + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(first);`
+  + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(second);`
+  + '     this.count = this.count + 1;'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/** A root that builds the store's frame from run-time scalars, which the store's dispatcher does not read. */
+const ROOT_IMPL_SCALAR_SOURCE = ((): string => {
+  const selectorPush = hexOf(new Uint8Array([...encodeDataPush(selectorOf({ Store: STORE_ARTIFACT }, 'Store',
+    'append'))]));
+  const frameOf = (value: string, tag: string): string => 'bytes.concat(hex"'
+    + `${selectorPush}", hex"08", toPaddedBytes(${value}, 8), hex"08", toPaddedBytes(${tag}, 8))`;
+  return 'pragma solidcash ^0.13.0;'
+    + ' interface IStoreProxy { function forward(bytes input); }'
+    + ' contract RootImpl {'
+    + '   address public implementation;'
+    + '   int public count;'
+    + '   function run(int a, int b) {'
+    + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(${frameOf('a', '1')});`
+    + `     IStoreProxy(0x${STORE_PROXY_ADDRESS_HEX}).forward(${frameOf('b', '2')});`
+    + '     this.count = this.count + 1;'
+    + '     require(true);'
+    + '   }'
+    + ' }';
+})();
 
 /** A proxied implementation: its artifact, the generated proxy, both deployments, and the fallback's call data. */
 interface ImplSetup {
@@ -200,7 +265,8 @@ function setupImpl(source: string, entry: string, args: readonly Uint8Array[]): 
 }
 
 const APPEND_SETUP = setupImpl(ROOT_IMPL_SOURCE, 'run', []);
-const RUNTIME_SETUP = setupImpl(ROOT_IMPL_RUNTIME_SOURCE, 'run', [encodeIntegerValue(10n), encodeIntegerValue(20n)]);
+const RUNTIME_SETUP = setupImpl(ROOT_IMPL_RUNTIME_SOURCE, 'run', [framedAppend(0), framedAppend(1)]);
+const SCALAR_SETUP = setupImpl(ROOT_IMPL_SCALAR_SOURCE, 'run', [encodeIntegerValue(10n), encodeIntegerValue(20n)]);
 
 const ROOT = rootOf(APPEND_SETUP.proxyContract, '__fallback', PROXY_MASTER);
 
@@ -212,8 +278,9 @@ function itemsBytes(values: readonly bigint[]): Uint8Array {
 }
 
 /** The log's data NFT commitment for a value, from the shipped encoder. */
-function headerOf(layout: StateLayout, bytes: Uint8Array): Uint8Array {
-  return new Uint8Array(Buffer.from(buildPushdataCommitment(layout, { items: bytes }, 0), 'hex'));
+function headerOf(bytes: Uint8Array): Uint8Array {
+  return new Uint8Array(Buffer.from(
+    buildPushdataCommitment(STORE_PROXY_LAYOUT, { implementation: STORE_IMPL_ADDRESS, items: bytes }, 0), 'hex'));
 }
 
 /** One chunk commitment of a run holding this element stream, from the shipped encoder. */
@@ -238,7 +305,8 @@ interface AppendBuild {
   readonly headerIndex: number;
   readonly chunkIndex: number;
   readonly chunkId: string;
-  readonly storeIndices: readonly number[];
+  readonly storeProxyIndices: readonly number[];
+  readonly storeImplIndices: readonly number[];
   readonly eventIndices: readonly number[];
   readonly recordBefore: Uint8Array;
   readonly recordAfter: Uint8Array;
@@ -247,14 +315,14 @@ interface AppendBuild {
   readonly eventPayloads: readonly Uint8Array[];
 }
 
-/** Lays the shape out, with the sender the store's frames declare. */
+/** Lays the shape out, with the sender the store's delegate frames declare. */
 function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_PROXY_ADDRESS): AppendBuild {
   const stages = [
     itemsBytes(SPENT_ITEMS),
     itemsBytes([...SPENT_ITEMS, APPENDS[0]!.item]),
     itemsBytes([...SPENT_ITEMS, ...APPENDS.map((append) => append.item)]),
   ];
-  const headers = stages.map((bytes) => headerOf(STORE_LAYOUT, bytes));
+  const headers = stages.map((bytes) => headerOf(bytes));
 
   const blockOf = (chunk: string): CompositionDraftPlan['blocks'] => [
     {
@@ -262,27 +330,32 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
       validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: [RECORD_ID],
     },
     { contract: setup.implContract, masters: [IMPL_MASTER], state: [] as readonly string[] },
-    { contract: STORE_CONTRACT, masters: [...STORE_MASTERS], state: [HEADER_ID, chunk] },
+    {
+      contract: STORE_PROXY_CONTRACT, masters: [...STORE_PROXY_MASTERS],
+      state: [HEADER_ID, chunk],
+    },
+    { contract: STORE_CONTRACT, masters: [...STORE_IMPL_MASTERS], state: [] as readonly string[] },
   ];
   // A probe with the same block geometry fixes the record block's width, because the log's run begins one layout
   // width past the store's header, which the emitted body derives from the frame's own declaration.
   const probe = layoutTransaction(blockOf('probe-chunk'));
   const headerIndex = participant(probe, HEADER_ID).index;
-  const base = headerIndex + STORE_LAYOUT.dataNftCount;
+  const base = headerIndex + STORE_PROXY_LAYOUT.dataNftCount;
   const chunkId = chunkRecordId('items', base);
   const blocks = blockOf(chunkId);
   const layout = layoutTransaction(blocks);
   const indexOf = (id: string): number => participant(layout, id).index;
   const recordIndex = indexOf(RECORD_ID);
-  const storeIndices = STORE_MASTERS.map((id) => indexOf(id));
+  const storeProxyIndices = STORE_PROXY_MASTERS.map((id) => indexOf(id));
+  const storeImplIndices = STORE_IMPL_MASTERS.map((id) => indexOf(id));
   const chunkIndex = indexOf(chunkId);
   const participantCount = layout.participantCount;
 
   const run = layOutChunkRun({
-    plan: planChunkRun({ layout: STORE_LAYOUT, variable: 'items', spent: stages[0]!, written: stages[2]! }),
-    category: STORE_CATEGORY,
+    plan: planChunkRun({ layout: STORE_PROXY_LAYOUT, variable: 'items', spent: stages[0]!, written: stages[2]! }),
+    category: STORE_PROXY_CATEGORY,
     base,
-    writer: storeIndices[0]!,
+    writer: storeProxyIndices[0]!,
     valueSatoshis: 1_000n,
   });
   const keptChunk = run.records[0]!;
@@ -292,7 +365,7 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
   const event = STORE_ARTIFACT.events![0]!;
   const eventPayloads = APPENDS.map((append) =>
     encodeEventCommitment(event.parameters, [append.tag, BIG_BLOB]));
-  const emitted = eventPayloads.map((payload) => eventOutput(STORE_CATEGORY, event.signature, payload));
+  const emitted = eventPayloads.map((payload) => eventOutput(STORE_PROXY_CATEGORY, event.signature, payload));
   const eventIndices = eventPayloads.map((_payload, offset) => participantCount + offset);
 
   const recordBefore = recordOf(setup, COUNT_BEFORE);
@@ -307,10 +380,21 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
     in: recordIndex, out: recordIndex, viewIn: recordAfter, viewOut: recordAfter,
   };
 
-  const appendSelector = selectorOf({ Store: STORE_ARTIFACT }, 'Store', 'append');
-  const appendPushes = (frame: number): readonly Uint8Array[] => [
-    appendSelector, encodeIntegerValue(APPENDS[frame]!.item), encodeIntegerValue(APPENDS[frame]!.tag),
-  ];
+  /** The store's header as one frame sees it: read before its delegate hop, and resumed after it. */
+  const headerRead = (frame: number): RecordEntry =>
+    ({ in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame]! });
+  const headerWritten = (frame: number): RecordEntry =>
+    ({ in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame + 1]! });
+  const headerResumed = (frame: number): RecordEntry =>
+    ({ in: headerIndex, out: headerIndex, viewIn: headers[frame + 1]!, viewOut: headers[frame + 1]! });
+  /** The log's chunks one append touches: each is kept in place and its value grows inside it. */
+  const chunkEntries = (frame: number): readonly RecordEntry[] => {
+    const before = chunksAt(frame);
+    const after = chunksAt(frame + 1);
+    return Array.from({ length: Math.max(before.length, after.length) }, (_unused, offset) => ({
+      in: chunkIndex, out: chunkIndex, viewIn: before[offset] ?? EMPTY, viewOut: after[offset] ?? EMPTY,
+    }));
+  };
 
   const proxyMaster: DraftMaster = master({
     master: PROXY_MASTER, contract: setup.proxyContract, entry: '__fallback', program: setup.proxy.program,
@@ -337,56 +421,68 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
     frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: setup.proxy.address, value: 0n },
     enteredBy: PROXY_MASTER, origin: USER_ID,
     calls: APPENDS.map((_append, frame) => ({
-      kind: FrameKind.CALL, callee: STORE_MASTERS[frame]!, target: STORE.address, value: 0n,
-      argumentPushes: appendPushes(frame),
+      kind: FrameKind.CALL, callee: STORE_PROXY_MASTERS[frame]!, target: STORE_PROXY.address, value: 0n,
+      argumentPushes: [FORWARD_SELECTOR, framedAppend(frame)],
     })),
     segments: [[recordRead], [recordRead], [recordWrite]],
     argumentPushes: [...setup.implPushes],
   });
 
-  const storeMaster = (frame: number): DraftMaster => {
-    const before = chunksAt(frame);
-    const after = chunksAt(frame + 1);
-    const entries: RecordEntry[] = Array.from({ length: Math.max(before.length, after.length) },
-      (_unused, offset) => ({
-        in: chunkIndex, out: chunkIndex, viewIn: before[offset] ?? EMPTY, viewOut: after[offset] ?? EMPTY,
-      }));
-    return {
-      ...master({
-        master: STORE_MASTERS[frame]!, contract: STORE_CONTRACT, entry: 'append', program: STORE.program,
-        facts: {
-          contract: STORE_CONTRACT, functionName: 'append', kind: FrameKind.CALL, callerIsUser: false,
-          originEqualsCaller: false, makesExternalCall: false, mastersOfContract: STORE_MASTERS.length,
-        },
-        frame: { kind: FrameKind.CALL, sender, self: STORE.address, value: 0n },
-        enteredBy: IMPL_MASTER, origin: USER_ID,
-        argumentPushes: appendPushes(frame),
-        segments: [[
-          { in: headerIndex, out: headerIndex, viewIn: headers[frame]!, viewOut: headers[frame + 1]! },
-          ...entries,
-        ]],
-      }),
-      events: [eventIndices[frame]!],
-    };
-  };
+  /** The store proxy's fallback: it reads the forwarding argument and delegates into the store's code. */
+  const storeProxyMaster = (frame: number): DraftMaster => master({
+    master: STORE_PROXY_MASTERS[frame]!, contract: STORE_PROXY_CONTRACT, entry: '__fallback',
+    program: STORE_PROXY.program,
+    facts: {
+      contract: STORE_PROXY_CONTRACT, functionName: '__fallback', kind: FrameKind.CALL, callerIsUser: false,
+      originEqualsCaller: false, makesExternalCall: true, mastersOfContract: STORE_PROXY_MASTERS.length,
+    },
+    frame: { kind: FrameKind.CALL, sender: ROOT_PROXY_ADDRESS, self: STORE_PROXY.address, value: 0n },
+    enteredBy: IMPL_MASTER, origin: USER_ID,
+    calls: [{
+      kind: FrameKind.DELEGATE, callee: STORE_IMPL_MASTERS[frame]!, target: STORE.address, value: 0n,
+      argumentPushes: appendPushes(frame),
+    }],
+    segments: [[headerRead(frame)], [headerResumed(frame)]],
+    argumentPushes: [FORWARD_SELECTOR, framedAppend(frame)],
+  });
+
+  /** The store's code as its proxy's delegate frame: it appends to the store proxy's log and emits. */
+  const storeImplMaster = (frame: number): DraftMaster => ({
+    ...master({
+      master: STORE_IMPL_MASTERS[frame]!, contract: STORE_CONTRACT, entry: 'append', program: STORE.program,
+      facts: {
+        contract: STORE_CONTRACT, functionName: 'append', kind: FrameKind.DELEGATE, callerIsUser: false,
+        originEqualsCaller: false, makesExternalCall: false, mastersOfContract: STORE_IMPL_MASTERS.length,
+      },
+      frame: { kind: FrameKind.DELEGATE, sender, self: STORE_PROXY.address, value: 0n },
+      enteredBy: STORE_PROXY_MASTERS[frame]!, origin: USER_ID,
+      argumentPushes: appendPushes(frame),
+      segments: [[headerWritten(frame), ...chunkEntries(frame)]],
+    }),
+    events: [eventIndices[frame]!],
+  });
 
   const recordSource = {
     lockingBytecode: stateRecordLockingBytecode(ROOT_PROXY_CATEGORY_HEX), valueSatoshis: 20_000n,
     token: token(ROOT_PROXY_CATEGORY, 'mutable', recordBefore),
   };
   const headerSource = {
-    lockingBytecode: stateRecordLockingBytecode(STORE_CATEGORY_HEX), valueSatoshis: 20_000n,
-    token: token(STORE_CATEGORY, 'mutable', headers[0]!),
+    lockingBytecode: stateRecordLockingBytecode(STORE_PROXY_CATEGORY_HEX), valueSatoshis: 20_000n,
+    token: token(STORE_PROXY_CATEGORY, 'mutable', headers[0]!),
   };
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: userInputs([USER_ID], layout.funderInputBase),
-    masters: [proxyMaster, implMaster, storeMaster(0), storeMaster(1)],
+    masters: [
+      proxyMaster, implMaster,
+      ...APPENDS.map((_append, frame) => storeProxyMaster(frame)),
+      ...APPENDS.map((_append, frame) => storeImplMaster(frame)),
+    ],
     inputs: {
       [PROXY_MASTER]: { source: masterInput(setup.proxy) },
       [IMPL_MASTER]: { source: masterInput(setup.impl) },
-      [STORE_MASTERS[0]]: { source: masterInput(STORE) },
-      [STORE_MASTERS[1]]: { source: masterInput(STORE) },
+      ...Object.fromEntries(STORE_PROXY_MASTERS.map((id) => [id, { source: masterInput(STORE_PROXY) }])),
+      ...Object.fromEntries(STORE_IMPL_MASTERS.map((id) => [id, { source: masterInput(STORE) }])),
       [VALIDATOR_ID]: {
         source: {
           lockingBytecode: validatorFor(ROOT_PROXY_CATEGORY).lock, valueSatoshis: 20_000n,
@@ -400,27 +496,30 @@ function buildAppend(setup: ImplSetup = APPEND_SETUP, sender: Uint8Array = ROOT_
       },
       [HEADER_ID]: {
         source: headerSource,
-        output: { ...headerSource, token: token(STORE_CATEGORY, 'mutable', headers[2]!) },
-        unlockingBytecode: stateRecordUnlockingBytecode(STORE_CATEGORY_HEX, storeIndices[0]!, 1),
+        output: { ...headerSource, token: token(STORE_PROXY_CATEGORY, 'mutable', headers[2]!) },
+        unlockingBytecode: stateRecordUnlockingBytecode(STORE_PROXY_CATEGORY_HEX, storeProxyIndices[0]!, 1),
       },
       [chunkId]: keptChunk.input!,
       [USER_ID]: userInput(),
     },
     trailingOutputs: [...emitted],
     validator: {
-      id: VALIDATOR_ID, covers: [setup.implContract, STORE_CONTRACT],
+      id: VALIDATOR_ID, covers: [setup.implContract, STORE_PROXY_CONTRACT, STORE_CONTRACT],
       settles: [
         { category: ROOT_PROXY_CATEGORY, stateInputs: [RECORD_ID] },
-        { category: STORE_CATEGORY, stateInputs: [HEADER_ID, chunkId] },
+        { category: STORE_PROXY_CATEGORY, stateInputs: [HEADER_ID, chunkId] },
+        // The store's code runs two delegate frames, so the validator settles the store's own category too,
+        // although the store itself keeps no state UTXO: the value it writes lives in the store proxy's records.
+        { category: STORE_IMPL_CATEGORY, stateInputs: [] },
       ],
       redeemScript: validatorFor(ROOT_PROXY_CATEGORY).redeem,
     },
   };
 
   return {
-    setup, plan, artifacts: [setup.proxyArtifact, setup.artifact, STORE_ARTIFACT],
+    setup, plan, artifacts: [setup.proxyArtifact, setup.artifact, STORE_PROXY_ARTIFACT, STORE_ARTIFACT],
     root: rootOf(setup.proxyContract, '__fallback', PROXY_MASTER),
-    recordIndex, headerIndex, chunkIndex, chunkId, storeIndices, eventIndices,
+    recordIndex, headerIndex, chunkIndex, chunkId, storeProxyIndices, storeImplIndices, eventIndices,
     recordBefore, recordAfter, headers, stages, eventPayloads,
   };
 }
@@ -431,34 +530,62 @@ function refused(outcome: ReturnType<typeof composeAndDerive>): string[] {
     .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
 }
 
-describe('a proxied root appending through one store', () => {
+describe('a proxied root appending through one store behind its proxy', () => {
   it('settles the record write and both appends: every contract input is accepted', () => {
     const built = buildAppend();
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
 
     expect(refused(outcome)).toStrictEqual([]);
-    // The delegate frame's call completes before the proxy fallback, and both store appends before the delegate.
+    // Each store entry completes before the store proxy fallback that forwarded to it, in call order; the root
+    // implementation completes after both hops and the root proxy after the implementation.
     expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
-      STORE_MASTERS[0], STORE_MASTERS[1], IMPL_MASTER, PROXY_MASTER,
+      STORE_IMPL_MASTERS[0], STORE_PROXY_MASTERS[0], STORE_IMPL_MASTERS[1], STORE_PROXY_MASTERS[1],
+      IMPL_MASTER, PROXY_MASTER,
     ]);
-    // The accepted inputs are the proxy, the implementation, both store masters, the validator and the records.
+    // The accepted inputs are the root proxy, the root implementation, both store proxy and store masters, the
+    // validator and the records.
     expect(outcome.verdicts.filter((verdict) => verdict.accepted)
       .map((verdict) => verdict.participant).sort())
-      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, STORE_MASTERS[0], STORE_MASTERS[1],
+      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, ...STORE_PROXY_MASTERS, ...STORE_IMPL_MASTERS,
         VALIDATOR_ID, RECORD_ID, HEADER_ID, built.chunkId].sort());
   });
 
-  it('writes the proxy record, the store header, the chunk and both events through the shipped encoders', () => {
+  it('reaches the store as a delegate frame on the store proxy\'s record, entered by a call frame', () => {
+    const built = buildAppend();
+    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    const layout = outcome.draft.layout;
+
+    // The store proxy's fallback runs a call frame entered by the root implementation's own frame, so its sender is
+    // the address that frame runs as: the root proxy's.
+    const proxyFrame = outcome.draft.blockOf(STORE_PROXY_MASTERS[0]!);
+    expect(proxyFrame.kind).toBe(FrameKind.CALL);
+    expect(proxyFrame.callerRef).toBe(participant(layout, IMPL_MASTER).index);
+    expect(proxyFrame.sender).toStrictEqual(ROOT_PROXY_ADDRESS);
+    expect(proxyFrame.self).toStrictEqual(STORE_PROXY.address);
+    expect(proxyFrame.calls[0]!.kind).toBe(FrameKind.DELEGATE);
+    expect(proxyFrame.calls[0]!.target).toStrictEqual(STORE.address);
+
+    // The store's code runs the delegate frame: it inherits the fallback's sender and runs as the store proxy, so
+    // that is the address the entry's `address(this)` and `msg.sender` read.
+    const storeFrame = outcome.draft.blockOf(STORE_IMPL_MASTERS[0]!);
+    expect(storeFrame.kind).toBe(FrameKind.DELEGATE);
+    expect(storeFrame.callerRef).toBe(participant(layout, STORE_PROXY_MASTERS[0]!).index);
+    expect(storeFrame.sender).toStrictEqual(ROOT_PROXY_ADDRESS);
+    expect(storeFrame.self).toStrictEqual(STORE_PROXY.address);
+  });
+
+  it('writes the root record, the store header, the chunk and both events through the shipped encoders', () => {
     const built = buildAppend();
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
     const outputs = outcome.transaction.outputs;
 
-    // The proxy's record commitment is what the shipped encoder materializes for the value the entry computed.
+    // The root proxy's record commitment is what the shipped encoder materializes for the value the entry computed.
     expect(bytesToHex(outputs[built.recordIndex]!.token!.nft!.commitment)).toBe(bytesToHex(built.recordAfter));
     expect(bytesToHex(built.recordAfter)).toBe(bytesToHex(recordOf(built.setup, COUNT_AFTER)));
     expect(bytesToHex(built.recordAfter)).not.toBe(bytesToHex(recordOf(built.setup, COUNT_BEFORE)));
 
-    // The log's header carries the byte length of the whole element stream, from the shipped encoder.
+    // The store proxy's header carries the address its fallback forwards to and the length of the whole element
+    // stream, from the shipped encoder.
     expect(bytesToHex(outputs[built.headerIndex]!.token!.nft!.commitment)).toBe(bytesToHex(built.headers[2]!));
 
     // The chunk carries the encoder's commitment for the final element stream, at the layout's index.
@@ -498,18 +625,19 @@ describe('a proxied root appending through one store', () => {
   });
 });
 
-describe('the store\'s caller check', () => {
-  it('settles when the call carries the root proxy\'s address as its sender', () => {
-    // The check is the store program's own `require(msg.sender == ...)`; the accepted composition is the evidence
-    // the delegate frame's call reaches the store as the proxy.
+describe('the store\'s caller check through its proxy', () => {
+  it('settles when the store\'s delegate frame carries the root proxy\'s address as its sender', () => {
+    // The check is the store program's own `require(msg.sender == ...)`, and the store reads it from the delegate
+    // frame's sender. The accepted composition is the evidence that frame carries the root proxy's address.
     const built = buildAppend();
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
     expect(refused(outcome)).toStrictEqual([]);
-    expect(outcome.verdicts.filter((verdict) => verdict.participant === STORE_MASTERS[0]!)[0]?.accepted).toBe(true);
+    expect(outcome.verdicts.filter((verdict) => verdict.participant === STORE_IMPL_MASTERS[0]!)[0]?.accepted)
+      .toBe(true);
   });
 
   it('refuses a control whose store frames are told a different sender, and the machine objects', () => {
-    // The store's sender is the frame the call reaches it in, so a plan that writes another address into that
+    // The store's sender is the frame the delegate runs with, so a plan that writes another address into that
     // frame makes the body's own check fail. The machine's objection on the store's input is asserted beside the
     // derivation stalling there.
     const built = buildAppend(APPEND_SETUP, ROOT_IMPL_ADDRESS);
@@ -520,7 +648,7 @@ describe('the store\'s caller check', () => {
       stalled = error as Error;
     }
     expect(stalled?.message)
-      .toMatch(/PER_CALL_DERIVATION_STALLED: master "store-1" of Store\.append\(\)/);
+      .toMatch(/PER_CALL_DERIVATION_STALLED: master "store-impl-1" of Store\.append\(\)/);
 
     const report = reportCompositionRefusal({
       draft: createComposedDerivationHost({
@@ -529,7 +657,7 @@ describe('the store\'s caller check', () => {
       artifacts: built.artifacts,
       vm: compositionMachine(),
     });
-    const store = report.refusals.find((entry) => entry.master === STORE_MASTERS[0]!);
+    const store = report.refusals.find((entry) => entry.master === STORE_IMPL_MASTERS[0]!);
     expect(store?.objection).toMatch(/OP_VERIFY/);
   });
 });
@@ -798,20 +926,38 @@ describe('the token pull and the shapes that stay open', () => {
     }]);
   });
 
-  it('settles a root entry that takes run-time arguments and makes a mixed two-argument call', () => {
-    // The entry's two run-time arguments reach the two-argument call, whose other argument is the compile-time tag.
-    // The caller's digest folds in that constant's push with its framing byte intact, so it equals the record's
-    // digest and the callee's call data: the derivation settles and every contract input is accepted.
+  it('settles a root entry whose run-time arguments are the frames it forwards to the store', () => {
+    // The store proxy's fallback forwards the bytes it received verbatim, so the store's call data can be a run-time
+    // argument: the entry forwards the frame it was given and the store appends what that frame names.
     const built = buildAppend(RUNTIME_SETUP);
     const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
     expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
-      STORE_MASTERS[0], STORE_MASTERS[1], IMPL_MASTER, PROXY_MASTER,
+      STORE_IMPL_MASTERS[0], STORE_PROXY_MASTERS[0], STORE_IMPL_MASTERS[1], STORE_PROXY_MASTERS[1],
+      IMPL_MASTER, PROXY_MASTER,
     ]);
-    // The proxy's record is recreated with the value the entry computed, through the shipped encoder.
-    expect(bytesToHex(outcome.transaction.outputs[built.recordIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(built.recordAfter));
+    // The store's header and chunk carry the run the forwarded frames named, from the shipped encoders.
+    expect(bytesToHex(outcome.transaction.outputs[built.headerIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(built.headers[2]!));
+    const finalChunk = splitValueIntoChunks(built.stages[2]!).map((piece, index) => chunkOf(index, piece));
+    expect(bytesToHex(outcome.transaction.outputs[built.chunkIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(finalChunk[0]!));
+  });
+
+  it('stalls a caller that builds the store\'s frame from a run-time scalar, naming its site', () => {
+    // A caller cannot frame the store's scalar arguments itself: the store's dispatcher reads the canonical push
+    // the compiler emits, and no source spelling produces one from a run-time scalar. A caller that builds the
+    // frame from its run-time arguments makes the site's digest differ from the record it committed to, and the
+    // derivation stalls at the caller's segment close rather than filling the call.
+    const built = buildAppend(SCALAR_SETUP);
+    let stalled: Error | undefined;
+    try {
+      composeAndDerive(built.plan, built.artifacts, [built.root]);
+    } catch (error) {
+      stalled = error as Error;
+    }
+    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "impl-1" of RootImpl.run() '
+      + 'filled no witness at site 2 (close of segment 0)');
   });
 });
-
 

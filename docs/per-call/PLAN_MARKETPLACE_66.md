@@ -1358,9 +1358,11 @@ risk. Take the slices in order, each with its own tests.
     measured, not gated: the published-density case in `validator/script.test.ts` reports each input's program and
     unlocking bytes and its operation cost against the published maximum, and Phase R's A9 turns those numbers
     into a gate.
-    **That case's first finding is that the shipped validator input is already 568 bytes over the 10,000-byte
-    bytecode cap** (10,568 unlocking, program 10,484), which the mock's lifted limits hide; the numbers are in
-    4.5, and any change that makes the transcript or the program larger makes Phase R's recovery larger with it.
+    **That case's first finding is that the shipped validator input is over the 10,000-byte bytecode cap** —
+    10,354 bytes of unlocking bytecode against a 10,270-byte program after the V6 order landed (10,568 and 10,484
+    before it), which the mock's lifted limits hide; the numbers are in 4.5. Spec section 24 resolves the size half
+    — a validator may span several inputs, a head and facets at fixed positions — so the cap is met by splitting the
+    validator rather than by shrinking it, and that is Phase R's A9.
   - Until M2 no round spends effort fitting a program under a real-chain limit. A size or density optimization found
     on the way is recorded for Phase R instead.
 - [ ] Per-title time budget of 1 day. When it is exceeded, write a reduced neutral reproducer and move on.

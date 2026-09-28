@@ -99,10 +99,16 @@ describe('kernel sorted-update PredOut under composition', () => {
     const unlocker = builder.inputs.find((input) => 'contract' in input.unlocker
       && input.unlocker.contract.artifact.contractName === 'Ledger')!.unlocker;
     if (!('params' in unlocker)) throw new Error('route input has no parameters');
-    for (const entry of route.entryAccesses!.filter((candidate) => candidate.collection === 'balances')) {
+    const balanceLanes = route.entryAccesses!.filter((candidate) => candidate.collection === 'balances');
+    const predOuts = balanceLanes.map((entry) => {
       const index = route.inputs.findIndex((input) => input.name === `__internal__vmapBatchPredOut_${entry.slotIndex}`);
-      expect(unlocker.params[index]).toBe(-1n);
-    }
+      return unlocker.params[index];
+    });
+    // Two reached writes update/chain through the existing proof. Compiler-published pooled sibling lanes
+    // are inactive in this envelope and must carry -2, not an invented predecessor-output coordinate.
+    expect(predOuts.slice(0, 2)).toEqual([-1n, -1n]);
+    expect(predOuts.length).toBeGreaterThan(2);
+    expect(predOuts.slice(2).every((value) => value === -2n)).toBe(true);
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     const entries = await ledger.getEntries('balances');
     expect(entries.find((entry) => binToHex(entry.slot) === binToHex(keyToSlot(bigIntToVmNumber(from))))?.value)

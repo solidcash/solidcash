@@ -15,6 +15,31 @@ address independent of nonce; for a token-bearing contract that can't be literal
 outpoint), so the salt becomes either a composed *address* segment (create2) or a logical *key* (create3),
 honoring - not bypassing - the self-pin.
 
+## Predicting a child's address (SDK look-ahead)
+
+A contract that creates another contract needs the child's address before the transaction is built, because the
+parent's own code and its caller both depend on it. The address is `addrV(category)`, and a category is created
+by spending a genesis-eligible UTXO - one at output index 0 the SDK can spend. So the SDK looks ahead: it
+**reserves** one genesis-eligible UTXO per child the caller says it will create and answers with the address the
+reserved UTXO's category derives, without broadcasting anything.
+
+    const lookahead = CreateLookahead.open({ signer, artifact: childArtifact });
+    await lookahead.reserve(4);                       // four children
+    const address = lookahead.getCreateAddress(n + i); // nonce n + i -> the i-th reserved UTXO
+    // deploy the i-th child with lookahead.getFundingUtxo(n + i) as its funding UTXO
+
+The mapping is the EVM `getCreateAddress({ from, nonce })` one: nonce `n + i` is the i-th reserved UTXO, with `n`
+the signer's nonce when the first reservation was made. A deployment for nonce `n + i` **must spend exactly that
+UTXO**, so the child's category - and therefore its address - is the predicted one. A reserved UTXO is held out
+of the SDK's genesis funding selection until `release()`, so a later send cannot spend a coin an address was
+already derived from.
+
+**What a caller must do.** Predictions need the UTXOs to exist first, so the account that deploys the children
+must hold enough genesis-eligible UTXOs: one vout-0, token-free, spendable UTXO per child, each with enough
+satoshis to fund a genesis. When too few are reserved, `getCreateAddress` refuses with an error naming this
+document; fund the account with more genesis-eligible UTXOs (or create fewer children) and reserve again before
+predicting.
+
 ## The three modes
 
 | | **Stateless** (`bytes lbc = new T(...)`, p2sh, no token) | **Stateful** (`new T()` mints a token genesis) |

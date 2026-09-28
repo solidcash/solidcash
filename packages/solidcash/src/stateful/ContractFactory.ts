@@ -12,6 +12,7 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress, resolveLogicalIdentity } from './logical-identity.js';
 import { registerDeployment, registeredPhysicalLockingBytecode } from './deployment-registry.js';
+import { genesisOutpointKey, isReservedGenesisOutpoint } from './genesis-reservations.js';
 
 /** Deploy overrides (a trailing object on `factory.deploy(...)` / the 3rd arg of `deployContract`). */
 export interface DeployContractOptions {
@@ -78,7 +79,9 @@ export async function selectGenesisFundingUtxo(
   // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
-  const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
+  // A reserved outpoint is one a caller derived a create address from: spending it here would destroy a prediction.
+  const excluded = (u: Utxo): boolean => excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
+    || isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout));
   const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us
     .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u))
     .sort(compareGenesisFundingFreshness)[0];
@@ -142,7 +145,8 @@ export async function fanOutPlainUtxos(
   signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
 ): Promise<Utxo[] | undefined> {
   const plain = (us: Utxo[]): Utxo[] => us
-    .filter((u) => !u.token && !excludedOutpoints.has(`${u.txid}:${u.vout}`));
+    .filter((u) => !u.token && !excludedOutpoints.has(genesisOutpointKey(u.txid, u.vout))
+      && !isReservedGenesisOutpoint(genesisOutpointKey(u.txid, u.vout)));
   const current = plain(await signer.getUtxos());
   if (current.length >= needed) return current;
 

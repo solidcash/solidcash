@@ -667,7 +667,7 @@ risk. Take the slices in order, each with its own tests.
     (`solidc/test/per-call/master/mapping-read-write.test.ts`). A read of an entry the execution does not write
     stays refused, since the frame fixes no value for it.
 - [ ] R4 Long mapping values: the value arrives as a witness bound by the root, and each writing frame mints its
-  version's chunks.
+  version's chunks. The write half is claimed by the parallel worker (see Claims).
   **Measured, and it splits into three pieces rather than one.** The per-call head derives exactly one dynamic
   coordinate (`__internal__dynamicChunkInputBase`) and nothing for the *value-witness* family: a
   `mapping(string => string)` write carries four hidden operands (`__internal__valueWitness_0`,
@@ -1270,7 +1270,8 @@ risk. Take the slices in order, each with its own tests.
     - **MS1, partial.** The outer proxy hop, the state write it inherits, appends through the proxy and a
       registration-style mapping batch settle, and so do P22's short set, its delete and, on two keys, the MECE
       tags' batch insert into an empty mapping (`shapes/mapping-values.test.ts`). Open: P22's long write, which a
-      value over 60 bytes takes, and the eight-key initializer itself, which no test runs yet.
+      value over 60 bytes takes, and the eight-key initializer itself, which no test runs yet. Both are claimed by
+      the parallel worker (see Claims).
     - **MS4 and MS7, partial.** The real `UnicrowClaim.claim` makes fixed calls and then, in the same frame
       (`claimPayments` is internal), `for (i < 5) if (amounts[i] > 0) sendEscrowShare(addresses[i], amounts[i],
       currency)`. **The loop is no longer the wall** (`3e4d51310`): the arbitration replica's claimer keeps four
@@ -1415,6 +1416,14 @@ risk. Take the slices in order, each with its own tests.
     own: I2b's replicas and primitives first, the fixture resumed when they hold. Compiling the real project stays
     the way a wall is found, and each wall still gets its small neutral case before it is fixed.
 
+- **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
+  workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
+  a round takes the next unticked item; the commit that lands it removes its line here.
+  - **Claimed by the parallel worker, from `4eb0915ca`:** R4's write half, the value-chunk layout a mapping value
+    over 60 bytes takes (P22's long write, and the mapping half of P19); a composer planner for a sorted batch
+    whose inserts share a predecessor (MS1's eight-key initializer); and a composer helper that fills a frame's
+    value list, the first item `4eb0915ca` names as not covered. Not claimed: the fixture, the proxy hop, I2's
+    security items and every other replica.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

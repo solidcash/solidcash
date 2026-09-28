@@ -26,8 +26,8 @@ import {
   userInput, userInputs, validatorFor, type DeployedContract,
 } from '../shapes/harness.js';
 import {
-  chunkRecordId, createComposedDerivationHost, layoutTransaction, layOutChunkRun, participant, planChunkRun,
-  type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
+  chunkRecordId, createComposedDerivationHost, deriveComposition, layoutTransaction, layOutChunkRun, participant,
+  planChunkRun, type ChunkRecordPlacement, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
 /**
@@ -46,9 +46,9 @@ import {
  * shape the compiler refuses by name is not the one under test.
  *
  * The static hop settles end to end (the generated proxy is admitted and the composer drives the delegate edge).
- * The dynamic hop does not: the proxy master's own program reverts while it runs its frame, so the derivation
- * stalls at the proxy's call site before the implementation is ever reached. The last case pins that wall, naming
- * the frame, the site, the machine's error and the failing instruction as measured today.
+ * The dynamic hop does not: the derivation reaches the implementation's frame, and that frame's own program
+ * reverts in its tail, while it walks the event list the frame declares. The last case pins that wall, naming the
+ * frame, the site, the machine's error and the failing instruction as measured today.
  *
  * Coordinates come from `layoutTransaction`/`participant`, frame references from `entryName`, and every commitment
  * from the shipped encoders; no coordinate in the plan is a literal.
@@ -250,8 +250,10 @@ function build(): Built {
     }],
     // The fallback reads the record before the hop and resumes from what the implementation wrote after it.
     segments: [[proxyRead], [proxyResumed]],
-    // The bytes the fallback received are the callee's own call data, pushed as one `bytes` argument.
-    argumentPushes: [encodeDataPush(callData)],
+    // The bytes the fallback received are the callee's own call data: the selector's push and its argument
+    // pushes. The fallback's `bytes` parameter carries that call data itself, so the master's own unlocking
+    // frames it once; framing it here again would hand the fallback the push of the call data instead.
+    argumentPushes: [callData],
     dispatches: true,
   });
   const implMaster: DraftMaster = {
@@ -301,7 +303,7 @@ function build(): Built {
       [USER_ID]: userInput(),
     },
     trailingOutputs: [
-      emitted,
+      ...emitted,
       ...records.filter((record) => record.role === 'created').map((record) => record.output!),
     ],
     validator: {
@@ -471,33 +473,49 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     expect(reasons).toContain('reads or writes a dynamic value and makes an external call');
   });
 
-  it('does NOT settle the append behind the proxy: the proxy master\'s own program reverts', () => {
-    // This is the wall, pinned. The composition is laid out and assembled correctly — every reference resolves and
-    // the implementation's delegate frame declares the run — but the derivation stalls at the proxy master's call
-    // site 0, because that master's compiled program reverts while it runs its own frame. The implementation's
-    // master is never reached, so the refusal is the proxy's, not the delegate hop's.
+  it('does NOT settle the append behind the proxy: the implementation master\'s frame tail reverts', () => {
+    // This is the wall, pinned. The composition is laid out and assembled correctly, the proxy hop itself is sound
+    // (the fallback forwards the callee's own call data and the composer drives the delegate edge), and the
+    // derivation reaches the implementation's frame. It stalls there: the implementation master's own program
+    // reverts in its frame tail, walking the event list the frame declares, so the implementation's segment close
+    // can never be filled.
+    //
+    // The failing instruction is the tail's category check on a listed event (`frame-tail.ts`'s `eventSection`,
+    // through `immutableCategoryScript`): an OP_EQUALVERIFY that compares the listed output's category
+    // (`OP_OUTPUTTOKENCATEGORY`) with the *executing* input's (`OP_INPUTINDEX OP_UTXOTOKENCATEGORY`). The frame is
+    // a DELEGATE, so the event belongs to the contract whose records the frame uses - the proxy's category, which
+    // is what the frame's body pins its record writes and its own event check to (through the head's category-owner
+    // slot) and what the validator's context-category walk attributes the frame's events to. The tail is the one
+    // emitter that reads the executing input instead, so no category the event output can carry satisfies both it
+    // and the body: measured, the proxy's category reverts the tail, and the implementation's reverts the body
+    // later.
     const built = build();
-    const { draft } = createComposedDerivationHost({
+    const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [built.proxyArtifact, built.implementationArtifact], plan: built.plan,
     });
 
-    // The machine's verdict on the proxy master's own input, against the assembled transaction.
-    const program = draft.programFor(PROXY_MASTER);
+    // The whole derivation: it fills the proxy's call site - the implementation is reached - and stops at the
+    // implementation's own frame, which cannot close against the run it declares.
+    let stalled: Error | undefined;
+    try {
+      deriveComposition([rootRequest(built)], host);
+    } catch (error) {
+      stalled = error as Error;
+    }
+    expect(stalled?.message).toMatch(/PER_CALL_DERIVATION_STALLED.*impl-1.*Impl\.append/);
+
+    // The machine's verdict on the implementation master's own program: the frame tail reverts at the listed
+    // event's category check. Its instruction pointer is 413, so the failing instruction is the OP_EQUALVERIFY at
+    // instruction index 412, byte offset 473 of the program bytes.
+    const program = draft.programFor(IMPL_MASTER);
     const state = compositionMachine().evaluate({
-      inputIndex: participant(draft.layout, PROXY_MASTER).index,
+      inputIndex: participant(draft.layout, IMPL_MASTER).index,
       sourceOutputs: program.sourceOutputs,
       transaction: program.transaction,
     });
-    // Measured today: the machine's error is "Program failed an OP_VERIFY operation." with its instruction
-    // pointer at 1182 (the byte at the corresponding offset is 0xa2), and the derivation stops before the
-    // implementation's frame is derived at all.
     expect(compositionMachine().stateSuccess(state)).not.toBe(true);
     expect(String((state as { readonly error?: string }).error)).toContain('failed an OP_VERIFY operation');
-
-    // And the whole derivation, which stops at the proxy's call site rather than reaching the implementation.
-    expect(() => composeAndDerive(
-      built.plan, [built.proxyArtifact, built.implementationArtifact], [rootRequest(built)],
-    )).toThrowError(/PER_CALL_DERIVATION_STALLED.*proxy-1.*call 0/);
+    expect((state as unknown as { readonly ip?: number }).ip).toBe(413);
   });
 
   it('refuses a record output no frame computed, on the same composition', () => {

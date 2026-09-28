@@ -1761,18 +1761,7 @@ export class AutoDerivationError extends Error {
   }
 }
 
-/**
- * Convert a participant-local dynamic-storage chunk coordinate to the physical transaction coordinate expected
- * by the covenant. A participant builder remains block-local after materialization; its enclosing block base is
- * therefore always part of the aggregate coordinate.
- */
-export function resolveDynamicChunkInputBase(
-  inputIndex: number,
-  blockBase: number,
-): bigint {
-  if (inputIndex < 0) return -1n;
-  return BigInt(blockBase + inputIndex);
-}
+export { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 
 export type ReturnAbiCandidate<T> = {
   logicalFunction: AbiFunction;

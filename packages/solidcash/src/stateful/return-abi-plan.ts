@@ -20,7 +20,9 @@ export class AutoDerivationError extends Error {
 export function resolveDynamicChunkInputBase(
   inputIndex: number,
   blockBase: number,
+  writeActive = true,
 ): bigint {
+  if (!writeActive) return inputIndex < 0 ? -2n : -BigInt(blockBase + inputIndex + 3);
   if (inputIndex < 0) return -1n;
   return BigInt(blockBase + inputIndex);
 }

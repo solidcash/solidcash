@@ -289,9 +289,9 @@ export function dynamicChunkPlaceholdersRemain(
 ): boolean {
   if (incomplete.length === 0) return false;
   if (convergence.ownedOutputs.length === 0) {
-    return incomplete.some((entry) => entry.resolved > 0);
+    return convergence.rounds > 0 || incomplete.some((entry) => entry.resolved > 0);
   }
-  return convergence.ownedOutputs.some((outputIndex) => {
+  return (convergence.authenticatedOutputs ?? convergence.ownedOutputs).some((outputIndex) => {
     const commitment = builder.outputs[outputIndex]?.token?.nft?.commitment ?? '';
     return commitment === '' || commitment === '00';
   });

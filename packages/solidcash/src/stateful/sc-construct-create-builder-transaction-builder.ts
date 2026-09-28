@@ -11,7 +11,10 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { batchPredecessorCommitment, isPendingBatchPredecessor } from '../message-bus/pending-batch-predecessor.js';
 import { materializeInternalFunctionArgument } from './kernel-journal-helpers.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
-import { compilerRouteUsesPhysicalWrapper } from './message-bus-resource-routing.js';
+import {
+  compilerRouteUsesPhysicalWrapper,
+  selectedMessageBusResourceMetadata,
+} from './message-bus-resource-routing.js';
 import { resolveDynamicChunkInputBase } from './return-abi-plan.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import type { ExternalCallUtxoGroup, EntryNftInfo, TokenContainerInfo } from './external-call-utxo-group.js';
@@ -282,6 +285,10 @@ export function constructCreateBuilderTransactionBuilder(
     }),
   });
   const firstRootDynamicChunk = dynamicReadChunkInputs[0] ?? dynamicChunkInputs[0];
+  const selectedRows = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusRowArguments;
+  const dynamicWriteActive = selectedRows === undefined
+    ? dynamicChunkVars.length > 0 || (abiFunction?.dynamicWrites?.length ?? 0) > 0
+    : selectedMessageBusResourceMetadata(selectedRows).dynamicWrites.length > 0;
   const refreshTopLevelDynamicChunkInputBase = topLevelDynamicChunkArgumentIndex < 0
     || compilerRouteUsesPhysicalWrapper(
       overrides?.compilerRouteSelector, physicalAbiFunction, abiFunction,
@@ -300,7 +307,7 @@ export function constructCreateBuilderTransactionBuilder(
       // to fit in this participant's local frame. buildParticipantProbeProgram performs the inverse conversion
       // only in generated probe bytecode, without changing these shared final-transaction arguments.
       finalArgs[topLevelDynamicChunkArgumentIndex] = resolveDynamicChunkInputBase(
-        localIndex, overrides?.blockBase ?? 0,
+        localIndex, overrides?.blockBase ?? 0, dynamicWriteActive,
       );
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_ORDER === '1') {

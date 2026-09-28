@@ -548,39 +548,57 @@ describe('a proxied single master: the outer hop', () => {
 });
 
 describe('the registration mapping write on the same proxy hop', () => {
-  it('stalls in the writer\'s own close: the delegate frame\'s declared read fails', () => {
+  it('settles: every contract input is accepted and each write matches the shipped planner', () => {
     const built = buildRegistrationEntry();
     // The plan is built from the shipped encoders: the read node is rewritten in place, the head is relinked, and
     // the second key's node is created — three records across the two writer groups.
     expect(built.mappingEntries).toHaveLength(3);
 
+    const outcome = composeAndDerive(built.plan, [proxyArtifact, implementationArtifact], [ROOT]);
+    // The delegate frame's records resolve from the input its caller's block put them at, so the batch read finds
+    // the group it wrote and the close reaches its own declared views.
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    expect(outcome.verdicts.filter((verdict) => verdict.accepted)
+      .map((verdict) => verdict.participant).sort())
+      .toStrictEqual([PROXY_MASTER, IMPL_MASTER, VALIDATOR_ID, RECORD_ID, HEAD_ID, KEY_NODE_ID].sort());
+
+    const program = outcome.draft.programFor(PROXY_MASTER);
+    const commitmentAt = (index: number): Uint8Array =>
+      new Uint8Array(program.transaction.outputs[index]!.token!.nft!.commitment);
+    // The created node is the shipped encoder's value for the second key's write, and the rewritten head and read
+    // node carry the commitments the shipped planner computed.
+    expect(bytesToHex(commitmentAt(built.createdIndex))).toBe(bytesToHex(built.createdCommitment));
+    expect(bytesToHex(commitmentAt(built.createdIndex))).toBe(bytesToHex(encodeEntryCommitment(
+      keyToSlot(encodeIntegerValue(KEYS.writeKey)), keyToSlot(encodeIntegerValue(KEYS.readKey)),
+      encodeIntegerValue(WRITTEN_VALUE))));
+    expect(bytesToHex(commitmentAt(built.headIndex))).toBe(bytesToHex(built.headAfter));
+    expect(bytesToHex(commitmentAt(built.keyNodeIndex))).toBe(bytesToHex(built.keyNodeAfter));
+    expect(bytesToHex(built.headAfter)).not.toBe(bytesToHex(headSentinelCommitment()));
+  });
+
+  it('refuses a created node no frame computed, on the same composition', () => {
+    const built = buildRegistrationEntry();
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [proxyArtifact, implementationArtifact], plan: built.plan,
     });
-    let stalled: Error | undefined;
-    try {
-      deriveComposition([ROOT], host);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    // The frame's records now resolve from the input the head parked as their owner, so the write reaches the
-    // close; the close's declared read then fails its own check, so the derivation still stops at site 0.
-    expect(stalled).toBeDefined();
-    expect(stalled!.message).toMatch(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
-    expect(stalled!.message).toMatch(/site 0 \(close of segment 0\)/);
-
-    const report = reportCompositionRefusal({
-      draft, artifacts: [proxyArtifact, implementationArtifact], vm: compositionMachine(),
+    deriveComposition([ROOT], host);
+    const program = draft.programFor(PROXY_MASTER);
+    const wrong = encodeEntryCommitment(keyToSlot(encodeIntegerValue(KEYS.writeKey)),
+      keyToSlot(encodeIntegerValue(KEYS.readKey)), encodeIntegerValue(WRITTEN_VALUE + 1n));
+    const transaction = {
+      ...program.transaction,
+      outputs: program.transaction.outputs.map((output, index) => (index === built.createdIndex
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
+        : output)),
+    };
+    const vm = compositionMachine();
+    const state = vm.evaluate({
+      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      sourceOutputs: program.sourceOutputs, transaction,
     });
-    const impl = report.refusals.find((refusal) => refusal.master === IMPL_MASTER);
-    expect(impl).toBeDefined();
-    expect(impl!.objection).toMatch(/OP_VERIFY/);
-    // The plan itself is sound: the created node's commitment is the shipped encoder's value for the second write,
-    // and the rewritten head and read node carry the commitments the shipped planner computed.
-    expect(bytesToHex(built.createdCommitment)).toBe(bytesToHex(encodeEntryCommitment(
-      keyToSlot(encodeIntegerValue(KEYS.writeKey)), keyToSlot(encodeIntegerValue(KEYS.readKey)),
-      encodeIntegerValue(WRITTEN_VALUE))));
-    expect(bytesToHex(built.headAfter)).not.toBe(bytesToHex(headSentinelCommitment()));
+    expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
   it('still refuses the record declared last: the batch then reads it as a target group', () => {

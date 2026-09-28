@@ -39,7 +39,7 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 
 | # | Primitive | In | Status |
 | --- | --- | --- | --- |
-| P1 | Proxy entry: `CALL` to the proxy, `DELEGATE` into the implementation (toy Y4, plan F5) | MS1-MS8 | none; per-call delegate shapes are refused at compile |
+| P1 | Proxy entry: `CALL` to the proxy, `DELEGATE` into the implementation (toy Y4, plan F5) | MS1-MS8 | settles. The forwarded hop, the state write it inherits, appends through the proxy and a registration-style mapping batch each derive and are accepted (`toys/proxied-entry.test.ts`, `toys/proxied-appends.test.ts`, `shapes/proxied-registration.test.ts`) |
 | P2 | Proxy-to-proxy call: the callee sees `msg.sender` = the calling proxy's address and gates on it | MS2-MS7 | none |
 | P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | partial. A `for` loop calling one callee twice, each turn rewriting one scalar record, settles through the shipped composer: the published site is resumed once per turn and the callee's record chains across the turns (`edges/repeated-callee.test.ts`). Toy Y1's shape is still refused: separate call statements to one callee ("the call to 'append' runs repeatedly"), each appending to one array and emitting. Three turns exceed the caller's own operation-cost budget (2,184,834 of 2,184,800 units), which `publishJobPost`'s 8 calls from one master will hit unless the caller's input gets headroom as the validator's did |
 | P4 | Calls in data-dependent loops with k > 1, a `STATIC` read per iteration, a revert mid-loop | MS2, MS4, MS7 | partial. A loop's calls compile for any trip count and the machine accepts 0 to 3 records against one program (`master/looped-call-entry.test.ts`); two turns derive and settle (P3's case). A body that reads its own records and repeats is refused by name; a `STATIC` read per iteration and a revert mid-loop are untested |
@@ -70,9 +70,11 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 | P29 | CREATE-predicted, circular addresses (F3) | MS9 | partial, as of `867cafe09`. The four escrow contracts deploy through the shipped factory path at their real addresses and are referenced by the next deployment; the fixture stops before the proxy half, so the prediction is exercised but not yet asserted (the assertion is F7's) |
 
 Movement since that reading, per the plan's Log: a frame that keeps a data-NFT record and writes a mapping batch now
-settles as a user-entered root — the batch groups are read past the frame's own state records, and every state and
-entry coordinate is based on the input the head parked as the records' owner — while the same entry behind a proxy
-hop still stalls at its close. No row above changes status on that: MS1's registration half still does not settle.
+settles, as a user-entered root and behind a proxy hop — the batch groups are read past the frame's own state
+records, every state and entry coordinate is based on the input the head parked as the records' owner, and the proof
+operand a derivation leaves is measured from that same input. P1's status above changes on it, and **MS1's replica
+settles in its own shape**: the outer hop of a user call into a proxied contract, the state write the implementation
+inherits, two appends through the proxy with their events, and a registration-style mapping batch.
 | P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 ## 3. Test mechanics the titles also need (not shapes)

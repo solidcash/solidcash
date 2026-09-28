@@ -3503,10 +3503,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       });
     });
     // The segment declares the frame's own data-NFT state records before any target's group, so the derivation
-    // steps over them; a delegate frame declares the records of the layout it mirrors, which is its caller's.
+    // steps over them; a delegate frame declares the records of the layout it mirrors, which is its caller's. A
+    // frame that runs on another contract's records addresses them from the input the head parked as their owner,
+    // so its proof operands are measured from that input too.
+    const ownerOrdinal = this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())
+      ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
+      : undefined;
+    const derivation = {
+      leadingRecords: this.dataNftCount,
+      ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
+    };
     const script = slots.length === 1
-      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, leadingRecords: this.dataNftCount })
-      : buildBatchTargetsDerivationScript({ keyDepths, leadingRecords: this.dataNftCount });
+      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, ...derivation })
+      : buildBatchTargetsDerivationScript({ keyDepths, ...derivation });
     this.emit([...script], loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {

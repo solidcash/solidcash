@@ -51,6 +51,16 @@ export interface BatchWitnessDerivationOptions {
    * steps over that many records before reading a group. Absent means none.
    */
   readonly leadingRecords?: number;
+  /**
+   * The bottom ordinal of the tracked slot holding the input the frame's records belong to, when the frame runs on
+   * another contract's records.
+   *
+   * A proof operand is the group's input coordinate less the input its records are addressed from, and the reader
+   * of that operand adds the same input back. A frame that borrowed its records addresses them from its caller's
+   * input, which is not the input the frame runs on, so the operand has to be measured from that one. Absent means
+   * the frame's own input.
+   */
+  readonly recordsOwnerOrdinal?: number;
 }
 
 /**
@@ -95,6 +105,14 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   const rollAndDrop = (depth: number): void => { num(depth); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); };
   /** Drops one declared record from the top of a record list: its two index fields and its two view commitments. */
   const skipRecord = (): void => { takeAndDrop(2); takeAndDrop(2); takeAndDropLp32(); takeAndDropLp32(); };
+  /** Leaves the input the frame's records are addressed from: its caller's when one is named, its own otherwise. */
+  const emitRecordsOwner = (): void => {
+    if (options.recordsOwnerOrdinal === undefined) { op(Opcodes.OP_INPUTINDEX); return; }
+    // The owner is named by its bottom ordinal, so its depth is read from the stack the script is running on.
+    op(Opcodes.OP_DEPTH);
+    num(options.recordsOwnerOrdinal);
+    op(Opcodes.OP_SUB, Opcodes.OP_PICK);
+  };
   /** Leaves bytes 32..64 of the item on top: the commitment's successor link. */
   const takeSuccessor = (): void => {
     num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_NIP); // drop the slot half
@@ -148,7 +166,7 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   // INSERT: record 0 is the predecessor; the created node is the record that follows it.
   {
     takeField(2); // [block, in0, records, Slot]
-    pick(1); op(Opcodes.OP_BIN2NUM, Opcodes.OP_INPUTINDEX, Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
+    pick(1); op(Opcodes.OP_BIN2NUM); emitRecordsOwner(); op(Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
     op(Opcodes.OP_SWAP); // [block, proof, in0, records, Slot]
     rollAndDrop(2); // in0 -> [block, proof, records, Slot]
     takeField(2); // [block, out0, proof, records, Slot]
@@ -168,7 +186,7 @@ export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivatio
   // UPDATE: record 0 is the target node, recreated in place, and it opens no predecessor output.
   {
     takeField(2); // [block, in0, records, Slot]
-    pick(1); op(Opcodes.OP_BIN2NUM, Opcodes.OP_INPUTINDEX, Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
+    pick(1); op(Opcodes.OP_BIN2NUM); emitRecordsOwner(); op(Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
     op(Opcodes.OP_SWAP); // [block, proof, in0, records, Slot]
     rollAndDrop(2); // in0 -> [block, proof, records, Slot]
     takeAndDrop(2); // out0
@@ -211,6 +229,8 @@ export interface BatchTargetsDerivationOptions {
    * over that many records before reading the first group. Absent means none.
    */
   readonly leadingRecords?: number;
+  /** The bottom ordinal of the slot holding the input the frame's records belong to; see the single-target option. */
+  readonly recordsOwnerOrdinal?: number;
 }
 
 /**
@@ -357,7 +377,7 @@ class BatchTargetsDerivationBuilder {
   private deriveUpdate(target: number): void {
     this.pick(`in0_${target}`);
     this.unary(Opcodes.OP_BIN2NUM, 'proof_index');
-    this.pushConst('active_input', Opcodes.OP_INPUTINDEX);
+    this.pushRecordsOwner('records_owner');
     this.binary(Opcodes.OP_SUB, 'proof');
     this.toAlt(`proof_${target}`);
     this.pick(`view_out0_${target}`);
@@ -378,7 +398,7 @@ class BatchTargetsDerivationBuilder {
     this.takeLengthField32(`view_out1_${target}`);
     this.pick(`in0_${target}`);
     this.unary(Opcodes.OP_BIN2NUM, 'proof_index');
-    this.pushConst('active_input', Opcodes.OP_INPUTINDEX);
+    this.pushRecordsOwner('records_owner');
     this.binary(Opcodes.OP_SUB, 'proof');
     this.toAlt(`proof_${target}`);
     this.pick(`view_out1_${target}`);
@@ -441,6 +461,20 @@ class BatchTargetsDerivationBuilder {
 
   private pushConst(name: string, opcode: number): void {
     this.op(opcode);
+    this.main.unshift(name);
+  }
+
+  /** Leaves the input the frame's records are addressed from, modelling the one item it pushes. */
+  private pushRecordsOwner(name: string): void {
+    if (this.options.recordsOwnerOrdinal === undefined) {
+      this.pushConst(name, Opcodes.OP_INPUTINDEX);
+      return;
+    }
+    // As in the emitter's own bottom-ordinal reads, the depth is taken at run time so the items the script has
+    // pushed above the frame do not have to be modelled.
+    this.op(Opcodes.OP_DEPTH);
+    this.num(this.options.recordsOwnerOrdinal);
+    this.op(Opcodes.OP_SUB, Opcodes.OP_PICK);
     this.main.unshift(name);
   }
 

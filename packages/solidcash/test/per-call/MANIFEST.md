@@ -36,13 +36,13 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 26 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 27 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1166 tests (115 + 405 + 646), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 646 is the fourteen rows above
+Total: 1167 tests (115 + 405 + 647), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 647 is the fourteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -294,8 +294,7 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   path: a compiled unit whose own bodies, or whose reached definitions, carry inline assembly is refused by name,
   and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame — a frame that keeps
-  a data-NFT record and writes a mapping batch now settles as a user-entered root, and the same entry behind a proxy
-  hop still stalls at its close. One target written
+  a data-NFT record and writes a mapping batch settles, as a user-entered root and behind a proxy hop. One target written
   in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
   collections in one body, and the sender and compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
   constructor that emits shares the head. A file-level definition is no longer a wall either: the master opens after

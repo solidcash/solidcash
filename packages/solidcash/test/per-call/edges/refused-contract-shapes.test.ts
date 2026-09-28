@@ -61,18 +61,22 @@ describe('a low-level call', () => {
 });
 
 describe('composite values at an entry boundary', () => {
-  it('refuses an entry that returns a struct', () => {
+  it('refuses an entry that returns an external function pointer', () => {
+    // A function pointer is an (address, selector) pair, so it is not one item the frame's `retval` comparison can
+    // hold; the entry is refused where it is compiled and the reason is published on the artifact.
     const source = 'pragma solidcash ^0.13.0;'
-      + ' struct Pair { int x; int y; }'
-      + ' contract Returns { function f() returns (Pair) { return Pair(1, 2); } }';
+      + ' contract Returns {'
+      + '   function f() returns (function(int) external returns (int)) { revert("no"); }'
+      + ' }';
     const message = refusal(source);
     expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain("the entry point 'f' returns a struct");
+    expect(message).toContain('returns a function pointer');
   });
 
-  // An entry that returns a fixed-size array is admitted, not refused: the array is one value the language holds
-  // already encoded, so the frame records the words the entry's own `return` built and compares them. The accept
-  // and its refusals are machine cases in `solidc/test/per-call/master/composite-return.test.ts`.
+  // An entry that returns a fixed-size array or a struct is admitted, not refused: each is one value the language
+  // holds already encoded, so the frame records the blob the entry's own `return` built and compares them. The
+  // accepts, the dynamic-member cases and the struct that stays refused (a mapping member is state, not a value)
+  // are machine cases in `solidc/test/per-call/master/composite-return.test.ts`.
   //
   // A call that passes a struct argument is admitted too, whether the struct is built from run-time values or
   // written as a literal: the caller materializes one blob and the site's digest is the wire's. The accept, the
@@ -81,15 +85,26 @@ describe('composite values at an entry boundary', () => {
 });
 
 describe('a recovery precompile', () => {
-  it('is refused by name: a compute side-car needs co-spent inputs', () => {
-    // The row is the invalid-input cases of `ecrecover`; the shape is refused before any of them can run.
+  it('is served: a master locates its recovery side-car pair from the input it runs on', () => {
+    // The pair is placed immediately after the master's own input, so the head admits the body and the machine
+    // cases in `solidc/test/per-call/master/ecrecover-invalid-input.test.ts` drive a real recovery.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Rec {'
       + '   function f(bytes32 h, int v, bytes32 r, bytes32 s) returns (address) { return ecrecover(h, v, r, s); }'
       + ' }';
-    const message = refusal(source, { ecrecover: 'p2pkh' });
+    expect(refusal(source, { ecrecover: 'p2pkh' })).toBe('');
+  });
+});
+
+describe('a keccak compute side-car', () => {
+  it('is refused by name: its co-spent input is not located', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Hashes {'
+      + '   function f(bytes preimage) returns (bytes32) { return keccak256(preimage); }'
+      + ' }';
+    const message = refusal(source);
     expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('a compute side-car needs co-spent inputs the master head does not locate');
+    expect(message).toContain('a keccak compute side-car needs co-spent inputs the master head does not locate');
   });
 });
 

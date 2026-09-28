@@ -485,8 +485,7 @@ const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
 /** A contract one of whose bodies is a shape the per-call convention cannot emit. */
 const REFUSED_ENTRY_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Only {'
-  + '   struct Point { int x; int y; }'
-  + '   function bad() returns (Point) { return Point(1, 2); }'
+  + '   function bad() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';
 
 describe('an entry the compiler refused', () => {
@@ -496,7 +495,7 @@ describe('an entry the compiler refused', () => {
     const artifacts = compileStringMulti(REFUSED_ENTRY_SOURCE, { composition: 'per-call' });
     const host = createShippedDerivationHost({ artifacts: [artifacts.Only!], runs: [] });
     expect(() => host.sitesFor('Only.bad()')).toThrow(/PER_CALL_HOST_ENTRY_REFUSED/);
-    expect(() => host.sitesFor('Only.bad()')).toThrow(/returns a struct/);
+    expect(() => host.sitesFor('Only.bad()')).toThrow(/returns a function pointer/);
   });
 });
 

@@ -21,7 +21,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 371 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 380 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
@@ -36,15 +36,15 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 60 |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | 33 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 74 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 34 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1228 tests passed (115 + 412 + 701), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1252 tests passed (115 + 421 + 716), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 412 is the four rows above it, and `solidcash` 701 is the fifteen rows above
+`vitest.per-call.config.ts`: `solidc` 421 is the four rows above it, and `solidcash` 716 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -222,7 +222,7 @@ and the binding of a delegate callee to the implementation the record names by `
   re-entry, `tx.origin` and `msg.sender` authority on a callee, events above the commitment size emitted by a
   nested frame, two events at distinct outputs, a static read of state another frame just wrote, a data-dependent
   call count, a record growing within one transaction, a four-deep call chain, and a named refusal for every row
-  the compiler or the composer still refuses (inline assembly, low-level calls, value sends, struct and array
+  the compiler or the composer still refuses (inline assembly, low-level calls, value sends, function-pointer
   returns, `ecrecover`, dynamic mapping values).
 - **`solidcash/test/per-call/toys/`** — the small compositions the design lists. Each is driven to the machine
   where the shipped path supports it and otherwise refused by name: a repeated call to one target, the sorted-entry

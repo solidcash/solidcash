@@ -25,11 +25,10 @@ const RETURNING_CONTRACT = 'pragma solidcash ^0.13.0;'
   + '   function answer() returns (int) { return 42; }'
   + ' }';
 
-/** A composite return: the encoding is not a blob the entry's own code compares against `retval`. */
+/** A composite return: a function pointer is a pair, not one value the frame compares against `retval`. */
 const COMPOSITE_RETURN_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Holder {'
-  + '   struct Point { int x; int y; }'
-  + '   function point() returns (Point) { return Point(1, 2); }'
+  + '   function point() returns (function(int) external returns (int)) { revert("no"); }'
   + ' }';
 
 /** An entry that emits one event: the head checks the event list, whose count the entry fixes. */

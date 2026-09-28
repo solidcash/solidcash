@@ -11525,6 +11525,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
       if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
+      if (this.perCallMaster) {
+        // A per-call frame owns its input: the side-car pair is placed immediately after it, one pair per call, so
+        // the body locates A/B from `OP_INPUTINDEX` rather than from an SDK operand. A self-preserving side-car
+        // recreates at its own index, so the input coordinate also reads the output.
+        this.emitMasterInputIndex(loc);
+        const offset = 1 + 2 * effectOrdinal + (role === 'B' ? 1 : 0);
+        this.emit(encodeInt(BigInt(offset)), loc);
+        this.emit(Op.OP_ADD, loc);
+        return;
+      }
       const threadedA = this.getStackIndex(
         GenerateTargetTraversalWithLocation.OUTLINED_RECOVERY_A_INDEX, true,
       );
@@ -11577,6 +11587,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const statefulEvmKeccak = ecrecoverKeccakSlot !== undefined;
     const keccakIdx = (isOutput = false, extra = 0): void => {
       if (loop) { emitLoopSideCarIndex(3n, extra); return; }
+      if (this.perCallMaster) {
+        // The EVM projection's keccak side-car rides after every recovery pair, one per ecrecoverEvm call, so its
+        // coordinate is the frame's own input plus the pairs plus this call's evm ordinal.
+        this.emitMasterInputIndex(loc);
+        const offset = 1 + 2 * n + j;
+        this.emit(encodeInt(BigInt(offset)), loc);
+        this.emit(Op.OP_ADD, loc);
+        return;
+      }
       if (ecrecoverKeccakSlot) {
         this.emitComputeSidecarBlockBase(loc, capturedComputeBase);
         this.emit(encodeInt(BigInt(ecrecoverKeccakSlot.offset)), loc);

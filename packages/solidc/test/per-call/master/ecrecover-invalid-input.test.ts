@@ -1,5 +1,23 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
+import {
+  binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh,
+  encodeLockingBytecodeP2sh32, hash256, hexToBin,
+} from '@bitauth/libauth';
+import {
+  asmToScript, ecrecoverComputeLockingBytecode, encodeWitnessBlock, keccakComputeLockingBytecode,
+  scriptToBytecode, sha256, SHARED_LIBRARY_SALT, validatorAddress, type WitnessBlock,
+} from '@solidcash/utils';
+import { ethers } from 'ethers';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
+import { buildKeccakComputeSidecar } from '../../../../solidcash/src/keccak/keccakComputeSidecar.js';
+import { buildEcrecoverComputeSidecars, probeEcrecoverSplit }
+  from '../../../../solidcash/src/ecrecover/ecrecoverComputeSidecar.js';
+import { computeEcrecoverWitness, type EcrecoverWitness }
+  from '../../../../solidcash/src/ecrecover/ecrecoverRecovery.js';
+import { compositionMachine } from '../machine.js';
+import { callerUnlockingBytecode } from './caller-input.js';
+import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './validator-input.js';
 import { publishedRefusals } from './refused-entry.js';
 
 /**
@@ -10,18 +28,22 @@ import { publishedRefusals } from './refused-entry.js';
  * source that ports `require(ecrecover(...) == expected)` therefore relies on the zero result to make the require
  * evaluate false rather than halt the script.
  *
- * On the shipped per-call compiler the recovery value comes from a co-spent side-car pair, and the master head
- * does not locate co-spent side-car inputs. So every body that makes an `ecrecover` call is refused by name,
- * whatever its arguments: a valid recovery, an empty signature, `v = 0`, `v = 1`, an out-of-range `s`, the
- * all-zero digest, and both projections are refused with the same reason. The per-call path serves no recovery at
- * all, so the invalid-input rule is not reachable there; the cases below pin that refusal.
+ * On the per-call path the recovery value comes from a co-spent side-car pair: A checkpoints the GLV ladder and B
+ * commits the recovered compressed key, and the master reads that key from B's output. The pair is placed
+ * immediately after the master's own input, so the body locates A at `OP_INPUTINDEX + 1` and B at `+ 2` (a
+ * `ecrecoverEvm` keccak side-car rides at `+ 3`) rather than through an SDK operand. The cases below compile each
+ * input shape and drive a real spend on the BCH-2026 machine, with the machine's own verdict as the assertion.
  *
- * The control compiles the same valid source on the direct convention, where the call is served and marked as
- * recovery compute - so what is refused is the per-call convention's side-car limitation, not the builtin.
+ * The side-car is signature-independent and self-verifying: as docs/ecrecover.md records, it commits whatever key
+ * its witnessed `(hash, v, r, s)` recover, and the master compares that key against the source's. So the per-call
+ * path has no zero-address sentinel. Measured here: a `v` outside 27/28 is refused by the covenant's own parity
+ * binding so no pair can be co-spent at all; an all-zero digest makes the witness's square root fail, so no pair
+ * is built; an out-of-range `s` yields a key that is not the expected signer, so the master's comparison rejects
+ * the spend. None of them answers address zero, and the invalid-input rule the design asks for is not reachable.
+ *
+ * The direct-convention control compiles the same valid source, where the call is served and marked as recovery
+ * compute - so what the per-call cases below show is the per-call convention's own behaviour.
  */
-
-/** The reason every ecrecover body is refused by the per-call master. */
-const RECOVERY_REFUSAL = 'a compute side-car needs co-spent inputs the master head does not locate';
 
 /** A standard compressed pubkey the recovery result is compared against. */
 const SIGNER = '0x021111111111111111111111111111111111111111111111111111111111111111';
@@ -101,7 +123,7 @@ const BARE_NAME_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-type Artifacts = Record<string, { composition?: unknown }>;
+type Artifacts = Record<string, { composition?: unknown; abi?: readonly { ecrecoverCompute?: boolean }[] }>;
 
 const compilePerCall = (source: string, options: Record<string, unknown> = {}): Artifacts =>
   compileStringMulti(source, { composition: 'per-call', ...options } as never) as Artifacts;
@@ -111,27 +133,34 @@ const refusalMessage = (source: string, options: Record<string, unknown> = {}): 
   publishedRefusals(compilePerCall(source, options))
     .map((refused) => `${refused.functionName}: ${refused.reason}`).join(' | ');
 
+/** True when the contract's entry is marked as a recovery compute. */
+const marksRecoveryCompute = (source: string, options: Record<string, unknown> = {}): boolean => {
+  const artifacts = compilePerCall(source, options);
+  return Object.values(artifacts).some((artifact) =>
+    (artifact.abi ?? []).some((entry) => entry.ecrecoverCompute === true));
+};
+
 const CASES = [
-  { name: 'a valid recovery used normally', source: VALID_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'an empty or short signature', source: SHORT_SIGNATURE_SOURCE, entry: 'Verifier.verify()', options: {} },
-  { name: 'a recovery id of 0', source: V_ZERO_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'a recovery id of 1', source: V_ONE_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'an out-of-range s', source: S_OUT_OF_RANGE_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'an all-zero digest and signature', source: ALL_ZERO_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'the EVM-address projection', source: EVM_PROJECTION_SOURCE, entry: 'Auth.check()', options: {} },
-  { name: 'the bare name in P2PKH mode', source: BARE_NAME_SOURCE, entry: 'Auth.check()',
-    options: { ecrecover: 'p2pkh' } },
+  { name: 'a valid recovery used normally', source: VALID_SOURCE, options: {} },
+  { name: 'an empty or short signature', source: SHORT_SIGNATURE_SOURCE, options: {} },
+  { name: 'a recovery id of 0', source: V_ZERO_SOURCE, options: {} },
+  { name: 'a recovery id of 1', source: V_ONE_SOURCE, options: {} },
+  { name: 'an out-of-range s', source: S_OUT_OF_RANGE_SOURCE, options: {} },
+  { name: 'an all-zero digest and signature', source: ALL_ZERO_SOURCE, options: {} },
+  { name: 'the EVM-address projection', source: EVM_PROJECTION_SOURCE, options: {} },
+  { name: 'the bare name in P2PKH mode', source: BARE_NAME_SOURCE, options: { ecrecover: 'p2pkh' } },
 ] as const;
 
-describe('ecrecover on the per-call path refuses every input shape', () => {
-  for (const { name, source, entry, options } of CASES) {
-    it(`refuses the body for ${name}`, () => {
-      expect(refusalMessage(source, options)).toBe(`${entry}: ${RECOVERY_REFUSAL}`);
+describe('ecrecover on the per-call path is admitted for every input shape', () => {
+  for (const { name, source, options } of CASES) {
+    it(`emits the body for ${name}`, () => {
+      expect(refusalMessage(source, options)).toBe('');
+      expect(marksRecoveryCompute(source, options)).toBe(true);
     });
   }
 });
 
-describe('the direct convention serves the recovery the per-call path refuses', () => {
+describe('the direct convention serves the same recovery', () => {
   it('compiles a valid recovery and marks it as recovery compute', () => {
     const artifact = compileString(VALID_SOURCE);
     const fn = (artifact.abi as { name: string; ecrecoverCompute?: boolean; ecrecoverArgParams?: unknown }[])
@@ -148,8 +177,8 @@ describe('the direct convention serves the recovery the per-call path refuses', 
   });
 });
 
-describe('the refusal is a property of the body that makes the call', () => {
-  it('serves the sibling body and refuses only the recovery body by name', () => {
+describe('the admission is a property of the body that makes the call', () => {
+  it('serves the sibling body and the recovery body together', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Mixed {'
       + '   function good() { require(true); }'
@@ -157,8 +186,293 @@ describe('the refusal is a property of the body that makes the call', () => {
       + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(${SIGNER}));`
       + '   }'
       + ' }';
-    const refusals = publishedRefusals(compilePerCall(source));
-    expect(refusals.map((refused) => refused.functionName)).toStrictEqual(['Mixed.bad()']);
-    expect(refusals[0]!.reason).toBe(RECOVERY_REFUSAL);
+    expect(publishedRefusals(compilePerCall(source))).toStrictEqual([]);
+  });
+});
+
+/* --------------------------------------------------------------------------------------------------------- */
+
+/**
+ * The machine fixture: a compiled master entered by a user, co-spent with its recovery side-car pair (and, for the
+ * EVM projection, a keccak side-car). The pair sits immediately after the master's own input, which is where the
+ * body reads it; every verdict below is the BCH-2026 machine's own.
+ */
+
+const CATEGORY = seededCategory('per-call ecrecover recovery');
+const CONTRACT_ADDRESS = validatorAddress(CATEGORY, REAL_VALIDATOR_PROGRAM);
+const TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
+const SIDECAR_CAT = hexToBin('ee'.repeat(32));
+const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
+
+/** Master input indices: the master, its A/B pair (and keccak K), then the user. */
+const MASTER_INDEX = 0;
+const A_INDEX = 1;
+const B_INDEX = 2;
+const K_INDEX = 3;
+
+type VmProgram = Parameters<ReturnType<typeof createVirtualMachineBch2026>['evaluate']>[0];
+type VmTransaction = NonNullable<VmProgram['transaction']>;
+type VmSourceOutput = VmProgram['sourceOutputs'][number];
+
+/** A signer whose signature decomposes into a two-covenant split, with the LE scalars the builtin takes. */
+interface Recovery {
+  readonly h: Uint8Array;
+  readonly v: number;
+  readonly r: Uint8Array;
+  readonly s: Uint8Array;
+  readonly owner: Uint8Array;
+  readonly address: Uint8Array;
+  readonly witness: EcrecoverWitness;
+}
+
+const token = (
+  category: Uint8Array, capability: 'minting' | 'mutable' | 'none', commitment = new Uint8Array(0),
+): { category: Uint8Array; amount: bigint; nft: { capability: 'minting' | 'mutable' | 'none'; commitment: Uint8Array } } =>
+  ({ category, amount: 0n, nft: { capability, commitment } });
+
+/** A dummy side-car UTXO for building and probing a pair (only its index and token matter to the covenants). */
+const dummySideCar = (odd: boolean): { txid: string; vout: number; satoshis: bigint; token: unknown } =>
+  ({
+    txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
+    token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
+  });
+
+const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
+
+/**
+ * Signs one message with a fresh random wallet and returns the LE scalars, the recovered signer, and the recovery
+ * witnesses. A small share of signatures have a GLV ladder too long for the two-covenant split, so the wallet is
+ * re-drawn until the split probe accepts - the same remedy the shipped e2e fixture uses.
+ */
+async function splittableSigner(): Promise<Recovery> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const wallet = ethers.Wallet.createRandom();
+    const message = `per-call ecrecover ${attempt}`;
+    const signature = await wallet.signMessage(message);
+    const digest = ethers.hashMessage(message);
+    const { r, s, v } = ethers.Signature.from(signature);
+    const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
+    const owner = hexToBin(ethers.SigningKey
+      .computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true).slice(2));
+    const witness = computeEcrecoverWitness(h, v, rLe, sLe);
+    try {
+      probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
+    } catch {
+      continue; // a width-0 signature; draw another
+    }
+    return { h, v, r: rLe, s: sLe, owner, address: hexToBin(wallet.address.slice(2)), witness };
+  }
+  throw new Error('no signature with a two-covenant split after 200 draws');
+}
+
+/** The finished bytes of a compiled contract's master program, with its deployment slots filled. */
+function masterProgram(artifacts: Artifacts, name: string): Uint8Array {
+  const artifact = artifacts[name]! as { bytecode: string; composition: { placeholders: never } };
+  return fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition.placeholders, {
+    category: categorySlotValue(CATEGORY), contractAddress: CONTRACT_ADDRESS, templateHash: TEMPLATE_HASH,
+  });
+}
+
+/** The witness block a user's root frame carries into the master. */
+function rootBlock(userIndex: number): WitnessBlock {
+  return {
+    kind: 0, callerRef: userIndex, originRef: userIndex, validatorRef: 0xffff, sender: USER_LOCK,
+    self: CONTRACT_ADDRESS, value: 0n, retval: new Uint8Array(0), calls: [], segments: [[]], events: [], sends: [],
+  };
+}
+
+/** One side-car input/output pair, recreated at its own index. */
+interface SideCar {
+  readonly unlockingBytecode: Uint8Array;
+  readonly lock: Uint8Array;
+  readonly commitment: Uint8Array;
+}
+
+const sideCarOutput = (car: SideCar): VmSourceOutput => ({
+  lockingBytecode: car.lock, valueSatoshis: 100_000n, token: token(SIDECAR_CAT, 'mutable', car.commitment),
+}) as VmSourceOutput;
+
+const sideCarSource = (car: SideCar): VmSourceOutput => ({
+  lockingBytecode: car.lock, valueSatoshis: 100_000n, token: token(SIDECAR_CAT, 'mutable'),
+}) as VmSourceOutput;
+
+/** Builds the A/B recovery pair for a witness at a fixed split. */
+function recoveryPair(witness: EcrecoverWitness): { readonly a: SideCar; readonly b: SideCar } {
+  const chunkA = probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
+  return pairAt(witness, chunkA);
+}
+
+/** Builds the A/B recovery pair for a witness at the given split, without probing viability. */
+function pairAt(witness: EcrecoverWitness, chunkA: number): { readonly a: SideCar; readonly b: SideCar } {
+  const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
+    witness, chunkA, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+  );
+  return {
+    a: {
+      unlockingBytecode: unlockerA.generateUnlockingBytecode({} as never),
+      lock: ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, 'A'),
+      commitment: hexToBin(recreateA.token!.nft!.commitment),
+    },
+    b: {
+      unlockingBytecode: unlockerB.generateUnlockingBytecode({} as never),
+      lock: ecrecoverComputeLockingBytecode(SHARED_LIBRARY_SALT, 'B'),
+      commitment: hexToBin(recreateB.token!.nft!.commitment),
+    },
+  };
+}
+
+/** The keccak side-car the EVM projection reads its address from. */
+function keccakCar(preimage: Uint8Array): SideCar {
+  const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, SHARED_LIBRARY_SALT, dummySideCar(false) as never, false);
+  return {
+    unlockingBytecode: unlocker.generateUnlockingBytecode({} as never),
+    lock: keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false),
+    commitment: hexToBin(recreate.token!.nft!.commitment),
+  };
+}
+
+/**
+ * Builds the transaction: the master at input 0, its side-car pair (and keccak) immediately after, then the user.
+ * The published outputs recreate every input at its own index, so a self-preserving side-car's coordinate is its
+ * own index.
+ */
+function buildSpend(program: Uint8Array, cars: readonly SideCar[]): { transaction: VmTransaction; sourceOutputs: VmProgram['sourceOutputs'] } {
+  const userIndex = 1 + cars.length;
+  const masterLock = encodeLockingBytecodeP2sh32(hash256(program));
+  const masterToken = token(CATEGORY, 'minting');
+  const inputs = [
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
+      unlockingBytecode: new Uint8Array([
+        ...encodeDataPush(encodeWitnessBlock(rootBlock(userIndex))), ...encodeDataPush(program),
+      ]),
+    },
+    ...cars.map((car, offset) => ({
+      outpointIndex: 1, outpointTransactionHash: new Uint8Array(32).fill(offset + 2), sequenceNumber: 0xffffffff,
+      unlockingBytecode: car.unlockingBytecode,
+    })),
+    {
+      outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(0x44), sequenceNumber: 0xffffffff,
+      unlockingBytecode: callerUnlockingBytecode(),
+    },
+  ];
+  const outputs = [
+    { lockingBytecode: masterLock, valueSatoshis: 20_000n, token: masterToken },
+    ...cars.map(sideCarOutput),
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+  ];
+  const sourceOutputs = [
+    { lockingBytecode: masterLock, valueSatoshis: 20_000n, token: masterToken },
+    ...cars.map(sideCarSource),
+    { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+  ] as VmProgram['sourceOutputs'];
+  return { transaction: { version: 2, inputs, outputs, locktime: 0 } as VmTransaction, sourceOutputs };
+}
+
+/** Each input's machine verdict, keyed by input index. */
+function verdicts(spend: { transaction: VmTransaction; sourceOutputs: VmProgram['sourceOutputs'] }, indices: readonly number[]): Record<number, boolean> {
+  const vm = compositionMachine();
+  return Object.fromEntries(indices.map((index) => [
+    index,
+    vm.stateSuccess(vm.evaluate({
+      inputIndex: index, sourceOutputs: spend.sourceOutputs, transaction: spend.transaction,
+    })) === true,
+  ]));
+}
+
+/** Compiles one recovery source with the given literal `(h, v, r, s)` and comparison, and returns its master. */
+function compileRecoverySource(args: { h: Uint8Array; v: number; r: Uint8Array; s: Uint8Array }, comparison: string, projection: 'pubkey' | 'evm'): Uint8Array {
+  const call = projection === 'pubkey' ? 'ecrecoverPubKey' : 'ecrecoverEvm';
+  const source = 'pragma solidcash ^0.13.0;'
+    + ' contract Auth {'
+    + '   function check() {'
+    + `     require(${call}(bytes32(0x${binToHex(args.h)}), ${args.v}, `
+    + `bytes32(0x${binToHex(args.r)}), bytes32(0x${binToHex(args.s)})) == ${comparison});`
+    + '   }'
+    + ' }';
+  const artifacts = compilePerCall(source);
+  expect(publishedRefusals(artifacts)).toStrictEqual([]);
+  return masterProgram(artifacts, 'Auth');
+}
+
+let signer: Recovery;
+
+beforeAll(async () => {
+  signer = await splittableSigner();
+}, 120_000);
+
+describe('a per-call body that recovers a signer', () => {
+  it('is accepted at every input when the co-spent pair recovers the expected key', () => {
+    const program = compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
+    const { a, b } = recoveryPair(signer.witness);
+    const spend = buildSpend(program, [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
+    });
+  });
+
+  it('is refused when the source expects a different signer', () => {
+    // The key the pair commits is the real one, so the source's own comparison is what refuses: the master fails
+    // and the side-car inputs, which do not read the expected signer, still accept.
+    const other = Uint8Array.from(signer.owner);
+    other[1] ^= 0xff;
+    const program = compileRecoverySource(signer, `pubkey(0x${binToHex(other)})`, 'pubkey');
+    const { a, b } = recoveryPair(signer.witness);
+    const spend = buildSpend(program, [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: false, [A_INDEX]: true, [B_INDEX]: true,
+    });
+  });
+
+  it('is accepted when the EVM projection reads the address from its keccak side-car', () => {
+    const program = compileRecoverySource(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+    const { a, b } = recoveryPair(signer.witness);
+    const spend = buildSpend(program, [a, b, keccakCar(signer.witness.uncompressedPubkey)]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX, K_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true, [K_INDEX]: true,
+    });
+  });
+});
+
+describe('the EVM invalid-input rule on the per-call path', () => {
+  it('has no pair for v = 0 or v = 1: the checkpoint covenant refuses them', () => {
+    // Side-car A verifies `Ry mod 2 == v - 27` on its own budget, so a recovery id outside 27/28 fails `OP_VERIFY`
+    // at every split; the split probe reports its generic no-split message because a covenant error reads as an
+    // over-budget split. B alone re-derives no parity, so its own script accepts - but the transaction that spends
+    // the pair cannot validate while A fails, so no spend can carry a `v` outside 27/28.
+    for (const v of [0, 1]) {
+      const witness = computeEcrecoverWitness(signer.h, v, signer.r, signer.s);
+      expect(() => probeEcrecoverSplit(
+        witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+      )).toThrow(/no ladder split fits/);
+      const { a, b } = pairAt(witness, 59);
+      const spend = buildSpend(compileRecoverySource({ ...signer, v }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'), [a, b]);
+      expect(verdicts(spend, [A_INDEX, B_INDEX])).toStrictEqual({ [A_INDEX]: false, [B_INDEX]: true });
+    }
+  });
+
+  it('has no pair for the all-zero digest and words: the witness has no square root', () => {
+    // `r = 0` has no `y` with `y^2 = r^3 + 7`, so the SDK cannot build a side-car for the spelling of "no
+    // signature" at all; the body still compiles, but no spend can be formed for it.
+    const zero = new Uint8Array(32);
+    expect(() => computeEcrecoverWitness(zero, 0, zero, zero)).toThrow(/Cannot find square root/);
+    const program = compileRecoverySource({ h: zero, v: 0, r: zero, s: zero }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
+    expect(program.length).toBeGreaterThan(0);
+  });
+
+  it('answers a non-matching key for an out-of-range s rather than address zero', () => {
+    // `s` above the curve order is used verbatim, so a key is recovered - just not the signer's. The master's
+    // comparison rejects the spend; nothing answers the zero address.
+    const outOfRange = new Uint8Array(32).fill(0xff);
+    const witness = computeEcrecoverWitness(signer.h, signer.v, signer.r, outOfRange);
+    const program = compileRecoverySource(
+      { ...signer, s: outOfRange }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey',
+    );
+    const { a, b } = recoveryPair(witness);
+    const spend = buildSpend(program, [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: false, [A_INDEX]: true, [B_INDEX]: true,
+    });
+    expect(binToHex(witness.compressedQ)).not.toBe(binToHex(signer.witness.compressedQ));
   });
 });

@@ -786,8 +786,14 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
     }
-    if (fn.keccakCompute || fn.ecrecoverCompute) {
-      refuseBody(fn, 'a compute side-car needs co-spent inputs the master head does not locate');
+    if (fn.keccakCompute) {
+      refuseBody(fn, 'a keccak compute side-car needs co-spent inputs the master head does not locate');
+    }
+    // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
+    // variable number of inputs for; the straight-line per-call pair is what the head locates.
+    if (fn.ecrecoverLoopReads === true) {
+      refuseBody(fn, 'an ecrecover loop reads one recovery side-car pair per iteration, which the master head does '
+        + 'not locate a run-time number of');
     }
     if ((fn.externalCalls?.length ?? 0) > 0 && invoked.has(fn.name)) {
       refuseBody(fn, 'the body makes an external call and is invoked as its own subroutine, so the call sites it '
@@ -1003,8 +1009,8 @@ function unsupportedConstructorShape(
   if (constructorDef.usesBlockhash) {
     return 'the constructor reads a blockhash, which needs a co-spent oracle input the master head does not locate';
   }
-  if (constructorDef.keccakCompute || constructorDef.ecrecoverCompute) {
-    return 'the constructor runs a compute side-car, which needs co-spent inputs the master head does not locate';
+  if (constructorDef.keccakCompute) {
+    return 'the constructor runs a keccak compute side-car, which needs co-spent inputs the master head does not locate';
   }
   return undefined;
 }
@@ -1029,14 +1035,16 @@ function unsupportedReturnShape(entry: FunctionDefinitionNode): string | undefin
 /**
  * True when a value of `type` is one item on the stack whose encoding a `return` leaves as the compared blob.
  *
- * A scalar is its own encoding, and an array is a value the language holds already encoded — under a Solidity
- * import it is the ABI words of its elements — so the entry's `return` leaves exactly the bytes the frame's
- * `retval` holds and the comparison is the same one a scalar return makes. A struct, a tuple, a mapping, a
- * function pointer and a token container are several items or an encoding the body does not produce.
+ * A scalar is its own encoding. An array and a struct are values the language holds already encoded: under a
+ * Solidity import the entry's `return` writes the ABI encoding of their members, and otherwise an array is its
+ * length-prefixed packed elements and a struct the pushdata blob of its fields. Either way the entry's `return`
+ * leaves exactly the bytes the frame's `retval` holds, so the comparison is the same one a scalar return makes. A
+ * tuple, a mapping, a function pointer and a token container are several items or an encoding the body does not
+ * produce.
  */
 function holdsAsOneEncodedItem(type: Type): boolean {
   const resolved = type instanceof ValueType ? type.underlyingType : type;
-  return isScalarArgumentType(resolved) || resolved instanceof ArrayType;
+  return isScalarArgumentType(resolved) || resolved instanceof ArrayType || resolved instanceof StructType;
 }
 
 /** The name a return shape is refused by, when its encoding is not a blob the entry's own code compares. */

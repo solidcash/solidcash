@@ -4337,6 +4337,17 @@ describe('assignPhysicalReturnIndices', () => {
     expect(outputs).toHaveLength(3);
   });
 
+  it('ignores an unmaterialized output before the minting master', () => {
+    const minting = { category: 'ft', nft: { capability: 'minting' as const } };
+    const outputs = [
+      { to: Uint8Array.of(0x51), amount: 1000n },
+      undefined,
+      { to: Uint8Array.of(0x51), amount: 1200n, token: minting },
+    ] as unknown as Parameters<typeof stripSurplusMintingOutputs>[0];
+    expect(stripSurplusMintingOutputs(outputs, [{}, {}, { token: minting }], 'ft', 2)).toBe(0);
+    expect(outputs[2]?.token).toBe(minting);
+  });
+
   it('refreshes satoshis and token amount on an existing same-category minting occupant', () => {
     const lock = new Uint8Array(35);
     lock[0] = 0xaa; lock[1] = 0x20; lock[34] = 0x87;

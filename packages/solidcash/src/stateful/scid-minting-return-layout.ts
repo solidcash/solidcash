@@ -188,7 +188,7 @@ export function stripSurplusMintingOutputs(
   for (let index = 0; index < outputs.length; index++) {
     if (index === masterIndex) continue;
     const output = outputs[index];
-    if (output.token?.nft?.capability !== 'minting' || output.token.category !== mintingCategory) {
+    if (output?.token?.nft?.capability !== 'minting' || output.token.category !== mintingCategory) {
       continue;
     }
     const input = inputs[index];

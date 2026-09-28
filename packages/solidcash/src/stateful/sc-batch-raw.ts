@@ -61,12 +61,12 @@ export function mergePublishedMessageBusHandlerMetadata(
   publishedHandlers: readonly AbiFunction[],
 ): AbiFunction {
   const published = callable.selector !== undefined
-    ? publishedHandlers.find((handler) => handler.selector === callable.selector)
+    ? publishedHandlers.find((handler) => handler.selector?.toLowerCase() === callable.selector?.toLowerCase())
     : publishedHandlers.find((handler) => handler.name === callable.name);
   // Keep the artifact ABI object itself when there is no published metadata to add. Carrier-route
   // authentication deliberately checks this identity before trusting runtime row metadata.
-  if (published === undefined || ((published.dynamicReads?.length ?? 0) === 0
-    && (published.dynamicWrites?.length ?? 0) === 0)) return callable;
+  if (published === undefined || (published.dynamicReads === undefined
+    && published.dynamicWrites === undefined)) return callable;
   return {
     ...callable,
     ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),

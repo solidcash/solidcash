@@ -213,6 +213,14 @@ describe('demoteUnclaimedConditionalEventOutput', () => {
 });
 
 describe('demoteUnclaimedDelegateEventClones', () => {
+  it('ignores an unmaterialized slot in a sparse balanced frame', () => {
+    const outputs = [undefined, eventOutput()] as unknown as Parameters<
+      typeof demoteUnclaimedDelegateEventClones
+    >[0];
+    expect(demoteUnclaimedDelegateEventClones(outputs, [])).toBe(0);
+    expect(outputs[1]).toEqual(eventOutput());
+  });
+
   it('keeps claimed slots and makes only exact unclaimed clones inert', () => {
     const outputs = [
       eventOutput(),

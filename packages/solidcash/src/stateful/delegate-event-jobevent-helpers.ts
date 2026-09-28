@@ -94,7 +94,7 @@ export function demoteUnclaimedDelegateEventClones<T extends {
   }
   let demoted = 0;
   for (const [index, output] of outputs.entries()) {
-    if (output.token?.nft?.capability !== 'none' || !output.token.category) continue;
+    if (output?.token?.nft?.capability !== 'none' || !output.token.category) continue;
     const identity = `${output.token.category}:${lockingHexOf(output)}:${commitmentHex(output.token.nft.commitment)}`;
     const destinations = destinationsByIdentity.get(identity);
     if (!destinations || destinations.has(index)) continue;

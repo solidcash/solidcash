@@ -25,6 +25,13 @@ export function reassertMintingOneToOne(
     const input = host.allInputs[index];
     if (!input?.token || input.token.nft?.capability !== 'minting') continue;
     if (!('unlocker' in input) || !input.unlocker) continue;
+    // A minting master can sit after a compiler-reserved balanced frame. Materialize its earlier
+    // unclaimed cells before assigning the master so probe transactions never contain sparse outputs.
+    for (let slot = 0; slot < index; slot++) {
+      if (builder.outputs[slot] === undefined) {
+        builder.outputs[slot] = { to: Uint8Array.of(0x51), amount: 1000n };
+      }
+    }
     builder.outputs[index] = {
       to: input.unlocker.generateLockingBytecode(),
       amount: input.satoshis,

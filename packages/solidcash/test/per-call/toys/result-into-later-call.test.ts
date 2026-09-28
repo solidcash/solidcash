@@ -202,10 +202,11 @@ describe('a read whose result a later call consumes', () => {
   });
 
   it('threads the read result into the later call, but a compile-time second argument still stalls', () => {
-    // The composer now fills the read's record with the callee's `retval`; what stops the derivation is the caller's
+    // The composer fills the read's record with the callee's `retval`; what stops the derivation is the caller's
     // run-time digest for the later call. It appends the literal `7` as the value `0x07`, while the wire push (the
-    // bytes the callee's call data carries and the record's digest is over) is `0x57`. No call data hashes to the
-    // record the caller checks, so the second call's site cannot advance.
+    // bytes the callee's call data carries and the record's digest is over) is `0x57`. The second call's site is
+    // filled - the run moves on to the segment close - and it is there that the digest is compared with the call
+    // data the callee's unlocking bytecode actually carries, so that is the site the derivation reports.
     const built = build('literal');
     const { host, draft } = hostFor(built);
 
@@ -215,7 +216,8 @@ describe('a read whose result a later call consumes', () => {
     const refusal = refusalOf(() => deriveDepthFirst(ROOT, host));
     expect(refusal.name).toBe('PerCallComposerError');
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message).toMatch(/master "claimer-1" of Claimer\.f\(\) filled no witness at site 1 \(call 1\)/);
+    expect(refusal.message)
+      .toMatch(/master "claimer-1" of Claimer\.f\(\) filled no witness at site 2 \(close of segment 0\)/);
   });
 
   it('settles the plan\'s Y3 shape when the id is a run-time value, accepted at every contract input', () => {

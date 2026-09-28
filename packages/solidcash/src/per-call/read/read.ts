@@ -273,7 +273,16 @@ function planReadFrames(options: {
     records: [],
   };
   const frames: ReadFrame[] = [root];
-  const planned = new Map([[root.contract, root.master]]);
+  const byMaster = new Map<string, ReadFrame>([[root.master, root]]);
+  // The frames a frame descends from, nearest first, so a call back into one of them is seen as the cycle it is.
+  const callerChain = (frame: ReadFrame): readonly ReadFrame[] => {
+    const chain: ReadFrame[] = [];
+    for (let current: ReadFrame | undefined = frame; current !== undefined;) {
+      chain.push(current);
+      current = current.parent === undefined ? undefined : byMaster.get(current.parent);
+    }
+    return chain;
+  };
   let calleeCount = 0;
 
   for (const frame of frames) {
@@ -288,9 +297,11 @@ function planReadFrames(options: {
         );
       }
       const contract = external.artifact.contractName;
-      if (planned.has(contract)) {
+      // One call is one frame, so a contract two call sites reach is two frames over its own records. A contract
+      // that reaches itself is not: the frames are ordered by their calls and the chain would never bottom out.
+      if (callerChain(frame).some((ancestor) => ancestor.contract === contract)) {
         throw new PerCallReadError(
-          `the read reaches "${contract}" more than once, and one read frame runs one entry per contract`,
+          `the read reaches "${contract}" again below itself, so its frames have no order`,
         );
       }
       const calleeEntry = requireEntry(external.artifact, call.functionName);
@@ -303,7 +314,7 @@ function planReadFrames(options: {
       calleeCount += 1;
       const calleeMaster = `read-${calleeCount}`;
       const calleeCategory = hexToBin(external.categoryId);
-      frames.push({
+      const callee: ReadFrame = {
         master: calleeMaster,
         contract,
         artifact: external.artifact,
@@ -322,8 +333,9 @@ function planReadFrames(options: {
         masterSatoshis: 0n,
         validatorSatoshis: 0n,
         records: [],
-      });
-      planned.set(contract, calleeMaster);
+      };
+      frames.push(callee);
+      byMaster.set(calleeMaster, callee);
       frame.calls.push({
         callee: calleeMaster,
         target: new Uint8Array(hexToBin(call.target)),
@@ -343,6 +355,8 @@ async function readFrameDeployments(
   provider: NetworkProvider,
   frames: readonly ReadFrame[],
 ): Promise<void> {
+  const deployments = new Map<string, Awaited<ReturnType<typeof readPerCallDeployment>>>();
+  const mastersTaken = new Map<string, number>();
   for (const frame of frames) {
     // A contract that keeps no state variable publishes no layout and mints no record; it is classified against an
     // empty one, so its category still yields the master the frame runs on.
@@ -353,11 +367,22 @@ async function readFrameDeployments(
         + 'as data-NFT records yet',
       );
     }
-    const deployment = await readPerCallDeployment(provider, frame.categoryId, stateLayout);
-    const master = deployment.masters[0];
-    if (master === undefined) {
-      throw new PerCallReadError(`category ${frame.categoryId} holds no master, so the read has no frame to run`);
+    let deployment = deployments.get(frame.categoryId);
+    if (deployment === undefined) {
+      deployment = await readPerCallDeployment(provider, frame.categoryId, stateLayout);
+      deployments.set(frame.categoryId, deployment);
     }
+    // Each frame runs on a master of its own, so a contract two calls reach takes the next master of its pool
+    // rather than the one the frame before it already spends.
+    const taken = mastersTaken.get(frame.categoryId) ?? 0;
+    const master = deployment.masters[taken];
+    if (master === undefined) {
+      throw new PerCallReadError(
+        `category ${frame.categoryId} holds ${deployment.masters.length} master(s), and the read runs `
+        + `${taken + 1} frame(s) over it`,
+      );
+    }
+    mastersTaken.set(frame.categoryId, taken + 1);
     frame.masterSatoshis = master.satoshis;
     if (frame.master === READ_MASTER) {
       const validator = deployment.validators[0];
@@ -487,13 +512,37 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     frame.origin = callerRef;
   }
 
-  const blocks: ContractBlock[] = frames.map((frame, index) => ({
-    contract: frame.contract,
-    masters: [frame.master],
+  // One block per contract, however many frames it runs: a contract two calls reach has two masters in its block.
+  // A record is one input however many frames read it, so a block declares it once and a later frame of the same
+  // contract resolves it through its own segments.
+  const blockOrder: string[] = [];
+  const mastersOfBlocks = new Map<string, string[]>();
+  const stateOfBlocks = new Map<string, string[]>();
+  for (const frame of frames) {
+    if (!mastersOfBlocks.has(frame.contract)) {
+      blockOrder.push(frame.contract);
+      mastersOfBlocks.set(frame.contract, []);
+      stateOfBlocks.set(frame.contract, []);
+    }
+    mastersOfBlocks.get(frame.contract)!.push(frame.master);
+    for (const record of frame.records) {
+      const state = stateOfBlocks.get(frame.contract)!;
+      if (!state.includes(record.id)) state.push(record.id);
+    }
+  }
+  const blocks: ContractBlock[] = blockOrder.map((contract, index) => ({
+    contract,
+    masters: mastersOfBlocks.get(contract)!,
     ...(index === 0 ? { validator: { id: VALIDATOR_ID, settles: [] } } : {}),
-    state: frame.records.map((record) => record.id),
+    state: stateOfBlocks.get(contract)!,
   }));
   const layout = layoutTransaction(blocks);
+
+  // How many masters of each contract the read spends: a contract a caller reaches twice has two frames.
+  const mastersPerContract = new Map<string, number>();
+  for (const frame of frames) {
+    mastersPerContract.set(frame.contract, (mastersPerContract.get(frame.contract) ?? 0) + 1);
+  }
 
   const masters: DraftMaster[] = frames.map((frame, index) => ({
     master: frame.master,
@@ -507,7 +556,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       callerIsUser: false,
       originEqualsCaller: false,
       makesExternalCall: frame.calls.length > 0,
-      mastersOfContract: 1,
+      mastersOfContract: mastersPerContract.get(frame.contract) ?? 1,
     },
     frame: { kind: FrameKind.STATIC, sender: frame.sender, self: frame.deployed.address, value: 0n },
     enteredBy: frame.enteredBy,
@@ -558,6 +607,8 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     }
     const masterIndex = participant(layout, frame.master).index;
     for (const record of frame.records) {
+      // The record's spend is authorized by the first master of its category, whichever frame reads it.
+      if (inputs[record.id] !== undefined) continue;
       inputs[record.id] = {
         source: {
           lockingBytecode: stateRecordLockingBytecode(frame.categoryId),
@@ -577,7 +628,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     inputs,
     validator: {
       id: VALIDATOR_ID,
-      covers: frames.slice(1).map((frame) => frame.contract),
+      covers: [...new Set(frames.slice(1).map((frame) => frame.contract))],
       settles: [],
       redeemScript: validatorRedeemScript(root.category, validatorProgram),
     },

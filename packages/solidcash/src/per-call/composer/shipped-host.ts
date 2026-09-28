@@ -168,15 +168,17 @@ export interface ShippedHostOptions {
 /**
  * True when `after` reached further than `before`: the run accepted, or stopped further along the program.
  *
- * A site a loop reaches is the one place where "further along the program" is not a higher instruction pointer: the
- * same instruction is where every visit stops, and what moved is the block the walk had consumed. A stop at the
- * same instruction with a different stack is that move, so it counts as well. A fill that changes nothing the
+ * "Further along the program" is not always a higher instruction pointer. A site a loop reaches stops at the same
+ * instruction on every visit and what moved is the block the walk had consumed; and a master that dispatches by
+ * selector stops its own head at the same instruction whatever call record the run failed on, so the pointer is the
+ * same for a fill that moved the run and for one that did not. In both cases the stack carries what the pointer
+ * does not: the block the run consumed, or the call data the fill put there. A fill that changes nothing the
  * program read leaves both the pointer and the stack as they were, which is still not progress.
  */
-function reachedFurther(before: ExecutionStop, after: ExecutionStop, repeated: boolean): boolean {
+function reachedFurther(before: ExecutionStop, after: ExecutionStop): boolean {
   if (after.accepted) return true;
   if ((after.ip ?? 0) > (before.ip ?? 0)) return true;
-  return repeated && after.ip !== undefined && after.ip === before.ip
+  return after.ip !== undefined && after.ip === before.ip
     && after.stack !== undefined && after.stack !== before.stack;
 }
 
@@ -301,7 +303,7 @@ export function createShippedDerivationHost(options: ShippedHostOptions): Deriva
       lastStop.set(run.master, after);
       options.onRun?.(run.master, site, after);
 
-      if (!reachedFurther(before, after, site.kind === 'call' && site.repeated === true)) return {};
+      if (!reachedFurther(before, after)) return {};
       if (site.kind === 'call') {
         // A call's witness is the callee, so the draft must have been missing it: a run that already accepted
         // before the fill means the site was not what the program stopped at, and the step reports nothing.

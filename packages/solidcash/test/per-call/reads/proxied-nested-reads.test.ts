@@ -30,12 +30,11 @@ import {
  * one read-only frame at that category, which is the address the callee's source calls. A read is never broadcast,
  * which the provider's transaction count is asserted to show.
  *
- * Four walls are pinned rather than worked around. A view that returns a struct is refused by the compiler by name,
- * so a struct carrying a `string[]` never reaches the shipped decoder at all. A callee entry that takes a
- * parameter is refused by the module, because a read cannot resolve an argument from the caller's live records. A
- * contract a caller reaches more than once is refused by the module, because a read runs one entry per contract.
- * And an entry that makes two calls at all is derived only to its first call site: two different callees stall the
- * same way, so the wall is the entry's call count rather than the contract it reaches twice.
+ * One wall is pinned rather than worked around: a callee entry that takes a parameter is refused by the module,
+ * because a read cannot resolve an argument from the caller's live records. A view that returns a struct is served:
+ * the struct is one pushdata blob the shipped decoder reads back, so the wall the shape used to be is gone. A
+ * contract a caller reaches more than once is served: one call is one frame, and each frame takes its own master of
+ * that contract, which is what the chain has to hold.
  */
 
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
@@ -117,9 +116,10 @@ interface UtxoShape {
 /** One live UTXO as the provider holds it: a token at the given category, with the commitment it carries. */
 function utxo(
   txid: string, satoshis: bigint, category: string, capability: 'minting' | 'mutable', commitment: Uint8Array,
+  vout = 0,
 ): UtxoShape {
   return {
-    txid, vout: 0, satoshis,
+    txid, vout, satoshis,
     token: { category, amount: 0n, nft: { capability, commitment: bytesToHex(commitment) } },
   };
 }
@@ -151,12 +151,17 @@ async function fund(
     readonly seed: string;
     readonly record: Uint8Array;
     readonly withValidator?: boolean;
+    /** How many masters of the contract the chain holds: one per frame the read runs over it. */
+    readonly masters?: number;
   },
 ): Promise<void> {
   const deployed = deployMaster(options.proxy, options.category, VALIDATOR_PROGRAM);
   const txid = (suffix: string, pad: string): string => `${options.seed}${suffix}`.padEnd(64, pad).slice(0, 64);
-  await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
-    utxo(txid('11', 'a'), 20_000n, options.categoryHex, 'minting', empty));
+  const masters = options.masters ?? 1;
+  for (let index = 0; index < masters; index += 1) {
+    await provider.addUtxo(bytesToHex(deployed.lockingBytecode),
+      utxo(txid(String(11 + index), 'a'), 20_000n, options.categoryHex, 'minting', empty, index));
+  }
   if (options.withValidator === true) {
     await provider.addUtxo(bytesToHex(deployed.address),
       utxo(txid('22', 'b'), 20_000n, options.categoryHex, 'mutable', empty));
@@ -166,7 +171,7 @@ async function fund(
 }
 
 /** The chain the read runs against, with the store's own `n` set to the value the case needs. */
-async function chain(n: bigint): Promise<MockNetworkProvider> {
+async function chain(n: bigint, options: { readonly storeMasters?: number } = {}): Promise<MockNetworkProvider> {
   const provider = new MockNetworkProvider();
   await fund(provider, {
     proxy: readerProxy, category: READER_CATEGORY, categoryHex: READER_HEX, seed: 'a',
@@ -175,6 +180,7 @@ async function chain(n: bigint): Promise<MockNetworkProvider> {
   await fund(provider, {
     proxy: storeProxy, category: STORE_CATEGORY, categoryHex: STORE_HEX, seed: 'b',
     record: recordOf(storeProxy.stateLayout, { implementation: STORE_ADDRESS, n }),
+    masters: options.storeMasters,
   });
   await fund(provider, {
     proxy: peerProxy, category: PEER_CATEGORY, categoryHex: PEER_HEX, seed: 'c',
@@ -213,25 +219,23 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
     expect(transactionCount(provider)).toBe(before);
   });
 
-  it('stalls on an entry that makes two calls, even to two different contracts', async () => {
-    // The plan is well formed - two call sites, two callees, one frame each - and the derivation still stops at the
-    // entry's first call site. Two different callees stall the same way, so the wall is the entry's call count
-    // rather than one contract reached twice: the read drives a master with one call record, and a master with two
-    // is not derived. A hand-built composition of the same two-call shape derives in `toys/result-into-later-call`,
-    // which is where the difference lives.
+  it('returns a callee read once, then a second contract read once', async () => {
+    // Two call sites, two callees, one frame each: the entry's own computation is over both results.
     const provider = await chain(7n);
-    await expect(read(provider, 'mix')).rejects.toThrow(
-      /PER_CALL_DERIVATION_STALLED: master "read" of Reader\.mix\(\) filled no witness at site 0 \(call 0\)/,
-    );
+    const result = await read(provider, 'mix');
+
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(14n);
   });
 
-  it('refuses an entry that reads one callee twice, naming the contract', async () => {
-    // The `both` entry reads the store's `value` twice and its `count` once, so the read reaches one
-    // implementation more than once; a read plans one frame per contract.
-    const provider = await chain(7n);
-    await expect(read(provider, 'both')).rejects.toThrow(
-      /the read reaches "Store" more than once, and one read frame runs one entry per contract/,
-    );
+  it('returns one callee read twice beside a length read: the read runs one frame per call', async () => {
+    // The `both` entry reads the store's `value` twice and its `count` once, so the store is reached by three call
+    // sites and the chain holds as many masters of it as the read has frames over it.
+    const provider = await chain(7n, { storeMasters: 3 });
+    const result = await read(provider, 'both');
+
+    expect(result.accepted).toBe(true);
+    expect(result.value).toBe(21n);
   });
 
   it('refuses a callee entry that takes a parameter, which a read cannot resolve', async () => {
@@ -260,18 +264,14 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
 });
 
 describe('a view whose return type is a struct', () => {
-  it('is refused by the compiler by name, so its value never reaches the decoder', () => {
+  it('is served by the compiler, so its blob is the one the shipped decoder reads', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Catalog {'
       + '   struct Item { int id; string[] labels; }'
       + '   function item(int id) view returns (Item) { return Item(id, ["a"]); }'
       + ' }';
-    // The struct return is published as a refusal rather than emitted, so the entry has no master the read could
-    // plan and no `retval` blob the shipped decoder could be asked to decode.
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([{
-      functionName: 'Catalog.item()',
-      reason: "the entry point 'item' returns a struct, but a frame's `retval` is compared with one scalar value "
-        + 'the entry computed, which a composite value is not yet',
-    }]);
+    // A struct is one pushdata blob the entry's own `return` leaves, so a struct-returning view is admitted like one
+    // returning a fixed-size array: the entry has a master the read can plan and a `retval` blob to decode.
+    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
   });
 });

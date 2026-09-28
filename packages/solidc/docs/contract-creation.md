@@ -34,11 +34,40 @@ UTXO**, so the child's category - and therefore its address - is the predicted o
 of the SDK's genesis funding selection until `release()`, so a later send cannot spend a coin an address was
 already derived from.
 
-**What a caller must do.** Predictions need the UTXOs to exist first, so the account that deploys the children
-must hold enough genesis-eligible UTXOs: one vout-0, token-free, spendable UTXO per child, each with enough
-satoshis to fund a genesis. When too few are reserved, `getCreateAddress` refuses with an error naming this
-document; fund the account with more genesis-eligible UTXOs (or create fewer children) and reserve again before
-predicting.
+## Preparing genesis-eligible UTXOs
+
+Predictions need the coins to exist first, so the account that deploys the children must be able to supply one
+**genesis-eligible** UTXO per child. A UTXO is genesis-eligible when all of these hold:
+
+- its output index is `0` - a token category is the genesis transaction's input-0 outpoint, and the input is the
+  coin's own outpoint, so the coin must sit at vout 0;
+- it carries no tokens;
+- the account can spend it;
+- it holds enough satoshis for the child's own genesis (the SDK computes the minimum from the child's bytecode and
+  its data-NFT count in `selectGenesisFundingUtxo`) and enough to pay for the fan-out below;
+- no caller has reserved it for another create.
+
+Two ways to satisfy that, in order:
+
+1. **Have one.** The SDK's genesis funding selection already prefers an existing vout-0, token-free coin the
+   account can spend, so an account funded with such coins deploys without extra transactions.
+2. **Let the deploy fan one out.** A deploy strands its change at a non-zero output, so an account that deploys
+   several contracts would otherwise run out of vout-0 coins. When the account has no eligible coin but does hold
+   spendable token-free satoshis, the deploy self-sends them into a fresh vout-0 output at the account's own
+   address (a plain P2PKH transaction that is valid on any provider) and uses that coin, paying a small fee. This
+   is what makes sequential deploys from one account unbounded: one large token-free coin is enough.
+
+If neither holds, the selection refuses and the error says so; fund the account with more spendable, token-free
+satoshis, or deploy fewer children.
+
+Reservations take part in both paths. A coin reserved through `CreateLookahead` is excluded from the genesis
+funding selection and from the fan-out, so a deployment that is not the one the nonce names cannot spend a coin
+an address was already derived from - which is what keeps a prediction true. Release the reservation (`release()`)
+once the children are deployed, or keep the look-ahead open for as long as addresses are predicted.
+
+The order a caller follows is: reserve as many coins as children, predict each child's address from its nonce,
+then deploy each child with `getFundingUtxo(nonce)` as its funding UTXO. `reserve()` tops up rather than replacing,
+and the base nonce is fixed at the first `reserve()`, so nonces predicted earlier stay valid across top-ups.
 
 ## The three modes
 

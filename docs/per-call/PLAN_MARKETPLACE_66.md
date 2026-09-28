@@ -623,6 +623,15 @@ risk. Take the slices in order, each with its own tests.
     (`solidc/test/per-call/master/mapping-delete-write.test.ts`). A record declaring the node removed, as a splice
     would, is refused, so the case drives the settlement rather than the encoding;
   - nodes created and relinked across frames.
+  - **A frame that keeps a data-NFT record and writes a mapping batch is the open wall, and its first half closed**
+    (`073632a9d`): the batch derivation read its target groups from the head of the segment's record list, and a
+    segment declares the frame's own state records first (the head derives the state block's base from the first
+    declared record), so the walk split a state commitment as a node (`OP_SPLIT`, `requested split index: 32`,
+    measured). The walk now steps over the frame's own state records, a created node's declared position is offset
+    by the same count, and a per-call delegate frame's entries resolve from its declared records; the shape then
+    reaches the writer's own close, where the declared-record read resolves no view (a UTXO index on the proxied
+    hop, an `OP_VERIFY` on a user-entered root), and both are pinned in `shapes/` with the machine's own objection.
+    This is what the marketplace's registering entries and the first flow shape's registration half need.
   - The read of the entry a write targets is derived from the same group as of `3d432f7a9`: an access that reads
     and writes one target is admitted, and the machine accepts both its present and its absent case
     (`solidc/test/per-call/master/mapping-read-write.test.ts`). A read of an entry the execution does not write
@@ -701,7 +710,15 @@ risk. Take the slices in order, each with its own tests.
   emitter that emits reports both logs with their own contracts' addresses, the nested one's five fields decoded from
   a value wider than 32 bytes; a composition that emits nothing reports nothing; an event output no frame lists is not
   reported, because the frames are the census (`test/per-call/receipt/`).
-- [ ] E6 A serialization queue for sends that could touch the same masters, validators or records.
+- [x] E6 A serialization queue for sends that could touch the same masters, validators or records. Landed
+  (`perCallQueue`): a queue holds the tail of the sends that named each resource, starts a send once every resource
+  it names is free, and resolves a send's plan only when its turn comes, so a later send is built against the state
+  its predecessor produced. A send names its resources by the identity of the masters, validators and records its
+  plan spends, or by the live outpoints when the caller knows them; a failing send settles its hold rather than
+  wedging the queue. Measured (`test/per-call/queue/`): two sends enqueued against the same live master without
+  awaiting either land in order, the second spending the first's own recreated output and the original outpoint
+  gone; two sends with disjoint resources both complete; a refused broadcast leaves a disjoint send and its own
+  overlap successor free to run, the successor spending the still-live master.
 - [x] E7 Time: locktime fixed before derivation; strictly later block times in the mock. Landed (`47f38733c`): the
   composer's plan states the locktime and the sequence each participant runs under, fixes them once when the draft is
   built and exposes the fixed value, so every program the derivation builds is the same transaction and no frame can
@@ -713,7 +730,13 @@ risk. Take the slices in order, each with its own tests.
   paths, which still fix a locktime of their own.
 - [ ] E8 Simulation before funding: a send from an unfunded wallet reports its revert.
 - [ ] E9 Snapshots: `loadFixture` restores SDK state (nonce, look-ahead reservations, pools, caches).
-- [ ] E10 Listeners: `addListener` on the emitting address, including nested frames.
+- [x] E10 Listeners: `addListener` on the emitting address, including nested frames. Landed
+  (`packages/solidcash/src/per-call/receipt/listeners.ts`): a registry keyed by the emitting address receives a
+  composition's decoded logs through the shipped receipt, so a nested emitter's event reaches its own contract's
+  handler and not the root's; a handler can be removed, and `deliverComposition` returns the logs it delivered.
+  Measured (`test/per-call/receipt/listeners.test.ts`): a handler registered on one contract sees only that
+  contract's event, the nested emitter's value (wider than 32 bytes) decodes into its own contract's handler, and a
+  removed handler receives nothing.
 - [ ] E11 A test helper that deploys a contract with N masters and a validator pool, for the B, C, R and E tests
   before stream F lands.
 - [x] E12 Pool exhaustion is refused before building, with `PER_CALL_POOL_EXHAUSTED` (spec 21). Tests: fill a master
@@ -742,7 +765,14 @@ risk. Take the slices in order, each with its own tests.
   - **Not done, and named**: no factory-level shim and no wiring into a real `new C(...)` execution or the composer
     (the `CREATE` frame itself remains spec open point 14), and `StatefulContract.deployFrom`'s own inline vout-0
     selection does not consult the reservation registry yet, so a `deployFrom` could still pick a reserved coin.
-- [ ] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
+- [x] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
+  Landed: the document gains a section stating what makes a UTXO genesis-eligible (output index `0`, token-free,
+  spendable, enough satoshis for the child's own genesis, and not reserved for another create), the two ways to
+  satisfy it — an existing vout-0 coin, or the deploy's own fan-out of a fresh one from the account's spendable
+  balances, which is what makes sequential deploys unbounded — and what to do when neither holds. It states how the
+  reservations take part in both paths (a reserved coin is held out of the selection and the fan-out, which is what
+  keeps a prediction true) and the order a caller follows: reserve, predict from the nonce, deploy with
+  `getFundingUtxo(nonce)`, release.
 - [x] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
   result unchanged. Landed (`5d4aeb6ed`): a caller does not write the proxy. `buildProxyArtifact` derives the source
   from the implementation's own published state layout - its fields in coordinate order, the struct definitions
@@ -1061,7 +1091,11 @@ risk. Take the slices in order, each with its own tests.
     pinned the refusal this replaced).
   - [x] `A.x` and `A.y`: 1 validator — served once each user-entered master carries its own selector behind the
     dispatcher flag; the refusals for a selector without the flag and for no selector are kept.
-- [ ] G6 Every edge of spec section 22 is exercised by at least one named test. The map is kept in `MANIFEST.md`.
+- [ ] G6 Every edge of spec section 22 is exercised by at least one named test. The map is kept in `MANIFEST.md`,
+  and it is written: every catalog row with the named test that exercises its shape today, or the piece a replica
+  would need (the low-level token spelling and the value send are refused by name rather than carried; a `string`
+  crossing an edge, a struct argument, a `string[]`-carrying return and the `uint256[5]` return have no replica yet).
+  The row stays open until every edge is carried.
 - [ ] G7 Marketplace flow shapes MS1-MS10 (`MARKETPLACE_SHAPES.md`): one neutral replica each, settling (milestone
   I2b).
 
@@ -1934,3 +1968,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | 47f38733c | per-call | an execution's time is a value the plan fixes | 115 + 405 + 629 | **E7 landed.** Time is the transaction's: `block.timestamp` is the locktime and every frame of one execution sees the same value. The plan now states the locktime and the sequence each participant runs under, fixes them once when the draft is built and exposes the fixed value, so no derivation can see them change and every program it builds is the same transaction; the proxy's broadcast copies the derived locktime and per-participant sequences rather than a builder's defaults. Measured on a lock-checked rule: the payment's own block is refused with the machine's own CLTV message, the next two blocks are accepted at the caller, the validator and the callee, and a plan whose locktime is already too early stalls the derivation. Named as not driven: a per-participant *relative* age, and the genesis and read paths, which still fix a locktime of their own. New `time/` suite (7). |
 | 2026-09-28 | b85ddee28 | per-call tests | a proxied single master, and the wall under its mapping write | 115 + 405 + 629 | **The first marketplace flow shape's neutral replica settles, and its registration half names a wall that matters.** The proxy's fallback delegates into an implementation whose entry reads its own record, writes it and emits; every contract input is accepted, the record's written commitment equals what the entry computed from the commitment the transaction spent, the event decodes through the shipped encoders, and a control whose record output no frame computed is refused by the validator. **The mapping write beside the record is the wall, and it is the emitter's**: an entry's frame must declare the contract's data-NFT record, and the writer's group walk then takes that record as its first mapping target group - the three ways a plan can declare it (record first, record last, record omitted) are each pinned with the machine's own objection (a split of the wrong width, and a failing verify twice). A frame that both holds a record and writes a mapping is therefore the next thing to fix, and it is what the marketplace's registering entries need. Shapes 15 to 23. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 405 + 629 | The manifest's table is refreshed from this round's runs (solidc master 364, solidcash deploy 88, toys 76, shapes 23, time 7, receipt 4, reads 8, reverts 3, composer 153, hostile 66, frames 71; 1149 in total), with `yarn build` exit 0 and both package suites green. The counts moved *down* in two directories because a trim landed on the branch in parallel with this round (dropping narrower variants and running each expensive fixture once); the table follows the trimmed tree. Ticks this round: **E7**, with C13's blocker measured and the first flow shape's replica landed at its wall. No marketplace project compile, per rule 4.6. |
+| 2026-09-28 | 073632a9d | per-call | a frame's mapping groups are read past its own state records | 115 + 405 + 642 | **The group walk's wall is gone; the wall it exposed is the writer's close.** A segment declares the frame's own data-NFT state records before any mapping target's group - the head derives the state block's base from the first declared record - and the sorted-batch derivation read its groups from the head of that same list, so a frame that both kept a record and wrote a mapping handed the walk a state record as its first group and the walk split a state commitment as a node (`OP_SPLIT`, `requested split index: 32`, measured). The derivation now steps over the records the frame's contract declares for its own state (the compiler's data-NFT count, which a delegate frame's mirrored declaration shares), the single-target count check counts the whole declared list, a created node's declared position is offset by the same number, and the entry-coordinate emitter prefers the frame's declared records over the delegate executor's adjacent block, so a per-call delegate frame's entries resolve where its segment declares them. **Measured**: the same plan that failed inside the derivation now reaches the writer's own close, where the declared-record read resolves no view - the proxied hop fails with `Program attempted to read from an invalid transaction UTXO index ... requested index: 7`, and a user-entered root with the same plan fails on `OP_VERIFY` - so the group walk is what this round fixed and the close's declared-record read is the next wall. Both are pinned with the machine's own objection in `shapes/proxied-registration.test.ts` and `shapes/record-with-mapping-write.test.ts` (2 cases, a root-entered plan and the same plan with the state record declared behind its groups refused), and the walk is exercised by the whole solidc master suite and the mapping shapes (toys 76, records 7) staying green. Shapes 23 to 25. No marketplace project compile, per rule 4.6.
+| 2026-09-28 | b1205c035 | per-call | a read follows the entry's calls into other contracts' views | 115 + 405 + 642 | **The read path reaches nested views.** The read planned one `STATIC` root over the entry's own records and refused an entry that made an external call; it now plans one frame per contract the entry's published stop sites reach, resolved through a caller-supplied `externals` map, each frame reading that contract's own live deployment (its own master and its own data-NFT records), with the root's validator covering the group. Frames are learned callee-first because the caller's call record carries the callee's returned bytes, then the whole composition is derived from the root, and nothing is broadcast. **Measured** (`reads/nested-reads.test.ts`): a view that reads another contract's view returns the composed value with the provider's transaction count unchanged; a three-contract chain returns the leaf's value; a nested view whose `require` fails reports the innermost callee frame and the machine's objection and builds nothing (the source message is not recoverable, which the case pins as the direct read's limitation too); an entry calling a contract the caller did not supply is refused by name. Reads 8 to 12.
+| 2026-09-28 | cc12cd53a | per-call | sends that share resources serialize, and a composition's logs reach their listeners | 115 + 405 + 642 | **E6 and E10 landed.** `CompositionQueue` holds the tail of the sends that named each resource, starts a send once every resource it names is free, and resolves its plan only when its turn comes, so a later send is built against the state its predecessor produced; a send names its resources by the identities its plan spends or by live outpoints, and a failing send settles its hold instead of wedging the queue. **Measured** (`queue/yield-queue.test.ts`): two sends enqueued against one live master without awaiting either land in order, the second spending the first's own recreated output while the original outpoint is gone; two sends with disjoint resources both complete; a refused broadcast leaves a disjoint send and its own overlap successor free, the successor spending the still-live master. The listener registry delivers a composition's decoded logs to the handlers registered for each log's emitting address, so a nested frame's event reaches its own contract's handler; measured with a caller and a nested emitter (the emitter's log arrives with its own address and its wide value decoded) and with a handler removed. Queue 3, receipt 4 to 8.
+| 2026-09-28 | (this row's commit) | per-call | the round's counts, F4's documentation, and the call-edge map | 115 + 405 + 642 | The manifest's table is refreshed from this round's runs (solidc master 364, solidcash shapes 25, toys 76, records 7, reads 12, receipt 8, queue 3, deploy 88, composer 153, hostiles 66, frames 71, edges 29, time 7, reverts 3; **1162 in total**), with `yarn build` exit 0 (it caught a readonly-field assignment in the new read planner, which is fixed) and every touched suite green. Ticks this round: **E6**, **E10**, **F4** (the document gains what makes a UTXO genesis-eligible, the two ways to get one including the deploy's own fan-out, how reservations take part in both paths, and the reserve-predict-deploy-release order). **G6's map is written into `MANIFEST.md`**: every row of the spec's call-edge catalog with the named test that exercises its shape today, or what is missing from the replica that would. Two measurement facts for the gate, taken from this tree: the compiler delta from `ea7a48e27` is `packages/solidc/src` +12,422/-136 (net 12,286) across 26 files, of which the per-call directory is +10,531 across 21 files, so the change to existing compiler code is +1,891/-136 across 5; and the SDK is +7,727/-4 across 41 files (per-call +7,561), the utils +1,306/-1 (per-call +1,263), and the tests +40,913 lines across 171 files. No marketplace project compile, per rule 4.6.

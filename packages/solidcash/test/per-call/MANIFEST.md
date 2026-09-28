@@ -28,24 +28,55 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 153 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
-| `packages/solidcash/test/per-call/reads/` | `solidcash` | 8 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
-| `packages/solidcash/test/per-call/receipt/` | `solidcash` | 4 |
+| `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
+| `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 88 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 23 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 25 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1149 tests (115 + 405 + 629), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 629 is the thirteen rows above
-it.
-total here counted rows that had gone stale rather than re-running them; the numbers above were taken from the
-per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
-`validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
+Total: 1162 tests (115 + 405 + 642), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 642 is the fourteen rows above
+it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
+place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
+the shape it mutates makes it.
+
+## The call-edge catalog (spec section 22)
+
+Every edge the catalog names, with the named test that exercises its shape on this path today. Until the project
+compiles here, a market edge is carried by a neutral replica of its shape; a row whose shape no replica carries
+says what is missing.
+
+| Edge (spec 22) | Kind | Exercised today by |
+| --- | --- | --- |
+| a static scalar read of another contract | `STATIC` | `reads/reads.test.ts`, `reads/nested.test.ts`, and the composed static call in `validator/script.test.ts`. The state-variable form (`ICounter(c).counter`) is refused by name in `edges/reads-and-loops.test.ts` |
+| a static read once per tag in a loop, with a `string` | `STATIC` | the loop half by `edges/reads-and-loops.test.ts` (a run-time trip count with one call site settles one iteration; a branch over the call is refused by name), and a static callee that refuses stalls the derivation there too. A `string` crossing the edge has no replica yet |
+| a call appending to one array entry, once per change, in a loop | `CALL` | `toys/same-entry-appends.test.ts` (one entry, one record across the frames, one event per append) and `edges/records-growing.test.ts`. The struct-with-two-`bytes` argument is not carried: a run-time struct argument is refused by name (`edges/refused-contract-shapes.test.ts`) |
+| a call the callee itself refuses on a bad value, with a `string` | `CALL` | `reverts/innermost-revert.test.ts` reports the innermost refusing frame and its custom error. A `string` argument has no replica yet |
+| a low-level token call (`abi.encodeCall` / `abi.encodeWithSelector` + `address(t).call`) | low-level `CALL` | refused per body with its reason measured, beside the typed call that is served (`edges/refused-contract-shapes.test.ts`, `toys/fan-in.test.ts` for the typed `transferFrom` shape) |
+| a static `balanceOf` read of a token | `STATIC` | the view-function form is served as above; a token's `balanceOf` has no replica yet |
+| a payable call with value 0 carrying a struct and returning a value | `CALL` | the return-consumed-by-a-later-call half by `toys/result-into-later-call.test.ts`. A value send is refused at compile by name, and a run-time struct argument likewise (`edges/refused-contract-shapes.test.ts`) |
+| a call before the caller stores its own record (a write after a call) | `CALL` | `edges/writes-after-call.test.ts` |
+| a token call in the token's own low-level spelling | low-level `CALL` | as the low-level row above |
+| a callee that is re-entered while its caller runs | `CALL` | `toys/reentry.test.ts` |
+| a static read that re-enters a contract whose write is still running | `STATIC` | `toys/reentry.test.ts` reads the record its caller just wrote; the stale-read direction is refused in `hostile/stale-view.test.ts`, and the struct-with-a-`string` return has no replica |
+| a re-entering call that passes because a guard field is still set | `CALL` | `edges/reentrant-guard.test.ts` |
+| a re-entering call in a loop, one per computed share | `CALL` | `edges/repeated-callee.test.ts`: two turns settle and the callee's record chains across them, while a plan declaring fewer call records than the turns stalls by name. A run-time-trip-count loop with a per-turn value argument is refused by name |
+| a call gated on `tx.origin` rather than `msg.sender` | `CALL` | `edges/nested-authority.test.ts`; the forged `originRef` directions are refused in `hostile/origin-reference.test.ts` |
+| a static read of a flag the same transaction just wrote | `STATIC` | `frames/round-trip-stateful.test.ts` and `edges/deep-chain.test.ts` chain a record's writes across frames; the read of a flag written by a deeper frame has no replica |
+| a call that needs a later block than its payment | `CALL` | `time/time-gated.test.ts` |
+| a deep call chain whose result returns up several frames | `CALL` | `edges/deep-chain.test.ts` for the chain, `toys/reentry.test.ts` for a value read back up two frames. The `uint256[5]` return has no replica (a tuple return is carried by the re-entry toy) |
+| a view that calls views on another contract, returning a struct with `string[]` | `STATIC` | `reads/nested.test.ts` (a two-frame read) and the read path's own replicas in `reads/nested-reads.test.ts`. A `string[]`-carrying struct return has no replica |
+
+The proxy hops of the catalog are exercised as their own rows: a user's call into a proxy that `DELEGATE`s into its
+implementation by `toys/proxied-entry.test.ts`, `toys/proxied-appends.test.ts` and `shapes/proxied-registration.test.ts`,
+and the binding of a delegate callee to the implementation the record names by `hostile/delegate-target-binding.test.ts`.
 
 ## What each directory covers
 
@@ -129,7 +160,10 @@ per-file lines of the same runs. A new case belongs in one place: before adding 
   asserted unchanged, a refusing entry reports the machine's objection, and the validator reference's own verdict on
   a read-only root is pinned. `nested.test.ts` drives a read whose root calls another contract's `view` entry: the
   callee's value is learned first and written into the caller's call record, both frames and the record accept, and
-  the shipped derivation completes callee first.
+  the shipped derivation completes callee first. `nested-reads.test.ts` drives the same shape through the module
+  itself: the caller names the other contracts in `externals`, a view that reads a view returns the composed value
+  with nothing broadcast, a three-contract chain returns the leaf's value, a nested refusal reports the innermost
+  callee frame and builds nothing, and an entry calling a contract the caller did not supply is refused by name.
 - **`solidcash/test/per-call/reverts/`** — a composition the machine refuses, reporting the *innermost* frame's
   reason: the refusing frame is found by asking the machine for a verdict on every frame of the draft, its depth is
   read from the assembled caller references, and its reason names the frame, the source line and the custom error the
@@ -138,7 +172,15 @@ per-file lines of the same runs. A new case belongs in one place: before adding 
 - **`solidcash/test/per-call/receipt/`** — the logs a composition's events make: each listed event output is matched to
   the event its covenant declares and reported with the emitting contract's `addrV(category)`, the fields keyed by
   parameter name and in declared order, including an event a nested frame emitted (reported with the callee's address)
-  and an anonymous event (disambiguated by its covenant).
+  and an anonymous event (disambiguated by its covenant). `listeners.test.ts` delivers those logs to handlers
+  registered per emitting address: a handler sees only its own contract's event, a nested emitter's log reaches its
+  own contract's handler, and a removed handler receives nothing.
+- **`solidcash/test/per-call/queue/`** — sends that could touch the same masters, validators or records are
+  serialized by `CompositionQueue`: each send holds its resources from the moment it is enqueued, so a later send on
+  one of them resolves its plan only after the earlier one landed, and two sends with disjoint resources run
+  together. Each case broadcasts through the mock provider on the masters' real outpoints, so the assertions are
+  about the provider's live UTXO view: the second send on one master spends the output the first created while the
+  original outpoint is gone, and a refused broadcast leaves a disjoint send and its own overlap successor free.
 - **`solidcash/test/per-call/records/`** — a stateful composition whose record sits away from the master that reads
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
@@ -180,6 +222,10 @@ per-file lines of the same runs. A new case belongs in one place: before adding 
   write creates its run beside one event per append (settled, with the created chunk's output, the header and each
   event read back through the shipped encoders).
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
+  including one entry that keeps its contract's data-NFT record and writes a mapping batch
+  (`record-with-mapping-write.test.ts`): the plan is built from the shipped encoders and layout, and the case pins
+  where the run stops — the writer's own close, whose declared-record read resolves no view — beside the same plan
+  with its state record declared behind the mapping groups, which is refused,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name. The chain that calls back to its head (head to
   middle to tail, tail back to the middle, middle back to the head) settles with every contract input and the one

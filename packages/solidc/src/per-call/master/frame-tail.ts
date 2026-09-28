@@ -189,10 +189,20 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * first, beneath the event walk's own parkings; a segment that declares no record parks the no-index sentinel
  * under the same convention, so the pair is always there and always means the same thing. A parked `retval` is
  * deepest and a parked call count sits above it, below both, because `retval` is read after them.
+ *
+ * With `eventOwnerBelowTail` the caller leaves, directly below the tail, the index of the input whose UTXO carries
+ * the category of the contract whose records the frame uses. The event walk then reads that index instead of the
+ * executing input, so a frame that runs on another contract's records compares a listed event against the records'
+ * owner rather than the code that executes. A frame that owns its records leaves its own input there, so the two
+ * agree. The item is left in place: the walk only copies it, and the caller consumes it once the walk is done.
  */
 export function verifyTailScript(
   tail: MasterTailShape,
-  options: { readonly keepsRecordIndices?: boolean; readonly returnsValue?: boolean } = {},
+  options: {
+    readonly keepsRecordIndices?: boolean;
+    readonly returnsValue?: boolean;
+    readonly eventOwnerBelowTail?: boolean;
+  } = {},
 ): Uint8Array {
   const keepsRecordIndices = options.keepsRecordIndices === true;
   const bytes: number[] = [];
@@ -207,7 +217,7 @@ export function verifyTailScript(
   bytes.push(...callWalkScript());
   bytes.push(...segmentCountCheckScript());
   bytes.push(...segmentLoopScript(keepsRecordIndices));
-  bytes.push(...eventSection(tail.maxEventCount));
+  bytes.push(...eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true));
   bytes.push(...requireU16Equals(tail.sendCount));
   if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
   bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
@@ -426,17 +436,19 @@ function requireRecordShape(sentinel: Uint8Array = INDEX_NONE_BYTES): number[] {
  * behind the head may emit different numbers. The count is read, required to be at most `maxEventCount`, and then
  * `maxEventCount` positions are filled: a position the block declares an output for is read from the tail and
  * checked, and a position past the declared count parks the no-index sentinel, so a slot a body reads never hands
- * back another output's index. The category comes from the active input's own token, which the prologue already
- * proved is the contract's category with minting capability; dropping that capability byte leaves the pin an
- * immutable token carries. The listed outputs must strictly increase, so no two events share one and their order
- * is fixed.
+ * back another output's index. The category is the records' owner's own token, which the prologue already proved
+ * carries the contract's category with minting capability where the frame owns its records; dropping that
+ * capability byte leaves the pin an immutable token carries. With `ownerBelowTail` the owner is the index the
+ * caller left below the tail, so a frame that runs on another contract's records is checked against the contract
+ * it runs on; without it the owner is the executing input. The listed outputs must strictly increase, so no two
+ * events share one and their order is fixed.
  *
  * The running previous index used for the ordering check sits on the alt stack and is refreshed by both arms, so
  * it is always on top and is popped once the region is consumed. Each position's value is parked below it, deepest
  * first, and the declared count is parked last, above them all; the caller moves them to the main stack as tracked
  * slots in the order the bodies read them.
  */
-function eventSection(maxEventCount: number): number[] {
+function eventSection(maxEventCount: number, ownerBelowTail: boolean): number[] {
   if (maxEventCount === 0) return requireU16Equals(0);
   const bytes: number[] = [
     // Read the declared count as a VM number, leaving `[declared, tail]`.
@@ -456,7 +468,7 @@ function eventSection(maxEventCount: number): number[] {
       ...encodeDataPush(scriptNumber(position)), Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
       ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
       Opcodes.OP_DUP, Opcodes.OP_OUTPUTTOKENCATEGORY,
-      ...immutableCategoryScript(), Opcodes.OP_EQUALVERIFY,
+      ...eventCategoryScript(ownerBelowTail), Opcodes.OP_EQUALVERIFY,
       Opcodes.OP_FROMALTSTACK, Opcodes.OP_OVER, Opcodes.OP_LESSTHAN, Opcodes.OP_VERIFY,
       // Keep the index for the walker, then hand the value back as the running previous index.
       Opcodes.OP_DUP, Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK,
@@ -474,10 +486,28 @@ function eventSection(maxEventCount: number): number[] {
   return bytes;
 }
 
-/** Leaves the active input's category without a capability byte: the token category an immutable token carries. */
-function immutableCategoryScript(): number[] {
+/**
+ * The number of items above the records' owner when the event walk reads a category.
+ *
+ * The owner sits directly below the tail. When a listed event is read the working region above it holds the tail's
+ * remainder, the declared event count and the output index just read, in that order with the output index on top.
+ */
+const EVENT_OWNER_DEPTH = 4;
+
+/**
+ * Leaves the category of the input the records belong to, without a capability byte.
+ *
+ * Without `ownerBelowTail` the owner is the executing input, whose token the prologue has already required to be
+ * the contract's. With it the owner is the input index directly below the tail, which the caller left there: a
+ * frame that runs on another contract's records is checked against that contract's category, and a frame that owns
+ * its records leaves its own index there, so the two cases agree.
+ */
+function eventCategoryScript(ownerBelowTail: boolean): number[] {
+  const owner = ownerBelowTail
+    ? [...encodeDataPush(scriptNumber(EVENT_OWNER_DEPTH)), Opcodes.OP_PICK]
+    : [Opcodes.OP_INPUTINDEX];
   return [
-    Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY,
+    ...owner, Opcodes.OP_UTXOTOKENCATEGORY,
     ...encodeDataPush(scriptNumber(32)), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
   ];
 }

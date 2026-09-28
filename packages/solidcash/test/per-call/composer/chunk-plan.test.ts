@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Opcodes, encodeDataPush } from '@bitauth/libauth';
 import {
   DYNAMIC_LEN_TYPE,
   INDEX_NONE,
@@ -7,7 +8,9 @@ import {
   decodePushdataValue,
   dynamicChunkSignature,
   buildEntryNftCovenantScript,
+  encodeInt,
   parseChunkCommitment,
+  scriptToBytecode,
   type StateLayout,
 } from '@solidcash/utils';
 import { compileString } from '../../../../solidc/src/compiler.js';
@@ -66,6 +69,16 @@ function covenantLock(variable: string, category: Uint8Array = CATEGORY): Uint8A
   return scriptToLockingBytecode(covenant, 'p2sh32');
 }
 
+/** The chunk covenant's own unlocking: the writing master, the write-path flag, then the program as the last push. */
+function chunkUnlocking(variable: string, writer: number, category: Uint8Array = CATEGORY): Uint8Array {
+  const covenant = buildEntryNftCovenantScript(
+    category, computeCollectionHash(dynamicChunkSignature(variable, 'string')),
+  );
+  return new Uint8Array([
+    ...encodeDataPush(encodeInt(BigInt(writer))), Opcodes.OP_1, ...encodeDataPush(scriptToBytecode(covenant)),
+  ]);
+}
+
 describe('the chunk plan', () => {
   it('reads a dynamic value back as the header length and the pieces it was built from', () => {
     const records = dynamicValueRecords(layout, 'name', SPENT);
@@ -105,11 +118,12 @@ describe('the chunk plan', () => {
     expect(record.input.output?.token?.nft?.commitment).toStrictEqual(plan.written.chunks[0]);
     expect(record.input.source.lockingBytecode).toStrictEqual(lock);
     expect(record.input.output?.lockingBytecode).toStrictEqual(lock);
-    // The covenant's own unlocking bytecode names the writing master, then the flag that takes the write path.
-    expect(record.input.unlockingBytecode).toStrictEqual(new Uint8Array([0x00, 0x51]));
+    // The covenant's own unlocking bytecode names the writing master, then the flag that takes the write path,
+    // then the program the spend is evaluated against.
+    expect(record.input.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 0));
     expect(run.entries).toStrictEqual([record.entry]);
     expect(layOutChunkRun({ plan, category: CATEGORY, base: 7, writer: 3, valueSatoshis: 1_000n })
-      .records[0]!.input.unlockingBytecode).toStrictEqual(new Uint8Array([0x53, 0x51]));
+      .records[0]!.input.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 3));
   });
 
   it('keeps two variables\' collections apart', () => {
@@ -188,7 +202,7 @@ describe('the chunk plan', () => {
     });
     // The removed chunk's input carries the write authorization but no record is written at its index: its
     // satoshis are paid to the caller's plain lock.
-    expect(removed.input?.unlockingBytecode).toStrictEqual(new Uint8Array([0x00, 0x51]));
+    expect(removed.input?.unlockingBytecode).toStrictEqual(chunkUnlocking('name', 0));
     expect(removed.input?.output).toStrictEqual({ lockingBytecode: REMOVED_LOCK, valueSatoshis: 1_000n });
     expect(run.entries).toStrictEqual([
       { in: 5, out: 5, viewIn: plan.spent.chunks[0], viewOut: plan.written.chunks[0] },

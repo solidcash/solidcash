@@ -7856,7 +7856,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // C1 full-state authority: a proxy must conserve its own-category mutable NFT population. A certified
         // delegate implementation can authorize cardinality changes through graftDefaultProxy's derived variant;
         // the compiler-authored default remains strict so arbitrary mutable NFTs cannot be appended.
-        this.emitOwnCategoryMutableNftConservation(node);
+        //
+        // The per-call convention settles a contract's records through the census instead: a validator admits an
+        // own-category mutable output only where a frame declared it, and a standalone master's own settlement walk
+        // does the same. The delegate's frame pins every record it writes, so this coarse on-chain balance would
+        // refuse the records a callee legitimately creates - the dynamic run an append grows, for one.
+        if (!this.perCallMaster) this.emitOwnCategoryMutableNftConservation(node);
         // C1/piece-5: on a path that did NOT reach the delegate edge, nothing authorized a state change - the
         // delegate never ran and a delegatecall function may not write its own state (C1/B). Freeze the proxy's
         // own data NFTs there.
@@ -22505,9 +22510,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitCopyUpsertHashFromAltstack(loc);
     this.pushToStack('(vc_slot)');
 
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emitTakeFirst32(loc);
+    this.emitRecordsCategoryBase(loc);
     this.pushToStack('(vc_chunkaddr)');
     this.emitValueChunkP2sh32(chunkHash, '(vc_slot)', '(vc_digest)', loc);
     this.stack[0] = '(vc_chunkaddr)'; // the helper renamed the top to '(value)'
@@ -25076,6 +25079,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INPUTINDEX, locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
+    } else if (this.readsRecordsFromFrame) {
+      // A per-call frame's records are separate UTXOs, so an entry does not sit at a fixed offset from the input
+      // the frame runs on: the frame's own witness block declares where its record block is and the head parks that
+      // base. A read that skipped it would address an unrelated input, which the record read then fails to resolve.
+      // A read the sorted batch carries keeps the proof's own coordinate, which is relative to the active input.
+      this.emitPerCallEntryIndex('in', slotIndex, locationData);
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
 
@@ -25183,6 +25192,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // OP_0 pushes empty bytes which equals 0 for int, false for bool, empty for bytes
     this.emit(encodeInt(0n), locationData);
+  }
+
+  /**
+   * Leaves the 32-byte category base of the contract whose records this frame reads and writes.
+   *
+   * The collection addresses a write pins - a sorted entry's address and a value chunk's address - belong to the
+   * records' owner's contract, so a frame that runs on another contract's records derives them from that owner's
+   * category. The head leaves the owner's input index in a slot for a per-call body, whose value a frame that owns
+   * its records already is; every other convention reads the executing input.
+   */
+  private emitRecordsCategoryBase(locationData: SingleLocationData, extraStackOffset = 0): void {
+    if (this.stack.includes(categoryOwnerSlotName())) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryOwnerSlotName()) + extraStackOffset)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emitMasterInputIndex(locationData, extraStackOffset);
+    }
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitTakeFirst32(locationData);
   }
 
   /** Verify the category on the stack shares the master's 32-byte category base. [cat] -> []. */
@@ -29766,11 +29794,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // runtime temporaries which are intentionally absent from the compile-time tracker, so those routes
       // recompute the address beside each use below (d673e3e39).
       if (!this.currentFunctionIsDelegate) {
-        this.emitMasterInputIndex(loc);
-        this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-        this.emit(encodeInt(32n), loc);
-        this.emit(Op.OP_SPLIT, loc);
-        this.emit(Op.OP_DROP, loc);
+        this.emitRecordsCategoryBase(loc);
         this.pushToStack('(dyn_chunkaddr)');
         this.emitSortedEntryAddress(chunkHash, loc);
         this.stack[0] = '(dyn_chunkaddr)';
@@ -31001,11 +31025,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(dyn_rlen)');
 
     // --- chunk address '(dyn_rchunkaddr)' ---
-    this.emitMasterInputIndex(loc);
-    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    this.emit(encodeInt(32n), loc);
-    this.emit(Op.OP_SPLIT, loc);
-    this.emit(Op.OP_DROP, loc);
+    this.emitRecordsCategoryBase(loc);
     this.pushToStack('(dyn_rchunkaddr)');
     this.emitSortedEntryAddress(chunkHash, loc);
     this.stack[0] = '(dyn_rchunkaddr)';
@@ -32988,12 +33008,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // master's category, building the full script, hashing, and wrapping in P2SH32.
       // This requires building the script bytes on-stack.
 
-      // Get master's 32-byte categoryId from input
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
-      this.emit(encodeInt(32n), locationData);
-      this.emit(Op.OP_SPLIT, locationData);
-      this.emit(Op.OP_DROP, locationData); // drop capability byte, keep 32-byte category
+      // The 32-byte categoryId the listed event covenant is pinned to. A frame that runs on another contract's
+      // records emits into that contract's event covenant, so the category is the records' owner's.
+      this.emitRecordsCategoryBase(locationData);
       this.pushToStack('(value)'); // categoryId on stack
 
       // Build the event covenant script bytes:

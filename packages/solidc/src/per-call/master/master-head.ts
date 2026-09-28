@@ -360,12 +360,16 @@ class HeadEmitter {
   }
 
   /**
-   * Parks the input index whose UTXO carries the category of the contract whose records this frame uses.
+   * Leaves the input index whose UTXO carries the category of the contract whose records this frame uses.
    *
    * The two header fields that decide which - the frame kind and the caller reference - are still on the stack
    * here, before the tail walk consumes the rest. A frame that owns its records is the master's own input; a
-   * frame that runs on its caller's records names its caller's input. The parked value is recovered with the
-   * other parked slots once the checks have run.
+   * frame that runs on its caller's records names its caller's input.
+   *
+   * The index is needed twice. One copy is parked on the alt stack for the body, which recovers it with the other
+   * parked slots once the checks have run. The other is left on the main stack, directly below the tail, where the
+   * event walk reads it so a listed event is compared against the records' owner rather than the executing input;
+   * the tail leaves it in place and the head drops it once the walk is done.
    */
   private parkCategoryOwner(): void {
     this.emitBranch(
@@ -386,7 +390,24 @@ class HeadEmitter {
         this.replaceTop('owner');
       },
     );
+    // A copy for the body's state sites, then the original beneath the tail for the event walk.
+    this.dup();
     this.emitOp(Opcodes.OP_TOALTSTACK);
+    this.pop(1);
+    this.emitOp(Opcodes.OP_SWAP);
+    const top = this.stack[0]!;
+    this.stack[0] = this.stack[1]!;
+    this.stack[1] = top;
+  }
+
+  /**
+   * Drops the copy of the category owner the event walk reads from below the tail.
+   *
+   * The tail consumes everything above it, so the copy is on top once the walk returns; the alt-stack copy the
+   * body reads is a different one and stays parked.
+   */
+  private dropTailCategoryOwner(): void {
+    this.emitOp(Opcodes.OP_DROP);
     this.pop(1);
   }
 
@@ -466,9 +487,13 @@ class HeadEmitter {
    * count must be zero, which is N1's second half together with the single-master scan.
    */
   private standaloneFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.tailShape,
-      { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
+    this.emitBytes(verifyTailScript(this.tailShape, {
+      keepsRecordIndices: this.keepsRecordIndices,
+      returnsValue: this.returnsValue,
+      eventOwnerBelowTail: true,
+    }));
     this.forget('rest');
+    this.dropTailCategoryOwner();
     this.assertSelfSettlement();
     this.assertFrameKindRoot();
     this.assertNoValidator();
@@ -493,9 +518,13 @@ class HeadEmitter {
    * constant, and its tail holds as many call records as its sites number.
    */
   private composedFrameChecks(): void {
-    this.emitBytes(verifyTailScript(this.tailShape,
-      { keepsRecordIndices: this.keepsRecordIndices, returnsValue: this.returnsValue }));
+    this.emitBytes(verifyTailScript(this.tailShape, {
+      keepsRecordIndices: this.keepsRecordIndices,
+      returnsValue: this.returnsValue,
+      eventOwnerBelowTail: true,
+    }));
     this.forget('rest');
+    this.dropTailCategoryOwner();
     this.assertCallerIsNotSelf();
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();

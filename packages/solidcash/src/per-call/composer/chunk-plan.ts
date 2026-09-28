@@ -24,6 +24,7 @@ import {
   computeCollectionHash,
   dynamicChunkSignature,
   encodeInt,
+  scriptToBytecode,
   splitValueIntoChunks,
   type RecordEntry,
   type StateLayout,
@@ -177,12 +178,15 @@ export function layOutChunkRun(options: {
       + 'their satoshis are paid to',
     );
   }
-  const lock = scriptToLockingBytecode(
-    buildEntryNftCovenantScript(category, computeCollectionHash(dynamicChunkSignature(plan.variable, plan.type))),
-    'p2sh32',
+  const covenant = buildEntryNftCovenantScript(
+    category, computeCollectionHash(dynamicChunkSignature(plan.variable, plan.type)),
   );
-  // The covenant's own unlocking bytecode: the master the write belongs to, then the flag that takes the write path.
-  const unlockingBytecode = new Uint8Array([...encodeDataPush(encodeInt(BigInt(writer))), Opcodes.OP_1]);
+  const lock = scriptToLockingBytecode(covenant, 'p2sh32');
+  // The covenant's own unlocking bytecode: the master the write belongs to, then the flag that takes the write path,
+  // and then the program itself, because a P2SH spend reads its program from the last push of its own unlocking.
+  const unlockingBytecode = new Uint8Array([
+    ...encodeDataPush(encodeInt(BigInt(writer))), Opcodes.OP_1, ...encodeDataPush(scriptToBytecode(covenant)),
+  ]);
   const chunkSource = (commitment: Uint8Array): DraftSourceOutput =>
     ({ lockingBytecode: lock, valueSatoshis, token: chunkToken(category, commitment) });
   const keptCount = Math.min(plan.spent.chunks.length, plan.written.chunks.length);

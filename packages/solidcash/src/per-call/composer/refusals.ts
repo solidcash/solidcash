@@ -104,6 +104,15 @@ export function mappingBatchWritesCreatedNode(slot: Uint8Array): PerCallComposer
   );
 }
 
+/** A long value's chunk has no output in the layout to be created at. */
+export function mappingChunkOutputUnavailable(slot: Uint8Array, index: number): PerCallComposerError {
+  return new PerCallComposerError(
+    'PER_CALL_MAPPING_UNPLANNABLE',
+    `value chunk ${index} of the mapping node at slot ${bytesToHex(slot)} needs an output index the layout `
+    + 'gives it none of',
+  );
+}
+
 /**
  * A node the mapping plan must declare has no coordinate in the layout: an input to spend it at, or an output to
  * recreate or create it at. Which side is missing decides the message.

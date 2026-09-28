@@ -290,8 +290,7 @@ import {
   callsOnEveryPath, callsRepeat, DYNAMIC_CHUNK_BASE_PARAMETER,
 } from '../per-call/master/support.js';
 import {
-  BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName, buildBatchTargetsDerivationScript,
-  buildBatchWitnessDerivationScript,
+  BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
 import { countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 
@@ -3530,9 +3529,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       leadingRecords: this.dataNftCount,
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
     };
-    const script = slots.length === 1
-      ? buildBatchWitnessDerivationScript({ keyDepths: keyDepths[0]!, ...derivation })
-      : buildBatchTargetsDerivationScript({ keyDepths, ...derivation });
+    const script = buildBatchTargetsDerivationScript({ keyDepths, ...derivation });
     this.emit([...script], loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {
@@ -3542,6 +3539,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.pushToStack(batchDerivationSlotName('Trailing', 0));
+    this.pushToStack(BATCH_EXTRA_RECORDS_SLOT);
     // The script left the emitted key values beneath the operands. Remove each from where it sits and keep the
     // tracked stack in step, so the body's own reads afterwards address the frame the runtime actually has.
     for (const { name } of pushedKeys) {
@@ -24290,6 +24288,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedBatchTransitionVerification(node);
     this.perCallReadSegment = previousReadSegment;
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
+    if (this.perCallMaster && this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT, true) >= 0) {
+      // Settlement admits a created record wherever the frame declares one, so every record the segment declares
+      // past the batch's groups must be one of the value chunks this body pinned.
+      this.emit(encodeInt(BigInt(this.getStackIndex(BATCH_EXTRA_RECORDS_SLOT))), loc);
+      this.emit(Op.OP_PICK, loc);
+      if (this.valueChunkTrailingCountActive) {
+        this.emitPickCompilerRouteFrameValue(GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc, 1);
+      } else {
+        this.emit(encodeInt(0n), loc);
+      }
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
     const snapshots = this.vmapBatchTopologyNames(node).map((name) => `__vmap_snapshot_${name}`);
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);

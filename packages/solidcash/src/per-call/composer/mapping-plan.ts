@@ -16,7 +16,21 @@
  * value is encoded, because that depends on the collection's declared value type.
  */
 
-import { INDEX_NONE, bytesEqual, bytesToHex, type RecordEntry } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import {
+  INDEX_NONE,
+  VALUE_INLINE_LIMIT,
+  buildValueChunkCommitment,
+  buildValueChunkCovenantScript,
+  bytesEqual,
+  bytesToHex,
+  computeCollectionHash,
+  sha256,
+  splitValueIntoValueChunks,
+  valueChunkSignature,
+  type RecordEntry,
+} from '@solidcash/utils';
+import { scriptToLockingBytecode } from '../../utils.js';
 import {
   bytesToSlotValue,
   decodeEntryCommitment,
@@ -26,6 +40,7 @@ import {
 import {
   mappingBatchRepeatsSlot,
   mappingBatchWritesCreatedNode,
+  mappingChunkOutputUnavailable,
   mappingIndexUnavailable,
   mappingPredecessorMissing,
 } from './refusals.js';
@@ -208,9 +223,11 @@ export interface MappingNodePlacement {
   readonly out?: number;
 }
 
-/** The coordinates of the nodes a plan touches, looked up by slot. */
+/** The coordinates of the nodes a plan touches, looked up by slot, and of the value chunks a batch creates. */
 export interface MappingNodePlacements {
   placementOf(slot: Uint8Array): MappingNodePlacement | undefined;
+  /** The output a long value's chunk is created at, by its node's slot and its index. */
+  chunkOutputOf?(slot: Uint8Array, index: number): number | undefined;
 }
 
 /** A record no input holds is declared with an empty commitment before it, the create sentinel. */
@@ -318,6 +335,19 @@ export interface MappingBatchRequest<V> {
   /** Every node commitment the caller reads from the collection's state UTXOs, the head included. */
   readonly inventory: readonly Uint8Array[];
   readonly encodeValue: (value: V) => Uint8Array;
+  /**
+   * A value's raw bytes, for a collection whose values chunk (`string`, `bytes` and other variable-width values):
+   * a value over 60 bytes keeps its root in the node and its bytes past the node's head in value chunks.
+   */
+  readonly chunkable?: (value: V) => Uint8Array;
+}
+
+/** One value chunk a long value takes: its node's slot, the value's root, its index and its commitment. */
+export interface MappingValueChunk {
+  readonly slot: Uint8Array;
+  readonly root: Uint8Array;
+  readonly index: number;
+  readonly commitment: Uint8Array;
 }
 
 /** One record a batch group declares: the node, the view it continues from and the view it leaves. */
@@ -341,6 +371,8 @@ export interface MappingBatchPlan {
   readonly groups: readonly MappingBatchGroup[];
   /** Every node the batch writes, once each, in first-declared order. */
   readonly written: readonly MappingWrittenNode[];
+  /** The value chunks the batch's long values take, in target order and, inside a value, by index. */
+  readonly chunks: readonly MappingValueChunk[];
 }
 
 /**
@@ -413,17 +445,33 @@ export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBat
       records: [declare(predecessor.slot, predecessor), declare(target.slot, undefined)],
     };
   });
-  return { groups, written };
+  const chunks = request.chunkable === undefined ? [] : request.writes.flatMap((write, position) => {
+    const raw = request.chunkable!(write.value);
+    if (raw.length <= VALUE_INLINE_LIMIT) return [];
+    const root = sha256(raw);
+    return splitValueIntoValueChunks(raw).map((data, index): MappingValueChunk => ({
+      slot: targets[position]!.slot, root, index, commitment: hexToBin(buildValueChunkCommitment(index, data)),
+    }));
+  });
+  return { groups, written, chunks };
 }
 
 /**
  * Lays a sorted batch out as the record entries its segment declares, group by group.
  *
  * A node the transaction spends names its input and the output it is recreated at; a node the batch creates names
- * only its output. A spent node the layout gives no input is refused by name.
+ * only its output. The value chunks follow the groups, each created at the output the layout gives it. A spent node
+ * with no input, and a chunk with no output, are refused by name.
  */
 export function layOutMappingBatch(plan: MappingBatchPlan, placements: MappingNodePlacements): RecordEntry[] {
-  return plan.groups.flatMap((group) => group.records.map((record): RecordEntry => {
+  const chunks = plan.chunks.map((chunk): RecordEntry => {
+    const out = placements.chunkOutputOf?.(chunk.slot, chunk.index);
+    if (out === undefined || out === INDEX_NONE || !Number.isInteger(out) || out < 0) {
+      throw mappingChunkOutputUnavailable(chunk.slot, chunk.index);
+    }
+    return { in: INDEX_NONE, out, viewIn: CREATE_VIEW_IN, viewOut: chunk.commitment };
+  });
+  return [...plan.groups.flatMap((group) => group.records.map((record): RecordEntry => {
     if (!record.existed) {
       return {
         in: INDEX_NONE,
@@ -439,5 +487,14 @@ export function layOutMappingBatch(plan: MappingBatchPlan, placements: MappingNo
       viewIn: record.viewIn,
       viewOut: record.viewOut,
     };
-  }));
+  })), ...chunks];
+}
+
+/** The lock a long value's chunks sit at: the collection's value-chunk covenant, salted with the slot and the root. */
+export function mappingValueChunkLock(
+  category: Uint8Array, collectionName: string, chunk: Pick<MappingValueChunk, 'slot' | 'root'>,
+): Uint8Array {
+  return scriptToLockingBytecode(buildValueChunkCovenantScript(
+    category, computeCollectionHash(valueChunkSignature(collectionName)), chunk.slot, chunk.root,
+  ), 'p2sh32');
 }

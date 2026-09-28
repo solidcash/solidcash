@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FrameKind,
+  INDEX_NONE,
   buildEntryNftCovenantScript,
   bytesToHex,
   computeCollectionHash,
@@ -31,8 +32,11 @@ import {
   type DeployedContract,
 } from './harness.js';
 import {
+  layOutMappingBatch,
   layoutTransaction,
+  mappingValueChunkLock,
   participant,
+  planMappingBatch,
   planMappingWrite,
   type CompositionDraftPlan,
   type DraftMaster,
@@ -55,6 +59,8 @@ const SECOND = encoder.encode('second title');
 const LONG = encoder.encode('a note long enough that the node keeps only its hash and the reader brings the value itself');
 /** The same length with its last byte changed, so only the hash can tell the two apart. */
 const FORGED = Uint8Array.from(LONG, (byte, index) => (index === LONG.length - 1 ? byte ^ 1 : byte));
+/** Long enough that its bytes past the node's 28-byte head fill one value chunk and part of another. */
+const LONG_WRITE = encoder.encode(`a long title whose bytes past the node's head go to value chunks ${'-'.repeat(118)} end`);
 const ZERO_SLOT = new Uint8Array(32);
 const SLOT = keyToSlotMulti([KEY]);
 
@@ -78,6 +84,9 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract SetHub {'
   + `   function run() { ITags(0x${hexOf(TAGS_ADDRESS)}).put("${text(KEY)}", "${text(SECOND)}"); require(true); }`
   + ' }'
+  + ' contract LongSetHub {'
+  + `   function run() { ITags(0x${hexOf(TAGS_ADDRESS)}).put("${text(KEY)}", "${text(LONG_WRITE)}"); require(true); }`
+  + ' }'
   + ' contract ReadHub {'
   + `   function run() { INotes(0x${hexOf(NOTES_ADDRESS)}).check("${text(KEY)}", "${text(LONG)}"); require(true); }`
   + ' }'
@@ -94,7 +103,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const { artifacts, contracts } = compileAndDeploy(SOURCE, {
   SetHub: 'mapping values set hub', ReadHub: 'mapping values read hub',
   Tags: 'mapping values tags', Notes: 'mapping values notes',
-  LedgerHub: 'mapping values ledger hub', Ledger: 'mapping values ledger',
+  LedgerHub: 'mapping values ledger hub', Ledger: 'mapping values ledger', LongSetHub: 'mapping values long set hub',
 });
 
 const HUB_MASTER = 'hub-1';
@@ -103,15 +112,21 @@ const NODE_ID = 'node';
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 
+/** The entry covenant a contract's mapping nodes are locked by. */
+function nodeRedeem(contract: DeployedContract, contractName: string): Uint8Array {
+  const collection = artifacts[contractName]!.stateLayout!.collections![0]!;
+  return scriptToBytecode(buildEntryNftCovenantScript(contract.category, computeCollectionHash(collection.signature)));
+}
+
+const nodeLock = (contract: DeployedContract, contractName: string): Uint8Array =>
+  scriptToLockingBytecode(nodeRedeem(contract, contractName), 'p2sh32');
+
 /** The node a frame spends at its entry covenant, unlocked on the write path its master authorizes. */
 function nodeInput(contract: DeployedContract, contractName: string, before: Uint8Array, after: Uint8Array,
   masterIndex: number): CompositionDraftPlan['inputs'][string] {
-  const collection = artifacts[contractName]!.stateLayout!.collections![0]!;
-  const redeem = scriptToBytecode(
-    buildEntryNftCovenantScript(contract.category, computeCollectionHash(collection.signature)),
-  );
+  const redeem = nodeRedeem(contract, contractName);
   const source = {
-    lockingBytecode: scriptToLockingBytecode(redeem, 'p2sh32'), valueSatoshis: 20_000n,
+    lockingBytecode: nodeLock(contract, contractName), valueSatoshis: 20_000n,
     token: token(contract.category, 'mutable', before),
   };
   return {
@@ -132,6 +147,12 @@ interface Shape {
   readonly before: Uint8Array;
   readonly after: Uint8Array;
   readonly values?: readonly Uint8Array[];
+  /** The entry's own records, trailing outputs and created outputs, laid out against the transaction's layout. */
+  readonly lay?: (participantCount: number, nodeIndex: number) => {
+    readonly records: readonly RecordEntry[];
+    readonly outputs: NonNullable<CompositionDraftPlan['trailingOutputs']>;
+    readonly created: readonly number[];
+  };
 }
 
 /** A hub calling the entry, the validator settling the entry's contract, and the node the entry touches. */
@@ -145,6 +166,7 @@ function buildPlan(shape: Shape): { readonly plan: CompositionDraftPlan; readonl
   const layout = layoutTransaction(blocks);
   const nodeIndex = participant(layout, NODE_ID).index;
   const record: RecordEntry = { in: nodeIndex, out: nodeIndex, viewIn: shape.before, viewOut: shape.after };
+  const laid = shape.lay?.(layout.participantCount, nodeIndex);
   const selector = selectorOf(artifacts, shape.entryContract, shape.entry);
   const validator = validatorFor(hub.category);
 
@@ -173,7 +195,7 @@ function buildPlan(shape: Shape): { readonly plan: CompositionDraftPlan; readonl
       frame: { kind: FrameKind.CALL, sender: hub.address, self: entryContract.address, value: 0n },
       enteredBy: HUB_MASTER, origin: USER_ID,
       argumentPushes: [selector, ...shape.argumentPushes],
-      segments: [[record]],
+      segments: [laid === undefined ? [record] : [...laid.records]],
       dispatches: true,
     }),
     ...(shape.values === undefined ? {} : { values: shape.values }),
@@ -193,9 +215,13 @@ function buildPlan(shape: Shape): { readonly plan: CompositionDraftPlan; readonl
         participant(layout, ENTRY_MASTER).index),
       [USER_ID]: userInput(),
     },
+    ...(laid === undefined ? {} : { trailingOutputs: laid.outputs }),
     validator: {
       id: VALIDATOR_ID, covers: [shape.entryContract],
-      settles: [{ category: entryContract.category, stateInputs: [NODE_ID] }],
+      settles: [{
+        category: entryContract.category, stateInputs: [NODE_ID],
+        ...(laid === undefined ? {} : { createdOutputs: [...laid.created] }),
+      }],
       redeemScript: validator.redeem,
     },
   };
@@ -322,5 +348,69 @@ describe('a long mapping value read from a contract with several entries', () =>
 
   it('refuses a read whose block lists no value', () => {
     expect(() => compose()).toThrow(STALL);
+  });
+});
+
+describe('a long mapping value written with its value chunks', () => {
+  const tags = contracts.Tags!;
+  const before = encodeEntryCommitment(SLOT, ZERO_SLOT, encodeChunkableValueTail(FIRST));
+  const batch = planMappingBatch({
+    writes: [{ keys: [KEY], value: LONG_WRITE }], inventory: [before], encodeValue: encodeChunkableValueTail,
+    chunkable: (value) => value,
+  });
+  const chunkLock = mappingValueChunkLock(tags.category, artifacts.Tags!.stateLayout!.collections![0]!.name,
+    batch.chunks[0]!);
+  /** A node no write made, at the collection's own covenant. */
+  const forged = encodeEntryCommitment(keyToSlotMulti([encoder.encode('forged')]), ZERO_SLOT,
+    encodeChunkableValueTail(encoder.encode('a node no write made')));
+
+  /** The update and its chunks; `control` alters one chunk or declares one record more. */
+  const shape = (control?: 'altered chunk' | 'extra record'): Shape => ({
+    hub: 'LongSetHub', entryContract: 'Tags', entry: 'put', argumentPushes: [LONG_WRITE, KEY], before,
+    after: batch.written[0]!.after,
+    lay: (participantCount, nodeIndex) => {
+      const records = layOutMappingBatch(batch, {
+        placementOf: () => ({ in: nodeIndex, out: nodeIndex }),
+        chunkOutputOf: (_slot, index) => participantCount + index,
+      });
+      const outputs = batch.chunks.map((chunk) => ({ lock: chunkLock, commitment: chunk.commitment }));
+      if (control === 'altered chunk') {
+        const commitment = Uint8Array.from(outputs[1]!.commitment, (byte, i) => (i === 2 ? byte ^ 1 : byte));
+        outputs[1] = { lock: chunkLock, commitment };
+        records[records.length - 1] = { ...records[records.length - 1]!, viewOut: commitment };
+      }
+      if (control === 'extra record') {
+        outputs.push({ lock: nodeLock(tags, 'Tags'), commitment: forged });
+        records.push({
+          in: INDEX_NONE, out: participantCount + batch.chunks.length, viewIn: new Uint8Array(0), viewOut: forged,
+        });
+      }
+      return {
+        records,
+        outputs: outputs.map(({ lock, commitment }) => ({
+          lockingBytecode: lock, valueSatoshis: 1_000n, token: token(tags.category, 'mutable', commitment),
+        })),
+        created: records.filter((record) => record.in === INDEX_NONE).map((record) => record.out),
+      };
+    },
+  });
+  const compose = (control?: 'altered chunk' | 'extra record'): ReturnType<typeof composeAndDerive> => composeAndDerive(
+    buildPlan(shape(control)).plan, [artifacts.LongSetHub!, artifacts.Tags!], [rootOf('LongSetHub', 'run', HUB_MASTER)],
+  );
+
+  it('settles: the node keeps the root, the chunks the bytes past its head, and every contract input is accepted', () => {
+    expect(batch.chunks.map((chunk) => chunk.index)).toStrictEqual([0, 1]);
+    const outcome = compose();
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Tags', 'put'), entryName('LongSetHub', 'run')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(bytesToHex(batch.written[0]!.after))
+      .toBe(bytesToHex(encodeEntryCommitment(SLOT, ZERO_SLOT, encodeChunkableValueTail(LONG_WRITE))));
+  });
+
+  it('refuses a chunk whose bytes are not the value\'s, and a record declared past the chunks it pinned', () => {
+    for (const control of ['altered chunk', 'extra record'] as const) {
+      expect(() => compose(control)).toThrow('PER_CALL_DERIVATION_STALLED: master "entry-1" of Tags.put()');
+    }
   });
 });

@@ -1,33 +1,21 @@
 /**
  * Deriving a sorted-batch transition's witnesses from a master's own witness block.
  *
- * The direct convention receives the five sorted-batch operands from its SDK: the target's masked slot, the input
- * index the write proves against, the successor the written node carries, the output the rewritten predecessor is
- * recreated at, and how many records the execution creates. A per-call master has no such SDK operand list, but
- * its own witness block already declares, per segment, every record the execution touches as
- * `{ in, out, viewIn, viewOut }`. This builder reads that block back and leaves the five operands the existing
+ * The direct convention receives the sorted-batch operands from its SDK: per target, the masked slot, the input
+ * index the write proves against, the successor the written node carries and the output the rewritten predecessor
+ * is recreated at, and once how many records the execution creates. A per-call master has no such SDK operand list,
+ * but its own witness block already declares, per segment, every record the execution touches as
+ * `{ in, out, viewIn, viewOut }`. This builder reads that block back and leaves the operands the existing
  * verification already consumes, so no verification check changes.
  *
- * A single logical target is the shape this derivation covers. The composer plans either
- *
- *   - an UPDATE: one record, the target node recreated in place, whose `viewIn` and `viewOut` both carry the
- *     target slot; or
- *   - an INSERT: the predecessor recreated in place first, then the created node as a trailing output. The
- *     predecessor's `viewOut` re-points its successor at the target slot and its `viewIn` carries the successor
- *     the created node takes over.
- *
- * Both shapes declare the node kept in place with `in == out` and the created node with the sentinel `in`, so a
- * segment of one record is an update and a segment of two is an insert. The script branches on that count. The
- * settlement walk in the master head has already established the chain from the spent commitment to the written
- * one and the node census, so this builder reads the successor link and the indices and re-checks neither.
- *
- * The five operands, and where each comes from:
+ * The operands, and where each comes from:
  *
  *   Slot      the masked `sha256` of the target key, computed in script from the key value on the stack
- *   Proof     the proof record's input index, relative to the master's own input
- *   Next      the successor the written node carries (the predecessor's old `next`, or the updated node's)
+ *   Proof     the proof record's input index, relative to the input the frame's records are addressed from
+ *   Next      the successor the written node carries
  *   PredOut   the output the predecessor is recreated at, or the direct convention's `-1` for an update
- *   Trailing  the created records, the trailing output region the direct convention also plans
+ *   Trailing  the distinct predecessors the execution rewrites
+ *   Extra     the records the segment declares past the groups, which only the value chunks the body pins may be
  */
 
 import { encodeDataPush, Opcodes } from '@bitauth/libauth';
@@ -35,39 +23,14 @@ import {
   WITNESS_BLOCK_HEADER_LENGTH,
   dropPrefix,
   readOwnWitnessBlockScript,
-  takeFixedWidthField,
   takeLengthPrefixedField,
   takeLengthPrefixedField32,
 } from './witness-reader.js';
 import { callSectionWalkScript } from './frame-tail.js';
 
-export interface BatchWitnessDerivationOptions {
-  /** Top-relative depths of the one target's keys, in source order, when the script begins. */
-  readonly keyDepths: readonly number[];
-  /**
-   * How many records a segment declares at the head of its record list for the frame's own contract state.
-   *
-   * A per-call frame declares its own data-NFT state records before any mapping target's group, so a derivation
-   * steps over that many records before reading a group. Absent means none.
-   */
-  readonly leadingRecords?: number;
-  /**
-   * The bottom ordinal of the tracked slot holding the input the frame's records belong to, when the frame runs on
-   * another contract's records.
-   *
-   * A proof operand is the group's input coordinate less the input its records are addressed from, and the reader
-   * of that operand adds the same input back. A frame that borrowed its records addresses them from its caller's
-   * input, which is not the input the frame runs on, so the operand has to be measured from that one. Absent means
-   * the frame's own input.
-   */
-  readonly recordsOwnerOrdinal?: number;
-}
-
 /**
- * The tracked slot names one derivation supplies, in the order the caller registers them.
- *
- * The script leaves `[Trailing, PredOut, Next, Proof, Slot]` with `Slot` on top. A caller that registers the
- * names in this (deepest first) order keeps the compiler's tracked stack aligned with the runtime one.
+ * The tracked slot names one derivation supplies per target, in the order the caller registers them, then the
+ * trailing count; the extra-record count is registered last, on top.
  */
 export const BATCH_DERIVATION_SLOT_ORDER = ['Slot', 'Proof', 'Next', 'PredOut', 'Trailing'] as const;
 
@@ -79,132 +42,8 @@ export function batchDerivationSlotName(kind: BatchDerivationSlot, slotIndex: nu
   return `__internal__vmapBatch${kind}_${slotIndex}`;
 }
 
-/**
- * Builds the script that leaves one target's five sorted-batch operands, reading the master's own witness block.
- *
- * Entry `[..., key, base]` with `key` at `keyDepth`; exit `[..., Trailing, PredOut, Next, Proof, Slot, base]`.
- * The script leaves the base untouched and consumes everything it pushes, so the caller registers exactly five
- * tracked slots. The target's group is the one or two records that follow `leadingRecords` records the frame
- * declares for its own contract state, and a segment whose record count is not that whole count fails rather than
- * reading a field that is not there.
- */
-export function buildBatchWitnessDerivationScript(options: BatchWitnessDerivationOptions): Uint8Array {
-  const bytes: number[] = [];
-  const leading = options.leadingRecords ?? 0;
-  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
-  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
-  const raw = (script: Uint8Array): void => { bytes.push(...script); };
-  const pick = (depth: number): void => { num(depth); op(Opcodes.OP_PICK); };
-  const takeField = (width: number): void => raw(takeFixedWidthField(width));
-  const takeLp32 = (): void => raw(takeLengthPrefixedField32());
-  /** Drops the fixed-width field the reader just left below the block, restoring the block on top. */
-  const takeAndDrop = (width: number): void => { takeField(width); op(Opcodes.OP_NIP); };
-  /** Drops the 32-bit length-prefixed field the reader just left below the block. */
-  const takeAndDropLp32 = (): void => { takeLp32(); op(Opcodes.OP_NIP); };
-  /** Rolls the item at `depth` to the top and drops it, removing a field or marker under the working area. */
-  const rollAndDrop = (depth: number): void => { num(depth); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); };
-  /** Drops one declared record from the top of a record list: its two index fields and its two view commitments. */
-  const skipRecord = (): void => { takeAndDrop(2); takeAndDrop(2); takeAndDropLp32(); takeAndDropLp32(); };
-  /** Leaves the input the frame's records are addressed from: its caller's when one is named, its own otherwise. */
-  const emitRecordsOwner = (): void => {
-    if (options.recordsOwnerOrdinal === undefined) { op(Opcodes.OP_INPUTINDEX); return; }
-    // The owner is named by its bottom ordinal, so its depth is read from the stack the script is running on.
-    op(Opcodes.OP_DEPTH);
-    num(options.recordsOwnerOrdinal);
-    op(Opcodes.OP_SUB, Opcodes.OP_PICK);
-  };
-  /** Leaves bytes 32..64 of the item on top: the commitment's successor link. */
-  const takeSuccessor = (): void => {
-    num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_NIP); // drop the slot half
-    num(32); op(Opcodes.OP_SPLIT); op(Opcodes.OP_DROP); // drop everything after the successor
-  };
-
-  // Slot = the masked key hash the write path computes: each key hashed, the hashes concatenated, hashed again
-  // when there is more than one, and the high bit of the last byte cleared. A key's depth is taken from the frame
-  // as the script found it, so only the hashes already concatenated sit above it.
-  options.keyDepths.forEach((depth, index) => {
-    pick(depth + (index === 0 ? 0 : 1)); // [key]
-    op(Opcodes.OP_SHA256); // [H]
-    if (index > 0) op(Opcodes.OP_CAT); // [H(k0) ++ ... ++ H(ki)]
-  });
-  if (options.keyDepths.length > 1) op(Opcodes.OP_SHA256); // [composite hash]
-  num(31); op(Opcodes.OP_SPLIT); // [tail, head31]
-  bytes.push(...encodeDataPush(new Uint8Array([0x7f])));
-  op(Opcodes.OP_AND); // [masked, head31]
-  op(Opcodes.OP_CAT); // [Slot]
-
-  // Read the master's own block and step to the first segment's record list. The header the walk drops is the
-  // fixed prefix only; the frame's `sender`, `self` and `value` follow it, then `retval`.
-  raw(readOwnWitnessBlockScript()); // [block, Slot]
-  raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
-  raw(takeLengthPrefixedField()); op(Opcodes.OP_NIP); // sender
-  raw(takeLengthPrefixedField()); op(Opcodes.OP_NIP); // self
-  takeAndDrop(8); // value
-  takeAndDropLp32(); // retval
-  // The call section is the block's own, so the walk steps over the records it declares and requires the segment
-  // count to be their successor; the declared count it parks is spent here.
-  raw(new Uint8Array(callSectionWalkScript())); // [block, Slot]
-  raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
-  takeField(2); // [block, records, Slot]
-
-  // A single target declares one record (update) or two (insert) in its group, after the records the frame's own
-  // contract state declares; require that whole count and branch on it.
-  pick(1); op(Opcodes.OP_BIN2NUM); // [count, block, records, Slot]
-  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(leading + 1)), Opcodes.OP_GREATERTHANOREQUAL,
-    Opcodes.OP_VERIFY);
-  op(Opcodes.OP_DUP, ...encodeDataPush(minimalNumber(leading + 2)), Opcodes.OP_LESSTHANOREQUAL,
-    Opcodes.OP_VERIFY);
-  if (leading > 0) {
-    // Bring the record list above the count copy, step over the state records at its head, and return the copy.
-    num(1); op(Opcodes.OP_ROLL);
-    for (let record = 0; record < leading; record += 1) skipRecord();
-    op(Opcodes.OP_SWAP);
-  }
-  num(leading + 2); op(Opcodes.OP_NUMEQUAL); // [isInsert, block, records, Slot]
-  op(Opcodes.OP_IF);
-
-  // INSERT: record 0 is the predecessor; the created node is the record that follows it.
-  {
-    takeField(2); // [block, in0, records, Slot]
-    pick(1); op(Opcodes.OP_BIN2NUM); emitRecordsOwner(); op(Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, proof, in0, records, Slot]
-    rollAndDrop(2); // in0 -> [block, proof, records, Slot]
-    takeField(2); // [block, out0, proof, records, Slot]
-    pick(1); op(Opcodes.OP_BIN2NUM); // [predOut, block, out0, proof, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, predOut, out0, proof, records, Slot]
-    rollAndDrop(2); // out0 -> [block, predOut, proof, records, Slot]
-    takeLp32(); // [block, viewIn0, predOut, proof, records, Slot]
-    pick(1); takeSuccessor(); // [next, block, viewIn0, predOut, proof, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, next, viewIn0, predOut, proof, records, Slot]
-    rollAndDrop(2); // viewIn0 -> [block, next, predOut, proof, records, Slot]
-    op(Opcodes.OP_DROP); // block -> [next, predOut, proof, records, Slot]
-    rollAndDrop(3); // records -> [next, predOut, proof, Slot]
-    op(Opcodes.OP_SWAP); // [predOut, next, proof, Slot]
-    op(Opcodes.OP_1); // [Trailing, predOut, next, proof, Slot]
-  }
-  op(Opcodes.OP_ELSE);
-  // UPDATE: record 0 is the target node, recreated in place, and it opens no predecessor output.
-  {
-    takeField(2); // [block, in0, records, Slot]
-    pick(1); op(Opcodes.OP_BIN2NUM); emitRecordsOwner(); op(Opcodes.OP_SUB); // [proof, block, in0, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, proof, in0, records, Slot]
-    rollAndDrop(2); // in0 -> [block, proof, records, Slot]
-    takeAndDrop(2); // out0
-    takeAndDropLp32(); // viewIn0
-    takeLp32(); // [block, viewOut0, proof, records, Slot]
-    pick(1); takeSuccessor(); // [next, block, viewOut0, proof, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, next, viewOut0, proof, records, Slot]
-    rollAndDrop(2); // viewOut0 -> [block, next, proof, records, Slot]
-    op(Opcodes.OP_1NEGATE); // [predOut, block, next, proof, records, Slot]
-    op(Opcodes.OP_SWAP); // [block, predOut, next, proof, records, Slot]
-    op(Opcodes.OP_DROP); // block -> [predOut, next, proof, records, Slot]
-    rollAndDrop(3); // records -> [predOut, next, proof, Slot]
-    op(Opcodes.OP_0); // [Trailing, predOut, next, proof, Slot]
-  }
-  op(Opcodes.OP_ENDIF);
-
-  return new Uint8Array(bytes);
-}
+/** The tracked name of the records the segment declares past the groups: the value chunks the body must pin. */
+export const BATCH_EXTRA_RECORDS_SLOT = '__internal__vmapBatchExtraRecords';
 
 /** A script number in its minimal push form. */
 function minimalNumber(value: number): Uint8Array {
@@ -229,7 +68,15 @@ export interface BatchTargetsDerivationOptions {
    * over that many records before reading the first group. Absent means none.
    */
   readonly leadingRecords?: number;
-  /** The bottom ordinal of the slot holding the input the frame's records belong to; see the single-target option. */
+  /**
+   * The bottom ordinal of the tracked slot holding the input the frame's records belong to, when the frame runs on
+   * another contract's records.
+   *
+   * A proof operand is the group's input coordinate less the input its records are addressed from, and the reader
+   * of that operand adds the same input back. A frame that borrowed its records addresses them from its caller's
+   * input, which is not the input the frame runs on, so the operand has to be measured from that one. Absent means
+   * the frame's own input.
+   */
   readonly recordsOwnerOrdinal?: number;
 }
 
@@ -246,10 +93,12 @@ export interface BatchTargetsDerivationOptions {
  * its `viewOut` slot with the target's own slot, and reads a second record only for the insert case.
  *
  * Per target the script leaves `[Slot, Proof, Next, PredOut]` with the target's fixed `-1` predecessor output for an
- * update and the predecessor's recreated output for an insert, and once for the batch `Trailing`, the number of
- * distinct predecessors the execution rewrites. The script never reorders the frame: operands are parked on the
- * alternate stack as they are found and moved back in ABI order at the end, and it consumes everything it pushes
- * above the frame.
+ * update and the predecessor's recreated output for an insert, then once for the batch `Trailing`, the number of
+ * distinct predecessors the execution rewrites, and `Extra` on top: the records the segment declares past its state
+ * records and the groups. Settlement admits a created record wherever a frame declares one, so the body holds
+ * `Extra` to the value chunks it pins. The script never reorders the frame: operands are parked on the alternate
+ * stack as they are found and moved back in ABI order at the end, and it consumes everything it pushes above the
+ * frame.
  */
 export function buildBatchTargetsDerivationScript(options: BatchTargetsDerivationOptions): Uint8Array {
   const builder = new BatchTargetsDerivationBuilder(options);
@@ -443,8 +292,8 @@ class BatchTargetsDerivationBuilder {
       this.main[0] = 'trailing';
     }
 
-    // The segment declares exactly the records the targets consumed: the frame's own state records, then one per
-    // update and two per insert. A record declared past them is one no target wrote.
+    // The groups consumed the frame's own state records, then one record per update and two per insert. What the
+    // segment declares past them is left as `Extra`, never negative, for the body to hold to its value chunks.
     this.fromAlt();
     this.unary(Opcodes.OP_BIN2NUM, 'declared_count');
     this.num((this.options.leadingRecords ?? 0) + count);
@@ -455,9 +304,8 @@ class BatchTargetsDerivationBuilder {
       this.binary(Opcodes.OP_GREATERTHANOREQUAL, 'inserts');
       this.binary(Opcodes.OP_ADD, 'consumed');
     }
-    this.op(Opcodes.OP_NUMEQUALVERIFY);
-    this.main.shift();
-    this.main.shift();
+    this.binary(Opcodes.OP_SUB, 'extra');
+    this.op(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
   }
 
   // --- Emitters that keep the modelled stacks in step with the bytes ------------------------------------------

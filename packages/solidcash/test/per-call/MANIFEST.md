@@ -38,16 +38,16 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 105 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 107 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 40 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 11 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1362 tests passed (115 + 445 + 800 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1364 tests passed (115 + 445 + 802 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 445 is the four rows above it, `solidcash` 800 is the seventeen rows above it,
+`vitest.per-call.config.ts`: `solidc` 445 is the four rows above it, `solidcash` 802 is the seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
@@ -254,7 +254,8 @@ and the binding of a delegate callee to the implementation the record names by `
   middle to tail, tail back to the middle, middle back to the head) settles with every contract input and the one
   validator accepted, and the plan that leaves the user-entered multi-entry root without the selector its dispatcher
   consumes is pinned as the stall it produces. `mapping-values.test.ts` settles a `mapping(string => string)`
-  set and a long value read from the frame's value list (a forged and a missing value stall), and
+  set, a long value read from the frame's value list (a forged and a missing value stall) and a long value
+  written with its value chunks (an altered chunk and a record past them stall), and
   `initializer-batch.test.ts` an initializer's record write, eight inserts into an empty mapping and event as one
   sorted batch (a chain that skips the other keys stalls, and so does a created record no write made).
 - **`solidcash/test/per-call/time/`** — time as the transaction's own field: a `require(tx.time >= n)` gate compiled

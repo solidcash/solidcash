@@ -1574,7 +1574,10 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
     first declaration in the segment, the view the batch started from.
 - **Long values written by several frames.** This is `jobEvents[jobId]`, where each append rewrites the whole
   array: 5 appends in `publishJobPost`, and 30 events in "update job many times".
-  - Each frame that writes the value mints the chunks of its own version, and checks them itself, as today.
+  - Each frame that writes the value mints the chunks of its own version, and checks them itself, as today. It
+    declares them as created records after its batch's groups, and its code requires the records it declares
+    past the groups to number exactly the chunks it pinned: settlement admits a created record wherever a frame
+    declares one.
   - The next frame receives the value as a witness bound by the root in its `viewIn`.
   - Intermediate versions' chunks stay as unspent outputs. Creating only the final version is a later optimization.
 - **Dynamic storage writes.** They consume every old chunk (record entries with `out = 0xFFFF`) and create every new

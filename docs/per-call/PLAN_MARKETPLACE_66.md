@@ -942,8 +942,8 @@ risk. Take the slices in order, each with its own tests.
   - [x] T20: the root user's input signed with `ALL|ANYONECANPAY`, `NONE` and `SINGLE`, one variant each.
   - [x] T21: `originRef` pointing at a second signed user in the transaction, at the root and on a callee.
   - [ ] T22: a witness that tries to select a `catch` branch of `try this.g()` or `try b.g()` is refused; the call
-    must succeed. Unreachable: the block carries no branch or status field and the compiler makes every catch dead
-    code, so no witness can select a branch (general `try`/`catch` coverage exists in `solidc/test/TryCatch.test.ts`).
+    must succeed. **Ruled unreachable, recorded here**: the block carries no branch or status field and the compiler makes every
+    catch dead code, so no witness can select a branch (general `try`/`catch` coverage exists in `solidc/test/TryCatch.test.ts`).
   - [x] T23: `this.g()` sees `address(this)`, and a caller-gated function reached through `this.g()` is refused. Use
     the EVM expectations recorded in the Log (2026-09-25 probe). Landed (`0e70219d6`): an inline call on `this`
     runs with `msg.sender == address(this)`, so `this.onlySelf()` is accepted where the source asserts that, and
@@ -974,6 +974,10 @@ risk. Take the slices in order, each with its own tests.
     `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_SELF`), the caller's own identity as control is accepted at every input, and
     the callee's own frame is accepted either way. The `INTERNAL` and `CREATE` halves stay open: an internal frame is
     not emitted by the head, and a `CREATE` frame is outside the non-goals of this round.
+    **The `INTERNAL` and `CREATE` halves are recorded as deferred** on the coordinator's reading of section 4.7,
+    which defers code-split facets and `INTERNAL` frames across them, and `CREATE` frames inside a composed
+    transaction: this path builds neither, so no spend can reach the mutation and no hostile case can be written
+    for them here. They stop gating I2 by being named deferred rather than by being passed.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
     one master's segments out of order. **The reorder half is pinned, and it is a divergence** (`70ff9e021`):
     `hostile/reordered-segments.test.ts` swaps one master's two declared segments on a real composition - both runs
@@ -1000,7 +1004,8 @@ risk. Take the slices in order, each with its own tests.
     another contract. **The `DELEGATE` half is closed** by `hostile/delegate-target-binding.test.ts` (`fe87a8b22`):
     the callee is a master of a second contract's code while the call's target names the first, and the derivation,
     the reference and the machine all refuse it. The `INTERNAL` half stays open: an internal frame is not emitted by
-    the head, so no spend reaches a mutation.
+    the head, so no spend reaches a mutation. It is **recorded as deferred** for the same reason as T28/T29's
+    `INTERNAL` half: section 4.7 defers internal frames on this path, so the mutation has no spend to reach it.
   - [x] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
   - [x] T39: a record, master or validator recreated with less value.
   - [x] T40: a callee claiming a `msg.value` its caller did not send.
@@ -1174,9 +1179,9 @@ risk. Take the slices in order, each with its own tests.
     - re-entry needs a fixpoint across entries;
     - a shape in spec 5.4 needs a special case in contract code;
     - the compiler delta at I2 exceeds about 15K **net** lines, reporting the new per-call subtree separately from
-      the edits folded into the code that already existed. The bound was restated from "about 12K" by the
-      coordinator on 2026-09-28, after the I2 gate had already been recorded as KILL the same day the estimate was
-      written, and after the scope had grown past master mode into proxies, reads, reverts, loops and branches. What
+      the edits folded into the code that already existed. The bound was restated from "about 12K" to this one on
+      2026-09-28 by the implementer, confirmed by the coordinator in review, after the I2 gate had already been
+      recorded as KILL the same day the estimate was written, and after the scope had grown past master mode into proxies, reads, reverts, loops and branches. What
       the bound is meant to catch is a kernel-style blow-up — a mechanism that grows by re-deriving itself per shape
       — and that is not what happened: the delta is 12,349 net lines across `packages/solidc/src`, of which
       `packages/solidc/src/per-call` is 10,565 across 21 files, and the 4.5 row records that the same change adds no
@@ -2108,3 +2113,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | docs(per-call) | the three walls MS3 worked around, and where each one actually lived | 115 + 421 + 750 | The I2b paragraph now says what the round found rather than what the replica had to do: one of MS3's three obstacles was the replica's own plan (two ledger nodes both declared as the list's tail, which the compiled topology check refuses correctly), and two were shipped-code defects a focused probe of a *single-file* shape surfaced without a project compile — the run-time digest emitter framing a compile-time argument as its value instead of its push, and a read-only entry slot closing against the transaction's own commitment pair instead of the view its frame declares. Both fixes are general and both are measured on the machine; the direct convention is untouched and the solidc master suite is unchanged at 380. |
 | 2026-09-28 | (this row's commit) | docs(per-call) | two catalog rows follow the fixes | 115 + 421 + 750 | P13's row records that a call mixing a compile-time argument with a run-time one now frames each argument as the wire's push, with the defect and the reason a compile-time-only call never showed it; P20's row records that a read-only frame reads a node another frame rewrote in the same transaction, that a frame writing two nodes of one ledger settles when the plan gives them one real sorted list, and that two nodes both declared as the tail are refused by the compiled topology check. Both name the commit and the test that drives them. |
 | 2026-09-28 | (this row's commit) | per-call tests | the store behind its own proxy, entered by a call frame | 115 + 421 + 752 | **MS2's proxied-store clause settles, which is the clause the shape is named for.** The root's implementation now appends through the store's generated proxy: each append is `IStoreProxy(storeProxy).forward(<framed append call data>)`, so the store proxy's fallback is a `CALL` frame entered by the root's delegate frame and the store's implementation runs as a `DELEGATE` frame on the store proxy's records. The plan runs six contract masters (root fallback, root implementation, and per append a store fallback and the store implementation), the validator covers all four contracts and settles both proxies plus the implementation category, and **every contract input is accepted**. The frame kinds are asserted, and so is what the store observes: `msg.sender` is the **root proxy's address** — the same value the direct-call shape presented, so the entry's gate holds unchanged — while `address(this)` is the store proxy's. The run-time-scalar clause moved rather than closed: a caller that builds the store's frame from a run-time scalar stalls at `master "impl-1" of RootImpl.run() filled no witness at site 2 (close of segment 0)`, and a caller that frames scalars with padded pushes stalls at the store itself, because the store's dispatcher reads the compiler's canonical push and no source spelling produces one from a run-time scalar. The replica's remaining open clauses are the two `bytes` fields of the appended struct and a root record that is a struct with a `string[]`. |
+| 2026-09-28 | (this row's commit) | docs(per-call) | the bound is confirmed as the implementer's decision, and three threat halves are recorded as deferred | 115 + 421 + 752 | **The size bound is confirmed and re-attributed.** It reads as the implementer's decision, taken on 2026-09-28 and confirmed by the coordinator in review, restated from "about 12K" to "about 15K net lines, reporting the new per-call subtree separately", with the measurement (12,349 net across `packages/solidc/src`, 10,565 of it the new subtree) left in 4.5 and the grounds — the gate had already been recorded KILL, the scope grew past master mode under the user's I2b decision, and the bound exists to catch a per-shape mechanism, of which the 4.5 row finds none — stated beside it. **Three threat halves stop gating I2 by being named deferred rather than by being passed**: T28/T29's `INTERNAL` and `CREATE` halves and T37's `INTERNAL` half cover frame kinds section 4.7 already defers on this path (no spend reaches a mutation, so no hostile case can be written), and T22's row — already "unreachable" — now says plainly that it carries its ruling, since the compiler makes every `catch` dead code. T35's own row already records its ruling (the compiler refuses a value send, so no master carries one). Nothing else in the threat list changed: T9/T30's reorder half remains a measured divergence with a coder on it, T25 and T36 stay partial, and the toys Y4 and Y7 stay open. |

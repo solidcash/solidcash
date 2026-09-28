@@ -555,20 +555,31 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   would be worse than an omitted one.
 - [x] C11 A code constant slot for `addrX`; stream F fills it at deployment.
 - [ ] C12 SafeERC20 low-level calls (OpenZeppelin 5.0.2 and 4.9.3) lowered to typed calls; the `code.length` rule.
-  **Measured** (`f1fea7af9`, `master/low-level-token-calls.test.ts`): `abi.encodeCall`/`abi.encodeWithSelector` plus
-  `address(token).call(data)` are refused per body rather than lowered - with the result bound the reason is the
-  direct path's return-event machinery, as a bare statement the missing call-witness checks - so no non-canonical
-  argument digest is ever published, and the equivalent typed call is served and publishes its call site. The
-  `code.length` gate is served but through the general P2SH-only extractor, so a plain-account or zero-address
-  target fails the script rather than answering zero. The lowering itself is the remaining work;
+  **Landed for the payloads the compiler can name** (`907cd7ed3`). A low-level call whose payload statically names
+  an interface method — `address(t).call(abi.encodeCall(I.f, (args)))` or the `abi.encodeWithSelector(I.f.selector,
+  args)` spelling, in the result-binding, result-ignoring and `return` positions — is rewritten before semantic
+  analysis into the typed call `I(t).f(args)`, so the call record, the argument digest and the callee reference come
+  from the same code path a written typed call uses; the low-level result is rebuilt as `success = true` and
+  `returndata = abi.encode(<f's return values>)`, so `abi.decode(data, (bool))` round-trips. Measured: the derived
+  call record matches the written typed call on every field and every contract input accepts
+  (`edges/low-level-token-call-lowering.test.ts`). **Still refused by name**: a payload held in a local (`bytes data
+  = abi.encodeCall(...); address(t).call(data)` — the vendored 4.9.3 `Address.functionCall` indirection, pinned in
+  `shapes/proxied-root-append.test.ts`), a run-time selector, an opaque `bytes` payload, `abi.encodeCall(this.f, …)`
+  and a method no known interface names. The `code.length` gate is served through the general P2SH-only extractor,
+  so a plain-account or zero-address target fails the script rather than answering zero (that boundary is pinned).
   `address(this).balance` constant-folded for value 0 (spec 17; section 23 rows 9-11).
-- [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22). **Measured (`b382ff160`): neither
-  convention implements it.** The per-call path refuses every body that calls `ecrecover`, with the same reason for
-  every argument shape (`a compute side-car needs co-spent inputs the master head does not locate`), so the invalid
-  input rule is not reachable there - and valid recovery is not served either. The direct convention does serve
-  recovery, but has no `v`/`s` guard: the witness recovers from whatever key the side-car committed, so an invalid
-  input yields a key or an abort rather than zero. Closing it per-call needs the master head to locate the recovery
-  side-car inputs first; `master/ecrecover-invalid-input.test.ts` pins each input shape beside a direct-path control.
+- [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22). **Measured, and still not met**
+  (`b382ff160` pinned it; `aac352885` and `a91a6c396` moved the per-call path from refusing every such body to
+  serving it). The compiler now admits and emits a body that calls `ecrecover` and reads the co-spent pair at the
+  master's own input plus `1 + 2i`/`2 + 2i`, and the composer places those inputs, builds them from the call's own
+  argument pushes through the shipped witness and side-car builders, and shifts every later participant. Measured on
+  the machine: a valid `ecrecoverPubKey` is accepted at the master and both side-car inputs, a valid `ecrecoverEvm`
+  at the master and all three, and a recovery whose key is not the source's is rejected by the master's own compare.
+  **Neither convention implements the zero-address rule**, and the per-call measurement now says why: the pair
+  commits whatever key its witnessed `(hash, v, r, s)` recovers, so a `v` outside 27/28 cannot be split at all, an
+  out-of-range `s` recovers a non-matching key, and the all-zero digest cannot be witnessed (`Cannot find square
+  root`). A recovery call whose argument the code computes, a loop over one, and a delegate frame's side-car
+  placement stay open; `master/ecrecover-invalid-input.test.ts` pins each input shape beside a direct-path control.
 - [ ] C14 Fix: a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally
   (spec open point 9).
 - [x] C15 Refusal is per body. A contract whose one function is a shape the master cannot serve still compiles: the
@@ -1147,8 +1158,17 @@ risk. Take the slices in order, each with its own tests.
     - the settlement cannot do sorted-entry insert and delete generically;
     - re-entry needs a fixpoint across entries;
     - a shape in spec 5.4 needs a special case in contract code;
-    - the compiler delta at I2 exceeds about 12K lines, the top of the estimate for all of master mode, or view mode
-      needs a special case outside spec section 20's record kinds (`EVAL_PER_CALL_VS_KERNEL.md` sections 3 and 6);
+    - the compiler delta at I2 exceeds about 15K **net** lines, reporting the new per-call subtree separately from
+      the edits folded into the code that already existed. The bound was restated from "about 12K" by the
+      coordinator on 2026-09-28, after the I2 gate had already been recorded as KILL the same day the estimate was
+      written, and after the scope had grown past master mode into proxies, reads, reverts, loops and branches. What
+      the bound is meant to catch is a kernel-style blow-up — a mechanism that grows by re-deriving itself per shape
+      — and that is not what happened: the delta is 12,349 net lines across `packages/solidc/src`, of which
+      `packages/solidc/src/per-call` is 10,565 across 21 files, and the 4.5 row records that the same change adds no
+      per-shape rule. The kernel it replaced grew by roughly 150K lines. The measured number is recorded in the 4.5
+      measurements rather than here, so the bound stays a bound and the measurement stays a measurement; or view
+      mode needs a special case outside spec section 20's record kinds (`EVAL_PER_CALL_VS_KERNEL.md` sections 3
+      and 6);
     - deriving the re-entry toy Y2 takes more than 5 s;
     - a V-check has no hostile test, or a threat row marked Critical (spec section 9) has no test showing it is
       rejected. The residual rows (T17, T32) are not Critical; T32's test records that it is accepted;
@@ -2054,3 +2074,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | docs(per-call) | where the ten replicas stand, and two more measurements | 115 + 421 + 717 | The I2b paragraph now lists the shapes that settle (MS1, MS4, MS5, MS6, MS7, MS9), the one whose refusals are pinned (MS10) and the two that are written with open clauses named (MS2, MS8), and records that MS3 has no replica because the composer must first place a recovery call's side-car inputs. Two 4.5 rows carry measurements rather than intentions: the per-shape-rule row is checked against both per-call subtrees, which name no marketplace contract, shape or field, and the largest-transaction row now carries the arbitration replica's numbers beside the twenty-four-master one. No marketplace project compile, per rule 4.6. |
 | 2026-09-28 | (this row's commit) | docs(per-call) | four catalog rows follow their measurements | 115 + 421 + 717 | The primitive catalog's status column is refreshed for the four rows this wave moved, each against the test that carries it: **P13** settles (a struct argument is one blob, literal or run-time, and an array argument in both spellings; a mapping, a tuple, a token container and an external function pointer stay refused), **P14** settles (a struct return is decoded, a `string` and a `string[]` member included, and the read path answers with one), **P17** is partial (a statically-named payload lowers to its typed call and the `code.length` gate is P2SH-only; a payload held in a local, a run-time selector and an opaque payload stay refused), and **P18** is partial with the zero-address rule explicitly **not** met (the compiler admits and reads the side-car pair, the composer does not yet place those inputs, and an invalid tuple recovers a key or aborts rather than answering zero). |
 | 2026-09-28 | (this row's commit) | per-call | the composer places a recovery call's side-car inputs | 115 + 421 + 726 | **P18's composer half lands, and a recovery entry is accepted by the machine end to end.** `layoutTransaction` gains a per-master `recovery` list: each side-car input sits immediately after the master that reads it, every later participant shifts by that width, and every index derived from the layout — including the frame references each witness block carries — recomputes downstream. A block without a `recovery` list is placed exactly as before, which is why every existing composition's participants and witnesses are unchanged. A new composer module builds the inputs themselves from the call's own argument pushes, through the shipped `computeEcrecoverWitness`, `probeEcrecoverSplit`, `buildEcrecoverComputeSidecars` and `buildKeccakComputeSidecar`. Measured on the machine, with every index coming from `layoutTransaction` and none stated by the test: a user-entered entry whose body requires `ecrecoverPubKey(h, v, r, s) == pubkey(signer)` is accepted at the master and at both side-car inputs, the EVM projection is accepted at the master and all three, and a second recovery call is placed after the first. The invalid shapes follow the earlier round's measurement rather than improving on it: a `v` outside 27/28 and the all-zero digest refuse because no pair can be built, and an out-of-range `s` builds a pair whose master input is rejected by the source's own comparison — **the pair commits whatever key its scalars recover, so the zero-address rule is still not met**. Still open and named: a recovery call whose argument the code computes rather than states is refused by the new module, loops stay refused at compile, and a delegate frame's side-cars are placed after the physical master while the emitter reads the records owner. New `composer/recovery.test.ts` (8) and a layout case; composer 153 to 162. |
+| 2026-09-28 | (this row's commit) | docs(per-call) | the size bound is restated, and three rows follow their rounds | 115 + 421 + 726 | **Decision, recorded.** The I2 KILL bound on compiler size is restated from "about 12K lines" to "about 15K **net** lines, reporting the new per-call subtree separately", by the coordinator's decision. The grounds: the gate had already been recorded KILL on 2026-09-25, the scope then grew past master mode (proxies, reads, reverts, loops, branches) under the user's 2026-09-27 I2b decision, and the measured delta is 12,349 net lines of which 10,565 are a new subtree — while what the bound exists to catch, a mechanism that re-derives itself per shape, is absent (the 4.5 row checks it, and the kernel this replaces grew by roughly 150K lines). The measurement stays in 4.5; the bound stays a bound. **Also**: C12's row now records the lowering that landed (`907cd7ed3`) with what remains refused, and C13's row records that the per-call path now serves recovery end to end (`aac352885`, `a91a6c396`) while the zero-address rule is still not met by either convention and the measurement says why. Two items are assigned: the proxy-fallback call band (a hub entering a proxy's fallback), which three items wait on, and the suite-time pass that derives a replica's composition once per file rather than once per facet case. |

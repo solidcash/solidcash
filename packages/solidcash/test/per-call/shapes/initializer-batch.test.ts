@@ -125,12 +125,16 @@ const BATCH = planMappingBatch({
   encodeValue: encodeChunkableValueTail,
 });
 const SLOTS = TAGS.map(({ key }) => keyToSlotMulti([key]));
+/** A node no write made, at the collection's own covenant. */
+const FORGED = encodeEntryCommitment(keyToSlotMulti([encoder.encode('FORGED')]), new Uint8Array(32),
+  encodeChunkableValueTail(encoder.encode('a node no write made')));
 
 /**
  * The composition: the record written, the head relinked, eight nodes created after the event. `relinkLowest`
- * replaces the lowest created node's successor, in its declaration and its output alike.
+ * replaces the lowest created node's successor, in its declaration and its output alike; `forged` declares one more
+ * created record, a node no write made, after the batch's groups or between its first two.
  */
-function buildPlan(relinkLowest?: Uint8Array): {
+function buildPlan(options: { readonly relinkLowest?: Uint8Array; readonly forged?: 'after' | 'between' } = {}): {
   readonly plan: CompositionDraftPlan;
   readonly headIndex: number;
   readonly created: readonly number[];
@@ -143,7 +147,9 @@ function buildPlan(relinkLowest?: Uint8Array): {
   const recordIndex = participant(layout, RECORD_ID).index;
   const headIndex = participant(layout, HEAD_ID).index;
   const eventIndex = layout.participantCount;
-  const created = SLOTS.map((_, position) => eventIndex + 1 + position);
+  const between = options.forged === 'between';
+  const created = SLOTS.map((_, position) => eventIndex + 1 + position + (between && position >= 1 ? 1 : 0));
+  const forgedIndex = between ? eventIndex + 2 : eventIndex + 1 + SLOTS.length;
   const placements = new Map<string, MappingNodePlacement>([
     [bytesToHex(new Uint8Array(32)), { in: headIndex, out: headIndex }],
     ...SLOTS.map((slot, position): [string, MappingNodePlacement] => [bytesToHex(slot), { out: created[position]! }]),
@@ -152,13 +158,16 @@ function buildPlan(relinkLowest?: Uint8Array): {
   const lowest = [...SLOTS].sort((a, b) => (bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1))[0]!;
   const nodeOf = (slot: Uint8Array): Uint8Array => {
     const planned = BATCH.written.find((node) => bytesToHex(node.slot) === bytesToHex(slot))!.after;
-    if (relinkLowest === undefined || bytesToHex(slot) !== bytesToHex(lowest)) return planned;
-    return encodeEntryCommitment(slot, relinkLowest, decodeEntryCommitment(planned).value);
+    if (options.relinkLowest === undefined || bytesToHex(slot) !== bytesToHex(lowest)) return planned;
+    return encodeEntryCommitment(slot, options.relinkLowest, decodeEntryCommitment(planned).value);
   };
   const entries = layOutMappingBatch(BATCH, { placementOf: (slot) => placements.get(bytesToHex(slot)) })
     .map((entry, index, all): RecordEntry => (entry.in === INDEX_NONE
       ? { ...entry, viewOut: nodeOf(SLOTS[all.slice(0, index).filter((e) => e.in === INDEX_NONE).length]!) }
       : entry));
+  const forgedRecord: RecordEntry = { in: INDEX_NONE, out: forgedIndex, viewIn: new Uint8Array(0), viewOut: FORGED };
+  const declared = options.forged === undefined ? entries
+    : between ? [...entries.slice(0, 2), forgedRecord, ...entries.slice(2)] : [...entries, forgedRecord];
   const headAfter = BATCH.written[0]!.after;
 
   const selector = new Uint8Array(Buffer.from(
@@ -173,7 +182,7 @@ function buildPlan(relinkLowest?: Uint8Array): {
       },
       frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: DEPLOYED.address, value: 0n },
       enteredBy: USER_ID, origin: USER_ID, calls: [],
-      segments: [[{ in: recordIndex, out: recordIndex, viewIn: RECORD_BEFORE, viewOut: RECORD_AFTER }, ...entries]],
+      segments: [[{ in: recordIndex, out: recordIndex, viewIn: RECORD_BEFORE, viewOut: RECORD_AFTER }, ...declared]],
       argumentPushes: [selector, HUB], dispatches: true,
     }),
     events: [eventIndex],
@@ -186,6 +195,10 @@ function buildPlan(relinkLowest?: Uint8Array): {
   const headSource = {
     lockingBytecode: ENTRY_LOCK, valueSatoshis: 1_500n, token: token(CATEGORY, 'mutable', headSentinelCommitment()),
   };
+  const nodes = SLOTS.map((slot) => ({
+    lockingBytecode: ENTRY_LOCK, valueSatoshis: 1_500n, token: token(CATEGORY, 'mutable', nodeOf(slot)),
+  }));
+  const fake = { lockingBytecode: ENTRY_LOCK, valueSatoshis: 1_500n, token: token(CATEGORY, 'mutable', FORGED) };
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: userInputs([USER_ID], layout.participantCount),
@@ -211,13 +224,15 @@ function buildPlan(relinkLowest?: Uint8Array): {
     },
     trailingOutputs: [
       eventOutput(CATEGORY, EVENT.signature, encodeEventCommitment(EVENT.parameters, [HUB])),
-      ...SLOTS.map((slot) => ({
-        lockingBytecode: ENTRY_LOCK, valueSatoshis: 1_500n, token: token(CATEGORY, 'mutable', nodeOf(slot)),
-      })),
+      ...(options.forged === undefined ? nodes
+        : between ? [nodes[0]!, fake, ...nodes.slice(1)] : [...nodes, fake]),
     ],
     validator: {
       id: VALIDATOR_ID, covers: [],
-      settles: [{ category: CATEGORY, stateInputs: [RECORD_ID, HEAD_ID], createdOutputs: created }],
+      settles: [{
+        category: CATEGORY, stateInputs: [RECORD_ID, HEAD_ID],
+        createdOutputs: options.forged === undefined ? created : [...created, forgedIndex].sort((a, b) => a - b),
+      }],
       redeemScript: validatorFor(CATEGORY).redeem,
     },
   };
@@ -249,8 +264,17 @@ describe('an initializer that writes its record, inserts eight keys into an empt
   });
 
   it('refuses a chain whose lowest node skips the other seven', () => {
-    const built = buildPlan(new Uint8Array(32));
+    const built = buildPlan({ relinkLowest: new Uint8Array(32) });
     expect(() => composeAndDerive(built.plan, [artifact], [ROOT]))
       .toThrow('PER_CALL_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
+  });
+
+  it('refuses a created record no write made, declared after the groups or between them', () => {
+    // Settlement admits a created record wherever a frame declares one, so the body must declare no more than it
+    // wrote: its state records, then one record per update and two per insert.
+    for (const forged of ['after', 'between'] as const) {
+      expect(() => composeAndDerive(buildPlan({ forged }).plan, [artifact], [ROOT]))
+        .toThrow('PER_CALL_DERIVATION_STALLED: master "registry-1" of Registry.initialize()');
+    }
   });
 });

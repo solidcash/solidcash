@@ -332,7 +332,10 @@ class BatchTargetsDerivationBuilder {
     this.raw(new Uint8Array(callSectionWalkScript()));
     this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
     this.takeFixedField(2, 'record_count');
-    this.nip(); // drop the declared count, keep the entries
+    // The declared count is parked beneath the operands the walk parks, and checked once they are back.
+    this.op(Opcodes.OP_SWAP);
+    [this.main[0], this.main[1]] = [this.main[1]!, this.main[0]!];
+    this.toAlt('declared_records');
     this.skipLeadingStateRecords();
     this.main[0] = 'records';
   }
@@ -439,6 +442,22 @@ class BatchTargetsDerivationBuilder {
       this.main.splice(depth, 1);
       this.main[0] = 'trailing';
     }
+
+    // The segment declares exactly the records the targets consumed: the frame's own state records, then one per
+    // update and two per insert. A record declared past them is one no target wrote.
+    this.fromAlt();
+    this.unary(Opcodes.OP_BIN2NUM, 'declared_count');
+    this.num((this.options.leadingRecords ?? 0) + count);
+    this.main.unshift('consumed');
+    for (let target = 0; target < count; target += 1) {
+      this.pick(`pred_out_${target}`);
+      this.pushConst('zero', Opcodes.OP_0);
+      this.binary(Opcodes.OP_GREATERTHANOREQUAL, 'inserts');
+      this.binary(Opcodes.OP_ADD, 'consumed');
+    }
+    this.op(Opcodes.OP_NUMEQUALVERIFY);
+    this.main.shift();
+    this.main.shift();
   }
 
   // --- Emitters that keep the modelled stacks in step with the bytes ------------------------------------------

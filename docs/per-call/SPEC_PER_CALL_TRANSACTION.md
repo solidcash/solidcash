@@ -914,6 +914,7 @@ by the code that produces it, by the validator program, or against real state.
 | T38 | Consume or delete a state UTXO that no frame touched (for example another user's mapping entry) in a validator-settled contract | V7 (inputs): spent state UTXOs are exactly the touched records | Yes |
 | T39 | Drain the value of a record, master or validator while keeping its commitment | P2, V1, S4, D2 | Yes |
 | T40 | A callee claims a `msg.value` its caller did not send | V5 (`e.value == calls[k].value`); value accounting (open point 10) | Yes |
+| T42 | Mint a state UTXO no write made, by declaring it as a created record of a frame that does write (a forged mapping node beside a sorted batch) | W: a frame declares exactly the records its code wrote (the batch walk counts them); census | Yes |
 | T41 | Two frames claim the same event output, so one of two events disappears | S2 and V7: event outputs are pairwise distinct | Medium |
 
 **Residual risks:**

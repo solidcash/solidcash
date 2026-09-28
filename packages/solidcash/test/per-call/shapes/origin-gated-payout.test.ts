@@ -339,6 +339,19 @@ function buildPlan(userLock: Uint8Array = SELLER_LOCK): {
 
 const ROOT = rootOf('Root', 'enter', ROOT_MASTER);
 
+/** The seller's plan, derived. */
+function deriveSellerPlan(): { readonly outcome: ReturnType<typeof composeAndDerive> } & ReturnType<typeof buildPlan> {
+  const planned = buildPlan();
+  return { ...planned, outcome: composeAndDerive(planned.plan, ARTIFACTS, [ROOT]) };
+}
+
+let sellerRun: ReturnType<typeof deriveSellerPlan> | undefined;
+/** The seller's composition, derived once: the cases that read it change nothing in it. */
+function settledSellerRun(): ReturnType<typeof deriveSellerPlan> {
+  sellerRun ??= deriveSellerPlan();
+  return sellerRun;
+}
+
 describe('a root that reaches an origin-gated escrow', () => {
   it('compiles the five contracts on the per-call path', () => {
     for (const name of ['Root', 'Escrow', 'Ledger', 'Token', 'Store']) {
@@ -348,8 +361,8 @@ describe('a root that reaches an origin-gated escrow', () => {
   });
 
   it('settles: the derivation completes callee-first and every contract input is accepted', () => {
-    const { plan } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    // The root user is the seller, so this is also the gate admitting the seller.
+    const { outcome } = settledSellerRun();
 
     // Depth-first, callee before caller: the ledger read and the token transfer, then the escrow, then the store,
     // then the root that started it.
@@ -375,8 +388,7 @@ describe('a root that reaches an origin-gated escrow', () => {
   });
 
   it('reads the three events back through the shipped receipt, the escrow\'s above the commitment size', () => {
-    const { plan, base } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome, base } = settledSellerRun();
     expect(refused(outcome)).toStrictEqual([]);
 
     const logs = compositionEventLogs(outcome.draft, ARTIFACTS, { validatorProgram: VALIDATOR_PROGRAM });
@@ -401,11 +413,6 @@ describe('a root that reaches an origin-gated escrow', () => {
 });
 
 describe('the origin gate', () => {
-  it('admits the seller as the root user', () => {
-    const { plan } = buildPlan(SELLER_LOCK);
-    expect(refused(composeAndDerive(plan, ARTIFACTS, [ROOT]))).toStrictEqual([]);
-  });
-
   it('refuses the payout when the root user is neither the seller nor the arbitrator: the driver stalls', () => {
     // The whole composition shares one origin input (the validator binds a callee's origin to its caller's, V5), so
     // `tx.origin` can only ever be the root user. Presenting a different user as that input makes the escrow's
@@ -440,8 +447,7 @@ describe('the escrow\'s event', () => {
 
     // The commitment the receipt reads back is the encoder's own bytes, and no size refusal stands in its way: the
     // composition machine runs the relaxed profile whose `maximumNftCommitmentBytes` admits this payload.
-    const { plan, base } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome, base } = settledSellerRun();
     const released = compositionEventLogs(outcome.draft, ARTIFACTS, { validatorProgram: VALIDATOR_PROGRAM })
       .find((log) => log.eventName === 'Released')!;
     expect(released.outputIndex).toBe(base + 2);

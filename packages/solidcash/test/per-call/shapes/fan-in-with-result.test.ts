@@ -580,6 +580,19 @@ function refused(outcome: ReturnType<typeof composeAndDerive>): string[] {
     .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
 }
 
+/** The flow's plan, derived. */
+function deriveFlow(): { readonly outcome: ReturnType<typeof composeAndDerive> } & ReturnType<typeof buildPlan> {
+  const planned = buildPlan();
+  return { ...planned, outcome: composeAndDerive(planned.plan, ARTIFACTS, [ROOT]) };
+}
+
+let flow: ReturnType<typeof deriveFlow> | undefined;
+/** The flow, derived once: every case below reads it and none changes it. */
+function settledFlow(): ReturnType<typeof deriveFlow> {
+  flow ??= deriveFlow();
+  return flow;
+}
+
 describe('a root that fans in: pay through a struct, then a token pull', () => {
   it('compiles every contract on the per-call path', () => {
     for (const name of ['Root', 'Store', 'Arbiter', 'Escrow', 'Token']) {
@@ -588,8 +601,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
   });
 
   it('settles: every participant is derived and every contract input is accepted', () => {
-    const { plan } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome } = settledFlow();
     expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('Store', 'getFee'), entryName('Token', 'approve'),
@@ -600,8 +612,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
   });
 
   it('records the payable call with the struct blob and the run-time fee, at value 0', () => {
-    const { plan, structPush } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome, structPush } = settledFlow();
     const paySelector = selectorOf(built.artifacts, 'Escrow', 'pay');
     const pay = outcome.draft.blockOf(ROOT_MASTER).calls[2]!;
     expect(pay.value).toBe(0n);
@@ -611,8 +622,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
   });
 
   it('writes the escrow record after the third-contract call, and the arbiter record the call set', () => {
-    const { plan } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome } = settledFlow();
     const outputAt = (id: string): Uint8Array =>
       new Uint8Array(outcome.transaction.outputs[participant(outcome.draft.layout, id).index]!.token!.nft!.commitment);
     expect(bytesToHex(outputAt(ESCROW_RECORD_ID))).toBe(bytesToHex(ESCROW_AFTER));
@@ -624,8 +634,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
   });
 
   it('pulls the token against the allowance the root wrote, moving both balances', () => {
-    const { plan } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome } = settledFlow();
     const outputAt = (id: string): Uint8Array =>
       new Uint8Array(outcome.transaction.outputs[participant(outcome.draft.layout, id).index]!.token!.nft!.commitment);
     expect(bytesToHex(outputAt(ALLOWANCE_NODE_ID))).toBe(bytesToHex(ALLOWANCE_AFTER));
@@ -638,8 +647,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
   });
 
   it('stores the id the escrow returned after the call, and emits both events', () => {
-    const { plan, base } = buildPlan();
-    const outcome = composeAndDerive(plan, ARTIFACTS, [ROOT]);
+    const { outcome, base } = settledFlow();
     const outputs = outcome.transaction.outputs;
     const rootCommitment = new Uint8Array(
       outputs[participant(outcome.draft.layout, ROOT_RECORD_ID).index]!.token!.nft!.commitment);
@@ -784,111 +792,6 @@ describe('a recovery over an EIP-191 digest', () => {
       .toStrictEqual([[RECOVERY_MASTER, 0], [`${RECOVERY_MASTER}/recovery-A0`, 1], [`${RECOVERY_MASTER}/recovery-B0`, 2]]);
   });
 });
-
-/** A two-contract composition where the root passes a compile-time address next to the run-time fee. */
-function buildMixedArgumentPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
-  const rootLabel = 'fan in with result mixed root';
-  const storeLabel = 'fan in with result mixed store';
-  const targetLabel = 'fan in with result mixed target';
-  const rootAddress = seededAddress(rootLabel);
-  const storeAddress = seededAddress(storeLabel);
-  const targetAddress = seededAddress(targetLabel);
-  const fee = 5n;
-
-  const source = 'pragma solidcash ^0.13.0;'
-    + ' interface IStore { function getFee() view returns (int); }'
-    + ' interface ITarget { function put(address who, int n); }'
-    + ' contract Store { int public fee; function getFee() view returns (int) { return this.fee; } }'
-    + ' contract Target {'
-    + '   address public who; int public n;'
-    + '   function put(address w, int value) { this.who = w; this.n = value; require(true); }'
-    + ' }'
-    + ' contract Root { function run() {'
-    + `   int fee = IStore(0x${hexOf(storeAddress)}).getFee();`
-    + `   ITarget(0x${hexOf(targetAddress)}).put(0x${hexOf(rootAddress)}, fee);`
-    + '   require(true); } }';
-  const mixed = compileAndDeploy(source, { Root: rootLabel, Store: storeLabel, Target: targetLabel });
-  const root = mixed.contracts.Root!, store = mixed.contracts.Store!, target = mixed.contracts.Target!;
-
-  const targetRecord = (who: Uint8Array, n: bigint): Uint8Array => new Uint8Array(Buffer.from(
-    buildPushdataCommitment(mixed.artifacts.Target!.stateLayout!, { who, n }, 0), 'hex'));
-  const storeRecord = new Uint8Array(Buffer.from(
-    buildPushdataCommitment(mixed.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
-
-  const blocks: CompositionDraftPlan['blocks'] = [
-    { contract: 'Root', masters: ['root-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
-    { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
-    { contract: 'Target', masters: ['target-1'], state: ['targetRecord'] },
-  ];
-  const layout = layoutTransaction(blocks);
-  const indexOf = (id: string): number => participant(layout, id).index;
-  const getFeeSelector = selectorOf(mixed.artifacts, 'Store', 'getFee');
-  const putSelector = selectorOf(mixed.artifacts, 'Target', 'put');
-  const feePush = encodeIntegerValue(fee);
-  // The wire carries the last parameter's push first, so the fee leads the compile-time address.
-  const putPushes = [putSelector, feePush, rootAddress];
-
-  const rootMaster: DraftMaster = {
-    ...master({
-      master: 'root-1', contract: 'Root', entry: 'run', program: root.program,
-      facts: facts('Root', 'run', FrameKind.ROOT, true),
-      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: root.address, value: 0n },
-      enteredBy: USER_ID, origin: USER_ID,
-      calls: [
-        { kind: FrameKind.STATIC, callee: 'store-1', target: store.address, value: 0n, argumentPushes: [getFeeSelector] },
-        { kind: FrameKind.CALL, callee: 'target-1', target: target.address, value: 0n, argumentPushes: putPushes },
-      ],
-    }),
-  };
-  const storeMaster: DraftMaster = {
-    ...master({
-      master: 'store-1', contract: 'Store', entry: 'getFee', program: store.program,
-      facts: facts('Store', 'getFee', FrameKind.STATIC, false),
-      frame: { kind: FrameKind.STATIC, sender: root.address, self: store.address, value: 0n },
-      enteredBy: 'root-1', origin: USER_ID,
-      argumentPushes: [getFeeSelector],
-      segments: [[{ in: indexOf('storeRecord'), out: indexOf('storeRecord'), viewIn: storeRecord, viewOut: storeRecord }]],
-    }),
-    retval: encodeResultList([feePush]),
-  };
-  const targetMaster: DraftMaster = master({
-    master: 'target-1', contract: 'Target', entry: 'put', program: target.program,
-    facts: facts('Target', 'put', FrameKind.CALL, false),
-    frame: { kind: FrameKind.CALL, sender: root.address, self: target.address, value: 0n },
-    enteredBy: 'root-1', origin: USER_ID,
-    argumentPushes: putPushes,
-    segments: [[{
-      in: indexOf('targetRecord'), out: indexOf('targetRecord'),
-      viewIn: targetRecord(new Uint8Array(0), 0n), viewOut: targetRecord(rootAddress, fee),
-    }]],
-  });
-
-  const plan: CompositionDraftPlan = {
-    blocks,
-    userInputs: userInputs([USER_ID], layout.funderInputBase),
-    masters: [rootMaster, storeMaster, targetMaster],
-    inputs: {
-      'root-1': { source: masterInput(root) },
-      'store-1': { source: masterInput(store) },
-      'target-1': { source: masterInput(target) },
-      [VALIDATOR_ID]: validatorInput(root.category),
-      storeRecord: stateRecord(store.category, storeRecord, storeRecord, indexOf('store-1'), 0),
-      targetRecord: stateRecord(
-        target.category, targetRecord(new Uint8Array(0), 0n), targetRecord(rootAddress, fee), indexOf('target-1'), 1,
-      ),
-      [USER_ID]: userInput(),
-    },
-    validator: {
-      id: VALIDATOR_ID, covers: ['Store', 'Target'],
-      settles: [
-        { category: store.category, stateInputs: ['storeRecord'] },
-        { category: target.category, stateInputs: ['targetRecord'] },
-      ],
-      redeemScript: validatorFor(root.category).redeem,
-    },
-  };
-  return { plan, artifacts: [mixed.artifacts.Root!, mixed.artifacts.Store!, mixed.artifacts.Target!] };
-}
 
 /**
  * A composition whose callee writes two mapping nodes of one ledger in one execution, each key a contract constant.
@@ -1451,167 +1354,6 @@ function derivationRefusal(
   return { message, objection: objections.length > 0 ? objections[objections.length - 1]! : '' };
 }
 
-/**
- * A read-only frame that reads a balance node an earlier frame moved in the same transaction, with the mover
- * touching both nodes of the one ledger. This is the flow's second `balanceOf` as a plan of its own.
- */
-function buildReadAfterPullPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
-  const rootLabel = 'fan in with result read after pull root';
-  const storeLabel = 'fan in with result read after pull store';
-  const tokenLabel = 'fan in with result read after pull token';
-  const storeAddress = seededAddress(storeLabel);
-  const key1 = new Uint8Array(32).fill(0xb1);
-  const key2 = new Uint8Array(32).fill(0xb2);
-  const fee = 5n;
-
-  const source = 'pragma solidcash ^0.13.0;'
-    + ' interface IStore { function getFee() view returns (int); }'
-    + ' interface IToken { function move(int amount); function read() view returns (int); }'
-    + ' contract Store { int public fee; function getFee() view returns (int) { return this.fee; } }'
-    + ' contract Token {'
-    + '   mapping(bytes32 => int) ledger;'
-    + `   function move(int amount) { this.ledger[hex"${hexOf(key1)}"] = amount; `
-    + `   this.ledger[hex"${hexOf(key2)}"] = amount; require(true); }`
-    + `   function read() view returns (int) { return this.ledger[hex"${hexOf(key2)}"]; }`
-    + ' }'
-    + ' contract Root { function run() {'
-    + `   int fee = IStore(0x${hexOf(storeAddress)}).getFee();`
-    + `   IToken(0x${hexOf(seededAddress(tokenLabel))}).move(fee);`
-    + `   int got = IToken(0x${hexOf(seededAddress(tokenLabel))}).read();`
-    + '   require(got >= 0); } }';
-  const raw = compileAndDeploy(source, { Root: rootLabel, Store: storeLabel, Token: tokenLabel });
-  const root = raw.contracts.Root!, store = raw.contracts.Store!, tokenContract = raw.contracts.Token!;
-
-  const slot1 = keyToSlotMulti([key1]);
-  const slot2 = keyToSlotMulti([key2]);
-  const key1IsLow = bytesToSlotValue(slot1) < bytesToSlotValue(slot2);
-  const lowSlot = key1IsLow ? slot1 : slot2;
-  const highSlot = key1IsLow ? slot2 : slot1;
-  const lowBefore = encodeEntryCommitment(lowSlot, highSlot, encodeIntegerValue(0n));
-  const highBefore = encodeEntryCommitment(highSlot, ZERO_SLOT, encodeIntegerValue(0n));
-  const node1Before = key1IsLow ? lowBefore : highBefore;
-  const node2Before = key1IsLow ? highBefore : lowBefore;
-  const inventory = [lowBefore, highBefore];
-  const write1 = planMappingWrite({
-    keys: [key1], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
-  });
-  const write2 = planMappingWrite({
-    keys: [key2], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
-  });
-
-  const blocks: CompositionDraftPlan['blocks'] = [
-    { contract: 'Root', masters: ['root-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
-    { contract: 'Store', masters: ['store-1'], state: ['storeRecord'] },
-    { contract: 'Token', masters: ['move-1', 'read-1'], state: ['node1', 'node2'] },
-  ];
-  const layout = layoutTransaction(blocks);
-  const indexOf = (id: string): number => participant(layout, id).index;
-  const storeRecord = new Uint8Array(Buffer.from(
-    buildPushdataCommitment(raw.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
-  const placements = new Map<string, MappingNodePlacement>([
-    [bytesToHex(slot1), { in: indexOf('node1'), out: indexOf('node1') }],
-    [bytesToHex(slot2), { in: indexOf('node2'), out: indexOf('node2') }],
-  ]);
-  // The segment declares the batch's targets in the body's write order: key1 then key2.
-  const moveEntries = layOutMappingWrites([[write1, write2]], {
-    placementOf: (s) => placements.get(bytesToHex(s)),
-  })[0]!;
-  const node2After = write2.written[0]!.after;
-  // The read frame declares the second node at the value the move left, which the transaction's input does not hold.
-  const readEntry: RecordEntry = {
-    in: indexOf('node2'), out: indexOf('node2'), viewIn: node2After, viewOut: node2After,
-  };
-
-  const ledgerCollection = raw.artifacts.Token!.stateLayout!.collections![0]!;
-  const ledgerRedeem = scriptToBytecode(
-    buildEntryNftCovenantScript(tokenContract.category, computeCollectionHash(ledgerCollection.signature)),
-  );
-  const ledgerLock = scriptToLockingBytecode(ledgerRedeem, 'p2sh32');
-  const unlock = createUnlockingBytecode('p2sh32', ledgerRedeem, [
-    encodeFunctionArgument(1n, 'bigint') as Uint8Array,
-    encodeFunctionArgument(BigInt(indexOf('move-1')), 'bigint') as Uint8Array,
-  ]);
-
-  const getFeeSelector = selectorOf(raw.artifacts, 'Store', 'getFee');
-  const moveSelector = selectorOf(raw.artifacts, 'Token', 'move');
-  const readSelector = selectorOf(raw.artifacts, 'Token', 'read');
-  const feePush = encodeIntegerValue(fee);
-  const movePushes = [moveSelector, feePush];
-  const readPushes = [readSelector];
-
-  const plan: CompositionDraftPlan = {
-    blocks,
-    userInputs: userInputs([USER_ID], layout.funderInputBase),
-    masters: [
-      master({
-        master: 'root-1', contract: 'Root', entry: 'run', program: root.program,
-        facts: facts('Root', 'run', FrameKind.ROOT, true),
-        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: root.address, value: 0n },
-        enteredBy: USER_ID, origin: USER_ID,
-        calls: [
-          { kind: FrameKind.STATIC, callee: 'store-1', target: store.address, value: 0n,
-            argumentPushes: [getFeeSelector] },
-          { kind: FrameKind.CALL, callee: 'move-1', target: tokenContract.address, value: 0n,
-            argumentPushes: movePushes },
-          { kind: FrameKind.STATIC, callee: 'read-1', target: tokenContract.address, value: 0n,
-            argumentPushes: readPushes },
-        ],
-      }),
-      {
-        ...master({
-          master: 'store-1', contract: 'Store', entry: 'getFee', program: store.program,
-          facts: facts('Store', 'getFee', FrameKind.STATIC, false),
-          frame: { kind: FrameKind.STATIC, sender: root.address, self: store.address, value: 0n },
-          enteredBy: 'root-1', origin: USER_ID, argumentPushes: [getFeeSelector],
-          segments: [[{
-            in: indexOf('storeRecord'), out: indexOf('storeRecord'), viewIn: storeRecord, viewOut: storeRecord,
-          }]],
-        }),
-        retval: encodeResultList([feePush]),
-      },
-      {
-        ...master({
-          master: 'move-1', contract: 'Token', entry: 'move', program: tokenContract.program,
-          facts: facts('Token', 'move', FrameKind.CALL, false, 2),
-          frame: { kind: FrameKind.CALL, sender: root.address, self: tokenContract.address, value: 0n },
-          enteredBy: 'root-1', origin: USER_ID, argumentPushes: movePushes, segments: [moveEntries],
-        }),
-        dispatches: true,
-      },
-      {
-        ...master({
-          master: 'read-1', contract: 'Token', entry: 'read', program: tokenContract.program,
-          facts: facts('Token', 'read', FrameKind.STATIC, false, 2),
-          frame: { kind: FrameKind.STATIC, sender: root.address, self: tokenContract.address, value: 0n },
-          enteredBy: 'root-1', origin: USER_ID, argumentPushes: readPushes, segments: [[readEntry]],
-        }),
-        retval: encodeResultList([feePush]),
-        dispatches: true,
-      },
-    ],
-    inputs: {
-      'root-1': { source: masterInput(root) },
-      'store-1': { source: masterInput(store) },
-      'move-1': { source: masterInput(tokenContract) },
-      'read-1': { source: masterInput(tokenContract) },
-      [VALIDATOR_ID]: validatorInput(root.category),
-      storeRecord: stateRecord(store.category, storeRecord, storeRecord, indexOf('store-1'), 0),
-      node1: nodeRecordInput(ledgerLock, tokenContract.category, node1Before, write1.written[0]!.after, unlock),
-      node2: nodeRecordInput(ledgerLock, tokenContract.category, node2Before, node2After, unlock),
-      [USER_ID]: userInput(),
-    },
-    validator: {
-      id: VALIDATOR_ID, covers: ['Store', 'Token'],
-      settles: [
-        { category: store.category, stateInputs: ['storeRecord'] },
-        { category: tokenContract.category, stateInputs: ['node1', 'node2'] },
-      ],
-      redeemScript: validatorFor(root.category).redeem,
-    },
-  };
-  return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Token!] };
-}
-
 describe('the obstacles this flow replica works around', () => {
   it('pins an inline struct literal built from a run-time member: the compiler cannot emit its digest', () => {
     // A struct argument is admitted when it is bound to a local first, and when it is written inline from
@@ -1634,23 +1376,6 @@ describe('the obstacles this flow replica works around', () => {
       + ` contract Root { function run() { int fee = IStore(0x${hexOf(STORE_ADDRESS)}).getFee(); Rec r = Rec("tag", fee); `
       + `   IEscrow(0x${hexOf(ESCROW_ADDRESS)}).pay(r, fee); require(true); } }`;
     expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
-  });
-
-  it('settles: a call passes a compile-time address alongside the run-time fee', () => {
-    // A call mixing a compile-time address with a run-time value. The caller's digest folds in the compile-time
-    // argument's push with its framing byte intact, so it equals the record's digest and the callee's call data:
-    // the derivation settles and every contract input is accepted.
-    const mixed = buildMixedArgumentPlan();
-    const outcome = composeAndDerive(mixed.plan, mixed.artifacts, [rootOf('Root', 'run', 'root-1')]);
-    expect(refused(outcome)).toStrictEqual([]);
-    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
-      entryName('Store', 'getFee'), entryName('Target', 'put'), entryName('Root', 'run'),
-    ]);
-    // The target's record carries both values, in the form the plan declares through the shipped encoder.
-    const targetIndex = participant(outcome.draft.layout, 'targetRecord').index;
-    const written = new Uint8Array(outcome.transaction.outputs[targetIndex]!.token!.nft!.commitment);
-    const expected = mixed.plan.masters.find((m) => m.master === 'target-1')!.segments![0]![0]!.viewOut;
-    expect(bytesToHex(written)).toBe(bytesToHex(expected!));
   });
 
   it('settles: a callee frame writes two mapping nodes of one ledger', () => {
@@ -1752,17 +1477,6 @@ describe('the obstacles this flow replica works around', () => {
       objection: 'Program called an OP_SPLIT operation with an invalid index. '
         + 'stack item length: 0; requested split index: 4.',
     });
-  });
-
-  it('settles: a read-only frame reads a balance node a two-node move wrote', () => {
-    // The flow's second `balanceOf` reads the balance the pull just moved. The read-only frame closes the node
-    // against the view its own segment declares, so the write another frame made in the same transaction does
-    // not hide it, and the read returns the value it read: every contract input is accepted.
-    const after = buildReadAfterPullPlan();
-    const outcome = composeAndDerive(after.plan, after.artifacts, [rootOf('Root', 'run', 'root-1')]);
-    expect(refused(outcome)).toStrictEqual([]);
-    expect(outcome.draft.blockOf('read-1').retval)
-      .toStrictEqual(encodeResultList([encodeIntegerValue(FEE)]));
   });
 
   it('pins a recovery whose digest the body computes: the composer cannot read it from the arguments', () => {

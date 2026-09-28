@@ -12,8 +12,6 @@ import { compositionMachine } from '../../../../solidc/test/per-call/machine.js'
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost,
-  deriveComposition,
   layoutTransaction,
   participant,
   type CompositionDraft,
@@ -625,6 +623,19 @@ function verdictAtIndex(
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
+const derivations = new Map<string, { readonly run: Run; readonly outcome: ReturnType<typeof composeAndDerive> }>();
+/** One derivation per share list: the cases that share one read it and change nothing in it. */
+function derived(shares: readonly bigint[]): { readonly run: Run; readonly outcome: ReturnType<typeof composeAndDerive> } {
+  const key = shares.join(',');
+  let found = derivations.get(key);
+  if (found === undefined) {
+    const run = build(shares);
+    found = { run, outcome: composeAndDerive(run.plan, artifactList(run), [ROOT]) };
+    derivations.set(key, found);
+  }
+  return found;
+}
+
 describe('a root, a rater, a vault and a claimer composed through the shipped path', () => {
   it('compiles all six contracts and serves every entry', () => {
     const run = build(DEFAULT_SHARES);
@@ -652,8 +663,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
 
   it('derives callee-first, is accepted at every contract input, and reads every written record back', () => {
     // The full composition: five shares, so twenty calls and twenty-one masters whole.
-    const run = build(FULL_SHARES);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+    const { run, outcome } = derived(FULL_SHARES);
 
     // Every hop runs on its own master and each callee completes before its caller resumes: the two store writes,
     // then the rater's read and settle, the claimer's re-entries into the rater and the vault, and the payouts.
@@ -693,8 +703,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
   });
 
   it('reaches four frames below the root and carries one frame per entered entry', () => {
-    const run = build(FULL_SHARES);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+    const { run, outcome } = derived(FULL_SHARES);
     const draft = outcome.draft;
 
     // The chain reaches four below the root: root, rater, claimer, the vault entry the claimer made, and the
@@ -714,8 +723,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
   });
 
   it('settles the rater that holds the flag and the pure calculation and is re-entered by the claimer', () => {
-    const run = build(DEFAULT_SHARES);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+    const { run, outcome } = derived(DEFAULT_SHARES);
     const draft = outcome.draft;
 
     // The rater's entry reads, settles and calls the claimer, and the claimer comes back for the flag and the
@@ -742,11 +750,7 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
   });
 
   it('refuses a record output no frame computed', () => {
-    const run = build(DEFAULT_SHARES);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: artifactList(run), plan: run.plan,
-    });
-    deriveComposition([ROOT], host);
+    const { run, outcome: { draft } } = derived(DEFAULT_SHARES);
     const program = draft.programFor(ROOT_MASTER);
     const wrong = commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 999n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.indices.TOKEN_RECORD

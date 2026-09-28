@@ -435,20 +435,20 @@ describe('a per-call body that recovers a signer', () => {
 });
 
 describe('the EVM invalid-input rule on the per-call path', () => {
-  it('has no pair for v = 0 or v = 1: the checkpoint covenant refuses them', () => {
+  it('has no pair for a recovery id outside 27/28: the checkpoint covenant refuses it', () => {
     // Side-car A verifies `Ry mod 2 == v - 27` on its own budget, so a recovery id outside 27/28 fails `OP_VERIFY`
     // at every split; the split probe reports its generic no-split message because a covenant error reads as an
     // over-budget split. B alone re-derives no parity, so its own script accepts - but the transaction that spends
-    // the pair cannot validate while A fails, so no spend can carry a `v` outside 27/28.
-    for (const v of [0, 1]) {
-      const witness = computeEcrecoverWitness(signer.h, v, signer.r, signer.s);
-      expect(() => probeEcrecoverSplit(
-        witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
-      )).toThrow(/no ladder split fits/);
-      const { a, b } = pairAt(witness, 59);
-      const spend = buildSpend(compileRecoverySource({ ...signer, v }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'), [a, b]);
-      expect(verdicts(spend, [A_INDEX, B_INDEX])).toStrictEqual({ [A_INDEX]: false, [B_INDEX]: true });
-    }
+    // the pair cannot validate while A fails, so no spend can carry a `v` outside 27/28. Every such id fails the
+    // same way, and the probe tries every split, so `v = 0` stands for them.
+    const v = 0;
+    const witness = computeEcrecoverWitness(signer.h, v, signer.r, signer.s);
+    expect(() => probeEcrecoverSplit(
+      witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+    )).toThrow(/no ladder split fits/);
+    const { a, b } = pairAt(witness, 59);
+    const spend = buildSpend(compileRecoverySource({ ...signer, v }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'), [a, b]);
+    expect(verdicts(spend, [A_INDEX, B_INDEX])).toStrictEqual({ [A_INDEX]: false, [B_INDEX]: true });
   });
 
   it('has no pair for the all-zero digest and words: the witness has no square root', () => {

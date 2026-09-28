@@ -264,10 +264,9 @@ describe('the recovery side-cars the composer places', () => {
 describe('the EVM invalid-input rule through the composer', () => {
   it('refuses to build a pair for a recovery id outside 27/28', () => {
     // Side-car A verifies `Ry mod 2 == v - 27`, so no split fits; the composer cannot co-spend the pair and says so.
-    for (const v of [0, 1]) {
-      expect(() => recoveryCase({ ...signer, v }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'))
-        .toThrow(/no ladder split fits/);
-    }
+    // Every id outside 27/28 fails the same way, and the search tries every split, so one id stands for them.
+    expect(() => recoveryCase({ ...signer, v: 0 }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'))
+      .toThrow(/no ladder split fits/);
   });
 
   it('refuses to build a pair for the all-zero digest and words', () => {

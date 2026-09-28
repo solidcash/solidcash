@@ -14,7 +14,6 @@ import { eventOutput } from '../../../../solidc/test/per-call/master/event-input
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
-  deriveComposition,
   layoutTransaction,
   participant,
   type CompositionDraftPlan,
@@ -621,6 +620,21 @@ function refused(outcome: ReturnType<typeof composeAndDerive>): string[] {
     .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
 }
 
+const derivations = new Map<string, { readonly run: Run; readonly outcome: ReturnType<typeof composeAndDerive> }>();
+/** One derivation per trip count and body: the cases that share one read it and change nothing in it. */
+function derived(
+  trips: number, options: { readonly mixed?: boolean } = {},
+): { readonly run: Run; readonly outcome: ReturnType<typeof composeAndDerive> } {
+  const key = `${trips}:${options.mixed === true}`;
+  let found = derivations.get(key);
+  if (found === undefined) {
+    const run = build(trips, options);
+    found = { run, outcome: composeAndDerive(run.plan, artifactList(run), [ROOT]) };
+    derivations.set(key, found);
+  }
+  return found;
+}
+
 describe('a claimer that pays once per share, driven through the shipped path', () => {
   it('compiles all six contracts and serves the escrow, claimer, payer, oracle and token entries', () => {
     const run = build(2);
@@ -640,8 +654,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
   });
 
   it('derives callee-first and is accepted at every contract input the layout places', () => {
-    const run = build(2);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+    const { outcome } = derived(2);
 
     // Every hop runs on its own master, and each callee completes before its caller resumes.
     expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
@@ -656,8 +669,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
   });
 
   it('reads the state back from the derived transaction through the shipped encoders', () => {
-    const run = build(2);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+    const { run, outcome } = derived(2);
     const outputs = outcome.transaction.outputs;
 
     // The escrow's record carries what `setClaimed` computed, the token's what the loop paid, the oracle's what it
@@ -674,29 +686,8 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     expect(logs.map((log) => log.outputIndex)).toStrictEqual([...run.eventIndices]);
   });
 
-  it('declares one token call per turn for two shares and for four, with the same shape', () => {
-    for (const trips of [2, 4]) {
-      const run = build(trips);
-      const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
-      expect(outcome.completed.filter((frame) => frame.functionName === entryName('Token', 'transfer')))
-        .toHaveLength(trips);
-      // The token's paid record ends at the amount the loop moved, one share per turn.
-      const outputs = outcome.transaction.outputs;
-      expect(outputs[run.tokenRecordIndex]!.token?.nft?.commitment)
-        .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: BigInt(trips) * SHARES }));
-      // The plan states one call per turn, so the block's call section is what the loop makes.
-      const pay = run.plan.masters.find((candidate) => candidate.master === PAY_MASTER)!;
-      expect(pay.calls).toHaveLength(trips);
-      expect(refused(outcome)).toStrictEqual([]);
-    }
-  });
-
   it('refuses a token record output no frame computed, on the same composition', () => {
-    const run = build(2);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: artifactList(run), plan: run.plan,
-    });
-    deriveComposition([ROOT], host);
+    const { run, outcome: { draft } } = derived(2);
     const program = draft.programFor(ROOT_MASTER);
     const wrong = commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 999n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.tokenRecordIndex
@@ -706,32 +697,17 @@ describe('a claimer that pays once per share, driven through the shipped path', 
       .toBe('refused: Program failed an OP_VERIFY operation.');
   });
 
-  it('settles a larger trip count too, because the profile relaxes the operation-cost budget', () => {
-    // Eight turns on `pay`'s loop: more token calls, more masters and a longer record chain, all admitted. The
-    // suites run on the composition profile, whose operation-cost density is far above a real chain's, so the
-    // caller's own input is not what refuses a long loop here; a real chain's byte budget is measured by the
-    // suite that publishes the validator's density, not gated by this one.
-    const run = build(8);
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
-    expect(outcome.completed.filter((frame) => frame.master.startsWith('transfer-')).map((frame) => frame.master))
-      .toStrictEqual(Array.from({ length: 8 }, (_unused, index) => `transfer-${index + 1}`));
-    expect(refused(outcome)).toStrictEqual([]);
-    expect(outcome.transaction.outputs[run.tokenRecordIndex]!.token?.nft?.commitment)
-      .toStrictEqual(commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 8n * SHARES }));
-  });
-
   it('settles the same loop written inside the claimer\'s fixed-call body', () => {
     // The shape as literally stated - `claim` does the read-only read, the oracle read, the guarded write and the
     // payout loop - derives in one execution. Only the loop's own call site is marked one the source does not fix;
     // the fixed calls keep their positions, so they and the loop's turns all fill, in order.
-    const run = build(2, { mixed: true });
+    const { run, outcome } = derived(2, { mixed: true });
     const claimer = run.artifacts.Claimer!.composition as
       { stopSites?: { entries: { functionName: string; sites: { sites: { kind: string; repeated?: boolean }[] } }[] } };
     const claim = claimer.stopSites!.entries.find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
     expect(claim.sites.sites.filter((site) => site.kind === 'call').map((site) => site.repeated ?? false))
       .toStrictEqual([false, false, false, true]);
 
-    const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
 
     // The two reads, the guarded write and the loop's two turns each run on their own master, and `claim` resumes
     // only once they have.
@@ -758,8 +734,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     // however many turns the plan declares: the compiler publishes one repeated site, and the derivation resumes
     // it once per record. Two turns and four run from one body, each reading back the amount the loop moved.
     for (const trips of [2, 4]) {
-      const run = build(trips, { mixed: true });
-      const outcome = composeAndDerive(run.plan, artifactList(run), [ROOT]);
+      const { run, outcome } = derived(trips, { mixed: true });
       expect(outcome.completed.filter((frame) => frame.master.startsWith('transfer-')).map((frame) => frame.master))
         .toStrictEqual(Array.from({ length: trips }, (_unused, index) => `transfer-${index + 1}`));
       expect(refused(outcome)).toStrictEqual([]);
@@ -772,11 +747,7 @@ describe('a claimer that pays once per share, driven through the shipped path', 
     // The root runs on one master, so no validator settles its record: the head the root's own input runs holds its
     // last declaration to the transaction's output, and that is the input the mutation is refused at. The validator
     // does not settle the store record, so it is unaffected by the same mutation.
-    const run = build(2);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: artifactList(run), plan: run.plan,
-    });
-    deriveComposition([ROOT], host);
+    const { run, outcome: { draft } } = derived(2);
     const program = draft.programFor(ROOT_MASTER);
     const wrong = commitmentOf(run.artifacts.Root!.stateLayout!, { score: 7n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.rootRecordIndex

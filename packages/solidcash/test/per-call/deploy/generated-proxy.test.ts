@@ -178,6 +178,25 @@ describe('a generated proxy', () => {
       .toStrictEqual((implementationLayout.structs ?? []).map((definition) => definition.name).sort());
   });
 
+  it('mirrors a field the implementation keeps alone in a data NFT of its own', () => {
+    // A field the compiler registers as a record of its own is not packed beside its neighbours, and the published
+    // layout says so only through the coordinates: a proxy that declared it beside them would put it in the
+    // previous record and every field after it would land somewhere the implementation does not read.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   address public implementation;'
+      + '   int public version;'
+      + '   pubkey external owner;'
+      + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
+      + ' }';
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const implementationLayout = artifacts.Impl!.stateLayout!;
+    expect(implementationLayout.dataNftCount).toBe(2);
+    const proxy = buildProxyArtifact(artifacts.Impl!);
+    expect(fieldCoordinates(proxy.stateLayout!)).toBe(fieldCoordinates(implementationLayout));
+    expect(proxy.stateLayout!.dataNftCount).toBe(implementationLayout.dataNftCount);
+  });
+
   it('refuses an implementation that declares no "implementation" field, naming the field', () => {
     const artifacts = compileStringMulti(NO_IMPLEMENTATION_FIELD, { composition: 'per-call' });
     expect(() => buildProxyArtifact(artifacts.Impl!)).toThrowError(

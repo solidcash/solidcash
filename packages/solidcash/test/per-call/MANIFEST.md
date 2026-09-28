@@ -33,7 +33,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 103 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 104 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 68 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 91 |
@@ -42,9 +42,9 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1312 tests passed (115 + 434 + 763), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1313 tests passed (115 + 434 + 764), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 434 is the four rows above it, and `solidcash` 763 is the fifteen rows above
+`vitest.per-call.config.ts`: `solidc` 434 is the four rows above it, and `solidcash` 764 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -308,9 +308,10 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 
 ## What is not covered
 
-- The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
-  path: a compiled unit whose own bodies, or whose reached definitions, carry inline assembly is refused by name,
-  and so is a body
+- The marketplace harness is pointed at `composition: 'per-call'`, and the project compiles there. The fixture runs
+  to its own deployment and stops at the proxy: the deployment generates a proxy from the implementation's
+  declaration, and `MarketplaceV1` declares no `implementation` field. A compiled unit whose own bodies, or whose
+  reached definitions, carry inline assembly is still refused by name, and so is a body
   that writes a mapping in a shape whose records the master cannot read back from its own frame — a frame that keeps
   a data-NFT record and writes a mapping batch settles, as a user-entered root and behind a proxy hop. One target written
   in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
@@ -328,8 +329,12 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
   `unicrow/UnicrowClaim.sol`'s `claimMultiple`: a loop of calls whose body also reads the state of the contract it
   runs on, where the segment a read resolves against is a number only the execution knows. The declared-view walk
   takes the running execution's own counts now, so the project compiles end to end — nine sources, seven artifacts,
-  no failure — and the next rung is the harness box (the testing layer composing per-call masters for the fixture),
-  not a compiler refusal. A title count is not claimed until that rung is crossed.
+  no failure. The fixture runs to its own deployment and stops there: the deployment generates a proxy from the
+  implementation's declaration, and `MarketplaceV1` declares no `implementation` field, so the proxy is refused by
+  name. The generator now mirrors an implementation whose layout holds a field the compiler keeps in a record of its
+  own; what the fixture needs is the home of the address — the EIP-1967-style slot the spec's open point 5 names, a
+  trailing record of the proxy's own, which the deployment's layout agreement does not yet admit. A title count is
+  not claimed until that lands.
 - A master's bodies may declare different numbers of call records: the walk reads the count the block declares and
   the body that runs pins it to its own, so a contract entered twice — once as a caller and once as a plain state
   write — is emitted and deploys, and a block declaring a count no body makes is refused at the caller. The

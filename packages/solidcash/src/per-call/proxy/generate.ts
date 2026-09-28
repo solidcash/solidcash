@@ -131,18 +131,36 @@ export function generateProxySource(implementationArtifact: Artifact): string {
   }
   lines.push('');
   lines.push(`contract ${proxyName(implementationArtifact)} {`);
+  const aloneInItsRecord = aloneFieldsOf(variables);
   for (const variable of variables) {
-    // The record keeps the field's coordinates whatever its visibility, and `implementation` is the only field the
-    // fallback names, so every generated field is public for the same reason the implementation's getters are.
+    // The record keeps the field's coordinates whatever its visibility. A field the implementation keeps alone in
+    // a data NFT of its own is re-declared `external`, which is what gives it that record: a field packed beside
+    // others is declared `public` so the same packing runs again. Without the distinction a field the compiler
+    // registered as its own record — one it synthesizes, for instance — would be packed into the previous record
+    // and the two layouts would disagree on every coordinate after it.
+    const visibility = aloneInItsRecord.has(variable) ? 'external' : 'public';
     const modifiers = [variable.immutable === true ? 'immutable' : '', variable.packed === true ? 'packed' : '']
       .filter((modifier) => modifier !== '').join(' ');
-    lines.push(`  ${variable.type} public ${modifiers === '' ? '' : `${modifiers} `}${variable.name};`);
+    lines.push(`  ${variable.type} ${visibility} ${modifiers === '' ? '' : `${modifiers} `}${variable.name};`);
   }
   lines.push(
     `  fallback(bytes input) external { this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(true); }`,
   );
   lines.push('}');
   return lines.join('\n');
+}
+
+/**
+ * The fields that are alone in their data NFT, in the coordinate-ordered list.
+ *
+ * A published layout names each field's data NFT but not whether the compiler isolated it or merely started a new
+ * record there, so the distinction is read from the coordinates: a record with one field is one the source has to
+ * isolate again to reproduce.
+ */
+function aloneFieldsOf(variables: readonly StateVariableInfo[]): ReadonlySet<StateVariableInfo> {
+  const counts = new Map<number, number>();
+  for (const variable of variables) counts.set(variable.nftIndex, (counts.get(variable.nftIndex) ?? 0) + 1);
+  return new Set(variables.filter((variable) => counts.get(variable.nftIndex) === 1));
 }
 
 /**

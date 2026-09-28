@@ -84,7 +84,11 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   events a constructor emits), the record discovery a deployed contract is read through - the token category is
   enumerated and each UTXO's capability and commitment classify it as a master, a validator or a record at its
   state index - and a proxy deployment in three transactions, whose third is an `initialize` delegate hop the
-  composer plans and the shipped derivation fills.
+  composer plans and the shipped derivation fills. `proxy-initialize-write.test.ts` drives that hop when the entry
+  *writes*: the state it leaves is read back out of the machine rather than stated in advance, the record keeps the
+  implementation's address, a second call offered the record the first one left is refused beside a control that the
+  same plan offered the state the entry expects is accepted, and a proxy whose record does not declare the
+  implementation's fields is refused by name.
 - **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
@@ -117,7 +121,9 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   it: the record is declared once per segment, the chain runs from the commitment the transaction spends to the one
   it writes, the plan states the output that carries the new commitment, and the machine accepts the master's own
   input. The control removes the declarations, and the same transaction is refused by the body's read and by the
-  derivation.
+  derivation. `partial-write.test.ts` drives a record with more fields than the frame writes: the field the body does
+  not touch comes back out of the spent commitment, and the same program and witnesses with only the output
+  commitment changed to the one a write that dropped that field would leave are refused.
 - **`solidcash/test/per-call/hostile/`** - spends that must be refused, each beside the faithful spend it mutates
   and each decided by the machine: loose funds at a master's lock, a master not recreated in place, a covered
   master presenting an address its category does not derive, a validator UTXO carrying no token or another
@@ -125,7 +131,9 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   transaction does not spend, a second signed user offered as the origin, a root whose sender is rewritten while a
   validator covers the edge, and the validator-program cases `validator/script.test.ts` does not make: a missing
   or non-recreated validator output, a covered witness block with a trailing byte or cut short, and a read-only
-  frame that changes a record, emits, or calls with value or into a frame that is not read-only. The validator
+  frame that changes a record, emits, or calls with value or into a frame that is not read-only, a proxied call
+  whose delegate callee is not the contract the caller's record names (refused by the derivation, by the reference
+  checker and by the shipped validator program). The validator
   program's per-rule refusals are `validator/script.test.ts`'s, one per rule it emits; the table below maps each
   attack to the file that refuses it.
 - **`solidcash/test/per-call/edges/`** — one dedicated test per row of the spec's edge-case table (section 23) that
@@ -144,12 +152,17 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   sets for a self call, and the re-entry shape, pinned on the wall it names (a master that calls cannot carry a
   verified-mapping write, so the vault's writing entries are refused before any run is built), a proxy whose
   fallback forwards its own call data to an implementation it holds (compiled and composed, with the derivation
-  settled: the proxy master, the implementation master and the validator are accepted), and a dynamic value whose first
+  settled: the proxy master, the implementation master and the validator are accepted), a proxied entry that is
+  itself stateful and calls a third contract (three masters plus the validator and the record, every input accepted,
+  two controls refused), and a dynamic value whose first
   write creates its run beside one event per append (settled, with the created chunk's output, the header and each
   event read back through the shipped encoders).
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
-  shapes the generator still refuses asserted as refusals by name.
+  shapes the generator still refuses asserted as refusals by name. The chain that calls back to its head (head to
+  middle to tail, tail back to the middle, middle back to the head) settles with every contract input and the one
+  validator accepted, and the plan that leaves the user-entered multi-entry root without the selector its dispatcher
+  consumes is pinned as the stall it produces.
 
 ## Which refusals cover which attack
 

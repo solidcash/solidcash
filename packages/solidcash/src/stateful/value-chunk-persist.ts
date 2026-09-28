@@ -344,22 +344,23 @@ export function runWithCompositionSettlementSession<T>(
 
 /** Active settlement maps for this composition (default session unless runWith…). */
 /**
- * constraint fixpoint: record one live converge fingerprint onto the active settlement's
- * ConstraintFixpointSession (no-op when the session is already finalized).
+ * Record a converge fingerprint on the explicitly owned composition tracker. Legacy standalone
+ * callers fall back to the active settlement tracker (no-op when already finalized).
  */
 export function recordActiveConstraintPass(
   domain: string,
   stateKey: string,
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): void {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return;
   session.recordDomainPass(domain, stateKey, cycleMessage);
 }
 
 /** constraint fixpoint: resolve every domain recorded during admit-time converges. */
-export function finalizeActiveConstraintFixpoint(): string {
-  const session = settlement().constraintFixpoint;
+export function finalizeActiveConstraintFixpoint(
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
+): string {
   if (session.getPhase() === 'finalized') return session.jointStateKey();
   return session.finalize();
 }
@@ -370,8 +371,8 @@ export function finalizeActiveConstraintFixpoint(): string {
  */
 export function runActiveConstraintSpeculative<T>(
   body: (session: ConstraintFixpointSession) => T,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): T {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return body(session);
   return session.runSpeculative(body);
 }
@@ -384,8 +385,8 @@ export function tryRecordActiveConstraintPass(
   domain: string,
   stateKey: string,
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): boolean {
-  const session = settlement().constraintFixpoint;
   if (session.getPhase() === 'finalized') return false;
   try {
     session.runSpeculative((fixpoint) => {
@@ -405,10 +406,11 @@ export function selectActiveConstraintCandidate(
   domain: string,
   candidates: readonly string[],
   cycleMessage: string,
+  session: ConstraintFixpointSession = settlement().constraintFixpoint,
 ): { stateKey: string; index: number } | undefined {
   for (let index = 0; index < candidates.length; index += 1) {
     const stateKey = candidates[index]!;
-    if (tryRecordActiveConstraintPass(domain, stateKey, cycleMessage)) {
+    if (tryRecordActiveConstraintPass(domain, stateKey, cycleMessage, session)) {
       return { stateKey, index };
     }
   }

@@ -3,6 +3,7 @@
  * constraint fixpoint: claim-pass progression uses the same MonotoneCell lattice as resource/chunk converges.
  */
 
+import { binToHex, sha256, utf8ToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StatefulContract } from '../stateful/StatefulContract.js';
@@ -38,6 +39,7 @@ import {
 } from './monotone-lattice.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
 import { recordActiveConstraintPass } from '../stateful/value-chunk-persist.js';
+import type { ConstraintFixpointSession } from './constraint-fixpoint-session.js';
 import { graphSemanticDerivationCeiling } from './semantic-derivation-budget.js';
 
 /**
@@ -48,13 +50,14 @@ export function recordSemanticClaimPass(
   lattice: MonotoneCell<string>,
   seen: Set<string>,
   claimState: string,
+  constraintFixpoint?: ConstraintFixpointSession,
 ): void {
   // constraint fixpoint: semantic-claim passes share the same recordMonotonePass helper as
   // resource / value-chunk / dynamic-chunk / deferred-compute converges.
   const cycleMessage = 'messageBus: semantic derivation entered a repeated non-final claim state';
   recordMonotonePass(lattice, seen, claimState, cycleMessage);
-  // Also fingerprint onto the settlement multi-domain fixpoint session.
-  recordActiveConstraintPass('semantic-claim', claimState, cycleMessage);
+  // Also fingerprint onto this build's multi-domain fixpoint session.
+  recordActiveConstraintPass('semantic-claim', claimState, cycleMessage, constraintFixpoint);
 }
 
 /** Resolve the claim lattice when the graph is admitted stable. */
@@ -67,6 +70,18 @@ export function finalizeSemanticClaimLattice(
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type FinalizedGraph = ReturnType<typeof finalizeAtomicInvocationGraph>;
+
+/** Opt-in bounded claim fingerprints: no value bytes, locking scripts, or witness payloads. */
+function traceSemanticClaims(stage: string, pass: number, claims: Record<string, unknown>, extra = {}): void {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ATOMIC_GRAPH !== '1') return;
+  console.error('atomic-semantic-claims', { stage, pass, ...extra,
+    claims: Object.fromEntries(Object.entries(claims).map(([domain, value]) => [domain, {
+      count: Array.isArray(value) ? value.length : Object.keys(value as object).length,
+      digest: binToHex(sha256.hash(utf8ToBin(semanticJson(value)))).slice(0, 16),
+    }])),
+  });
+}
 
 export interface RunComposeSemanticClaimLoopContext {
   plan: CompiledGraphPlan;
@@ -96,14 +111,15 @@ export interface RunComposeSemanticClaimLoopContext {
   resultPropagationDepth: number;
   runtime: Pick<
     ComposeAssemblyRuntime,
-    | 'rebalanceFeeTail'
-    | 'eventLockingBytecodes'
-    | 'eventLockingBytecodeAtOffset'
-    | 'eventLockingBytecodeForCommitment'
-    | 'assemble'
-    | 'admit'
-    | 'actualSpansMatch'
-    | 'deriveReturnResults'
+  | 'constraintFixpoint'
+  | 'rebalanceFeeTail'
+  | 'eventLockingBytecodes'
+  | 'eventLockingBytecodeAtOffset'
+  | 'eventLockingBytecodeForCommitment'
+  | 'assemble'
+  | 'admit'
+  | 'actualSpansMatch'
+  | 'deriveReturnResults'
   >;
   propagateResultDependentArguments: (
     results: Readonly<Record<number, string>>,
@@ -172,7 +188,12 @@ export async function runComposeSemanticClaimLoop(
       computedValueChunks: claimedComputedValueChunks,
     });
     latestClaimState = claimState;
-    recordSemanticClaimPass(claimLattice, seenClaimStates, claimState);
+    traceSemanticClaims('record', pass, {
+      results: claimedResults, events: claimedEventEffects, resources: claimedResourceEffects,
+      values: claimedValueEffects, tokens: claimedTokenEffects, sidecars: claimedSidecarEffects,
+      computedValueChunks: claimedComputedValueChunks,
+    }, { localRepeat: seenClaimStates.has(claimState), resultPropagationDepth });
+    recordSemanticClaimPass(claimLattice, seenClaimStates, claimState, runtime.constraintFixpoint);
     finalized = finalizeAtomicInvocationGraph(
       plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
       claimedTokenEffects,
@@ -220,6 +241,7 @@ export async function runComposeSemanticClaimLoop(
     );
     if (returning.some((invocation) =>
       derivedResults[invocation.index] !== claimedResults[invocation.index])) {
+      traceSemanticClaims('returns', pass, { previous: claimedResults, observed: derivedResults });
       // Some compiler-authored arguments contain an earlier invocation's result inside a larger expression
       // (for example a struct field or abi.encodePacked). Once the VM exposes an updated authenticated result,
       // rebuild those complete expressions and restart planning: argsHex, route-key witnesses, participant
@@ -280,6 +302,16 @@ export async function runComposeSemanticClaimLoop(
       },
       semanticEffectClaims,
     );
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
+      traceSemanticClaims('observed', pass, {
+        events: derivedEventEffects, resources: derivedResourceEffects, values: derivedValueEffects,
+        tokens: derivedTokenEffects, sidecars: derivedSidecarEffects,
+        computedValueChunks: semanticObservations[0]?.observed ?? [],
+      }, { changedObservations: semanticObservations.flatMap((observation, index) => (
+        semanticJson(observation.previous) === semanticJson(observation.observed) ? [] : [index]
+      )) });
+    }
     const semanticClaimsChanged = applySemanticClaimObservationPass(semanticObservations);
     let stable = !semanticClaimsChanged;
     if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;

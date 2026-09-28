@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   runComposeSemanticClaimLoop, type RunComposeSemanticClaimLoopContext,
 } from '../../src/message-bus/compose-semantic-claim-loop.js';
+import { createConstraintFixpointSession } from '../../src/message-bus/constraint-fixpoint-session.js';
 
 vi.mock('../../src/message-bus/graph.js', async (original) => ({
   ...await original<typeof import('../../src/message-bus/graph.js')>(),
@@ -40,6 +41,7 @@ describe('semantic return discovery ordering', () => {
       selfdestructByParticipant: new Map(), descriptorsLength: 1, resultPropagationDepth: 0,
       propagateResultDependentArguments: () => ({ propagated: false, calls: [] }),
       runtime: {
+        constraintFixpoint: createConstraintFixpointSession(),
         assemble: async (_graph: unknown, results: Record<number, string>) => ({
           builder: { resourceReady: false, claimedResult: results[0] }, actualSizes: [], incompleteDynamicChunks: [],
         }),

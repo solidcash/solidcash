@@ -5,6 +5,7 @@
 import { binToHex } from '@bitauth/libauth';
 import { sha256 } from '@solidcash/utils';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
+import type { ConstraintFixpointSession } from './constraint-fixpoint-session.js';
 import {
   convergeMessageBusComputedResourceOutputs,
   finalizedByteGateOptionsForProvider,
@@ -32,6 +33,7 @@ import {
 
 export interface AdmitCompositionContext {
   executionContexts: ExecutionContextLifecycle;
+  constraintFixpoint: ConstraintFixpointSession;
   options: Pick<ComposeAtomicMessageBusOptions, 'preparedCalls'>;
   assembledPredOutClaimsByParticipant?: AssemblePredOutClaimsByParticipant;
   /** settle-time ExecutionContext: when present, effect plans are checked against published slot capacity. */
@@ -51,7 +53,7 @@ export function admitCompositionBuilder(
     convergence: convergeMessageBusComputedResourceOutputs(builder),
     valueChunkConvergence: convergeMessageBusComputedValueChunkOutputs(builder),
     dynamicChunkConvergence: convergeMessageBusComputedDynamicChunkOutputs(builder),
-  }));
+  }), ctx.constraintFixpoint);
   if (convergence.repairs > 0 || valueChunkConvergence.repairs > 0
     || dynamicChunkConvergence.repairs > 0) {
     throw new Error(
@@ -93,7 +95,7 @@ export function admitCompositionBuilder(
   // path-effect activation/settle-time ExecutionContext: settle-time ExecutionContext lifecycle (no-op when none registered).
   assertAndSettleExecutionContexts(ctx.executionContexts);
   // constraint fixpoint: resolve multi-domain converge fingerprints recorded during admit.
-  finalizeActiveConstraintFixpoint();
+  finalizeActiveConstraintFixpoint(ctx.constraintFixpoint);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_ATOMIC_GRAPH === '1') {
     const digests = (ctx.options.preparedCalls ?? []).flatMap((call) =>

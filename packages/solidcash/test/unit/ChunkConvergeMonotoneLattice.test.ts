@@ -33,7 +33,7 @@ describe('constraint fixpoint chunk converge monotone lattice', () => {
   it('dynamic-chunk converge returns frozen empty geometry when no assembly is describable', () => {
     const builder = new TransactionBuilder({ provider: new MockNetworkProvider() });
     const result = convergeMessageBusComputedDynamicChunkOutputs(builder);
-    expect(result).toEqual({ repairs: 0, rounds: 0, ownedOutputs: [], outputs: [] });
+    expect(result).toEqual({ repairs: 0, rounds: 0, ownedOutputs: [], authenticatedOutputs: [], outputs: [] });
     expect(Object.isFrozen(result)).toBe(true);
   });
 

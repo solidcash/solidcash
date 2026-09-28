@@ -58,6 +58,9 @@ input: it can print argument shapes and stack summaries, is expensive, and is no
 or production bytecode. Verify any proposed identity fix again with the switch unset.
 
 `SOLIDC_DEBUG_ATOMIC_GRAPH=1` traces graph participant placement, argument transport, and published unlockers;
+it also reports `atomic-semantic-claims` with bounded per-domain counts/digests, pass number, local-repeat status,
+and changed observation indices (computed chunks, resources, values, tokens, sidecars). These records contain
+no claim value bytes and distinguish local claim cycles from a repeated active-session fingerprint.
 `SOLIDC_DEBUG_VMAP_PROOF=1` traces sorted-entry proof and predecessor-output rebinding;
 `SOLIDC_DEBUG_VALUE_WITNESS=1` traces chunked-entry witness selection across nested calls. These are opt-in
 reports, not alternate settlement modes. They can log large transaction or witness summaries, so use one named

@@ -97,6 +97,7 @@ import {
   recordMonotonePass,
 } from './monotone-lattice.js';
 import { recordActiveConstraintPass } from '../stateful/value-chunk-persist.js';
+import { bindBuilderConstraintFixpoint, type ConstraintFixpointSession } from './constraint-fixpoint-session.js';
 import {
   buildTransportedContinuationResourceClaim,
   canonicalValueChunkProducerIdentity, canonicalValueChunkProducerPathContext,
@@ -162,6 +163,7 @@ export type AssemblePredOutClaimsByParticipant = ReadonlyMap<number, ReadonlyArr
 
 export interface AssembleAtomicCompositionContext {
   executionContexts: ExecutionContextLifecycle;
+  constraintFixpoint: ConstraintFixpointSession;
   options: Pick<ComposeAtomicMessageBusOptions, 'changeAddress' | 'feeRate' | 'preparedCalls'>;
   descriptors: readonly CallDescriptor[];
   feeFunder: UnlockableUtxo;
@@ -279,6 +281,7 @@ export async function assembleAtomicComposition(
     const aggregate = new TransactionBuilder({
       provider, allowImplicitNftBurn: true, skipAutomaticCoSpends: true,
     });
+    bindBuilderConstraintFixpoint(aggregate, ctx.constraintFixpoint);
     const actualSizes: number[] = [];
     const incompleteDynamicChunks: Array<{
       participant: number; variable: string; resolved: number; total: number;
@@ -2087,7 +2090,7 @@ export async function assembleAtomicComposition(
           discoveryState,
           deferredCycle,
         );
-        recordActiveConstraintPass('deferred-compute', discoveryState, deferredCycle);
+        recordActiveConstraintPass('deferred-compute', discoveryState, deferredCycle, ctx.constraintFixpoint);
         const program = aggregate.buildLibauthProgram();
         let progressed = false;
         for (const block of unresolved) {

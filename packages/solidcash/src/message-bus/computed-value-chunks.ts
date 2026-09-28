@@ -18,6 +18,7 @@ import {
 } from './monotone-lattice.js';
 import { preflightMessageBusBlockAssembly } from './preflight.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
+import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
 
 export interface ComputedValueChunkConvergence {
   repairs: number;
@@ -363,6 +364,7 @@ export function convergeMessageBusComputedValueChunkOutputs(
       'value-chunk',
       [stateKey],
       'messageBus: computed value-chunk output convergence entered a repeated state',
+      builderConstraintFixpoint(builder),
     );
     if (picked === undefined) {
       finalizeMonotonePass(commitmentLattice, stateKey);

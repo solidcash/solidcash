@@ -33,6 +33,7 @@ import {
 } from './monotone-lattice.js';
 import { isVmValidationOnly } from './materialization-mode.js';
 import { selectActiveConstraintCandidate } from '../stateful/value-chunk-persist.js';
+import { builderConstraintFixpoint } from './constraint-fixpoint-session.js';
 
 /**
  * Measure each participant's ACTUAL runtime-resource run off the unsigned builder, and refuse a run the
@@ -309,6 +310,7 @@ const convergeMessageBusMutableResourceOutputs = (
         'resource',
         [stateKey],
         'messageBus: mutable resource output convergence entered a repeated state',
+        builderConstraintFixpoint(builder),
       );
       if (picked === undefined) {
         finalizeMonotonePass(commitmentLattice, stateKey);
@@ -403,6 +405,7 @@ const convergeMessageBusMutableResourceOutputs = (
             `${outputIndex}:${binToHex(candidate.commitment)}@${candidate.inputIndex}`
           )),
           'messageBus: OTC conflict fingerprint entered a repeated state',
+          builderConstraintFixpoint(builder),
         );
       }
       if (isVmValidationOnly()) {
@@ -449,11 +452,13 @@ const convergeMessageBusMutableResourceOutputs = (
         'resource-proposals',
         [proposalKeys.join('|'), jointCrossOutput, ...proposalKeys],
         'messageBus: resource proposal fingerprint entered a repeated state',
+        builderConstraintFixpoint(builder),
       );
       selectActiveConstraintCandidate(
         'resource-otc-cross-output',
         [jointCrossOutput, ...proposalKeys],
         'messageBus: cross-output OTC ranking entered a repeated state',
+        builderConstraintFixpoint(builder),
       );
     }
 

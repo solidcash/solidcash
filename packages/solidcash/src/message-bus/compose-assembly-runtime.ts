@@ -20,6 +20,7 @@ import {
 } from './compose-admit.js';
 import type { ComposeSlotInventory } from './compose-slot-inventory.js';
 import { createExecutionContextLifecycle } from './execution-context.js';
+import { createConstraintFixpointSession, type ConstraintFixpointSession } from './constraint-fixpoint-session.js';
 import {
   rebalanceFeeTail as rebalanceComposeFeeTail,
   eventCandidates as composeEventCandidates,
@@ -78,6 +79,7 @@ export interface CreateComposeAssemblyRuntimeInput {
 }
 
 export interface ComposeAssemblyRuntime {
+  readonly constraintFixpoint: ConstraintFixpointSession;
   rebalanceFeeTail: (builder: TransactionBuilder, subject: string) => void;
   eventCandidates: (participant: PlanParticipant) => ReturnType<typeof composeEventCandidates>;
   eventLockingBytecodes: (participant: PlanParticipant) => string[];
@@ -118,6 +120,7 @@ export function createComposeAssemblyRuntime(
   // One registry per build, explicitly threaded through assembly and admission. A global
   // settlement registry would mix participants and activations across nested/concurrent builds.
   const executionContexts = createExecutionContextLifecycle();
+  const constraintFixpoint = createConstraintFixpointSession();
   const participantReturnBlob = (
     participant: number, results: Readonly<Record<number, string>>,
   ): Uint8Array | undefined => composeParticipantReturnBlob(input.plan, participant, results);
@@ -190,6 +193,7 @@ export function createComposeAssemblyRuntime(
     eventLockingBytecodes,
     predOutClaimsSlot,
     executionContexts,
+    constraintFixpoint,
   });
   const assemble = async (
     graph: FinalizedGraph,
@@ -211,6 +215,7 @@ export function createComposeAssemblyRuntime(
         options: input.options,
         assembledPredOutClaimsByParticipant,
         executionContexts,
+        constraintFixpoint,
         ...(input.slotInventory !== undefined && { slotInventory: input.slotInventory }),
       },
       builder,
@@ -239,6 +244,7 @@ export function createComposeAssemblyRuntime(
   );
 
   return {
+    constraintFixpoint,
     rebalanceFeeTail,
     eventCandidates,
     eventLockingBytecodes,

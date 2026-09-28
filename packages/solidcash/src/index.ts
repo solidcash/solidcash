@@ -59,3 +59,5 @@ export * as perCallReference from './per-call/validator/reference/index.js';
 export * as perCallDeploy from './per-call/deploy/index.js';
 // Reading a deployed contract off chain: a `STATIC` frame derived and evaluated locally, never broadcast.
 export * as perCallRead from './per-call/read/index.js';
+// Reading an accepted composition's declared event outputs back into decoded logs.
+export * as perCallReceipt from './per-call/receipt/index.js';

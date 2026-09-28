@@ -26,6 +26,10 @@ import {
   getSatoshiContainerAddress,
 } from './covenant-helpers.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import {
+  assertAcyclicExternalCallPath,
+  visitExpandingExternalCallGroups,
+} from './external-call-graph-frontier.js';
 import { externalCallIterationIndices } from './external-call-iteration-domain.js';
 import { encodeExternalReturnValue } from './external-return-encoding.js';
 import { externalReturnsForCallsites } from './external-returns-for-callsites.js';
@@ -128,8 +132,7 @@ export async function expandCreateBuilderLateTransitive(
     }
     return depth;
   });
-  for (let parentGroupIndex = 0; parentGroupIndex < expansionGroups.length; parentGroupIndex++) {
-    const parent = expansionGroups[parentGroupIndex];
+  await visitExpandingExternalCallGroups(expansionGroups, async (parent, parentGroupIndex) => {
     const parentContract = parent.externalContract as any;
     const logicalParentContract = (parent.logicalContract ?? parentContract) as any;
     const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
@@ -155,7 +158,7 @@ export async function expandCreateBuilderLateTransitive(
       ? logicalParentArgs : preparedAtomicNodes?.[parentAtomicNode]?.args ?? logicalParentArgs;
     const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === logicalParentFunctionName);
-    if (!parentFn?.externalCalls?.length) continue;
+    if (!parentFn?.externalCalls?.length) return;
     const graphParentArgs = projectMessageBusHandlerArguments(
       logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
     );
@@ -351,6 +354,10 @@ export async function expandCreateBuilderLateTransitive(
       const selectedFn = (selectedContract.inner.artifact.abi as readonly AbiFunction[])
         .find((candidate) => candidate.name === (rawFunctionName ?? nested.functionName));
       if (!selectedFn) continue;
+      assertAcyclicExternalCallPath(
+        externalCallUtxoGroups, allGroupParentIndices, parentGroupIndex,
+        callee.categoryId, selectedFn.name,
+      );
       const childDepth = expansionDepths[parentGroupIndex] + 1;
       if (childDepth > MAX_LATE_TRANSITIVE_DEPTH) throw new MessageBusDiagnosticError(
         'L3_GRAPH_DEPTH_LIMIT',
@@ -910,7 +917,7 @@ export async function expandCreateBuilderLateTransitive(
       allGroupParentIndices = [...allGroupParentIndices, parentGroupIndex];
       lateTransitiveGroupIndices.add(childGroupIndex);
     }
-  }
+  });
 
   return { allGroupEcSlots, allGroupParentIndices, lateTransitiveGroupIndices };
 }

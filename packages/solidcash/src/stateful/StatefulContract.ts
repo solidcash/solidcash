@@ -779,6 +779,10 @@ import {
   type BatchExecutionContextBinding,
 } from './sc-batch-raw.js';
 export { mergePublishedMessageBusHandlerMetadata };
+export {
+  assertAcyclicExternalCallPath,
+  visitExpandingExternalCallGroups,
+} from './external-call-graph-frontier.js';
 import {
   buildStatefulFunctionCall as buildStatefulFunctionCallImpl,
 } from './sc-build-stateful-function-call.js';

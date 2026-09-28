@@ -35,13 +35,6 @@ const HELPER_WITH_ARMS = HEAD + INTERFACES
   + '   function go(bool take, int x) { require(pick(take, x) > 0); require(true); }'
   + ' }';
 
-/** A caller whose arms each make one call, so every path makes the same number of calls. */
-const BALANCED_ARMS = HEAD + INTERFACES
-  + ' contract Caller {'
-  + `   function go(bool take) { if (take) { IState(0x${CALLEE}).add(1); }`
-  + `     else { IPeek(0x${CALLEE}).peek(); } require(true); }`
-  + ' }';
-
 /**
  * A caller whose call a branch inside a loop can skip.
  *
@@ -82,15 +75,7 @@ describe('a call whose occurrence the source fixes', () => {
   });
 });
 
-describe('a branch whose arms each make one call', () => {
-  it('is admitted, because every path makes the same number of calls', () => {
-    // The execution reaches the same position on either arm, so the record a body binds, the segment the code
-    // after the branch reads, and the count it pins are facts of every path — which is what the head needs.
-    const artifacts = compileStringMulti(BALANCED_ARMS, { composition: 'per-call' });
-    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
-    expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
-  });
-});
+// A branch whose arms each make one call is admitted and accepted by the machine in `branched-call-entry.test.ts`.
 
 describe('a helper whose arms each call out, reached from an entry', () => {
   it('is admitted, which is the shape a claim entry has', () => {

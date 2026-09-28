@@ -270,26 +270,7 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     expect(segments[2]![0]!.viewIn).toStrictEqual(segments[1]![0]!.viewOut);
   });
 
-  it('settles the frame that creates the node, writing it at the adjacent output', () => {
-    const { draft, nodeAfter, headAfter } = drive();
-
-    // The head input carries the genesis head and the head output the relinked one; the created node output the
-    // default value the delete wrote, all read back through the shipped sorted-list encoder.
-    const program = draft.programFor('hub-1');
-    const headIndex = HEAD_INDEX;
-    expect(headIndex).toBe(HEAD_INDEX);
-    expect(headAfter).toStrictEqual(relinkedHead(keyToSlotMulti([KEY_PUSH])));
-    expect(program.sourceOutputs[headIndex]!.token?.nft?.commitment).toStrictEqual(headSentinelCommitment());
-    expect(program.transaction.outputs[headIndex]!.token?.nft?.commitment).toStrictEqual(headAfter);
-    expect(program.transaction.outputs[headIndex]!.token?.nft?.commitment)
-      .toStrictEqual(relinkedHead(keyToSlotMulti([KEY_PUSH])));
-    expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment).toStrictEqual(nodeAfter);
-    expect(program.transaction.outputs[CREATED_INDEX]!.token?.nft?.commitment)
-      .toStrictEqual(node(keyToSlotMulti([KEY_PUSH]), DEFAULT));
-
-    // The machine accepts the frame that creates the node against the segment the composer declared.
-    expect(verdictAt(draft, 'insert-1')).toBe('accepted');
-  });
+  // The creating frame's head and node outputs are asserted, with every other frame's, by the whole lifecycle below.
 
   it('refuses a frame whose declared close is not the one its body computed', () => {
     // The control for the accepts below: each frame closes against the view its own segment declares, so a

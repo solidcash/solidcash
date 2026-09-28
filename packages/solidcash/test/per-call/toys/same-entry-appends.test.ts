@@ -397,55 +397,8 @@ describe('one entry appending to one log three times', () => {
     )).not.toThrow();
   });
 
-  it('settles one append: the frame reads the run it spends and writes it once', () => {
-    const single = build([7n], [10n]);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [single.artifacts.Hub!, single.artifacts.Log!],
-      plan: single.plan,
-    });
-    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'hub-1']);
-    expect(verdictAt(draft, 'log-1')).toBe('accepted');
-    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
-    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
-    // The header is spent under the log's data-NFT covenant, whose script the machine evaluates.
-    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
-
-    // The run's output carries the appended element stream, and the log's header the value's byte length.
-    const program = draft.programFor('hub-1');
-    expect(program.transaction.outputs[participant(draft.layout, single.chunkIds[0]!).index]!.token?.nft?.commitment)
-      .toStrictEqual(chunkOf(0, itemsBytes([7n, 10n])));
-    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
-      .toStrictEqual(headerOf(single.artifacts.Log!.stateLayout!, itemsBytes([7n, 10n])));
-  });
-
-  it('carries a run one frame writes to the next: the second append reads what the first wrote', () => {
-    // Each frame reads and closes the run against the view its own segment declares, so the value the first
-    // append wrote is the run the second append reads, although the transaction's one chunk input holds the value
-    // it spent and its one chunk output the value the last frame wrote.
-    const pair = build([7n], [10n, 20n]);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [pair.artifacts.Hub!, pair.artifacts.Log!],
-      plan: pair.plan,
-    });
-    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'hub-1']);
-    expect(verdictAt(draft, 'log-1')).toBe('accepted');
-    expect(verdictAt(draft, 'log-2')).toBe('accepted');
-    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
-    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
-    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
-
-    // The run's chunk carries the whole element stream, and the log's header the value's byte length, both read
-    // back from the encoders the composer shipped.
-    const program = draft.programFor('hub-1');
-    expect(program.transaction.outputs[participant(draft.layout, pair.chunkIds[0]!).index]!.token?.nft?.commitment)
-      .toStrictEqual(chunkOf(0, itemsBytes([7n, 10n, 20n])));
-    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
-      .toStrictEqual(headerOf(pair.artifacts.Log!.stateLayout!, itemsBytes([7n, 10n, 20n])));
-  });
+  // One and two appends are narrower than the three below, on the same path: each frame reads the run the frame
+  // before it wrote.
 
   it('composes the three appends, each frame reading the run the frame before it wrote', () => {
     // The run starts with one element. Each append reads the view the frame before it declared and closes its
@@ -480,73 +433,8 @@ describe('one entry appending to one log three times', () => {
       .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
   });
 
-  it('settles a run the transaction creates: the first append creates the chunk, the later appends keep it', () => {
-    // The run does not exist when the transaction starts, so the first append declares a chunk the transaction
-    // creates and each later append declares the record it wrote. A created record has no input, so it is named by
-    // the trailing output it appears at, and the transcript carries that output as a created record of the
-    // settlement: the validator accepts the index as a created record rather than requiring it to be a spent
-    // state UTXO, starts its chain from the creation, and does not weigh its output against the input that happens
-    // to sit at the same index. Every contract input and the validator are accepted, and the created chunk and the
-    // log's header carry the whole element stream, read back through the encoders the composer shipped.
-    const three = build([], APPENDS.map((append) => append.item));
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
-      plan: three.plan,
-    });
-    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'log-3', 'hub-1']);
-    expect(verdictAt(draft, 'log-1')).toBe('accepted');
-    expect(verdictAt(draft, 'log-2')).toBe('accepted');
-    expect(verdictAt(draft, 'log-3')).toBe('accepted');
-    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
-    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
-    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
-
-    const values = APPENDS.map((append) => append.item);
-    const chunks = splitValueIntoChunks(itemsBytes(values)).map((piece, index) => chunkOf(index, piece));
-    expect(chunks).toHaveLength(1);
-    // A created record is not a participant, so the settlement names the trailing output the plan places it at.
-    const program = draft.programFor('hub-1');
-    expect(draft.trailingOutputs).toHaveLength(1);
-    const createdIndex = draft.trailingOutputs[0]!.index;
-    expect(program.transaction.outputs[createdIndex]!.token?.nft?.commitment).toStrictEqual(chunks[0]);
-    expect(program.transaction.outputs[participant(draft.layout, HEADER_ID).index]!.token?.nft?.commitment)
-      .toStrictEqual(headerOf(three.artifacts.Log!.stateLayout!, itemsBytes(values)));
-  });
-
-  it('settles the event each append emits beside the run it writes', () => {
-    // The full shape: `append` pushes onto the run and emits, so the transaction carries one event per append at a
-    // trailing output. Each frame lists its own event, and the validator's census takes their union. The run holds
-    // one chunk across both appends, so no chunk is created and the trailing region holds only the events.
-    const appends = APPENDS.slice(0, 2);
-    const three = build([7n], appends.map((append) => append.item), true);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
-      plan: three.plan,
-    });
-    const derived = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-    expect(derived.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'hub-1']);
-    expect(verdictAt(draft, 'log-1')).toBe('accepted');
-    expect(verdictAt(draft, 'log-2')).toBe('accepted');
-    expect(verdictAt(draft, 'hub-1')).toBe('accepted');
-    expect(verdictAt(draft, VALIDATOR_ID)).toBe('accepted');
-    expect(verdictAt(draft, HEADER_ID)).toBe('accepted');
-
-    // One event per append, each at the trailing output the plan placed it at, carrying the payload the body
-    // computed.
-    const event = three.artifacts.Log!.events![0]!;
-    const program = draft.programFor('hub-1');
-    const eventIndices = draft.assembly.outputs.eventIndices;
-    expect(eventIndices).toHaveLength(appends.length);
-    appends.forEach((append, index) => {
-      const payload = encodeEventCommitment(event.parameters, [BigInt(index + 1), append.item]);
-      expect(program.transaction.outputs[eventIndices[index]!]!.token?.nft).toStrictEqual({
-        capability: 'none', commitment: payload,
-      });
-    });
-  });
+  // A run the transaction creates without events, and events over a kept run, are each narrower than the case
+  // below: three appends that create the run and emit one event each.
 
   it('settles the per-append events beside a run the transaction creates', () => {
     // The run does not exist when the transaction starts, so the first append creates its chunk while every append

@@ -145,7 +145,6 @@ const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
   + ' }';
 
-const single = compileAndDeploy(source('amount'), LABELS);
 const amounts = compileAndDeploy(source('amounts'), LABELS);
 
 /** One entry as the artifact publishes it: its stop sites, and the calls its own code makes. */
@@ -362,18 +361,10 @@ function driveSettled(
   };
 }
 
+// The update case of the write-then-call shape settles inside the vault graph below, whose descriptor test and
+// settlement also stand for the served-entry checks this describe used to repeat.
 describe('a vault whose release writes its record and calls a claimer that reads it back', () => {
-  const { artifacts, contracts } = single;
-
-  it('publishes a per-call descriptor, the sorted record and the event for every contract', () => {
-    for (const name of ['Token', 'Vault', 'Claimer']) {
-      expect(artifacts[name]?.composition?.convention).toBe('per-call');
-    }
-    expect(artifacts.Vault?.stateLayout?.mappings?.map((mapping) => mapping.name)).toStrictEqual(['recs']);
-    expect(artifacts.Vault?.stateLayout?.mappings?.[0]?.sorted).toBe(true);
-    expect(artifacts.Vault?.events?.map((event) => event.signature)).toStrictEqual(['Released(int256)']);
-    expect(contracts.Vault!.program.length).toBeGreaterThan(0);
-  });
+  const { artifacts } = amounts;
 
   it('compiles the claimer\'s graph: the read-back, the re-entered claim and the two pays', () => {
     // `claim` reads the vault, requires the record, re-enters the vault and pays twice; the read-only read and the
@@ -381,46 +372,6 @@ describe('a vault whose release writes its record and calls a claimer that reads
     const claim = entriesOf(artifacts, 'Claimer').find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
     expect(claim.calls.map((call) => call.functionName)).toStrictEqual(['get', 'markClaimed', 'pay', 'pay']);
     expect(claim.calls[2]!.selector).toBe(claim.calls[3]!.selector);
-  });
-
-  it('serves the vault entries that write a record and make an external call', () => {
-    // `release` writes `recs[id].state`, then calls the claimer, so its record write lands in the segment its own
-    // code runs in and the derivation reads it. `markClaimed` writes the same collection and makes no call. Both
-    // are emitted; the compiler publishes no refusal for either.
-    const refused = publishedRefusals(artifacts as Record<string, { composition?: unknown }>)
-      .map((refusal) => refusal.functionName);
-    expect(refused).not.toContain(entryName('Vault', 'release'));
-    expect(refused).not.toContain(entryName('Vault', 'markClaimed'));
-    const served = (contract: string): string[] => entriesOf(artifacts, contract).map((entry) => entry.functionName);
-    expect(served('Token')).toStrictEqual([entryName('Token', 'transfer')]);
-    expect(served('Vault')).toStrictEqual([
-      entryName('Vault', 'release'), entryName('Vault', 'markClaimed'), entryName('Vault', 'pay'), entryName('Vault', 'get'),
-    ]);
-    expect(artifacts.Token?.stateLayout?.mappings?.map((mapping) => mapping.name)).toStrictEqual(['balances']);
-  });
-
-  it('settles the write-then-call shape: the record the transaction holds, its two rewrites and the call', () => {
-    const { draft, completed, error, written, nodeIndex } = driveSettled();
-
-    // The callee is derived before its caller, and the call back into the vault runs after the entry it re-enters.
-    expect(error).toBeUndefined();
-    expect(completed).toStrictEqual(['markClaimed-1', 'claim-1', 'release-1']);
-
-    // The record the entries rewrote is what the transaction writes, read back through the shipped encoder.
-    const program = draft.programFor('release-1');
-    expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment).toStrictEqual(written);
-    expect(program.transaction.outputs[nodeIndex]!.token?.nft?.commitment).toStrictEqual(releaseView(2n));
-
-    // Each declared segment closes against the view the shipped plan computed for the write's own segment.
-    expect(draft.blockOf('release-1').segments[0]![0]!.viewOut).toStrictEqual(releaseView(1n));
-    expect(draft.blockOf('markClaimed-1').segments[0]![0]!.viewOut).toStrictEqual(releaseView(2n));
-  });
-
-  it('is accepted by the machine at every contract input of the write-then-call shape', () => {
-    const { draft } = driveSettled();
-    for (const id of ['release-1', 'markClaimed-1', 'claim-1', 'validator']) {
-      expect(`${id}: ${verdictAt(draft, id)}`).toBe(`${id}: accepted`);
-    }
   });
 
   it('settles the write that creates the record: its relinked head, the created node and the call', () => {
@@ -849,6 +800,14 @@ function driveGraph(options: { readonly vaultRecordWritten?: Uint8Array } = {}):
   };
 }
 
+let honestGraph: GraphOutcome | undefined;
+
+/** The honest graph, derived once: the cases that read it change nothing in it. */
+function sharedGraph(): GraphOutcome {
+  honestGraph ??= driveGraph();
+  return honestGraph;
+}
+
 describe('the vault graph: release, two payments through the token and the emit', () => {
   it('publishes the descriptor, the two collections and the event the graph needs', () => {
     for (const name of ['Token', 'Vault', 'Claimer']) {
@@ -865,7 +824,7 @@ describe('the vault graph: release, two payments through the token and the emit'
   });
 
   it('derives the whole graph and is accepted at every contract input', () => {
-    const { draft, completed, error, verdicts, vaultNodeIndex, tokenNodeIndex, eventIndex } = driveGraph();
+    const { draft, completed, error, verdicts, vaultNodeIndex, tokenNodeIndex, eventIndex } = sharedGraph();
 
     // Every hop runs on its own master, callee before caller.
     expect(error).toBeUndefined();
@@ -887,7 +846,7 @@ describe('the vault graph: release, two payments through the token and the emit'
   });
 
   it('chains each record\'s views across every frame that runs on it', () => {
-    const { draft, vaultNodeIndex, tokenNodeIndex, vaultRelease, vaultWritten, balanceWritten } = driveGraph();
+    const { draft, vaultNodeIndex, tokenNodeIndex, vaultRelease, vaultWritten, balanceWritten } = sharedGraph();
     const program = draft.programFor('release-1');
 
     // The vault record the transaction spends and writes, read back through the shipped encoder, and the two
@@ -918,7 +877,7 @@ describe('the vault graph: release, two payments through the token and the emit'
   });
 
   it('emits the value the claimer returned and records it in the callers\' frames', () => {
-    const { draft, eventIndex } = driveGraph();
+    const { draft, eventIndex } = sharedGraph();
     const program = draft.programFor('release-1');
 
     // The event `release` emits carries the value `claim` returned, at the layout's first trailing output, read
@@ -940,7 +899,7 @@ describe('the vault graph: release, two payments through the token and the emit'
     // The control on the same composition: every frame keeps its own declaration and the body computes what it
     // closes against, so the masters are self-consistent; the settlement is what holds the chain's last
     // declaration to the commitment the transaction writes, and it refuses.
-    const honest = driveGraph();
+    const honest = sharedGraph();
     const written = encodeEntryCommitment(
       keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(9n),
     );

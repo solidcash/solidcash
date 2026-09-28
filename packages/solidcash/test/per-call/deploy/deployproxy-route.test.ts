@@ -1,13 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
 import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   MockNetworkProvider, Signer, getContractFactory, deployProxy, ProxyContract,
   type PerCallArtifact, type PerCallProxyDeployment,
 } from '../../../src/index.js';
-import { deployMaster, readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
 
@@ -58,14 +57,6 @@ async function fundedSigner(network: MockNetworkProvider, fill: number): Promise
   return signer;
 }
 
-/** The commitment the shipped encoder materializes from one state of a layout. */
-function commitment(
-  artifact: Artifact, implementation: Uint8Array, initialized: bigint, version: bigint,
-): Uint8Array {
-  return new Uint8Array(Buffer.from(
-    buildPushdataCommitment(artifact.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
-}
-
 describe('deployProxy with a per-call implementation', () => {
   it('routes to the per-call deployment and settles the initialize hop', async () => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -92,32 +83,8 @@ describe('deployProxy with a per-call implementation', () => {
     expect(routed.initialize.accepted).toBe(true);
   });
 
-  it('keeps the implementation\'s address in the written record the entry computed', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = provider();
-    const signer = await fundedSigner(network, 0x52);
-
-    const routed = await deployProxy(
-      getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [signer.getLockingBytecode()],
-    );
-
-    // The proxy's genesis record carries the implementation's address, read back through the shipped decoder.
-    const discovery = await readPerCallDeployment(
-      network, routed.proxy.categoryId, artifacts.Impl!.stateLayout!,
-    );
-    expect(discovery.records.length).toBe(1);
-    expect(bytesToHex(new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'))))
-      .toBe(bytesToHex(commitment(artifacts.Impl!, routed.implementation.address, 0n, 0n)));
-
-    // The entry wrote the state it computed: the flag set and the version written, the address still there.
-    const written = commitment(artifacts.Impl!, routed.implementation.address, 1n, 7n);
-    expect(bytesToHex(routed.initialize.writtenRecordCommitment)).toBe(bytesToHex(written));
-    const recordIndex = routed.initialize.draft.layout.participants
-      .find((placed) => placed.id === 'proxy-record')!.index;
-    expect(bytesToHex(routed.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(written));
-  });
-
+  // The written record keeping the implementation's address is the deployment's own property, asserted in
+  // `proxy-deployment`, `proxy-initialize-write`, `generated-proxy` and `proxy-initialize-broadcast`.
   it('leaves a direct-convention artifact on the direct path', async () => {
     const artifacts = compileStringMulti(DIRECT_SOURCE);
     const network = provider();

@@ -43,7 +43,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const ENTRY = 'initialize';
 
 /** The deployed proxy and implementation, driven through the shipped module. */
-async function deploy(): Promise<{
+async function deployFresh(): Promise<{
   readonly provider: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
   readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
@@ -75,6 +75,14 @@ async function deploy(): Promise<{
     vm: compositionMachine(),
   });
   return { provider, artifacts, deployment, implCategory: implFunding.txid, proxyCategory: proxyFunding.txid };
+}
+
+let deployed: ReturnType<typeof deployFresh> | undefined;
+
+/** One deployment serves every case: each reads it and none changes it. */
+function deploy(): ReturnType<typeof deployFresh> {
+  deployed ??= deployFresh();
+  return deployed;
 }
 
 describe('a per-call proxy deployment', () => {

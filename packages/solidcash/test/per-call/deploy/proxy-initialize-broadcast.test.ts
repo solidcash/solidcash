@@ -74,13 +74,21 @@ async function funded(network: MockNetworkProvider): Promise<{
   };
 }
 
-describe('a broadcast per-call proxy initialization', () => {
-  it('broadcasts all three transactions, placing the derived hop on the geneses\' real outpoints', async () => {
+interface Broadcast {
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly network: MockNetworkProvider;
+  readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
+}
+
+let broadcastRun: Promise<Broadcast> | undefined;
+
+/** The broadcast deployment the first two cases read; neither changes it, so it runs once. */
+function broadcast(): Promise<Broadcast> {
+  broadcastRun ??= (async (): Promise<Broadcast> => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const { funder, signature, implFunding, proxyFunding, callerUtxo, deployerLock, changeAddress }
       = await funded(network);
-
     const deployment = await deployPerCallProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
@@ -92,6 +100,14 @@ describe('a broadcast per-call proxy initialization', () => {
       callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
       vm: compositionMachine(),
     });
+    return { artifacts, network, deployment };
+  })();
+  return broadcastRun;
+}
+
+describe('a broadcast per-call proxy initialization', () => {
+  it('broadcasts all three transactions, placing the derived hop on the geneses\' real outpoints', async () => {
+    const { network, deployment } = await broadcast();
 
     // Three broadcast transactions: both geneses through the shipped deployment, the hop through the caller's coin.
     // The provider knows all three, so each is genuinely on the mock chain and not merely returned.
@@ -120,22 +136,7 @@ describe('a broadcast per-call proxy initialization', () => {
   });
 
   it('carries the entry\'s written state in the broadcast outputs and reads it back through the decoder', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const { funder, signature, implFunding, proxyFunding, callerUtxo, deployerLock, changeAddress }
-      = await funded(network);
-
-    const deployment = await deployPerCallProxy({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      proxyArtifact: artifacts.Proxy!,
-      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
-      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
-      initialize: { functionName: 'initialize', args: [deployerLock] },
-      callerLockingBytecode: deployerLock,
-      callerFunding: { utxo: callerUtxo, funder: signature.unlockP2PKH() },
-      vm: compositionMachine(),
-    });
+    const { artifacts, network, deployment } = await broadcast();
     const hop = deployment.initialize.broadcast!;
 
     // The record the hop writes is the commitment the entry itself computed.

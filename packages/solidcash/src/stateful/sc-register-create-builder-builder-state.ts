@@ -261,6 +261,18 @@ export function registerCreateBuilderBuilderState(
     builder.setLoopEntryCommitments(collectionName, commitments);
     builder.pinLoopEntry(collectionName);
   }
+  // The sorted-batch planner has already examined the authenticated list. When it found no predecessor
+  // rewrite, and no other path produces a node in this collection, the trailing family is exactly empty.
+  // Letting generic loop derivation seed a speculative NEW node turns an existing-key update into an
+  // extra mutable NFT output, which the master covenant correctly rejects.
+  for (const collectionName of new Set(entryAbiFunction?.sortedBatchInfo?.map((batch) => batch.collection) ?? [])) {
+    if (batchPredCommitments.has(collectionName)
+      || sortedLoopCommitments.has(collectionName)
+      || (runtimeLoopDerivedCounts.get(collectionName) ?? 0) > 0
+      || sortedInserts.some((insert) => insert.collection === collectionName)) continue;
+    builder.setLoopEntryCommitments(collectionName, []);
+    builder.pinLoopEntry(collectionName);
+  }
   // A batch TARGET node whose row builds its value has only its key and successor link so far. The compiler-
   // authenticated production transported for that exact entry carries the bytes the covenant chunks, so finish
   // the node here; entries with no transported production stay registered for trace completion.

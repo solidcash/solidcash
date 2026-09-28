@@ -626,8 +626,11 @@ risk. Take the slices in order, each with its own tests.
   `layOutChunkRun` places the band one layout width past the block's declared records, locks every chunk with the
   value's own collection covenant and emits the record entry each one declares, and a plan built that way derives
   with the machine accepting the master that wrote the value (`solidcash/test/per-call/frames/chunk-run.test.ts`).
-  What is missing is a write that changes the run's width — creating or deleting chunks — which the plan refuses by
-  name, and `bytes`/`T[]` runs, which are unexercised. **A body that both touches a dynamic value and makes a call
+  **A write that changes the run's width is served** (`50b33ec71`, verified and widened this round): `layOutChunkRun`
+  places kept, created and removed chunks, and the run that grows and the run that shrinks both settle — the
+  `PER_CALL_CHUNK_UNPLANNABLE` refusal this note used to cite had already been removed when the planner landed, and
+  `chunk-run.test.ts` now also drives a write that creates two chunks at once (`9f00b1286`). What is still
+  unexercised is `bytes` and `T[]` runs. **A body that both touches a dynamic value and makes a call
   is now refused by name rather than crashing** (`110dfb155`): a call ends the segment the code before it runs in,
   so such a body declares its records per segment and has no single declaration the head can locate the run from -
   code generation used to ask for the direct convention's return-event operand and die with a stack-variable error,
@@ -685,8 +688,19 @@ risk. Take the slices in order, each with its own tests.
   - the `getCreateAddress` shim maps nonce `n + i` to the `i`-th reserved UTXO;
   - an error pointing at the documentation when too few are reserved.
 - [ ] F4 User documentation in `packages/solidc/docs/contract-creation.md` on preparing genesis-eligible UTXOs.
-- [ ] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
-  result unchanged.
+- [x] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
+  result unchanged. Landed (`5d4aeb6ed`): a caller does not write the proxy. `buildProxyArtifact` derives the source
+  from the implementation's own published state layout - its fields in coordinate order, the struct definitions
+  those fields name, and the fallback that forwards to the `implementation` field - compiles it with the shipped
+  per-call compiler at the implementation's record geometry, and checks the generated layout against the
+  implementation field by field, so a difference is a refusal naming the field rather than a contract that cannot be
+  called after its first write. A stateful implementation deployed through the generated proxy settles, and the
+  three unexpressible declarations (no `implementation` field, one that is not an address, a field of a type the
+  layout does not publish) are refused by name. The proxy artifact becomes optional on the deployment entry point; a
+  supplied one is held to the same agreement. **The `implementation` field still lives in the record** - the
+  fallback reads it from there as the design says - and it is the *implementation* that must declare it, because a
+  write rebuilds the record from the writer's own declaration. Putting the address in the proxy's *code* instead
+  (a reserved slot the deployment fills) is what would remove that requirement, and it is not what landed.
 - [x] F6 `deployProxy` in three transactions; `initialize` through the proxy; the `Initializable` flag in the proxy's
   records (title #8). Landed across `23a89c66b`..`39deb3656`:
   - the SDK builds the three transactions on the per-call path (`packages/solidcash/src/per-call/proxy/deploy.ts`):
@@ -802,7 +816,14 @@ risk. Take the slices in order, each with its own tests.
     pins by name. The "master presenting its code lock instead of its address" half is covered by
     `hostile/standalone-address-slot.test.ts`.
   - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
-    creator that ran no `new`.
+    creator that ran no `new`. **The `DELEGATE` half is closed** (`8ebc782be`): `hostile/delegate-identity.test.ts`
+    lays out a real proxied composition and gives the delegate callee a second user's lock as its `sender` (and, in
+    a second case, a third contract's address as its `self`); the derivation, the reference checker and the shipped
+    validator program all refuse (`V5_SENDER_MISMATCH` /
+    `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_THE_SENDER` and `V5_SELF_NOT_CALLER_SELF` /
+    `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_SELF`), the caller's own identity as control is accepted at every input, and
+    the callee's own frame is accepted either way. The `INTERNAL` and `CREATE` halves stay open: an internal frame is
+    not emitted by the head, and a `CREATE` frame is outside the non-goals of this round.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
     one master's segments out of order. Open for its second half, which is T9's reorder finding: the program accepts
     a master whose segments are swapped while the derivation refuses.
@@ -1777,3 +1798,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | bc0926172 | per-call | the chain that calls back to its head settles | 115 + 389 + 560 | **`ABCBA`, and the wall was the plan.** The shape closes a cycle - head to middle to tail, tail back to the middle, middle back to the head - and it now derives with the completion order the design states, each call's resolved callee reference asserted, and every contract input including the one validator accepted by the machine. The recorded stall was a property of the plan, not the program: the user-entered head has two entries, so its master dispatches on the call data its own input carries, and a plan that leaves the root without that selector stops inside the head's dispatcher (`OP_INVOKE`) before its first call site - the same ip before and after the host's fill, which is why the derivation reported the site as filling nothing. The regression pin keeps the wrong plan's stall named. Shapes 13 to 15. |
 | 2026-09-28 | 365ee2ded | per-call | a proxied entry that is itself stateful and calls settles | 115 + 389 + 560 | **The proxy toy's hop widened to the shape a proxied deployment really has**: a stateful implementation whose entry writes the record it inherited from the proxy and then calls a third contract, so the transaction carries three masters, the validator and the record. Every input is accepted, each frame's declared view equals what the transaction carries, and two controls are refused on the same composition - a record output that dropped the field the write did not compute, and a frame whose declaration does not chain from the one before it. Found on the way and now stated in the fixture: a body that writes and then calls applies its write at the end of the body, so the record must be declared in the frame's last segment as well as its first. Toys 58 to 65. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 560 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash shapes 15, toys 65; 1064 in total), with `yarn build` exit 0 and both package suites green. Ticks this round: F6 (with the record-owner fix, the shared-layout rule and the delegate-target rule it needed), `ABCBA`, and the two threat rows the delegate-target work closes (T26/T27, T37's `DELEGATE` half). |
+| 2026-09-28 | 5d4aeb6ed | per-call | a proxy deployment generates the proxy from the implementation's declaration | 115 + 389 + 571 | **F5, and the layout rule stops being the caller's problem.** A record's write rebuilds the whole commitment from the fields the writer's own source declares, so a proxy that declares different fields loses whatever only it knows - the address its fallback reads among them. The SDK now derives the proxy from the implementation's published layout (its fields in coordinate order, the struct definitions they name, and the fallback that forwards to the `implementation` field), compiles it with the shipped per-call compiler at the implementation's record geometry, and checks the generated layout against the implementation field by field, so a difference is a refusal naming the field. The proxy artifact becomes optional; a supplied one is held to the same agreement. Measured: a stateful implementation deployed through the generated proxy settles - the writing initialize, every participant accepted, the record's commitment from the shipped encoder - and the three unexpressible declarations are refused by name. Deploy 72 to 78. |
+| 2026-09-28 | 8ebc782be | per-call | a delegate frame claiming an identity its caller lacks is refused | 115 + 389 + 571 | **T28/T29's `DELEGATE` half, testable only now that proxied hops compose.** A real proxied composition is laid out and the delegate callee is given a second user's lock as its `sender` (and, separately, a third contract's address as its `self`). All three layers refuse - `V5_SENDER_MISMATCH` / `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_THE_SENDER` and `V5_SELF_NOT_CALLER_SELF` / `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_SELF` - while the control with the caller's own identity is accepted at every input, and the callee's own frame is accepted either way, so the refusal is the identity rule rather than the plan. The `INTERNAL` and `CREATE` halves stay open. Hostile 58 to 62. |
+| 2026-09-28 | 9f00b1286 | per-call tests | one write grows a dynamic run by more than one chunk | 115 + 389 + 571 | **A stale note is corrected by measurement.** The plan recorded that the run planner refuses a write that changes the run's width by name; that refusal was already removed when the planner landed (`50b33ec71`) - `layOutChunkRun` places kept, created and removed chunks, and `chunk-run.test.ts` already drove a run that grows and one that shrinks. The uncovered clause was a write that creates several chunks at once, which this adds: 150 bytes appended to a 100-byte value creates two chunks in one write, and the header, both created chunks and the master's own input are accepted, with every commitment taken from the shipped planner and decoders. Frames 71 to 72. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 571 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash deploy 78, hostile 62, frames 72; 1075 in total). Ticks: F5 and T28/T29's `DELEGATE` half, on top of F6 and `ABCBA` earlier in the round; R5's width clause is corrected rather than newly ticked. Y4's SDK half and its stateful-behind-the-proxy shape are now landed too, leaving Y1's full shape behind the proxy as its open clause. |

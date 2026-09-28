@@ -27,17 +27,17 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 149 |
-| `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
+| `packages/solidcash/test/per-call/frames/` | `solidcash` | 72 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 72 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 58 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 78 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 62 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 15 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 65 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1064 tests (115 + 389 + 560), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 560 is the nine rows above it.
+Total: 1075 tests (115 + 389 + 571), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 389 is the four rows above it, and `solidcash` 571 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.

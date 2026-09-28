@@ -218,6 +218,24 @@ export interface CompositionDraftPlan {
   readonly blocks: readonly ContractBlock[];
   readonly userInputs: readonly PlannedUserInput[];
   readonly masters: readonly DraftMaster[];
+  /**
+   * The transaction's nLocktime, fixed before any derivation runs.
+   *
+   * On this convention `block.timestamp` is the transaction's locktime, so a body that reads it sees this value in
+   * every frame of every execution the plan derives. A caller takes it from the chain — the block time of the
+   * transaction it is settling against — once, when the plan is built, so the transaction every derived frame is
+   * evaluated against is the one a signature over that locktime belongs to. Defaults to `0` (locktime unset).
+   */
+  readonly locktime?: number;
+  /**
+   * The nSequence every input of the assembled transaction carries. Defaults to `0xffffffff`, the final value.
+   *
+   * A body that reads the transaction's locktime (`require(tx.time >= n)`) is refused outright when the input
+   * being evaluated is final, and a body that reads its own input's age (`require(this.age >= n)`) is measured
+   * against this very value. A plan whose body gates on time states a non-final sequence rather than leaving the
+   * default in place, which would make the gate unenforceable.
+   */
+  readonly sequenceNumber?: number;
   /** Every input the transaction spends, keyed by the identity the layout and the plan's calls use. */
   readonly inputs: Readonly<Record<string, DraftInput>>;
   /**
@@ -238,6 +256,13 @@ export interface CompositionDraft {
   readonly runs: readonly ShippedMasterRun[];
   /** The plan's trailing outputs, with the index the layout gave each. */
   readonly trailingOutputs: readonly PlacedTrailingOutput<DraftTrailingOutput>[];
+  /**
+   * The transaction's nLocktime, fixed when the draft was built and read by every run the derivation drives.
+   *
+   * It is the value the plan stated, so no run can move it: a frame that reads `block.timestamp` and a signature
+   * made over the transaction both see this one number.
+   */
+  readonly locktime: number;
   /** The witness block a master's derivation mutates, as it currently stands. */
   blockOf(master: string): WitnessBlock;
   /** The unlocking bytecode a master's input carries as the draft currently stands. */
@@ -505,6 +530,12 @@ export function composeDraft(
     return provided;
   };
 
+  // The transaction's nLocktime, read from the plan once. Every run and every frame the derivation evaluates is
+  // built by `transactionFor` from this same number, so no frame can see a different one.
+  const locktime = plan.locktime ?? 0;
+  // The sequence every input carries, read from the plan once alongside the locktime.
+  const sequenceNumber = plan.sequenceNumber ?? 0xffffffff;
+
   const transactionFor = (
     override: { readonly master: string; readonly block: WitnessBlock },
   ): ShippedVmProgram['transaction'] =>
@@ -513,11 +544,11 @@ export function composeDraft(
       inputs: orderedIds.map((id, index) => ({
         outpointIndex: 0,
         outpointTransactionHash: new Uint8Array(32).fill(index + 1),
-        sequenceNumber: 0xffffffff,
+        sequenceNumber,
         unlockingBytecode: unlockingFor(id, id === override.master ? override.block : undefined),
       })),
       outputs: transactionOutputs(),
-      locktime: 0,
+      locktime,
     });
 
   // Built on first use: a plan that states every view never needs a machine of its own.
@@ -627,6 +658,7 @@ export function composeDraft(
     assembly,
     runs,
     trailingOutputs: trailing,
+    locktime,
     blockOf: (master) => {
       const block = blocks.get(master);
       if (block === undefined) throw new CompositionDraftError(`no block for master "${master}"`);

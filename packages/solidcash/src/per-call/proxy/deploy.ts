@@ -707,6 +707,10 @@ async function broadcastInitializeHop(options: BroadcastInitializeOptions): Prom
   // The hop's own shape is fixed - the composer assembled every contract input and there is no oracle or side-car
   // to co-spend - so the builder must not append anything.
   const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
+  // The builder defaults to locktime 0, which would serialize a different transaction than the one derived: the
+  // hop's signature and every frame that reads `block.timestamp` were made over the derived locktime, so the
+  // broadcast carries that same one.
+  builder.setLocktime(program.transaction.locktime ?? 0);
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
@@ -730,10 +734,15 @@ async function broadcastInitializeHop(options: BroadcastInitializeOptions): Prom
       ? {}
       : { token: libauthTokenDetailsToSolidCashTokenDetails(source.token) };
     const utxo: Utxo = { txid: real.txid, vout: real.vout, satoshis: source.valueSatoshis, ...token };
-    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
+    // The sequence the derived hop carries, so the broadcast is the same transaction the frames were evaluated
+    // against rather than one the builder's own default rewrites.
+    const sequence = program.transaction.inputs[placed.index]?.sequenceNumber;
+    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode),
+      sequence === undefined ? undefined : { sequence });
   }
   // The deployer's own coin funds the hop and is the frame's root caller; its signature is a real one over the
-  // real transaction, which is what the root's `msg.sender` binding and the provider both check.
+  // real transaction, which is what the root's `msg.sender` binding and the provider both check. Its sequence is
+  // the caller's own choice, not the composer's.
   builder.addInput(callerFunding.utxo, callerFunding.funder);
 
   // Every participant recreates in place, so its output index is its input index; anything the composer placed

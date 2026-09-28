@@ -289,6 +289,46 @@ describe('a state whose value lives in chunks', () => {
         `${INDEX_NONE}/${createdIndex}`]);
   });
 
+  it('accepts a run that grows by more than one chunk in a single write', () => {
+    // The entry appends a run of bytes, so one write crosses two chunk boundaries: 100 bytes are one chunk and the
+    // 250-byte result is three, which creates the second and third chunks beside the kept first one.
+    const tail = 'b'.repeat(150);
+    const growSource = 'pragma solidcash ^0.13.0;'
+      + ' contract Named {'
+      + '   string public name;'
+      + `   function append() { this.name = string.concat(this.name, "${tail}"); }`
+      + ' }';
+    const spentBytes = new Uint8Array(100).fill(0x61);
+    const writtenBytes = utf8(`${'a'.repeat(100)}${tail}`);
+    const { host, draft, built } = compose({ source: growSource, spent: spentBytes, written: writtenBytes });
+    expect(deriveDepthFirst(ROOT, host).completed.map((frame) => frame.master)).toStrictEqual([MASTER_ID]);
+    expect(verdictAt(draft)).toBe('accepted');
+    expect(stateVerdictAt(draft)).toBe('accepted');
+
+    const run = planChunkRun({ layout: built.layout, variable: 'name', spent: spentBytes, written: writtenBytes });
+    expect(run.spent.chunks).toHaveLength(1);
+    expect(run.written.chunks).toHaveLength(3);
+    const program = draft.programFor(MASTER_ID);
+    const keptIndex = participant(draft.layout, chunkRecordId('name', built.base)).index;
+    expect(program.transaction.outputs[keptIndex]!.token?.nft?.commitment).toStrictEqual(run.written.chunks[0]);
+    // The header data NFT carries the new value's length, from the shipped header encoder.
+    expect(program.transaction.outputs[built.stateIndex]!.token?.nft?.commitment).toStrictEqual(run.written.header);
+    // The two chunks past the kept one are created records, placed as trailing outputs at the indices the layout
+    // gives them, each carrying the commitment the body computed.
+    const created = run.written.chunks.slice(1);
+    const createdIndices = draft.trailingOutputs.map((output) => output.index);
+    expect(createdIndices).toHaveLength(created.length);
+    createdIndices.forEach((index, offset) => {
+      expect(program.transaction.outputs[index]!.token).toStrictEqual({
+        category: CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: created[offset] },
+      });
+    });
+    expect(draft.blockOf(MASTER_ID).segments.flat().map((entry) => `${entry.in}/${entry.out}`)).toStrictEqual([
+      `${built.stateIndex}/${built.stateIndex}`, `${built.base}/${built.base}`,
+      ...createdIndices.map((index) => `${INDEX_NONE}/${index}`),
+    ]);
+  });
+
   it('accepts a run that shrinks, spending a chunk and writing no record back', () => {
     // 121 bytes need two chunks and a five-byte write needs one, so the second chunk is removed: spent with the
     // write's authorization and no record written at its index.

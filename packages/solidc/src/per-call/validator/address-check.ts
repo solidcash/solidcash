@@ -27,14 +27,15 @@ const P2SH32_PREFIX = new Uint8Array([Opcodes.OP_HASH256, Opcodes.OP_PUSHBYTES_3
 const P2SH32_SUFFIX = new Uint8Array([Opcodes.OP_EQUAL]);
 
 /**
- * Script that enforces the address rule for one witness block.
+ * The P2SH32 lock of `push(pin) || program`, the address a covered master of `pin`'s category presents.
  *
- * Pass the validator program to push it as a constant, which is how a test runs the fragment on its own. Pass
- * `{ fromActiveBytecode: true }` from the validator: the redeem script is `push(pin) || program`, so the program
- * is what follows that push in the script now running. Pushing the program as a constant would nest it inside
- * itself.
+ * Entry is `[pin]`, exit is `[address]`; anything the caller holds below `pin` is left in place. `pin` is the
+ * 33-byte mutable category pin in chain order. Pass the validator program to push it as a constant, which is how a
+ * test runs the fragment on its own. Pass `{ fromActiveBytecode: true }` from the validator: the redeem script is
+ * `push(pin) || program`, so the program is what follows that push in the script now running. Pushing the program
+ * as a constant would nest it inside itself.
  */
-export function addressCheckScript(source: Uint8Array | { fromActiveBytecode: true }): Uint8Array {
+export function addressFromPinScript(source: Uint8Array | { fromActiveBytecode: true }): Uint8Array {
   const programOnStack = source instanceof Uint8Array
     ? concat(encodeDataPush(source), op(Opcodes.OP_CAT))
     : concat(
@@ -43,6 +44,28 @@ export function addressCheckScript(source: Uint8Array | { fromActiveBytecode: tr
       op(Opcodes.OP_SPLIT, Opcodes.OP_NIP, Opcodes.OP_CAT),
     );
 
+  // `[pin, 0x21 || pin || program]`, hashed and wrapped into the P2SH32 lock.
+  return concat(
+    encodeDataPush(new Uint8Array([CATEGORY_PIN_LENGTH])),
+    op(Opcodes.OP_SWAP, Opcodes.OP_CAT),
+    programOnStack,
+    op(Opcodes.OP_HASH256),
+    encodeDataPush(P2SH32_PREFIX),
+    op(Opcodes.OP_SWAP, Opcodes.OP_CAT),
+    encodeDataPush(P2SH32_SUFFIX),
+    op(Opcodes.OP_CAT),
+  );
+}
+
+/**
+ * Script that enforces the address rule for one witness block.
+ *
+ * Entry is `[pin, payload]`, with the payload on top, and exit is `[]`. `pin` is the 33-byte mutable category pin
+ * in chain order, and `payload` is a covered master's witness block; the `self` it claims must be the address
+ * {@link addressFromPinScript} derives. Delegate and internal frames inherit their caller's address rather than
+ * presenting this one, so the rule does not decide them.
+ */
+export function addressCheckScript(source: Uint8Array | { fromActiveBytecode: true }): Uint8Array {
   return concat(
     // `[pin, payload]`. The pin is the 33-byte mutable category.
     op(Opcodes.OP_SWAP, Opcodes.OP_SIZE),
@@ -63,15 +86,9 @@ export function addressCheckScript(source: Uint8Array | { fromActiveBytecode: tr
     // `[pin, sender, self, value, rest]`. Keep `self`.
     readFrameFieldsScript(),
     op(Opcodes.OP_DROP, Opcodes.OP_DROP, Opcodes.OP_NIP, Opcodes.OP_SWAP),
-    // `[self, 0x21 || pin || program]`, hashed and wrapped, then compared raw.
-    encodeDataPush(new Uint8Array([CATEGORY_PIN_LENGTH])),
-    op(Opcodes.OP_SWAP, Opcodes.OP_CAT),
-    programOnStack,
-    op(Opcodes.OP_HASH256),
-    encodeDataPush(P2SH32_PREFIX),
-    op(Opcodes.OP_SWAP, Opcodes.OP_CAT),
-    encodeDataPush(P2SH32_SUFFIX),
-    op(Opcodes.OP_CAT, Opcodes.OP_EQUALVERIFY),
+    // `[self, address]`, compared raw.
+    addressFromPinScript(source),
+    op(Opcodes.OP_EQUALVERIFY),
     op(Opcodes.OP_ENDIF),
   );
 }

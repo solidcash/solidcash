@@ -28,7 +28,7 @@ import {
   takeLengthPrefixedField32,
   unsignedLength,
 } from '../master/witness-reader.js';
-import { addressCheckScript } from './address-check.js';
+import { addressCheckScript, addressFromPinScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
 /** The transcript's first four bytes: the wire name and the version the program understands. */
@@ -125,6 +125,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V5_SENDER_MISMATCH',
   'V5_SELF_NOT_TARGET',
   'V5_SELF_NOT_CALLER_SELF',
+  'V5_DELEGATE_TARGET_MISMATCH',
   'V5_RETVAL_MISMATCH',
   'V5_ARGS_HASH_MISMATCH',
   'V5_MASTER_UNREACHED_BY_A_CALL',
@@ -189,7 +190,8 @@ export const VALIDATOR_PROGRAM_CHECKS: readonly string[] = ['V1', 'V3', 'V4', 'V
  * 6. V4 on `[M]`: the roots are the covered masters a user entered, and every other covered master is called by one;
  * 7. edges on `[M]`: every call names a covered master that records this caller, this kind, this origin, the value,
  *    the sender, the address and the result the call recorded, and the argument hash of the callee's own pushes.
- *    Every covered master that is not a root is named by exactly one call;
+ *    A DELEGATE call's target is the address of the callee master's own category, so the callee's code is the
+ *    implementation the caller's record named. Every covered master that is not a root is named by exactly one call;
  * 8. order on `[M]`: walking from the roots reaches every covered master, and no master is entered twice;
  * 9. read-only frames on `[M]`: a read-only frame leaves every record unchanged, emits nothing, sends nothing and
  *    calls only read-only frames;
@@ -603,8 +605,9 @@ function emitCoveredFrame(e: Emitter): void {
 
 /**
  * Every call names a covered master that records the caller, the kind, the origin, the value, the sender, the
- * address and the result the call recorded, and whose own pushes hash to the call's argument digest. A covered
- * master that is not a root is named by exactly one such call.
+ * address and the result the call recorded, and whose own pushes hash to the call's argument digest. A DELEGATE
+ * call's target is the address derived from the callee master's own category. A covered master that is not a root
+ * is named by exactly one such call.
  *
  * Entry `[M]`, exit `[M]`.
  */
@@ -835,6 +838,20 @@ function emitDelegateEdge(e: Emitter): void {
   e.count(14).op(O.OP_PICK, O.OP_EQUALVERIFY);
   e.count(1).op(O.OP_PICK);
   e.count(13).op(O.OP_PICK, O.OP_EQUALVERIFY);
+
+  // The callee's own code is the implementation the call names: the address of the callee master's own category is
+  // the target the call recorded. Only the DELEGATE kind binds a target this way; an INTERNAL frame is a facet of
+  // its caller's contract rather than a proxied hop, and the head does not emit it, so it is left to the rules that
+  // do decide it.
+  e.count(9).op(O.OP_PICK);
+  e.count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL, O.OP_IF);
+  e.count(6).op(O.OP_PICK, O.OP_UTXOTOKENCATEGORY);
+  // `OP_UTXOTOKENCATEGORY` answers a master's minting pin; the address is derived from the mutable pin.
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
+  e.push(Uint8Array.from([TokenCapability.MUTABLE])).op(O.OP_CAT);
+  e.script(addressFromPinScript({ fromActiveBytecode: true }));
+  e.count(9).op(O.OP_PICK, O.OP_EQUALVERIFY);
+  e.op(O.OP_ENDIF);
 }
 
 /** Entry `[argsHash, index]`, exit `[]`. The digest is `SHA256(selector || argument pushes)`. */

@@ -725,8 +725,13 @@ risk. Take the slices in order, each with its own tests.
     underlying property), and the proxy source declares the implementation's fields beside its own. The
     spec's section 19 wording ("its records hold the implementation's state layout plus one field") is realized
     this way; the built-in proxy of F5 is what removes the requirement by keeping the address in code;
-  - **still open**: broadcasting the initialize transaction (its participants sit on synthetic outpoints), and
-    routing the SDK's `upgrades.deployProxy` here, which needs a slot for the compiled proxy contract. The
+  - **the SDK's ordinary entry point routes here** (`564d490e4`): `upgrades.deployProxy` reads the convention from
+    the artifact's published descriptor and, for a per-call implementation, runs the same three transactions and
+    returns the per-call deployment (`PerCallProxyDeployment`, not a `ProxyContract` - the doc comment and a branded
+    overload say so). The proxy is the caller's or one generated from the implementation's declaration, and the
+    options with no per-call equivalent (`initializer: false`, a non-Signer runner, a record-shaped seed) are
+    refused with their own messages;
+  - **still open**: broadcasting the initialize transaction (its participants sit on synthetic outpoints). The
     composer's `fill` still returns `{}` for non-call sites, so a plan that cannot state a written view in advance
     is not derived from the machine at the composer layer - the deployment path reads it back itself.
 - [x] (with F6) The validator program binds a delegate call's target to the callee's own code (`fe87a8b22`): the
@@ -825,8 +830,13 @@ risk. Take the slices in order, each with its own tests.
     the callee's own frame is accepted either way. The `INTERNAL` and `CREATE` halves stay open: an internal frame is
     not emitted by the head, and a `CREATE` frame is outside the non-goals of this round.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
-    one master's segments out of order. Open for its second half, which is T9's reorder finding: the program accepts
-    a master whose segments are swapped while the derivation refuses.
+    one master's segments out of order. **The reorder half is pinned, and it is a divergence** (`70ff9e021`):
+    `hostile/reordered-segments.test.ts` swaps one master's two declared segments on a real composition - both runs
+    complete the derivation - and the machine accepts all five inputs while the derivation refuses with
+    `V7_CHAIN_START_MISMATCH`. The program's chain walk is order-free, so `5->6->7->8` still chains from the spent
+    commitment to the written one; enforcing the order means deriving the V6 walk (a depth-first interleaving of each
+    frame's segments) on chain, which the program does not derive and its own comments say so. The first half (a
+    second root inside the window) stays open.
   - [x] T31: two masters naming each other as caller, with no user root.
   - [x] T32 is a residual (D8). Add a test recording that an extra call naming an already-used signed input is
     accepted, so that adopting receipts later flips it. `hostile/reused-signature.test.ts` records it, asserting the
@@ -849,8 +859,11 @@ risk. Take the slices in order, each with its own tests.
   - [x] T38: an untouched state UTXO of a validator-settled contract consumed without an output.
   - [x] T39: a record, master or validator recreated with less value.
   - [x] T40: a callee claiming a `msg.value` its caller did not send.
-  - [ ] T41: two frames listing the same event output. Open: the event cases refuse a payload the body did not
-    compute and a body that emits at an unlisted output, but not two frames naming one output.
+  - [x] T41: two frames listing the same event output. **Enforced and pinned** (`70ff9e021`): the composer refuses
+    such a plan before assembly, so `hostile/shared-event-output.test.ts` rewrites the assembled called frame's
+    witness block to list the root's event output; the derivation refuses with `V7_EVENT_OUTPUT_SHARED` **and** the
+    shipped program does too - the validator's census gathers every listed event index for the settled contract and
+    requires each exactly once - so this one is agreement rather than a gap.
   - [ ] T16 (non-critical): changing a master's witness after the user signed either fails or yields identical
     outputs. Open; the signature-hash-type cases are the closest coverage today.
   - T17 (pool contention) is liveness only: no test; pools are sized per section 21.
@@ -1802,3 +1815,7 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-28 | 8ebc782be | per-call | a delegate frame claiming an identity its caller lacks is refused | 115 + 389 + 571 | **T28/T29's `DELEGATE` half, testable only now that proxied hops compose.** A real proxied composition is laid out and the delegate callee is given a second user's lock as its `sender` (and, separately, a third contract's address as its `self`). All three layers refuse - `V5_SENDER_MISMATCH` / `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_THE_SENDER` and `V5_SELF_NOT_CALLER_SELF` / `A_DELEGATE_CALLEE_DOES_NOT_INHERIT_SELF` - while the control with the caller's own identity is accepted at every input, and the callee's own frame is accepted either way, so the refusal is the identity rule rather than the plan. The `INTERNAL` and `CREATE` halves stay open. Hostile 58 to 62. |
 | 2026-09-28 | 9f00b1286 | per-call tests | one write grows a dynamic run by more than one chunk | 115 + 389 + 571 | **A stale note is corrected by measurement.** The plan recorded that the run planner refuses a write that changes the run's width by name; that refusal was already removed when the planner landed (`50b33ec71`) - `layOutChunkRun` places kept, created and removed chunks, and `chunk-run.test.ts` already drove a run that grows and one that shrinks. The uncovered clause was a write that creates several chunks at once, which this adds: 150 bytes appended to a 100-byte value creates two chunks in one write, and the header, both created chunks and the master's own input are accepted, with every commitment taken from the shipped planner and decoders. Frames 71 to 72. |
 | 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 571 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash deploy 78, hostile 62, frames 72; 1075 in total). Ticks: F5 and T28/T29's `DELEGATE` half, on top of F6 and `ABCBA` earlier in the round; R5's width clause is corrected rather than newly ticked. Y4's SDK half and its stateful-behind-the-proxy shape are now landed too, leaving Y1's full shape behind the proxy as its open clause. |
+| 2026-09-28 | 70ff9e021 | per-call tests | the two validator gaps the threat list names, measured | 115 + 389 + 583 | **One is a divergence, one is agreement.** A master whose two declared segments are swapped: both runs complete the derivation, the derivation refuses with `V7_CHAIN_START_MISMATCH`, and the machine **accepts every input** - the program's chain walk is order-free, so `5->6->7->8` still chains from the spent commitment to the written one. Pinned as the divergence it is, with the program's comments stating why closing it means deriving the V6 walk on chain rather than adding a rule the emitter carries. Two frames listing one event output: the composer refuses such a plan before assembly, so the forgery rewrites the assembled called frame's witness block; the derivation refuses with `V7_EVENT_OUTPUT_SHARED` **and so does the program** - the validator's census gathers every listed event index of the settled contract and requires each exactly once - so that row is ticked as agreement. Hostile 62 to 66. |
+| 2026-09-28 | 564d490e4 | per-call | the ordinary deployProxy entry point routes a per-call implementation | 115 + 389 + 583 | **F6's last open clause but one.** A caller who reaches `upgrades.deployProxy` with a per-call artifact used to fall through to the direct convention's builder, which looks for data NFTs at a category-derived address and finds none. The convention is read from the artifact's published descriptor where the split-bundle branch is decided, so a direct artifact is untouched, and the per-call path runs the three transactions it already runs - the proxy the caller supplied or one generated from the implementation's declaration, and the initialize hop entered by the deployer's own lock. What the caller does not get is a `ProxyContract`: the routed call returns the per-call deployment, and the doc comment, a branded overload and three refusals (`initializer: false`, a non-Signer runner, a record-shaped seed) say so rather than pretending the handle is the same. Measured: the routed deployment settles (the hop's frames complete, every participant accepted, the written record equal to the shipped encoder's), and a direct control still returns a `ProxyContract` with a baked forward shape. Deploy 78 to 81. |
+| 2026-09-28 | 6d3ef678f | per-call tests | the append shape behind a proxy, and the wall its run hits | 115 + 389 + 583 | **The hop is sound and the run is the wall.** An append-shape implementation entered through a *generated* proxy compiles (both contracts served), a static write through the same proxy settles end to end, and the compiler's refusal of an entry that both writes the dynamic value and calls is real but orthogonal - yet the shape whose written value is the dynamic one does **not** settle: the proxy master's own program reverts (`OP_VERIFY`, instruction offset 1182) *before the implementation is ever derived*, while an unused dynamic field, a non-empty header, extra trailing outputs and the event all leave the proxy master settling. Pinned with the frame, the site, the error and the offset, and with the two positive controls that isolate it. Toys 65 to 70. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts | 115 + 389 + 583 | The manifest's table is refreshed from this round's runs (solidc master 348, solidcash deploy 81, hostile 66, toys 70, frames 72, shapes 15; 1087 in total) with `yarn build` exit 0 and both package suites green. Ticks this round: F6 (with the record-owner fix, the shared-layout rule, the delegate-target rule and the routing it needed), F5, `ABCBA`, T26/T27, T28/T29's `DELEGATE` half, T37's `DELEGATE` half and T41; R5's width clause corrected. Named as the next walls: the append-behind-a-proxy run, the V6 order the program does not derive (T30's reorder half), broadcasting the initialize transaction, and the composer's `fill` returning `{}` for non-call sites. |

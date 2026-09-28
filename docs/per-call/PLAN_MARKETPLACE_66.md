@@ -890,9 +890,12 @@ risk. Take the slices in order, each with its own tests.
     arm now names the node by its position in the segment's declared list, and the creating frame, the
     re-entered frame, the claimer and the validator are all accepted, with the control (the created output
     carrying the creating frame's value instead of the value the last declaration ends at) refused by the
-    validator. Still open: an entry returning several values is refused (a frame's return value is compared
-    with one value the entry computed), and the rest of the toy's graph - the static read-back, the two
-    payments and their token transfers, the emit - compiles but is not driven end to end.
+    validator. **An entry returning several values is admissible** (`e2a8e5424`, which this note predated): a
+    tuple's canonical encoding is the concatenation of its values' own encodings, which is the same encoding a
+    call's arguments go through, so the emission already built one blob and compared it as one item - only the
+    admission refused the shape, and it now refuses a composite value only. Still open: the rest of the toy's
+    graph - the static read-back, the two payments and their token transfers, the emit - compiles but is not
+    driven end to end.
     - `Vault.release(id)` writes `recs[id].state = 1`, calls `Claimer.claim(id)`, and emits the returned amounts.
     - `claim` reads `vault.get(id)` and requires `state == 1`.
     - `claim` calls `vault.markClaimed(id)`, then `vault.pay(to, amt)` twice.

@@ -8,6 +8,7 @@ import {
   computeCollectionHash,
   encodeEventCommitment,
   encodeIntegerValue,
+  scriptToBytecode,
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -40,7 +41,8 @@ import {
   headSentinelCommitment,
   keyToSlot,
 } from '../../../src/stateful/SortedList.js';
-import { scriptToLockingBytecode } from '../../../src/utils.js';
+import { scriptToLockingBytecode, createUnlockingBytecode } from '../../../src/utils.js';
+import { encodeFunctionArgument } from '../../../src/Argument.js';
 import {
   USER_LOCK,
   composeAndDerive,
@@ -65,11 +67,10 @@ import {
  * record commitment.
  *
  * The entry is the shape for an entry that reads its own record, writes it and emits. The registration-style
- * mapping write — a few distinct keys written in one entry — cannot be laid out on this contract: the entry's frame
- * has to declare the contract's data-NFT record, and the writer's own record groups then start at the frame's
- * declared record base, so a mapping batch read there either mistakes the data-NFT record for its first target
- * group (record declared first) or resolves the data-NFT record at the wrong coordinate (record declared last).
- * Both refusals are pinned below with the frame, the site and the machine's error.
+ * mapping write — a few distinct keys written in one entry — is laid out on this contract the same way: the entry's
+ * frame declares the contract's data-NFT record first, and the writer's own record groups follow it, so a mapping
+ * batch read starts at the target groups rather than mistaking the data-NFT record for its first one. The record
+ * declared last is still refused, because the group walk then consumes a mapping record as that record's group.
  *
  * Every coordinate comes from `layoutTransaction`/`participant` and every commitment from the shipped encoders.
  * The whole shipped path runs: the compiler, `deployMaster`, `buildProxyArtifact`, the composer, the derivation
@@ -154,14 +155,18 @@ const IMPL: DeployedContract = {
 
 const EVENT = implementationArtifact.events![0]!;
 /** The mapping collection's node lock: the proxy's category derives it, because the delegate frame runs as the proxy. */
-const ENTRY_LOCK = scriptToLockingBytecode(
+const ENTRY_REDEEM = scriptToBytecode(
   buildEntryNftCovenantScript(
     PROXY_CATEGORY,
     computeCollectionHash(implementationArtifact.stateLayout!.collections![0]!.signature),
   ),
-  'p2sh32',
 );
-const ENTRY_UNLOCK = encodeDataPush(new Uint8Array([1]));
+const ENTRY_LOCK = scriptToLockingBytecode(ENTRY_REDEEM, 'p2sh32');
+/** The entry covenant's `<masterInputIndex> <flag>` unlocking, authorized by the proxy's own master. */
+const entryUnlock = (masterInputIndex: number): Uint8Array => createUnlockingBytecode('p2sh32', ENTRY_REDEEM, [
+  encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+  encodeFunctionArgument(BigInt(masterInputIndex), 'bigint') as Uint8Array,
+]);
 const ROOT = rootOf(proxyContract, '__fallback', PROXY_MASTER);
 
 /** The commitment the shipped encoder materializes for the proxy's data-NFT record, at one state. */
@@ -444,12 +449,12 @@ function buildRegistrationEntry(options: { readonly recordLast?: boolean } = {})
       [HEAD_ID]: {
         source: headSource,
         output: { ...headSource, token: token(PROXY_CATEGORY, 'mutable', insert.written[0]!.after) },
-        unlockingBytecode: ENTRY_UNLOCK,
+        unlockingBytecode: entryUnlock(proxyIndex),
       },
       [KEY_NODE_ID]: {
         source: keyNodeSource,
         output: { ...keyNodeSource, token: token(PROXY_CATEGORY, 'mutable', update.written[0]!.after) },
-        unlockingBytecode: ENTRY_UNLOCK,
+        unlockingBytecode: entryUnlock(proxyIndex),
       },
       [USER_ID]: userInput(),
     },
@@ -543,7 +548,7 @@ describe('a proxied single master: the outer hop', () => {
 });
 
 describe('the registration mapping write on the same proxy hop', () => {
-  it('stalls in the writer\'s own close: the batch read resolves no declared view', () => {
+  it('stalls in the writer\'s own close: the delegate frame\'s declared read fails', () => {
     const built = buildRegistrationEntry();
     // The plan is built from the shipped encoders: the read node is rewritten in place, the head is relinked, and
     // the second key's node is created — three records across the two writer groups.
@@ -558,10 +563,8 @@ describe('the registration mapping write on the same proxy hop', () => {
     } catch (error) {
       stalled = error as Error;
     }
-    // The frame's group walk now starts on the target groups, so the close reaches its declared-record read; that
-    // read then names a coordinate the transaction has no input at, and the run stops in the writer's own close.
-    // The group walk is what this pins: with the state record read as the first group, the same plan fails earlier,
-    // inside the derivation, on the state record's commitment.
+    // The frame's records now resolve from the input the head parked as their owner, so the write reaches the
+    // close; the close's declared read then fails its own check, so the derivation still stops at site 0.
     expect(stalled).toBeDefined();
     expect(stalled!.message).toMatch(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.register\(\)/);
     expect(stalled!.message).toMatch(/site 0 \(close of segment 0\)/);
@@ -571,7 +574,7 @@ describe('the registration mapping write on the same proxy hop', () => {
     });
     const impl = report.refusals.find((refusal) => refusal.master === IMPL_MASTER);
     expect(impl).toBeDefined();
-    expect(impl!.objection).toMatch(/invalid transaction UTXO index/);
+    expect(impl!.objection).toMatch(/OP_VERIFY/);
     // The plan itself is sound: the created node's commitment is the shipped encoder's value for the second write,
     // and the rewritten head and read node carry the commitments the shipped planner computed.
     expect(bytesToHex(built.createdCommitment)).toBe(bytesToHex(encodeEntryCommitment(

@@ -35349,6 +35349,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
 
   private emitMasterInputIndex(locationData: SingleLocationData, extraStackOffset = 0): void {
+    if (this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())) {
+      // A per-call frame's records belong to the input the head parked as their owner: the frame's own input for a
+      // frame that owns its records, and its caller's for a frame that runs on them. Every state and entry site is
+      // an offset from that input, so a frame that runs on its caller's records resolves them where the caller's
+      // block put them instead of against an input of its own that holds none.
+      this.emitPickTrackedFromBottom(categoryOwnerSlotName(), locationData);
+      return;
+    }
     if (this.usesMessageBusOwnerBlockBase()) {
       // Every generated route handler receives its physical participant owner as an explicit compiler argument.
       // Use that one authority for both direct routes (where the caller supplied OP_INPUTINDEX) and delegated

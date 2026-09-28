@@ -69,10 +69,10 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 | P28 | `STATIC` root reads off-chain, including reverting views (E4) | MS8 | none |
 | P29 | CREATE-predicted, circular addresses (F3) | MS9 | partial, as of `867cafe09`. The four escrow contracts deploy through the shipped factory path at their real addresses and are referenced by the next deployment; the fixture stops before the proxy half, so the prediction is exercised but not yet asserted (the assertion is F7's) |
 
-Movement since that reading, per the plan's Log: the record-and-mapping wall's first half closed (`073632a9d`) — a
-per-call segment's mapping groups are read past the frame's own state records — and the shapes that keep a record
-beside a mapping batch now stall in the writer's own close, where the declared-record read resolves no view. No row
-above changes status on that: MS1's registration half still does not settle.
+Movement since that reading, per the plan's Log: a frame that keeps a data-NFT record and writes a mapping batch now
+settles as a user-entered root — the batch groups are read past the frame's own state records, and every state and
+entry coordinate is based on the input the head parked as the records' owner — while the same entry behind a proxy
+hop still stalls at its close. No row above changes status on that: MS1's registration half still does not settle.
 | P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 ## 3. Test mechanics the titles also need (not shapes)

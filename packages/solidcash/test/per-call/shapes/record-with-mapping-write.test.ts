@@ -7,6 +7,7 @@ import {
   computeCollectionHash,
   encodeEventCommitment,
   encodeIntegerValue,
+  scriptToBytecode,
   type RecordEntry,
 } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -25,7 +26,6 @@ import {
   layoutTransaction,
   participant,
   planMappingWrite,
-  reportCompositionRefusal,
   type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
@@ -47,14 +47,16 @@ import {
   headSentinelCommitment,
   keyToSlot,
 } from '../../../src/stateful/SortedList.js';
-import { scriptToLockingBytecode } from '../../../src/utils.js';
+import { scriptToLockingBytecode, createUnlockingBytecode } from '../../../src/utils.js';
+import { encodeFunctionArgument } from '../../../src/Argument.js';
 
 /**
  * One entry that keeps its contract's data-NFT record and writes a mapping batch.
  *
  * The frame's segment declares its own state record first — that record is what its state sites read and what the
  * head derives the state block's base from — and the mapping nodes it writes after it. The plan, its coordinates
- * and every commitment come from the shipped encoders and the shipped layout; the case pins where the run stops.
+ * and every commitment come from the shipped encoders and the shipped layout; the run settles and each write is
+ * read back from the transaction's own outputs.
  */
 
 const LABEL = 'record with mapping write';
@@ -88,6 +90,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     emit Registered(readKey, value);'
   + '     require(true);'
   + '   }'
+  + '   function currentCount() view returns (int) { return this.count; }'
   + ' }';
 
 const artifact = compileStringMulti(SOURCE, { composition: 'per-call' }).Impl!;
@@ -97,13 +100,17 @@ const DEPLOYED: DeployedContract = {
   program: deployed.script, lockingBytecode: deployed.lockingBytecode,
 };
 const EVENT = artifact.events![0]!;
-const ENTRY_LOCK = scriptToLockingBytecode(
+const ENTRY_REDEEM = scriptToBytecode(
   buildEntryNftCovenantScript(
     CATEGORY, computeCollectionHash(artifact.stateLayout!.collections![0]!.signature),
   ),
-  'p2sh32',
 );
-const ENTRY_UNLOCK = new Uint8Array([1]);
+const ENTRY_LOCK = scriptToLockingBytecode(ENTRY_REDEEM, 'p2sh32');
+/** The entry covenant's `<masterInputIndex> <flag>` unlocking, as the data-NFT record's own builder shapes it. */
+const ENTRY_UNLOCK = createUnlockingBytecode('p2sh32', ENTRY_REDEEM, [
+  encodeFunctionArgument(1n, 'bigint') as Uint8Array,
+  encodeFunctionArgument(BigInt(MASTER_INDEX), 'bigint') as Uint8Array,
+]);
 const ROOT = rootOf(artifact.contractName, 'register', MASTER);
 
 /** The commitment the shipped encoder materializes for the contract's one state record. */
@@ -112,8 +119,20 @@ function recordOf(count: bigint): Uint8Array {
     buildPushdataCommitment(artifact.stateLayout!, { count }, 0), 'hex'));
 }
 
+/** The plan and the commitments the settlement proof reads back, from the shipped planner and encoders. */
+interface BuiltPlan {
+  readonly plan: CompositionDraftPlan;
+  readonly recordIndex: number;
+  readonly headIndex: number;
+  readonly readNodeIndex: number;
+  readonly createdIndex: number;
+  readonly createdCommitment: Uint8Array;
+  readonly headAfter: Uint8Array;
+  readonly nodeAfter: Uint8Array;
+}
+
 /** The plan: a kept-in-place state record, an in-place update of one key and an insert of another. */
-function buildPlan(): CompositionDraftPlan {
+function buildPlan(options: { readonly recordLast?: boolean } = {}): BuiltPlan {
   const readKeyPush = encodeIntegerValue(READ_KEY);
   const writeKeyPush = encodeIntegerValue(WRITE_KEY);
   const readSlot = keyToSlot(readKeyPush);
@@ -172,7 +191,9 @@ function buildPlan(): CompositionDraftPlan {
       },
       frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: DEPLOYED.address, value: 0n },
       enteredBy: USER_ID, origin: USER_ID, calls: [],
-      segments: [[recordWritten, ...mappingEntries]],
+      segments: [options.recordLast === true
+        ? [...mappingEntries, recordWritten]
+        : [recordWritten, ...mappingEntries]],
       argumentPushes, dispatches: true,
     }),
     events: [eventIndex],
@@ -190,7 +211,7 @@ function buildPlan(): CompositionDraftPlan {
   };
   const createdCommitment = insert.written.find((node) => !node.existed)!.after;
 
-  return {
+  const plan: CompositionDraftPlan = {
     blocks,
     userInputs: userInputs([USER_ID], participantCount),
     masters: [implMaster],
@@ -234,39 +255,62 @@ function buildPlan(): CompositionDraftPlan {
       redeemScript: validatorFor(CATEGORY).redeem,
     },
   };
+  return {
+    plan, recordIndex, headIndex, readNodeIndex, createdIndex, createdCommitment,
+    headAfter: insert.written[0]!.after, nodeAfter: update.written[0]!.after,
+  };
 }
 
-describe('one entry that keeps its record and writes a mapping batch', () => {
-  it('stalls in the writer\'s own close, with the state record declared before its groups', () => {
-    const plan = buildPlan();
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: [artifact], plan,
-    });
-    let stalled: Error | undefined;
-    try {
-      deriveComposition([ROOT], host);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled).toBeDefined();
-    expect(stalled!.message).toMatch(
-      new RegExp(`PER_CALL_DERIVATION_STALLED: master "${MASTER}" of Impl\\.register\\(\\)`),
-    );
+describe('an entry that keeps its record and writes a mapping batch', () => {
+  it('settles: the derivation completes, every contract input is accepted and the writes match the planner', () => {
+    const built = buildPlan();
+    const outcome = composeAndDerive(built.plan, [artifact], [ROOT]);
+    // The user's call reaches the entry its own selector names.
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toContain(entryName(artifact.contractName, 'register'));
+    // Every contract input the layout places is accepted by the BCH-2026 machine.
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    // The created node's output carries what the shipped encoder materializes for the second key's write.
+    const outputs = outcome.transaction.outputs;
+    const created = outputs[built.createdIndex]!.token!.nft!.commitment;
+    expect(bytesToHex(created)).toBe(bytesToHex(built.createdCommitment));
+    expect(bytesToHex(created)).toBe(bytesToHex(encodeEntryCommitment(
+      keyToSlot(encodeIntegerValue(WRITE_KEY)), keyToSlot(encodeIntegerValue(READ_KEY)),
+      encodeIntegerValue(WRITTEN_VALUE))));
+    // The rewritten head and the read node carry the commitments the shipped planner computed.
+    expect(bytesToHex(outputs[built.headIndex]!.token!.nft!.commitment)).toBe(bytesToHex(built.headAfter));
+    expect(bytesToHex(outputs[built.readNodeIndex]!.token!.nft!.commitment)).toBe(bytesToHex(built.nodeAfter));
+    expect(bytesToHex(built.headAfter)).not.toBe(bytesToHex(headSentinelCommitment()));
+  });
 
-    const report = reportCompositionRefusal({ draft, artifacts: [artifact], vm: compositionMachine() });
-    expect(report.refusals.map((refusal) => refusal.master)).toContain(MASTER);
-    expect(report.refusals[0]!.objection).toMatch(/OP_VERIFY/);
+  it('refuses a record output no frame computed, on the same composition', () => {
+    const built = buildPlan();
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: [artifact], plan: built.plan,
+    });
+    deriveComposition([ROOT], host);
+    const program = draft.programFor(MASTER);
+    const wrong = recordOf(COUNT_BEFORE + 100n);
+    const transaction = {
+      ...program.transaction,
+      outputs: program.transaction.outputs.map((output, index) => (index === built.recordIndex
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
+        : output)),
+    };
+    const vm = compositionMachine();
+    const state = vm.evaluate({
+      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      sourceOutputs: program.sourceOutputs, transaction,
+    });
+    expect(vm.stateSuccess(state)).not.toBe(true);
   });
 
   it('refuses the same plan with the state record declared after its groups', () => {
-    const plan = buildPlan();
     // The state record is what the frame's state sites read and what the block base derives from, so a plan that
     // declares it behind the mapping groups hands the block a base at the wrong coordinate.
-    const writer = plan.masters[0]!;
-    const segment = writer.segments[0]!;
-    (writer as { segments: readonly (readonly RecordEntry[])[] }).segments = [
-      [segment[segment.length - 1]!, ...segment.slice(0, -1)],
-    ];
-    expect(() => composeAndDerive(plan, [artifact], [ROOT])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    const built = buildPlan({ recordLast: true });
+    expect(() => composeAndDerive(built.plan, [artifact], [ROOT])).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });

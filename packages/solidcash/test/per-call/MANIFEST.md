@@ -36,13 +36,13 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 25 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 26 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1165 tests (115 + 405 + 645), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 645 is the fourteen rows above
+Total: 1166 tests (115 + 405 + 646), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 646 is the fourteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -223,9 +223,10 @@ and the binding of a delegate callee to the implementation the record names by `
   event read back through the shipped encoders).
 - **`solidcash/test/per-call/shapes/`** — the compositions the same scripts and the same builder have to serve,
   including one entry that keeps its contract's data-NFT record and writes a mapping batch
-  (`record-with-mapping-write.test.ts`): the plan is built from the shipped encoders and layout, and the case pins
-  where the run stops — the writer's own close, whose declared-record read resolves no view — beside the same plan
-  with its state record declared behind the mapping groups, which is refused,
+  (`record-with-mapping-write.test.ts`): the derivation completes, every contract input is accepted, the created
+  node's output carries the commitment the shipped encoder materializes and the rewritten head and read node carry
+  the shipped planner's commitments, with a control (a record output no frame computed) the validator refuses and
+  the same plan with its state record declared behind the mapping groups refused,
   laid out and derived through the shipped composer and settled in the machine where they are supported, with the
   shapes the generator still refuses asserted as refusals by name. The chain that calls back to its head (head to
   middle to tail, tail back to the middle, middle back to the head) settles with every contract input and the one
@@ -292,7 +293,9 @@ all eleven checks, and every rule it emits has a machine-level hostile rejection
 - The marketplace harness is pointed at `composition: 'per-call'`, but the project still does not compile on that
   path: a compiled unit whose own bodies, or whose reached definitions, carry inline assembly is refused by name,
   and so is a body
-  that writes a mapping in a shape whose records the master cannot read back from its own frame. One target written
+  that writes a mapping in a shape whose records the master cannot read back from its own frame — a frame that keeps
+  a data-NFT record and writes a mapping batch now settles as a user-entered root, and the same entry behind a proxy
+  hop still stalls at its close. One target written
   in place, a whole multi-target batch, the read of the entry the write targets, a composite key, several
   collections in one body, and the sender and compile-time key forms are now derived, planned and settled, and a body now pins its own event count against the head's region, so a
   constructor that emits shares the head. A file-level definition is no longer a wall either: the master opens after

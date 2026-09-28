@@ -3,6 +3,7 @@ import {
   existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'path';
 import { detectCompatibility, detectPackageManager, initializeProject } from '../src/init.js';
 import { compatibilityAliases } from '../src/vitest-preset.js';
@@ -157,13 +158,17 @@ describe('initializeProject', () => {
   });
 
   it('generates explicit aliases for each compatibility generation', () => {
-    expect(compatibilityAliases({ hardhat: 2, ethers: 5 })).toMatchObject({
+    const aliases = compatibilityAliases({ hardhat: 2, ethers: 5 });
+    expect(aliases).toMatchObject({
       hardhat: expect.stringContaining('solidhat/dist/hardhat2.js'),
       ethers: expect.stringContaining('solidhat/dist/ethers5.js'),
       '@nomicfoundation/hardhat-toolbox/network-helpers': expect.stringContaining('testing/dist/network-helpers.js'),
       '@nomicfoundation/hardhat-ethers/signers': expect.stringContaining('testing/dist/stubs/empty.js'),
       chai: expect.stringContaining('testing/dist/chai.js'),
     });
+    const require = createRequire(import.meta.url);
+    expect(aliases.solidcash).toBe(require.resolve('solidcash'));
+    expect(aliases['@solidcash/testing']).toBe(require.resolve('@solidcash/testing'));
     expect(compatibilityAliases({ hardhat: 3, ethers: 6 })).toMatchObject({
       hardhat: expect.stringContaining('solidhat/dist/hardhat3.js'),
       ethers: expect.stringContaining('solidhat/dist/ethers6.js'),

@@ -23,6 +23,7 @@ export function leSmallNumber(bytes: Uint8Array): number {
 // (base TransactionBuilder) and stateful (block-layout-slot) complex/nested-arg probes.
 export function extractKeccakPreimageFromTrace(
   trace: unknown[], base: number, n: number, slotCount = n,
+  acceptCandidate: (callIndex: number, preimage: Uint8Array) => boolean = () => true,
 ): { callIndex: number; preimage: Uint8Array } {
   let found: { callIndex: number; preimage: Uint8Array } | undefined;
   for (const s of trace) {
@@ -33,9 +34,10 @@ export function extractKeccakPreimageFromTrace(
     const idx = leSmallNumber(step.stack[step.stack.length - 1]);
     if (idx >= base && idx < base + slotCount) {
       const marker = step.stack.length >= 3 ? leSmallNumber(step.stack[step.stack.length - 2]) : 0;
-      found = marker >= 1 && marker <= n
+      const candidate = marker >= 1 && marker <= n
         ? { callIndex: marker - 1, preimage: Uint8Array.from(step.stack[step.stack.length - 3]) }
         : { callIndex: idx - base, preimage: Uint8Array.from(step.stack[step.stack.length - 2]) };
+      if (acceptCandidate(candidate.callIndex, candidate.preimage)) found = candidate;
     }
   }
   if (!found) throw new Error('keccak256 preimage extraction: no side-car read found in the probe trace.');

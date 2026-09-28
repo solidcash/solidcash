@@ -8,10 +8,58 @@ export interface MessageBusVerifierProgram {
   inputCount: number;
   inputs: readonly { name: string; type: string }[];
   functions: readonly { id: number; name: string; bytecode: string }[];
+  /** Compatibility metadata published by replacement-style verifier artifacts. */
+  results?: readonly { type: string }[];
   /** Selector-derived participant lifecycle authority encoded in the verifier's two-byte result suffix. */
   lifecycle?: true;
   /** @deprecated Read support for artifacts emitted before lifecycle authority was generalized to merge. */
   splitLifecycle?: true;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Validate verifier-program JSON before it is allowed to determine a covenant address. */
+export function assertMessageBusVerifierProgram(program: unknown): asserts program is MessageBusVerifierProgram {
+  if (!isRecord(program)) throw new Error('message bus verifier program must be an object');
+  const { verifyFunctionId, inputCount, inputs, results, functions } = program;
+  if (!Number.isSafeInteger(verifyFunctionId)
+    || !Number.isSafeInteger(inputCount) || typeof inputCount !== 'number' || inputCount < 1
+    || !Array.isArray(inputs) || inputs.length !== inputCount
+    || !inputs.every((input) => isRecord(input)
+      && typeof input.name === 'string' && input.name.length > 0
+      && typeof input.type === 'string' && input.type.length > 0)
+    || (results !== undefined && (!Array.isArray(results) || results.length !== 3
+      || !results.every((result) => isRecord(result) && result.type === 'bytes32')))
+    || !Array.isArray(functions) || functions.length === 0
+    || !functions.every((fn) => isRecord(fn)
+      && Number.isSafeInteger(fn.id)
+      && typeof fn.name === 'string' && fn.name.length > 0
+      && typeof fn.bytecode === 'string' && fn.bytecode.length > 0
+      && /^[0-9a-f]*$/i.test(fn.bytecode) && fn.bytecode.length % 2 === 0)) {
+    throw new Error('message bus verifier program has an invalid replacement shape');
+  }
+  const ids = functions.map((fn) => fn.id as number);
+  const names = functions.map((fn) => fn.name as string);
+  const canonicalInputs = [
+    ['activeInputIndex', 'bigint'], ['expectedLocalRows', 'bigint'], ['localBatch', 'bytes'],
+  ];
+  const canonicalGraphInputs = [
+    ['suppliedFixedSize', 'bigint'], ['suppliedBlockSize', 'bigint'], ['suppliedEmissions', 'bytes'],
+    ['suppliedCallers', 'bytes'], ['suppliedSettlementBoundary', 'bigint'],
+    ['suppliedCompletionPositions', 'bytes'], ['suppliedSettlementTable', 'bytes'],
+  ];
+  const metadataInputs = inputs as { name: string; type: string }[];
+  const expectedInputs = inputCount === 3 ? canonicalInputs
+    : inputCount === 10 ? [...canonicalInputs, ...canonicalGraphInputs] : undefined;
+  if (new Set(ids).size !== ids.length || new Set(names).size !== names.length
+    || expectedInputs === undefined
+    || !expectedInputs.every(([name, type], index) =>
+      metadataInputs[index].name === name && metadataInputs[index].type === type)
+    || !ids.includes(verifyFunctionId as number)
+    || functions.find((fn) => fn.id === verifyFunctionId)?.name !== '__message_bus_verify_atomic') {
+    throw new Error('message bus verifier program has an invalid replacement function table');
+  }
 }
 
 /** The specialized verifier cannot fit within BCH's consensus script-size limit. */
@@ -24,6 +72,10 @@ export class MessageBusVerifierCapacityError extends Error {
 
 /** Commitment domain for one genesis-deployed composition-verifier instance. */
 export const MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN = new Uint8Array([0x4c, 0x33, 0x56, 0x31]); // L3V1
+/** Domain separation for the replacement master/verifier binding preimage. */
+export const MESSAGE_BUS_BINDING_DOMAIN = new Uint8Array([0x4c, 0x33, 0x42, 0x31]); // L3B1
+/** Six-byte instance prefix plus manifest and binding digests. */
+export const MESSAGE_BUS_VERIFIER_RECURRENT_COMMITMENT_BYTES = 70;
 
 /** Stable per-instance commitment. Instances share one covenant address but remain independently discoverable. */
 export const messageBusVerifierCommitment = (instance: number): Uint8Array => {
@@ -47,6 +99,7 @@ export const messageBusVerifierCommitment = (instance: number): Uint8Array => {
 export function buildMessageBusVerifierCovenantScript(
   program: MessageBusVerifierProgram, maximumInputBytes = 10_000,
 ): Script {
+  assertMessageBusVerifierProgram(program);
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (!verify) throw new Error('message bus verifier program omits its verify function');
   if (!Number.isSafeInteger(program.inputCount) || program.inputCount < 1) {

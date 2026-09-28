@@ -12,7 +12,8 @@ By default the `ElectrumNetworkProvider` creates a short-lived connection only w
 
 ### Constructor
 
-Both `network` and `options` parameters are optional, and they default to `mainnet` with the `bch.imaginary.scash` electrum server.
+Both `network` and `options` parameters are optional, and they default to `mainnet` with the
+`bch.imaginary.cash` Electrum server.
 
 ```ts
 new ElectrumNetworkProvider(network?: Network, options?: Options)

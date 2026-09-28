@@ -29,7 +29,7 @@ export interface TypegenResult {
 export interface TypegenWatcher { close(): void }
 
 interface ArtifactFile { artifact: Artifact; file: string; sourceModule: string }
-const GENERATOR_VERSION = 6;
+const GENERATOR_VERSION = 8;
 
 function walk(dir: string, accept: (file: string) => boolean, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;
@@ -205,14 +205,23 @@ function writeTarget(records: ArtifactFile[], target: TypegenTargetConfig, cache
   // errors into the concrete contract, so provide equivalent factory aliases for matcher-only imports.
   const compatibilityFactories = [
     { alias: 'Initializable', error: 'InvalidInitialization' },
+    { alias: 'Ownable', error: 'OwnableUnauthorizedAccount' },
     { alias: 'OwnableUpgradeable', error: 'OwnableUnauthorizedAccount' },
     { alias: 'ECDSA', error: 'ECDSAInvalidSignature' },
+    // Solidity exposes IERC20Errors as a matcher-only abstract interface. Some compilers omit inherited interface
+    // errors from the concrete ERC20 artifact, but its factory still provides the TypeChain-compatible interface
+    // object expected by revertedWithCustomError.
+    { alias: 'IERC20Errors', contract: 'FakeToken' },
   ];
   const existingNames = new Set(records.map((record) => record.artifact.contractName));
   for (const compatibility of compatibilityFactories) {
     if (existingNames.has(compatibility.alias)) continue;
-    const record = records.find((candidate) => candidate.artifact.errors?.some(
-      (error) => error.name === compatibility.error,
+    const record = records.find((candidate) => (
+      compatibility.error !== undefined && candidate.artifact.errors?.some(
+        (error) => error.name === compatibility.error,
+      )
+    )) ?? records.find((candidate) => (
+      compatibility.contract !== undefined && candidate.artifact.contractName === compatibility.contract
     ));
     if (!record) continue;
     const exportPath = `./contracts/${record.sourceModule}.js`.replace(/\\/g, '/');

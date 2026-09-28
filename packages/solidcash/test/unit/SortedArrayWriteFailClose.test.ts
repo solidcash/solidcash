@@ -22,7 +22,7 @@ describe('sorted vmap array writes: fail-close boundary', () => {
     expect(() => compileString(
       `contract C() { mapping(int => int[]) m;
         function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); for (int j = 0; j < ks.length; j++) { m[ks[j]].push(v); } } }`,
-    )).toThrow(/cannot be represented|supported scalar or fixed-batch|does not match a supported insert or update loop shape/i);
+    )).toThrow(/cannot be represented|supported scalar or fixed-batch|(?:does not match a )?supported insert or update loop shape/i);
   });
 
   it('multi-dimensional array element write `m[k][i][j]` now COMPILES (whole-value RMW desugar)', () => {

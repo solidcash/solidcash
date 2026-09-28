@@ -477,6 +477,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   messageBusPhysicalEntrySlotAlternatives?: number[][];
   /** Route-wide dynamic resources which precede this outlined handler's trailing mapping entries. */
   messageBusRouteDynamicResources?: string[];
+  /** Authenticated participant-master offset used by message-bus handler code generation. */
+  messageBusOwnerInputOffset?: number;
   /** Kernel route whose selected upgrade rows may replace the participant master locking bytecode. */
   messageBusUpgradeRoute?: boolean;
   /**
@@ -1950,6 +1952,9 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  /** Preserves source-level `this` after lowering to active-input bytecode introspection. */
+  isThisExpression = false;
+
   // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
   // destination width (e.g. `d & -d` in FullMath).
   legacyWrappingNegation = false;
@@ -2754,6 +2759,8 @@ export interface ExternalCallArgSource {
   value?: string;
   type?: string;
   expression?: ExternalCallExpression;
+  /** Source-level `address(this)`, distinct from physical active-input bytecode introspection. */
+  logicalIdentity?: boolean;
 }
 
 export interface ExternalCallExpression {
@@ -2979,6 +2986,8 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
+  // A fixed-method pointer table still broadcasts across every table element even without a selector sidecar.
+  pointerTableBroadcast: boolean = false;
   // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
   // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
   // broadening computed-receiver acceptance for unrelated Solidity-negative fixtures.

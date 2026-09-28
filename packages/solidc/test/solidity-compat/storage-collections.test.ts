@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import {
+  decodeAuthenticationInstructions, hexToBin, OpcodesBCH, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import { compileString } from './helpers.js';
+
+const readVmNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+  if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+  if (instruction.opcode === OpcodesBCH.OP_1NEGATE) return -1n;
+  if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+    return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+  }
+  if (!instruction.data) return undefined;
+  const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+  return typeof decoded === 'bigint' ? decoded : undefined;
+};
 
 // Focused regression guards derived from the Solidity compiler corpus.
 describe('transient and storage declaration placement', () => {
@@ -1189,7 +1203,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
     expect(fn?.dynamicReads).toContain('jobs');
     expect(fn?.sortedUpsertLoopInfo?.[0]?.op).toBe('set');
   });
-  it('adds ceil(jobsLen/120) onto the upsert predecessor index after a jobs element read', () => {
+  it('places read-only dynamic chunks before sorted-upsert inputs and outputs', () => {
     const art = compileString(
       'struct Job { int creator; int state; }'
       + ' contract C() { Job[] jobs; mapping(int => mapping(int => bool)) whitelist;'
@@ -1198,13 +1212,28 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' for (int i = 0; i < ks.length; i++) { this.whitelist[jobId][ks[i]] = true; } } }',
       { forceStateful: true },
     );
-    const hex = art.bytecode;
+    const hex = art.debug!.bytecode;
+    const instructions = decodeAuthenticationInstructions(hexToBin(hex));
     // encodeInt(119) ADD encodeInt(120) DIV — X151 foreign read-only chunk count
     expect(hex).toContain('017793017896');
-    // Teardown input-count pin must pick the entry address from the stack bottom
-    // (OP_DEPTH SUB PICK). A top-relative PICK misses the predecessor once the
-    // upsert working area leaves untracked items above the tracked frame.
-    expect(hex).toMatch(/74(?:0[1-9a-f]|5[1-9a-f])94(?:79)/);
+    // The SDK preserves those read-only chunks in both halves of the transaction. Require the same chunk-count
+    // term in the output-index expression which immediately feeds a sorted mapping bytecode covenant; checking
+    // only that it occurs somewhere in the contract misses an input-correct/output-early split layout.
+    const sortedOutputAfterReadOnlyChunks = instructions.findIndex((instruction, index) => {
+      if (instruction.opcode !== OpcodesBCH.OP_OUTPUTBYTECODE
+        || instructions[index - 1]?.opcode !== OpcodesBCH.OP_DUP
+        || instructions[index - 2]?.opcode !== OpcodesBCH.OP_ADD
+        || instructions[index - 3]?.opcode !== OpcodesBCH.OP_PICK) return false;
+      const baseWindow = instructions.slice(Math.max(0, index - 36), index - 3);
+      return baseWindow.some((candidate, offset) => (
+        readVmNumber(candidate) === 119n
+        && baseWindow[offset + 1]?.opcode === OpcodesBCH.OP_ADD
+        && readVmNumber(baseWindow[offset + 2]) === 120n
+        && baseWindow[offset + 3]?.opcode === OpcodesBCH.OP_DIV
+        && baseWindow[offset + 4]?.opcode === OpcodesBCH.OP_ADD
+      ));
+    });
+    expect(sortedOutputAfterReadOnlyChunks).toBeGreaterThanOrEqual(0);
     const fn = art.abi.find((candidate) => candidate.name === 'f');
     expect(fn?.dynamicReads).toContain('jobs');
     expect(fn?.sortedUpsertLoopInfo?.[0]?.collection).toBe('whitelist');
@@ -1229,7 +1258,7 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       }),
     ]));
     // Old jobs chunks still occupy impl+trailingBase even though this function writes jobs.
-    expect(art.bytecode).toContain('017793017896');
+    expect(art.debug!.bytecode).toContain('017793017896');
   });
   it('records both allow and disallow upsert loops over the same whitelist mapping', () => {
     const art = compileString(

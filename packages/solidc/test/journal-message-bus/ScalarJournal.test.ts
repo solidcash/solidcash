@@ -179,6 +179,7 @@ describe('Release 1 scalar journal lowering', () => {
       expect.objectContaining({
         name: 'approve',
         eligible: true,
+        physicalEntrySlots: [0],
         outputs: [{ type: 'bool' }],
         emits: [expect.objectContaining({ eventName: 'Approval' })],
       }),
@@ -349,13 +350,13 @@ describe('Release 1 scalar journal lowering', () => {
 
     expect(artifact.messageBus?.maximumRows).toBe(255);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'approve', eligible: true }),
-      expect.objectContaining({ name: 'transferFrom', eligible: true }),
+      expect.objectContaining({ name: 'approve', eligible: true, physicalEntrySlots: [0] }),
+      expect.objectContaining({ name: 'transferFrom', eligible: true, physicalEntrySlots: [2, 1, 0] }),
     ]));
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
       .toEqual(expect.arrayContaining(['allowances', 'balances']));
     // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice
     // into a Cartesian dispatcher produced tens of megabytes for the corresponding production ERC-20 route.
     expect(artifact.debug.bytecode.length).toBeLessThan(2_000_000);
-  });
+  }, 120_000);
 });

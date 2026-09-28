@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../direct-compile.js';
+import { compileString as compileMessageBusString } from 'solidc';
 import { Contract, StatefulContract } from '../../../src/index.js';
 import { hexToBin } from '@bitauth/libauth';
-import { alicePkh, bobPkh, carolPkh } from '../../fixture/vars.js';
+import {
+  aliceAddress, alicePkh, bobAddress, bobPkh, carolAddress, carolPkh,
+} from '../../fixture/vars.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../../test-util.js';
+import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 
 const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
@@ -295,6 +299,62 @@ describe('Release 3 collection journal SDK E2E', () => {
     await token.checkBalance(alicePkh, 50n).send();
     await token.checkBalance(bobPkh, 60n).send();
     await token.checkAllowance(alicePkh, carolPkh, 30n).send();
+  });
+
+  it('executes a later-row ERC-20 write through its physical entry slots', async () => {
+    const provider = createTestProvider();
+    const artifact = compileMessageBusString(`pragma solidity ^0.8.0;
+      contract RoutedJournalToken() {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+
+        function mint(address to, uint amount) public {
+          balances[to] = balances[to] + amount;
+          require(amount >= 0);
+        }
+        function approve(address spender, address owner, uint amount) public {
+          allowances[owner][spender] = amount;
+          require(amount >= 0);
+        }
+        function transferFrom(address from, address to, address spender, uint amount) public {
+          require(allowances[from][spender] >= amount);
+          require(balances[from] >= amount);
+          allowances[from][spender] = allowances[from][spender] - amount;
+          balances[from] = balances[from] - amount;
+          balances[to] = balances[to] + amount;
+          require(amount >= 0);
+        }
+        function checkBalance(address owner, uint expected) public {
+          require(balances[owner] == expected);
+        }
+        function checkAllowance(address owner, address spender, uint expected) public {
+          require(allowances[owner][spender] == expected);
+        }
+      }
+    `, {
+      forceStateful: true,
+      solidityImportCompat: true,
+      messageBus: true,
+      maximumInputBytes: 10_000,
+      optimizeForCompilationSpeed: true,
+      suppressWarnings: true,
+    });
+    const inner = new Contract(artifact, [], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, inner, artifact.stateLayout!, {}, { saltContract: true },
+    );
+    const token = StatefulContract.withCategory(inner, categoryId);
+    await token.mint(aliceAddress, 100n).send();
+    await token.mint(bobAddress, 10n).send();
+
+    const batch = encodeMessageBatch(artifact, [
+      { function: 'approve', args: [carolAddress, aliceAddress, 80n] },
+      { function: 'transferFrom', args: [aliceAddress, bobAddress, carolAddress, 30n] },
+    ]);
+    await token._batchRaw(batch.blob, batch.routeWitnesses).send();
+    await token.checkBalance(aliceAddress, 70n).send();
+    await token.checkBalance(bobAddress, 40n).send();
+    await token.checkAllowance(aliceAddress, carolAddress, 50n).send();
   });
 
   it('does not stale-read a shared literal-key debit across two multi-entry helper calls', async () => {

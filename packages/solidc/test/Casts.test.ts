@@ -141,13 +141,14 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
-  it('abi.encodePacked(uint160(address)) publishes the locking bytecode under solidityImportCompat', () => {
+  it('abi.encodePacked(uint160(address)) publishes the narrowed 20-byte Solidity identity', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
       'contract C() { function f(address a) returns (bytes) { return abi.encodePacked(uint160(a)); } }',
       { solidityImportCompat: true, messageBus: false }).debug.bytecode));
-    expect(asm).not.toContain('OP_3 OP_SPLIT OP_NIP');
-    expect(asm).not.toContain('OP_HASH160');
+    expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
+    expect(asm).toContain('OP_BIN2NUM');
+    expect(asm).toContain('OP_REVERSEBYTES');
     warn.mockRestore();
   });
 

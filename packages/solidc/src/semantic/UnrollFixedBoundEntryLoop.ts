@@ -206,7 +206,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         hasCandidateLoop = true;
       }
       if (n instanceof IndirectCallNode
-        || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined)) {
+        || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast))) {
         hasIndirectCall = true;
       }
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
@@ -330,7 +330,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
     if (hasIndirectCall
       && this.countNodes(bodyStmts, (n) => n instanceof IndirectCallNode
-        || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined)) === 1) {
+        || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast))) === 1) {
       recordPointerTableExpansion(
         this.expansions, this.currentFunction, { count: values.length, guarded: false },
       );
@@ -506,7 +506,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   private hasIndirectCall(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
-      || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined));
+      || (n instanceof MethodCallNode && (n.selectorArrayVar !== undefined || n.pointerTableBroadcast)));
   }
 
   private hasControlFlowEscape(stmts: Node[]): boolean {

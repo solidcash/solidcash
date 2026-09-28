@@ -60,6 +60,10 @@ and their equivalent for outputs:
 - **`bytes tx.outputs[i].nftCommitment`** - NFT commitment data of a specific output
 - **`int tx.outputs[i].tokenAmount`** - Amount of fungible tokens of a specific output.
 
+Stateful contracts can usually avoid manual token introspection by using [Token Containers](/docs/language/token-containers),
+which provide aggregate balances, authenticated FT/NFT transfers, deposits, and SDK discovery for native tokens
+held by the contract.
+
 ## CashTokens Use cases
 
 The Jedex has a section on novel "[demonstrated concepts](https://github.com/bitjson/jedex#demonstrated-concepts)" enabled by CashTokens. The Jedex overview serves as the best reference to-date for the new possibilities enabled by CashTokens.
@@ -169,15 +173,19 @@ The easiest way to prevent issues with "junk" empty NFTs is to check that only N
 
 #### tokenCategory encoding
 
-The `tokenCategory` introspection variable returns the tokenCategory in the original unreversed order, this is unlike wallets and explorers which use the reversed byte-order. So be careful about the byte-order of `tokenCategory` when working with BCH smart contracts.
+Raw `tokenCategory` introspection uses consensus byte order, unlike the display-order category strings used by
+wallets, explorers, and the SolidCash SDK. It can also carry a trailing NFT capability byte. Split the capability
+when present and reverse the 32-byte category before comparing it with a display-order ID.
 
 ```ts
 import { swapEndianness } from '@bitauth/libauth';
 import { Contract } from 'solidcash';
 
-// when using a standard encoded tokenId, swap the endianness of the hex before using it in your contract
+// A raw introspection comparison needs consensus byte order.
 const contract = new Contract(artifact, [swapEndianness(tokenId)], { provider })
 ```
+
+High-level `this.tokens[category]` parameters use the ordinary display-order ID; do not swap those SDK arguments.
 
 #### Combined BCH + CashTokens UTXOs
 

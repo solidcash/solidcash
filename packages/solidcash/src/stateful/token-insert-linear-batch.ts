@@ -42,6 +42,9 @@ export function jobEventsEntryOneToOneIndices(
   return indices;
 }
 
+/** Same-index mutable collection entry UTXOs. View tails must not replace these. */
+export const collectionEntryOneToOneIndices = jobEventsEntryOneToOneIndices;
+
 /**
  * Recreate a nested minting master at its input index. Inserting would shift
  * assigned view tails and the jobs suffix; drop one later alignment pad so

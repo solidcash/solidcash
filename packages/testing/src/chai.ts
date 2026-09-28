@@ -722,7 +722,7 @@ class Assertion {
     const viewRead = this.actual?.parentContract?.inner?.artifact?.abi
       ?.find((fn: { name?: string; writesState?: boolean }) => fn.name === this.actual?.functionName)
       ?.writesState === false;
-    if (!this.negate && !viewRead && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
+    if (!this.negate && !viewRead && relaxed) {
       const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
       return Promise.resolve(result).then(
         () => { throw new Error(`expected transaction to revert with ${String(reason)}, but it succeeded`); },
@@ -733,12 +733,7 @@ class Assertion {
       );
     }
     const e = ensureVitest();
-    const assertion = Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
-    if (this.negate) return assertion;
-    return assertion.catch((error) => {
-      if (delegatedSourceDeclaresReason(this.actual, reason)) return;
-      throw error;
-    });
+    return Promise.resolve((this.negate ? e(this.actual).not : e(this.actual)).toBeRevertedWith(reason));
   }
 
   /**
@@ -753,9 +748,9 @@ class Assertion {
     p.withArgs = async (...expected: any[]): Promise<void> => {
       await p;
       const actualArgs = await this.revertArgumentTuple();
-      // A compiled covenant only carries the error name, so there is nothing to verify: keep this branch's
-      // lenient pass-through. A locally modelled contract attaches its argument tuple.
-      if (actualArgs === undefined) return;
+      if (actualArgs === undefined) {
+        throw new Error(`Custom error ${name}: cannot yet verify its arguments`);
+      }
       expected.forEach((want, index) => {
         const got = actualArgs[index];
         const ga = typeof got === 'bigint' ? got : (got as any)?.toString?.() ?? got;

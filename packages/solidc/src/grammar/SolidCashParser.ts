@@ -358,276 +358,276 @@ export default class SolidCashParser extends Parser {
 	public static readonly RULE_functionTypeReturnParameter = 153;
 	public static readonly RULE_typeCast = 154;
 	public static readonly RULE_arrayCastType = 155;
-	public static readonly literalNames: (string | null)[] = [ null, "'import'", 
-                                                            "';'", "'as'", 
-                                                            "'{'", "','", 
-                                                            "'}'", "'.'", 
-                                                            "'*'", "'function'", 
-                                                            "'using'", "'for'", 
-                                                            "'global'", 
-                                                            "'+'", "'-'", 
-                                                            "'/'", "'%'", 
-                                                            "'**'", "'=='", 
-                                                            "'!='", "'<'", 
-                                                            "'<='", "'>'", 
-                                                            "'>='", "'&'", 
-                                                            "'|'", "'^'", 
-                                                            "'~'", "'delegate'", 
-                                                            "'upgrade'", 
-                                                            "'selfdestruct'", 
-                                                            "'unsafe'", 
-                                                            "'packed'", 
-                                                            "'entries'", 
-                                                            "'error'", "'revert'", 
-                                                            "'transient'", 
-                                                            "'leave'", "'fallback'", 
-                                                            "'receive'", 
-                                                            "'enumerable'", 
-                                                            "'require'", 
-                                                            "'this'", "'_'", 
-                                                            "'pragma'", 
-                                                            "'solidity'", 
-                                                            "'solidcash'", 
-                                                            "'||'", "'='", 
-                                                            "'interface'", 
-                                                            "'is'", "'public'", 
-                                                            "'external'", 
-                                                            "'library'", 
-                                                            "'abstract'", 
-                                                            "'contract'", 
-                                                            "'event'", "'('", 
-                                                            "')'", "'anonymous'", 
-                                                            "'indexed'", 
-                                                            "'struct'", 
-                                                            "'enum'", "'type'", 
-                                                            "'constant'", 
-                                                            "'constructor'", 
-                                                            "'internal'", 
-                                                            "'payable'", 
-                                                            "'virtual'", 
-                                                            "'+='", "'-='", 
-                                                            "'*='", "'/='", 
-                                                            "'%='", "'&='", 
-                                                            "'|='", "'^='", 
-                                                            "'<<='", "'>>='", 
-                                                            "'private'", 
-                                                            "'mapping'", 
-                                                            "'=>'", "'['", 
-                                                            "']'", "'modifier'", 
-                                                            "'pure'", "'view'", 
-                                                            "'override'", 
-                                                            "'returns'", 
-                                                            "'fixed'", "'ufixed'", 
-                                                            "'address'", 
-                                                            "'new'", "'++'", 
-                                                            "'--'", "'return'", 
-                                                            "'emit'", "'delete'", 
-                                                            "'if'", "'else'", 
-                                                            "'of'", "'in'", 
-                                                            "'do'", "'while'", 
-                                                            "'console.log'", 
-                                                            "'assembly'", 
-                                                            "'break'", "'continue'", 
-                                                            "'let'", "':='", 
-                                                            "'switch'", 
-                                                            "'case'", "'default'", 
-                                                            "'->'", "'unchecked'", 
-                                                            "':'", "'try'", 
-                                                            "'catch'", "'assert'", 
-                                                            "'abi.encode'", 
-                                                            "'abi.encodePacked'", 
-                                                            "'abi.encodeWithSelector'", 
-                                                            "'abi.encodeWithSignature'", 
-                                                            "'abi.encodeCall'", 
-                                                            "'bytes.concat'", 
-                                                            "'string.concat'", 
-                                                            "'abi.decode'", 
-                                                            "'abi.decodeAt'", 
-                                                            "'tx.outputs'", 
-                                                            "'tx.inputs'", 
-                                                            "'.reverse()'", 
-                                                            "'!'", "'>>'", 
-                                                            "'<<'", "'&&'", 
-                                                            "'?'", "'memory'", 
-                                                            "'calldata'", 
-                                                            "'storage'", 
-                                                            "'immutable'", 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            "'bytes'", null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, null, 
-                                                            null, "'.value'", 
-                                                            "'.length'", 
-                                                            "'.push'", "'.pop'", 
-                                                            "'.split'", 
-                                                            "'.slice'", 
-                                                            "'.delete'", 
-                                                            "'.code'", "'.codehash'", 
-                                                            "'.lockingBytecode'", 
-                                                            "'.tokenCategory'", 
-                                                            "'.nftCommitment'", 
-                                                            "'.tokenAmount'", 
-                                                            "'.outpointTransactionHash'", 
-                                                            "'.outpointIndex'", 
-                                                            "'.unlockingBytecode'", 
+	public static readonly literalNames: (string | null)[] = [ null, "'import'",
+                                                            "';'", "'as'",
+                                                            "'{'", "','",
+                                                            "'}'", "'.'",
+                                                            "'*'", "'function'",
+                                                            "'using'", "'for'",
+                                                            "'global'",
+                                                            "'+'", "'-'",
+                                                            "'/'", "'%'",
+                                                            "'**'", "'=='",
+                                                            "'!='", "'<'",
+                                                            "'<='", "'>'",
+                                                            "'>='", "'&'",
+                                                            "'|'", "'^'",
+                                                            "'~'", "'delegate'",
+                                                            "'upgrade'",
+                                                            "'selfdestruct'",
+                                                            "'unsafe'",
+                                                            "'packed'",
+                                                            "'entries'",
+                                                            "'error'", "'revert'",
+                                                            "'transient'",
+                                                            "'leave'", "'fallback'",
+                                                            "'receive'",
+                                                            "'enumerable'",
+                                                            "'require'",
+                                                            "'this'", "'_'",
+                                                            "'pragma'",
+                                                            "'solidity'",
+                                                            "'solidcash'",
+                                                            "'||'", "'='",
+                                                            "'interface'",
+                                                            "'is'", "'public'",
+                                                            "'external'",
+                                                            "'library'",
+                                                            "'abstract'",
+                                                            "'contract'",
+                                                            "'event'", "'('",
+                                                            "')'", "'anonymous'",
+                                                            "'indexed'",
+                                                            "'struct'",
+                                                            "'enum'", "'type'",
+                                                            "'constant'",
+                                                            "'constructor'",
+                                                            "'internal'",
+                                                            "'payable'",
+                                                            "'virtual'",
+                                                            "'+='", "'-='",
+                                                            "'*='", "'/='",
+                                                            "'%='", "'&='",
+                                                            "'|='", "'^='",
+                                                            "'<<='", "'>>='",
+                                                            "'private'",
+                                                            "'mapping'",
+                                                            "'=>'", "'['",
+                                                            "']'", "'modifier'",
+                                                            "'pure'", "'view'",
+                                                            "'override'",
+                                                            "'returns'",
+                                                            "'fixed'", "'ufixed'",
+                                                            "'address'",
+                                                            "'new'", "'++'",
+                                                            "'--'", "'return'",
+                                                            "'emit'", "'delete'",
+                                                            "'if'", "'else'",
+                                                            "'of'", "'in'",
+                                                            "'do'", "'while'",
+                                                            "'console.log'",
+                                                            "'assembly'",
+                                                            "'break'", "'continue'",
+                                                            "'let'", "':='",
+                                                            "'switch'",
+                                                            "'case'", "'default'",
+                                                            "'->'", "'unchecked'",
+                                                            "':'", "'try'",
+                                                            "'catch'", "'assert'",
+                                                            "'abi.encode'",
+                                                            "'abi.encodePacked'",
+                                                            "'abi.encodeWithSelector'",
+                                                            "'abi.encodeWithSignature'",
+                                                            "'abi.encodeCall'",
+                                                            "'bytes.concat'",
+                                                            "'string.concat'",
+                                                            "'abi.decode'",
+                                                            "'abi.decodeAt'",
+                                                            "'tx.outputs'",
+                                                            "'tx.inputs'",
+                                                            "'.reverse()'",
+                                                            "'!'", "'>>'",
+                                                            "'<<'", "'&&'",
+                                                            "'?'", "'memory'",
+                                                            "'calldata'",
+                                                            "'storage'",
+                                                            "'immutable'",
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            "'bytes'", null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, null,
+                                                            null, "'.value'",
+                                                            "'.length'",
+                                                            "'.push'", "'.pop'",
+                                                            "'.split'",
+                                                            "'.slice'",
+                                                            "'.delete'",
+                                                            "'.code'", "'.codehash'",
+                                                            "'.lockingBytecode'",
+                                                            "'.tokenCategory'",
+                                                            "'.nftCommitment'",
+                                                            "'.tokenAmount'",
+                                                            "'.outpointTransactionHash'",
+                                                            "'.outpointIndex'",
+                                                            "'.unlockingBytecode'",
                                                             "'.sequenceNumber'" ];
-	public static readonly symbolicNames: (string | null)[] = [ null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             null, null, 
-                                                             "VersionLiteral", 
-                                                             "BooleanLiteral", 
-                                                             "NumberUnit", 
-                                                             "BchUnit", 
-                                                             "DecimalLiteral", 
-                                                             "NumberLiteral", 
-                                                             "PrimitiveType", 
-                                                             "CryptoType", 
-                                                             "UnboundedBytes", 
-                                                             "BoundedBytes", 
-                                                             "Bound", "StringLiteral", 
-                                                             "DateLiteral", 
-                                                             "HexLiteral", 
-                                                             "TxVar", "UnsafeCast", 
-                                                             "BoundedSignedInt", 
-                                                             "BoundedUnsignedInt", 
-                                                             "BoundedSignedFixed", 
-                                                             "BoundedUnsignedFixed", 
-                                                             "NullaryOp", 
-                                                             "UnicodeLiteral", 
-                                                             "HexStringLiteral", 
-                                                             "DotValue", 
-                                                             "DotLength", 
-                                                             "DotPush", 
-                                                             "DotPop", "DotSplit", 
-                                                             "DotSlice", 
-                                                             "DotDelete", 
-                                                             "DotCode", 
-                                                             "DotCodehash", 
-                                                             "DotLockingBytecode", 
-                                                             "DotTokenCategory", 
-                                                             "DotNftCommitment", 
-                                                             "DotTokenAmount", 
-                                                             "DotOutpointTransactionHash", 
-                                                             "DotOutpointIndex", 
-                                                             "DotUnlockingBytecode", 
-                                                             "DotSequenceNumber", 
-                                                             "Identifier", 
-                                                             "WHITESPACE", 
-                                                             "COMMENT", 
+	public static readonly symbolicNames: (string | null)[] = [ null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             null, null,
+                                                             "VersionLiteral",
+                                                             "BooleanLiteral",
+                                                             "NumberUnit",
+                                                             "BchUnit",
+                                                             "DecimalLiteral",
+                                                             "NumberLiteral",
+                                                             "PrimitiveType",
+                                                             "CryptoType",
+                                                             "UnboundedBytes",
+                                                             "BoundedBytes",
+                                                             "Bound", "StringLiteral",
+                                                             "DateLiteral",
+                                                             "HexLiteral",
+                                                             "TxVar", "UnsafeCast",
+                                                             "BoundedSignedInt",
+                                                             "BoundedUnsignedInt",
+                                                             "BoundedSignedFixed",
+                                                             "BoundedUnsignedFixed",
+                                                             "NullaryOp",
+                                                             "UnicodeLiteral",
+                                                             "HexStringLiteral",
+                                                             "DotValue",
+                                                             "DotLength",
+                                                             "DotPush",
+                                                             "DotPop", "DotSplit",
+                                                             "DotSlice",
+                                                             "DotDelete",
+                                                             "DotCode",
+                                                             "DotCodehash",
+                                                             "DotLockingBytecode",
+                                                             "DotTokenCategory",
+                                                             "DotNftCommitment",
+                                                             "DotTokenAmount",
+                                                             "DotOutpointTransactionHash",
+                                                             "DotOutpointIndex",
+                                                             "DotUnlockingBytecode",
+                                                             "DotSequenceNumber",
+                                                             "Identifier",
+                                                             "WHITESPACE",
+                                                             "COMMENT",
                                                              "LINE_COMMENT" ];
 	// tslint:disable:no-trailing-whitespace
 	public static readonly ruleNames: string[] = [
-		"sourceFile", "importDirective", "importBinding", "experimentalStdImport", 
-		"freeFunctionDefinition", "usingForDirective", "usingFunctionBinding", 
-		"userDefinableOperator", "anyIdentifier", "functionName", "pragmaDirective", 
-		"pragmaName", "pragmaValue", "versionAlternative", "versionConstraint", 
-		"versionOperator", "interfaceDefinition", "interfaceCollection", "interfaceStateVariable", 
-		"interfaceStateVariableVisibility", "interfaceFunction", "interfaceFallbackDefinition", 
-		"libraryDefinition", "contractDefinition", "inheritanceSpecifier", "abstractFunctionDefinition", 
-		"eventDefinition", "eventParameter", "errorDefinition", "errorParameter", 
-		"structDefinition", "structField", "enumDefinition", "enumMember", "typeDefinition", 
-		"constantDefinition", "constructorDefinition", "fallbackDefinition", "fallbackModifier", 
-		"receiveDefinition", "receiveModifier", "parentInvocation", "stateVariableDeclaration", 
-		"collectionModifier", "stateVariableVisibility", "mappingType", "arrayType", 
-		"modifierDefinition", "modifierStatement", "placeholderStatement", "functionDefinition", 
-		"customModifierInvocation", "functionModifier", "overrideSpecifier", "unsafeModifier", 
-		"returnType", "returnParam", "parameterList", "parameter", "block", "blockStatement", 
-		"statement", "primitiveTypeReferenceStatement", "userDefinedArrayTypeReferenceStatement", 
-		"elementaryTypeToken", "bareTypeExpressionStatement", "bareCallOptionsStatement", 
-		"callOptionsFunctionMember", "bareNewWithOptionsStatement", "parenthesizedArrayPopStatement", 
-		"expressionStatement", "assignChain", "prefixIncDecStatement", "returnStatement", 
-		"selfdestructStatement", "emitStatement", "variableDefinition", "functionArrayType", 
-		"tupleAssignment", "nestedTupleAssignment", "nestedTuplePattern", "nestedTuplePatternItem", 
-		"tupleSlot", "pushArgument", "deleteStatement", "timeOpStatement", "requireStatement", 
-		"ifStatement", "loopStatement", "forOfEntriesStatement", "forInStatement", 
-		"forOfStatement", "forStatement", "forInit", "forCondition", "forUpdate", 
-		"doWhileStatement", "whileStatement", "consoleStatement", "assemblyStatement", 
-		"yulBlock", "yulStatement", "yulVariableDeclaration", "yulAssignment", 
-		"yulIf", "yulSwitch", "yulCase", "yulDefault", "yulForLoop", "yulFunctionDefinition", 
-		"yulExpression", "yulFunctionCall", "yulFunctionName", "yulIdentifier", 
-		"yulPath", "yulLiteral", "uncheckedStatement", "switchStatement", "switchCase", 
-		"switchDefault", "tryCatchStatement", "tryReturns", "catchClause", "breakStatement", 
-		"continueStatement", "requireMessage", "revertStatement", "assertStatement", 
-		"consoleParameter", "consoleParameterList", "functionCall", "namedArg", 
-		"expressionList", "callArgument", "callOptions", "callOption", "typeList", 
-		"typeListItem", "parenExpression", "newExpression", "expression", "typeIntrospectionBase", 
-		"abiEncodeCallArguments", "bareAbiFunctionReferenceStatement", "memberName", 
-		"modifier", "dataLocation", "literal", "numberLiteral", "decimalLiteral", 
-		"typeName", "functionType", "functionTypeParameter", "functionTypeReturnParameter", 
+		"sourceFile", "importDirective", "importBinding", "experimentalStdImport",
+		"freeFunctionDefinition", "usingForDirective", "usingFunctionBinding",
+		"userDefinableOperator", "anyIdentifier", "functionName", "pragmaDirective",
+		"pragmaName", "pragmaValue", "versionAlternative", "versionConstraint",
+		"versionOperator", "interfaceDefinition", "interfaceCollection", "interfaceStateVariable",
+		"interfaceStateVariableVisibility", "interfaceFunction", "interfaceFallbackDefinition",
+		"libraryDefinition", "contractDefinition", "inheritanceSpecifier", "abstractFunctionDefinition",
+		"eventDefinition", "eventParameter", "errorDefinition", "errorParameter",
+		"structDefinition", "structField", "enumDefinition", "enumMember", "typeDefinition",
+		"constantDefinition", "constructorDefinition", "fallbackDefinition", "fallbackModifier",
+		"receiveDefinition", "receiveModifier", "parentInvocation", "stateVariableDeclaration",
+		"collectionModifier", "stateVariableVisibility", "mappingType", "arrayType",
+		"modifierDefinition", "modifierStatement", "placeholderStatement", "functionDefinition",
+		"customModifierInvocation", "functionModifier", "overrideSpecifier", "unsafeModifier",
+		"returnType", "returnParam", "parameterList", "parameter", "block", "blockStatement",
+		"statement", "primitiveTypeReferenceStatement", "userDefinedArrayTypeReferenceStatement",
+		"elementaryTypeToken", "bareTypeExpressionStatement", "bareCallOptionsStatement",
+		"callOptionsFunctionMember", "bareNewWithOptionsStatement", "parenthesizedArrayPopStatement",
+		"expressionStatement", "assignChain", "prefixIncDecStatement", "returnStatement",
+		"selfdestructStatement", "emitStatement", "variableDefinition", "functionArrayType",
+		"tupleAssignment", "nestedTupleAssignment", "nestedTuplePattern", "nestedTuplePatternItem",
+		"tupleSlot", "pushArgument", "deleteStatement", "timeOpStatement", "requireStatement",
+		"ifStatement", "loopStatement", "forOfEntriesStatement", "forInStatement",
+		"forOfStatement", "forStatement", "forInit", "forCondition", "forUpdate",
+		"doWhileStatement", "whileStatement", "consoleStatement", "assemblyStatement",
+		"yulBlock", "yulStatement", "yulVariableDeclaration", "yulAssignment",
+		"yulIf", "yulSwitch", "yulCase", "yulDefault", "yulForLoop", "yulFunctionDefinition",
+		"yulExpression", "yulFunctionCall", "yulFunctionName", "yulIdentifier",
+		"yulPath", "yulLiteral", "uncheckedStatement", "switchStatement", "switchCase",
+		"switchDefault", "tryCatchStatement", "tryReturns", "catchClause", "breakStatement",
+		"continueStatement", "requireMessage", "revertStatement", "assertStatement",
+		"consoleParameter", "consoleParameterList", "functionCall", "namedArg",
+		"expressionList", "callArgument", "callOptions", "callOption", "typeList",
+		"typeListItem", "parenExpression", "newExpression", "expression", "typeIntrospectionBase",
+		"abiEncodeCallArguments", "bareAbiFunctionReferenceStatement", "memberName",
+		"modifier", "dataLocation", "literal", "numberLiteral", "decimalLiteral",
+		"typeName", "functionType", "functionTypeParameter", "functionTypeReturnParameter",
 		"typeCast", "arrayCastType",
 	];
 	public get grammarFileName(): string { return "SolidCash.g4"; }
@@ -15320,7 +15320,7 @@ export default class SolidCashParser extends Parser {
 export class SourceFileContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public EOF(): TerminalNode {
 		return this.getToken(SolidCashParser.EOF, 0);
@@ -15410,7 +15410,7 @@ export class SourceFileContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ContractDefinitionContext, i) as ContractDefinitionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_sourceFile;
+	return SolidCashParser.RULE_sourceFile;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15426,10 +15426,10 @@ export class SourceFileContext extends ParserRuleContext {
 export class ImportDirectiveContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_importDirective;
+	return SolidCashParser.RULE_importDirective;
 	}
 	public override copyFrom(ctx: ImportDirectiveContext): void {
 		super.copyFrom(ctx);
@@ -15503,16 +15503,16 @@ export class NamespaceImportContext extends ImportDirectiveContext {
 export class ImportBindingContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_importBinding;
+	return SolidCashParser.RULE_importBinding;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15528,16 +15528,16 @@ export class ImportBindingContext extends ParserRuleContext {
 export class ExperimentalStdImportContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_experimentalStdImport;
+	return SolidCashParser.RULE_experimentalStdImport;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15553,7 +15553,7 @@ export class ExperimentalStdImportContext extends ParserRuleContext {
 export class FreeFunctionDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionName(): FunctionNameContext {
 		return this.getTypedRuleContext(FunctionNameContext, 0) as FunctionNameContext;
@@ -15583,7 +15583,7 @@ export class FreeFunctionDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_freeFunctionDefinition;
+	return SolidCashParser.RULE_freeFunctionDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15599,10 +15599,10 @@ export class FreeFunctionDefinitionContext extends ParserRuleContext {
 export class UsingForDirectiveContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_usingForDirective;
+	return SolidCashParser.RULE_usingForDirective;
 	}
 	public override copyFrom(ctx: UsingForDirectiveContext): void {
 		super.copyFrom(ctx);
@@ -15668,10 +15668,10 @@ export class UsingLibraryForContext extends UsingForDirectiveContext {
 export class UsingFunctionBindingContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -15680,7 +15680,7 @@ export class UsingFunctionBindingContext extends ParserRuleContext {
 		return this.getTypedRuleContext(UserDefinableOperatorContext, 0) as UserDefinableOperatorContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_usingFunctionBinding;
+	return SolidCashParser.RULE_usingFunctionBinding;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15696,10 +15696,10 @@ export class UsingFunctionBindingContext extends ParserRuleContext {
 export class UserDefinableOperatorContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_userDefinableOperator;
+	return SolidCashParser.RULE_userDefinableOperator;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15715,7 +15715,7 @@ export class UserDefinableOperatorContext extends ParserRuleContext {
 export class AnyIdentifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -15742,7 +15742,7 @@ export class AnyIdentifierContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BoundedUnsignedFixed, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_anyIdentifier;
+	return SolidCashParser.RULE_anyIdentifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15758,13 +15758,13 @@ export class AnyIdentifierContext extends ParserRuleContext {
 export class FunctionNameContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionName;
+	return SolidCashParser.RULE_functionName;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15780,7 +15780,7 @@ export class FunctionNameContext extends ParserRuleContext {
 export class PragmaDirectiveContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public pragmaName(): PragmaNameContext {
 		return this.getTypedRuleContext(PragmaNameContext, 0) as PragmaNameContext;
@@ -15789,31 +15789,31 @@ export class PragmaDirectiveContext extends ParserRuleContext {
 		return this.getTypedRuleContext(PragmaValueContext, 0) as PragmaValueContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
 	}
 	public VersionLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.VersionLiteral);
+		return this.getTokens(SolidCashParser.VersionLiteral);
 	}
 	public VersionLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.VersionLiteral, i);
 	}
 	public NumberLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.NumberLiteral);
+		return this.getTokens(SolidCashParser.NumberLiteral);
 	}
 	public NumberLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.NumberLiteral, i);
 	}
 	public StringLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.StringLiteral);
+		return this.getTokens(SolidCashParser.StringLiteral);
 	}
 	public StringLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.StringLiteral, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_pragmaDirective;
+	return SolidCashParser.RULE_pragmaDirective;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15829,10 +15829,10 @@ export class PragmaDirectiveContext extends ParserRuleContext {
 export class PragmaNameContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_pragmaName;
+	return SolidCashParser.RULE_pragmaName;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15848,7 +15848,7 @@ export class PragmaNameContext extends ParserRuleContext {
 export class PragmaValueContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public versionAlternative_list(): VersionAlternativeContext[] {
 		return this.getTypedRuleContexts(VersionAlternativeContext) as VersionAlternativeContext[];
@@ -15857,7 +15857,7 @@ export class PragmaValueContext extends ParserRuleContext {
 		return this.getTypedRuleContext(VersionAlternativeContext, i) as VersionAlternativeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_pragmaValue;
+	return SolidCashParser.RULE_pragmaValue;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15873,7 +15873,7 @@ export class PragmaValueContext extends ParserRuleContext {
 export class VersionAlternativeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public versionConstraint_list(): VersionConstraintContext[] {
 		return this.getTypedRuleContexts(VersionConstraintContext) as VersionConstraintContext[];
@@ -15882,7 +15882,7 @@ export class VersionAlternativeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(VersionConstraintContext, i) as VersionConstraintContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_versionAlternative;
+	return SolidCashParser.RULE_versionAlternative;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15898,7 +15898,7 @@ export class VersionAlternativeContext extends ParserRuleContext {
 export class VersionConstraintContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public VersionLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.VersionLiteral, 0);
@@ -15913,7 +15913,7 @@ export class VersionConstraintContext extends ParserRuleContext {
 		return this.getTypedRuleContext(VersionOperatorContext, 0) as VersionOperatorContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_versionConstraint;
+	return SolidCashParser.RULE_versionConstraint;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15929,10 +15929,10 @@ export class VersionConstraintContext extends ParserRuleContext {
 export class VersionOperatorContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_versionOperator;
+	return SolidCashParser.RULE_versionOperator;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -15948,10 +15948,10 @@ export class VersionOperatorContext extends ParserRuleContext {
 export class InterfaceDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -16017,7 +16017,7 @@ export class InterfaceDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(InterfaceFallbackDefinitionContext, i) as InterfaceFallbackDefinitionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceDefinition;
+	return SolidCashParser.RULE_interfaceDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16033,7 +16033,7 @@ export class InterfaceDefinitionContext extends ParserRuleContext {
 export class InterfaceCollectionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public interfaceStateVariableVisibility(): InterfaceStateVariableVisibilityContext {
 		return this.getTypedRuleContext(InterfaceStateVariableVisibilityContext, 0) as InterfaceStateVariableVisibilityContext;
@@ -16048,7 +16048,7 @@ export class InterfaceCollectionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceCollection;
+	return SolidCashParser.RULE_interfaceCollection;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16064,7 +16064,7 @@ export class InterfaceCollectionContext extends ParserRuleContext {
 export class InterfaceStateVariableContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public interfaceStateVariableVisibility(): InterfaceStateVariableVisibilityContext {
 		return this.getTypedRuleContext(InterfaceStateVariableVisibilityContext, 0) as InterfaceStateVariableVisibilityContext;
@@ -16076,7 +16076,7 @@ export class InterfaceStateVariableContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.Identifier, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceStateVariable;
+	return SolidCashParser.RULE_interfaceStateVariable;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16092,10 +16092,10 @@ export class InterfaceStateVariableContext extends ParserRuleContext {
 export class InterfaceStateVariableVisibilityContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceStateVariableVisibility;
+	return SolidCashParser.RULE_interfaceStateVariableVisibility;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16111,7 +16111,7 @@ export class InterfaceStateVariableVisibilityContext extends ParserRuleContext {
 export class InterfaceFunctionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionName(): FunctionNameContext {
 		return this.getTypedRuleContext(FunctionNameContext, 0) as FunctionNameContext;
@@ -16129,7 +16129,7 @@ export class InterfaceFunctionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ReturnTypeContext, 0) as ReturnTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceFunction;
+	return SolidCashParser.RULE_interfaceFunction;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16145,7 +16145,7 @@ export class InterfaceFunctionContext extends ParserRuleContext {
 export class InterfaceFallbackDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public parameterList(): ParameterListContext {
 		return this.getTypedRuleContext(ParameterListContext, 0) as ParameterListContext;
@@ -16160,7 +16160,7 @@ export class InterfaceFallbackDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ReturnTypeContext, 0) as ReturnTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_interfaceFallbackDefinition;
+	return SolidCashParser.RULE_interfaceFallbackDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16176,7 +16176,7 @@ export class InterfaceFallbackDefinitionContext extends ParserRuleContext {
 export class LibraryDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -16242,7 +16242,7 @@ export class LibraryDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(FreeFunctionDefinitionContext, i) as FreeFunctionDefinitionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_libraryDefinition;
+	return SolidCashParser.RULE_libraryDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16258,7 +16258,7 @@ export class LibraryDefinitionContext extends ParserRuleContext {
 export class ContractDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16357,7 +16357,7 @@ export class ContractDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ReceiveDefinitionContext, i) as ReceiveDefinitionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_contractDefinition;
+	return SolidCashParser.RULE_contractDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16373,7 +16373,7 @@ export class ContractDefinitionContext extends ParserRuleContext {
 export class InheritanceSpecifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -16382,7 +16382,7 @@ export class InheritanceSpecifierContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionListContext, 0) as ExpressionListContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_inheritanceSpecifier;
+	return SolidCashParser.RULE_inheritanceSpecifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16398,7 +16398,7 @@ export class InheritanceSpecifierContext extends ParserRuleContext {
 export class AbstractFunctionDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionName(): FunctionNameContext {
 		return this.getTypedRuleContext(FunctionNameContext, 0) as FunctionNameContext;
@@ -16422,7 +16422,7 @@ export class AbstractFunctionDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ReturnTypeContext, 0) as ReturnTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_abstractFunctionDefinition;
+	return SolidCashParser.RULE_abstractFunctionDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16439,7 +16439,7 @@ export class EventDefinitionContext extends ParserRuleContext {
 	public _eventSpecialName!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16451,7 +16451,7 @@ export class EventDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(EventParameterContext, i) as EventParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_eventDefinition;
+	return SolidCashParser.RULE_eventDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16467,7 +16467,7 @@ export class EventDefinitionContext extends ParserRuleContext {
 export class EventParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -16479,7 +16479,7 @@ export class EventParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_eventParameter;
+	return SolidCashParser.RULE_eventParameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16495,7 +16495,7 @@ export class EventParameterContext extends ParserRuleContext {
 export class ErrorDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16507,7 +16507,7 @@ export class ErrorDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ErrorParameterContext, i) as ErrorParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_errorDefinition;
+	return SolidCashParser.RULE_errorDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16523,7 +16523,7 @@ export class ErrorDefinitionContext extends ParserRuleContext {
 export class ErrorParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -16535,7 +16535,7 @@ export class ErrorParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_errorParameter;
+	return SolidCashParser.RULE_errorParameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16551,7 +16551,7 @@ export class ErrorParameterContext extends ParserRuleContext {
 export class StructDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16563,7 +16563,7 @@ export class StructDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StructFieldContext, i) as StructFieldContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_structDefinition;
+	return SolidCashParser.RULE_structDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16579,7 +16579,7 @@ export class StructDefinitionContext extends ParserRuleContext {
 export class StructFieldContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16594,7 +16594,7 @@ export class StructFieldContext extends ParserRuleContext {
 		return this.getTypedRuleContext(MappingTypeContext, 0) as MappingTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_structField;
+	return SolidCashParser.RULE_structField;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16610,7 +16610,7 @@ export class StructFieldContext extends ParserRuleContext {
 export class EnumDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16622,7 +16622,7 @@ export class EnumDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(EnumMemberContext, i) as EnumMemberContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_enumDefinition;
+	return SolidCashParser.RULE_enumDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16638,7 +16638,7 @@ export class EnumDefinitionContext extends ParserRuleContext {
 export class EnumMemberContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16647,7 +16647,7 @@ export class EnumMemberContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.NumberLiteral, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_enumMember;
+	return SolidCashParser.RULE_enumMember;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16663,7 +16663,7 @@ export class EnumMemberContext extends ParserRuleContext {
 export class TypeDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -16672,7 +16672,7 @@ export class TypeDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeDefinition;
+	return SolidCashParser.RULE_typeDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16688,7 +16688,7 @@ export class TypeDefinitionContext extends ParserRuleContext {
 export class ConstantDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -16700,7 +16700,7 @@ export class ConstantDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_constantDefinition;
+	return SolidCashParser.RULE_constantDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16716,7 +16716,7 @@ export class ConstantDefinitionContext extends ParserRuleContext {
 export class ConstructorDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public parameterList(): ParameterListContext {
 		return this.getTypedRuleContext(ParameterListContext, 0) as ParameterListContext;
@@ -16740,7 +16740,7 @@ export class ConstructorDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_constructorDefinition;
+	return SolidCashParser.RULE_constructorDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16756,7 +16756,7 @@ export class ConstructorDefinitionContext extends ParserRuleContext {
 export class FallbackDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public parameterList(): ParameterListContext {
 		return this.getTypedRuleContext(ParameterListContext, 0) as ParameterListContext;
@@ -16783,7 +16783,7 @@ export class FallbackDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_fallbackDefinition;
+	return SolidCashParser.RULE_fallbackDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16799,13 +16799,13 @@ export class FallbackDefinitionContext extends ParserRuleContext {
 export class FallbackModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public overrideSpecifier(): OverrideSpecifierContext {
 		return this.getTypedRuleContext(OverrideSpecifierContext, 0) as OverrideSpecifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_fallbackModifier;
+	return SolidCashParser.RULE_fallbackModifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16821,7 +16821,7 @@ export class FallbackModifierContext extends ParserRuleContext {
 export class ReceiveDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public receiveModifier_list(): ReceiveModifierContext[] {
 		return this.getTypedRuleContexts(ReceiveModifierContext) as ReceiveModifierContext[];
@@ -16836,7 +16836,7 @@ export class ReceiveDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_receiveDefinition;
+	return SolidCashParser.RULE_receiveDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16852,13 +16852,13 @@ export class ReceiveDefinitionContext extends ParserRuleContext {
 export class ReceiveModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public overrideSpecifier(): OverrideSpecifierContext {
 		return this.getTypedRuleContext(OverrideSpecifierContext, 0) as OverrideSpecifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_receiveModifier;
+	return SolidCashParser.RULE_receiveModifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16874,7 +16874,7 @@ export class ReceiveModifierContext extends ParserRuleContext {
 export class ParentInvocationContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -16883,7 +16883,7 @@ export class ParentInvocationContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionListContext, 0) as ExpressionListContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_parentInvocation;
+	return SolidCashParser.RULE_parentInvocation;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16900,7 +16900,7 @@ export class StateVariableDeclarationContext extends ParserRuleContext {
 	public _sop!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -16942,7 +16942,7 @@ export class StateVariableDeclarationContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_stateVariableDeclaration;
+	return SolidCashParser.RULE_stateVariableDeclaration;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16958,7 +16958,7 @@ export class StateVariableDeclarationContext extends ParserRuleContext {
 export class CollectionModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public modifier(): ModifierContext {
 		return this.getTypedRuleContext(ModifierContext, 0) as ModifierContext;
@@ -16970,7 +16970,7 @@ export class CollectionModifierContext extends ParserRuleContext {
 		return this.getTypedRuleContext(OverrideSpecifierContext, 0) as OverrideSpecifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_collectionModifier;
+	return SolidCashParser.RULE_collectionModifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -16986,10 +16986,10 @@ export class CollectionModifierContext extends ParserRuleContext {
 export class StateVariableVisibilityContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_stateVariableVisibility;
+	return SolidCashParser.RULE_stateVariableVisibility;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17005,7 +17005,7 @@ export class StateVariableVisibilityContext extends ParserRuleContext {
 export class MappingTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName_list(): TypeNameContext[] {
 		return this.getTypedRuleContexts(TypeNameContext) as TypeNameContext[];
@@ -17026,7 +17026,7 @@ export class MappingTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_mappingType;
+	return SolidCashParser.RULE_mappingType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17042,7 +17042,7 @@ export class MappingTypeContext extends ParserRuleContext {
 export class ArrayTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionType(): FunctionTypeContext {
 		return this.getTypedRuleContext(FunctionTypeContext, 0) as FunctionTypeContext;
@@ -17060,7 +17060,7 @@ export class ArrayTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_arrayType;
+	return SolidCashParser.RULE_arrayType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17076,7 +17076,7 @@ export class ArrayTypeContext extends ParserRuleContext {
 export class ModifierDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -17097,7 +17097,7 @@ export class ModifierDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ModifierStatementContext, i) as ModifierStatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_modifierDefinition;
+	return SolidCashParser.RULE_modifierDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17113,7 +17113,7 @@ export class ModifierDefinitionContext extends ParserRuleContext {
 export class ModifierStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public placeholderStatement(): PlaceholderStatementContext {
 		return this.getTypedRuleContext(PlaceholderStatementContext, 0) as PlaceholderStatementContext;
@@ -17122,7 +17122,7 @@ export class ModifierStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, 0) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_modifierStatement;
+	return SolidCashParser.RULE_modifierStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17138,10 +17138,10 @@ export class ModifierStatementContext extends ParserRuleContext {
 export class PlaceholderStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_placeholderStatement;
+	return SolidCashParser.RULE_placeholderStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17157,7 +17157,7 @@ export class PlaceholderStatementContext extends ParserRuleContext {
 export class FunctionDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionName(): FunctionNameContext {
 		return this.getTypedRuleContext(FunctionNameContext, 0) as FunctionNameContext;
@@ -17187,7 +17187,7 @@ export class FunctionDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionDefinition;
+	return SolidCashParser.RULE_functionDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17203,10 +17203,10 @@ export class FunctionDefinitionContext extends ParserRuleContext {
 export class CustomModifierInvocationContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -17215,7 +17215,7 @@ export class CustomModifierInvocationContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionListContext, 0) as ExpressionListContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_customModifierInvocation;
+	return SolidCashParser.RULE_customModifierInvocation;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17231,7 +17231,7 @@ export class CustomModifierInvocationContext extends ParserRuleContext {
 export class FunctionModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public overrideSpecifier(): OverrideSpecifierContext {
 		return this.getTypedRuleContext(OverrideSpecifierContext, 0) as OverrideSpecifierContext;
@@ -17240,7 +17240,7 @@ export class FunctionModifierContext extends ParserRuleContext {
 		return this.getTypedRuleContext(UnsafeModifierContext, 0) as UnsafeModifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionModifier;
+	return SolidCashParser.RULE_functionModifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17256,16 +17256,16 @@ export class FunctionModifierContext extends ParserRuleContext {
 export class OverrideSpecifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_overrideSpecifier;
+	return SolidCashParser.RULE_overrideSpecifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17281,13 +17281,13 @@ export class OverrideSpecifierContext extends ParserRuleContext {
 export class UnsafeModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public NumberLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.NumberLiteral, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_unsafeModifier;
+	return SolidCashParser.RULE_unsafeModifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17303,7 +17303,7 @@ export class UnsafeModifierContext extends ParserRuleContext {
 export class ReturnTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public returnParam_list(): ReturnParamContext[] {
 		return this.getTypedRuleContexts(ReturnParamContext) as ReturnParamContext[];
@@ -17312,7 +17312,7 @@ export class ReturnTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ReturnParamContext, i) as ReturnParamContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_returnType;
+	return SolidCashParser.RULE_returnType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17328,7 +17328,7 @@ export class ReturnTypeContext extends ParserRuleContext {
 export class ReturnParamContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -17349,7 +17349,7 @@ export class ReturnParamContext extends ParserRuleContext {
 		return this.getTypedRuleContext(MappingTypeContext, 0) as MappingTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_returnParam;
+	return SolidCashParser.RULE_returnParam;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17365,7 +17365,7 @@ export class ReturnParamContext extends ParserRuleContext {
 export class ParameterListContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public parameter_list(): ParameterContext[] {
 		return this.getTypedRuleContexts(ParameterContext) as ParameterContext[];
@@ -17374,7 +17374,7 @@ export class ParameterListContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ParameterContext, i) as ParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_parameterList;
+	return SolidCashParser.RULE_parameterList;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17390,7 +17390,7 @@ export class ParameterListContext extends ParserRuleContext {
 export class ParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -17411,7 +17411,7 @@ export class ParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(MappingTypeContext, 0) as MappingTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_parameter;
+	return SolidCashParser.RULE_parameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17427,13 +17427,13 @@ export class ParameterContext extends ParserRuleContext {
 export class BlockContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public statement(): StatementContext {
 		return this.getTypedRuleContext(StatementContext, 0) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_block;
+	return SolidCashParser.RULE_block;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17449,7 +17449,7 @@ export class BlockContext extends ParserRuleContext {
 export class BlockStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public statement_list(): StatementContext[] {
 		return this.getTypedRuleContexts(StatementContext) as StatementContext[];
@@ -17458,7 +17458,7 @@ export class BlockStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_blockStatement;
+	return SolidCashParser.RULE_blockStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17474,7 +17474,7 @@ export class BlockStatementContext extends ParserRuleContext {
 export class StatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public placeholderStatement(): PlaceholderStatementContext {
 		return this.getTypedRuleContext(PlaceholderStatementContext, 0) as PlaceholderStatementContext;
@@ -17570,7 +17570,7 @@ export class StatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionStatementContext, 0) as ExpressionStatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_statement;
+	return SolidCashParser.RULE_statement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17586,7 +17586,7 @@ export class StatementContext extends ParserRuleContext {
 export class PrimitiveTypeReferenceStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public elementaryTypeToken(): ElementaryTypeTokenContext {
 		return this.getTypedRuleContext(ElementaryTypeTokenContext, 0) as ElementaryTypeTokenContext;
@@ -17598,7 +17598,7 @@ export class PrimitiveTypeReferenceStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_primitiveTypeReferenceStatement;
+	return SolidCashParser.RULE_primitiveTypeReferenceStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17614,7 +17614,7 @@ export class PrimitiveTypeReferenceStatementContext extends ParserRuleContext {
 export class UserDefinedArrayTypeReferenceStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -17626,7 +17626,7 @@ export class UserDefinedArrayTypeReferenceStatementContext extends ParserRuleCon
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_userDefinedArrayTypeReferenceStatement;
+	return SolidCashParser.RULE_userDefinedArrayTypeReferenceStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17642,7 +17642,7 @@ export class UserDefinedArrayTypeReferenceStatementContext extends ParserRuleCon
 export class ElementaryTypeTokenContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public PrimitiveType(): TerminalNode {
 		return this.getToken(SolidCashParser.PrimitiveType, 0);
@@ -17669,7 +17669,7 @@ export class ElementaryTypeTokenContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BoundedUnsignedFixed, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_elementaryTypeToken;
+	return SolidCashParser.RULE_elementaryTypeToken;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17685,13 +17685,13 @@ export class ElementaryTypeTokenContext extends ParserRuleContext {
 export class BareTypeExpressionStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_bareTypeExpressionStatement;
+	return SolidCashParser.RULE_bareTypeExpressionStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17707,7 +17707,7 @@ export class BareTypeExpressionStatementContext extends ParserRuleContext {
 export class BareCallOptionsStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -17722,7 +17722,7 @@ export class BareCallOptionsStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(CallOptionsFunctionMemberContext, 0) as CallOptionsFunctionMemberContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_bareCallOptionsStatement;
+	return SolidCashParser.RULE_bareCallOptionsStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17738,13 +17738,13 @@ export class BareCallOptionsStatementContext extends ParserRuleContext {
 export class CallOptionsFunctionMemberContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_callOptionsFunctionMember;
+	return SolidCashParser.RULE_callOptionsFunctionMember;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17760,7 +17760,7 @@ export class CallOptionsFunctionMemberContext extends ParserRuleContext {
 export class BareNewWithOptionsStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -17769,7 +17769,7 @@ export class BareNewWithOptionsStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(CallOptionsContext, 0) as CallOptionsContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_bareNewWithOptionsStatement;
+	return SolidCashParser.RULE_bareNewWithOptionsStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17785,7 +17785,7 @@ export class BareNewWithOptionsStatementContext extends ParserRuleContext {
 export class ParenthesizedArrayPopStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -17794,7 +17794,7 @@ export class ParenthesizedArrayPopStatementContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.DotPop, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_parenthesizedArrayPopStatement;
+	return SolidCashParser.RULE_parenthesizedArrayPopStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17818,7 +17818,7 @@ export class ExpressionStatementContext extends ParserRuleContext {
 	public _bareMember!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression_list(): ExpressionContext[] {
 		return this.getTypedRuleContexts(ExpressionContext) as ExpressionContext[];
@@ -17830,7 +17830,7 @@ export class ExpressionStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AssignChainContext, 0) as AssignChainContext;
 	}
 	public DotPush_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.DotPush);
+		return this.getTokens(SolidCashParser.DotPush);
 	}
 	public DotPush(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, i);
@@ -17848,7 +17848,7 @@ export class ExpressionStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(PushArgumentContext, 0) as PushArgumentContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_expressionStatement;
+	return SolidCashParser.RULE_expressionStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17865,7 +17865,7 @@ export class AssignChainContext extends ParserRuleContext {
 	public _op!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -17874,7 +17874,7 @@ export class AssignChainContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AssignChainContext, 0) as AssignChainContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_assignChain;
+	return SolidCashParser.RULE_assignChain;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17891,13 +17891,13 @@ export class PrefixIncDecStatementContext extends ParserRuleContext {
 	public _op!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_prefixIncDecStatement;
+	return SolidCashParser.RULE_prefixIncDecStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17915,7 +17915,7 @@ export class ReturnStatementContext extends ParserRuleContext {
 	public _rop!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public DotPush(): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, 0);
@@ -17933,7 +17933,7 @@ export class ReturnStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AssignChainContext, 0) as AssignChainContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_returnStatement;
+	return SolidCashParser.RULE_returnStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17949,13 +17949,13 @@ export class ReturnStatementContext extends ParserRuleContext {
 export class SelfdestructStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_selfdestructStatement;
+	return SolidCashParser.RULE_selfdestructStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -17971,10 +17971,10 @@ export class SelfdestructStatementContext extends ParserRuleContext {
 export class EmitStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -17989,7 +17989,7 @@ export class EmitStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionListContext, 0) as ExpressionListContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_emitStatement;
+	return SolidCashParser.RULE_emitStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18006,7 +18006,7 @@ export class VariableDefinitionContext extends ParserRuleContext {
 	public _iop!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionArrayType(): FunctionArrayTypeContext {
 		return this.getTypedRuleContext(FunctionArrayTypeContext, 0) as FunctionArrayTypeContext;
@@ -18039,7 +18039,7 @@ export class VariableDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(MappingTypeContext, 0) as MappingTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_variableDefinition;
+	return SolidCashParser.RULE_variableDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18055,7 +18055,7 @@ export class VariableDefinitionContext extends ParserRuleContext {
 export class FunctionArrayTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionType(): FunctionTypeContext {
 		return this.getTypedRuleContext(FunctionTypeContext, 0) as FunctionTypeContext;
@@ -18067,7 +18067,7 @@ export class FunctionArrayTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionArrayType;
+	return SolidCashParser.RULE_functionArrayType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18083,7 +18083,7 @@ export class FunctionArrayTypeContext extends ParserRuleContext {
 export class TupleAssignmentContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName_list(): TypeNameContext[] {
 		return this.getTypedRuleContexts(TypeNameContext) as TypeNameContext[];
@@ -18092,7 +18092,7 @@ export class TupleAssignmentContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TypeNameContext, i) as TypeNameContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18122,7 +18122,7 @@ export class TupleAssignmentContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ArrayTypeContext, 0) as ArrayTypeContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_tupleAssignment;
+	return SolidCashParser.RULE_tupleAssignment;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18138,7 +18138,7 @@ export class TupleAssignmentContext extends ParserRuleContext {
 export class NestedTupleAssignmentContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public nestedTuplePattern(): NestedTuplePatternContext {
 		return this.getTypedRuleContext(NestedTuplePatternContext, 0) as NestedTuplePatternContext;
@@ -18147,7 +18147,7 @@ export class NestedTupleAssignmentContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_nestedTupleAssignment;
+	return SolidCashParser.RULE_nestedTupleAssignment;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18163,7 +18163,7 @@ export class NestedTupleAssignmentContext extends ParserRuleContext {
 export class NestedTuplePatternContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public nestedTuplePatternItem_list(): NestedTuplePatternItemContext[] {
 		return this.getTypedRuleContexts(NestedTuplePatternItemContext) as NestedTuplePatternItemContext[];
@@ -18172,7 +18172,7 @@ export class NestedTuplePatternContext extends ParserRuleContext {
 		return this.getTypedRuleContext(NestedTuplePatternItemContext, i) as NestedTuplePatternItemContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_nestedTuplePattern;
+	return SolidCashParser.RULE_nestedTuplePattern;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18188,7 +18188,7 @@ export class NestedTuplePatternContext extends ParserRuleContext {
 export class NestedTuplePatternItemContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -18215,7 +18215,7 @@ export class NestedTuplePatternItemContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
 	public DotPush_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.DotPush);
+		return this.getTokens(SolidCashParser.DotPush);
 	}
 	public DotPush(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, i);
@@ -18224,7 +18224,7 @@ export class NestedTuplePatternItemContext extends ParserRuleContext {
 		return this.getTypedRuleContext(NestedTuplePatternContext, 0) as NestedTuplePatternContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_nestedTuplePatternItem;
+	return SolidCashParser.RULE_nestedTuplePatternItem;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18240,7 +18240,7 @@ export class NestedTuplePatternItemContext extends ParserRuleContext {
 export class TupleSlotContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -18267,13 +18267,13 @@ export class TupleSlotContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
 	public DotPush_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.DotPush);
+		return this.getTokens(SolidCashParser.DotPush);
 	}
 	public DotPush(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_tupleSlot;
+	return SolidCashParser.RULE_tupleSlot;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18289,13 +18289,13 @@ export class TupleSlotContext extends ParserRuleContext {
 export class PushArgumentContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_pushArgument;
+	return SolidCashParser.RULE_pushArgument;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18311,10 +18311,10 @@ export class PushArgumentContext extends ParserRuleContext {
 export class DeleteStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_deleteStatement;
+	return SolidCashParser.RULE_deleteStatement;
 	}
 	public override copyFrom(ctx: DeleteStatementContext): void {
 		super.copyFrom(ctx);
@@ -18343,7 +18343,7 @@ export class DeleteMemberEntryContext extends DeleteStatementContext {
 		super.copyFrom(ctx);
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18373,7 +18373,7 @@ export class DeletePushContext extends DeleteStatementContext {
 		return this.getToken(SolidCashParser.Identifier, 0);
 	}
 	public DotPush_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.DotPush);
+		return this.getTokens(SolidCashParser.DotPush);
 	}
 	public DotPush(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, i);
@@ -18393,7 +18393,7 @@ export class DeleteDeepMemberEntryContext extends DeleteStatementContext {
 		super.copyFrom(ctx);
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18499,7 +18499,7 @@ export class DeleteMemberContext extends DeleteStatementContext {
 		super.copyFrom(ctx);
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18518,7 +18518,7 @@ export class DeleteMemberContext extends DeleteStatementContext {
 export class TimeOpStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public TxVar(): TerminalNode {
 		return this.getToken(SolidCashParser.TxVar, 0);
@@ -18530,7 +18530,7 @@ export class TimeOpStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(RequireMessageContext, 0) as RequireMessageContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_timeOpStatement;
+	return SolidCashParser.RULE_timeOpStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18546,7 +18546,7 @@ export class TimeOpStatementContext extends ParserRuleContext {
 export class RequireStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -18555,7 +18555,7 @@ export class RequireStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(RequireMessageContext, 0) as RequireMessageContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_requireStatement;
+	return SolidCashParser.RULE_requireStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18573,7 +18573,7 @@ export class IfStatementContext extends ParserRuleContext {
 	public _elseBlock!: BlockContext;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -18585,7 +18585,7 @@ export class IfStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(BlockContext, i) as BlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_ifStatement;
+	return SolidCashParser.RULE_ifStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18601,7 +18601,7 @@ export class IfStatementContext extends ParserRuleContext {
 export class LoopStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public doWhileStatement(): DoWhileStatementContext {
 		return this.getTypedRuleContext(DoWhileStatementContext, 0) as DoWhileStatementContext;
@@ -18622,7 +18622,7 @@ export class LoopStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ForOfStatementContext, 0) as ForOfStatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_loopStatement;
+	return SolidCashParser.RULE_loopStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18638,7 +18638,7 @@ export class LoopStatementContext extends ParserRuleContext {
 export class ForOfEntriesStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName_list(): TypeNameContext[] {
 		return this.getTypedRuleContexts(TypeNameContext) as TypeNameContext[];
@@ -18647,7 +18647,7 @@ export class ForOfEntriesStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TypeNameContext, i) as TypeNameContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18656,7 +18656,7 @@ export class ForOfEntriesStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forOfEntriesStatement;
+	return SolidCashParser.RULE_forOfEntriesStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18672,13 +18672,13 @@ export class ForOfEntriesStatementContext extends ParserRuleContext {
 export class ForInStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18687,7 +18687,7 @@ export class ForInStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forInStatement;
+	return SolidCashParser.RULE_forInStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18703,13 +18703,13 @@ export class ForInStatementContext extends ParserRuleContext {
 export class ForOfStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -18718,7 +18718,7 @@ export class ForOfStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forOfStatement;
+	return SolidCashParser.RULE_forOfStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18734,7 +18734,7 @@ export class ForOfStatementContext extends ParserRuleContext {
 export class ForStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public forInit(): ForInitContext {
 		return this.getTypedRuleContext(ForInitContext, 0) as ForInitContext;
@@ -18749,7 +18749,7 @@ export class ForStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ForUpdateContext, 0) as ForUpdateContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forStatement;
+	return SolidCashParser.RULE_forStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18766,7 +18766,7 @@ export class ForInitContext extends ParserRuleContext {
 	public _op!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -18793,7 +18793,7 @@ export class ForInitContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TupleSlotContext, i) as TupleSlotContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forInit;
+	return SolidCashParser.RULE_forInit;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18809,13 +18809,13 @@ export class ForInitContext extends ParserRuleContext {
 export class ForConditionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forCondition;
+	return SolidCashParser.RULE_forCondition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18832,7 +18832,7 @@ export class ForUpdateContext extends ParserRuleContext {
 	public _op!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -18850,7 +18850,7 @@ export class ForUpdateContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TupleSlotContext, i) as TupleSlotContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_forUpdate;
+	return SolidCashParser.RULE_forUpdate;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18866,7 +18866,7 @@ export class ForUpdateContext extends ParserRuleContext {
 export class DoWhileStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public block(): BlockContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
@@ -18875,7 +18875,7 @@ export class DoWhileStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_doWhileStatement;
+	return SolidCashParser.RULE_doWhileStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18891,7 +18891,7 @@ export class DoWhileStatementContext extends ParserRuleContext {
 export class WhileStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -18900,7 +18900,7 @@ export class WhileStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_whileStatement;
+	return SolidCashParser.RULE_whileStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18916,7 +18916,7 @@ export class WhileStatementContext extends ParserRuleContext {
 export class ConsoleStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public consoleParameterList(): ConsoleParameterListContext {
 		return this.getTypedRuleContext(ConsoleParameterListContext, 0) as ConsoleParameterListContext;
@@ -18925,7 +18925,7 @@ export class ConsoleStatementContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.Identifier, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_consoleStatement;
+	return SolidCashParser.RULE_consoleStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18941,19 +18941,19 @@ export class ConsoleStatementContext extends ParserRuleContext {
 export class AssemblyStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulBlock(): YulBlockContext {
 		return this.getTypedRuleContext(YulBlockContext, 0) as YulBlockContext;
 	}
 	public StringLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.StringLiteral);
+		return this.getTokens(SolidCashParser.StringLiteral);
 	}
 	public StringLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.StringLiteral, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_assemblyStatement;
+	return SolidCashParser.RULE_assemblyStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18969,7 +18969,7 @@ export class AssemblyStatementContext extends ParserRuleContext {
 export class YulBlockContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulStatement_list(): YulStatementContext[] {
 		return this.getTypedRuleContexts(YulStatementContext) as YulStatementContext[];
@@ -18978,7 +18978,7 @@ export class YulBlockContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulStatementContext, i) as YulStatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulBlock;
+	return SolidCashParser.RULE_yulBlock;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -18994,10 +18994,10 @@ export class YulBlockContext extends ParserRuleContext {
 export class YulStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulStatement;
+	return SolidCashParser.RULE_yulStatement;
 	}
 	public override copyFrom(ctx: YulStatementContext): void {
 		super.copyFrom(ctx);
@@ -19220,7 +19220,7 @@ export class YulIfStmtContext extends YulStatementContext {
 export class YulVariableDeclarationContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulIdentifier_list(): YulIdentifierContext[] {
 		return this.getTypedRuleContexts(YulIdentifierContext) as YulIdentifierContext[];
@@ -19232,7 +19232,7 @@ export class YulVariableDeclarationContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulVariableDeclaration;
+	return SolidCashParser.RULE_yulVariableDeclaration;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19248,7 +19248,7 @@ export class YulVariableDeclarationContext extends ParserRuleContext {
 export class YulAssignmentContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulPath_list(): YulPathContext[] {
 		return this.getTypedRuleContexts(YulPathContext) as YulPathContext[];
@@ -19260,7 +19260,7 @@ export class YulAssignmentContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulAssignment;
+	return SolidCashParser.RULE_yulAssignment;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19276,7 +19276,7 @@ export class YulAssignmentContext extends ParserRuleContext {
 export class YulIfContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulExpression(): YulExpressionContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
@@ -19285,7 +19285,7 @@ export class YulIfContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulBlockContext, 0) as YulBlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulIf;
+	return SolidCashParser.RULE_yulIf;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19301,7 +19301,7 @@ export class YulIfContext extends ParserRuleContext {
 export class YulSwitchContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulExpression(): YulExpressionContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
@@ -19316,7 +19316,7 @@ export class YulSwitchContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulCaseContext, i) as YulCaseContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulSwitch;
+	return SolidCashParser.RULE_yulSwitch;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19332,7 +19332,7 @@ export class YulSwitchContext extends ParserRuleContext {
 export class YulCaseContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulLiteral(): YulLiteralContext {
 		return this.getTypedRuleContext(YulLiteralContext, 0) as YulLiteralContext;
@@ -19341,7 +19341,7 @@ export class YulCaseContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulBlockContext, 0) as YulBlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulCase;
+	return SolidCashParser.RULE_yulCase;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19357,13 +19357,13 @@ export class YulCaseContext extends ParserRuleContext {
 export class YulDefaultContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulBlock(): YulBlockContext {
 		return this.getTypedRuleContext(YulBlockContext, 0) as YulBlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulDefault;
+	return SolidCashParser.RULE_yulDefault;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19379,7 +19379,7 @@ export class YulDefaultContext extends ParserRuleContext {
 export class YulForLoopContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulBlock_list(): YulBlockContext[] {
 		return this.getTypedRuleContexts(YulBlockContext) as YulBlockContext[];
@@ -19391,7 +19391,7 @@ export class YulForLoopContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulExpressionContext, 0) as YulExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulForLoop;
+	return SolidCashParser.RULE_yulForLoop;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19407,7 +19407,7 @@ export class YulForLoopContext extends ParserRuleContext {
 export class YulFunctionDefinitionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulIdentifier_list(): YulIdentifierContext[] {
 		return this.getTypedRuleContexts(YulIdentifierContext) as YulIdentifierContext[];
@@ -19419,7 +19419,7 @@ export class YulFunctionDefinitionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulBlockContext, 0) as YulBlockContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulFunctionDefinition;
+	return SolidCashParser.RULE_yulFunctionDefinition;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19435,7 +19435,7 @@ export class YulFunctionDefinitionContext extends ParserRuleContext {
 export class YulExpressionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulFunctionCall(): YulFunctionCallContext {
 		return this.getTypedRuleContext(YulFunctionCallContext, 0) as YulFunctionCallContext;
@@ -19447,7 +19447,7 @@ export class YulExpressionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulLiteralContext, 0) as YulLiteralContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulExpression;
+	return SolidCashParser.RULE_yulExpression;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19463,7 +19463,7 @@ export class YulExpressionContext extends ParserRuleContext {
 export class YulFunctionCallContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulFunctionName(): YulFunctionNameContext {
 		return this.getTypedRuleContext(YulFunctionNameContext, 0) as YulFunctionNameContext;
@@ -19475,7 +19475,7 @@ export class YulFunctionCallContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulExpressionContext, i) as YulExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulFunctionCall;
+	return SolidCashParser.RULE_yulFunctionCall;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19491,7 +19491,7 @@ export class YulFunctionCallContext extends ParserRuleContext {
 export class YulFunctionNameContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -19500,7 +19500,7 @@ export class YulFunctionNameContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BoundedBytes, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulFunctionName;
+	return SolidCashParser.RULE_yulFunctionName;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19516,13 +19516,13 @@ export class YulFunctionNameContext extends ParserRuleContext {
 export class YulIdentifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulIdentifier;
+	return SolidCashParser.RULE_yulIdentifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19538,7 +19538,7 @@ export class YulIdentifierContext extends ParserRuleContext {
 export class YulPathContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public yulIdentifier_list(): YulIdentifierContext[] {
 		return this.getTypedRuleContexts(YulIdentifierContext) as YulIdentifierContext[];
@@ -19547,13 +19547,13 @@ export class YulPathContext extends ParserRuleContext {
 		return this.getTypedRuleContext(YulIdentifierContext, i) as YulIdentifierContext;
 	}
 	public DotLength_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.DotLength);
+		return this.getTokens(SolidCashParser.DotLength);
 	}
 	public DotLength(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.DotLength, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulPath;
+	return SolidCashParser.RULE_yulPath;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19569,7 +19569,7 @@ export class YulPathContext extends ParserRuleContext {
 export class YulLiteralContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public NumberLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.NumberLiteral, 0);
@@ -19587,7 +19587,7 @@ export class YulLiteralContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BooleanLiteral, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_yulLiteral;
+	return SolidCashParser.RULE_yulLiteral;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19603,7 +19603,7 @@ export class YulLiteralContext extends ParserRuleContext {
 export class UncheckedStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public statement_list(): StatementContext[] {
 		return this.getTypedRuleContexts(StatementContext) as StatementContext[];
@@ -19612,7 +19612,7 @@ export class UncheckedStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_uncheckedStatement;
+	return SolidCashParser.RULE_uncheckedStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19628,7 +19628,7 @@ export class UncheckedStatementContext extends ParserRuleContext {
 export class SwitchStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -19643,7 +19643,7 @@ export class SwitchStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(SwitchDefaultContext, 0) as SwitchDefaultContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_switchStatement;
+	return SolidCashParser.RULE_switchStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19659,7 +19659,7 @@ export class SwitchStatementContext extends ParserRuleContext {
 export class SwitchCaseContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -19671,7 +19671,7 @@ export class SwitchCaseContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_switchCase;
+	return SolidCashParser.RULE_switchCase;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19687,7 +19687,7 @@ export class SwitchCaseContext extends ParserRuleContext {
 export class SwitchDefaultContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public statement_list(): StatementContext[] {
 		return this.getTypedRuleContexts(StatementContext) as StatementContext[];
@@ -19696,7 +19696,7 @@ export class SwitchDefaultContext extends ParserRuleContext {
 		return this.getTypedRuleContext(StatementContext, i) as StatementContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_switchDefault;
+	return SolidCashParser.RULE_switchDefault;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19713,7 +19713,7 @@ export class TryCatchStatementContext extends ParserRuleContext {
 	public _tryBlock!: BlockContext;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -19731,7 +19731,7 @@ export class TryCatchStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(CatchClauseContext, i) as CatchClauseContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_tryCatchStatement;
+	return SolidCashParser.RULE_tryCatchStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19747,7 +19747,7 @@ export class TryCatchStatementContext extends ParserRuleContext {
 export class TryReturnsContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public parameter_list(): ParameterContext[] {
 		return this.getTypedRuleContexts(ParameterContext) as ParameterContext[];
@@ -19756,7 +19756,7 @@ export class TryReturnsContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ParameterContext, i) as ParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_tryReturns;
+	return SolidCashParser.RULE_tryReturns;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19773,7 +19773,7 @@ export class CatchClauseContext extends ParserRuleContext {
 	public _catchBlock!: BlockContext;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public block(): BlockContext {
 		return this.getTypedRuleContext(BlockContext, 0) as BlockContext;
@@ -19788,7 +19788,7 @@ export class CatchClauseContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ParameterContext, i) as ParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_catchClause;
+	return SolidCashParser.RULE_catchClause;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19804,10 +19804,10 @@ export class CatchClauseContext extends ParserRuleContext {
 export class BreakStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_breakStatement;
+	return SolidCashParser.RULE_breakStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19823,10 +19823,10 @@ export class BreakStatementContext extends ParserRuleContext {
 export class ContinueStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_continueStatement;
+	return SolidCashParser.RULE_continueStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19842,7 +19842,7 @@ export class ContinueStatementContext extends ParserRuleContext {
 export class RequireMessageContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public StringLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.StringLiteral, 0);
@@ -19857,7 +19857,7 @@ export class RequireMessageContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_requireMessage;
+	return SolidCashParser.RULE_requireMessage;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19873,7 +19873,7 @@ export class RequireMessageContext extends ParserRuleContext {
 export class RevertStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public anyIdentifier(): AnyIdentifierContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
@@ -19894,7 +19894,7 @@ export class RevertStatementContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_revertStatement;
+	return SolidCashParser.RULE_revertStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19910,13 +19910,13 @@ export class RevertStatementContext extends ParserRuleContext {
 export class AssertStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_assertStatement;
+	return SolidCashParser.RULE_assertStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19932,7 +19932,7 @@ export class AssertStatementContext extends ParserRuleContext {
 export class ConsoleParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -19941,7 +19941,7 @@ export class ConsoleParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(LiteralContext, 0) as LiteralContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_consoleParameter;
+	return SolidCashParser.RULE_consoleParameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19957,7 +19957,7 @@ export class ConsoleParameterContext extends ParserRuleContext {
 export class ConsoleParameterListContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public consoleParameter_list(): ConsoleParameterContext[] {
 		return this.getTypedRuleContexts(ConsoleParameterContext) as ConsoleParameterContext[];
@@ -19966,7 +19966,7 @@ export class ConsoleParameterListContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ConsoleParameterContext, i) as ConsoleParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_consoleParameterList;
+	return SolidCashParser.RULE_consoleParameterList;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -19982,10 +19982,10 @@ export class ConsoleParameterListContext extends ParserRuleContext {
 export class FunctionCallContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -20003,7 +20003,7 @@ export class FunctionCallContext extends ParserRuleContext {
 		return this.getTypedRuleContext(NamedArgContext, i) as NamedArgContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionCall;
+	return SolidCashParser.RULE_functionCall;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20019,7 +20019,7 @@ export class FunctionCallContext extends ParserRuleContext {
 export class NamedArgContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -20028,7 +20028,7 @@ export class NamedArgContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_namedArg;
+	return SolidCashParser.RULE_namedArg;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20044,7 +20044,7 @@ export class NamedArgContext extends ParserRuleContext {
 export class ExpressionListContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public callArgument_list(): CallArgumentContext[] {
 		return this.getTypedRuleContexts(CallArgumentContext) as CallArgumentContext[];
@@ -20053,7 +20053,7 @@ export class ExpressionListContext extends ParserRuleContext {
 		return this.getTypedRuleContext(CallArgumentContext, i) as CallArgumentContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_expressionList;
+	return SolidCashParser.RULE_expressionList;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20071,7 +20071,7 @@ export class CallArgumentContext extends ParserRuleContext {
 	public _aop!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public DotPush(): TerminalNode {
 		return this.getToken(SolidCashParser.DotPush, 0);
@@ -20086,7 +20086,7 @@ export class CallArgumentContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AssignChainContext, 0) as AssignChainContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_callArgument;
+	return SolidCashParser.RULE_callArgument;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20102,7 +20102,7 @@ export class CallArgumentContext extends ParserRuleContext {
 export class CallOptionsContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public callOption_list(): CallOptionContext[] {
 		return this.getTypedRuleContexts(CallOptionContext) as CallOptionContext[];
@@ -20111,7 +20111,7 @@ export class CallOptionsContext extends ParserRuleContext {
 		return this.getTypedRuleContext(CallOptionContext, i) as CallOptionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_callOptions;
+	return SolidCashParser.RULE_callOptions;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20127,7 +20127,7 @@ export class CallOptionsContext extends ParserRuleContext {
 export class CallOptionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -20136,7 +20136,7 @@ export class CallOptionContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_callOption;
+	return SolidCashParser.RULE_callOption;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20152,7 +20152,7 @@ export class CallOptionContext extends ParserRuleContext {
 export class TypeListContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeListItem_list(): TypeListItemContext[] {
 		return this.getTypedRuleContexts(TypeListItemContext) as TypeListItemContext[];
@@ -20161,7 +20161,7 @@ export class TypeListContext extends ParserRuleContext {
 		return this.getTypedRuleContext(TypeListItemContext, i) as TypeListItemContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeList;
+	return SolidCashParser.RULE_typeList;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20177,7 +20177,7 @@ export class TypeListContext extends ParserRuleContext {
 export class TypeListItemContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -20195,7 +20195,7 @@ export class TypeListItemContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeListItem;
+	return SolidCashParser.RULE_typeListItem;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -20211,10 +20211,10 @@ export class TypeListItemContext extends ParserRuleContext {
 export class ParenExpressionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_parenExpression;
+	return SolidCashParser.RULE_parenExpression;
 	}
 	public override copyFrom(ctx: ParenExpressionContext): void {
 		super.copyFrom(ctx);
@@ -20326,10 +20326,10 @@ export class ParenthesisedContext extends ParenExpressionContext {
 export class NewExpressionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_newExpression;
+	return SolidCashParser.RULE_newExpression;
 	}
 	public override copyFrom(ctx: NewExpressionContext): void {
 		super.copyFrom(ctx);
@@ -20347,7 +20347,7 @@ export class NewArrayContext extends NewExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
 	}
 	public NumberLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.NumberLiteral);
+		return this.getTokens(SolidCashParser.NumberLiteral);
 	}
 	public NumberLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.NumberLiteral, i);
@@ -20429,10 +20429,10 @@ export class NewDynamicBytesContext extends NewExpressionContext {
 export class ExpressionContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_expression;
+	return SolidCashParser.RULE_expression;
 	}
 	public override copyFrom(ctx: ExpressionContext): void {
 		super.copyFrom(ctx);
@@ -20488,7 +20488,7 @@ export class LegacyCallOptionCallContext extends ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -20676,7 +20676,7 @@ export class ThisExprContext extends ExpressionContext {
 		super.copyFrom(ctx);
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -21077,7 +21077,7 @@ export class AbiEncodeCallContext extends ExpressionContext {
 		return this.getTypedRuleContext(AbiEncodeCallArgumentsContext, 0) as AbiEncodeCallArgumentsContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
@@ -21143,13 +21143,13 @@ export class CallOptionsMemberContext extends ExpressionContext {
 export class TypeIntrospectionBaseContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeIntrospectionBase;
+	return SolidCashParser.RULE_typeIntrospectionBase;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21167,7 +21167,7 @@ export class AbiEncodeCallArgumentsContext extends ParserRuleContext {
 	public _aop!: Token;
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public expression(): ExpressionContext {
 		return this.getTypedRuleContext(ExpressionContext, 0) as ExpressionContext;
@@ -21176,7 +21176,7 @@ export class AbiEncodeCallArgumentsContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.Identifier, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_abiEncodeCallArguments;
+	return SolidCashParser.RULE_abiEncodeCallArguments;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21192,10 +21192,10 @@ export class AbiEncodeCallArgumentsContext extends ParserRuleContext {
 export class BareAbiFunctionReferenceStatementContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_bareAbiFunctionReferenceStatement;
+	return SolidCashParser.RULE_bareAbiFunctionReferenceStatement;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21211,7 +21211,7 @@ export class BareAbiFunctionReferenceStatementContext extends ParserRuleContext 
 export class MemberNameContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public Identifier(): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, 0);
@@ -21250,7 +21250,7 @@ export class MemberNameContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.DotCodehash, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_memberName;
+	return SolidCashParser.RULE_memberName;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21266,10 +21266,10 @@ export class MemberNameContext extends ParserRuleContext {
 export class ModifierContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_modifier;
+	return SolidCashParser.RULE_modifier;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21285,10 +21285,10 @@ export class ModifierContext extends ParserRuleContext {
 export class DataLocationContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_dataLocation;
+	return SolidCashParser.RULE_dataLocation;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21304,7 +21304,7 @@ export class DataLocationContext extends ParserRuleContext {
 export class LiteralContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public BooleanLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.BooleanLiteral, 0);
@@ -21316,19 +21316,19 @@ export class LiteralContext extends ParserRuleContext {
 		return this.getTypedRuleContext(DecimalLiteralContext, 0) as DecimalLiteralContext;
 	}
 	public StringLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.StringLiteral);
+		return this.getTokens(SolidCashParser.StringLiteral);
 	}
 	public StringLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.StringLiteral, i);
 	}
 	public UnicodeLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.UnicodeLiteral);
+		return this.getTokens(SolidCashParser.UnicodeLiteral);
 	}
 	public UnicodeLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.UnicodeLiteral, i);
 	}
 	public HexStringLiteral_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.HexStringLiteral);
+		return this.getTokens(SolidCashParser.HexStringLiteral);
 	}
 	public HexStringLiteral(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.HexStringLiteral, i);
@@ -21340,7 +21340,7 @@ export class LiteralContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.HexLiteral, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_literal;
+	return SolidCashParser.RULE_literal;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21356,7 +21356,7 @@ export class LiteralContext extends ParserRuleContext {
 export class NumberLiteralContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public NumberLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.NumberLiteral, 0);
@@ -21368,7 +21368,7 @@ export class NumberLiteralContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BchUnit, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_numberLiteral;
+	return SolidCashParser.RULE_numberLiteral;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21384,7 +21384,7 @@ export class NumberLiteralContext extends ParserRuleContext {
 export class DecimalLiteralContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public DecimalLiteral(): TerminalNode {
 		return this.getToken(SolidCashParser.DecimalLiteral, 0);
@@ -21396,7 +21396,7 @@ export class DecimalLiteralContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BchUnit, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_decimalLiteral;
+	return SolidCashParser.RULE_decimalLiteral;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21412,7 +21412,7 @@ export class DecimalLiteralContext extends ParserRuleContext {
 export class TypeNameContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public PrimitiveType(): TerminalNode {
 		return this.getToken(SolidCashParser.PrimitiveType, 0);
@@ -21442,13 +21442,13 @@ export class TypeNameContext extends ParserRuleContext {
 		return this.getTypedRuleContext(FunctionTypeContext, 0) as FunctionTypeContext;
 	}
 	public Identifier_list(): TerminalNode[] {
-	    	return this.getTokens(SolidCashParser.Identifier);
+		return this.getTokens(SolidCashParser.Identifier);
 	}
 	public Identifier(i: number): TerminalNode {
 		return this.getToken(SolidCashParser.Identifier, i);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeName;
+	return SolidCashParser.RULE_typeName;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21464,7 +21464,7 @@ export class TypeNameContext extends ParserRuleContext {
 export class FunctionTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public functionTypeParameter_list(): FunctionTypeParameterContext[] {
 		return this.getTypedRuleContexts(FunctionTypeParameterContext) as FunctionTypeParameterContext[];
@@ -21479,7 +21479,7 @@ export class FunctionTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(FunctionTypeReturnParameterContext, i) as FunctionTypeReturnParameterContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionType;
+	return SolidCashParser.RULE_functionType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21495,7 +21495,7 @@ export class FunctionTypeContext extends ParserRuleContext {
 export class FunctionTypeParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -21513,7 +21513,7 @@ export class FunctionTypeParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(AnyIdentifierContext, 0) as AnyIdentifierContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionTypeParameter;
+	return SolidCashParser.RULE_functionTypeParameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21529,7 +21529,7 @@ export class FunctionTypeParameterContext extends ParserRuleContext {
 export class FunctionTypeReturnParameterContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeName(): TypeNameContext {
 		return this.getTypedRuleContext(TypeNameContext, 0) as TypeNameContext;
@@ -21544,7 +21544,7 @@ export class FunctionTypeReturnParameterContext extends ParserRuleContext {
 		return this.getTypedRuleContext(DataLocationContext, 0) as DataLocationContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_functionTypeReturnParameter;
+	return SolidCashParser.RULE_functionTypeReturnParameter;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21560,7 +21560,7 @@ export class FunctionTypeReturnParameterContext extends ParserRuleContext {
 export class TypeCastContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public PrimitiveType(): TerminalNode {
 		return this.getToken(SolidCashParser.PrimitiveType, 0);
@@ -21593,7 +21593,7 @@ export class TypeCastContext extends ParserRuleContext {
 		return this.getToken(SolidCashParser.BoundedUnsignedFixed, 0);
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_typeCast;
+	return SolidCashParser.RULE_typeCast;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {
@@ -21609,7 +21609,7 @@ export class TypeCastContext extends ParserRuleContext {
 export class ArrayCastTypeContext extends ParserRuleContext {
 	constructor(parser?: SolidCashParser, parent?: ParserRuleContext, invokingState?: number) {
 		super(parent, invokingState);
-    	this.parser = parser;
+	this.parser = parser;
 	}
 	public typeCast(): TypeCastContext {
 		return this.getTypedRuleContext(TypeCastContext, 0) as TypeCastContext;
@@ -21621,7 +21621,7 @@ export class ArrayCastTypeContext extends ParserRuleContext {
 		return this.getTypedRuleContext(ExpressionContext, i) as ExpressionContext;
 	}
     public get ruleIndex(): number {
-    	return SolidCashParser.RULE_arrayCastType;
+	return SolidCashParser.RULE_arrayCastType;
 	}
 	// @Override
 	public accept<Result>(visitor: SolidCashVisitor<Result>): Result {

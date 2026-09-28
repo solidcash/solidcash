@@ -352,6 +352,7 @@ export default class LowerForeignFunctionPointerArrayElements extends AstTravers
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, t.method, args); mc.location = node.location;
           mc.callOptions = node.callOptions;
+          mc.pointerTableBroadcast = true;
           if (t.kind === 'varying') {
             mc.selectorArrayVar = this.selArrayName(name);
             if (this.graphMode) {

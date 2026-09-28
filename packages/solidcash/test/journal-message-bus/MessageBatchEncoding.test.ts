@@ -566,15 +566,15 @@ describe('messageBus.encodeMessageBatch', () => {
     expect(() => messageBus.encodeMessageBatch(artifact, [{ function: 'missing' }])).toThrow(/Unknown/);
     expect(() => messageBus.encodeMessageBatch(artifact, [{ function: 'add' }])).toThrow(/number of arguments/);
 
-    const unsupported = {
+    const legacyShaped = {
       ...artifact,
       messageBus: { ...artifact.messageBus!, version: 2 },
     } as unknown as typeof artifact;
-    expect(() => messageBus.encodeMessageBatch(unsupported, [{ function: 'clear' }])).toThrow(
+    expect(() => messageBus.encodeMessageBatch(legacyShaped, [{ function: 'clear' }])).toThrow(
       expect.objectContaining({
-        code: 'L3_PROTOCOL_VERSION_UNSUPPORTED',
+        code: 'L3_PROTOCOL_METADATA_MALFORMED',
         context: expect.objectContaining({
-          metadataField: 'messageBus.version', actual: 2, expected: 1,
+          metadataField: 'messageBus',
           ownerIdentity: 'MessageBatchEncoding',
         }),
       }),
@@ -590,5 +590,25 @@ describe('messageBus.encodeMessageBatch', () => {
         context: expect.objectContaining({ metadataField: 'messageBus' }),
       }),
     );
+
+    for (const maximumBlobBytes of [9_999, 10_001]) {
+      const drifted = {
+        ...artifact,
+        messageBus: { ...artifact.messageBus!, maximumBlobBytes },
+      } as unknown as typeof artifact;
+      expect(() => messageBus.encodeMessageBatch(drifted, [{ function: 'clear' }])).toThrow(
+        expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+      );
+    }
+
+    for (const minimumRows of [0, Number.NaN, artifact.messageBus!.maximumRows + 1]) {
+      const drifted = {
+        ...artifact,
+        messageBus: { ...artifact.messageBus!, minimumRows },
+      } as unknown as typeof artifact;
+      expect(() => messageBus.encodeMessageBatch(drifted, [{ function: 'clear' }])).toThrow(
+        expect.objectContaining({ code: 'L3_PROTOCOL_METADATA_MALFORMED' }),
+      );
+    }
   });
 });

@@ -66,6 +66,7 @@ import type { LibauthOutput, Output, ReceiptEvent } from '../interfaces.js';
 import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { onMockNetworkProviderReset } from '../network/MockNetworkProvider.js';
+import { clearCollectionValueRecords } from './ValueChunkPersistence.js';
 import {
   assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants,
   finalizedByteGateOptionsForProvider, inputSubjectsOfBuilder,
@@ -1000,6 +1001,7 @@ import {
 
 export {
   jobEventsEntryOneToOneIndices,
+  collectionEntryOneToOneIndices,
   reassertTokenInsertNewLock,
   reassertTokenInsertCommitments,
   linearSortedBatchEntryBands,
@@ -7299,6 +7301,7 @@ export class StatefulTransactionBuilder {
 
 onMockNetworkProviderReset(() => {
   StatefulTransactionBuilder.clearPersistedJobEvents();
+  clearCollectionValueRecords();
 });
 
 /**

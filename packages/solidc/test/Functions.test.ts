@@ -172,6 +172,19 @@ describe('unnamed-return fall-through: no dead default when all paths return', (
     expect(cc('contract C { function f(uint x) internal pure returns (uint r) { if (x > 0) { r = x; } }'
       + ' function g() public pure { require(f(0) == 0); } }')).toBe('C');
   });
+  it('normalizes an unnamed fall-through path ending in a non-returning library helper call', () => {
+    // OpenZeppelin Address.verifyCallResultFromTarget uses this shape: the failure arm calls a void helper
+    // whose assembly always reverts, while the success arm returns the value. The unnamed fall-through default
+    // must still be materialized before final-return validation; optional-pass admission cannot key only on
+    // named return variables.
+    expect(cc('library L {'
+      + ' function verify(bool success, bytes memory data) internal pure returns (bytes memory) {'
+      + ' if (!success) { _revert(data); } else { return data; } }'
+      + ' function _revert(bytes memory data) private pure {'
+      + ' if (data.length > 0) { assembly { revert(add(32, data), mload(data)) } } else { revert("failed"); } } }'
+      + ' contract C { function f(bool success, bytes memory data) public pure returns (bytes memory) {'
+      + ' return L.verify(success, data); } }')).toBe('C');
+  });
   it('synthesizes a type-correct default for a genuine fall-through returning address', () => {
     // The unnamed-return default for address is address(0) (a cast), not int 0 (which does not type-check).
     expect(cc('contract C { function f(uint x) internal pure returns (address) { if (x > 0) { return address(uint160(1)); } }'

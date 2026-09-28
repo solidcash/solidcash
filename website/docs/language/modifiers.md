@@ -100,10 +100,10 @@ inlined where that is cheaper.
 | `view` | Declares read-only state access |
 | `payable` | Function can receive BCH; enables `msg.value` |
 
-:::caution
-`pure` and `view` are **accepted but not enforced**. Unlike solc, the compiler does not currently reject a
-`view` function that writes state. Treat them as documentation and as porting affordances, not guarantees.
-:::
+Native SolidCash enforces `pure` contract-state reads but does not yet reject every direct state write in a
+`view` function. The `solidityImportCompat` pipeline applies the stricter Solidity effect checks, including
+state/transient-state writes, contract creation, low-level calls, and calls to less-restrictive functions.
+Accordingly, review native `view` functions as annotations rather than assuming full solc-equivalent enforcement.
 
 ```solidity
 contract Example() {
@@ -188,6 +188,7 @@ contract TokenV1(pubkey admin) {
 ```
 
 State layout can be extended in the new version (append new fields). Existing state values are preserved.
+See [Upgrades, Proxies & Delegatecall](/docs/language/upgrades-proxies).
 
 ### `selfdestruct`
 
@@ -204,7 +205,9 @@ contract Killable(pubkey admin) {
 ```
 
 :::caution
-Selfdestruct is irreversible. All state, entries, and token containers are permanently lost.
+Selfdestruct is irreversible. State and entry NFTs are burned. CashTokens are not assigned a recipient by the
+modifier and can be stranded or burned unless the contract sweeps them deliberately. See
+[Contract Destruction](/docs/language/selfdestruct#tokens-are-not-transferred).
 :::
 
 ### `split`
@@ -256,7 +259,8 @@ contract Implementation() {
 ```
 
 Access the inferred build through `artifact.delegateArtifact`, `contract.asDelegate()`, or the SDK proxy helpers.
-`delegate` is not a source-level modifier.
+New code should not write a `delegate` modifier. The parser retains the legacy explicit form during migration,
+but ordinary `public`/`external` functions are how proxy implementation code is authored now.
 
 ### `unsafe`
 
@@ -269,13 +273,23 @@ function authorize(pubkey pk, sig s) unsafe {
 }
 
 function limitedAccess() unsafe(1) {
-    // Tier 1: cannot read contract state variables
+    // Tier 1: preserve the master NFT and minting uniqueness
 }
 
 function readOnlyNft() unsafe(2) {
-    // Tier 2: cannot write NFTs
+    // Tier 2: tier 1 plus satoshi-value preservation
 }
 ```
+
+| Tier | Covenant protections retained |
+| --- | --- |
+| `unsafe` / `unsafe(0)` | None; the master may be lost or duplicated |
+| `unsafe(1)` | Master category, capability, locking bytecode, and minting uniqueness |
+| `unsafe(2)` | Tier 1 plus `input value <= output value` |
+
+Tier 1 and 2 functions may read ordinary scalar state but cannot write state, access entries, emit events, move
+satoshis/tokens, call other contracts, or deploy children. Every tier is compiler-warned; prefer the normal
+covenant unless the transaction shape genuinely cannot use it.
 
 ## Modifier Compatibility
 

@@ -114,12 +114,18 @@ describe('vmap fixed-write batch metadata', () => {
     expect(artifact.abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.valueSource).toBe('id:v');
   });
 
-  it('records a whole-value integer literal as valueSource so the SDK can pin the first probe', () => {
+  it('publishes exact literal and parameter-delta mapping values for faithful first probes', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;
-      function f(int k) external { m[k] = 5; require(true); }
+      function seed(int k) external { m[k] = 5; require(true); }
+      function move(int a, int b, int v) external {
+        m[a] = m[a] - v; m[b] = m[b] + v; require(true);
+      }
     }`, { forceStateful: true });
-    expect(artifact.abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.valueSource).toBe('lit:5');
+    expect(artifact.abi.find((f) => f.name === 'seed')?.entryAccesses?.[0]?.valueSource).toBe('lit:5');
+    expect(artifact.abi.find((f) => f.name === 'move')?.entryAccesses
+      ?.map((access) => access.valueSource).sort())
+      .toEqual(['binop:+(entry,id:v)', 'binop:-(entry,id:v)']);
   });
 
   it('records whole-value byte-sequence literals so the SDK can pin the first probe', () => {
@@ -137,7 +143,7 @@ describe('vmap fixed-write batch metadata', () => {
     expect(accesses?.find((access) => access.collection === 'payloads')?.valueSource).toBe('lit:0xc0ffee');
   });
 
-  it('records a struct-constructor mapping write as valueSource', () => {
+  it('publishes a struct constructor value without contract-specific field knowledge', () => {
     const artifact = compileString(`contract C {
       struct S { uint256 a; uint256 b; uint256 c; uint256 d; }
       mapping(uint256 => S) m;

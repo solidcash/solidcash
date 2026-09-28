@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
+import { decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
 import { messageBus } from '../../../src/index.js';
+import { artifactTestRequires } from '../../fixture/debugging/debugging_contracts.js';
 
 const push = (payload: number[]): number[] => [payload.length, ...payload];
 const routeUnlock = (payload: number[]): Uint8Array => Uint8Array.from([
@@ -93,6 +95,56 @@ describe('message-bus batch VM refusal attribution', () => {
       expect(messageBus.mapMessageBusVmFailure({ inputs: [{}] } as never, valid, 0, raw).message)
         .toBe(`messageBus: BCH-2026 preflight failed at input 0: ${raw}`);
     }
+  });
+
+  it('recovers an exact compiler require reason from the active preflight body', () => {
+    const selected = Object.entries(artifactTestRequires.debug!.functionDebug!)
+      .find(([, debug]) => debug.requires.some((entry) => entry.message === '1 should equal 2'));
+    expect(selected).toBeDefined();
+    const [selector, debug] = selected!;
+    const requireStatement = debug.requires.find((entry) => entry.message === '1 should equal 2')!;
+    const instructions = decodeAuthenticationInstructions(hexToBin(artifactTestRequires.functionBodies![selector]));
+    const builder = {
+      inputs: [{
+        unlocker: {
+          contract: { artifact: artifactTestRequires },
+          abiFunction: { selector },
+        },
+      }],
+    } as never;
+
+    const error = messageBus.mapMessageBusVmFailure(
+      builder,
+      transaction([0]),
+      0,
+      raw,
+      { instructions, ip: requireStatement.ip + 1 } as never,
+    );
+    expect(error.message).toContain('1 should equal 2');
+    expect(error).toMatchObject({ requireStatement, inputIndex: 0 });
+  });
+
+  it('resolves an exact active body owned by another transaction participant', () => {
+    const selected = Object.entries(artifactTestRequires.debug!.functionDebug!)
+      .find(([, debug]) => debug.requires.some((entry) => entry.message === '1 should equal 2'))!;
+    const [selector, debug] = selected;
+    const requireStatement = debug.requires.find((entry) => entry.message === '1 should equal 2')!;
+    const instructions = decodeAuthenticationInstructions(hexToBin(artifactTestRequires.functionBodies![selector]));
+    const builder = {
+      inputs: [
+        { unlocker: { abiFunction: { selector: 'ffffffff' } } },
+        { unlocker: { contract: { artifact: artifactTestRequires } } },
+      ],
+    } as never;
+
+    const error = messageBus.mapMessageBusVmFailure(
+      builder,
+      transaction([0]),
+      0,
+      raw,
+      { instructions, ip: requireStatement.ip + 1 } as never,
+    );
+    expect(error.message).toContain('1 should equal 2');
   });
 
   it('maps a VM-priced resource refusal without discarding its raw reason', () => {

@@ -5,6 +5,7 @@ import { compileString } from './direct-compile.js';
 import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
 import { Contract, TransactionBuilder, MockNetworkProvider } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
+import { extractKeccakPreimageFromTrace } from '../src/keccak/keccakComputeSidecar.js';
 
 const K = new Uint8Array(32).fill(0xbb); // side-car own NFT category
 const evm = (b: Uint8Array): Uint8Array => keccak_256(b);
@@ -33,6 +34,35 @@ async function deploySidecars(provider: MockNetworkProvider, count: number): Pro
 }
 
 describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
+  it('selects the last unresolved call when batched sidecar reads include an already-resolved call', () => {
+    const state = (marker: number, preimage: number[]): unknown => ({
+      ip: 0,
+      instructions: [{ opcode: 0xca }],
+      controlStack: [],
+      stack: [Uint8Array.from(preimage), Uint8Array.of(marker), Uint8Array.of(5)],
+    });
+    const learned = extractKeccakPreimageFromTrace(
+      [state(2, [0x22]), state(1, [0x11])], 5, 2, 1,
+      (callIndex) => callIndex === 1,
+    );
+    expect(learned).toEqual({ callIndex: 1, preimage: Uint8Array.of(0x22) });
+  });
+
+  it('revisits a resolved outer call when its nested keccak result changes', () => {
+    const state = (marker: number, preimage: number[]): unknown => ({
+      ip: 0,
+      instructions: [{ opcode: 0xca }],
+      controlStack: [],
+      stack: [Uint8Array.from(preimage), Uint8Array.of(marker), Uint8Array.of(5)],
+    });
+    const current = [Uint8Array.of(0x10), Uint8Array.of(0x22)];
+    const learned = extractKeccakPreimageFromTrace(
+      [state(2, [0x22]), state(1, [0x11])], 5, 2, 1,
+      (callIndex, preimage) => binToHex(current[callIndex]) !== binToHex(preimage),
+    );
+    expect(learned).toEqual({ callIndex: 0, preimage: Uint8Array.of(0x11) });
+  });
+
   it('compiles a single keccak256(param) to the compute model by default (no blob)', () => {
     const lib = SINGLE.externalLibraries?.find((l) => l.name === 'keccak256');
     expect(lib?.resultNft).toBe(true);

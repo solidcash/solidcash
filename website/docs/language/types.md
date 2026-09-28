@@ -307,9 +307,9 @@ Array literals use bracket syntax, which is also how `checkMultiSig` takes its a
 require(checkMultiSig([sig1, sig2], [pk1, pk2, pk3]));
 ```
 
-State arrays additionally support `.push()`, `.pop()`, `.delete(i)` and indexed assignment. See
-[Stateful Contracts](/docs/language/stateful-contracts#dynamic-arrays) for the state-array backends and the
-`packed` layout modifier.
+State arrays additionally support `.push()`, `.pop()`, `.delete(i)` and indexed assignment when their backend is
+dense. `.delete(i)` uses swap-with-last removal, so it does not preserve order. See [Arrays](./arrays.md) for local
+semantics, persistent backends, nested arrays, and the `packed` layout modifier.
 
 ## Mappings
 

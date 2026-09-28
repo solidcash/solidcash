@@ -29,6 +29,13 @@ const leUint = (bytes: Uint8Array): bigint => {
 // covenant (no dummy state, no manual UTXO gathering).
 const artifact = compileString(SOURCE, { forceStateful: true });
 
+const compatArtifact = compileString(`pragma solidity ^0.8.20;
+contract CompatAddrCast {
+  function checkPackedUint160(address a, bytes20 expected) public {
+    require(abi.encodePacked(uint160(a)) == abi.encodePacked(expected));
+  }
+}`, { forceStateful: true, solidityImportCompat: true });
+
 describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => {
   const addr = p2pkh(alicePkh); // a P2PKH address whose embedded 20-byte hash is alicePkh
 
@@ -57,6 +64,13 @@ describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => 
     const sc = await factory.deploy();
     const highBit = new Uint8Array(20).fill(0xff); // top bit set -> would be negative without the 0x00 fix
     const txid = await sc.uint160NonNegative(p2pkh(highBit));
+    expect(txid).toBeDefined();
+  });
+
+  it('Solidity-compat abi.encodePacked(uint160(address)) emits exactly the narrowed 20-byte identity', async () => {
+    const factory = getContractFactory(compatArtifact, await fundedSigner());
+    const sc = await factory.deploy();
+    const txid = await sc.checkPackedUint160(addr, alicePkh);
     expect(txid).toBeDefined();
   });
 

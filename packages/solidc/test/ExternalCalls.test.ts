@@ -589,7 +589,10 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
     const run = artifact.abi.find((entry) => entry.name === 'run');
     expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['move']);
-    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+    expect(run?.externalCalls?.[0].addressSource).toEqual({ kind: 'forward', paramIndex: 0 });
+    // Tail recursion changes n, but not token. The nested cast/library boundary must preserve that provenance
+    // instead of allocating a runtime target table for a receiver which is invariant across every iteration.
+    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(false);
   });
 
   // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the

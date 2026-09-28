@@ -17,7 +17,7 @@ const features: FeatureItem[] = [
     title: 'TypeScript SDK',
     description: (
       <>
-        The CashScript TypeScript SDK makes it easy to build smart contract transactions, both in browser or on the server.
+        The SolidCash TypeScript SDK makes it easy to build smart contract transactions, both in browser or on the server.
         By offering full type-safety, developers can be confident in the quality and reliability of their applications.
       </>
     ),
@@ -26,9 +26,9 @@ const features: FeatureItem[] = [
     title: 'Familiar Syntax',
     description: (
       <>
-        The CashScript syntax is based on Ethereum's smart contract language Solidity,
+        The SolidCash syntax is based on Ethereum's smart contract language Solidity,
         which in turn is influenced by C++, Python, and JavaScript. This should make writing
-        CashScript contracts feel familiar even to new developers.
+        SolidCash contracts feel familiar even to new developers.
       </>
     ),
   },
@@ -36,7 +36,7 @@ const features: FeatureItem[] = [
     title: 'Integrated Network APIs',
     description: (
       <>
-        To make it easy to get blockchain information, the CashScript SDK exports a standardized network provider to query network APIs.
+        To make it easy to get blockchain information, the SolidCash SDK exports a standardized network provider to query network APIs.
         The primary class of network providers are the electrum servers but other network providers are also supported.
       </>
     ),
@@ -46,7 +46,7 @@ const features: FeatureItem[] = [
     description: (
       <>
         To offer the best developer experience for debugging and automated testing easy for developers,
-        CashScript has extensive debug tooling built-in.
+        SolidCash has extensive debug tooling built-in.
         This makes it possible to develop robust contract testing suites, and to debug your contracts with the Bitauth-IDE.
       </>
     ),

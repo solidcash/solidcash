@@ -46,6 +46,13 @@ describe('pending batch predecessor discovery', () => {
     expect(isPendingBatchPredecessor(fn, [first, -2n, second, -1n], 1, proof(first))).toBe(true);
   });
 
+  it('does not rebind a later insert in the same proof gap to the first insert\'s P\' output', () => {
+    const head = proof(new Uint8Array(32));
+    const args = [second, -1n, first, 23n];
+    expect(isPendingBatchPredecessor(fn, args, 0, head)).toBe(false);
+    expect(isPendingBatchPredecessor(fn, [second, -1n, first, -1n], 1, head)).toBe(true);
+  });
+
   it('requires an absent witness, a complete proof, and compiler batch membership', () => {
     expect(isPendingBatchPredecessor(fn, [second, -2n], 0, proof(first))).toBe(false);
     expect(isPendingBatchPredecessor(fn, [second, 23n], 0, proof(first))).toBe(false);

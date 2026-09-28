@@ -22,7 +22,7 @@
  * deployment's real outpoints and the same unlocking bytecodes.
  */
 
-import { createVirtualMachineBch2026, encodeDataPush } from '@bitauth/libauth';
+import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import { FrameKind, validatorRedeemScript, type Artifact, type RecordEntry } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
@@ -118,7 +118,7 @@ function selectorOf(artifact: Artifact, functionName: string): Uint8Array {
       `contract "${artifact.contractName}" publishes no selector for "${functionName}"`,
     );
   }
-  return new Uint8Array(Buffer.from(entry.selector, 'hex'));
+  return hexToBin(entry.selector);
 }
 
 /** The identity the compiler's stop-site table keys an entry on. */
@@ -244,8 +244,8 @@ export async function deployPerCallProxy(
   }
 
   const validatorProgram = perCallValidator.buildValidatorProgram();
-  const implementationCategory = new Uint8Array(Buffer.from(options.implementationDeploy.fundingUtxo.txid, 'hex'));
-  const proxyCategory = new Uint8Array(Buffer.from(options.proxyDeploy.fundingUtxo.txid, 'hex'));
+  const implementationCategory = hexToBin(options.implementationDeploy.fundingUtxo.txid);
+  const proxyCategory = hexToBin(options.proxyDeploy.fundingUtxo.txid);
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
@@ -270,7 +270,7 @@ export async function deployPerCallProxy(
   if (record === undefined || commitment === undefined) {
     throw new PerCallProxyDeployError(`the proxy's genesis published no record for category ${proxy.categoryId}`);
   }
-  const recordCommitment = new Uint8Array(Buffer.from(commitment, 'hex'));
+  const recordCommitment = hexToBin(commitment);
 
   // 3. `initialize` through the proxy: a root frame on the proxy master, one DELEGATE edge to the implementation.
   const plan = buildInitializePlan({

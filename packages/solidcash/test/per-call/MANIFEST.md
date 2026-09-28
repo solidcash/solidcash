@@ -29,15 +29,15 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 149 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 4 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 51 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 66 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 54 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 13 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 56 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 57 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1013 tests (115 + 377 + 521), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 377 is the four rows above it, and `solidcash` 521 is the nine rows above it.
+Total: 1029 tests (115 + 377 + 537), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 377 is the four rows above it, and `solidcash` 537 is the nine rows above it.
 An earlier total here counted rows that had gone stale rather than re-running them; the numbers above were taken
 from the per-file lines of the same runs. A new case belongs in one place: before adding a refusal, check whether
 `validator/script.test.ts`, `master-program.test.ts` or the file of the shape it mutates makes it.
@@ -79,6 +79,12 @@ from the per-file lines of the same runs. A new case belongs in one place: befor
   and `chunk-plan.test.ts` derives a dynamic value's length header and chunk commitments and lays the run out at
   the index the layout gives it, each read back through the shipped codecs (`decodePushdataValue`,
   `parseChunkCommitment`) and each refused shape named.
+- **`solidcash/test/per-call/deploy/`** — the deployed side: the master program's filled slots and published
+  offsets, the master and validator pools, the genesis state a constructor's own frame computes (including the
+  events a constructor emits), the record discovery a deployed contract is read through - the token category is
+  enumerated and each UTXO's capability and commitment classify it as a master, a validator or a record at its
+  state index - and a proxy deployment in three transactions, whose third is an `initialize` delegate hop the
+  composer plans and the shipped derivation fills.
 - **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the

@@ -683,7 +683,18 @@ risk. Take the slices in order, each with its own tests.
 - [ ] F5 The built-in proxy: an `implementation` field, and a fallback that delegatecalls with the arguments and
   result unchanged.
 - [ ] F6 `deployProxy` in three transactions; `initialize` through the proxy; the `Initializable` flag in the proxy's
-  records (title #8).
+  records (title #8). Moved (`23a89c66b`): the SDK builds the three transactions on the per-call path
+  (`packages/solidcash/src/per-call/proxy/deploy.ts`) - the implementation's genesis, the proxy's genesis with
+  the implementation's address in its own record, and `initialize` through the proxy as a delegate hop, planned
+  by the composer and derived by the shipped host, with the proxy master, the implementation master and the
+  validator accepted and the delegate record binding to the address the proxy's record holds. The state
+  discovery the fixture failed on is answered: per-call records are minted at the funder's lock and found by
+  enumerating the token category (`deploy/records.ts`), which is why the direct reader found none. Still open:
+  a state-writing `initialize` (a delegate frame writing a field would re-encode the record with the
+  implementation's layout, which lacks the proxy's own field), broadcasting the initialize transaction (its
+  participants sit on synthetic outpoints), and routing the SDK's `upgrades.deployProxy` here, which needs a
+  slot for the compiled proxy contract. **The record lock is a deviation, recorded below**: the genesis mints
+  the state record at the deployer's lock, while the spec's record table says a category-derived covenant.
 - [ ] F7 The fixture's 14 transactions on the per-call path, with the predicted Unicrow addresses equal to the
   deployed ones.
 - `split` and `merge` admin functions: not needed for the 66; deferred.
@@ -756,9 +767,11 @@ risk. Take the slices in order, each with its own tests.
     (`Base(this).g()`), but a call through an interface value whose runtime target equals the contract is still
     compiled as an external call and refused by the site check, so the two forms are not yet shown to agree.
   - [ ] T26/T27: a proxied call whose `DELEGATE` callee is not the proxy's current implementation (the fallback's
-    target), and a master presenting its code lock instead of its address. Open, and there is no spend to mutate: the
-    per-call delegate shapes are refused at compile, which `hostile/proxy-binding.test.ts` pins by name (a fallback or
-    receive that dispatches by selector; a body that issues a low-level call).
+    target), and a master presenting its code lock instead of its address. **Open, and now testable**: the forwarded
+    hop settles in the machine, so the record's target can be mutated against it, and the wider shapes (a fallback
+    beside ordinary entries, a receive, a delegatecall whose data is not the entry's own, a target the contract does
+    not hold) stay refused at compile, which `hostile/proxy-binding.test.ts` pins by name. No case yet for the
+    delegate callee that is not the implementation the proxy's record names.
   - [ ] T28/T29: a `DELEGATE` / `INTERNAL` frame with a sender or self its caller lacks; a `CREATE` frame naming a
     creator that ran no `new`.
   - [ ] T30: a second root placed between a caller's segment and its callee (the vault-share reentrancy window), and
@@ -798,11 +811,19 @@ risk. Take the slices in order, each with its own tests.
     each event's commitment read back through the shipped encoders. The body resolves the run's chunk through its
     own segment's declaration, which is what lets a created chunk sit in the trailing region after the events
     (`toys/same-entry-appends.test.ts`).
-  - [ ] **Y2 re-entry.** Built test-first and pinned (`b505d0e8d`, `toys/reentry.test.ts`), not settled: the shape's
-    first step cannot compile, because a master that makes an external call is refused a verified-mapping write (its
-    sorted-batch operands would have to be derived from the segment the write lands in, which a call has not fixed
-    yet), so `Vault.release` and `Vault.markClaimed` are published as refused entries and no run can be built. The
-    toy asserts the sibling entries are served, so the refusal is the conjunction rather than the shape.
+  - [ ] **Y2 re-entry.** Moved twice. The wall was that a master making external calls could not carry a
+    verified-mapping write at all; the refusal now names what it requires (`56411d2eb`): a body's write is
+    admissible when it precedes every call the body makes, because the segment the write lands in is then the
+    entry's own first segment, which the derivation reads, and the emission reads that segment rather than the
+    one the frame ends in. **The design's writing half settles**: `Vault.release` rewrites the record and calls
+    `Claimer.claim`, which re-enters the vault to mark the record claimed - the derivation completes the callee
+    first, the machine accepts the two vault masters, the claimer and the validator, the record's output carries
+    the commitment the shipped mapping planner computes, and each frame's declared view equals the plan's view
+    for that frame's write. Still open, both pinned: a write that **creates** a fresh record under a validator
+    fails on chain (`OP_VERIFY` in the creating frame's own segment walk, with or without the call, so it is the
+    insert declaration and not the call), and an entry returning several values is still refused (a frame's
+    return value is compared with one value the entry computed). The rest of the toy's graph - the static
+    read-back, the two payments and their token transfers, the emit - compiles but is not driven end to end.
     - `Vault.release(id)` writes `recs[id].state = 1`, calls `Claimer.claim(id)`, and emits the returned amounts.
     - `claim` reads `vault.get(id)` and requires `state == 1`.
     - `claim` calls `vault.markClaimed(id)`, then `vault.pay(to, amt)` twice.
@@ -1680,3 +1701,19 @@ Titles marked NEVER have not passed on any real compile to date.
 | 2026-09-27 | 7125f91b4 | per-call | three frames answer from their own declarations | 115 + 377 + 521 | **Three mechanisms, one principle: a frame resolves a record through what its own segment declares.** *Dynamic runs*: the write verification takes the entry's declared index for the transaction checks and keeps the band coordinate only for the view close, so a chunk the transaction creates can sit in the trailing region after the events; the declared-view ordinal walk had a real defect this exposed (its input arm split the view it had just extracted and reread a non-empty view as a length prefix, and the write side computed its ordinal against the input base) and is now one shared implementation for either side. **Measured**: the append toy's from-empty run with one event per append settles - three appends, one created chunk after the events, every contract input and the validator accepted, the created chunk, the header and each event read back through the shipped encoders - which ticks Y1. *Rewritten nodes*: a frame rewriting a created mapping node takes the node's declared ordinal (pushed as a negative index) instead of an output coordinate derived from the parked base, a frame that spent its node keeps the coordinate path, and a per-call frame no longer proves the whole transaction's collection cardinality, which is not its to prove when other frames hold records of the same collection. **Measured**: the lifecycle toy's three ledger frames are accepted, the relinked head and the created node's commitment read back through the shipped encoder, a mutated declaration refused. *Delegate calls*: the proxy's stall was the body's **call-count pin**, not the record's kind or target compare - the path walk counted only message calls, so a forwarded delegatecall left the body pinning zero against the block's declared one - and the fallback binds its received call data at its real depth instead of rebuilding it from the input's bytecode. **Measured**: the hop settles with the proxy master, the implementation master and the validator accepted. **Found on the way**: the frame tail parked the first record's input index twice (the second read split the same copy after the first field was dropped, so the output base equalled the input base); the two index fields are now read from one copy, input first, which is the order the head's slot reader takes them back in. |
 | 2026-09-27 | (this row's commit) | per-call | the spec's created-record rule is corrected | 115 + 377 + 521 | **The design document now states what ships.** A created record's entry carries the create sentinel only on the frame that creates it, and a frame that reads or rewrites it names the output index (`in == out == that index`), which is what the transcript's created-output list exists to make decidable; the transcript section's codec block, its version byte (`PC7` `0x02`, with version `0x01` having no created list) and the settlement's created-output list are all stated there now, and the insert-across-frames passage says the same. Nothing else changed: the wire itself landed last round, and the focused suites are the ones above. |
 | 2026-09-28 | (this round) | per-call | the lifecycle toy was not driving the derivation | 115 + 377 + 521 | **A correction to the row above it and to the Y5 annotation it wrote.** The previous round attributed the hub's and the validator's refusals to something outside the ledger frames. They were an artefact of the test: `toys/sorted-entry-lifecycle.test.ts` created the composer's host but never ran the derivation, so the hub's three call records kept the unfilled callee reference (`0xFFFE`), which the master's call-site binding reads as an input index - `OP_BIN2NUM(0xFFFE) = -32766`, byte-for-byte the reported `requested index`. With the shipped `deriveComposition` in the toy, the references resolve to the three ledger frames (in layout order `insert-1:4, update-1:2, remove-1:3`), every input of the composition is accepted, and **Y5 is ticked**. Nothing in the composer, the compiler or the plan layer changed: the composer was right, and the lesson is that a toy which assembles a plan without running the shipped derivation can report refusals that belong to its own driver. The validator refusal went the same way. |
+
+- **A per-call genesis mints the scalar state record at the deployer's lock, while the design says every record
+  lock is derived from the contract's category.** Spec section 20 states it plainly ("Every record lock is derived
+  from the contract's category `C`, plus a salt where noted", and "every record lock pins its own category and
+  capability, so a spent UTXO at a record lock is a genuine record"), and section 3.3 has state UTXOs sitting at
+  `stateX`, the data-NFT covenant. The shipped per-call deployment mints that one record at
+  `options.funder.generateLockingBytecode()` - a plain user lock - and the focused composition tests build their
+  state record at a user lock too, so the two agree with each other and disagree with the design. Two consequences
+  follow, and neither is tested: a state NFT at a user lock is spendable by that lock's owner outside the contract's
+  rules, and the identity argument that a state UTXO can never act as a caller (T19) rests on the record's lock
+  pinning the category, which a user lock does not. The mapping node, chunk and event records do sit at their
+  collection covenants. Reconciling the deployment (and the fixtures that mirror it) with the data-NFT covenant is
+  queued work, and it should land before the ladder, since the fixture's contracts carry state.
+| 2026-09-28 | 23a89c66b | per-call | a proxied deployment in three transactions | 115 + 377 + 537 | **The deployment half of the proxy lands, and the state-discovery question is answered in code.** A proxied deployment went through the direct convention's builder and state reader, which look for data NFTs at a category-derived address; this convention mints them at the funder's own lock, so the reader found none (`Expected 2 data NFT(s) ... found 0`). Per-call records are now found by enumerating the token category, with capability and commitment classifying a UTXO as a master, a validator or a record at its state index. `deployPerCallProxy` builds the design's three transactions - the implementation's genesis, the proxy's genesis with the implementation's address in its own record, and `initialize` through the proxy as a delegate hop planned by the composer and derived by the shipped host - and reports each half's real address and the machine's verdicts; the proxy master, the implementation master and the validator are accepted, and `readPerCallState` decodes a deployed contract's registers back through the shipped pushdata decoders. Recorded as open: a state-writing `initialize` (a delegate frame writing a field would re-encode the record with the implementation's layout, which lacks the proxy's own field), broadcasting the transaction (its participants sit on synthetic outpoints), and routing `upgrades.deployProxy` here (it wants a slot for the compiled proxy contract). Deploy suite 51 to 66. **A deviation was recorded with it**: the genesis mints the scalar state record at the deployer's lock, where the design says a category-derived covenant. |
+| 2026-09-28 | 56411d2eb | per-call | a calling master's mapping write that precedes its calls | 115 + 377 + 537 | **The re-entry wall moved from "never" to "before the calls".** A master making external calls was refused every verified-mapping write, because the write's proof node was resolved against the segment the frame ends in while a call splits an execution into later segments. The admission now states what it needs: a body's write is admissible when it precedes every call the body makes, so the segment the write lands in is the entry's own first segment, which the derivation reads; the emission reads that segment for the proof node, guarded on the convention, and the direct path's byte identity still holds. **Measured**: `Vault.release` rewrites its record and calls `Claimer.claim`, which re-enters the vault to mark the record claimed - the derivation completes `markClaimed-1`, `claim-1`, `release-1`, the machine accepts the two vault masters, the claimer and the validator, the record's output carries the commitment the shipped mapping planner computes, and each frame's declared view equals the plan's view for its own write. Still pinned: a write that creates a fresh record under a validator fails on chain (`OP_VERIFY` in the creating frame's segment walk, with or without the call, so it is the insert declaration and not the call), and an entry returning several values is refused. |
+| 2026-09-28 | (this row's commit) | per-call | the round's counts, and a build fix folded in | 115 + 377 + 537 | The manifest's per-directory table is refreshed from the runs above (deploy 66, toys 57; 1029 in total), and the coverage table's proxy rows are corrected now that the forwarded hop settles rather than being refused at compile, which also retires T26/T27's "there is no spend to mutate" reason: the delegate callee that is not the implementation the proxy's record names is now testable and owes a case. Folded into this commit because the build caught it and nothing else was in flight: `packages/solidcash/src/per-call/proxy/deploy.ts` used the Node `Buffer` for hex decoding, which the SDK's browser-safe sources do not have types for - the root project-reference build failed on it while the focused vitest runs passed - and it now uses the shipped `hexToBin`. |

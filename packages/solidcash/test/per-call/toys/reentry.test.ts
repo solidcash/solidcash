@@ -167,12 +167,15 @@ function blockOf(unlocking: Uint8Array): ReturnType<typeof decodeWitnessBlock> {
 
 /** The machine's verdict on one participant's own input of the assembled transaction. */
 function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft'], id: string): string {
+  return verdictAtIndex(draft, participant(draft.layout, id).index);
+}
+
+/** The machine's verdict on the input at an index, for the UTXOs the layout places that are not participants. */
+function verdictAtIndex(draft: ReturnType<typeof createComposedDerivationHost>['draft'], index: number): string {
   const program = draft.programFor('release-1');
   const vm = compositionMachine();
   const state = vm.evaluate({
-    inputIndex: participant(draft.layout, id).index,
-    sourceOutputs: program.sourceOutputs,
-    transaction: program.transaction,
+    inputIndex: index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
   });
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
@@ -953,19 +956,19 @@ describe('the vault graph: release, two payments through the token and the emit'
 });
 
 /**
- * The read-back the same graph's claimer makes, and the wall it meets.
+ * The read-back the same graph's claimer makes, and the hop it settles.
  *
  * `Vault.release` writes its record and calls `Claimer.claim`, which reads the record back through the read-only
  * `get` and returns what it read. The composition is otherwise the smallest that carries the hop: the vault's two
- * masters and record, the claimer's master, one validator and the user. Every participant but the reading frame is
- * accepted by the machine, and the derivation stops on the reading frame's own close.
+ * masters and record, the claimer's master, one validator and the user. Every participant is accepted by the
+ * machine and the derivation completes the reading frame, then the claimer, then the entry that made the call.
  *
- * A frame that reads a mapping record without writing it cannot resolve the record its segment declares: the
- * declared-view read comes back empty and the frame's own non-empty check fails, an `OP_VERIFY` inside the read
- * helper. The fault is the read path, not the plan. The plan declares the record at the coordinate the writing
- * frames use, and the writing frames of the settled graph above are accepted at that coordinate; a frame that
- * reads a mapping record it also writes resolves it (the two transfers read and rewrite the balance node), so the
- * read itself works and only a read the frame does not write fails.
+ * A read-only frame declares the record it reads the same way a writing frame declares one, and its `viewIn` for a
+ * record it does not write is that record's current view. The frame's records are separate UTXOs, so an entry does
+ * not sit at a fixed offset from the input the frame runs on: the body addresses the record block the frame's own
+ * witness block declares, which is the base the head parks, exactly as a state read does. A read that addressed its
+ * own input instead matched no declared record, so the declared-view read came back empty and its non-emptiness
+ * guard failed. The control below shows the read resolving that declaration rather than the spent commitment.
  */
 const READBACK_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IVault { function get(int id) view returns (int); }'
@@ -1129,22 +1132,246 @@ function driveReadBack(): GraphOutcome {
 }
 
 describe('the claimer\'s read-back of the record `release` wrote', () => {
-  it('pins the wall: the read-only frame cannot resolve the record its segment declares', () => {
-    const { completed, error, verdicts } = driveReadBack();
+  it('settles the hop: the read-only frame resolves the record its segment declares', () => {
+    const { draft, completed, error, verdicts, vaultNodeIndex } = driveReadBack();
 
-    // The derivation stops on the reading frame's own segment close, before the claimer that called it resumes.
-    expect(error).toBe(
-      'PER_CALL_DERIVATION_STALLED: master "get-1" of Vault.get() filled no witness at site 0 (close of segment 0)',
-    );
-    expect(completed).toStrictEqual([]);
+    // The reading frame runs first, then the claimer that called it, then the entry that made the call; no frame
+    // is refused, so the read-back is part of the graph rather than its end.
+    expect(error).toBeUndefined();
+    expect(completed).toStrictEqual(['get-1', 'claim-1', 'release-1']);
 
-    // The reading frame is the only refused participant: `release`'s write and call, the call back into the vault
-    // the claimer records, the validator and the vault's record are all accepted by the machine.
+    // The reading frame declares the record at the index the transaction holds it at and reads its own
+    // declaration for both sides: it neither writes the record nor names a coordinate of its own.
+    expect(draft.blockOf('get-1').segments[0]).toStrictEqual([
+      { in: vaultNodeIndex, out: vaultNodeIndex, viewIn: releaseView(1n), viewOut: releaseView(1n) },
+    ]);
+
+    // Every participant is accepted: the writing entry and its call, the reading frame, the validator that covers
+    // the composition and the record UTXO itself.
     const refused = verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
-    expect(refused).toStrictEqual(['get-1: Program failed an OP_VERIFY operation.']);
+    expect(refused).toStrictEqual([]);
     expect(verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted}`)).toStrictEqual([
-      'release-1:true', 'get-1:false', 'validator:true', 'vaultNode:true', 'claim-1:true',
+      'release-1:true', 'get-1:true', 'validator:true', 'vaultNode:true', 'claim-1:true',
     ]);
+  });
+
+  it('reads the declaration its segment carries, not the commitment the transaction spends', () => {
+    // The control: the reading frame's body resolves the record through its own segment's declaration, so a
+    // declaration carrying another value reaches the body's `require(s == 1)` and fails there.
+    const { draft } = driveReadBack();
+    draft.blockOf('get-1').segments[0]![0]!.viewIn = releaseView(2n);
+    expect(verdictAt(draft, 'get-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+
+    // The other control: a frame that declares no record has nothing to resolve, so the read fails rather than
+    // falling back to the spent commitment.
+    const empty = driveReadBack();
+    empty.draft.blockOf('get-1').segments[0] = [];
+    expect(verdictAt(empty.draft, 'get-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+  });
+});
+
+/** The read-back shape without an event, so the created node's trailing output follows the participants directly. */
+const CREATED_READBACK_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IVault { function get(int id) view returns (int); }'
+  + ' interface IClaimer { function claim(int id) returns (int); }'
+  + ' contract Vault {'
+  + '   mapping(int => int) public recs;'
+  + '   function release(int id) {'
+  + '     this.recs[id] = 1;'
+  + `     int first = IClaimer(0x${CLAIMER}).claim(id);`
+  + '     require(first == 1);'
+  + '     require(true);'
+  + '   }'
+  + '   function get(int id) view returns (int) { return this.recs[id]; }'
+  + ' }'
+  + ' contract Claimer {'
+  + '   function claim(int id) returns (int) {'
+  + `     int s = IVault(0x${VAULT}).get(id);`
+  + '     require(s == 1);'
+  + '     return s;'
+  + '   }'
+  + ' }';
+
+/**
+ * The same read-back against a record an earlier frame created.
+ *
+ * `Vault.release` inserts into an empty list, so the record has no input at all: the creating segment declares the
+ * head sentinel relinked in place and the created node as a trailing output. `Claimer.claim` reads it back through
+ * `Vault.get`, whose segment declares the created node with the no-index sentinel on its input side, carrying the
+ * node the creator left. The reading frame addresses its declaration the same way a read of a spent record does, so
+ * the read resolves what the earlier frame created rather than a UTXO the transaction does not hold.
+ */
+function driveCreatedReadBack(): {
+  readonly draft: CompositionDraft;
+  readonly completed: readonly string[];
+  readonly error?: string;
+  readonly createdIndex: number;
+  readonly headIndex: number;
+} {
+  const { artifacts, contracts } = compileAndDeploy(CREATED_READBACK_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
+  const vault = contracts.Vault!;
+  const claimer = contracts.Claimer!;
+  const validator = validatorFor(vault.category);
+
+  const idPush = encodeIntegerValue(ID);
+  const slot = keyToSlotMulti([idPush]);
+  const encodeValue = (value: bigint): Uint8Array => encodeIntegerValue(value);
+  const head = headSentinelCommitment();
+  const release = planMappingWrite({ keys: [idPush], value: 1n, inventory: [head], encodeValue });
+  const createdNode = release.written[1]!;
+
+  const blocks: CompositionDraftPlan['blocks'] = [
+    { contract: 'Vault', masters: ['release-1', 'get-1'], validator: { id: 'validator', settles: [] }, state: [] },
+    { contract: 'Claimer', masters: ['claim-1'], state: [] },
+  ];
+  const layout = layoutTransaction(blocks);
+  const createdIndex = layout.participantCount;
+  const headIndex = createdIndex + 1;
+  const userIndex = headIndex + 1;
+  const placements = new Map<string, MappingNodePlacement>([
+    [bytesToHex(new Uint8Array(32)), { in: headIndex, out: headIndex }],
+    [bytesToHex(slot), { out: createdIndex }],
+  ]);
+  const releaseSegments = layOutMappingWrites([[release]], {
+    placementOf: (candidate) => placements.get(bytesToHex(candidate)),
+  });
+
+  const releaseSelector = selectorOf(artifacts, 'Vault', 'release');
+  const getSelector = selectorOf(artifacts, 'Vault', 'get');
+  const claimSelector = selectorOf(artifacts, 'Claimer', 'claim');
+  const entryScript = buildEntryNftCovenantScript(
+    vault.category, computeCollectionHash(artifacts.Vault!.stateLayout!.collections![0]!.signature),
+  );
+  const lock = scriptToLockingBytecode(entryScript, 'p2sh32');
+  const releaseIndex = participant(layout, 'release-1').index;
+
+  const plan: CompositionDraftPlan = {
+    blocks,
+    userInputs: [
+      { id: 'site', index: createdIndex },
+      { id: 'head', index: headIndex },
+      { id: 'user', index: userIndex },
+    ],
+    masters: [
+      master({
+        master: 'release-1', contract: 'Vault', entry: 'release', program: vault.program,
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: vault.address, value: 0n },
+        facts: {
+          contract: 'Vault', functionName: 'release', kind: FrameKind.ROOT, callerIsUser: true,
+          originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 2,
+        },
+        enteredBy: 'user', origin: 'user', argumentPushes: [releaseSelector, idPush], dispatches: true,
+        calls: [{
+          kind: FrameKind.CALL, callee: 'claim-1', target: claimer.address, value: 0n,
+          argumentPushes: [claimSelector, idPush],
+        }],
+        segments: [releaseSegments[0]!, []],
+      }),
+      {
+        ...master({
+          master: 'get-1', contract: 'Vault', entry: 'get', program: vault.program,
+          frame: { kind: FrameKind.STATIC, sender: claimer.address, self: vault.address, value: 0n },
+          facts: {
+            contract: 'Vault', functionName: 'get', kind: FrameKind.STATIC, callerIsUser: false,
+            originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+          },
+          enteredBy: 'claim-1', origin: 'user', argumentPushes: [getSelector, idPush],
+          // The created node carries no input index, so the reading frame declares it with the sentinel the
+          // creator's own segment used and carries on from the node that segment left.
+          segments: [[
+            { in: 0xffff, out: createdIndex, viewIn: createdNode.after, viewOut: createdNode.after },
+          ]],
+        }),
+        retval: encodeResultList([encodeIntegerValue(1n)]),
+      },
+      {
+        ...master({
+          master: 'claim-1', contract: 'Claimer', entry: 'claim', program: claimer.program,
+          frame: { kind: FrameKind.CALL, sender: vault.address, self: claimer.address, value: 0n },
+          facts: {
+            contract: 'Claimer', functionName: 'claim', kind: FrameKind.CALL, callerIsUser: false,
+            originEqualsCaller: false, makesExternalCall: true, mastersOfContract: 1,
+          },
+          enteredBy: 'release-1', origin: 'user', argumentPushes: [claimSelector, idPush],
+          calls: [{
+            kind: FrameKind.STATIC, callee: 'get-1', target: vault.address, value: 0n,
+            argumentPushes: [getSelector, idPush],
+          }],
+        }),
+        retval: encodeResultList([encodeIntegerValue(1n)]),
+      },
+    ],
+    inputs: {
+      'release-1': { source: masterInput(vault) },
+      'get-1': { source: masterInput(vault) },
+      'claim-1': { source: masterInput(claimer) },
+      validator: {
+        source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable') },
+      },
+      site: {
+        source: { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
+        output: {
+          lockingBytecode: lock, valueSatoshis: 20_000n,
+          token: token(vault.category, 'mutable', createdNode.after),
+        },
+        unlockingBytecode: userInput().unlockingBytecode,
+      },
+      head: {
+        source: { lockingBytecode: lock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', head) },
+        output: {
+          lockingBytecode: lock, valueSatoshis: 20_000n,
+          token: token(vault.category, 'mutable', release.written[0]!.after),
+        },
+        unlockingBytecode: entryNodeUnlocking(entryScript, releaseIndex),
+      },
+      user: userInput(),
+    },
+    validator: {
+      id: 'validator', covers: ['Claimer'],
+      settles: [{ category: vault.category, stateInputs: ['head'] }],
+      redeemScript: validator.redeem,
+    },
+  };
+
+  const { host, draft } = createComposedDerivationHost({
+    vm: compositionMachine(), artifacts: [artifacts.Vault!, artifacts.Claimer!], plan,
+  });
+  let completed: readonly string[] = [];
+  let error: string | undefined;
+  try {
+    completed = deriveDepthFirst(rootOf('Vault', 'release', 'release-1'), host)
+      .completed.map((frame) => frame.master);
+  } catch (caught) {
+    error = (caught as Error).message;
+  }
+  return { draft, completed, error, createdIndex, headIndex };
+}
+
+describe('the claimer\'s read-back of a record an earlier frame created', () => {
+  it('settles the hop: the reading frame resolves the node the creating segment declared', () => {
+    const { draft, completed, error, createdIndex, headIndex } = driveCreatedReadBack();
+
+    // The creating frame runs first, then the reading frame, then the claimer that called it, then the entry.
+    expect(error).toBeUndefined();
+    expect(completed).toStrictEqual(['get-1', 'claim-1', 'release-1']);
+
+    // The created node is a trailing output with no input to read it at; the creating segment names it with the
+    // sentinel, and the reading frame's own segment carries on from the node that segment left.
+    const created = draft.blockOf('get-1').segments[0]![0]!;
+    expect(created).toStrictEqual({
+      in: 0xffff, out: createdIndex,
+      viewIn: draft.blockOf('release-1').segments[0]![1]!.viewOut,
+      viewOut: draft.blockOf('release-1').segments[0]![1]!.viewOut,
+    });
+
+    // Every contract input is accepted, and so is the relinked head's own UTXO, which is the other record the
+    // creating frame wrote. (The inputs that fund the created node are the harness's own spends, whose filler
+    // signatures cannot satisfy a P2PKH, so they are not what this asks.)
+    const accepted = ['release-1', 'get-1', 'validator', 'claim-1'].map((id) => `${id}: ${verdictAt(draft, id)}`);
+    expect(accepted).toStrictEqual([
+      'release-1: accepted', 'get-1: accepted', 'validator: accepted', 'claim-1: accepted',
+    ]);
+    expect(verdictAtIndex(draft, headIndex)).toBe('accepted');
   });
 });

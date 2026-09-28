@@ -117,7 +117,8 @@ export function externalEntryLockingBytecode(
       || candidate.signature === entryAccess.collection)
     // Interface artifacts can omit implementation entry-access metadata. A state layout with exactly one
     // collection still identifies an entry slot without ambiguity; refuse to guess when several exist.
-    : collections.length === 1 ? collections[0] : undefined;
+    : group.compilerRoute?.abiFunction?.entryAccesses === undefined && collections.length === 1
+      ? collections[0] : undefined;
   return collection?.signature ? scriptToLockingBytecode(
     buildEntryNftCovenantScript(
       hexToBin(group.categoryId), computeCollectionHash(collection.signature),

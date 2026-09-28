@@ -54,6 +54,11 @@ describe('physical compiler-route entry ownership', () => {
       'p2sh32',
     );
     expect(lock).toEqual(expected);
+    expect(externalEntryLockingBytecode({
+      ...group,
+      compilerRoute: { abiFunction: { name: '__message_bus1', entryAccesses: [] } },
+      stateLayout: { collections: [{ name: 'physical', signature: physicalSignature }] },
+    } as never, { kind: 'entry', offset: 1, slotIndex: 0 } as never)).toBeUndefined();
   });
 
   it('does not replay a learned entry transition onto a new collection at the same coordinate', () => {

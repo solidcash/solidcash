@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { FrameKind, buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
+import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -9,7 +9,8 @@ import {
   deployMaster, readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost, participant, type CompositionDraftPlan, type DraftMaster,
+  createComposedDerivationHost, layoutTransaction, participant,
+  type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -143,91 +144,114 @@ describe('a proxied initialize that writes state', () => {
       .toBe(bytesToHex(written));
   });
 
-  it('refuses a second initialize against the record the first one left, at the entry\'s own guard', () => {
-    // The record a second call is offered is the one the first call wrote: the flag is set, so the entry's own
-    // require refuses before it writes, and the plan declares the record unchanged.
+  it('refuses a second initialize offered the record the first call left, and accepts the same plan before it', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Proxy: 'second call proxy', Impl: 'second call impl' });
     const proxyContract = contracts.Proxy!;
     const implContract = contracts.Impl!;
     const implementation = implContract.address;
-    const written = new Uint8Array(Buffer.from(
-      buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized: 1n, version: 7n }, 0), 'hex'));
     const selector = selectorOf(artifacts, 'Impl', 'initialize');
     const recordIndex = 2;
-    const facts = (
-      contract: string, entry: string, kind: number, makesExternalCall: boolean,
-    ): DraftMaster['facts'] => ({
-      contract, functionName: `${contract}.${entry}()`, kind, callerIsUser: kind === FrameKind.ROOT,
-      originEqualsCaller: kind === FrameKind.ROOT, makesExternalCall, mastersOfContract: 1,
-    });
-    const proxyMaster = master({
-      master: 'proxy-1', contract: 'Proxy', entry: '__fallback', program: proxyContract.program,
-      facts: facts('Proxy', '__fallback', FrameKind.ROOT, true),
-      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxyContract.address, value: 0n },
-      enteredBy: 'user', origin: 'user',
-      calls: [{ kind: FrameKind.DELEGATE, callee: 'impl-1', target: implementation, value: 0n,
-        argumentPushes: [selector, encodeDataPush(USER_LOCK)] }],
-      segments: [
-        [{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }],
-        [{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }],
-      ],
-      // The fallback receives its call data as one `bytes` argument: the selector's push and the argument's.
-      argumentPushes: [new Uint8Array([...encodeDataPush(selector), ...encodeDataPush(USER_LOCK)])],
-      dispatches: true,
-    });
-    const implementationMaster = master({
-      master: 'impl-1', contract: 'Impl', entry: 'initialize', program: implContract.program,
-      facts: facts('Impl', 'initialize', FrameKind.DELEGATE, false),
-      frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxyContract.address, value: 0n },
-      enteredBy: 'proxy-1', origin: 'user',
-      segments: [[{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }]],
-      // The forwarded call data is the selector's push followed by the entry's argument pushes, which is what the
-      // fallback received and handed to the implementation.
-      argumentPushes: [selector, encodeDataPush(USER_LOCK)],
-    });
-    const proxyCategoryHex = bytesToHex(proxyContract.category);
-    const recordSource = {
-      lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
-      token: token(proxyContract.category, 'mutable', written),
-    };
-    const validator = validatorFor(proxyContract.category);
-    const plan: CompositionDraftPlan = {
-      blocks: [
+    const state = (initialized: bigint, version: bigint): Uint8Array => new Uint8Array(Buffer.from(
+      buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
+    const written = state(1n, 7n);
+
+    /** The proxied hop for one state of the record, with the record ending where the entry computes it. */
+    const planFor = (before: Uint8Array, after: Uint8Array): CompositionDraftPlan => {
+      const facts = (
+        contract: string, entry: string, kind: number, makesExternalCall: boolean,
+      ): DraftMaster['facts'] => ({
+        contract, functionName: `${contract}.${entry}()`, kind, callerIsUser: kind === FrameKind.ROOT,
+        originEqualsCaller: kind === FrameKind.ROOT, makesExternalCall, mastersOfContract: 1,
+      });
+      const kept = (view: Uint8Array): RecordEntry =>
+        ({ in: recordIndex, out: recordIndex, viewIn: view, viewOut: view });
+      const proxyMaster = master({
+        master: 'proxy-1', contract: 'Proxy', entry: '__fallback', program: proxyContract.program,
+        facts: facts('Proxy', '__fallback', FrameKind.ROOT, true),
+        frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxyContract.address, value: 0n },
+        enteredBy: 'user', origin: 'user',
+        calls: [{ kind: FrameKind.DELEGATE, callee: 'impl-1', target: implementation, value: 0n,
+          argumentPushes: [selector, USER_LOCK] }],
+        // The record as the proxy read it before the call, and as the delegate frame left it after.
+        segments: [[kept(before)], [kept(after)]],
+        argumentPushes: [new Uint8Array([...encodeDataPush(selector), ...encodeDataPush(USER_LOCK)])],
+        dispatches: true,
+      });
+      const implementationMaster = master({
+        master: 'impl-1', contract: 'Impl', entry: 'initialize', program: implContract.program,
+        facts: facts('Impl', 'initialize', FrameKind.DELEGATE, false),
+        frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxyContract.address, value: 0n },
+        enteredBy: 'proxy-1', origin: 'user',
+        segments: [[{ in: recordIndex, out: recordIndex, viewIn: before, viewOut: after }]],
+        // The forwarded call data's pushes are the entry's write to its frame: the selector, then the argument.
+        argumentPushes: [selector, USER_LOCK],
+      });
+      const proxyCategoryHex = bytesToHex(proxyContract.category);
+      const blocks = [
         { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
         { contract: 'Impl', masters: ['impl-1'], state: [] },
-      ],
-      userInputs: userInputs(['user'], 4),
-      masters: [proxyMaster, implementationMaster],
-      inputs: {
-        'proxy-1': { source: masterInput(proxyContract) },
-        'impl-1': { source: masterInput(implContract) },
-        validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n,
-          token: token(proxyContract.category, 'mutable') } },
-        record: {
-          source: recordSource, output: recordSource,
-          unlockingBytecode: stateRecordUnlockingBytecode(proxyCategoryHex, 0, 0),
+      ];
+      // A record the entry rewrites is spent on the covenant's write path, which names a master of the record's
+      // own category; a record it leaves alone needs no master.
+      const writes = bytesToHex(before) !== bytesToHex(after);
+      const proxyMasterIndex = participant(layoutTransaction(blocks), 'proxy-1').index;
+      const recordSource = {
+        lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
+        token: token(proxyContract.category, 'mutable', before),
+      };
+      const validator = validatorFor(proxyContract.category);
+      return {
+        blocks,
+        userInputs: userInputs(['user'], 4),
+        masters: [proxyMaster, implementationMaster],
+        inputs: {
+          'proxy-1': { source: masterInput(proxyContract) },
+          'impl-1': { source: masterInput(implContract) },
+          validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n,
+            token: token(proxyContract.category, 'mutable') } },
+          record: {
+            source: recordSource,
+            output: { ...recordSource, token: token(proxyContract.category, 'mutable', after) },
+            unlockingBytecode: stateRecordUnlockingBytecode(
+              proxyCategoryHex, proxyMasterIndex, writes ? 1 : 0,
+            ),
+          },
+          user: userInput(),
         },
-        user: userInput(),
-      },
-      validator: {
-        id: 'validator', covers: ['Impl'],
-        settles: [{ category: proxyContract.category, stateInputs: ['record'] }],
-        redeemScript: validator.redeem,
-      },
+        validator: {
+          id: 'validator', covers: ['Impl'],
+          settles: [{ category: proxyContract.category, stateInputs: ['record'] }],
+          redeemScript: validator.redeem,
+        },
+      };
     };
 
-    const { draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: [artifacts.Proxy!, artifacts.Impl!], plan,
-    });
-    const program = draft.programFor('impl-1');
-    const vm = compositionMachine();
-    const state = vm.evaluate({
-      inputIndex: participant(draft.layout, 'impl-1').index,
-      sourceOutputs: program.sourceOutputs,
-      transaction: program.transaction,
-    });
-    expect(vm.stateSuccess(state)).not.toBe(true);
-    expect(String((state as { readonly error?: string }).error)).toContain('OP_VERIFY');
+    /** The machine's verdict on the implementation frame of one plan. */
+    const verdictOf = (before: Uint8Array, after: Uint8Array): { accepted: boolean; error?: string } => {
+      const plan = planFor(before, after);
+      const { draft } = createComposedDerivationHost({
+        vm: compositionMachine(), artifacts: [artifacts.Proxy!, artifacts.Impl!], plan,
+      });
+      const program = draft.programFor('impl-1');
+      const vm = compositionMachine();
+      const evaluation = vm.evaluate({
+        inputIndex: participant(draft.layout, 'impl-1').index,
+        sourceOutputs: program.sourceOutputs,
+        transaction: program.transaction,
+      });
+      return vm.stateSuccess(evaluation) === true
+        ? { accepted: true }
+        : { accepted: false, error: String((evaluation as { readonly error?: string }).error) };
+    };
+
+    // The control the refusal is attributed to: the same plan - the same masters, the same calls, the same push
+    // encoding - offered the state the entry expects, which it then writes itself.
+    expect(verdictOf(state(0n, 0n), written)).toStrictEqual({ accepted: true });
+    // The record the first call left, with the plan declaring it unchanged: the flag the entry guards on is set,
+    // and the state the deployment would leave is not the state that record holds.
+    const refused = verdictOf(written, written);
+    expect(refused.accepted).toBe(false);
+    expect(refused.error).toContain('OP_VERIFY');
   });
 
   it('refuses a proxy whose record does not declare the implementation\'s fields', async () => {

@@ -6081,14 +6081,13 @@ export default class SymbolTableTraversal extends AstTraversal {
           : this.mappingLoopLastCounter(node)
             ?? this.mappingRmwLiteralDelta(node)
             ?? (node.expression instanceof IdentifierNode ? this.mappingLocalNetSource(node.expression.name) : undefined)
-            ?? (node.expression instanceof IntLiteralNode || node.expression instanceof BoolLiteralNode
-              ? this.canonicalizeExpression(node.expression)
-              : directValueParam ? `id:${valueIdentifier!.name}`
-                : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
-                  || node.expression instanceof FunctionCallNode
-                  ? this.canonicalizeExpression(node.expression)
-                  : this.isOffChainEvaluableMappingValue(node.expression)
-                    ? this.canonicalizeExpression(node.expression) : undefined));
+            ?? this.literalWholeValueSource(node.expression)
+            ?? (directValueParam ? `id:${valueIdentifier!.name}`
+              : node.expression instanceof TernaryOpNode || node.expression instanceof InstantiationNode
+                || node.expression instanceof FunctionCallNode
+                ? this.canonicalizeExpression(node.expression)
+                : this.isOffChainEvaluableMappingValue(node.expression)
+                  ? this.canonicalizeExpression(node.expression) : undefined));
       if (existing) {
         const alreadyWrote = existing.operations.includes('write');
         if (!existing.operations.includes('write')) existing.operations.push('write');
@@ -9997,6 +9996,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       return this.isOffChainEvaluableMappingValue(node.left) && this.isOffChainEvaluableMappingValue(node.right);
     }
     return false;
+  }
+
+  /**
+   * The value a whole-value mapping write states from a literal, as an `evalComputedKey` label, or undefined.
+   *
+   * An integer or boolean keeps its canonical decimal label. A string or hex literal is published as its exact
+   * stored bytes (`lit:0x…`) rather than its text: the SDK reads a `lit:` label's text back as UTF-8, while a
+   * string literal may spell bytes (`\xNN` escapes) and may contain a spelling that reads as a number or hex.
+   */
+  private literalWholeValueSource(expression: ExpressionNode): string | undefined {
+    if (expression instanceof IntLiteralNode || expression instanceof BoolLiteralNode) {
+      return this.canonicalizeExpression(expression);
+    }
+    if (expression instanceof HexLiteralNode) return `lit:0x${binToHex(expression.value)}`;
+    if (expression instanceof StringLiteralNode) {
+      return `lit:0x${binToHex(expression.solidityBytes ?? new TextEncoder().encode(expression.value))}`;
+    }
+    return undefined;
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {

@@ -431,8 +431,8 @@ export async function deployPerCallProxy(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
   const recordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
-  // The records the entry's own body writes — a mapping node today — are planned against the entry's published
-  // accesses and their computed commitments are seeded with sentinels the derivation learns.
+  // The records the entry's own body writes — mapping nodes today — are planned against the entry's published
+  // accesses and their stated values, so their commitments are declared outright rather than learned.
   const entryWrites = hopEntryWrites({
     artifact: implementationArtifact,
     functionName: options.initialize.functionName,
@@ -446,7 +446,7 @@ export async function deployPerCallProxy(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: entryWrites?.candidates ?? [],
+    extraWrites: [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
@@ -795,8 +795,6 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // body's group walk reads them at. A created node is a trailing output past the events.
   const laidWrites = options.entryWrites?.lay({
     layout,
-    computed: options.writtenCommitments,
-    recordCount: options.recordCommitments.length,
     proxyMasterIndex,
     createdBase: layout.participantCount + options.eventOutputs.length,
     recordAmount: options.validatorAmount,
@@ -1186,7 +1184,7 @@ export async function callPerCallProxyEntry(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: entryWrites?.candidates ?? [],
+    extraWrites: [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),

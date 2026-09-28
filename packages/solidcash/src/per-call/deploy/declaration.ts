@@ -35,6 +35,19 @@ export interface ReadDeclaration {
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026ForProvider>;
 type VirtualMachineProgram = Parameters<VirtualMachine['evaluate']>[0];
 
+/** A machine that can step to a program's stop state without retaining every step, when it offers it. */
+type BoundedDebugVirtualMachine = VirtualMachine & {
+  boundedDebug?: (program: VirtualMachineProgram) => readonly ProgramStateTrace[];
+};
+
+/** The program state facts a stop's declaration is read from. */
+interface ProgramStateTrace {
+  readonly ip: number;
+  readonly instructions: readonly { readonly opcode: number }[];
+  readonly stack: readonly Uint8Array[];
+  readonly error?: string;
+}
+
 export type DeclarationReading =
   | ({ readonly ok: true } & ReadDeclaration)
   | {
@@ -52,12 +65,9 @@ export function readComputedDeclaration(options: {
   /** The largest value the caller will accept as a commitment. */
   readonly maximumCommitmentBytes: number;
 }): DeclarationReading {
-  const trace = options.vm.debug(options.program) as readonly {
-    readonly ip: number;
-    readonly instructions: readonly { readonly opcode: number }[];
-    readonly stack: readonly Uint8Array[];
-    readonly error?: string;
-  }[];
+  const machine = options.vm as BoundedDebugVirtualMachine;
+  const trace = (machine.boundedDebug?.(options.program)
+    ?? options.vm.debug(options.program)) as unknown as readonly ProgramStateTrace[];
   const failed = trace.findIndex((state) => state.error !== undefined);
   if (failed <= 0) return { ok: false, reason: 'no-trace', error: trace[0]?.error };
   const before = trace[failed - 1]!;

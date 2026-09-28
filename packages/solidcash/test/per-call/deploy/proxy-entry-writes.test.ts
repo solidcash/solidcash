@@ -5,7 +5,7 @@ import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { planMappingWrite } from '../../../src/per-call/composer/index.js';
+import { planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
 import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -16,9 +16,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * A delegate frame runs on the proxy's records, so an entry that writes a mapping touches the collection's node
  * UTXOs. The hop has to declare them in the frame's segment: the head sentinel it splices through, recreated in
- * place, and the node it creates as a trailing output. The node's commitment is what the entry's own body computed,
- * so the plan seeds it with a structurally valid placeholder and the derivation learns the value from the body's
- * close. The expected value here comes from the shipped planner against the real key and value.
+ * place, and every node it creates as a trailing output. Each node's commitment carries the value the artifact
+ * states for the write, so the plan declares it outright rather than learning it from the body's close. The
+ * expected commitments here come from the shipped batch planner against the real keys and values.
  */
 
 const IMPL_CATEGORY = '11'.repeat(32);
@@ -37,6 +37,20 @@ const BATCH_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function initialize() {'
   + '     this.tags["DA"] = "DIGITAL_AUDIO";'
   + '     this.tags["DV"] = "DIGITAL_VIDEO";'
+  + '   }'
+  + ' }';
+
+/** The marketplace data contract's own eight-key initializer. */
+const EIGHT_TAGS: readonly (readonly [string, string])[] = [
+  ['DA', 'DIGITAL_AUDIO'], ['DV', 'DIGITAL_VIDEO'], ['DT', 'DIGITAL_TEXT'], ['DS', 'DIGITAL_SOFTWARE'],
+  ['DO', 'DIGITAL_OTHERS'], ['NDG', 'NON_DIGITAL_GOODS'], ['NDS', 'NON_DIGITAL_SERVICES'],
+  ['NDO', 'NON_DIGITAL_OTHERS'],
+];
+const EIGHT_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   mapping(string => string) tags;'
+  + '   function initialize() {'
+  + EIGHT_TAGS.map(([key, value]) => `     this.tags["${key}"] = "${value}";`).join('')
   + '   }'
   + ' }';
 
@@ -116,11 +130,75 @@ describe('a proxied initialize that writes a sorted mapping', () => {
       .not.toBe(bytesToHex(headSentinelCommitment()));
   });
 
-  it('refuses a batch of several writes to one collection, naming the entry', async () => {
-    // The same boundary the constructor planner holds: one write to one collection. The fixture's own `initialize`
-    // writes eight keys in one batch, which this hop has no plan for.
-    await expect(deploy(BATCH_SOURCE)).rejects.toThrow(
-      /writes 2 mapping entry\(ies\) across 1 sorted batch\(es\), and this hop plans exactly one write/,
+  it('settles a batch of several writes to one collection, each created node carrying its stated value', async () => {
+    const deployment = await deploy(BATCH_SOURCE);
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The shipped batch planner's own commitments: the head relinked to the lowest created slot, then one node per
+    // write in the order the body declares them.
+    const encoder = new TextEncoder();
+    const plan = planMappingBatch({
+      writes: [
+        { keys: [encoder.encode('DA')], value: encoder.encode('DIGITAL_AUDIO') },
+        { keys: [encoder.encode('DV')], value: encoder.encode('DIGITAL_VIDEO') },
+      ],
+      inventory: [headSentinelCommitment()],
+      encodeValue: encodeChunkableValueTail,
+    });
+    const created = plan.written.filter((node) => !node.existed);
+
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(created.length);
+    trailing.forEach((output, position) => {
+      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(created[position]!.after));
+      expect(bytesToHex(deployment.initialize.transaction.outputs[output.index]!.token!.nft!.commitment))
+        .toBe(bytesToHex(created[position]!.after));
+      // The node's slot is its key's, so it is one of the entry's own writes rather than some other record.
+      expect(bytesToHex(decodeEntryCommitment(created[position]!.after).slot))
+        .toBe(bytesToHex(keyToSlotMulti([encoder.encode(position === 0 ? 'DA' : 'DV')])));
+    });
+
+    // The head sentinel is spent under the collection covenant and recreated with the relinked commitment.
+    const head = deployment.initialize.draft.layout.participants
+      .find((placed) => placed.id.startsWith('mapping-head-'))!.index;
+    expect(bytesToHex(deployment.initialize.transaction.outputs[head]!.token!.nft!.commitment))
+      .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
+  });
+
+  it('refuses a write whose value the artifact publishes no source for', async () => {
+    const computed = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   mapping(string => string) tags;'
+      + '   function initialize(string a, string b) { this.tags["DA"] = a + b; }'
+      + ' }';
+    await expect(deploy(computed, ['x', 'y'])).rejects.toThrow(
+      /writes mapping "tags" a value whose source the artifact does not publish/,
     );
+  });
+
+  it('settles the eight-key initializer the marketplace data contract publishes', async () => {
+    const deployment = await deploy(EIGHT_SOURCE);
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const encoder = new TextEncoder();
+    const plan = planMappingBatch({
+      writes: EIGHT_TAGS.map(([key, value]) => ({ keys: [encoder.encode(key)], value: encoder.encode(value) })),
+      inventory: [headSentinelCommitment()],
+      encodeValue: encodeChunkableValueTail,
+    });
+    const created = plan.written.filter((node) => !node.existed);
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(created.length);
+    trailing.forEach((output, position) => {
+      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(created[position]!.after));
+    });
   });
 });

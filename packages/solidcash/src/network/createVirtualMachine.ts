@@ -98,9 +98,13 @@ function installCachedP2shEvaluator(
   provider: NetworkProvider,
   maximumBytecodeLength: number,
   onPhaseComplete?: (state: unknown) => void,
-): void {
+): NonNullable<typeof instructionSet.evaluate> {
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
-  instructionSet.evaluate = (program, { stateEvaluate, stateInitialize, stateOverride }) => {
+  // The phased runner is shared with the bounded declaration reader: it runs the same unlocking, locking and
+  // P2SH redeem phases, so a reader that only needs the stop state can step them without retaining a full trace.
+  const runPhases: NonNullable<typeof instructionSet.evaluate> = (
+    program, { stateEvaluate, stateInitialize, stateOverride },
+  ) => {
     const { unlockingBytecode } = program.transaction.inputs[program.inputIndex]!;
     const { lockingBytecode } = program.sourceOutputs[program.inputIndex]!;
     // The final P2SH push can be several megabytes. The VM treats program bytecode as immutable, and the actual
@@ -241,6 +245,8 @@ function installCachedP2shEvaluator(
     }
     return p2shResult;
   };
+  instructionSet.evaluate = runPhases;
+  return runPhases;
 }
 
 /** Cache immutable OP_DEFINE bodies instead of decoding and copying their pushes at every OP_INVOKE. */
@@ -522,8 +528,9 @@ function buildVirtualMachineBch2026ForProvider(
   const instructionSet = createInstructionSetBch2026(standard, {
     consensus, ripemd160, secp256k1, sha1, sha256,
   } as never);
+  let runPhases: NonNullable<typeof instructionSet.evaluate> | undefined;
   if (limits !== undefined && limits.maximumInputBytes > 10_000) {
-    installCachedP2shEvaluator(
+    runPhases = installCachedP2shEvaluator(
       instructionSet, provider!, limits.maximumInputBytes, observer?.onPhaseComplete,
     );
     installCachedInvokeEvaluator(instructionSet);
@@ -738,5 +745,30 @@ function buildVirtualMachineBch2026ForProvider(
       };
     }
   }
-  return createVirtualMachine(instructionSet);
+  const machine = createVirtualMachine(instructionSet);
+  if (runPhases !== undefined) {
+    // The same phases as `evaluate`, stepped one instruction at a time and retaining only the state before the
+    // current one. `debug` keeps every step, so reading a stop state from a long-running program grows without
+    // bound; this returns the stop state's neighborhood in constant memory.
+    type MachineState = Parameters<typeof machine.stateStep>[0];
+    const boundedDebug = (program: Parameters<typeof machine.evaluate>[0]): readonly MachineState[] => {
+      const states: MachineState[] = [];
+      const collect = (initial: MachineState): MachineState => {
+        let previous = initial;
+        let current = initial;
+        while (machine.stateContinue(current)) {
+          previous = current;
+          current = machine.stateStep(current);
+        }
+        states.push(previous, current);
+        return current;
+      };
+      runPhases(program, {
+        stateEvaluate: collect, stateInitialize: machine.stateInitialize, stateOverride: undefined,
+      } as never);
+      return states;
+    };
+    (machine as { boundedDebug?: typeof boundedDebug }).boundedDebug = boundedDebug;
+  }
+  return machine;
 }

@@ -122,6 +122,15 @@ describe('vmap fixed-write batch metadata', () => {
     expect(artifact.abi.find((f) => f.name === 'f')?.entryAccesses?.[0]?.valueSource).toBe('lit:5');
   });
 
+  it('records a whole-value string literal as valueSource carrying its exact bytes', () => {
+    const artifact = compileString(`contract C {
+      mapping(string => string) tags;
+      function f(string k) external { tags[k] = "DIGITAL_VIDEO"; require(true); }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0]?.valueSource)
+      .toBe('lit:0x4449474954414c5f564944454f');
+  });
+
   it('records a struct-constructor mapping write as valueSource', () => {
     const artifact = compileString(`contract C {
       struct S { uint256 a; uint256 b; uint256 c; uint256 d; }

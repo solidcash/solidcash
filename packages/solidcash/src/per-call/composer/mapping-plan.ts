@@ -9,10 +9,11 @@
  * default (`planMappingDelete`).
  *
  * This module derives, for one write against the state the transaction spends, the node commitments the execution
- * must write, and then lays those nodes out as the record entries each segment must declare. It computes hashes and
- * node commitments only through the shipped encoders (`keyToSlotMulti`, `encodeEntryCommitment`, `bytesToSlotValue`
- * from `stateful/SortedList`, and `INDEX_NONE`); the one thing it takes from the caller is how a value is encoded,
- * because that depends on the collection's declared value type.
+ * must write, and then lays those nodes out as the record entries each segment must declare. The writes one body
+ * makes to one collection are planned together (`planMappingBatch`), as its sorted batch proves them. It computes
+ * hashes and node commitments only through the shipped encoders (`keyToSlotMulti`, `encodeEntryCommitment`,
+ * `bytesToSlotValue` from `stateful/SortedList`, and `INDEX_NONE`); the one thing it takes from the caller is how a
+ * value is encoded, because that depends on the collection's declared value type.
  */
 
 import { INDEX_NONE, bytesEqual, bytesToHex, type RecordEntry } from '@solidcash/utils';
@@ -22,7 +23,12 @@ import {
   encodeEntryCommitment,
   keyToSlotMulti,
 } from '../../stateful/SortedList.js';
-import { mappingIndexUnavailable, mappingPredecessorMissing } from './refusals.js';
+import {
+  mappingBatchRepeatsSlot,
+  mappingBatchWritesCreatedNode,
+  mappingIndexUnavailable,
+  mappingPredecessorMissing,
+} from './refusals.js';
 
 /** A node's commitment is a 32-byte slot followed by a 32-byte successor link, then the value tail. */
 const NODE_HEADER_BYTES = 64;
@@ -231,9 +237,12 @@ function requireWrittenOutput(placements: MappingNodePlacements, slot: Uint8Arra
  * A node the segment spends names its input index and the output it recreates it at. A node it creates names only
  * its output, and the slots the earlier segments created are recorded so a later segment that rewrites one
  * carries on from the view the one before it left with no input to read it at. A node neither spent nor created
- * earlier has no coordinate to declare it with, which is refused by name.
+ * earlier has no coordinate to declare it with, and a node written again in the segment that created it belongs to
+ * a sorted batch (`planMappingBatch`); both are refused by name.
  */
-function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements, created: Set<string>): RecordEntry[] {
+function entriesFor(
+  plan: MappingWritePlan, placements: MappingNodePlacements, created: Set<string>, createdHere: Set<string>,
+): RecordEntry[] {
   const entries: RecordEntry[] = [];
   for (const node of plan.written) {
     const key = bytesToHex(node.slot);
@@ -247,6 +256,7 @@ function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements, c
           viewOut: node.after,
         });
       } else if (created.has(key)) {
+        if (createdHere.has(key)) throw mappingBatchWritesCreatedNode(node.slot);
         // An earlier segment created this node, so the transaction writes it rather than spends it: the
         // declaration continues the created chain from the view that segment left.
         entries.push({
@@ -266,6 +276,7 @@ function entriesFor(plan: MappingWritePlan, placements: MappingNodePlacements, c
         viewOut: node.after,
       });
       created.add(key);
+      createdHere.add(key);
     }
   }
   if (plan.removed && plan.target !== undefined) {
@@ -288,5 +299,145 @@ export function layOutMappingWrites(
   placements: MappingNodePlacements,
 ): readonly (readonly RecordEntry[])[] {
   const created = new Set<string>();
-  return segments.map((writes) => writes.flatMap((plan) => entriesFor(plan, placements, created)));
+  return segments.map((writes) => {
+    const createdHere = new Set<string>();
+    return writes.flatMap((plan) => entriesFor(plan, placements, created, createdHere));
+  });
+}
+
+/** One write of a sorted batch: the key(s), and the value the body stores under them. */
+export interface MappingBatchWrite<V> {
+  readonly keys: readonly Uint8Array[];
+  readonly value: V;
+}
+
+/** The writes one body makes to one collection, which its sorted batch verifies as one transition. */
+export interface MappingBatchRequest<V> {
+  /** The writes in the body's target order, the order its segment declares their record groups in. */
+  readonly writes: readonly MappingBatchWrite<V>[];
+  /** Every node commitment the caller reads from the collection's state UTXOs, the head included. */
+  readonly inventory: readonly Uint8Array[];
+  readonly encodeValue: (value: V) => Uint8Array;
+}
+
+/** One record a batch group declares: the node, the view it continues from and the view it leaves. */
+export interface MappingBatchRecord {
+  readonly slot: Uint8Array;
+  /** Whether the inventory held the node, so the transaction spends it rather than creating it. */
+  readonly existed: boolean;
+  readonly viewIn: Uint8Array;
+  readonly viewOut: Uint8Array;
+}
+
+/** A target's record group: the target alone for an update; its predecessor, then the new node, for an insert. */
+export interface MappingBatchGroup {
+  readonly slot: Uint8Array;
+  readonly existed: boolean;
+  readonly records: readonly MappingBatchRecord[];
+}
+
+/** A sorted batch as its segment declares it, and the nodes its transaction writes. */
+export interface MappingBatchPlan {
+  readonly groups: readonly MappingBatchGroup[];
+  /** Every node the batch writes, once each, in first-declared order. */
+  readonly written: readonly MappingWrittenNode[];
+}
+
+/**
+ * Plans the writes of one sorted batch as the body's batch verification proves them.
+ *
+ * Every predecessor is decided against the list the batch started from, so inserts that fall in one gap share its
+ * predecessor, which links to the lowest of them, and the new nodes form one ascending chain ending at the gap's old
+ * successor. An updated target keeps its link unless it is also such a predecessor. Each node is written once, in
+ * its final form: a node's first declaration continues from the commitment the inventory holds, and a later group
+ * that declares it again continues from, and leaves, that final form.
+ */
+export function planMappingBatch<V>(request: MappingBatchRequest<V>): MappingBatchPlan {
+  const nodes = readInventory(request.inventory);
+  const targets = request.writes.map((write) => ({
+    slot: keyToSlotMulti([...write.keys]),
+    value: request.encodeValue(write.value),
+  }));
+  const seen = new Set<string>();
+  for (const target of targets) {
+    const key = bytesToHex(target.slot);
+    if (seen.has(key)) throw mappingBatchRepeatsSlot(target.slot);
+    seen.add(key);
+  }
+
+  // Each insert's predecessor in the original list, and the inserts every predecessor takes, lowest first.
+  const predecessorOf = new Map<string, MappingNode>();
+  const insertsAfter = new Map<string, Uint8Array[]>();
+  for (const target of targets) {
+    if (findNode(nodes, target.slot) !== undefined) continue;
+    const predecessor = requirePredecessor(nodes, target.slot);
+    predecessorOf.set(bytesToHex(target.slot), predecessor);
+    const key = bytesToHex(predecessor.slot);
+    insertsAfter.set(key, [...(insertsAfter.get(key) ?? []), target.slot]);
+  }
+  const nextOf = new Map<string, Uint8Array>();
+  for (const [key, slots] of insertsAfter) {
+    const predecessor = nodes.find((node) => bytesToHex(node.slot) === key)!;
+    const chain = [...slots].sort((a, b) => (bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1));
+    nextOf.set(key, chain[0]!);
+    chain.forEach((slot, index) => nextOf.set(bytesToHex(slot), chain[index + 1] ?? predecessor.nextKey));
+  }
+  const valueOf = new Map(targets.map((target) => [bytesToHex(target.slot), target.value]));
+  const finalOf = (slot: Uint8Array, held: MappingNode | undefined): Uint8Array => {
+    const key = bytesToHex(slot);
+    return encodeEntryCommitment(slot, nextOf.get(key) ?? held!.nextKey, valueOf.get(key) ?? held!.value);
+  };
+
+  const written: MappingWrittenNode[] = [];
+  const declared = new Set<string>();
+  const declare = (slot: Uint8Array, held: MappingNode | undefined): MappingBatchRecord => {
+    const key = bytesToHex(slot);
+    const after = finalOf(slot, held);
+    const first = !declared.has(key);
+    if (first) {
+      declared.add(key);
+      written.push({ slot, existed: held !== undefined, before: held?.commitment ?? CREATE_VIEW_IN, after });
+    }
+    const viewIn = held === undefined ? CREATE_VIEW_IN : first ? held.commitment : after;
+    return { slot, existed: held !== undefined, viewIn, viewOut: after };
+  };
+  const groups = targets.map((target): MappingBatchGroup => {
+    const held = findNode(nodes, target.slot);
+    if (held !== undefined) {
+      return { slot: target.slot, existed: true, records: [declare(target.slot, held)] };
+    }
+    const predecessor = predecessorOf.get(bytesToHex(target.slot))!;
+    return {
+      slot: target.slot,
+      existed: false,
+      records: [declare(predecessor.slot, predecessor), declare(target.slot, undefined)],
+    };
+  });
+  return { groups, written };
+}
+
+/**
+ * Lays a sorted batch out as the record entries its segment declares, group by group.
+ *
+ * A node the transaction spends names its input and the output it is recreated at; a node the batch creates names
+ * only its output. A spent node the layout gives no input is refused by name.
+ */
+export function layOutMappingBatch(plan: MappingBatchPlan, placements: MappingNodePlacements): RecordEntry[] {
+  return plan.groups.flatMap((group) => group.records.map((record): RecordEntry => {
+    if (!record.existed) {
+      return {
+        in: INDEX_NONE,
+        out: requireWrittenOutput(placements, record.slot, INDEX_NONE),
+        viewIn: record.viewIn,
+        viewOut: record.viewOut,
+      };
+    }
+    const input = requireSpentInput(placements, record.slot);
+    return {
+      in: input,
+      out: requireWrittenOutput(placements, record.slot, input),
+      viewIn: record.viewIn,
+      viewOut: record.viewOut,
+    };
+  }));
 }

@@ -25531,6 +25531,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < this.entrySlots.length; i++) {
       // Loop-write entries are NEW (minted from master, no co-spent input entry) and have no fixed block slot.
       if (this.entrySlots[i].inLoop) continue;
+      // A per-call batch target is not at a fixed block slot: its frame declares the node it spends, and settlement
+      // holds that input to a mutable NFT of the contract's category.
+      if (this.readsRecordsFromFrame
+        && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)) continue;
 
       const routeBatch = this.ownsMessageBusParticipantBlock()
         && (this.currentFunction.sortedBatchInfo?.some((batch) => batch.slotIndices.includes(i)) ?? false)

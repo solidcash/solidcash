@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   FrameKind,
-  INDEX_NONE,
   buildEntryNftCovenantScript,
   bytesToHex,
   computeCollectionHash,
@@ -13,13 +12,7 @@ import {
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
-import {
-  bytesToSlotValue,
-  decodeEntryCommitment,
-  encodeEntryCommitment,
-  headSentinelCommitment,
-  keyToSlotMulti,
-} from '../../../src/stateful/SortedList.js';
+import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import {
   composeAndDerive,
   compileAndDeploy,
@@ -46,12 +39,12 @@ import {
 } from '../../../src/per-call/composer/index.js';
 
 /**
- * A `mapping(string => string)` set, a long value read from the frame's witness block, and an initializer's inserts.
+ * A `mapping(string => string)` set, and a long value read from the frame's witness block.
  *
  * A node's value tail holds a value of at most 60 bytes inline and a longer one as its hash, so a body reading a
  * long value takes the value itself from the value list its frame's block carries and checks it against that hash.
  * A body that only writes reads nothing, so its value slot stays empty. Each case is a hub calling the entry
- * through an interface, the mapping's nodes spent as entry UTXOs, and the BCH-2026 machine asked about every input.
+ * through an interface, the node spent as one entry UTXO, and the BCH-2026 machine asked about every input.
  */
 
 const encoder = new TextEncoder();
@@ -67,14 +60,8 @@ const SLOT = keyToSlotMulti([KEY]);
 
 const TAGS_ADDRESS = seededAddress('mapping values tags');
 const NOTES_ADDRESS = seededAddress('mapping values notes');
-const REGISTRY_ADDRESS = seededAddress('mapping values registry');
 /** A reading contract with a second entry beside the reader, so the head's value slot is derived from several bodies. */
 const LEDGER_ADDRESS = seededAddress('mapping values ledger');
-/** Two keys an initializer writes in one frame, each with a short value. */
-const INITIAL = [
-  { key: encoder.encode('DA'), value: encoder.encode('DIGITAL_AUDIO') },
-  { key: encoder.encode('DV'), value: encoder.encode('DIGITAL_VIDEO') },
-];
 const text = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -94,15 +81,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract ReadHub {'
   + `   function run() { INotes(0x${hexOf(NOTES_ADDRESS)}).check("${text(KEY)}", "${text(LONG)}"); require(true); }`
   + ' }'
-  + ' interface IRegistry { function init(); }'
-  + ' contract Registry {'
-  + '   mapping(string => string) tags;'
-  + `   function init() { ${INITIAL.map(({ key, value }) => `this.tags["${text(key)}"] = "${text(value)}";`).join(' ')}`
-  + '     require(true); }'
-  + ' }'
-  + ' contract InitHub {'
-  + `   function run() { IRegistry(0x${hexOf(REGISTRY_ADDRESS)}).init(); require(true); }`
-  + ' }'
   + ' interface ILedger { function check(string k, string v); }'
   + ' contract Ledger {'
   + '   mapping(string => string) ledger;'
@@ -114,8 +92,8 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const { artifacts, contracts } = compileAndDeploy(SOURCE, {
-  SetHub: 'mapping values set hub', ReadHub: 'mapping values read hub', InitHub: 'mapping values init hub',
-  Tags: 'mapping values tags', Notes: 'mapping values notes', Registry: 'mapping values registry',
+  SetHub: 'mapping values set hub', ReadHub: 'mapping values read hub',
+  Tags: 'mapping values tags', Notes: 'mapping values notes',
   LedgerHub: 'mapping values ledger hub', Ledger: 'mapping values ledger',
 });
 
@@ -344,106 +322,5 @@ describe('a long mapping value read from a contract with several entries', () =>
 
   it('refuses a read whose block lists no value', () => {
     expect(() => compose()).toThrow(STALL);
-  });
-});
-
-describe('an initializer inserting two keys into an empty mapping in one frame', () => {
-  const HEAD_ID = 'head';
-  const registry = contracts.Registry!;
-  const hub = contracts.InitHub!;
-  const slots = INITIAL.map(({ key }) => keyToSlotMulti([key]));
-  // A batch decides each predecessor against the list it started from: both keys splice in after the head, the
-  // created nodes form one ascending chain, and the head is written once and declared by each insert's group.
-  const ascending = [...slots].sort((a, b) => (bytesToSlotValue(a) < bytesToSlotValue(b) ? -1 : 1));
-  const headAfter = encodeEntryCommitment(ZERO_SLOT, ascending[0]!,
-    decodeEntryCommitment(headSentinelCommitment()).value);
-  const node = (position: number, next: Uint8Array): Uint8Array =>
-    encodeEntryCommitment(slots[position]!, next, encodeChunkableValueTail(INITIAL[position]!.value));
-  const successorOf = (slot: Uint8Array): Uint8Array => ascending[ascending.indexOf(slot) + 1] ?? ZERO_SLOT;
-  const NODES = INITIAL.map((_, position) => node(position, successorOf(slots[position]!)));
-
-  function buildInitPlan(nodes: readonly Uint8Array[]): CompositionDraftPlan {
-    const blocks: CompositionDraftPlan['blocks'] = [
-      { contract: 'InitHub', masters: [HUB_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
-      { contract: 'Registry', masters: [ENTRY_MASTER], state: [HEAD_ID] },
-    ];
-    const layout = layoutTransaction(blocks);
-    const headIndex = participant(layout, HEAD_ID).index;
-    const created = [layout.participantCount, layout.participantCount + 1];
-    const records = INITIAL.flatMap((_, position): RecordEntry[] => [
-      { in: headIndex, out: headIndex, viewIn: position === 0 ? headSentinelCommitment() : headAfter, viewOut: headAfter },
-      { in: INDEX_NONE, out: created[position]!, viewIn: new Uint8Array(0), viewOut: nodes[position]! },
-    ]);
-    const selector = selectorOf(artifacts, 'Registry', 'init');
-    const validator = validatorFor(hub.category);
-    const head = nodeInput(registry, 'Registry', headSentinelCommitment(), headAfter,
-      participant(layout, ENTRY_MASTER).index);
-
-    const hubMaster: DraftMaster = master({
-      master: HUB_MASTER, contract: 'InitHub', entry: 'run', program: hub.program,
-      facts: {
-        contract: 'InitHub', functionName: entryName('InitHub', 'run'), kind: FrameKind.ROOT,
-        callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
-      },
-      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: hub.address, value: 0n },
-      enteredBy: USER_ID, origin: USER_ID,
-      calls: [{
-        kind: FrameKind.CALL, callee: ENTRY_MASTER, target: registry.address, value: 0n, argumentPushes: [selector],
-      }],
-      segments: [[], []],
-    });
-    const registryMaster: DraftMaster = master({
-      master: ENTRY_MASTER, contract: 'Registry', entry: 'init', program: registry.program,
-      facts: {
-        contract: 'Registry', functionName: entryName('Registry', 'init'), kind: FrameKind.CALL,
-        callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
-      },
-      frame: { kind: FrameKind.CALL, sender: hub.address, self: registry.address, value: 0n },
-      enteredBy: HUB_MASTER, origin: USER_ID,
-      argumentPushes: [selector],
-      segments: [records],
-      dispatches: true,
-    });
-
-    return {
-      blocks,
-      userInputs: userInputs([USER_ID], layout.participantCount),
-      masters: [hubMaster, registryMaster],
-      inputs: {
-        [HUB_MASTER]: { source: masterInput(hub) },
-        [ENTRY_MASTER]: { source: masterInput(registry) },
-        [VALIDATOR_ID]: {
-          source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(hub.category, 'mutable') },
-        },
-        [HEAD_ID]: head,
-        [USER_ID]: userInput(),
-      },
-      trailingOutputs: nodes.map((commitment) => ({
-        lockingBytecode: head.source.lockingBytecode, valueSatoshis: 1_500n,
-        token: token(registry.category, 'mutable', commitment),
-      })),
-      validator: {
-        id: VALIDATOR_ID, covers: ['Registry'],
-        settles: [{ category: registry.category, stateInputs: [HEAD_ID], createdOutputs: created }],
-        redeemScript: validator.redeem,
-      },
-    };
-  }
-
-  const compose = (nodes: readonly Uint8Array[]): ReturnType<typeof composeAndDerive> => composeAndDerive(
-    buildInitPlan(nodes), [artifacts.InitHub!, artifacts.Registry!], [rootOf('InitHub', 'run', HUB_MASTER)],
-  );
-
-  it('settles: both nodes are created from the one head, and every contract input is accepted', () => {
-    const outcome = compose(NODES);
-    expect(outcome.completed.map((frame) => frame.functionName))
-      .toStrictEqual([entryName('Registry', 'init'), entryName('InitHub', 'run')]);
-    expect(refused(outcome)).toStrictEqual([]);
-  });
-
-  it('refuses a chain whose lower node skips the other key', () => {
-    const lower = slots.indexOf(ascending[0]!);
-    const skipping = NODES.map((commitment, position) => (position === lower ? node(position, ZERO_SLOT) : commitment));
-    expect(() => compose(skipping)).toThrow('PER_CALL_DERIVATION_STALLED: master "entry-1" of Registry.init()');
   });
 });

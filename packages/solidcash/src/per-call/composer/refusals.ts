@@ -81,6 +81,30 @@ export function mappingPredecessorMissing(slot: Uint8Array): PerCallComposerErro
 }
 
 /**
+ * A sorted batch writes one slot twice. The body's batch verifies each target once, so the two writes do not
+ * compose into one transition; the plan is refused rather than keeping either value.
+ */
+export function mappingBatchRepeatsSlot(slot: Uint8Array): PerCallComposerError {
+  return new PerCallComposerError(
+    'PER_CALL_MAPPING_UNPLANNABLE',
+    `a sorted batch writes slot ${bytesToHex(slot)} more than once`,
+  );
+}
+
+/**
+ * A segment writes again a mapping node it created. The writes one body makes to a collection are one sorted batch,
+ * which decides every predecessor against the list it started from, so laying them out one after another declares
+ * the node created twice.
+ */
+export function mappingBatchWritesCreatedNode(slot: Uint8Array): PerCallComposerError {
+  return new PerCallComposerError(
+    'PER_CALL_MAPPING_UNPLANNABLE',
+    `the mapping node at slot ${bytesToHex(slot)} is written again in the segment that created it; plan the `
+    + 'segment\'s writes as one sorted batch (planMappingBatch)',
+  );
+}
+
+/**
  * A node the mapping plan must declare has no coordinate in the layout: an input to spend it at, or an output to
  * recreate or create it at. Which side is missing decides the message.
  */

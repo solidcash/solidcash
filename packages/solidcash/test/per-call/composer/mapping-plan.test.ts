@@ -5,7 +5,9 @@ import { SortedList, bytesToSlotValue, encodeEntryCommitment, keyToSlot } from '
 import {
   PerCallComposerError,
   assertRecordChains,
+  layOutMappingBatch,
   layOutMappingWrites,
+  planMappingBatch,
   planMappingDelete,
   planMappingWrite,
   type MappingNodePlacement,
@@ -256,6 +258,62 @@ describe('laying the plans out as the record entries each segment declares', () 
     // A segment that rewrites the node without an earlier segment's creation has no input either, and is refused.
     expect(() => layOutMappingWrites([[updatePlan]], placements))
       .toThrow(/PER_CALL_MAPPING_UNPLANNABLE: the mapping node .* needs an input index/);
+  });
+});
+
+describe('planning a sorted batch as the body proves it', () => {
+  // Three keys by slot: the two lower ones fall in HEAD's gap, the highest is the stored node.
+  const [lowKey, middleKey] = ['account-a', 'account-b', 'account-c'].map((name) => utf8ToBin(name))
+    .sort((a, b) => (bytesToSlotValue(keyToSlot(a)) < bytesToSlotValue(keyToSlot(b)) ? -1 : 1));
+
+  it('writes what the shipped batch planner writes, and declares a shared predecessor once per group', () => {
+    const { list, inventory, headCommitment, upper } = twoNodeList();
+    // Out of slot order: an insert, the update, then an insert into the same gap as the first.
+    const writes = [
+      { keys: [middleKey!], value: 300n }, { keys: [upper.key], value: 200n }, { keys: [lowKey!], value: 100n },
+    ];
+    const plan = planMappingBatch({ writes, inventory, encodeValue });
+    const expected = list.planBatchUpsert(writes.map((write) => ({
+      slot: keyToSlot(write.keys[0]!), value: value(write.value),
+    })));
+    const sortedHex = (commitments: readonly Uint8Array[]): string[] => commitments.map(bytesToHex).sort();
+    expect(sortedHex(plan.written.map((node) => node.after)))
+      .toStrictEqual(sortedHex(expected.outputs.map((output) => output.commitment)));
+
+    // HEAD links to the lowest insert; its first group spends the stored view and the later one continues.
+    const headAfter = encodeEntryCommitment(ZERO_SLOT, keyToSlot(lowKey!), EMPTY_TAIL);
+    const [first, update, last] = plan.groups;
+    expect(first!.records.map((record) => bytesToHex(record.viewIn)))
+      .toStrictEqual([bytesToHex(headCommitment), '']);
+    expect(first!.records[0]!.viewOut).toStrictEqual(headAfter);
+    expect(update!.records.map((record) => bytesToHex(record.slot))).toStrictEqual([bytesToHex(upper.slot)]);
+    expect(last!.records[0]!.viewIn).toStrictEqual(headAfter);
+    expect(last!.records[0]!.viewOut).toStrictEqual(headAfter);
+
+    const placements = placementsOf(new Map([
+      [bytesToHex(ZERO_SLOT), { in: 1, out: 1 }], [bytesToHex(upper.slot), { in: 2, out: 2 }],
+      [bytesToHex(keyToSlot(middleKey!)), { out: 5 }], [bytesToHex(keyToSlot(lowKey!)), { out: 6 }],
+    ]));
+    expect(layOutMappingBatch(plan, placements).map((entry) => [entry.in, entry.out]))
+      .toStrictEqual([[1, 1], [INDEX_NONE, 5], [2, 2], [1, 1], [INDEX_NONE, 6]]);
+  });
+
+  it('refuses a batch that writes one slot twice, and one segment laying its shared-gap inserts out in sequence', () => {
+    const { inventory } = twoNodeList();
+    expect(() => planMappingBatch({
+      writes: [{ keys: [lowKey!], value: 1n }, { keys: [lowKey!], value: 2n }], inventory, encodeValue,
+    })).toThrow(/PER_CALL_MAPPING_UNPLANNABLE: a sorted batch writes slot .* more than once/);
+
+    // Planned one after another, the second insert relinks the node the first just created.
+    const first = planMappingWrite({ keys: [lowKey!], value: 1n, inventory, encodeValue });
+    const second = planMappingWrite({
+      keys: [middleKey!], value: 2n, inventory: first.written.map((node) => node.after), encodeValue,
+    });
+    const placements = placementsOf(new Map([
+      [bytesToHex(ZERO_SLOT), { in: 1, out: 1 }],
+      [bytesToHex(keyToSlot(lowKey!)), { out: 5 }], [bytesToHex(keyToSlot(middleKey!)), { out: 6 }],
+    ]));
+    expect(() => layOutMappingWrites([[first, second]], placements)).toThrow(/one sorted batch \(planMappingBatch\)/);
   });
 });
 

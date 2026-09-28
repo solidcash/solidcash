@@ -281,7 +281,8 @@ import {
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
 import {
-  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript, type RecordSide,
+  declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript,
+  type DeclaredViewCounts, type RecordSide,
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
@@ -30284,24 +30285,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * touch it. Settlement holds the declaration the body reads to the transaction's real inputs and outputs.
    */
   private emitRecordCommitmentRead(side: RecordSide, loc: SingleLocationData): void {
-    if (this.readsRecordsFromFrame && this.perCallCallsMadeActive) {
-      // The record block declares one view per segment, and a body whose calls repeat runs in a segment only its
-      // own execution knows, so the declaration this read resolves against is not one the compiler can name. The
-      // refusal is the honest answer until the read locates it from the number of calls the body has made.
-      throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the body of '${this.currentFunction?.name ?? 'unknown'}' reads its state records, and its calls repeat, so `
-        + 'which segment declares the view it reads is a run-time value the read does not yet locate',
-        { function: this.currentFunction?.name, entry: true },
-      );
-    }
     if (!this.readsRecordsFromFrame) {
       this.emit(side === 'in' ? Op.OP_UTXOTOKENCOMMITMENT : Op.OP_OUTPUTTOKENCOMMITMENT, loc);
       return;
     }
     this.emit(bytecodeToScript(declaredRecordViewScript({
-      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
-      callCount: this.perCallExecutionCallCount(),
+      ...this.declaredViewCounts(loc),
       side,
     })), loc);
   }
@@ -30315,19 +30304,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * it or an earlier frame created it.
    */
   private emitDeclaredOrdinalCommitmentRead(side: RecordSide, loc: SingleLocationData): void {
-    if (this.perCallCallsMadeActive) {
-      throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the body of '${this.currentFunction?.name ?? 'unknown'}' reads its state records, and its calls repeat, so `
-        + 'which segment declares the view it reads is a run-time value the read does not yet locate',
-        { function: this.currentFunction?.name, entry: true },
-      );
-    }
     this.emit(bytecodeToScript(declaredRecordOrdinalViewScript({
-      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
-      callCount: this.perCallExecutionCallCount(),
+      ...this.declaredViewCounts(loc),
       side,
     })), loc);
+  }
+
+  /**
+   * The counts a declared-view walk resolves against, and the item the walk's entry asks for when they are run-time
+   * ones.
+   *
+   * A body whose source fixes how many calls it makes runs in a segment the compiler can name, so the walk steps
+   * over a fixed number of call records and segments. A body whose calls repeat runs in the segment its own number
+   * of calls names: the walk takes that number from the frame, pushed beneath the record it is asked about, and
+   * reads the block's own declared call count as it walks, so one walk answers for every segment the execution can
+   * be in.
+   */
+  private declaredViewCounts(loc: SingleLocationData): DeclaredViewCounts {
+    if (!this.perCallCallsMadeActive) {
+      return {
+        segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
+        callCount: this.perCallExecutionCallCount(),
+      };
+    }
+    const slot = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+    this.emit(Op.OP_TOALTSTACK, loc); // the record the read is about, beneath the index its walk takes
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
+    return { runtimeCounts: true };
   }
 
   /**
@@ -30385,18 +30390,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitRecordCommitmentRead(side, loc);
       return;
     }
-    if (this.perCallCallsMadeActive) {
-      throw new SolidcDiagnosticError(
-        'PER_CALL_CODEGEN_UNAVAILABLE',
-        `the body of '${this.currentFunction?.name ?? 'unknown'}' writes a dynamic value, and its calls repeat, so `
-        + 'which segment declares the run it writes is a run-time value the record does not yet locate',
-        { function: this.currentFunction?.name, entry: true },
-      );
-    }
     this.emitChunkRecordOrdinal(side, loc);
     this.emit(bytecodeToScript(declaredRecordOrdinalViewScript({
-      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
-      callCount: this.perCallExecutionCallCount(),
+      ...this.declaredViewCounts(loc),
       side,
     })), loc);
   }
@@ -30412,8 +30408,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitChunkRecordIndex(side: RecordSide, loc: SingleLocationData): void {
     this.emitChunkRecordOrdinal(side, loc);
     this.emit(bytecodeToScript(declaredRecordOrdinalIndexScript({
-      segmentIndex: this.perCallReadSegment ?? this.perCallSegmentIndex,
-      callCount: this.perCallExecutionCallCount(),
+      ...this.declaredViewCounts(loc),
       side,
     })), loc);
   }

@@ -32,24 +32,34 @@ import {
 /** Which side of a record a read addresses. */
 export type RecordSide = 'in' | 'out';
 
-export interface DeclaredViewOptions {
-  /** The segment the body is running in, as the number of its external calls already executed. */
-  readonly segmentIndex: number;
-  /** How many call records the block declares, which is the body's own number of calls. */
-  readonly callCount: number;
+/**
+ * How many call records and segments the walk steps over before the record it reads.
+ *
+ * The counts are either numbers the source fixes, which is what a body with a fixed number of calls has, or the
+ * running execution's own. A body whose calls repeat runs in the segment its own number of calls names and declares
+ * as many call records as it makes, so the walk takes the segment index from the stack beneath the record it reads
+ * and the call count from the block as it walks it; its entry gains one item: `[..., segmentIndex, coordinate]`.
+ */
+export type DeclaredViewCounts =
+  | {
+    /** The segment the body is running in, as the number of its external calls already executed. */
+    readonly segmentIndex: number;
+    /** How many call records the block declares, which is the body's own number of calls. */
+    readonly callCount: number;
+    readonly runtimeCounts?: false;
+  }
+  | { readonly runtimeCounts: true };
+
+export type DeclaredViewOptions = DeclaredViewCounts & {
   /** Which index field selects the record, and therefore which view is returned. */
   readonly side: RecordSide;
-}
+};
 
 /** Options for a read that selects its record by position in the segment rather than by index. */
-export interface DeclaredRecordOrdinalOptions {
-  /** The segment the body is running in, as the number of its external calls already executed. */
-  readonly segmentIndex: number;
-  /** How many call records the block declares, which is the body's own number of calls. */
-  readonly callCount: number;
+export type DeclaredRecordOrdinalOptions = DeclaredViewCounts & {
   /** Which view the selected record's read returns. */
   readonly side: RecordSide;
-}
+};
 
 /**
  * Builds the script that leaves the view of the record at a given ordinal in the running segment.
@@ -121,18 +131,20 @@ function buildOrdinalWalk(
   const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
   const takeView = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_SWAP, Opcodes.OP_NIP); };
 
-  // The ordinal is parked for the walk and used once the target segment's record list is on top.
+  // The ordinal is parked for the walk and used once the target segment's record list is on top; a walk over the
+  // running execution's own counts parks the segment index beside it, because the block's call count is read as the
+  // walk reaches it.
   op(Opcodes.OP_TOALTSTACK);
+  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
   raw(readOwnWitnessBlockScript());
   raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
   skipField(takeLengthPrefixedField()); // sender
   skipField(takeLengthPrefixedField()); // self
   skipField(takeFixedWidthField(8)); // value
   skipField(takeLengthPrefixedField32()); // retval
-  skipField(takeFixedWidthField(2)); // declared call count
-  for (let call = 0; call < options.callCount; call += 1) skipCallRecord(bytes);
+  stepDeclaredCallRecords(bytes, options, op, raw, num); // declared call count, then its records
   skipField(takeFixedWidthField(2)); // declared segment count
-  for (let segment = 0; segment < options.segmentIndex; segment += 1) skipSegment(op, raw, num);
+  stepDeclaredSegments(options, op, raw, num);
 
   // The target segment's record list. `[records, count]` with the records on top, then the ordinal below the count.
   raw(takeFixedWidthField(2)); // [countBytes, records]
@@ -178,18 +190,20 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
   const skipField = (field: Uint8Array): void => { raw(field); op(Opcodes.OP_NIP); };
 
-  // The coordinate is parked for the walk and recovered once the record is found.
+  // The coordinate is parked for the walk and recovered once the record is found; a walk over the running
+  // execution's own counts parks the segment index beside it, because the block's call count is read as the walk
+  // reaches it.
   op(Opcodes.OP_TOALTSTACK);
+  if (options.runtimeCounts === true) op(Opcodes.OP_TOALTSTACK);
   raw(readOwnWitnessBlockScript());
   raw(dropPrefix(WITNESS_BLOCK_HEADER_LENGTH));
   skipField(takeLengthPrefixedField()); // sender
   skipField(takeLengthPrefixedField()); // self
   skipField(takeFixedWidthField(8)); // value
   skipField(takeLengthPrefixedField32()); // retval
-  skipField(takeFixedWidthField(2)); // declared call count
-  for (let call = 0; call < options.callCount; call += 1) skipCallRecord(bytes);
+  stepDeclaredCallRecords(bytes, options, op, raw, num); // declared call count, then its records
   skipField(takeFixedWidthField(2)); // declared segment count
-  for (let segment = 0; segment < options.segmentIndex; segment += 1) skipSegment(op, raw, num);
+  stepDeclaredSegments(options, op, raw, num);
 
   // The target segment's record list. The result starts empty and is replaced by the matching record's view; a
   // segment that declares no record at the coordinate therefore ends the walk with an empty result and fails.
@@ -257,6 +271,69 @@ export function declaredRecordViewScript(options: DeclaredViewOptions): Uint8Arr
   // A read that matched no declared record fails here rather than resolving to the spent commitment.
   op(Opcodes.OP_DUP, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0, Opcodes.OP_GREATERTHAN, Opcodes.OP_VERIFY);
   return new Uint8Array(bytes);
+}
+
+/**
+ * Consumes the block's declared call-count field and steps that many call records off the item on top.
+ *
+ * A count the source fixes is the number the body's own calls make, so the records are unrolled and the field is
+ * dropped with them. A body whose calls repeat declares as many records as it makes, which no compile-time number
+ * names: the field's own value is the loop's bound, and the counter is dropped where the loop ends.
+ */
+function stepDeclaredCallRecords(
+  bytes: number[],
+  options: DeclaredViewCounts,
+  op: (...opcodes: number[]) => void,
+  raw: (script: Uint8Array) => void,
+  num: (value: number) => void,
+): void {
+  raw(takeFixedWidthField(2));
+  if (options.runtimeCounts !== true) {
+    op(Opcodes.OP_NIP);
+    for (let call = 0; call < options.callCount; call += 1) skipCallRecord(bytes);
+    return;
+  }
+  op(Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_SWAP); // [count, rest]
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  skipCallRecord(bytes);
+  op(Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_NIP); // the counter
+}
+
+/**
+ * Steps the segments declared before the one the read resolves against off the item on top.
+ *
+ * A segment the source fixed is skipped outright. A body whose calls repeat runs in a segment only its execution
+ * names, so the index was parked by the walk's prologue and the same skip runs that many times; the index is
+ * consumed here so the record scan below finds the record it selects on top.
+ */
+function stepDeclaredSegments(
+  options: DeclaredViewCounts,
+  op: (...opcodes: number[]) => void,
+  raw: (script: Uint8Array) => void,
+  num: (value: number) => void,
+): void {
+  if (options.runtimeCounts !== true) {
+    for (let segment = 0; segment < options.segmentIndex; segment += 1) skipSegment(op, raw, num);
+    return;
+  }
+  op(Opcodes.OP_FROMALTSTACK, Opcodes.OP_SWAP); // [segmentIndex, rest]
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  skipSegment(op, raw, num);
+  op(Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP);
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_NIP); // the segment index
 }
 
 /** Steps one call record off the block on top, by the widths the codec writes it with. */

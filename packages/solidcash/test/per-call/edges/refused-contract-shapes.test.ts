@@ -40,13 +40,13 @@ describe('a contract whose transfer helper is written in assembly', () => {
 });
 
 describe('a value send', () => {
-  it('is refused by name: the recipient lock is a run-time value', () => {
-    // `address(this).balance` is read by the SafeERC20 guard; the send it guards has no fixed send list.
+  it('is served: the body pins the lock it computed at the listed output', () => {
+    // The recipient lock is a run-time value, so the head leaves the listed output index for the body to pin the
+    // lock and the value it computed against. The accept and the mutations are machine cases in
+    // `solidc/test/per-call/master/send-output.test.ts`.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Sender { function pay(address to) { this.transfer(to, 1000); require(true); } }';
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('a value send is a listed send only when its recipient is a user address');
+    expect(refusal(source)).toBe('');
   });
 });
 

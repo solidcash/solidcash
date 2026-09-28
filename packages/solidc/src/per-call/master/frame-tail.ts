@@ -18,13 +18,19 @@
  * The sections after the calls are checked, not dropped. The segment count is the call count plus one; every
  * segment's records are walked and each entry's shape is checked, so a record is kept in place, created or
  * deleted and never moved. The event and send counts are the ones the entry fixes, and each listed output is
- * checked: an event output carries the contract's category with no capability, and a send output is a user's
- * P2PKH lock. The last check is that nothing follows the final field, which is what makes the walk exact.
+ * checked: an event output carries the contract's category with no capability, and a send output is whatever the
+ * body that computed it pins there. The last check is that nothing follows the final field, which is what makes
+ * the walk exact.
  *
  * The event walk leaves a fixed-size region parked on the alt stack: one slot per position up to `maxEventCount`,
  * holding the listed output index where the block lists one and the no-index sentinel past its declared count,
  * with the declared count itself above them. The head hands those to the body as tracked slots, so a body reads
  * the index of its own `emitIndex`-th listed event and pins the number of events it emitted against the count.
+ *
+ * The send walk parks one slot per send position the entry fixes, holding that send's output index or the no-index
+ * sentinel where the execution made no send. The head hands those to the body too, so a body pins the lock and the
+ * value it computed at the output the frame listed, or requires the sentinel for a send it did not make, rather
+ * than the tail requiring a P2PKH shape from an output whose lock only the body's own code knows.
  *
  * The first segment's walk can park its declared record indices the same way, so a body reads the data-NFT block
  * where the frame's own block declared it rather than at a fixed offset from the input the frame runs on. The
@@ -132,7 +138,8 @@ export function callSectionWalkScript(): number[] {
  * consumes each segment's declared count. `maxEventCount` is the size of the event region the head parks: the
  * largest number of events any body the master runs emits. The block's own declared count is checked against it
  * and each body pins the count it emits, so bodies may emit different numbers. `sendCount` is the send list an
- * entry fixes; a master with no call, event or send carries none of them. `valueWitnessCount` is the number of
+ * entry fixes: every body the master runs lists that many sends, so the head's count check is what holds each
+ * body to it. A master with no call, event or send carries none of them. `valueWitnessCount` is the number of
  * value slots the head parks: the most value-witness slots any body the master runs reads.
  */
 export interface MasterTailShape {
@@ -158,8 +165,9 @@ const P2PKH_LENGTH = 25;
 /**
  * Requires the item on top to be a 25-byte `OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG` lock, leaving it.
  *
- * A root frame's caller and a listed value send are both user addresses, so the frame checks and the tail walk
- * test the same shape from the same bytes.
+ * A root frame's caller and its origin are user addresses, so the head checks both against this shape. A listed
+ * value send is not: its recipient lock is a run-time value the body computes, which the body pins at the listed
+ * output instead.
  */
 export function assertP2pkhShapeScript(): Uint8Array {
   return new Uint8Array([
@@ -185,7 +193,8 @@ export function assertP2pkhShapeScript(): Uint8Array {
  * record is walked past — the site that made the call binds it in the caller's own body. The segment count
  * must be the call count plus one, and every segment's records are walked. The block's declared event count must
  * be at most `maxEventCount`, that many listed outputs are checked and the region is padded with the no-index
- * sentinel to `maxEventCount` slots, and the send count must equal the shape's. The value list may hold at most
+ * sentinel to `maxEventCount` slots, and the send count must be at most the shape's, each listed output index
+ * parked with the sentinel past the declared count. The value list may hold at most
  * `valueWitnessCount` values, parked last, one slot each. The remaining tail must be empty, so nothing follows the
  * last field.
  *
@@ -228,8 +237,7 @@ export function verifyTailScript(
   bytes.push(...segmentCountCheckScript());
   bytes.push(...segmentLoopScript(keepsRecordIndices));
   bytes.push(...eventSection(tail.maxEventCount, options.eventOwnerBelowTail === true));
-  bytes.push(...requireU16Equals(tail.sendCount));
-  if (tail.sendCount > 0) bytes.push(...sendOutputSection(tail.sendCount));
+  bytes.push(...sendSection(tail.sendCount));
   bytes.push(...valueSection(tail.valueWitnessCount ?? 0));
   bytes.push(Opcodes.OP_0, Opcodes.OP_EQUALVERIFY);
   return new Uint8Array(bytes);
@@ -542,17 +550,39 @@ function eventCategoryScript(ownerBelowTail: boolean): number[] {
   ];
 }
 
-/** Consumes the send list, requiring each output to be a user's P2PKH lock. */
-function sendOutputSection(count: number): number[] {
-  const bytes: number[] = [];
-  for (let send = 0; send < count; send += 1) {
+/**
+ * Consumes the send list into a fixed-size region, parking each listed output index for the body that sent it.
+ *
+ * The block declares how many sends the execution made, which may be any number up to `count` because a send on
+ * one branch of a conditional may not happen. The count is read and required to be at most `count`; then `count`
+ * positions are filled, a position the block lists an output for being read from the tail and a position past the
+ * declared count parking the no-index sentinel. The body that computed each send reads its own position and pins
+ * the lock and the value it computed at the listed output, or requires the sentinel when its own send did not
+ * happen, so the region states exactly the sends the execution made.
+ */
+function sendSection(count: number): number[] {
+  if (count === 0) return requireU16Equals(0);
+  const bytes: number[] = [
+    // Read the declared count as a VM number, leaving `[declared, tail]`, and require it not to exceed the region.
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
+    Opcodes.OP_DUP,
+    ...encodeDataPush(scriptNumber(count)), Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY,
+    // Put the tail on top, leaving `[tail, declared]`.
+    Opcodes.OP_SWAP,
+  ];
+  for (let position = 0; position < count; position += 1) {
+    // `declared > position ?`: read the listed output, else park the sentinel.
     bytes.push(
-      ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM,
-      Opcodes.OP_OUTPUTBYTECODE,
-      ...assertP2pkhShapeScript(),
-      Opcodes.OP_DROP,
+      Opcodes.OP_1, Opcodes.OP_PICK,
+      ...encodeDataPush(scriptNumber(position)), Opcodes.OP_GREATERTHAN, Opcodes.OP_IF,
+      ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_ELSE,
+      ...encodeDataPush(INDEX_NONE_BYTES), Opcodes.OP_BIN2NUM, Opcodes.OP_TOALTSTACK,
+      Opcodes.OP_ENDIF,
     );
   }
+  // Park the declared count above the positions.
+  bytes.push(Opcodes.OP_SWAP, Opcodes.OP_TOALTSTACK);
   return bytes;
 }
 

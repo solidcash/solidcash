@@ -286,9 +286,9 @@ describe('a per-call master whose entry writes a verified mapping after an exter
 });
 
 describe('a per-call master whose write sits beside a call inside a branch', () => {
-  it('keeps refusing the entry whose write segment the source does not fix', () => {
-    // Both arms make one call, so the paths make the same number of calls; the branch itself is what leaves the
-    // write's segment unfixed, because the source does not say which arm ran.
+  it('serves a branch whose arms make the same number of calls', () => {
+    // Both arms make one call, so every path makes the same number before the write: the write's segment is the
+    // count the paths agree on, and the master reads it.
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface ICallee { function ping(); function pong(); }'
       + ` contract Callee { function ping() { require(true); } function pong() { require(true); } }`
@@ -300,7 +300,192 @@ describe('a per-call master whose write sits beside a call inside a branch', () 
       + '     balances[to] = amount;'
       + '   }'
       + ' }';
-    expect(refusalMessageOf(source)).toContain('the segment the write lands in is a fact the derivation does not '
-      + 'read');
+    expect(refusalMessageOf(source)).toBe('');
+  });
+
+  it('keeps refusing the entry whose write a call the source does not fix precedes', () => {
+    // Only one arm calls, so the write's segment is 0 or 1 depending on which arm ran.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' interface ICallee { function ping(); }'
+      + ` contract Callee { function ping() { require(true); } }`
+      + ' contract Caller {'
+      + '   mapping(address => uint) balances;'
+      + '   function set(bool go, address to, uint amount) {'
+      + `     if (go) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
+      + '     balances[to] = amount;'
+      + '   }'
+      + ' }';
+    expect(refusalMessageOf(source)).toContain('behind a call whose occurrence the source does not fix');
+  });
+
+  it('keeps refusing the entry whose write a loop of calls precedes', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' interface ICallee { function ping(); }'
+      + ` contract Callee { function ping() { require(true); } }`
+      + ' contract Caller {'
+      + '   mapping(address => uint) balances;'
+      + '   function set(int n, address to, uint amount) {'
+      + `     for (int i = 0; i < n; i = i + 1) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
+      + '     balances[to] = amount;'
+      + '   }'
+      + ' }';
+    expect(refusalMessageOf(source)).toContain('behind a call whose occurrence the source does not fix');
+  });
+});
+
+describe('a per-call master whose entry deletes a mapping entry beside a call elsewhere', () => {
+  const DELETE_SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface ICallee { function ping(); }'
+    + ` contract Callee { function ping() { require(true); } }`
+    + ' contract Caller {'
+    + '   mapping(string => string) meceTags;'
+    + '   function callIt() {'
+    + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+    + '     require(true);'
+    + '   }'
+    + '   function removeMeceTag(string shortForm) {'
+    + '     require(bytes(meceTags[shortForm]).length != 0);'
+    + '     delete meceTags[shortForm];'
+    + '   }'
+    + ' }';
+
+  it('serves the removal: its write precedes the contract\'s calls', () => {
+    expect(refusalMessageOf(DELETE_SOURCE)).toBe('');
+  });
+});
+
+/**
+ * A write that precedes a call the source does not fix: `balances[to] = amount;` then `if (amount >= 0) ping`.
+ * The write lands in the frame's opening segment whatever runs, and it settles there: the block declares it in
+ * the first segment and the segment the call opens keeps it.
+ */
+const WRITE_FIRST_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) balances;'
+  + '   function set(address to, uint amount) {'
+  + '     balances[to] = amount;'
+  + `     if (amount >= 0) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
+  + '   }'
+  + ' }';
+
+/** The same write with an unconditional call after it, so the entry carries no calls-made counter. */
+const WRITE_FIRST_PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) balances;'
+  + '   function set(address to, uint amount) {'
+  + '     balances[to] = amount;'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '   }'
+  + ' }';
+
+describe('a per-call master whose write precedes a call in the same body', () => {
+  it('serves the entry, whose records are declared in the frame\'s opening segment', () => {
+    expect(refusalMessageOf(WRITE_FIRST_SOURCE)).toBe('');
+    expect(refusalMessageOf(WRITE_FIRST_PLAIN_SOURCE)).toBe('');
+  });
+});
+
+/**
+ * A branch whose arms make the same number of calls: `if (amount >= 0) ping else pong`, then the write. Every path
+ * makes one call before the write, so the write lands in segment 1 and the master reads that segment.
+ */
+const SAME_CALL_BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); function pong(); }'
+  + ` contract Callee { function ping() { require(true); } function pong() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) balances;'
+  + '   function set(address to, uint amount) {'
+  + `     if (amount >= 0) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
+  + `     else { ICallee(0x${toHex(ADDRESS_CALLEE)}).pong.call(); }`
+  + '     balances[to] = amount;'
+  + '   }'
+  + ' }';
+
+const sameCallBranchArtifacts = compileStringMulti(SAME_CALL_BRANCH_SOURCE, { composition: 'per-call' });
+
+describe('a per-call master whose write follows a branch whose arms call the same number of times', () => {
+  it('serves the entry and settles in the machine', () => {
+    expect(refusalMessageOf(SAME_CALL_BRANCH_SOURCE)).toBe('');
+    const outcome = verdict({ calls: 1, callerUnit: sameCallBranchArtifacts });
+    expect(outcome.accepted, outcome.objection).toBe(true);
+  });
+});
+
+
+/**
+ * A removal of a mapping entry after the same body makes a call, so the removal's records are declared in the
+ * segment the call opened. The removal's own body makes the call the write follows.
+ */
+const REMOVE_AFTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) tags;'
+  + '   function callIt() {'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '     require(true);'
+  + '   }'
+  + '   function removeTag(address t) {'
+  + '     require(true);'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '     delete tags[t];'
+  + '   }'
+  + ' }';
+
+const removeAfterCallArtifacts = compileStringMulti(REMOVE_AFTER_CALL_SOURCE, { composition: 'per-call' });
+
+/**
+ * A removal whose own body makes no call, in a contract whose other entry does. Its records are declared in the
+ * frame's opening segment, the one segment the entry has.
+ */
+const REMOVE_ONLY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) tags;'
+  + '   function callIt() {'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '     require(true);'
+  + '   }'
+  + '   function removeTag(address t) { delete tags[t]; require(true); }'
+  + ' }';
+
+describe('a per-call master whose entry removes a mapping entry', () => {
+  it('serves a removal the entry makes after its own call', () => {
+    // The removal's write is a mapping write on the target node, so the walker sees it where the call precedes it.
+    expect(refusalMessageOf(REMOVE_AFTER_CALL_SOURCE)).toBe('');
+  });
+
+  it('serves a removal that precedes every call the master makes', () => {
+    expect(refusalMessageOf(REMOVE_ONLY_SOURCE)).toBe('');
+  });
+});
+
+/**
+ * A derived write whose key is an element of a dynamic state array, in a body that writes that array inside a loop,
+ * so the compiler caches the array in a `__dlcache_<name>` local. The key reads that local, which the body defines
+ * in its own prologue; the derivation is emitted before the prologue, so it cannot address the element.
+ */
+const DYNAMIC_ARRAY_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   struct Job { uint amount; }'
+  + '   Job[] jobs;'
+  + '   mapping(uint => mapping(uint => bool)) flags;'
+  + '   function go(uint id) {'
+  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
+  + '     for (int i = 0; i < 2; i = i + 1) { jobs.push(); }'
+  + '     flags[id][jobs[id].amount] = true;'
+  + '   }'
+  + ' }';
+
+describe('a per-call master whose derived write key reads a dynamic state array element', () => {
+  it('refuses the body that reads it through the array cache local', () => {
+    expect(refusalMessageOf(DYNAMIC_ARRAY_KEY_SOURCE)).toContain("reads an element of the dynamic state array 'jobs'");
   });
 });

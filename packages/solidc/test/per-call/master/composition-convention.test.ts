@@ -191,7 +191,9 @@ describe('the tail sections a compiled master fixes', () => {
     expect(artifacts.Pinged?.composition?.convention).toBe('per-call');
     expect(artifacts.Quiet?.composition?.convention).toBe('per-call');
   });
-  // A value send is refused by name in `solidcash/test/per-call/edges/refused-contract-shapes.test.ts`.
+  // A value send is served: the body pins the lock it computed at the listed output. Its machine cases are in
+  // `master/send-output.test.ts`, and the served spelling is asserted in
+  // `solidcash/test/per-call/edges/refused-contract-shapes.test.ts`.
 });
 
 describe('the call set a compiled master fixes', () => {

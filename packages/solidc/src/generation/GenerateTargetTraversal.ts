@@ -276,7 +276,8 @@ import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
 import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 import {
   buildMasterHeadScript, callCountSlotName, categoryOwnerSlotName, eventCountSlotName, eventOutputSlotName,
-  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, valueWitnessSlotName,
+  recordInputIndexSlotName, recordOutputIndexSlotName, retvalSlotName, sendCountSlotName, sendOutputSlotName,
+  valueWitnessSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
 import { dropPrefix } from '../per-call/master/witness-reader.js';
@@ -3132,6 +3133,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // under the names the bodies' own reads resolve.
     for (let slot = (tail.tail.valueWitnessCount ?? 0) - 1; slot >= 0; slot -= 1) {
       this.pushToStack(valueWitnessSlotName(slot));
+    }
+    // A send's listed output index is left above the value slots and below the event region: the declared count,
+    // then one slot per send position the entry fixes, registered in reverse so a body reads the `sendIndex`-th
+    // send's output at its own slot.
+    if (tail.tail.sendCount > 0) {
+      this.pushToStack(sendCountSlotName());
+      for (let index = tail.tail.sendCount - 1; index >= 0; index -= 1) {
+        this.pushToStack(sendOutputSlotName(index));
+      }
     }
     // Above them the head leaves the event region: the declared count, then one output slot per
     // position up to the region size, first position topmost. Registering the count first and the positions in
@@ -7641,6 +7651,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.conditionalTransferIndices.add(slot.slotIndex);
         }
       }
+      // A per-call body's slots are all allocated here, so the branch and switch visitors' own conditionality
+      // marking does not run for it. A transfer that sits inside a branch arm is one the execution may skip, so
+      // mark it from the body itself: its verification then requires the send region's sentinel when its arm is not
+      // taken. The direct convention keeps the marking its own pre-allocation sites publish.
+      if (this.perCallMaster) this.markConditionalTransferIndices(node.body);
       this.transfersPreallocatedAtFunctionStart = true;
     }
 
@@ -31457,6 +31472,92 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Marks every transfer index that sits inside a conditional construct of the body.
+   *
+   * A construct whose arm may not run reaches its transfers on some executions only, so their region positions
+   * must be able to say the send did not happen. A transfer in a branch condition runs on every path, and one in
+   * a loop is refused before code generation, so neither is marked.
+   */
+  private markConditionalTransferIndices(block: BlockNode | undefined): void {
+    const mark = (value: unknown, seen: Set<Node>): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      if (value instanceof BranchNode) {
+        this.collectTransferIndices(value.ifBlock, this.conditionalTransferIndices);
+        if (value.elseBlock) this.collectTransferIndices(value.elseBlock, this.conditionalTransferIndices);
+        mark(value.condition, seen);
+        return;
+      }
+      if (value instanceof SwitchNode) {
+        for (const arm of value.cases) this.collectTransferIndices(arm.body, this.conditionalTransferIndices);
+        if (value.defaultCase) this.collectTransferIndices(value.defaultCase, this.conditionalTransferIndices);
+        return;
+      }
+      if (value instanceof TryCatchNode) {
+        this.collectTransferIndices(value.tryBlock, this.conditionalTransferIndices);
+        return;
+      }
+      for (const child of Object.values(value as unknown as Record<string, unknown>)) {
+        if (child instanceof Node) mark(child, seen);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) mark(item, seen);
+      }
+    };
+    mark(block, new Set<Node>());
+  }
+
+  /**
+   * Emits the output index a transfer pays.
+   *
+   * A per-call master has no fixed position for a send: the recipient lock is a run-time value, and the frame's
+   * witness block lists the output the send went to. The head leaves each listed index as a tracked slot, so the
+   * body pins the lock and the value it computed at exactly the output the block named. The direct convention
+   * reads the index from the frame's block layout instead.
+   */
+  private emitTransferOutputIndex(transferIndex: number, locationData: SingleLocationData): void {
+    if (!this.perCallMaster) {
+      this.emitBlockSlotIndex('transfer', transferIndex, locationData);
+      return;
+    }
+    const name = sendOutputSlotName(transferIndex);
+    if (!this.stack.includes(name)) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master head left no output slot for transfer ${transferIndex} while compiling `
+        + `'${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+  }
+
+  /**
+   * Requires the send region's slot for `transferIndex` to be the no-index sentinel, for a send that did not
+   * happen.
+   *
+   * The region parks the two-byte sentinel for a position the execution sent nothing at, and its script-number
+   * value is negative, which no output index is. A per-call send on one branch of a conditional still owns its
+   * region position, so requiring the sentinel there keeps the block's declared count and the sends the body made
+   * in step: a witness cannot list an output for a send the body did not make.
+   */
+  private requireSendSlotAbsent(transferIndex: number, locationData: SingleLocationData): void {
+    const name = sendOutputSlotName(transferIndex);
+    if (!this.stack.includes(name)) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master head left no output slot for transfer ${transferIndex} while compiling `
+        + `'${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(name))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+  }
+
+  /**
    * Emit covenant verification for transfer outputs.
    * For each pending transfer:
    * 1. Verify output locking bytecode at block layout transfer offset matches expected
@@ -31503,8 +31604,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
 
-      // Compute output index: transfer block slot + transferIndex
-      this.emitBlockSlotIndex('transfer', transferIndex, locationData);
+      // Compute output index: the witness-listed send slot for a per-call master, the block slot otherwise.
+      this.emitTransferOutputIndex(transferIndex, locationData);
       this.emit(Op.OP_OUTPUTBYTECODE, locationData);
       this.pushToStack('(value)');
 
@@ -31517,7 +31618,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
 
-      this.emitBlockSlotIndex('transfer', transferIndex, locationData);
+      this.emitTransferOutputIndex(transferIndex, locationData);
       this.emit(Op.OP_OUTPUTVALUE, locationData);
       this.pushToStack('(value)');
 
@@ -31525,7 +31626,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
 
       // 3. Verify no tokens on transfer output (empty token category)
-      this.emitBlockSlotIndex('transfer', transferIndex, locationData);
+      this.emitTransferOutputIndex(transferIndex, locationData);
       this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
       this.pushToStack('(value)');
       this.emit(encodeInt(0n), locationData);
@@ -31537,6 +31638,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         if (node.graphEmissionHandler && node.graphEffectFrame) {
           this.emit(Op.OP_ELSE, locationData);
           this.emitNotTakenGraphTransferSlotBinding(transferIndex, locationData);
+        } else if (this.perCallMaster) {
+          // A per-call send the execution did not make still owns its region position, and the position must say
+          // so: the body requires the no-index sentinel there rather than leaving a listed output unclaimed.
+          this.emit(Op.OP_ELSE, locationData);
+          this.requireSendSlotAbsent(transferIndex, locationData);
         }
         this.emit(Op.OP_ENDIF, locationData);
       }
@@ -37545,7 +37651,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // locals remain empty when the selected handler runs through OP_INVOKE, so treating them as the transfer
     // authority would compare (for example) `5000 <= 4000 + 0` and reject the authenticated 1000-sat output.
     // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
-    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
+    // A per-call master has no satoshi container: its value sends are the witness block's listed sends, and the
+    // value accounting for them is the records' own floor rather than a co-spent container's balance.
+    if (!this.perCallMaster && this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
       && !this.graphTransferFlagActive) {
       // A compiler-visible transfer may be a generic call-with-value helper whose runtime value is zero. In
       // that case no satoshi container is co-spent, so neither identify nor introspect its fixed slot.
@@ -37576,7 +37684,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_IF, locationData);
         }
 
-        this.emitBlockSlotIndex('transfer', transfer.transferIndex, locationData);
+        this.emitTransferOutputIndex(transfer.transferIndex, locationData);
         this.emit(Op.OP_OUTPUTVALUE, locationData);
 
         if (isCondTransfer) {

@@ -20,10 +20,10 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory } from './val
  *
  * After the frame fields and the call records, the block carries a segment, an event and a send section. The
  * master's head requires the counts the entry fixes, checks the shape of every record entry, checks that each
- * listed event output carries the contract's category with no capability and that each listed send output is a
- * user's P2PKH lock, and requires nothing to follow the last field. This file drives a compiled head through the
- * BCH-2026 virtual machine so the machine's own verdict is the assertion, and pairs every refusal with the shape
- * it does not touch, so the refusal is the check under test rather than a malformed block.
+ * listed event output carries the contract's category with no capability, leaves each listed send's output index
+ * for the body that computed the send, and requires nothing to follow the last field. This file drives a compiled
+ * head through the BCH-2026 virtual machine so the machine's own verdict is the assertion, and pairs every refusal
+ * with the shape it does not touch, so the refusal is the check under test rather than a malformed block.
  *
  * The head is built directly rather than compiled: the entry's calls, events and sends are the shape the head is
  * handed, which is exactly what the compiler derives for a compiled contract and passes through.
@@ -71,11 +71,13 @@ function masterProgram(options: MasterHeadOptions): { program: Uint8Array; lock:
     },
   );
   // The head leaves the four frame values, the category-owner index, the block's declared call count, the record
-  // indices when the head keeps them, and the event region: the declared count above one slot per position, when
-  // the region holds any.
+  // indices when the head keeps them, and the event and send regions: the declared count above one slot per
+  // position, when a region holds any.
   const eventRegionSize = options.tail?.maxEventCount ?? 0;
+  const sendRegionSize = options.tail?.sendCount ?? 0;
   const leaves = 4 + 1 + 1 + (options.keepsRecordIndices === true ? 2 : 0)
-    + (eventRegionSize > 0 ? eventRegionSize + 1 : 0);
+    + (eventRegionSize > 0 ? eventRegionSize + 1 : 0)
+    + (sendRegionSize > 0 ? sendRegionSize + 1 : 0);
   const program = new Uint8Array([
     ...filled,
     ...new Array<number>(leaves).fill(Opcodes.OP_DROP), Opcodes.OP_1,
@@ -286,7 +288,7 @@ describe('a master whose tail carries an event', () => {
 });
 
 describe('a master whose tail carries a value send', () => {
-  it('is accepted when the send sits at a P2PKH output', () => {
+  it('is accepted when the send sits at the listed output', () => {
     expect(verdict({
       tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock({ sends: [1] }),
@@ -294,18 +296,30 @@ describe('a master whose tail carries a value send', () => {
     })).toStrictEqual({ accepted: true });
   });
 
-  it('is refused when the listed output is not a P2PKH lock', () => {
+  it('is accepted when the listed output is not a P2PKH lock', () => {
+    // A listed send's recipient lock is a run-time value the body computed, so the tail leaves the index for the
+    // body to pin rather than checking a shape: a contract's lock reads like a user's at this level.
     expect(verdict({
       tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock({ sends: [1] }),
       outputs: [{ lockingBytecode: OTHER_LOCK, valueSatoshis: PAYMENT }],
-    }).accepted).toBe(false);
+    })).toStrictEqual({ accepted: true });
   });
 
-  it('is refused when the send count is not the one the entry fixes', () => {
+  it('is accepted when the block lists fewer sends than the region holds', () => {
+    // The region holds one position and the block declares none: the position parks the sentinel, and the body
+    // behind the head requires it there for a send it did not make. The head itself leaves the region.
     expect(verdict({
       tail: { maxEventCount: 0, sendCount: 1 },
       block: baseBlock(),
+      outputs: [],
+    })).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the block lists more sends than the region holds', () => {
+    expect(verdict({
+      tail: { maxEventCount: 0, sendCount: 1 },
+      block: baseBlock({ sends: [1, 2] }),
       outputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: PAYMENT }],
     }).accepted).toBe(false);
   });

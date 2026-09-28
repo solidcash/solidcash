@@ -25,7 +25,7 @@ import {
   TupleAssignmentNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { BytesType } from '@solidcash/utils';
+import { AddressType, BytesType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -58,6 +58,10 @@ interface LowLevelSite {
  * A payload the compiler cannot name statically - a selector computed at run time, an interface it does not know -
  * is left alone, so the call keeps its own low-level refusal.
  *
+ * The method may be named through a variable of the interface's type (`abi.encodeCall(token.f, (args))`, as OZ
+ * SafeERC20 spells it) rather than the interface name itself; the interface is then read from the variable's
+ * declaration. A receiver the pass cannot type resolves to no call and stays opaque.
+ *
  * A payload held in a local (`bytes data = abi.encodeCall(I.f, (args)); addr.call(data)`) denotes the same call when
  * the enclosing block bound that local, earlier in source order and without a later reassignment, to exactly one
  * such abi-encode expression. The lookup is flow-local and block-scoped; every other local stays opaque.
@@ -70,18 +74,33 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   // One map per lexical block, innermost last. A name present here shadows any outer binding; a value that is not
   // an abi-encode node marks a local that was bound to something else (or reassigned), so the lookup stops there.
   private payloadScopes: Map<string, ExpressionNode | undefined>[] = [];
+  // The declared type of each in-scope name, in the same lexical-block order as `payloadScopes`. A payload's
+  // receiver may be an interface-typed variable (`abi.encodeCall(token.transfer, ..)`, as OZ SafeERC20 spells it)
+  // rather than the interface name itself, so the callee's interface is read from the variable's declaration.
+  private declaredTypes: Map<string, Type>[] = [];
+  // State variables are visible in every body, so their declared types sit below the block scopes.
+  private stateVariableTypes = new Map<string, Type>();
+  // Parameter types of the function whose body is being entered; consumed by that body's own block scope.
+  private incomingParameterTypes: Map<string, Type> | undefined;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.interfaces = new Map(node.interfaceDefinitions.map((iface) => [iface.name, iface]));
+    this.stateVariableTypes = new Map((node.contract?.stateVariables ?? []).map((sv) => [sv.name, sv.type]));
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     return node;
+  }
+
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    this.incomingParameterTypes = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type]));
+    return super.visitFunctionDefinition(node);
   }
 
   visitContract(node: ContractNode): Node {
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
       if (!fn?.body) continue;
+      this.incomingParameterTypes = new Map(fn.parameters.map((parameter) => [parameter.name, parameter.type]));
       fn.body = this.visit(fn.body) as BlockNode;
     }
     return node;
@@ -90,16 +109,35 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     this.payloadScopes.push(new Map());
+    this.declaredTypes.push(new Map(this.incomingParameterTypes ?? []));
+    this.incomingParameterTypes = undefined;
     for (const statement of node.statements ?? []) {
       const visited = this.visit(statement) as StatementNode;
       const rewritten = this.rewriteStatement(visited);
-      if (rewritten) out.push(...rewritten);
-      else out.push(visited);
+      const emitted = rewritten ?? [visited];
+      out.push(...emitted);
+      for (const item of emitted) this.recordDeclaredType(item);
       this.recordPayloadBinding(visited);
     }
     this.payloadScopes.pop();
+    this.declaredTypes.pop();
     node.statements = out;
     return node;
+  }
+
+  /** Track the declared type of each name a statement binds, so a payload receiver resolves through it. */
+  private recordDeclaredType(statement: StatementNode): void {
+    const scope = this.declaredTypes[this.declaredTypes.length - 1];
+    if (!scope) return;
+    if (statement instanceof VariableDefinitionNode) {
+      scope.set(statement.name, statement.type);
+      return;
+    }
+    if (statement instanceof TupleAssignmentNode) {
+      for (const element of statement.elements) {
+        if (element.name && element.type) scope.set(element.name, element.type);
+      }
+    }
   }
 
   /** Track a payload local declared by `statement`, or drop one a later statement reassigns. */
@@ -312,8 +350,10 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       }
     }
     if (payload instanceof AbiEncodeCallNode) {
-      if (payload.interfaceName === 'this' || !this.interfaces.has(payload.interfaceName)) return undefined;
-      return { interfaceName: payload.interfaceName, functionName: payload.functionName, args: payload.parameters };
+      if (payload.interfaceName === 'this') return undefined;
+      const interfaceName = this.resolveReceiverInterface(payload.interfaceName);
+      if (interfaceName === undefined) return undefined;
+      return { interfaceName, functionName: payload.functionName, args: payload.parameters };
     }
     if (payload instanceof AbiEncodeWithSelectorNode) {
       const selector = payload.selector;
@@ -322,11 +362,30 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       if (!(declaration instanceof FieldAccessNode) || !(declaration.expression instanceof IdentifierNode)) {
         return undefined;
       }
-      const interfaceName = declaration.expression.name;
-      if (!this.interfaces.has(interfaceName)) return undefined;
+      const interfaceName = this.resolveReceiverInterface(declaration.expression.name);
+      if (interfaceName === undefined) return undefined;
       return { interfaceName, functionName: declaration.name, args: payload.parameters };
     }
     return undefined;
+  }
+
+  /**
+   * The interface a payload's receiver names, or undefined when it names nothing this pass can type.
+   *
+   * The receiver is either the interface itself (`abi.encodeCall(IERC20.transfer, ..)`) or a variable of that
+   * interface's type (`abi.encodeCall(token.transfer, ..)`). A variable is resolved through its declaration - a
+   * parameter, a local, or a state variable - since the payload carries no type of its own.
+   */
+  private resolveReceiverInterface(receiver: string): string | undefined {
+    if (this.interfaces.has(receiver)) return receiver;
+    const lookup = (type: Type | undefined): string | undefined => type instanceof AddressType
+      && type.interfaceName !== undefined && this.interfaces.has(type.interfaceName)
+      ? type.interfaceName : undefined;
+    for (let index = this.declaredTypes.length - 1; index >= 0; index -= 1) {
+      const scope = this.declaredTypes[index]!;
+      if (scope.has(receiver)) return lookup(scope.get(receiver));
+    }
+    return lookup(this.stateVariableTypes.get(receiver));
   }
 
   private findFunction(interfaceName: string, functionName: string): InterfaceFunctionNode | undefined {

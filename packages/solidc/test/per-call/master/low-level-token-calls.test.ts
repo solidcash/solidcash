@@ -11,10 +11,12 @@ import { publishedRefusals } from './refused-entry.js';
  * call compiles as a typed call of the named function, so the call's argument digest and its result stay canonical.
  *
  * What the shipped compiler does today: a payload that names its method statically compiles as that typed call,
- * whether the payload is written at the call site or held in a local, and whether or not the result is bound. A
- * payload the compiler cannot name - a raw selector literal, a selector it only holds at run time - leaves the call
- * on the direct path's opaque-return machinery, which a per-call body does not emit, so that body is refused by
- * name. The `code.length` gate the helper uses beside the call is served.
+ * whether the payload is written at the call site or held in a local, whether or not the result is bound, and
+ * whether the method is named through the interface (`abi.encodeCall(IERC20.f, ..)`) or through an interface-typed
+ * variable (`abi.encodeCall(token.f, ..)`). A payload the compiler cannot name - a raw selector literal, a selector
+ * it only holds at run time, or a payload passed into a helper as opaque `bytes` - leaves the call on the direct
+ * path's opaque-return machinery, which a per-call body does not emit, so that body is refused by name. The
+ * `code.length` gate the helper uses beside the call is served.
  *
  * Each case drives a real source through the shipped compile entry point and reads the refusal the compile
  * publishes; the code-length case reads the entry it serves.
@@ -74,6 +76,32 @@ const TYPED_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IToken { function transfer(address to, int amount); }'
   + ' contract Caller {'
   + '   function callIt(IToken token, address to, int amount) { token.transfer(to, amount); require(true); }'
+  + ' }';
+
+/** The same `abi.encodeCall` payload, but its method named through the `IToken`-typed variable `token`. */
+const VARIABLE_RECEIVER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IToken { function transfer(address to, int amount); }'
+  + ' contract Caller {'
+  + '   function callIt(IToken token, address to, int amount) {'
+  + '     bytes data = abi.encodeCall(token.transfer, (to, amount));'
+  + '     (bool ok, bytes ret) = address(token).call(data);'
+  + '     require(ok);'
+  + '     require(true);'
+  + '   }'
+  + ' }';
+
+/** The same payload passed through a value-returning helper's `bytes` parameter, as `Address.functionCall` does. */
+const HELPER_PARAMETER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface IToken { function transfer(address to, int amount) returns (bool); }'
+  + ' library Addr { function functionCall(address target, bytes data) internal returns (bytes) {'
+  + '   (bool success, bytes returndata) = target.call(data); require(success); return returndata; } }'
+  + ' contract Caller {'
+  + '   using Addr for address;'
+  + '   function callIt(IToken token, address to, int amount) {'
+  + '     bytes data = abi.encodeCall(token.transfer, (to, amount));'
+  + '     address(token).functionCall(data);'
+  + '     require(true);'
+  + '   }'
   + ' }';
 
 type Artifacts = Record<string, { composition?: unknown }>;
@@ -154,5 +182,24 @@ describe('SafeERC20 token-call shapes under per-call', () => {
         interfaceName: 'IToken', functionName: 'transfer', selector: TRANSFER_SELECTOR,
       }),
     ]);
+  });
+
+  it('compiles a payload whose method is named through an interface-typed variable, as the typed call', () => {
+    // `abi.encodeCall(token.transfer, ..)` names the method through `token`'s declared `IToken` type, so it
+    // denotes the same call as the literal `IToken.transfer` spelling and publishes the same call site.
+    const artifacts = compile(VARIABLE_RECEIVER_SOURCE);
+    expect(publishedRefusals(artifacts)).toEqual([]);
+    expect(publishedCallSites(artifacts, 'Caller.callIt()')).toEqual([
+      expect.objectContaining({
+        interfaceName: 'IToken', functionName: 'transfer', selector: TRANSFER_SELECTOR,
+      }),
+    ]);
+  });
+
+  it('refuses a payload passed through a value-returning helper parameter, naming the machinery it lacks', () => {
+    // The payload is built at the caller and handed to `Addr.functionCall` as a `bytes` parameter, so the callee's
+    // method is not known where the convention rewrites named payloads; the call keeps the direct path's opaque
+    // return machinery, which a per-call body does not emit.
+    expect(refusalMessage(HELPER_PARAMETER_SOURCE)).toBe(`Caller.callIt(): ${OPAQUE_RETURN_REFUSAL}`);
   });
 });

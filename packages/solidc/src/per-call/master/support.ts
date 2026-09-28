@@ -57,6 +57,7 @@ import {
   LowLevelCallStatementNode,
   MappingAccessNode,
   MappingAssignNode,
+  MappingDeleteNode,
   Node,
   NullaryOpNode,
   StateAccessNode,
@@ -75,6 +76,7 @@ import {
 } from '../../ast/AST.js';
 import { NullaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
+import { countTransfersMinMax } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
 import { BATCH_DERIVATION_SLOT_ORDER, batchDerivationSlotName } from './batch-witness-derivation.js';
 
@@ -459,7 +461,14 @@ function keyOperandUnavailable(
     }
     // A field the body reads out of a state record is a value it holds; the bare state read is not addressable.
     if (current instanceof StateAccessNode) {
-      return underField ? undefined : `the state value '${current.name}'`;
+      if (!underField) return `the state value '${current.name}'`;
+      // An element of a dynamic (chunk-backed) state array is not a value the body holds at its start: its bytes
+      // live in the frame's chunk run, and a body that caches the array in a `__dlcache_<name>` local holds that
+      // local only once its own code begins. The derivation is emitted before the body's first statement, so a key
+      // reading either the element or the cached copy of it is not one the master can produce there.
+      return current.stateVariable?.isDynamic === true && current.stateVariable.type instanceof ArrayType
+        ? `an element of the dynamic state array '${current.name}'`
+        : undefined;
     }
     if (current instanceof FunctionCallNode) return `the value computed by '${current.identifier.name}'`;
     return `an ${current.constructor.name}`;
@@ -622,16 +631,20 @@ function unsupportedBatchWriteShape(
     + 'segment would not fix which transition ran';
 }
 
-/** True when a body's subtree makes an external call, so a branch or loop over it runs one on some paths only. */
-function subtreeMakesExternalCall(node: Node): boolean {
-  let found = false;
-  walkInvocationAst(node, (candidate) => {
-    if (candidate instanceof ExternalFunctionCallNode || candidate instanceof LowLevelCallNode
-      || candidate instanceof LowLevelCallStatementNode) {
-      found = true;
-    }
-  });
-  return found;
+/** A closed interval of the calls some path makes, or undefined when the source leaves the count open. */
+type CallRange = { readonly least: number; readonly most: number } | undefined;
+
+/** Advances a call range past a value that makes its own calls on every path, or undefined when one is open. */
+function advanceCallRange(range: CallRange, value: unknown): CallRange {
+  if (range === undefined) return undefined;
+  const calls = callsInExpression(value);
+  return calls === undefined ? undefined : { least: range.least + calls, most: range.most + calls };
+}
+
+/** The calls either of two mutually exclusive paths makes, or undefined when either leaves the count open. */
+function joinCallRanges(left: CallRange, right: CallRange): CallRange {
+  if (left === undefined || right === undefined) return undefined;
+  return { least: Math.min(left.least, right.least), most: Math.max(left.most, right.most) };
 }
 
 /**
@@ -640,31 +653,53 @@ function subtreeMakesExternalCall(node: Node): boolean {
  *
  * The derivation reads the segment the write's records are declared in, and a call closes the segment the code
  * before it runs in, so a write that precedes every call lands in the segment the derivation reads while one that
- * follows a call lands in a later one. A write inside a branch or loop that also makes a call is a position the
- * source does not fix, so it is left to the caller to refuse.
+ * follows a call lands in a later one. The count is walked path by path: a branch's arms are joined and a
+ * call-bearing loop or switch leaves it open, so a write behind a call the source does not fix — or in a body
+ * whose arms make different numbers of calls — is left to the caller to refuse.
  */
 export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number | undefined {
   const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
   if (slots.size === 0) return undefined;
-  let calls = 0;
   let segment: number | undefined;
   let ambiguous = false;
-  walkInvocationAst(entry.body, (node) => {
-    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
-      || node instanceof LowLevelCallStatementNode) {
-      calls += 1;
-      return;
+  // A write a call precedes lands in the segment the write's own path reached, so a write is fixed only when
+  // every path that reaches it made the same number of calls.
+  const record = (calls: CallRange): void => {
+    if (calls === undefined || calls.least !== calls.most) { ambiguous = true; return; }
+    if (segment === undefined) segment = calls.least;
+    else if (segment !== calls.least) ambiguous = true;
+  };
+  const walkBlock = (block: BlockNode | undefined, incoming: CallRange): CallRange => {
+    let range = incoming;
+    for (const statement of block?.statements ?? []) range = walkStatement(statement, range);
+    return range;
+  };
+  const walkStatement = (statement: Node, incoming: CallRange): CallRange => {
+    if (statement instanceof MappingAssignNode || statement instanceof MappingDeleteNode) {
+      if (slots.has(statement.entrySlotIndex)) record(incoming);
+      return advanceCallRange(incoming, statement);
     }
-    if (node instanceof MappingAssignNode && slots.has(node.entrySlotIndex)) {
-      if (segment === undefined) segment = calls;
-      else if (segment !== calls) ambiguous = true;
-      return;
+    if (statement instanceof BranchNode) {
+      const afterCondition = advanceCallRange(incoming, statement.condition);
+      const thenRange = walkBlock(statement.ifBlock, afterCondition);
+      const elseRange = statement.elseBlock === undefined
+        ? afterCondition
+        : walkBlock(statement.elseBlock, afterCondition);
+      return joinCallRanges(thenRange, elseRange);
     }
-    if ((node instanceof BranchNode || node instanceof SwitchNode || node instanceof WhileNode
-      || node instanceof DoWhileNode || node instanceof TryCatchNode) && subtreeMakesExternalCall(node)) {
-      ambiguous = true;
+    if (statement instanceof BlockNode) return walkBlock(statement, incoming);
+    if (statement instanceof SwitchNode || statement instanceof CollectionIterationNode
+      || statement instanceof WhileNode || statement instanceof DoWhileNode) {
+      // A loop, switch or iteration makes a number of calls its own bound decides; a call-free one makes none.
+      return reachesExternalCall(statement) ? undefined : incoming;
     }
-  });
+    if (statement instanceof TryCatchNode) {
+      // A catch block is not an executable path, matching the invocation walk.
+      return walkBlock(statement.tryBlock, advanceCallRange(incoming, statement.expression));
+    }
+    return advanceCallRange(incoming, statement);
+  };
+  walkBlock(entry.body, { least: 0, most: 0 });
   return ambiguous ? undefined : segment;
 }
 
@@ -874,16 +909,15 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       refuseBody(fn, `the body carries the hidden parameter '${hidden[0].name}', which the master head does not `
         + 'supply');
     }
-    // The head sizes its event region and its send list by the bodies it serves, so a body whose own counts are
+    // The head sizes its event and send regions by the bodies it serves, so a body whose own counts are
     // not values the source fixes is refused on its own rather than refusing the contract's other bodies.
     if ((fn.runtimeLoopEvents?.length ?? 0) > 0 || emitsFromLoop(fn)) {
       refuseBody(fn, 'an event emitted from a loop makes the event count depend on the loop, so the master cannot '
         + 'fix how many events the tail holds');
     }
     if ((fn.transferInfos?.length ?? 0) > 0 || (fn.runtimeLoopTransfers?.length ?? 0) > 0) {
-      refuseBody(fn, 'a value send is a listed send only when its recipient is a user address and a call when it '
-        + 'is a contract, and the recipient lock is a run-time value, so the master cannot fix how many sends the '
-        + 'tail holds');
+      const sends = sendCountRefusal(fn);
+      if (sends !== undefined) refuseBody(fn, sends);
     }
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
@@ -1140,16 +1174,53 @@ export interface PerCallTailDerivation {
 }
 
 /**
+ * Why a body's value sends cannot share the master's one send region, or undefined when they can.
+ *
+ * The head fixes one send region for every body it runs, so a send's position in it is a fact of the source
+ * rather than of the execution. A send inside a loop makes as many as the loop turns and reaches no fixed
+ * position, so it is refused. A send on one branch of a conditional keeps its position and simply does not happen
+ * on the other arm: the body requires its slot to hold the no-index sentinel there, so the region states which
+ * sends an execution actually made.
+ */
+function sendCountRefusal(body: FunctionDefinitionNode): string | undefined {
+  if ((body.runtimeLoopTransfers?.length ?? 0) > 0 || sendsFromLoop(body)) {
+    return 'a value send inside a loop makes the send count depend on the loop, so the master cannot fix how many '
+      + 'sends the tail holds';
+  }
+  return undefined;
+}
+
+/** True when a value send sits inside a loop, so its position in the send region is not fixed by the source. */
+function sendsFromLoop(body: FunctionDefinitionNode): boolean {
+  let found = false;
+  walkInvocationAst(body.body, (node) => {
+    if (found || !(node instanceof WhileNode || node instanceof DoWhileNode)) return;
+    if (countTransfersMinMax(node).max > 0) found = true;
+  });
+  return found;
+}
+
+/**
+ * The sends a body's region holds, in the order its transfer statements number them.
+ *
+ * A transfer statement is one slot whether or not the execution reaches it, so the region's size is the source's
+ * own count of them; the body's verification tells a taken slot from an untaken one.
+ */
+function bodySendSlots(body: FunctionDefinitionNode): number {
+  return body.transferInfos?.length ?? 0;
+}
+
+/**
  * Derives the event-region size and send count a master's tail has to declare, from the bodies the master runs.
  *
  * A master has one head that parks a fixed-size event region, so the region is as large as the largest number of
  * events any body emits; each body pins its own emit count against the block's declared count, so two bodies may
  * emit different numbers. The constructor runs as one more body behind the head and counts here with the entries.
- * A body that emits from a loop leaves its count to the loop, which the head cannot fix. A value send is a listed
- * send only when its recipient is a user address and a call when it is a contract, and the recipient's lock type
- * is a run-time value, so the send list is not fixed by the source and a transfer is refused rather than guessed.
- * Segments are not fixed here: the records a segment touches are decided by settlement, so the head walks each
- * segment's declared count.
+ * A body that emits from a loop leaves its count to the loop, which the head cannot fix. A listed send's recipient
+ * lock is a run-time value, so the tail cannot check the output's shape; the body that computed the send pins the
+ * lock and the value it computed at the listed output, and the region is as wide as the most sends any body lists.
+ * A send inside a loop reaches no fixed position and is refused. Segments are not fixed here: the records a segment
+ * touches are decided by settlement, so the head walks each segment's declared count.
  */
 export function derivePerCallTailShape(
   entryPoints: readonly FunctionDefinitionNode[],
@@ -1171,13 +1242,20 @@ export function derivePerCallTailShape(
   }
   for (const body of bodies) {
     if ((body.transferInfos?.length ?? 0) > 0 || (body.runtimeLoopTransfers?.length ?? 0) > 0) {
-      return { reason: 'a value send is a listed send only when its recipient is a user address and a call when '
-        + 'it is a contract, and the recipient lock is a run-time value, so the master cannot fix how many sends '
-        + 'the tail holds' };
+      const sends = sendCountRefusal(body);
+      if (sends !== undefined) return { reason: sends };
     }
   }
+  // Every body's transfers take the region's first positions in their own source order, so two bodies that list
+  // different numbers would leave the extra positions of the shorter body unread and uncheckable.
+  const sendCounts = bodies.map((body) => bodySendSlots(body));
+  const sendCount = sendCounts.length === 0 ? 0 : Math.max(...sendCounts);
+  if (sendCounts.some((count) => count !== sendCount)) {
+    return { reason: 'the master\'s bodies list different numbers of sends, and its head leaves one send region '
+      + 'for every body it runs' };
+  }
   const valueWitnessCount = Math.max(0, ...bodies.map((body) => valueWitnessSlotsOf(body)));
-  return { tail: { maxEventCount, sendCount: 0, valueWitnessCount } };
+  return { tail: { maxEventCount, sendCount, valueWitnessCount } };
 }
 
 /**

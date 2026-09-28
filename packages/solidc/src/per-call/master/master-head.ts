@@ -67,6 +67,28 @@ export function eventOutputSlotName(emitIndex: number): string {
 }
 
 /**
+ * The tracked slot the body reads the output index of its `sendIndex`-th listed send from.
+ *
+ * The head's tail walk reads each listed send's output index from the witness block and leaves it here. The body
+ * that computed the send pins the lock and the value it computed at that output, since only that code knows the
+ * recipient lock it computed.
+ */
+export function sendOutputSlotName(sendIndex: number): string {
+  return `__internal__frameSendOutput_${sendIndex}`;
+}
+
+/**
+ * The tracked slot holding the number of sends the witness block declares.
+ *
+ * The head parks the block's declared send count above the send output slots, the same shape the event region
+ * uses. The region is as wide as the most send positions any body the master runs lists; a body matches each of
+ * its own positions against the region, so the count and the slots together state the sends the execution made.
+ */
+export function sendCountSlotName(): string {
+  return '__internal__frameSendCount';
+}
+
+/**
  * The tracked slot the body reads the number of call records the witness block declares.
  *
  * The head walks the call section without fixing its length, because one head serves every body the master
@@ -376,6 +398,7 @@ class HeadEmitter {
     if (this.composed) this.composedFrameChecks();
     else this.standaloneFrameChecks();
     this.leaveValueSlots();
+    this.leaveSendSlots();
     this.leaveEventSlots();
     this.leaveRecordSlots();
     this.leaveCallCountSlot();
@@ -468,6 +491,25 @@ class HeadEmitter {
     for (let slot = (this.tailShape.valueWitnessCount ?? 0) - 1; slot >= 0; slot -= 1) {
       this.emitOp(Opcodes.OP_FROMALTSTACK);
       this.push(valueWitnessSlotName(slot));
+    }
+  }
+
+  /**
+   * Moves the send region off the alt stack, where the tail walk parked it, so a body can match its own sends
+   * against the positions the frame listed.
+   *
+   * The region is the declared count on top of exactly `sendCount` positions below it. The count comes back first
+   * and is left deepest in the region, so the positions come back in reverse and the first position's index ends
+   * up topmost, above the frame values the checks left; that is the order the body's transfers number them.
+   */
+  private leaveSendSlots(): void {
+    const count = this.tailShape.sendCount;
+    if (count === 0) return;
+    this.emitOp(Opcodes.OP_FROMALTSTACK);
+    this.push(sendCountSlotName());
+    for (let popped = 1; popped <= count; popped += 1) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push(sendOutputSlotName(count - popped));
     }
   }
 

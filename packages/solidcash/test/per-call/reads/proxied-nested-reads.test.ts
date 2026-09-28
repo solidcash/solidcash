@@ -30,21 +30,25 @@ import {
  * one read-only frame at that category, which is the address the callee's source calls. A read is never broadcast,
  * which the provider's transaction count is asserted to show.
  *
- * Three walls are pinned rather than worked around. A view that returns a struct is refused by the compiler by
- * name, so a struct carrying a `string[]` never reaches the shipped decoder at all. A view that reads one callee
- * twice beside a length read is refused by the module, because a read plans one frame per contract. A callee entry
- * that takes a parameter is refused by the module too, because a read cannot resolve an argument from the caller's
- * live records.
+ * Four walls are pinned rather than worked around. A view that returns a struct is refused by the compiler by name,
+ * so a struct carrying a `string[]` never reaches the shipped decoder at all. A callee entry that takes a
+ * parameter is refused by the module, because a read cannot resolve an argument from the caller's live records. A
+ * contract a caller reaches more than once is refused by the module, because a read runs one entry per contract.
+ * And an entry that makes two calls at all is derived only to its first call site: two different callees stall the
+ * same way, so the wall is the entry's call count rather than the contract it reaches twice.
  */
 
 const VALIDATOR_PROGRAM = REAL_VALIDATOR_PROGRAM;
 
 const READER_CATEGORY = seededCategory('proxied nested reads reader');
 const STORE_CATEGORY = seededCategory('proxied nested reads store');
+const PEER_CATEGORY = seededCategory('proxied nested reads peer');
 const READER_HEX = bytesToHex(READER_CATEGORY);
 const STORE_HEX = bytesToHex(STORE_CATEGORY);
+const PEER_HEX = bytesToHex(PEER_CATEGORY);
 const READER_ADDRESS = validatorAddress(READER_CATEGORY, VALIDATOR_PROGRAM);
 const STORE_ADDRESS = validatorAddress(STORE_CATEGORY, VALIDATOR_PROGRAM);
+const PEER_ADDRESS = validatorAddress(PEER_CATEGORY, VALIDATOR_PROGRAM);
 
 const hex = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
 const empty = new Uint8Array(0);
@@ -68,6 +72,12 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     return this.n;'
   + '   }'
   + ' }'
+  + ' interface IPeer { function value() view returns (int); }'
+  + ' contract Peer {'
+  + '   address public implementation;'
+  + '   int public n;'
+  + '   function value() view returns (int) { return this.n; }'
+  + ' }'
   + ' contract Reader {'
   + '   address public implementation;'
   + '   int public seed;'
@@ -76,6 +86,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `     return IStore(0x${hex(STORE_ADDRESS)}).value() + IStore(0x${hex(STORE_ADDRESS)}).value()`
   + `       + IStore(0x${hex(STORE_ADDRESS)}).count();`
   + '   }'
+  + `   function mix() view returns (int) {`
+  + `     int first = IStore(0x${hex(STORE_ADDRESS)}).value();`
+  + `     int second = IPeer(0x${hex(PEER_ADDRESS)}).value();`
+  + '     return first + second;'
+  + '   }'
   + `   function byId() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).entry(2); }`
   + `   function guarded() view returns (int) { return IStore(0x${hex(STORE_ADDRESS)}).guard(); }`
   + ' }';
@@ -83,8 +98,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const reader = artifacts.Reader!;
 const store = artifacts.Store!;
+const peer = artifacts.Peer!;
 const readerProxy = buildProxyArtifact(reader);
 const storeProxy = buildProxyArtifact(store);
+const peerProxy = buildProxyArtifact(peer);
 
 interface UtxoShape {
   readonly txid: string;
@@ -159,6 +176,10 @@ async function chain(n: bigint): Promise<MockNetworkProvider> {
     proxy: storeProxy, category: STORE_CATEGORY, categoryHex: STORE_HEX, seed: 'b',
     record: recordOf(storeProxy.stateLayout, { implementation: STORE_ADDRESS, n }),
   });
+  await fund(provider, {
+    proxy: peerProxy, category: PEER_CATEGORY, categoryHex: PEER_HEX, seed: 'c',
+    record: recordOf(peerProxy.stateLayout, { implementation: PEER_ADDRESS, n }),
+  });
   return provider;
 }
 
@@ -171,7 +192,10 @@ function read(
     artifact: reader,
     categoryId: READER_HEX,
     functionName,
-    externals: { IStore: { artifact: store, categoryId: STORE_HEX } },
+    externals: {
+      IStore: { artifact: store, categoryId: STORE_HEX },
+      IPeer: { artifact: peer, categoryId: PEER_HEX },
+    },
     vm: compositionMachine(),
   });
 }
@@ -187,6 +211,18 @@ describe('a read that reaches another contract\'s implementation at its proxy ad
     expect(result.retval).toStrictEqual(encodeResultList([encodeIntegerValue(7n)]));
     // The read is a local evaluation: the provider's transaction count does not move.
     expect(transactionCount(provider)).toBe(before);
+  });
+
+  it('stalls on an entry that makes two calls, even to two different contracts', async () => {
+    // The plan is well formed - two call sites, two callees, one frame each - and the derivation still stops at the
+    // entry's first call site. Two different callees stall the same way, so the wall is the entry's call count
+    // rather than one contract reached twice: the read drives a master with one call record, and a master with two
+    // is not derived. A hand-built composition of the same two-call shape derives in `toys/result-into-later-call`,
+    // which is where the difference lives.
+    const provider = await chain(7n);
+    await expect(read(provider, 'mix')).rejects.toThrow(
+      /PER_CALL_DERIVATION_STALLED: master "read" of Reader\.mix\(\) filled no witness at site 0 \(call 0\)/,
+    );
   });
 
   it('refuses an entry that reads one callee twice, naming the contract', async () => {

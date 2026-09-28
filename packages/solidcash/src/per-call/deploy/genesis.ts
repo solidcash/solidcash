@@ -432,7 +432,7 @@ interface EventShape {
  * encodings, so the probe output is one the head accepts before the body's payload check runs. An anonymous event
  * carries no signature hash in its covenant, which the shipped anonymous covenant builds the same way.
  */
-function eventLockingBytecode(category: Uint8Array, signature: string, anonymous: boolean): Uint8Array {
+export function eventLockingBytecode(category: Uint8Array, signature: string, anonymous: boolean): Uint8Array {
   const covenant = anonymous
     ? buildAnonymousEventNftCovenantScript(category)
     : buildEventNftCovenantScript(category, computeEventNameHash(signature));
@@ -447,7 +447,7 @@ function eventLockingBytecode(category: Uint8Array, signature: string, anonymous
  * event's position, so it is distinct from every record view a declaration carries and the comparison is
  * unambiguous.
  */
-function eventSentinel(
+export function eventSentinel(
   category: Uint8Array,
   contractName: string,
   index: number,

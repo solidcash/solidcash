@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex, type StateLayout } from '@solidcash/utils';
+import { buildPushdataCommitment, bytesToHex, encodeEventCommitment, type StateLayout } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
@@ -155,6 +155,50 @@ describe('a generated proxy', () => {
     expect(bytesToHex(recordState)).toBe(bytesToHex(commitment(proxy.stateLayout!, {
       implementation: deployment.implementation.address, initialized: 0n, version: 0n,
     })));
+  });
+
+  it('settles an initialize that emits, and lists the payload the entry computed', async () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   address public implementation;'
+      + '   uint public initialized;'
+      + '   event Changed(uint indexed version);'
+      + '   function initialize(address expected) {'
+      + '     require(msg.sender == expected);'
+      + '     this.initialized = 7;'
+      + '     emit Changed(this.initialized);'
+      + '   }'
+      + ' }';
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const generated = buildProxyArtifact(artifacts.Impl!);
+
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [deployerLock] },
+      callerLockingBytecode: deployerLock,
+      vm: compositionMachine(),
+    });
+
+    expect(deployment.initialize.accepted).toBe(true);
+    // The delegate frame's block lists the event, and the payload is what the entry's own body computed.
+    const payload = new Uint8Array(Buffer.from(
+      encodeEventCommitment(artifacts.Impl!.events![0]!.parameters, [7n]), 'hex',
+    ));
+    expect(deployment.initialize.writtenEventCommitments.map(bytesToHex)).toStrictEqual([bytesToHex(payload)]);
+    const eventIndex = deployment.initialize.draft.trailingOutputs[0]!.index;
+    const eventOutput = deployment.initialize.transaction.outputs[eventIndex]!;
+    expect(bytesToHex(eventOutput.token!.nft!.commitment)).toBe(bytesToHex(payload));
+    // The output carries the proxy's category, which is the contract the delegate frame runs on.
+    expect(bytesToHex(eventOutput.token!.category)).toBe(bytesToHex(new Uint8Array(Buffer.from(PROXY_CATEGORY, 'hex'))));
+    expect(deployment.initialize.writtenRecordCommitment)
+      .toStrictEqual(commitment(generated.stateLayout!, {
+        implementation: deployment.implementation.address, initialized: 7n,
+      }));
   });
 
   it('mirrors struct-typed fields, carrying the struct definitions they reference', () => {

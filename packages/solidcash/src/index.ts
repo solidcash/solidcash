@@ -57,3 +57,5 @@ export * as perCallComposer from './per-call/composer/index.js';
 export * as perCallReference from './per-call/validator/reference/index.js';
 // Deployment of a compiled master: filling its reserved slots and deriving its address.
 export * as perCallDeploy from './per-call/deploy/index.js';
+// Reading a deployed contract off chain: a `STATIC` frame derived and evaluated locally, never broadcast.
+export * as perCallRead from './per-call/read/index.js';

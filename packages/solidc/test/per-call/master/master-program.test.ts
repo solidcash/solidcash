@@ -52,6 +52,19 @@ const contains = (script: Uint8Array, pattern: readonly number[]): boolean => {
   return false;
 };
 
+/** Every offset at which `pattern` occurs in `script`, in script order. */
+const offsetsOf = (script: Uint8Array, pattern: readonly number[]): number[] => {
+  const offsets: number[] = [];
+  for (let index = 0; index + pattern.length <= script.length; index += 1) {
+    if (pattern.every((byte, offset) => script[index + offset] === byte)) offsets.push(index);
+  }
+  return offsets;
+};
+
+/** The bytes a reserved slot of `length` payload bytes spends before deployment: a minimal zero push. */
+const reservedPush = (length: number): Uint8Array =>
+  new Uint8Array([length, ...new Array<number>(length).fill(0)]);
+
 describe('a compiled per-call master', () => {
   it('publishes the convention and the deployment-time slots', () => {
     const artifact = compile();
@@ -122,6 +135,48 @@ describe('a compiled per-call master', () => {
     const script = scriptBytes(compile());
     // The signature's last byte: SIZE 1SUB SPLIT NIP, then clear bit 5 and compare with `SIGHASH_ALL` (`0x41`).
     expect(contains(script, [0x82, 0x8c, 0x7f, 0x77, 0x01, 0xdf, 0x84, 0x01, 0x41, 0x88])).toBe(true);
+  });
+
+  // A body's mapping access proves the journal record's clean synthetic form, whose zero successor is a 32-byte
+  // zero push. The compiled master therefore contains the reserved category pattern a third time beside the head's
+  // own two slots; the published offsets must still name the head's slots.
+  const BODY_ZERO_PUSH_SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' contract Tagged {'
+    + '   mapping(string => string) tags;'
+    + '   function init() public { this.tags["DA"] = "DIGITAL_AUDIO"; require(true); }'
+    + '   function readTag(string k) public { string v = this.tags[k]; require(v.length > 0); }'
+    + ' }';
+
+  it('publishes the head\'s slots when a body carries a 32-byte zero push of its own', () => {
+    const artifact = compileString(BODY_ZERO_PUSH_SOURCE, { composition: 'per-call' });
+    const script = scriptBytes(artifact);
+    const { categoryOffset, addressOffset, templateHashOffset } = artifact.composition!.placeholders;
+    expect(templateHashOffset).toBeTypeOf('number');
+    assertPlaceholders(script, artifact.composition!.placeholders);
+    // The published offsets are the head's reserved pushes, byte for byte.
+    expect(script.subarray(categoryOffset, categoryOffset + 33))
+      .toEqual(reservedPush(CATEGORY_SLOT_LENGTH));
+    expect(script.subarray(addressOffset, addressOffset + 36))
+      .toEqual(reservedPush(ADDRESS_SLOT_LENGTH));
+    expect(script.subarray(templateHashOffset!, templateHashOffset! + 33))
+      .toEqual(reservedPush(TEMPLATE_HASH_SLOT_LENGTH));
+    // The reserved category pattern genuinely recurs beyond the head's own two slots, and the third occurrence
+    // sits after the head; the published offsets sit on the head's slots regardless.
+    const occurrences = offsetsOf(script, reservedPush(CATEGORY_SLOT_LENGTH));
+    expect(occurrences.length).toBeGreaterThan(2);
+    expect(occurrences).toContain(categoryOffset);
+    expect(occurrences).toContain(templateHashOffset!);
+    expect(occurrences.some((offset) => offset > templateHashOffset!)).toBe(true);
+  });
+
+  it('refuses a descriptor whose offset does not sit on a reserved push', () => {
+    // The published offsets are what a deployment fills; an offset that misses the reserved push by one byte must
+    // be refused rather than overwriting the opcode next to the slot.
+    const artifact = compile();
+    const script = scriptBytes(artifact);
+    const placeholders = artifact.composition!.placeholders;
+    expect(() => assertPlaceholders(script, { ...placeholders, categoryOffset: placeholders.categoryOffset + 1 }))
+      .toThrow(/not a reserved/);
   });
 });
 

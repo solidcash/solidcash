@@ -120,7 +120,17 @@ function isFoldParameter(name: string): boolean {
 
 /** The value-witness slots a body reads: one past the highest slot its parameters name. */
 export function valueWitnessSlotsOf(fn: FunctionDefinitionNode): number {
-  if (fn.perCallValueWitnessSlots !== undefined) return fn.perCallValueWitnessSlots;
+  return Math.max(fn.perCallValueWitnessSlots ?? 0, valueWitnessSlotsInParameters(fn));
+}
+
+/**
+ * The slots the body's current parameters name.
+ *
+ * The head takes these parameters over, so the count is recorded when they are removed; a later pass that adds one
+ * back - a mapping value read resolved after the frame was stripped - has to raise the count rather than be lost
+ * behind the recorded one.
+ */
+function valueWitnessSlotsInParameters(fn: FunctionDefinitionNode): number {
   let slots = 0;
   for (const parameter of fn.parameters) {
     const match = VALUE_WITNESS_PARAMETER.exec(parameter.name);

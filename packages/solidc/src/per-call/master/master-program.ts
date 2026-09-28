@@ -38,30 +38,53 @@ export function setPerCallMaster(options: PerCallMasterOptionCarrier): void {
 /**
  * Locates the reserved category, address and (when declared) validator-program-hash slots in a finished master.
  *
- * Each slot is a zero-filled push of a fixed length, so its byte pattern is unique in a real script; a script with
- * zero or several matches is refused rather than publishing an offset a fill would write to the wrong place. The
- * category and validator-program-hash slots are both 32-byte zero pushes and so identical; they are told apart by
- * position, because the head emits the category slot first, in its prologue, and the validator hash slot later,
- * inside the frame checks.
+ * The address slot is a 35-byte zero push, a length no other reserved slot uses, so its exact bytes identify it
+ * even after the optimiser has rewritten the script and after a body of its own carries a 32-byte zero push. The
+ * head emits its category slot in the prologue, before that address slot, and its validator-program-hash slot later,
+ * inside the validator arm; those two are both 32-byte zero pushes and so identical to each other and to any 32-byte
+ * zero push a body carries. They are told apart by the address slot's own position: the last 32-byte reserved push
+ * before it is the category slot and the first one after it is the validator-program-hash slot. The head reserves
+ * no other 32-byte slot between them, and a body's own pushes lie either side of the whole head, so a body push can
+ * neither be mistaken for one of the head's own slots nor displace the published offset from it.
+ *
+ * A script with no category slot before the address slot, or - when one is declared - no validator-program-hash
+ * slot after it, is refused rather than publishing an offset a fill would write to the wrong place.
  */
 export function findPlaceholderOffsets(
   script: Uint8Array,
   declaresTemplateHash = false,
 ): { categoryOffset: number; addressOffset: number; templateHashOffset?: number } {
-  const categoryLengthSlots = allOffsets(script, placeholderPush(CATEGORY_SLOT_LENGTH));
-  const expectedCategorySlots = declaresTemplateHash ? 2 : 1;
-  if (categoryLengthSlots.length !== expectedCategorySlots) {
+  const addressOffset = uniqueOffset(script, placeholderPush(ADDRESS_SLOT_LENGTH), 'address');
+  const thirtyTwoByteSlots = allOffsets(script, placeholderPush(CATEGORY_SLOT_LENGTH));
+  const categoryOffset = lastBefore(thirtyTwoByteSlots, addressOffset);
+  if (categoryOffset === undefined) {
     throw new SolidcDiagnosticError(
       'PER_CALL_CODEGEN_UNAVAILABLE',
-      `the compiled master reserves a ${CATEGORY_SLOT_LENGTH}-byte slot ${categoryLengthSlots.length} times, `
-      + `but its descriptor declares ${expectedCategorySlots}`,
-      { matches: categoryLengthSlots, expected: expectedCategorySlots },
+      `the compiled master does not contain a reserved ${CATEGORY_SLOT_LENGTH}-byte category slot before its `
+      + 'address slot',
+      { matches: thirtyTwoByteSlots, addressOffset },
     );
   }
-  const addressOffset = uniqueOffset(script, placeholderPush(ADDRESS_SLOT_LENGTH), 'address');
-  return declaresTemplateHash
-    ? { categoryOffset: categoryLengthSlots[0]!, addressOffset, templateHashOffset: categoryLengthSlots[1]! }
-    : { categoryOffset: categoryLengthSlots[0]!, addressOffset };
+  if (!declaresTemplateHash) return { categoryOffset, addressOffset };
+  const templateHashOffset = thirtyTwoByteSlots.find((offset) => offset > addressOffset);
+  if (templateHashOffset === undefined) {
+    throw new SolidcDiagnosticError(
+      'PER_CALL_CODEGEN_UNAVAILABLE',
+      `the compiled master does not contain a reserved ${CATEGORY_SLOT_LENGTH}-byte validator program hash slot `
+      + 'after its address slot',
+      { matches: thirtyTwoByteSlots, addressOffset },
+    );
+  }
+  return { categoryOffset, addressOffset, templateHashOffset };
+}
+
+/** The greatest offset in `offsets` below `bound`, or undefined when none is. */
+function lastBefore(offsets: readonly number[], bound: number): number | undefined {
+  let last: number | undefined;
+  for (const offset of offsets) {
+    if (offset < bound) last = offset;
+  }
+  return last;
 }
 
 /** Every offset at which `pattern` occurs, in script order. */

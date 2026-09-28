@@ -1093,6 +1093,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallReturnsValue = false;
   /** The size of the head's parked event region: the largest event count any body behind the head emits. */
   private perCallMaxEventCount = 0;
+  /** Long-value slots the head parks, which a body reads its own witness out of. */
+  private perCallValueWitnessCount = 0;
 
   getLocationDataForOptimisation(): FullLocationData {
     return normaliseSourceMapLocationData(this.locationData);
@@ -3107,6 +3109,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const returnsValue = served.some((candidate) => candidate.returnTypes.length > 0);
     this.perCallReturnsValue = returnsValue;
     this.perCallMaxEventCount = tail.tail.maxEventCount;
+    this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
     this.emit([...buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -5833,6 +5836,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Copy necessary context
       subTraversal.perCallReturnsValue = this.perCallReturnsValue;
       subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
+      subTraversal.perCallValueWitnessCount = this.perCallValueWitnessCount;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
       subTraversal.collectionDefinitions = this.collectionDefinitions;
@@ -5925,6 +5929,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
         if (eventRegion > 0) subTraversal.stack.push(eventCountSlotName());
+        // The head parks one slot per long value a body reads, below the event region and above the frame values,
+        // so a body that reads a mapping value's witness finds it where the head left it. Slot 0 is the topmost of
+        // them, the order the head pops them back in.
+        for (let slot = 0; slot < this.perCallValueWitnessCount; slot += 1) {
+          subTraversal.stack.push(valueWitnessSlotName(slot));
+        }
         subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
       }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.

@@ -43,7 +43,7 @@ export function planCreateBuilderNestedBases(params: {
   abiFunction: AbiFunction | undefined;
   lowLevelCallUtxoGroups: readonly ExternalCallUtxoGroup[];
   externalCallUtxoGroups: readonly ExternalCallUtxoGroup[];
-  externalOutStateUtxoGroups: readonly { dataNftUtxos: readonly unknown[] }[];
+  externalOutStateUtxoGroups: readonly { dataNftUtxos: readonly unknown[]; keccakInputs?: readonly unknown[] }[];
   legacyRouteDelegateFn: AbiFunction | undefined;
   returnEmitOutputIndex: number;
   overrides: { blockBase?: number } | undefined;
@@ -111,7 +111,8 @@ export function planCreateBuilderNestedBases(params: {
   }
   timing?.('projected-route-size');
   const packedNestedOutputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
-    + externalOutStateUtxoGroups.reduce((sum: number, g: { dataNftUtxos: readonly unknown[] }) => sum + 1 + g.dataNftUtxos.length, 0)
+    + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length
+      + (g.keccakInputs?.length ?? 0), 0)
     + iterationEntryInputs.length
     // An active caller return is an output-only root-block slot, so it shifts nested output blocks without
     // shifting their input coordinates.
@@ -162,7 +163,8 @@ export function planCreateBuilderNestedBases(params: {
   // Delegate-mode return events are emitted immediately after all ordinary
   // external-call outputs and before the preserved implementation group.
   const externalOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
-    + externalOutStateUtxoGroups.reduce((sum: number, g: { dataNftUtxos: readonly unknown[] }) => sum + 1 + g.dataNftUtxos.length, 0)
+    + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length
+      + (g.keccakInputs?.length ?? 0), 0)
     + iterationEntryInputs.length;
   // Only the *entry* implementation's own return channel occupies a slot before
   // the nested tail. Nested view impls (MarketplaceData.arbitratorRegistered,

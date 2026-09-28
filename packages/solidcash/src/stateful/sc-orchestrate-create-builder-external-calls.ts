@@ -586,7 +586,7 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
     const emitCount = abiFunction?.emits?.length ?? 0;
 
     const outStateOutputCount = externalOutStateUtxoGroups.reduce(
-      (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+      (sum, g) => sum + 1 + g.dataNftUtxos.length + (g.keccakRecreates?.length ?? 0), 0,
     );
     const baseOutputOffset = 1 + requiredNftIndices.length
       + externalReadUtxos.length + outStateOutputCount + externalCallOutputCount + lowLevelCallOutputCount;

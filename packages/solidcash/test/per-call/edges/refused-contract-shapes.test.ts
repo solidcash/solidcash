@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { seededAddress, hexOf } from '../shapes/harness.js';
 
 /**
  * The contract shapes the per-call path refuses by name.
@@ -10,8 +9,6 @@ import { seededAddress, hexOf } from '../shapes/harness.js';
  * assertion is the refusal the shipped code raises: an error code plus the fragment that names the fact. They
  * stand beside the shapes that do compile so the refusal is the named feature and not a syntax error.
  */
-
-const CALLEE = seededAddress('refused shapes callee');
 
 /** The message the compiler raises for a per-call shape it will not emit. */
 function refusal(source: string, options: Record<string, unknown> = {}): string {
@@ -76,17 +73,11 @@ describe('composite values at an entry boundary', () => {
   // An entry that returns a fixed-size array is admitted, not refused: the array is one value the language holds
   // already encoded, so the frame records the words the entry's own `return` built and compares them. The accept
   // and its refusals are machine cases in `solidc/test/per-call/master/composite-return.test.ts`.
-
-  it('refuses a call that passes a run-time struct argument', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' struct Pair { int x; int y; }'
-      + ' interface ICal { function take(Pair p); }'
-      + ' contract Cal { function take(Pair p) { require(p.x > 0); } }'
-      + ` contract Send { function f() { ICal(0x${hexOf(CALLEE)}).take.call(Pair(1, 2)); require(true); } }`;
-    const message = refusal(source);
-    expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('passes a run-time argument whose value the compiler cannot encode into one push');
-  });
+  //
+  // A call that passes a struct argument is admitted too, whether the struct is built from run-time values or
+  // written as a literal: the caller materializes one blob and the site's digest is the wire's. The accept, the
+  // array argument in both spellings, and the one argument type that stays refused (an external function pointer)
+  // are cases in `solidc/test/per-call/master/composed-arguments.test.ts`.
 });
 
 describe('a recovery precompile', () => {

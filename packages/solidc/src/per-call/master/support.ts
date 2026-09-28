@@ -1540,8 +1540,8 @@ function isReadCall(slot: ExternalCallSlot, interfaces: readonly InterfaceNode[]
  *
  * The site computes `SHA256(selector || argument pushes)` from these. A compile-time value has its bytes at
  * compile time, so they are folded in as a constant. A run-time value is one only the running code holds, and the
- * site turns the value on the stack into the push the wire carries, which needs a scalar the code holds as one
- * item; a value with a composite encoding is refused rather than guessed.
+ * site turns the value on the stack into the push the wire carries, which needs a value the code holds as one
+ * item; a value that is not one such item is refused rather than guessed.
  */
 function encodeSiteArguments(
   slot: ExternalCallSlot,
@@ -1561,7 +1561,7 @@ function encodeSiteArguments(
       continue;
     }
     const type = declared[index];
-    if (type === undefined || !isScalarArgumentType(type)) {
+    if (type === undefined || !isEncodableArgumentType(type)) {
       return { reason: `the call to '${slot.functionName}' passes a run-time argument whose value the compiler `
         + 'cannot encode into one push, so the caller cannot compute the digest its record must carry' };
     }
@@ -1583,9 +1583,18 @@ function declaredParameterTypes(
 /**
  * True when a run-time value of `type` reaches the code as one stack item the site can encode.
  *
- * A struct, an array, a mapping, a tuple, a function pointer and a token container are several items or a
- * composite encoding, which this site does not build.
+ * A scalar is one item the site frames from its value. A struct and an array are also one item: the code already
+ * holds each as the flattened blob the wire carries, so the site pushes that blob under its own length. A mapping,
+ * a tuple, a function pointer and a token container are several items or an encoding the running code does not
+ * hold as one value, which this site does not build.
  */
+function isEncodableArgumentType(type: Type): boolean {
+  const resolved = type instanceof ValueType ? type.underlyingType : type;
+  if (resolved instanceof StructType || resolved instanceof ArrayType) return true;
+  return isScalarArgumentType(resolved);
+}
+
+/** True when a value of `type` is a scalar: one stack item that is not itself a composite value. */
 function isScalarArgumentType(type: Type): boolean {
   const resolved = type instanceof ValueType ? type.underlyingType : type;
   if (resolved instanceof ArrayType || resolved instanceof StructType || resolved instanceof MappingType) {

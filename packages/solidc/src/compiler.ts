@@ -158,6 +158,7 @@ import SynthesizeLibraryDelegateCalls from './semantic/SynthesizeLibraryDelegate
 import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
+import LowerStaticLowLevelCalls from './semantic/LowerStaticLowLevelCalls.js';
 import LowerSelfCallMsgData from './semantic/LowerSelfCallMsgData.js';
 import LowerInternalMsgDataContext from './semantic/LowerInternalMsgDataContext.js';
 import LowerInternalMsgSigContext from './semantic/LowerInternalMsgSigContext.js';
@@ -13211,6 +13212,13 @@ function compileResolvedAst(
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
   if (needsExternalCallLowering) ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
+  // A low-level call whose payload names an interface method (`addr.call(abi.encodeCall(I.f, (args)))` or the
+  // selector spelling) denotes the typed call `I(addr).f(args)`. It is rewritten to that call before semantic
+  // analysis, so the per-call convention - which compiles typed calls but refuses the raw calldata form - serves
+  // it as the call its spelling denotes. After LowerSelfLowLevelCalls, so a self-call has already been lowered.
+  if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
+    ast = ast.accept(new LowerStaticLowLevelCalls()) as Ast;
+  }
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.
   if (needsMsgDataContext) ast = ast.accept(new LowerSelfCallMsgData()) as Ast;

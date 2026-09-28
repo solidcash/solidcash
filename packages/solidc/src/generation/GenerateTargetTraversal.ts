@@ -3584,6 +3584,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           );
         }
         // The value the code computes replaces itself with the push the wire carries, so the frame is unchanged.
+        this.markArrayArgumentBlobEncoded(parameter);
         this.visit(parameter);
         this.emit(bytecodeToScript(canonicalPushScript(argument.numeric)), loc);
       }
@@ -3594,6 +3595,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SHA256, loc);
     this.popFromStack();
     this.pushToStack('(value)');
+  }
+
+  /**
+   * Marks an array-literal argument so its value is the one flattened blob the wire carries.
+   *
+   * A call's arguments are encoded where the call is made, and the wire carries an array as a single
+   * length-prefixed blob. An array literal is otherwise lowered as its elements followed by a count, so it is
+   * marked here as an assignment or a return marks it, and nested literals, both arms of a conditional and the
+   * operand of a cast are marked too.
+   */
+  private markArrayArgumentBlobEncoded(expression: ExpressionNode): void {
+    if (expression instanceof ArrayNode) {
+      expression.blobEncoded = true;
+      for (const element of expression.elements) this.markArrayArgumentBlobEncoded(element);
+    } else if (expression instanceof TernaryOpNode) {
+      this.markArrayArgumentBlobEncoded(expression.ifTrue);
+      this.markArrayArgumentBlobEncoded(expression.ifFalse);
+    } else if (expression instanceof CastNode) {
+      this.markArrayArgumentBlobEncoded(expression.expression);
+    }
   }
 
   visitContract(node: ContractNode): Node {

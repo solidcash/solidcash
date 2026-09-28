@@ -9,7 +9,7 @@ import {
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, type CompositionDraft, type CompositionDraftPlan,
+  createComposedDerivationHost, type CompositionDraft, type CompositionDraftPlan,
   type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
 
@@ -20,13 +20,10 @@ import {
  * out of the first record and recomputes the second call's digest from it. The plan's own `Y3` shape — `A.f(id)`
  * computes `fee = B.fee(id)` then calls `C.pay(id, fee)` — settles when `id` is a value the running code holds,
  * which is `tx.inputs.length` below (a user-entered root carries no call data, so it cannot take the parameter the
- * plan writes). Two walls remain and are pinned by name:
- *
- *   - a root entry that takes its own argument is refused by the composer (a user-entered master carries no call
- *     data), so `id` cannot arrive as a parameter;
- *   - a later call that also passes a compile-time argument still stalls: the caller's run-time digest appends the
- *     compile-time value's bytes rather than its wire push (the fold for `7` is the value `0x07`; the wire push is
- *     `0x57`), so no callee call data can hash to the record the caller checks.
+ * plan writes). One wall remains and is pinned by name: a root entry that takes its own argument is refused by the
+ * composer (a user-entered master carries no call data), so `id` cannot arrive as a parameter. A later call that
+ * also passes a compile-time argument settles: the caller's run-time digest folds in the constant's wire push with
+ * its framing byte intact, so the callee's call data hashes to the record the caller checks.
  */
 
 const CLAIMER_LABEL = 'later call claimer';
@@ -201,23 +198,24 @@ describe('a read whose result a later call consumes', () => {
     expect(refusal.message).toMatch(/is entered by a user, so it carries no call data/);
   });
 
-  it('threads the read result into the later call, but a compile-time second argument still stalls', () => {
-    // The composer fills the read's record with the callee's `retval`; what stops the derivation is the caller's
-    // run-time digest for the later call. It appends the literal `7` as the value `0x07`, while the wire push (the
-    // bytes the callee's call data carries and the record's digest is over) is `0x57`. The second call's site is
-    // filled - the run moves on to the segment close - and it is there that the digest is compared with the call
-    // data the callee's unlocking bytecode actually carries, so that is the site the derivation reports.
+  it('settles when the later call also passes a compile-time argument', () => {
+    // The composer fills the read's record with the callee's `retval`, and the later call mixes that run-time fee
+    // with the compile-time `id`. The constant argument's push keeps its framing byte in the caller's digest (the
+    // wire push for `7` is `0x57`, not the value `0x07`), so it equals the record's digest and the callee's call
+    // data, and the derivation settles.
     const built = build('literal');
-    const { host, draft } = hostFor(built);
+    const outcome = composeAndDerive(built.plan, built.artifacts, [ROOT]);
 
-    const claimer = blockOf(draft.unlockingBytecodeOf('claimer-1'));
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.master)).toStrictEqual(['fee-1', 'pay-1', 'claimer-1']);
+
+    const claimer = blockOf(outcome.draft.unlockingBytecodeOf('claimer-1'));
     expect(claimer.calls[0]!.result).toStrictEqual(built.feeRetval);
-
-    const refusal = refusalOf(() => deriveDepthFirst(ROOT, host));
-    expect(refusal.name).toBe('PerCallComposerError');
-    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
-    expect(refusal.message)
-      .toMatch(/master "claimer-1" of Claimer\.f\(\) filled no witness at site 2 \(close of segment 0\)/);
+    // The later call's recorded digest is the one the shipped encoders produce from the pushes the callee carries.
+    expect(claimer.calls[1]!.argsHash)
+      .toStrictEqual(argsHash(built.paySelector, encodeArgumentList([built.feePush, built.idPush])));
   });
 
   it('settles the plan\'s Y3 shape when the id is a run-time value, accepted at every contract input', () => {

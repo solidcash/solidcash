@@ -798,21 +798,19 @@ describe('the token pull and the shapes that stay open', () => {
     }]);
   });
 
-  it('pins a root entry that takes run-time arguments and makes a two-argument call', () => {
-    // The shape this file's append case narrows. The same store and the same two-argument calls settle while the
-    // entry passes constants; the entry's run-time values are themselves read correctly, because a record write fed
-    // by them settles. With the call passing a run-time value, the caller's own digest does not reach the callee's
-    // call data, and the derivation refuses at the segment close — the site where that comparison runs, after the
-    // frame's records have closed.
+  it('settles a root entry that takes run-time arguments and makes a mixed two-argument call', () => {
+    // The entry's two run-time arguments reach the two-argument call, whose other argument is the compile-time tag.
+    // The caller's digest folds in that constant's push with its framing byte intact, so it equals the record's
+    // digest and the callee's call data: the derivation settles and every contract input is accepted.
     const built = buildAppend(RUNTIME_SETUP);
-    let stalled: Error | undefined;
-    try {
-      composeAndDerive(built.plan, built.artifacts, [built.root]);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "impl-1" of RootImpl.run() '
-      + 'filled no witness at site 2 (close of segment 0)');
+    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.master)).toStrictEqual([
+      STORE_MASTERS[0], STORE_MASTERS[1], IMPL_MASTER, PROXY_MASTER,
+    ]);
+    // The proxy's record is recreated with the value the entry computed, through the shipped encoder.
+    expect(bytesToHex(outcome.transaction.outputs[built.recordIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(built.recordAfter));
   });
 });
 

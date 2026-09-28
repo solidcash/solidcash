@@ -3571,7 +3571,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let index = siteArguments.length - 1; index >= 0; index -= 1) {
       const argument = siteArguments[index]!;
       if (argument.kind === 'constant') {
-        this.emit(bytecodeToScript(encodeArgumentPayload(argument.bytes)), loc);
+        // The digest concatenates the push the wire carries, framing byte included, so a compile-time value's push
+        // is left on the stack as data rather than run as a script push: executing it would consume the framing
+        // byte, and the digest would carry the bare value. The run-time branch's canonical fragment leaves its own
+        // push the same way.
+        this.emit(bytecodeToScript(encodeDataPush(encodeArgumentPayload(argument.bytes))), loc);
         this.pushToStack('(value)');
       } else {
         const parameter = node.parameters[index];
@@ -37165,16 +37169,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // If entry exists, verify preservation
       this.emit(Op.OP_IF, locationData);
 
-      // Verify commitment: input commitment == output commitment
+      // Verify commitment: the record keeps its value. A per-call frame reads the view its own segment declares
+      // for the record, exactly as a state-record close does: another frame of the same transaction may have
+      // rewritten the record's input or output, so the transaction's pair is not this frame's view. A frame that
+      // addresses its records directly reads the transaction's own pair.
       this.emitEntryInputIndex(i, locationData, 0);
-      // emitEntryInputIndex pushes 1 untracked value (input index)
-      this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
-      // OP_UTXOTOKENCOMMITMENT pops index, pushes commitment -> 1 untracked value
+      if (this.readsRecordsFromFrame) {
+        this.emitRecordCommitmentRead('in', locationData);
+      } else {
+        // emitEntryInputIndex pushes 1 untracked value (input index)
+        this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+        // OP_UTXOTOKENCOMMITMENT pops index, pushes commitment -> 1 untracked value
+      }
 
-      this.emitEntryOutputIndex(i, locationData, 1); // +1 for the untracked commitment
-      // pushes 1 untracked value (output index) -> 2 untracked values
-      this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
-      // pops index, pushes commitment -> 2 untracked values
+      if (this.readsRecordsFromFrame) {
+        // The declared output coordinate, which the head parked; the frame's own input need not sit beside it.
+        this.emitPerCallEntryIndex('out', i, locationData);
+        this.emitRecordCommitmentRead('out', locationData);
+      } else {
+        this.emitEntryOutputIndex(i, locationData, 1); // +1 for the untracked commitment
+        // pushes 1 untracked value (output index) -> 2 untracked values
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+        // pops index, pushes commitment -> 2 untracked values
+      }
 
       this.emit(Op.OP_EQUALVERIFY, locationData);
       // pops 2 -> 0 untracked values

@@ -34,6 +34,8 @@ import { eventOutput } from '../../../../solidc/test/per-call/master/event-input
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   buildRecoverySideCars,
+  createComposedDerivationHost,
+  deriveComposition,
   layOutMappingWrites,
   layoutTransaction,
   participant,
@@ -43,7 +45,8 @@ import {
   type DraftMaster,
   type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
-import { encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { bytesToSlotValue, encodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import {
@@ -72,11 +75,11 @@ import {
  * allowance down, the payer's balance down, the payee's up), and returns an id the root stores after the call.
  * The escrow and the root each emit.
  *
- * Two shapes the shipped path carries restrict the replica. A call that mixes a compile-time argument with a
- * run-time one stalls the derivation (the pin below), so the token's keys are contract constants and each token
- * call passes only the run-time amount. A frame that writes two mapping nodes, and a read-only frame that reads a
- * node another frame wrote in the same transaction, stall too, so the escrow pulls through three single-key
- * token entries and takes the payee's new balance from the `credit` return rather than a second `balanceOf`.
+ * The escrow keeps each token write to one key. Three shapes the replica's earlier revisions treated as walls now
+ * settle in the cases below: a callee frame that writes two ledger nodes of one collection (its segment declares
+ * one group per target, and the two nodes must form a single sorted list), a call that mixes a compile-time
+ * argument with a run-time one, and a read-only frame that reads a node another frame wrote in the same
+ * transaction (it closes the node against the view its own segment declares).
  *
  * Nothing here supplies an index: the layout places every participant, the token's ledger nodes come from the
  * shipped planner (`planMappingWrite`/`layOutMappingWrites`) at the collection's entry covenant, and the struct
@@ -887,8 +890,23 @@ function buildMixedArgumentPlan(): { readonly plan: CompositionDraftPlan; readon
   return { plan, artifacts: [mixed.artifacts.Root!, mixed.artifacts.Store!, mixed.artifacts.Target!] };
 }
 
-/** A composition whose callee writes two mapping nodes in one execution, each key a contract constant. */
-function buildTwoKeyPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
+/**
+ * A composition whose callee writes two mapping nodes of one ledger in one execution, each key a contract constant.
+ *
+ * The two nodes form one sorted list: the lower slot's node carries the higher slot as its successor and that higher
+ * node is the tail. Both writes are updates against that whole inventory, so the segment declares each target's node
+ * kept in place, one record per target, in the order the body writes them.
+ */
+function buildTwoKeyPlan(): {
+  readonly plan: CompositionDraftPlan;
+  readonly artifacts: readonly Artifact[];
+  readonly node1Index: number;
+  readonly node2Index: number;
+  readonly node1Before: Uint8Array;
+  readonly node2Before: Uint8Array;
+  readonly node1After: Uint8Array;
+  readonly node2After: Uint8Array;
+} {
   const rootLabel = 'fan in with result two key root';
   const storeLabel = 'fan in with result two key store';
   const tokenLabel = 'fan in with result two key token';
@@ -917,10 +935,16 @@ function buildTwoKeyPlan(): { readonly plan: CompositionDraftPlan; readonly arti
   const twoKey = compileAndDeploy(source, { Root: rootLabel, Store: storeLabel, Token: tokenLabel });
   const root = twoKey.contracts.Root!, store = twoKey.contracts.Store!, tokenContract = twoKey.contracts.Token!;
 
-  const node = (slot: Uint8Array, value: bigint): Uint8Array =>
-    encodeEntryCommitment(slot, ZERO_SLOT, encodeIntegerValue(value));
   const slot1 = keyToSlotMulti([key1]);
   const slot2 = keyToSlotMulti([key2]);
+  // The ledger's one sorted list: the lower slot's node points at the higher, and the higher node is the tail.
+  const key1IsLow = bytesToSlotValue(slot1) < bytesToSlotValue(slot2);
+  const lowSlot = key1IsLow ? slot1 : slot2;
+  const highSlot = key1IsLow ? slot2 : slot1;
+  const lowBefore = encodeEntryCommitment(lowSlot, highSlot, encodeIntegerValue(0n));
+  const highBefore = encodeEntryCommitment(highSlot, ZERO_SLOT, encodeIntegerValue(0n));
+  const node1Before = key1IsLow ? lowBefore : highBefore;
+  const node2Before = key1IsLow ? highBefore : lowBefore;
 
   const blocks: CompositionDraftPlan['blocks'] = [
     { contract: 'Root', masters: ['root-1'], validator: { id: VALIDATOR_ID, settles: [] }, state: [] },
@@ -932,11 +956,12 @@ function buildTwoKeyPlan(): { readonly plan: CompositionDraftPlan; readonly arti
   const storeRecord = new Uint8Array(Buffer.from(
     buildPushdataCommitment(twoKey.artifacts.Store!.stateLayout!, { fee }, 0), 'hex'));
 
+  const inventory = [lowBefore, highBefore];
   const write1 = planMappingWrite({
-    keys: [key1], value: fee, inventory: [node(slot1, 0n)], encodeValue: (n) => encodeIntegerValue(n),
+    keys: [key1], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
   });
   const write2 = planMappingWrite({
-    keys: [key2], value: fee, inventory: [node(slot2, 0n)], encodeValue: (n) => encodeIntegerValue(n),
+    keys: [key2], value: fee, inventory, encodeValue: (n) => encodeIntegerValue(n),
   });
   const placements = new Map<string, MappingNodePlacement>([
     [bytesToHex(slot1), { in: indexOf('node1'), out: indexOf('node1') }],
@@ -1004,8 +1029,8 @@ function buildTwoKeyPlan(): { readonly plan: CompositionDraftPlan; readonly arti
       'token-1': { source: masterInput(tokenContract) },
       [VALIDATOR_ID]: validatorInput(root.category),
       storeRecord: stateRecord(store.category, storeRecord, storeRecord, indexOf('store-1'), 0),
-      node1: nodeRecordInput(ledgerLock, tokenContract.category, node(slot1, 0n), write1.written[0]!.after, unlock),
-      node2: nodeRecordInput(ledgerLock, tokenContract.category, node(slot2, 0n), write2.written[0]!.after, unlock),
+      node1: nodeRecordInput(ledgerLock, tokenContract.category, node1Before, write1.written[0]!.after, unlock),
+      node2: nodeRecordInput(ledgerLock, tokenContract.category, node2Before, write2.written[0]!.after, unlock),
       [USER_ID]: userInput(),
     },
     validator: {
@@ -1017,7 +1042,11 @@ function buildTwoKeyPlan(): { readonly plan: CompositionDraftPlan; readonly arti
       redeemScript: validatorFor(root.category).redeem,
     },
   };
-  return { plan, artifacts: [twoKey.artifacts.Root!, twoKey.artifacts.Store!, twoKey.artifacts.Token!] };
+  return {
+    plan, artifacts: [twoKey.artifacts.Root!, twoKey.artifacts.Store!, twoKey.artifacts.Token!],
+    node1Index: indexOf('node1'), node2Index: indexOf('node2'),
+    node1Before, node2Before, node1After: write1.written[0]!.after, node2After: write2.written[0]!.after,
+  };
 }
 
 /** A composition where a read-only frame reads a mapping node another frame wrote in the same transaction. */
@@ -1183,49 +1212,100 @@ describe('the obstacles this flow replica works around', () => {
     expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
   });
 
-  it('pins a call that passes a compile-time address alongside the run-time fee: the derivation stalls', () => {
-    // The shape `root.approve(escrow, fee)` is a call mixing a compile-time address with a run-time value. The
-    // caller's run-time digest for such a call does not reach the callee's call data, so the driver refuses at
-    // the caller's segment close. The flow replica passes only the run-time amount and keeps the key inside the
-    // token.
+  it('settles: a call passes a compile-time address alongside the run-time fee', () => {
+    // A call mixing a compile-time address with a run-time value. The caller's digest folds in the compile-time
+    // argument's push with its framing byte intact, so it equals the record's digest and the callee's call data:
+    // the derivation settles and every contract input is accepted.
     const mixed = buildMixedArgumentPlan();
-    let stalled: Error | undefined;
-    try {
-      composeAndDerive(mixed.plan, mixed.artifacts, [rootOf('Root', 'run', 'root-1')]);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "root-1" of Root.run() '
-      + 'filled no witness at site 2 (close of segment 0)');
+    const outcome = composeAndDerive(mixed.plan, mixed.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('Store', 'getFee'), entryName('Target', 'put'), entryName('Root', 'run'),
+    ]);
+    // The target's record carries both values, in the form the plan declares through the shipped encoder.
+    const targetIndex = participant(outcome.draft.layout, 'targetRecord').index;
+    const written = new Uint8Array(outcome.transaction.outputs[targetIndex]!.token!.nft!.commitment);
+    const expected = mixed.plan.masters.find((m) => m.master === 'target-1')!.segments![0]![0]!.viewOut;
+    expect(bytesToHex(written)).toBe(bytesToHex(expected!));
   });
 
-  it('pins a callee frame that writes two mapping nodes: the derivation stalls at its segment close', () => {
-    // The token's `transferFrom` would write the allowance and both balances in one execution. A callee frame
-    // that writes two ledger nodes stalls the derivation here, which is why the pull is three single-key entries.
+  it('settles: a callee frame writes two mapping nodes of one ledger', () => {
+    // The token's `transferFrom` writes the allowance and both balances in one execution; the same shape here is
+    // two ledger nodes written by one callee frame. The nodes are one sorted list, so the segment declares each
+    // target's node kept in place and the derivation reads both groups back.
     const twoKey = buildTwoKeyPlan();
-    let stalled: Error | undefined;
-    try {
-      composeAndDerive(twoKey.plan, twoKey.artifacts, [rootOf('Root', 'run', 'root-1')]);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "token-1" of Token.twoKeys() '
-      + 'filled no witness at site 0 (close of segment 0)');
+    const outcome = composeAndDerive(twoKey.plan, twoKey.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('Store', 'getFee'), entryName('Token', 'twoKeys'), entryName('Root', 'run'),
+    ]);
+    const written = (index: number): Uint8Array =>
+      new Uint8Array(outcome.transaction.outputs[index]!.token!.nft!.commitment);
+    // Each node carries the value the pull computed, in the form the shipped planner materializes, and the two
+    // written nodes still form one list: the lower slot's node keeps pointing at the higher one.
+    expect(bytesToHex(written(twoKey.node1Index))).toBe(bytesToHex(twoKey.node1After));
+    expect(bytesToHex(written(twoKey.node2Index))).toBe(bytesToHex(twoKey.node2After));
+    expect(bytesToHex(written(twoKey.node1Index)))
+      .not.toBe(bytesToHex(written(twoKey.node2Index)));
+    expect(bytesToHex(twoKey.node1After)).not.toBe(bytesToHex(twoKey.node1Before));
+    expect(bytesToHex(twoKey.node2After)).not.toBe(bytesToHex(twoKey.node2Before));
+    // Independently of the plan: each node is the shipped encoder's node for its key at the value written, keeping
+    // the successor the list held, so the lower slot's node still points at the higher and the higher is the tail.
+    const key1Slot = keyToSlotMulti([new Uint8Array(32).fill(0xb1)]);
+    const key2Slot = keyToSlotMulti([new Uint8Array(32).fill(0xb2)]);
+    const lowIsFirst = bytesToSlotValue(key1Slot) < bytesToSlotValue(key2Slot);
+    const lowSlot = lowIsFirst ? key1Slot : key2Slot;
+    const highSlot = lowIsFirst ? key2Slot : key1Slot;
+    const expected = (slot: Uint8Array): Uint8Array =>
+      encodeEntryCommitment(slot, slot === lowSlot ? highSlot : ZERO_SLOT, encodeIntegerValue(FEE));
+    expect(bytesToHex(written(twoKey.node1Index))).toBe(bytesToHex(expected(key1Slot)));
+    expect(bytesToHex(written(twoKey.node2Index))).toBe(bytesToHex(expected(key2Slot)));
   });
 
-  it('pins a read-only frame that reads a node another frame wrote in the same transaction', () => {
-    // The token's second `balanceOf` would read the balance the pull just moved, but a read-only frame closes its
-    // node against the transaction's own input/output pair, which the write has already moved. The flow replica
-    // therefore takes the payee's new balance from the `credit` return instead of a second read.
+  it('refuses a node output no frame computed, on the same composition', () => {
+    // The two writes are what fixes the nodes. A transaction carrying a different commitment at one node's output
+    // is refused at the validator that settles the ledger.
+    const twoKey = buildTwoKeyPlan();
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: twoKey.artifacts, plan: twoKey.plan,
+    });
+    deriveComposition([rootOf('Root', 'run', 'root-1')], host);
+    const program = draft.programFor('token-1');
+    const wrong = encodeEntryCommitment(
+      keyToSlotMulti([new Uint8Array(32).fill(0xb1)]), ZERO_SLOT, encodeIntegerValue(FEE + 1n),
+    );
+    const transaction = {
+      ...program.transaction,
+      outputs: program.transaction.outputs.map((output, index) => (index === twoKey.node1Index
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: wrong } } }
+        : output)),
+    };
+    const vm = compositionMachine();
+    const state = vm.evaluate({
+      inputIndex: participant(draft.layout, VALIDATOR_ID).index,
+      sourceOutputs: program.sourceOutputs, transaction,
+    });
+    expect(vm.stateSuccess(state)).not.toBe(true);
+  });
+
+  it('settles: a read-only frame reads the node another frame wrote in the same transaction', () => {
+    // The token's second `balanceOf` reads the balance the pull just moved. The read-only frame closes the node
+    // against the view its own segment declares, so the write another frame made in the same transaction does not
+    // hide it: the derivation settles, every contract input is accepted, and the read returns the written value.
     const readAfterWrite = buildReadAfterWritePlan();
-    let stalled: Error | undefined;
-    try {
-      composeAndDerive(readAfterWrite.plan, readAfterWrite.artifacts, [rootOf('Root', 'run', 'root-1')]);
-    } catch (error) {
-      stalled = error as Error;
-    }
-    expect(stalled?.message).toBe('PER_CALL_DERIVATION_STALLED: master "read-1" of Token.read() '
-      + 'filled no witness at site 0 (close of segment 0)');
+    const outcome = composeAndDerive(readAfterWrite.plan, readAfterWrite.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('Store', 'getFee'), entryName('Token', 'write'), entryName('Token', 'read'),
+      entryName('Root', 'run'),
+    ]);
+    // The node's output carries the value the write computed, in the shipped encoder's form.
+    const nodeIndex = participant(outcome.draft.layout, 'node').index;
+    const written = new Uint8Array(outcome.transaction.outputs[nodeIndex]!.token!.nft!.commitment);
+    const slot = keyToSlotMulti([new Uint8Array(32).fill(0xb1)]);
+    expect(bytesToHex(written)).toBe(bytesToHex(node(slot, FEE)));
+    // The read frame returns the value it read from its declaration; the head holds the body's answer to it.
+    expect(outcome.draft.blockOf('read-1').retval).toStrictEqual(encodeResultList([encodeIntegerValue(FEE)]));
   });
 
   it('pins a recovery whose digest the body computes: the composer cannot read it from the arguments', () => {

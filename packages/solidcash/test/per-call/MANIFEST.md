@@ -36,13 +36,14 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 91 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 66 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 27 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 38 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 29 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 
-Total: 1167 tests (115 + 405 + 647), all passing. The two package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 647 is the fourteen rows above
+Total: 1186 tests (115 + 405 + 666), all passing. The two package totals are full-config runs of
+`vitest.per-call.config.ts`: `solidc` 405 is the four rows above it, and `solidcash` 666 is the fifteen rows above
 it. A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
 place: before adding a refusal, check whether `validator/script.test.ts`, `master-program.test.ts` or the file of
 the shape it mutates makes it.
@@ -160,7 +161,15 @@ and the binding of a delegate callee to the implementation the record names by `
   asserted unchanged, a refusing entry reports the machine's objection, and the validator reference's own verdict on
   a read-only root is pinned. `nested.test.ts` drives a read whose root calls another contract's `view` entry: the
   callee's value is learned first and written into the caller's call record, both frames and the record accept, and
-  the shipped derivation completes callee first. `nested-reads.test.ts` drives the same shape through the module
+  the shipped derivation completes callee first. `time-gated-challenge.test.ts` is a flow replica: a root whose
+  judge reads the escrow's recorded payment block in a read-only frame, gates on a strictly later block and calls the
+  escrow's own entry — every contract input accepted, the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the payment's
+  own block pinned, and the same composition over one data-NFT state record refused at the reading frame's own close
+  (pinned, with the two commitments the failing close compared). `revert-partway.test.ts` is the other one: a root
+  whose own check fails after an earlier call succeeded, a nested callee's failing check reported as the innermost
+  frame with its source line, and a revert with a declared error, whose arguments the compiler type-checks and does
+  not evaluate (its own warning is asserted).
+  `nested-reads.test.ts` drives the same shape through the module
   itself: the caller names the other contracts in `externals`, a view that reads a view returns the composed value
   with nothing broadcast, a three-contract chain returns the leaf's value, a nested refusal reports the innermost
   callee frame and builds nothing, and an entry calling a contract the caller did not supply is refused by name.
@@ -200,6 +209,12 @@ and the binding of a delegate callee to the implementation the record names by `
   checker and by the shipped validator program). The validator
   program's per-rule refusals are `validator/script.test.ts`'s, one per rule it emits; the table below maps each
   attack to the file that refuses it.
+- **`solidcash/test/per-call/primitives/`** — one case per primitive a flow shape is made of, driven on the shipped
+  path: a `pure` callee reached as a `STATIC` frame that takes a fixed-size array argument and returns one (the
+  caller's call record carries the result and it decodes back through the shipped decoder, while a fixed-size array
+  argument built at run time is refused by name), `uint16[2]` / `uint16[4]` / `int16[2]` arguments and a computed
+  `uint16[5]` return in and out, and one contract's two entries each emitting an event in one transaction, both read
+  back through the shipped receipt.
 - **`solidcash/test/per-call/edges/`** — one dedicated test per row of the spec's edge-case table (section 23) that
   the shipped language subset can express: a record written on both sides of a call, a reentrancy guard crossed by
   re-entry, `tx.origin` and `msg.sender` authority on a callee, events above the commitment size emitted by a

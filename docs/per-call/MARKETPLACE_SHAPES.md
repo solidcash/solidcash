@@ -41,32 +41,32 @@ re-read at `900cf00ee`. A row settles only in its own shape: a narrower variant 
 | --- | --- | --- | --- |
 | P1 | Proxy entry: `CALL` to the proxy, `DELEGATE` into the implementation (toy Y4, plan F5) | MS1-MS8 | settles. The forwarded hop, the state write it inherits, appends through the proxy and a registration-style mapping batch each derive and are accepted (`toys/proxied-entry.test.ts`, `toys/proxied-appends.test.ts`, `shapes/proxied-registration.test.ts`) |
 | P2 | Proxy-to-proxy call: the callee sees `msg.sender` = the calling proxy's address and gates on it | MS2-MS7 | none |
-| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | partial. A `for` loop calling one callee twice, each turn rewriting one scalar record, settles through the shipped composer: the published site is resumed once per turn and the callee's record chains across the turns (`edges/repeated-callee.test.ts`). Toy Y1's shape is still refused: separate call statements to one callee ("the call to 'append' runs repeatedly"), each appending to one array and emitting. Three turns exceed the caller's own operation-cost budget (2,184,834 of 2,184,800 units), which `publishJobPost`'s 8 calls from one master will hit unless the caller's input gets headroom as the validator's did |
+| P3 | Repeated calls to one callee from one entry, including appends to one record entry (toy Y1) | MS2-MS7 | settles. One entry appending to one log three times publishes one call site per call, so each append runs on its own master: the run is laid out growing from an empty log, each frame's declaration chains from the run the frame before it wrote, the per-append events settle beside a run the transaction creates, and a run whose declared close is not the one the frame computed is refused (`toys/same-entry-appends.test.ts`). What the density of a longer run does is P4's question |
 | P4 | Calls in data-dependent loops with k > 1, a `STATIC` read per iteration, a revert mid-loop | MS2, MS4, MS7 | partial. A loop's calls compile for any trip count and the machine accepts 0 to 3 records against one program (`master/looped-call-entry.test.ts`); two turns derive and settle (P3's case). A body that reads its own records and repeats is refused by name; a `STATIC` read per iteration and a revert mid-loop are untested |
-| P5 | One call's result as another call's argument (toy Y3) | MS3 | refused today |
-| P6 | Fan-in: a second caller's frame reads the record the first caller's frame wrote (toy Y6) | MS3 | compiles; refused by the derivation (V7 / R2) |
-| P7 | Re-entry with intermediate state: a `STATIC` read-back of a write made higher up (toy Y2) | MS4, MS7 | none |
+| P5 | One call's result as another call's argument (toy Y3) | MS3 | settles (`toys/result-into-later-call.test.ts`): the composer fills the caller's call record from the callee's declared `retval` and the shape derives callee-first with every input accepted. Pinned in the toy: a user-entered root cannot take the parameter the shape writes, and a later call that also passes a compile-time argument stalls on the caller's own digest |
+| P6 | Fan-in: a second caller's frame reads the record the first caller's frame wrote (toy Y6) | MS3 | settles (`toys/fan-in.test.ts`): the frame that writes the allowance closes against the value its own body computes, the pulling frame reads that value and closes against its own, every frame and the validator are accepted, and a pull whose declared close is not the one the frame computed is refused |
+| P7 | Re-entry with intermediate state: a `STATIC` read-back of a write made higher up (toy Y2) | MS4, MS7 | settles (`toys/reentry.test.ts`): the record write, the call, the re-entered read-back, two payments through the token and the emitting return derive callee-first with every contract input accepted; the reading frame resolves the view its own segment declares |
 | P8 | A storage guard crossed by re-entry (unguarded `release`, guarded `setClaimed`) | MS4, MS7 | chains across a call split (`edges/reentrant-guard`) |
-| P9 | A pure external function as a `STATIC` frame | MS4, MS7 | read-only frames settle (`master/read-only-frame`); pure with array arguments untested |
+| P9 | A pure external function as a `STATIC` frame | MS4, MS7 | settles: a `pure` callee with a fixed-size array argument is reached as a `STATIC` frame, the caller's call record carries the callee's result and the array decodes back through the shipped decoder; a fixed-size array argument built at run time is refused by name (`primitives/pure-static-frame.test.ts`) |
 | P10 | A write after an external call | MS3, MS5, MS7 | settles (`edges/writes-after-call`) |
 | P11 | `tx.origin` authorizing a nested call | MS5, MS7 | settles one hop down (`edges/nested-authority`) |
 | P12 | `msg.sender` peer guards on deployment-derived addresses | MS2-MS7 | settles one hop down (`edges/nested-authority`) |
 | P13 | Struct arguments with dynamic members (`string`, `bytes`) | MS2, MS3 | refused by name |
 | P14 | Struct returns with a `string` | MS4, MS5, MS7, MS8 | refused by name |
-| P15 | Fixed-array arguments (`uint16[2]`, `uint16[4]`, `int16[2]`, `uint16[5]`) and returns (`uint16[5]`, `uint256[5]`) | MS4, MS7 | returns admitted at `362cb13eb`; arguments untested |
-| P16 | A payable entry called with value 0 | MS3 | untested |
+| P15 | Fixed-array arguments (`uint16[2]`, `uint16[4]`, `int16[2]`, `uint16[5]`) and returns (`uint16[5]`, `uint256[5]`) | MS4, MS7 | settles: `uint16[2]`, `uint16[4]` and `int16[2]` are driven in and out (the callee requires the elements the caller passed and the caller decodes the result it stored) and a `uint16[5]` return is computed by the callee from a scalar argument; a fixed-size array argument built at run time is refused by name (`primitives/fixed-array-calls.test.ts`; returns admitted at `362cb13eb`) |
+| P16 | A payable entry called with value 0 | MS3 | not served: a value send is refused at compile by name (`edges/refused-contract-shapes.test.ts`), so no composition carries one |
 | P17 | Low-level token calls: `abi.encodeCall` / `encodeWithSelector`, `bool` return, revert re-raise, `code.length`, `address(this).balance`; OpenZeppelin 5.0.2 and 4.9.3 (plan C12) | MS2-MS7 | refused by name |
 | P18 | `ecrecover` returning address 0 for invalid input (plan C13) | MS2, MS3 | refused by name |
 | P19 | A mapping-of-array append that rewrites the whole array; long struct values in chunks; one version per writing frame (R4, R5) | MS2-MS7 | partial (R5) |
-| P20 | Sorted-entry insert, update and delete of one key in one transaction (toy Y5) | MS2 (whitelist) | refused today |
+| P20 | Sorted-entry insert, update and delete of one key in one transaction (toy Y5) | MS2 (whitelist) | settles (`toys/sorted-entry-lifecycle.test.ts`): insert, update then delete of one key across three calls in one transaction, each later frame carrying on from the view the one before it left, and a frame whose declared close is not the one its body computed refused |
 | P21 | Nested mapping `mapping(uint256 => mapping(address => bool))` | MS2 | settles (`7273d613e`) |
 | P22 | `string => string` mapping set and delete | MS1 | refused by name |
 | P23 | Events above 128 bytes from nested frames | all | settles (`edges/events-across-frames`) |
-| P24 | Several events of one contract in one transaction, from several frames | MS2-MS7 | two events settle from one frame |
+| P24 | Several events of one contract in one transaction, from several frames | MS2-MS7 | settles: one contract's two entries each emit an event in one transaction, both listed at their own trailing outputs and both commitments read back through the shipped receipt (`primitives/several-events.test.ts`) |
 | P25 | One contract entered up to 9 times; about 24 masters per transaction (pools, E12) | MS4, MS7 | untested at that size |
 | P26 | Depth 4 below the root, plus proxy hops | MS4, MS7 | a 4-contract chain settles (`edges/deep-chain`) |
-| P27 | The innermost revert reported after state-changing calls (E3) | MS10 | refused by the derivation, not reported |
-| P28 | `STATIC` root reads off-chain, including reverting views (E4) | MS8 | none |
+| P27 | The innermost revert reported after state-changing calls (E3) | MS10 | the innermost refusing frame is reported with its source line, reason and the custom error the artifact publishes (`reverts/innermost-revert.test.ts`; E3 landed). The compiler does not evaluate a custom error's argument values, which the report says rather than inventing them |
+| P28 | `STATIC` root reads off-chain, including reverting views (E4) | MS8 | settles: a `STATIC` root read over a contract's live records, nested reads into another contract's views, and a refusing view reported as the innermost refusal (`reads/reads.test.ts`, `reads/nested.test.ts`, `reads/nested-reads.test.ts`) |
 | P29 | CREATE-predicted, circular addresses (F3) | MS9 | partial, as of `867cafe09`. The four escrow contracts deploy through the shipped factory path at their real addresses and are referenced by the next deployment; the fixture stops before the proxy half, so the prediction is exercised but not yet asserted (the assertion is F7's) |
 
 Movement since that reading, per the plan's Log: a frame that keeps a data-NFT record and writes a mapping batch now
@@ -74,7 +74,14 @@ settles, as a user-entered root and behind a proxy hop — the batch groups are 
 records, every state and entry coordinate is based on the input the head parked as the records' owner, and the proof
 operand a derivation leaves is measured from that same input. P1's status above changes on it, and **MS1's replica
 settles in its own shape**: the outer hop of a user call into a proxied contract, the state write the implementation
-inherits, two appends through the proxy with their events, and a registration-style mapping batch.
+inherits, two appends through the proxy with their events, and a registration-style mapping batch. The primitives
+P3, P5, P6, P7, P9, P15, P20, P24, P27 and P28 were re-read against the tree and their statuses follow the tests
+that hold them. Two further flow shapes have neutral replicas: **MS6** (a root whose judge reads the escrow's
+recorded payment block `STATIC`, gates on a strictly later block, then calls the escrow's own entry — accepted at
+every contract input, with the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the payment's own block pinned) and
+**MS10** (a root whose own check fails after an earlier call succeeded, a nested callee's failing check reported as
+the innermost frame, and a revert with a declared error carrying arguments, with the compiler's own warning that the
+arguments are not evaluated pinned beside it).
 | P30 | `deployProxy` in three transactions, `initialize` through the proxy (F5, F6) | MS9 | refused by name at the fixture's own step: `upgrades.deployProxy(Marketplace, ...)` stops with `PerCallGenesisError: the constructor of "MarketplaceV1" emits an event, which this deployment has no plan for`. The proxy shapes themselves are still refused at compile (P1) |
 
 ## 3. Test mechanics the titles also need (not shapes)

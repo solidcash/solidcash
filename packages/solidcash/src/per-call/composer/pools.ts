@@ -40,6 +40,11 @@ export class MasterPool {
     return this.masterIds.slice(0, this.cursor);
   }
 
+  /** Returns the pool to its funded order, releasing every reservation it holds. */
+  public reset(): void {
+    this.cursor = 0;
+  }
+
   /** Reserves one more master for an entry into this contract, refusing when the pool cannot cover it. */
   public takeEntry(): string {
     const needed = this.cursor + 1;
@@ -78,6 +83,11 @@ export class ValidatorPool {
     this.cursor += 1;
     return validator;
   }
+
+  /** Returns the pool to its funded order, releasing every reservation it holds. */
+  public reset(): void {
+    this.cursor = 0;
+  }
 }
 
 /** Every contract's pools, as one reservation ledger. */
@@ -101,6 +111,15 @@ export class CompositionPools {
     const empty = new MasterPool(contract, []);
     this.masterPools.set(contract, empty);
     return empty;
+  }
+
+  /**
+   * Returns every pool to the state its inventory describes, so a ledger kept across a reload of the chain a
+   * composition was planned against starts again from the deployment's own order.
+   */
+  public reset(): void {
+    for (const pool of this.masterPools.values()) pool.reset();
+    for (const pool of this.validatorPools.values()) pool.reset();
   }
 
   /** A contract's validator pool. A contract that was never funded has an empty one. */

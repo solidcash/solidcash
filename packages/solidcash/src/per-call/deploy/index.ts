@@ -11,3 +11,4 @@ export * from './create-lookahead.js';
 export * from './genesis.js';
 export * from './stateful.js';
 export * from './records.js';
+export * from './reload.js';

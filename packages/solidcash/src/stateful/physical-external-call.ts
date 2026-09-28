@@ -6,6 +6,45 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { FunctionArgument } from '../Argument.js';
 import type { Utxo } from '../interfaces.js';
+import { addressToLockScript } from '../utils.js';
+import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+
+/** Resolve an explicit target to one physical participant; never guess through an ambiguous address. */
+export function uniqueParticipantIndexForTarget(
+  targetLockingBytecodeHex: string | undefined,
+  candidates: readonly { index: number; lockingBytecodeHexes: readonly string[] }[],
+): number | undefined {
+  if (targetLockingBytecodeHex === undefined) return undefined;
+  const target = targetLockingBytecodeHex.toLowerCase();
+  const matches = candidates.filter((candidate) => candidate.lockingBytecodeHexes.some(
+    (lockingBytecode) => lockingBytecode.toLowerCase() === target,
+  ));
+  return matches.length === 1 ? matches[0].index : undefined;
+}
+
+export function participantGroupForTarget(
+  groups: readonly ExternalCallUtxoGroup[], candidateIndices: readonly number[],
+  targetLockingBytecodeHex: string | undefined,
+): number | undefined {
+  return uniqueParticipantIndexForTarget(targetLockingBytecodeHex, candidateIndices.map((index) => {
+    const group = groups[index];
+    const locks = new Set<string>();
+    const addHex = (value: unknown): void => {
+      if (typeof value === 'string' && /^(?:[0-9a-f]{2})+$/i.test(value)) locks.add(value.toLowerCase());
+    };
+    const addAddress = (value: unknown): void => {
+      if (typeof value !== 'string') return;
+      try { locks.add(binToHex(addressToLockScript(value))); } catch { /* not an address */ }
+    };
+    addHex(group?.externalContract?.inner?.lockingBytecode);
+    addAddress(group?.externalContract?._logicalAddress);
+    addAddress(group?.externalContract?.target);
+    const unlocker = group?.masterUtxo && 'unlocker' in group.masterUtxo
+      ? group.masterUtxo.unlocker : undefined;
+    if (unlocker) addHex(binToHex(unlocker.generateLockingBytecode()));
+    return { index, lockingBytecodeHexes: [...locks] };
+  }));
+}
 
 /**
  * Map `__internal__externalCallSelector` / `__internal__externalCallSelectorN` onto an ABI slot.

@@ -16,10 +16,14 @@ import {
   isSdkResolvedParticipantStorageWitness,
   nestedProxyImplementationInputIndex,
   physicalExternalCallSelectorHex,
+  participantGroupForTarget,
   selectorParamSlot,
   vmapBatchWitnessFallback,
 } from './physical-external-call.js';
 import { selectVisibleCallArguments } from './route-expression-key.js';
+import {
+  addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
+} from './mapping-key-lookup.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
@@ -701,6 +705,7 @@ export async function fixCreateBuilderDelegateUnlockers(
           const callIndex = delegateCallInputWitnessIndex++;
           const lowLevelCall = (bFunc as AbiFunction).lowLevelCalls?.[callIndex] as {
             target?: { kind?: string; name?: string };
+            targetSource?: { kind?: string; paramIndex?: number };
           } | undefined;
           const targetName = lowLevelCall?.target?.name;
           const rawSlot = targetName === undefined ? -1 : ((bFunc as AbiFunction).externalCalls ?? [])
@@ -709,13 +714,21 @@ export async function fixCreateBuilderDelegateUnlockers(
           const typedSlot = targetName === undefined ? -1 : ((bFunc as AbiFunction).externalCalls ?? [])
             .findIndex((call) => call.addressParam === targetName);
           const targetSlot = rawSlot >= 0 ? rawSlot : typedSlot;
+          const targetLock = lowLevelCall?.targetSource?.kind === 'forward'
+            && lowLevelCall.targetSource.paramIndex !== undefined
+            ? addressArgumentLockingBytecodeHex(visibleFunctionArgs[lowLevelCall.targetSource.paramIndex])
+            : targetSlot < 0 ? undefined
+              : externalCallTargetSourceLockingBytecodeHex(bFunc as AbiFunction, targetSlot, visibleFunctionArgs);
+          const explicitTarget = participantGroupForTarget(
+            externalCallUtxoGroups, nestedGroups, targetLock,
+          );
           const tokenNested = lowLevelCall?.target?.kind === 'computed'
             ? computedStateWriterGroupIndex(
               externalCallUtxoGroups, nestedGroups,
               (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
             ) : undefined;
-          const nestedGroup = tokenNested !== undefined ? tokenNested
-            : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex];
+          const nestedGroup = explicitTarget ?? (tokenNested !== undefined ? tokenNested
+            : targetSlot >= 0 ? nestedGroups[targetSlot] : nestedGroups[callIndex]);
           const callInputIndex = BigInt(nestedGroup === undefined
             ? masterInputIndex + 1 + group.dataNftUtxos.length
             : nestedMasterIndices[nestedGroup]);

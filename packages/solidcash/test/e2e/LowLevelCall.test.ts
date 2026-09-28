@@ -70,7 +70,8 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       expect(dynamicCallFn!.externalCalls!.length).toBe(1);
       expect(dynamicCallFn!.externalCalls![0].interfaceName).toBe('ICounter');
       expect(dynamicCallFn!.externalCalls![0].functionName).toBe('increment');
-      expect(dynamicCallFn!.externalCalls![0].callMode).toBe('call');
+      // Typed interface .call() uses regular selector-verified dispatch; raw address.call(bytes) is opaque.
+      expect(dynamicCallFn!.externalCalls![0].callMode).toBeUndefined();
 
       const readOnlyCallFn = art.abi.find((f) => f.name === 'readOnlyCall');
       expect(readOnlyCallFn).toBeDefined();
@@ -142,7 +143,7 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       //   Input[2]: Counter master
       //   Input[3]: Counter data NFT
 
-      const unlockCaller = contractCaller.unlock.dynamicCall(2n);
+      const unlockCaller = contractCaller.unlock.dynamicCall();
       const unlockCounter = contractCounter.unlock.increment();
 
       const stb = new StatefulTransactionBuilder({
@@ -218,7 +219,7 @@ describe('Low-Level Call Primitives (.call and .staticcall)', () => {
       const masterCaller = callerGenesis.utxos[0];
       const dataNftCaller = callerGenesis.utxos[1];
 
-      const unlockCaller = contractCaller.unlock.readOnlyCall(2n);
+      const unlockCaller = contractCaller.unlock.readOnlyCall();
       const unlockCounter = contractCounter.unlock.increment();
 
       const stb = new StatefulTransactionBuilder({

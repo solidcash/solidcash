@@ -12,9 +12,13 @@ import {
   externalReturnParamSlot,
   nestedProxyImplementationInputIndex,
   physicalExternalCallSelectorHex,
+  participantGroupForTarget,
   selectorParamSlot,
 } from './physical-external-call.js';
 import { selectVisibleCallArguments } from './route-expression-key.js';
+import {
+  addressArgumentLockingBytecodeHex, externalCallTargetSourceLockingBytecodeHex,
+} from './mapping-key-lookup.js';
 import type { MessageBusRuntimeAbiFunction } from './sc-batch-raw.js';
 import { logicalReturnGroupIndex } from './value-chunk-geometry.js';
 import {
@@ -355,6 +359,7 @@ export async function completeCreateBuilderNestedUnlockers(
         const callIndex = callInputWitness[1] === '' ? 0 : Number(callInputWitness[1]);
         const lowLevelCall = childFn.lowLevelCalls?.[callIndex] as {
           target?: { kind?: string; name?: string };
+          targetSource?: { kind?: string; paramIndex?: number };
         } | undefined;
         const delegateGroupIndex = child.delegateCallGroupIndex;
         const nestedGroups = childNestedGroups;
@@ -362,13 +367,24 @@ export async function completeCreateBuilderNestedUnlockers(
         const targetSlot = targetName === undefined ? -1 : (childFn.externalCalls ?? [])
           .findIndex((call) => call.addressParam === targetName
             || call.addressParam?.endsWith(`_${targetName}`));
+        const visibleArgs = child.compilerRoute?.args ?? selectVisibleCallArguments(
+          childFn.inputs, child.logicalFunctionArgs, child.functionArgs,
+        );
+        const targetLock = lowLevelCall?.targetSource?.kind === 'forward'
+          && lowLevelCall.targetSource.paramIndex !== undefined
+          ? addressArgumentLockingBytecodeHex(visibleArgs[lowLevelCall.targetSource.paramIndex])
+          : targetSlot < 0 ? undefined
+            : externalCallTargetSourceLockingBytecodeHex(childFn, targetSlot, visibleArgs);
+        const explicitTarget = participantGroupForTarget(
+          externalCallUtxoGroups, nestedGroups, targetLock,
+        );
         const computedTarget = lowLevelCall?.target?.kind === 'computed'
           ? computedStateWriterGroupIndex(
             externalCallUtxoGroups, nestedGroups,
             (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.messageBusConvention,
           )
           : undefined;
-        const nestedGroupIndex = computedTarget
+        const nestedGroupIndex = explicitTarget ?? computedTarget
           ?? (targetSlot >= 0 ? childNestedGroupIndexForSlot(targetSlot) : nestedGroups[callIndex]);
         if (nestedGroupIndex === undefined) return -1n;
         const nested = externalCallUtxoGroups[nestedGroupIndex];

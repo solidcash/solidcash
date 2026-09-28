@@ -30,6 +30,11 @@ export interface MaterializedNftUnlockerReconcileHost {
   ): void;
 }
 
+// Manually assembled transaction builders can carry a Contract directly; SDK-composed groups carry its
+// StatefulContract wrapper. Both identify the same covenant, but only the latter has an `inner` property.
+const groupContract = (group: ExternalCallUtxoGroup): any =>
+  group.externalContract?.inner ?? group.externalContract;
+
 /**
  * Rebind write-path entry NFT unlockers of `categoryId` to `masterInputIndex`.
  * Entry inputs may live outside their owner's fixed participant block, so a
@@ -84,11 +89,15 @@ export function reconcileMaterializedDataNftUnlockers(
       const outputIndexParam = dataNft.unlocker.abiFunction.inputs
         .findIndex((input) => input.name === 'outputIndex');
       const outputIndex = outputIndexParam < 0 ? undefined : dataNft.unlocker.params[outputIndexParam];
+      const contract = groupContract(group);
+      if (!contract?.addressType) {
+        throw new Error(`Cannot rebind data NFT for participant ${group.categoryId} without its contract`);
+      }
       const unlocker = flag === 3n && typeof outputIndex === 'bigint'
         ? createRelocatedDataNftUnlocker(
-          group.externalContract.inner, masterInputIndex, Number(outputIndex), group.categoryId,
+          contract, masterInputIndex, Number(outputIndex), group.categoryId,
         )
-        : createDataNftUnlocker(group.externalContract.inner, masterInputIndex, group.categoryId);
+        : createDataNftUnlocker(contract, masterInputIndex, group.categoryId);
       const rebound = { ...dataNft, unlocker } as UnlockableUtxo;
       const matches = (candidate: Utxo | undefined): boolean => candidate !== undefined
         && candidate.txid.toLowerCase() === dataNft.txid.toLowerCase() && candidate.vout === dataNft.vout;
@@ -125,8 +134,8 @@ export function reconcileMaterializedEntryNftUnlockers(
       if (group.categoryId !== categoryId) return [];
       const delegateGroup = group.delegateCallGroupIndex === undefined
         ? undefined : host.lowLevelCallUtxoGroups[group.delegateCallGroupIndex];
-      const entryContract = delegateGroup?.externalContract ?? group.externalContract;
-      if (!entryContract?.inner) return [];
+      const entryContract = delegateGroup ? groupContract(delegateGroup) : groupContract(group);
+      if (!entryContract?.addressType) return [];
       return (group.stateLayout?.collections ?? []).flatMap((collection) => (
         typeof collection.signature === 'string'
           ? [{ entryContract, signature: collection.signature }]
@@ -144,7 +153,7 @@ export function reconcileMaterializedEntryNftUnlockers(
       const lockingBytecode = input.unlocker.generateLockingBytecode();
       for (const { entryContract, signature } of descriptors) {
         const candidate = createEntryNftUnlocker(
-          entryContract.inner, masterInputIndex, categoryId, signature,
+          entryContract, masterInputIndex, categoryId, signature,
         );
         if (!binsAreEqual(candidate.generateLockingBytecode(), lockingBytecode)) continue;
         changed = true;
@@ -176,7 +185,11 @@ export function reconcileMaterializedSatoshiContainerUnlockers(
       const master = params.findIndex((param) => param.name === 'masterInputIndex');
       if (flag < 0 || master < 0 || input.unlocker.params[flag] !== 1n
         || input.unlocker.params[master] === BigInt(masterIndex)) continue;
-      const unlocker = createSatoshiContainerUnlocker(group.externalContract.inner, masterIndex, group.categoryId);
+      const contract = groupContract(group);
+      if (!contract?.addressType) {
+        throw new Error(`Cannot rebind satoshi container for participant ${group.categoryId} without its contract`);
+      }
+      const unlocker = createSatoshiContainerUnlocker(contract, masterIndex, group.categoryId);
       if (!binsAreEqual(unlocker.generateLockingBytecode(), input.unlocker.generateLockingBytecode())) continue;
       const rebound = { ...input, unlocker };
       group.blockInputs![slot.offset] = rebound;

@@ -781,6 +781,7 @@ import {
 export { mergePublishedMessageBusHandlerMetadata };
 import { runtimeEntryAliasOwners } from './sorted-batch-activity.js';
 export { runtimeEntryAliasOwners };
+export { uniqueParticipantIndexForTarget } from './physical-external-call.js';
 export {
   assertAcyclicExternalCallPath,
   visitExpandingExternalCallGroups,

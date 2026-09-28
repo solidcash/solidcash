@@ -9516,8 +9516,10 @@ function synthesizeMessageBusRoute(
             return descend(witness, 0);
           };
           const requireAll = leaves.map(requireLeafAll).join(' ');
-          return fn.modifiers.includes(FunctionModifier.UPGRADE) || graphTailHandlers.has(fn)
-            ? requireAll : `if (__message_bus_version == 2) { ${requireAll} }`;
+          // The published transactionSignaturePolicy is independent of batch-row version. V1 rows in a mixed
+          // upgrade graph can carry ordinary signed leaves; gating their hash type on V2 lets SIGHASH_NONE
+          // authorize a transaction whose outputs the adjacent upgrade does not bind.
+          return requireAll;
         }).join(' ')
         : kernelV2SignatureFence && fn.messageBusUsesTransactionSignature === true
           ? '__message_bus_signature_count = __message_bus_signature_count + 1;' : '';

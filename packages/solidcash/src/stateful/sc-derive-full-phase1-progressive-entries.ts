@@ -175,6 +175,14 @@ export function deriveFullPhase1ProgressiveEntries(
       for (const [outputIndex, commitment] of revealed) {
         const previous = bEntryMap.get(outputIndex);
         if (hexToBin(commitment).length < 64 || /^0+$/.test(commitment)) continue;
+        // A provisional PredOut witness can still point at the fixed NEW slot. Its later P' comparison then
+        // exposes the predecessor commitment at that same output index, even though the compiler plan places
+        // P' in the trailing slot. Do not let that second observation erase the already learned NEW node.
+        if (group.plannedEntryInserts?.some((planned) => (
+          planned.outputBlockSlot !== planned.blockSlot
+          && outputIndex === bOutputBase + planned.blockSlot
+          && planned.commitment?.toLowerCase() === commitment.toLowerCase()
+        ))) continue;
         // bEntryMap records what an authenticated probe observed; it does not prove the current builder
         // has materialized those bytes. In particular, the initial trace can reveal a complete NEW node
         // which an earlier relative-slot seed records while physical compaction still leaves P' at that

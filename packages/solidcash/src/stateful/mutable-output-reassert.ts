@@ -112,7 +112,10 @@ export function reassertBatchPredecessorOutputsAtDeclaredSlots(
 
     const replacement = source >= 0 ? outputs[source] : {
       to: predecessor.lockingBytecode,
-      amount: occupant?.amount && occupant.amount > 0n ? occupant.amount : 1000n,
+      // A token-free structural funder is value backing, not a 1:1 predecessor recreation. Taking its entire
+      // amount for P' can leave zero fee even though the transaction has ample funding; conservation returns
+      // the remaining sats as change after this balanced 1000-sat output is installed.
+      amount: occupant?.token && occupant.amount && occupant.amount > 0n ? occupant.amount : 1000n,
       token: {
         amount: 0n,
         category: categoryId,

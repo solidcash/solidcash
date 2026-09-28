@@ -18,16 +18,22 @@ The kernel is a runtime row loop with reusable handlers behind `OP_INVOKE`; `mes
   gate pass. The prior root lint run was also red (`utils` 15, `solidc` 401, `solidcash` 11,446 errors); lint was
   not rerun at this checkpoint. There is no current 66-title result or clean-env legacy/kernel timing comparison.
 - Focused post-run repairs now pass for upgrade-verifier ABI arities, read-carrier ABI identity, direct value-chunk
-  identity, VM unknown-opcode observation, and active-body require-message attribution. The compiler now lowers
+  identity, VM unknown-opcode observation, active-body require-message attribution, and all-output signature
+  enforcement for kernel version-1 as well as version-2 rows. The compiler now lowers
   default returns and empty bodies regardless of whether returns are named; the full compiler count above includes
   that repair. Remaining representative blockers include missing SDK helper exports after extraction, kernel VM
   `OP_VERIFY` failures, child-genesis bytecodes above the 10,000-byte limit, Solidity-compat compiler failures,
-  and other stateful e2e failures, including an oversized array-in-mapping loop whose fail-closed expectation
-  currently resolves instead of rejecting. A direct-only mapping-array write previously lost its trailing predecessor to
+  and other stateful e2e failures. An oversized array-in-mapping loop now has a positive VM proof that writes the
+  chunked value and reads every element back from both keys; the old fail-closed assertion had become stale.
+  A direct-only mapping-array write previously lost its trailing predecessor to
   nested-call surplus cleanup; that cleanup is now gated by the compiler's fixed entry-slot layout, and both
   mapping-array e2e proofs pass unchanged. The artifact had no message-bus metadata despite the generic
   `messageBus:` preflight error prefix. The repeated mixed-route BCH-2026 proof still fails at input 2 with
-  `OP_VERIFY`; the merged Chai event/revert test file passes all 14 tests.
+  `OP_VERIFY`; the merged Chai event/revert test file passes all 14 tests. The kernel admission file still has
+  four failures (685/689 pass): a raw-call rejection-reason mismatch and three child-genesis routes over 10 KB.
+  Cross-contract sorted INSERT with a `msg.sender` key now passes all three VM tests: the progressive probe keeps
+  NEW at the fixed entry slot, finalization places P' at the declared trailing slot, and fee change preserves the
+  structural funder's excess.
 - The refused-selector compose proof now reaches its intended fail-closed assertion: the SDK accepts the exact
   kernel 10,000-byte batch ceiling while rejecting altered ceilings. The mixed-route proof remains unresolved.
   A diagnostic grouped build passed the caller and proxy selector checks, then failed because standalone

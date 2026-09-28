@@ -4,6 +4,7 @@ import {
   type Artifact, type EntryAccessAbi,
 } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
+import type { Output } from '../../src/interfaces.js';
 import {
   adaptLegacyNestedJobEventArguments,
   vmapBatchWitnessFallback,
@@ -2584,6 +2585,22 @@ describe('assignPhysicalReturnIndices', () => {
         nft: { capability: 'mutable', commitment: 'abcd' },
       },
     });
+  });
+
+  it('does not consume a token-free structural funder as the predecessor value', () => {
+    const lock = hexToBin(`aa20${'71'.repeat(32)}87`);
+    const outputs: Output[] = Array.from({ length: 5 }, () => ({
+      to: Uint8Array.of(0x51), amount: 1000n,
+    }));
+    outputs[4] = { to: Uint8Array.of(0x51), amount: 10000n };
+
+    expect(reassertBatchPredecessorOutputsAtDeclaredSlots(outputs, 2, 'bank', [{
+      outputBlockSlot: 2,
+      lockingBytecode: lock,
+      commitment: 'ab'.repeat(64),
+    }])).toBe(1);
+    expect(outputs[4].amount).toBe(1000n);
+    expect(outputs[4].token?.nft?.commitment).toBe('ab'.repeat(64));
   });
 
   it('does not overwrite an unrelated mutable output at a predecessor coordinate', () => {

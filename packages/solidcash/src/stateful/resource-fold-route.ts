@@ -207,7 +207,7 @@ function routeRowCollectionKey(
  * authenticated collection entry before that final push.
  */
 /**
- * Build a Gate-B / published resource-fold plan `ResourceFoldPlan` for ≥2 selected rows that mutate the same chunkable key.
+ * Build a Gate-B / published resource-fold plan for selected rows that mutate the same chunkable key.
  * When `publishedFoldPlans` is present, the matching published summary is authority for step kind /
  * initial source / witness names; a missing collection fails closed. When absent, rediscovery is the
  * legacy fallback. Leading/complete witnesses must come from `foldChunkableResource`.
@@ -224,6 +224,8 @@ export function buildChunkablePushFoldPlan(params: {
    * fail closed when this collection is absent. Undefined ⇒ legacy rediscovery.
    */
   publishedFoldPlans?: readonly PublishedResourceFoldPlanSummary[];
+  /** Complete-value proofs can fold one row; a leading witness requires at least two. */
+  minimumRows?: 1 | 2;
   resolveElement?: (
     row: RouteExpressionKeyRow, access: EntryAccessAbi, elementType: string,
   ) => Uint8Array | undefined;
@@ -266,10 +268,11 @@ export function buildChunkablePushFoldPlan(params: {
     return elementInputs.length === 1
       ? [{ row, key, access: accesses[0], legacyElementIndex: elementInputs[0].index }] : [];
   });
-  if (rows.length < 2) return undefined;
+  const minimumRows = params.minimumRows ?? 2;
+  if (rows.length < minimumRows) return undefined;
   const final = rows[rows.length - 1]!;
   const sameKey = rows.filter((row) => row.key === final.key);
-  if (sameKey.length < 2) return undefined;
+  if (sameKey.length < minimumRows) return undefined;
   const elements: Uint8Array[] = [];
   const stepShells: Omit<ResourceFoldStep, 'kind'>[] = [];
   for (const [index, candidate] of sameKey.entries()) {
@@ -342,7 +345,23 @@ export function foldLeadingRouteArrayPushes(params: {
   /** Override step activity; when omitted, structured step activations + env decide. */
   isActive?: (step: ResourceFoldStep) => boolean;
 }): { leading: Uint8Array; complete: Uint8Array; plan: ResourceFoldPlan } | undefined {
-  const built = buildChunkablePushFoldPlan(params);
+  const folded = foldSelectedRouteArrayPushes(params, 2);
+  if (folded?.leading === undefined) return undefined;
+  return { leading: folded.leading, complete: folded.complete, plan: folded.plan };
+}
+
+/** Include the terminal push even when it is the route's only selected mutation. */
+export function foldCompleteRouteArrayPushes(
+  params: Parameters<typeof foldLeadingRouteArrayPushes>[0],
+): { complete: Uint8Array; plan: ResourceFoldPlan } | undefined {
+  const folded = foldSelectedRouteArrayPushes(params, 1);
+  return folded === undefined ? undefined : { complete: folded.complete, plan: folded.plan };
+}
+
+function foldSelectedRouteArrayPushes(
+  params: Parameters<typeof foldLeadingRouteArrayPushes>[0], minimumRows: 1 | 2,
+): { leading?: Uint8Array; complete: Uint8Array; plan: ResourceFoldPlan } | undefined {
+  const built = buildChunkablePushFoldPlan({ ...params, minimumRows });
   if (!built) return undefined;
   // Published resource-fold plans authority: leading/complete are fold outputs from the (published or rediscovered) plan.
   // path-effect activation/settle-time ExecutionContext: step activations from entry-access ECE; env from shared, per-row, or settle-time EC.
@@ -363,7 +382,6 @@ export function foldLeadingRouteArrayPushes(params: {
       return evaluateFoldActivation(step.activation, env);
     }),
   });
-  if (folded.leading === undefined) return undefined;
   return { leading: folded.leading, complete: folded.complete, plan: built.plan };
 }
 

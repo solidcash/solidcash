@@ -51,10 +51,12 @@ export function reassertSendFinalLayout(
   debugBal12('layout-start');
   host.reconcileMaterializedValueChunkWitnesses(finalBuilder);
   host.reconcileMaterializedInputWitnesses(finalBuilder);
-  host.reconcileMaterializedPredOutWitnesses(finalBuilder);
-  debugBal12('after-predOut-witnesses');
   host.reassertMaterializedBatchPredecessorOutputs(finalBuilder);
   debugBal12('after-materialized-pred');
+  // Materialize the declared P' before content-rebinding PredOut. A provisional P' can still sit at the
+  // fixed NEW slot; binding first would preserve that stale coordinate and the subsequent move would invalidate it.
+  host.reconcileMaterializedPredOutWitnesses(finalBuilder);
+  debugBal12('after-predOut-witnesses');
   host.reassertFinalConservation();
   debugBal12('after-conservation');
   host.reconcileMaterializedReturnWitnesses(finalBuilder);

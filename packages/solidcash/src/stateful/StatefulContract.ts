@@ -4685,6 +4685,7 @@ import {
   buildChunkablePushFoldPlan,
   createFoldRowActivationEnvResolver,
   foldActivationEnvironmentFromRouteRow,
+  foldCompleteRouteArrayPushes,
   foldLeadingRouteArrayPushes,
   materializeCompletePushValueWitness,
 } from './resource-fold-route.js';
@@ -4710,6 +4711,16 @@ export function encodeLeadingRouteArrayPushes(params: {
   ) => Uint8Array | undefined;
 }): Uint8Array | undefined {
   return foldLeadingRouteArrayPushes(params)?.leading;
+}
+
+/** Apply every selected-route push to an authenticated pre-state array, including the terminal row. */
+export function encodeCompleteRouteArrayPushes(
+  params: Parameters<typeof foldLeadingRouteArrayPushes>[0] & { initialValue?: Uint8Array },
+): Uint8Array | undefined {
+  const folded = foldCompleteRouteArrayPushes(params);
+  if (!folded) return undefined;
+  return params.initialValue === undefined
+    ? folded.complete : concatenateEncodedArrays(params.initialValue, folded.complete);
 }
 
 /** `AbiDecodeAtNode{data=id:rowArgs,index=N,schema=[...]}` → argument index and handler arity. */

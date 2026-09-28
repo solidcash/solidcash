@@ -1565,7 +1565,7 @@ describe('required kernel admission', () => {
   });
 
   it.each([
-    ['raw', 'address(target).call(payload)[0]', 'KERNEL_OPAQUE_EFFECT'],
+    ['raw', 'address(target).call(payload)[0]', 'KERNEL_TX_SIGNATURE'],
     ['delegate', 'address(target).delegatecall(payload)[0]', 'KERNEL_FOREIGN_DELEGATE'],
   ])('keeps a signed %s call in a branch condition fenced', (_label, condition, rejectionReason) => {
     const artifact = compileString(`contract C(pubkey authority) {

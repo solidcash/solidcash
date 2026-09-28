@@ -26,12 +26,17 @@ function fixture(solidityImportCompat: boolean): {
       variables: [
         { name: 'records', type: 'Record[][1]' }, { name: 'owner', type: 'address' }, { name: 'digest', type: 'bytes32' },
       ],
-      collections: [{ name: 'catalog', kind: 'mapping', keyType: 'uint256', valueType: 'Record' }],
+      collections: [
+        { name: 'catalog', kind: 'mapping', keyType: 'uint256', valueType: 'Record' },
+        { name: 'catalogRows', kind: 'mapping', keyType: 'uint256', keyTypes: ['uint256', 'bool'],
+          valueType: 'Record[][1]' },
+      ],
     },
   } as unknown as Artifact;
   const host = {
     getState: async () => stored,
-    getEntries: async () => [{ key: 0n, value: record }],
+    getEntries: async (name: string) => (name === 'catalogRows'
+      ? [{ keys: [0n, true], value: stored.records }] : [{ key: 0n, value: record }]),
   } as unknown as BuildNamespacesHost;
   buildNamespaces(host, { artifact, stateLayout: artifact.stateLayout } as Contract);
   return { getters: host.state as Record<string, (...args: any[]) => Promise<any>>, stored, word };
@@ -67,5 +72,26 @@ describe('typed state namespace results', () => {
     await expect(getters.owner()).rejects.toThrow(/canonical 20-byte identity/);
     await expect(getters.records(0n, 0n)).rejects.toThrow(/canonical 20-byte identity/);
     expect(await getters.digest()).toBe(word);
+  });
+
+  it.each([true, false])('separates composite mapping keys from array indices with Solidity compatibility %s', async (solidity) => {
+    const { getters, stored, word } = fixture(solidity);
+    const expected = solidity ? word.slice(12) : word;
+    const indexed = await getters.catalogRows(0n, true, 0, '0');
+    const partial = await getters.catalogRows(0n, true, 0n);
+    const whole = await getters.catalogRows(0n, true);
+    expect(indexed).toBeDefined();
+    for (const record of [indexed, partial[0], whole[0][0], indexed.toObject()]) {
+      expect(record.party.recipient).toEqual(expected);
+      expect(record.party.digest).toBe(word);
+    }
+    expect(await getters.catalogRows(1n, true)).toBeUndefined();
+    for (const index of [-1n, 1n, 0.5, 'invalid', true, new Uint8Array([0])]) {
+      await expect(getters.catalogRows(0n, true, index)).rejects.toThrow(/out of bounds/);
+    }
+    await expect(getters.catalogRows(0n, true, 0n, 0n, 0n)).rejects.toThrow(/not indexable/);
+    await expect(getters.catalog(0n, 0n)).rejects.toThrow(/not indexable/);
+    expect(stored.records[0][0].party.recipient).toBe(word);
+    expect(decodedAddressEncoding(word)).toBeUndefined();
   });
 });

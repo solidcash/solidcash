@@ -13,7 +13,7 @@ import {
   visibleHandlerInputs,
 } from './route-expression-key.js';
 import { resolveStatefulAbiFunction } from './stateful-abi-resolve.js';
-import { decorateStateAccessorResult } from './public-result.js';
+import { decorateStateAccessorResult, indexStateAccessorValue } from './public-result.js';
 import type { DeployFunctionCall, StatefulFunctionCall, TokenContainerAccessor } from './StatefulContract.js';
 import type { StatefulTransactionBuilder } from './StatefulTransactionBuilder.js';
 
@@ -56,32 +56,24 @@ export function buildNamespaces<TArtifact extends Artifact>(
     // Native addresses retain their locking bytes; Solidity-compatible public getters project only fields
     // whose declared type is address. The raw getState() snapshot must not acquire public-result metadata.
     host.state[variable.name] = async (...indices: Array<bigint | number | string>): Promise<any> => {
-      let value: unknown = (await host.getState())[variable.name];
-      for (const rawIndex of indices) {
-        if (!Array.isArray(value)) throw new Error(`State variable '${variable.name}' is not indexable at this depth.`);
-        const index = typeof rawIndex === 'number'
-          ? rawIndex
-          : typeof rawIndex === 'bigint' || /^-?\d+$/.test(rawIndex)
-            ? Number(rawIndex)
-            : Number.NaN;
-        if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) {
-          throw new Error(`Array index ${String(rawIndex)} is out of bounds for '${variable.name}'.`);
-        }
-        value = value[index];
-      }
+      const value = indexStateAccessorValue((await host.getState())[variable.name], indices, variable.name);
       return decorateStateAccessorResult(value as StateValue | undefined, variable.name, indices.length, contract.artifact);
     };
   }
   // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
   // (sugar over getEntries), or undefined when no entry exists. Nested/composite keys pass multiple args.
-  // Array collections keep the getEntries form for now (indexed array getters are a separate open item).
+  // For mapping values that are arrays, the remaining arguments index the value, not the mapping key slot.
   for (const coll of contract.stateLayout!.collections ?? []) {
     if (coll.kind !== 'mapping') continue;
     // @ts-ignore - dynamic property assignment (mapping getter takes key args, unlike the scalar getters)
     host.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
       const entries = await host.getEntries(coll.name);
-      const match = selectMappingEntryByKeys(entries, keys, coll.keyTypes ?? [coll.keyType], coll);
-      if (match) return decorateStateAccessorResult(match.value, coll.name, keys.length, contract.artifact);
+      const keyTypes = coll.keyTypes ?? [coll.keyType];
+      const match = selectMappingEntryByKeys(entries, keys.slice(0, keyTypes.length), keyTypes, coll);
+      if (match) {
+        const value = indexStateAccessorValue(match.value, keys.slice(keyTypes.length), coll.name);
+        return decorateStateAccessorResult(value as StateValue, coll.name, keys.length, contract.artifact);
+      }
       // Solidity reads a missing mapping key as the value type's zero value, so a bool getter returns false
       // rather than an SDK-level missing value. Strings/bytes must be empty sequences so
       // `bytes(meceTags(tag)).length != 0` treats absent tags as non-MECE.

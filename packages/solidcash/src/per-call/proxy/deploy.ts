@@ -42,7 +42,7 @@ import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecy
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   createComposedDerivationHost, deriveComposition, layoutTransaction, participant,
-  type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
+  type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftInput, type DraftMaster,
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
 import { readComputedDeclaration } from '../deploy/declaration.js';
@@ -52,6 +52,7 @@ import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
 import { PerCallProxyDeployError } from './errors.js';
+import { hopEntryWrites, type HopEntryWrites } from './entry-writes.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
@@ -430,6 +431,14 @@ export async function deployPerCallProxy(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
   const recordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
+  // The records the entry's own body writes — a mapping node today — are planned against the entry's published
+  // accesses and their computed commitments are seeded with sentinels the derivation learns.
+  const entryWrites = hopEntryWrites({
+    artifact: implementationArtifact,
+    functionName: options.initialize.functionName,
+    ...(options.initialize.args === undefined ? {} : { args: options.initialize.args }),
+    callerLockingBytecode: options.callerLockingBytecode,
+  });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -437,6 +446,7 @@ export async function deployPerCallProxy(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
+    extraWrites: entryWrites?.candidates ?? [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
@@ -444,6 +454,7 @@ export async function deployPerCallProxy(
     planFor: (writtenCommitments, eventCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
+      ...(entryWrites === undefined ? {} : { entryWrites }),
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
       ),
@@ -529,6 +540,11 @@ interface SettleHopOptions {
   readonly root: FrameRequest;
   readonly maximumCommitmentBytes: number;
   readonly recordCommitments: readonly Uint8Array[];
+  /**
+   * One placeholder per commitment the entry's own body computes beyond its data-NFT records, which the
+   * derivation replaces as it learns. A mapping write's created node is the only one today.
+   */
+  readonly extraWrites: readonly Uint8Array[];
   /** One placeholder per event the entry emits, in emit order, which the derivation replaces as it learns. */
   readonly eventCommitments: readonly Uint8Array[];
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
@@ -553,14 +569,15 @@ interface SettleHopOptions {
 async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   const { vm, proxyArtifact, implementationArtifact } = options;
   let writtenCommitments = [...options.recordCommitments];
+  let writtenExtras = [...options.extraWrites];
   let writtenEvents = [...options.eventCommitments];
   // One step per value the entry computes, plus the attempt that is accepted once every value is stated.
   const maximumAttempts = Math.max(
-    MAXIMUM_HOP_ATTEMPTS, writtenCommitments.length + writtenEvents.length + 1,
+    MAXIMUM_HOP_ATTEMPTS, writtenCommitments.length + writtenExtras.length + writtenEvents.length + 1,
   );
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = options.planFor(writtenCommitments, writtenEvents);
+    const plan = options.planFor([...writtenCommitments, ...writtenExtras], writtenEvents);
     const candidate = createComposedDerivationHost({
       vm, artifacts: [proxyArtifact, implementationArtifact], plan,
     });
@@ -577,18 +594,21 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     const reading = readComputedDeclaration({
       vm, program: implementationProgram, maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
-    // The declaration the failing comparison closed against is the candidate one of the records or of the events
-    // carries, and that is what names the value the entry computed: the plan states a candidate for every one of
-    // them and the body compares them in the order the frame declares them, so each attempt learns the first one
-    // whose computed value the plan had not stated yet. A body that writes two records and emits one event takes
-    // three attempts.
+    // The declaration the failing comparison closed against is the candidate one of the records, of the entry's
+    // own computed writes, or of the events carries, and that is what names the value the entry computed: the plan
+    // states a candidate for every one of them and the body compares them in the order the frame declares them, so
+    // each attempt learns the first one whose computed value the plan had not stated yet. A body that writes two
+    // records and emits one event takes three attempts.
     const learned = reading.ok
       ? writtenCommitments.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
-    const learnedEvent = reading.ok && learned < 0
+    const learnedExtra = reading.ok && learned < 0
+      ? writtenExtras.findIndex((candidate) => bytesEqual(reading.declared, candidate))
+      : -1;
+    const learnedEvent = reading.ok && learned < 0 && learnedExtra < 0
       ? writtenEvents.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
-    if (!reading.ok || (learned < 0 && learnedEvent < 0)) {
+    if (!reading.ok || (learned < 0 && learnedExtra < 0 && learnedEvent < 0)) {
       throw new PerCallProxyDeployError(
         `the implementation's ${options.entryLabel} did not settle through the proxy: `
         + `${describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))}`,
@@ -597,6 +617,9 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     if (learned >= 0) {
       writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
         (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
+    } else if (learnedExtra >= 0) {
+      writtenExtras = writtenExtras.map((candidate, writeIndex) =>
+        (writeIndex === learnedExtra ? Uint8Array.from(reading.computed) : candidate));
     } else {
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
         (emitIndex === learnedEvent ? Uint8Array.from(reading.computed) : candidate));
@@ -640,6 +663,8 @@ interface HopPlanOptions {
   readonly implementationCategory: Uint8Array;
   /** The entry the proxy forwards to, and its arguments in parameter order. */
   readonly entry: { readonly functionName: string; readonly args?: readonly FunctionArgument[] };
+  /** The records the entry's own body writes beyond the data-NFT records, or absent when it writes none. */
+  readonly entryWrites?: HopEntryWrites;
   readonly recordCommitments: readonly Uint8Array[];
   /** The commitment each record is being asked to end at, which a writing entry's own computation replaces. */
   readonly writtenCommitments: readonly Uint8Array[];
@@ -714,14 +739,16 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
 
   // One participant per data NFT of the proxy's layout, in data-NFT order: the record the proxy's genesis minted
   // for it. The proxy's block holds its master, its validator and them; the implementation's master follows, and
-  // the deployer's signed input enters the composition.
+  // the deployer's signed input enters the composition. A record the entry's own body writes — a mapping node — is
+  // a participant of the same block, after them.
   const recordIds = options.recordCommitments.map((_commitment, nftIndex) => proxyRecordParticipantId(nftIndex));
+  const entryWriteIds = options.entryWrites?.participantIds ?? [];
   const blocks: ContractBlock[] = [
     {
       contract: proxyArtifact.contractName,
       masters: [PROXY_MASTER_ID],
       validator: { id: VALIDATOR_ID, settles: [] },
-      state: recordIds,
+      state: [...recordIds, ...entryWriteIds],
     },
     { contract: implementationArtifact.contractName, masters: [IMPLEMENTATION_MASTER_ID], state: [] },
   ];
@@ -764,6 +791,18 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const implementationSegments: RecordEntry[][] = [
     recordKept.slice(0, implementationRecords).map((_entry, nftIndex) => at(recordWritten, nftIndex)),
   ];
+  // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
+  // body's group walk reads them at. A created node is a trailing output past the events.
+  const laidWrites = options.entryWrites?.lay({
+    layout,
+    computed: options.writtenCommitments,
+    recordCount: options.recordCommitments.length,
+    proxyMasterIndex,
+    createdBase: layout.participantCount + options.eventOutputs.length,
+    recordAmount: options.validatorAmount,
+    category: options.proxyCategory,
+  });
+  if (laidWrites !== undefined) implementationSegments[0] = [...implementationSegments[0]!, ...laidWrites.entries];
 
   const proxyMasterDraft: DraftMaster = {
     master: PROXY_MASTER_ID,
@@ -850,17 +889,22 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerSatoshis },
         unlockingBytecode: callerUnlocking(),
       },
+      ...(laidWrites?.inputs ?? {}),
     },
     validator: {
       id: VALIDATOR_ID,
       covers: [implementationArtifact.contractName],
-      settles: [{ category: options.proxyCategory, stateInputs: recordIds }],
+      settles: [{
+        category: options.proxyCategory,
+        stateInputs: [...recordIds, ...entryWriteIds],
+        ...(laidWrites === undefined ? {} : { createdOutputs: laidWrites.createdOutputs }),
+      }],
       redeemScript: validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram()),
     },
-    ...(options.eventOutputs.length === 0 ? {} : {
-      // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category
-      // at the covenant the body rebuilds, carrying the payload the entry computed.
-      trailingOutputs: options.eventOutputs.map((output): DraftSourceOutput => ({
+    // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
+    // the covenant the body rebuilds, carrying the payload the entry computed. A created mapping node follows them.
+    trailingOutputs: [
+      ...options.eventOutputs.map((output): DraftSourceOutput => ({
         lockingBytecode: output.lockingBytecode,
         valueSatoshis: EVENT_OUTPUT_SATOSHIS,
         token: {
@@ -868,7 +912,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
           nft: { capability: 'none', commitment: output.commitment },
         },
       })),
-    }),
+      ...(laidWrites?.trailingOutputs ?? []),
+    ],
   };
 }
 
@@ -1128,6 +1173,12 @@ export async function callPerCallProxyEntry(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
 
+  const entryWrites = hopEntryWrites({
+    artifact: implementationArtifact,
+    functionName: options.functionName,
+    ...(options.args === undefined ? {} : { args: options.args }),
+    callerLockingBytecode: options.callerLockingBytecode,
+  });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -1135,6 +1186,7 @@ export async function callPerCallProxyEntry(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
+    extraWrites: entryWrites?.candidates ?? [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
@@ -1142,6 +1194,7 @@ export async function callPerCallProxyEntry(
     planFor: (writtenCommitments, eventCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
+      ...(entryWrites === undefined ? {} : { entryWrites }),
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,

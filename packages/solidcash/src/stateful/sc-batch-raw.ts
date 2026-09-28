@@ -47,7 +47,9 @@ import {
   kernelEntryJournalReadCarrierCapabilityFromArtifact,
   kernelEntryJournalRecordSegmentIndex,
 } from './KernelEntryJournal.js';
-import { authenticateKernelReadCarrierRoute } from './kernel-read-carrier-route.js';
+import {
+  authenticateKernelReadCarrierRoute, bindKernelCarrierHandlerOverlay,
+} from './kernel-read-carrier-route.js';
 import type { ResolvedLogicalIdentity } from './logical-identity.js';
 import {
   entryAccessAt,
@@ -370,12 +372,16 @@ executionContextBinding?: BatchExecutionContextBinding,
   const capability = executionArtifact.messageBus;
   if (!capability) throw new Error('This artifact does not advertise a message-bus route');
   const canonicalBlobLineage = hasCanonicalBatchBlobLineage(blob);
-  const effectiveRowArguments = rowArguments?.map((row) => ({
-    ...row,
-    handler: mergePublishedMessageBusHandlerMetadata(row.handler, capability.handlers),
-    args: [...row.args],
-    internalArgs: { ...(row.internalArgs ?? {}) },
-  }));
+  const effectiveRowArguments = rowArguments?.map((row) => {
+    const handler = mergePublishedMessageBusHandlerMetadata(row.handler, capability.handlers);
+    bindKernelCarrierHandlerOverlay(handler, row.handler);
+    return {
+      ...row,
+      handler,
+      args: [...row.args],
+      internalArgs: { ...(row.internalArgs ?? {}) },
+    };
+  });
   const runtimeEventMutationRows = (effectiveRowArguments ?? []).filter((row) =>
     (row.handler.runtimeLoopEvents?.length ?? 0) > 0
     && (row.handler.sortedUpsertLoopInfo ?? []).some((stream) => stream.op !== 'read'));

@@ -110,6 +110,40 @@ export function sortedBatchOperationsMutate(operations: readonly string[]): bool
   return operations.includes('write') || operations.includes('delete');
 }
 
+export interface RuntimeEntryAliasCandidate {
+  slotIndex: number;
+  collection: string;
+  priorSlots: readonly number[];
+  target?: string;
+  proof?: string;
+  operations: readonly string[];
+  inactive?: boolean;
+}
+
+/** A shared predecessor proof does not make two distinct sorted targets the same journal mutation. */
+export function runtimeEntryAliasOwners(
+  entries: readonly RuntimeEntryAliasCandidate[],
+): ReadonlyMap<number, number> {
+  const bySlot = new Map(entries.map((entry) => [entry.slotIndex, entry]));
+  const owners = new Map<number, number>();
+  for (const entry of entries) {
+    if (entry.inactive) continue;
+    for (const priorSlot of entry.priorSlots) {
+      const ownerSlot = owners.get(priorSlot) ?? priorSlot;
+      const owner = bySlot.get(ownerSlot);
+      if (!owner || owner.inactive || owner.collection !== entry.collection
+        || owner.proof === undefined || entry.proof === undefined) continue;
+      if (entry.target !== undefined && entry.target === owner.target
+        && sortedBatchOperationsMutate(entry.operations)
+        && sortedBatchOperationsMutate(owner.operations)) {
+        owners.set(entry.slotIndex, ownerSlot);
+        break;
+      }
+    }
+  }
+  return owners;
+}
+
 /**
  * Select the value reconstructed for one fixed sorted-batch target from successive output-pin observations.
  *

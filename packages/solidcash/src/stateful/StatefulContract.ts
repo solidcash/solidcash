@@ -779,6 +779,8 @@ import {
   type BatchExecutionContextBinding,
 } from './sc-batch-raw.js';
 export { mergePublishedMessageBusHandlerMetadata };
+import { runtimeEntryAliasOwners } from './sorted-batch-activity.js';
+export { runtimeEntryAliasOwners };
 export {
   assertAcyclicExternalCallPath,
   visitExpandingExternalCallGroups,
@@ -9841,41 +9843,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (unlocker) entry.utxo = { ...entry.utxo, unlocker };
       }
 
-      const batchAliasSkips = new Set<number>();
-      const batchAliasOwners = new Map<number, number>();
-      for (const entry of entryNfts) {
-        const entrySlot = batchTargetSlots.get(entry.slotIndex);
-        const candidates = [
+      const batchAliasOwners = new Map(runtimeEntryAliasOwners(entryNfts.map((entry) => ({
+        slotIndex: entry.slotIndex,
+        collection: entry.collection,
+        priorSlots: [
           ...(entryAccessForSlot(entry.slotIndex)?.aliasCondDeleteSlot === undefined
             ? [] : [entryAccessForSlot(entry.slotIndex)!.aliasCondDeleteSlot!]),
           ...(entryAccessForSlot(entry.slotIndex)?.runtimeAliasPriorSlots ?? []),
-        ];
-        for (const ownerSlot of candidates) {
-          const owner = entryNfts.find((candidate) => candidate.slotIndex === ownerSlot);
-          const ownerTarget = batchTargetSlots.get(ownerSlot);
-          const sameSortedTarget = entrySlot && ownerTarget
-            && binToHex(entrySlot) === binToHex(ownerTarget);
-          const sameProof = !!(entry.utxo && owner?.utxo
-            && entry.utxo.txid.toLowerCase() === owner.utxo.txid.toLowerCase()
-            && entry.utxo.vout === owner.utxo.vout);
-          const readOnly = !entryOperations(entry.slotIndex).some(
-            (operation) => operation === 'write' || operation === 'delete',
-          );
-          // Equal targets are one logical entry and the generated route can deliberately compose them through
-          // the earlier row's journal cache. Equal PROOFS are different: two absent target keys often share the
-          // same predecessor UTXO, but both writes must still execute and produce their own target outputs. A
-          // read-only access can safely reuse that proof: its covenant recomputes the requested key and proves
-          // membership/non-membership against an authorized earlier same-collection slot.
-          if (owner?.utxo && !inactiveMessageBusEntrySlots.has(ownerSlot)
-            && entry.collection === owner.collection
-            && (sameSortedTarget || (readOnly && sameProof))) {
-            batchAliasSkips.add(entry.slotIndex);
-            batchAliasOwners.set(entry.slotIndex, ownerSlot);
-            runtimeMessageBusAliasSkipSlots.add(entry.slotIndex);
-            break;
-          }
-        }
-      }
+        ],
+        target: batchTargetSlots.has(entry.slotIndex)
+          ? binToHex(batchTargetSlots.get(entry.slotIndex)!) : undefined,
+        proof: entry.utxo ? `${entry.utxo.txid.toLowerCase()}:${entry.utxo.vout}` : undefined,
+        operations: entryOperations(entry.slotIndex),
+        inactive: inactiveMessageBusEntrySlots.has(entry.slotIndex),
+      }))));
+      const batchAliasSkips = new Set(batchAliasOwners.keys());
+      for (const slotIndex of batchAliasSkips) runtimeMessageBusAliasSkipSlots.add(slotIndex);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_ENTRY_PLAN === '1') {
         console.error('message-bus-route-entry-plan', entryNfts.map((entry) => ({

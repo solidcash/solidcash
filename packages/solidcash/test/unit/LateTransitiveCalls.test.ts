@@ -491,13 +491,11 @@ describe('late transitive call preparation', () => {
     expect(fixture.groups[2].functionArgs).toEqual([9n]);
   });
 
-  it('refuses recursive descendants at the deployed depth bound', async () => {
+  it('refuses recursive descendants before expanding another physical participant', async () => {
     const recursive = contract(1, [handler('run', [edge('Self')])]);
     recursive._externalRegistry.set('Self', recursive);
     const fixture = preparation([group(recursive)]);
-    await expect(fixture.expand()).rejects.toMatchObject({
-      code: 'L3_GRAPH_DEPTH_LIMIT', context: { measured: 8, limit: 7 },
-    });
-    expect(fixture.groups).toHaveLength(7);
+    await expect(fixture.expand()).rejects.toThrow('Recursive external-call graph cannot be materialized.');
+    expect(fixture.groups).toHaveLength(1);
   });
 });

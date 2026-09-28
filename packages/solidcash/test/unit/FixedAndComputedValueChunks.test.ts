@@ -19,7 +19,7 @@ function fixture(fixedLock: Uint8Array, fixedCategory = categoryId): {
     derivedChunkOutputs: new Map([[4, {
       fixedIndex: true, commitment, lockingBytecode: fixedLock, categoryId: fixedCategory,
     }]]),
-    getPublishJobEventsBand: () => ({ start: 4, end: 4, nNew: 1 }),
+    getChunkableValueWriteBand: () => ({ start: 4, end: 4, nNew: 1 }),
     getValueChunkVars: () => [{ id: 'records#0', lockingBytecode: lock(0x31) }],
     valueChunkRawCommitments: new Map([['records#0', [commitment]]]),
   } as unknown as MaterializeValueAndDynamicChunksHost;

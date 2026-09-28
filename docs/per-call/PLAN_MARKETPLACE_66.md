@@ -1161,11 +1161,21 @@ risk. Take the slices in order, each with its own tests.
   - **Stream R's bus factor.** R is the main risk and has one coder. Every R slice gets a second coder's review
     before it merges, and `MANIFEST.md` records R's state per slice, so another coder can take it over.
 - [ ] **I2b: every marketplace shape settles**, before I3 and the ladder (user decision 2026-09-27;
-  `MARKETPLACE_SHAPES.md`). Replicas that settle in their own shape so far: **MS1** (the outer proxy hop, the state
-  write it inherits, appends through the proxy and a registration-style mapping batch) and **MS6** (a judge that
-  reads the escrow's recorded payment block read-only, gates on a strictly later block and calls the escrow's own
-  entry); **MS10**'s replica is written and its refusals are pinned (including the compiler's own warning that a
-  custom error's arguments are not evaluated).
+  `MARKETPLACE_SHAPES.md`). Where the ten replicas stand at `92840ca68`. **Settling in their own shape: MS1** (the
+  outer proxy hop, the state write it inherits, appends through the proxy and a registration-style mapping batch),
+  **MS4** (a re-entrant payout whose trip count is data), **MS5** (a payout gated on `tx.origin`), **MS6** (a judge
+  that reads the escrow's recorded payment block read-only, gates on a strictly later block and calls the escrow's
+  own entry), **MS7** (a root, a rater that holds its own flag and a pure calculation, a vault and a claimer
+  re-entered by the claimer: 20 calls, 21 masters, depth 4) and **MS9** (a deployment circle of sixteen broadcast
+  transactions). **MS10**'s replica is written, with its refusals pinned (including the compiler's own warning that
+  a custom error's arguments are not evaluated). **MS2** and **MS8** are written with their open clauses named
+  rather than faked: MS2 calls its store at its own address rather than through a proxy (a call into a fallback
+  needs a call-data band the composer does not lay), appends an `int` element rather than a two-`bytes` struct, and
+  writes a scalar record rather than a struct with a `string[]`; MS8 reads a struct with a `string[]` back through
+  the shipped decoder and runs one frame per call, but a callee getter that takes a parameter is refused because a
+  read cannot resolve an argument from the caller's live records. **MS3 has no replica yet**: it needs the composer
+  to place a recovery call's co-spent side-car inputs after the master that reads them, which the compiler output is
+  already proven against by hand.
   - One neutral replica per flow shape MS1-MS10 in `solidcash/test/per-call/shapes/`, each settled through the
     shipped compile, deployment, composer, derivation and validator with exact post-state, events and balances.
   - Every primitive P1-P30 settles in its own focused test or inside a replica; the catalog's status column follows.
@@ -1207,15 +1217,20 @@ risk. Take the slices in order, each with its own tests.
   utils 1,237 / 9). The number to read beside the I2 KILL bound (`~12K` for the compiler) is that the per-call
   machinery is a new subtree rather than edits folded into the existing one; if the gate counts the whole
   `packages/solidc/src` delta, the bound is reached at ~12.3K and the decision belongs in the I2 gate paragraph.
-- [ ] Per-shape admission rules or static footprint recipes added: must be 0.
+- [x] Per-shape admission rules or static footprint recipes added: must be 0. **Checked**: neither the
+  per-call compiler subtree (`packages/solidc/src/per-call/`) nor the SDK's (`packages/solidcash/src/per-call/`)
+  names a marketplace contract, shape or field, so no rule can key on one; the admissions are all clauses about the
+  language (a dynamic value with a call, a compute side-car, a hidden parameter, a return shape).
 - [ ] VM evaluations per composed transaction during derivation, for Y2 and Y6.
 - [ ] Size of the validator program and of the witnesses per master (spec section 12).
 - [ ] Wall time to derive and build Y2 and Y6.
 - [ ] Wall time and size of the largest marketplace transaction: `arbitrate` 80-20, about 24 masters. **Measured
   shape**: a composition of twenty-four masters across three contracts (one record chain of eight frames per
   contract, twenty-nine inputs, twenty-four filled call records) derives in about 27.9 s on this machine, and every
-  input is accepted (`primitives/many-masters.test.ts`, which runs that case under `PER_CALL_FULL=1`). The market
-  transaction's own size waits for the project compile.
+  input is accepted (`primitives/many-masters.test.ts`, which runs that case under `PER_CALL_FULL=1`). The deepest
+  marketplace replica so far is the arbitration shape: twenty calls and twenty-one masters, depth four, its heaviest
+  case 4.8 s and the whole file 14.5 s (`shapes/deep-arbitration.test.ts`). The market transaction's own size waits
+  for the project compile.
 - [ ] Chunk outputs per `jobEvents` append, and over 30 updates of one job.
 - [ ] VM runs per master during derivation (should be 1 with resumption, E1).
 
@@ -2036,3 +2051,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | per-call tests | a root, a rater, a vault, a claimer and a token in one transaction | 115 + 421 + 716 | **MS7's replica settles in full, and the wall it first pinned is the one the round before removed.** The shape is the deep arbitration: a user-entered root writes a store twice and enters a rater; the rater requires `tx.origin` to be the root's user, reads the vault's record, calls `Vault.settle(uint16[4], int16[2])`, writes its own flag, calls `Claimer.claim` and returns the `uint16[N]` shares; the claimer re-enters the rater for the flag and a `pure` calculation and re-enters the vault for its record, its claimed write and one `sendShare` per share, each calling `Token.transfer`. Five shares give **20 calls, 21 masters**, the derivation completes callee-first, the chain reaches **depth 4** (root → rater → claimer → vault `sendShare` → token `transfer`), every participant the layout places is accepted — all masters, the validator and the five records — and each written record's commitment is read back through `buildPushdataCommitment`; a token record output no frame computed is refused at the validator's own input. What the earlier round pinned here (`PER_CALL_DERIVATION_STALLED: master "enter-1" of Rater.enter() filled no witness at site 0 (call 0)`) no longer occurs, which is what let the rater keep the flag and the pure calculation: the multi-entry master that makes two calls was the *host's* progress detection, not the composer's call handling. Heaviest case 4.8 s, so no case is gated. |
 | 2026-09-28 | (this row's commit) | per-call tests | a proxied root that writes its record and appends twice | 115 + 421 + 716 | **MS2's replica is written and settles where it can; the clauses it cannot reach are named.** Nine cases over a root entered at a proxy that writes its own record and calls one store twice, each append pushing an element onto the store's log: the record, the log header and the chunk are asserted through `buildPushdataCommitment`/`buildChunkCommitment`, both events through `encodeEventCommitment`, and every contract input is accepted; the derivation completes callee-first; a store record output no frame computed is refused by the machine. The `msg.sender` gate settles (the delegate frame's call carries the proxy's address) and a control told a different sender is refused with the derivation's own message and the machine's `OP_VERIFY`. A read-only hop into a second contract, and a token's `code.length` gate beside a `balanceOf` read, compile and derive. Four clauses are open and pinned rather than faked: **the store is called at its own address** (a call into a proxy's fallback needs a call-data band the composer does not lay, the same wall `toys/proxied-append-run.test.ts` pins); a **read of a proxied contract** is unverified, because a read-only frame makes no calls and a proxy's fallback is a delegate hop; the appended value is an element of an `int[]` rather than **a struct with two `bytes` fields**; and the root's own record is a scalar rather than **a struct with a `string[]`**. The token pull is refused by name where its payload is held in a local — the statically-named payload is lowered to the typed call by the compiler change two rows up, and the local-held one is not. One more pin: a call whose argument is a run-time value stalls at `site 2 (close of segment 0)`, the site where the caller's digest is compared with the callee's own call data. |
 | 2026-09-28 | (this row's commit) | per-call | a read decodes the struct an entry returned | 115 + 421 + 717 | **The read path answers with a struct.** A contract that keeps no state variable publishes no state layout, and the read module took its struct definitions from that layout alone — so a view returning a struct decoded as raw bytes. The definitions live on the artifact itself, which is where the module now reads them when the layout has none. Measured: a view returning `Item { int id; string[] labels; }` is read off chain and answers `{ id: 7n, labels: ['a', 'b'] }` through the shipped decoder, accepted by the machine and without broadcasting. That is MS8's struct-with-a-string-list clause; what MS8 still lacks is a getter that takes a parameter, which the module refuses because a read cannot resolve an argument from the caller's live records. Reads 18 to 19. |
+| 2026-09-28 | (this row's commit) | docs(per-call) | where the ten replicas stand, and two more measurements | 115 + 421 + 717 | The I2b paragraph now lists the shapes that settle (MS1, MS4, MS5, MS6, MS7, MS9), the one whose refusals are pinned (MS10) and the two that are written with open clauses named (MS2, MS8), and records that MS3 has no replica because the composer must first place a recovery call's side-car inputs. Two 4.5 rows carry measurements rather than intentions: the per-shape-rule row is checked against both per-call subtrees, which name no marketplace contract, shape or field, and the largest-transaction row now carries the arbitration replica's numbers beside the twenty-four-master one. No marketplace project compile, per rule 4.6. |

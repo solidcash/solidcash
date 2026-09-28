@@ -935,8 +935,8 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     optimise,
     ownerAltAnchor: options.ownerAltAnchor ?? featureFlags.ownerAltAnchor,
     handlerBandModel: options.handlerBandModel ?? featureFlags.handlerBandModel,
-    // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Once the AST
-    // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
+    // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Source-level
+    // selection narrows graph-free contracts before either admission path can synthesize a route.
     messageBus: messageBusMode !== 'disabled',
     // An explicitly present `undefined` must not turn a default-on convention back into the legacy path.
     messageBusKernel: options.messageBusKernel ?? true,
@@ -1559,6 +1559,15 @@ export function ensureMessageBusAdmissionStamp(artifact: Artifact): Artifact {
     ]);
     return applyAdmissionStamp(artifact, analysis, 'attribution-spans');
   }
+  // A stateless contract cannot enter the atomic route, so synthesis has no handler spans to analyze.
+  // Preserve the explicit, non-executable refusal stub without inventing an admission authority. This
+  // exception must never apply to a bytecode route or to a stub advertising an eligible handler.
+  if (artifact.messageBus.available === false
+    && artifact.messageBus.routeInBytecode === false
+    && artifact.messageBus.handlers.every((handler) => handler.eligible === false)) {
+    stampKernelCapabilitySchema(artifact);
+    return artifact;
+  }
   const published = artifact.messageBus.handlers ?? [];
   // Published-fallback is retired. Kernel requires attribution-spans.
   // admissionSource stamp: legacy non-kernel path stamps explicit `legacy-eligibility` (never silent unset with ids).
@@ -1803,7 +1812,8 @@ function compileWithExternalAdmissionFallback(
     );
   delete (mergedCompilerOptions as InternalCompilerOptions).__parsedAst;
   const messageBusMode = (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto';
-  if (messageBusMode === 'auto' && !hasMessageBusGraphEdge(initialAst)) {
+  if (messageBusMode === 'auto' && !mergedCompilerOptions.messageBusGraphContext
+    && !hasMessageBusGraphEdge(initialAst)) {
     mergedCompilerOptions.messageBus = false;
   }
   if (messageBusMode === 'required' && !supportsAtomicMessageBus(initialAst, mergedCompilerOptions)) {
@@ -2196,6 +2206,17 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   if (parsedAst !== undefined) mergedCompilerOptions.__parsedAst = parsedAst;
+  // The fast first-rung path calls compileResolvedAst directly, before the admission ladder's auto-selection
+  // check. Decide from this primary contract's source AST first, then pass that same tree to whichever path
+  // compiles it. Otherwise optimizeForCompilationSpeed changes a graph-free contract into a bus participant.
+  if (mergedCompilerOptions.__messageBusMode === 'auto'
+    && !mergedCompilerOptions.messageBusGraphContext) {
+    const selectionAst = parsedAst ?? parseAndResolve(
+      code, mergedCompilerOptions, errorListener, primaryContractName,
+    );
+    mergedCompilerOptions.__parsedAst = selectionAst;
+    if (!hasMessageBusGraphEdge(selectionAst)) mergedCompilerOptions.messageBus = false;
+  }
   const pristineAstBox = { ast: undefined as Ast | undefined };
   mergedCompilerOptions.__pristineAstBox = pristineAstBox;
   const admissionWinnerBox: { winner?: AdmissionWinner } = {};
@@ -6646,12 +6667,11 @@ function synthesizeMessageBusRoute(
         if (!reason) {
           // Kernel journals both alternatives from this row's arguments (ERC-20 transferFrom from/to) as two
           // physical slots of one invocation. That is not a 2-row resource template and must not set
-          // `resourceShapedHandler` or `_rN` copies. Legacy keeps the compact two-row resource batch.
+          // `resourceShapedHandler` or `_rN` copies. A project-wide graph context does not change a graph-free
+          // leaf handler's physical shape; only a handler which actually owns a graph tail needs that context.
+          // Legacy keeps the compact two-row resource batch.
           const kernelParamKeyedResource = compilerOptions.messageBusKernel === true
-            && graphTailHandlers.size === 0 && !compilerOptions.messageBusGraphContext
             && !graphTailCallEligible
-            && !(fn.returnTypes.length > 0
-              && footprint.effects.some((effect) => effect === 'events' || effect === 'value'))
             && [...directKeys.values()].every((alternatives) =>
               alternatives.every((indices) => indices.every((index) => index >= -2)));
           if (!kernelParamKeyedResource) resourceShapedHandler ??= fn;
@@ -10129,6 +10149,8 @@ function synthesizeMessageBusRoute(
     'bigint __internal__graphSettlementBoundary',
     'bytes __internal__graphCompletionPositions',
     'bytes __internal__graphSettlementTable',
+    ...((compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+      ? ['bigint __internal__graphSelfIdentityInput'] : []),
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
   const lifecycleOwnerRouteParameters = [...kernelLifecycleHandlers.values()].includes('merge')
@@ -11696,6 +11718,9 @@ function synthesizeMessageBusRoute(
     ? ''
     : `require(__internal__graphEmissions == __internal__graphEmissions);
         require(__internal__graphCallers == __internal__graphCallers);`}
+        ${graphExecutionContext
+    && (compilerOptions.solidityImportCompat || compilerOptions.evmCompat)
+    ? 'require(__internal__graphSelfIdentityInput == __internal__graphSelfIdentityInput);' : ''}
         ${returnStatement}
       }
     }`;
@@ -13602,20 +13627,6 @@ function compileResolvedAst(
   const semanticStarted = Date.now();
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   if (mergedCompilerOptions.messageBus) {
-    // Route synthesis publishes the caller band before semantic analysis, but the symbol pass can append
-    // compiler-owned route inputs (currently return-output, proxy-master, and dynamic-chunk coordinates). A
-    // DEFINE'd handler addresses this physical band from the bottom, so retaining the pre-semantic list shifts
-    // every published ordinal by the number of appended inputs. Refresh every clone from the final route ABI;
-    // deriving the band here also keeps future hidden inputs from requiring another coordinate adjustment.
-    const finalizedRoute = ast.contract.functions.find((fn) => fn.messageBusRoute === true);
-    if (finalizedRoute) {
-      const finalizedBandNames = finalizedRoute.parameters.map((parameter) => parameter.name);
-      for (const candidate of ast.contract.functions) {
-        if (MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) {
-          candidate.messageBusCallerBandNames = finalizedBandNames;
-        }
-      }
-    }
     padMessageBusCloneCalls(ast);
   }
   profileLog('resolved:symbol', semanticStarted, { contract: contractName });
@@ -14112,6 +14123,20 @@ function compileResolvedAst(
     delete (mergedCompilerOptions as InternalCompilerOptions).__singlePassVerifierSource;
   }
   // Code generation
+  if (mergedCompilerOptions.messageBus) {
+    // Both semantic analysis and late resource-fold preparation append compiler-owned route inputs. Invoked
+    // handlers address this shared band from the bottom, so publish its final layout only after all those
+    // inputs exist. In particular, complete-value witnesses must shift every earlier band's ordinal too.
+    const finalizedRoute = ast.contract.functions.find((fn) => fn.messageBusRoute === true);
+    if (finalizedRoute) {
+      const finalizedBandNames = finalizedRoute.parameters.map((parameter) => parameter.name);
+      for (const candidate of ast.contract.functions) {
+        if (MESSAGE_BUS_CLONE_PREFIXES.some((prefix) => candidate.name.startsWith(prefix))) {
+          candidate.messageBusCallerBandNames = finalizedBandNames;
+        }
+      }
+    }
+  }
   // Kernel entry wrappers and row-handler clones are one cross-body optimisation domain. The ordinary
   // per-entry peephole freezes each optimized body into a separate OP_DEFINE push before the cross-body
   // outliner sees it; on a large neutral corpus that retained 263KB of clone bodies, while the bounded
@@ -15369,7 +15394,10 @@ function compileResolvedAst(
             })(),
             ...(fn.sortedInsertLoops?.length ? { sortedInsertLoops: fn.sortedInsertLoops } : {}),
             ...(fn.sortedInsertLoopInfo?.length ? { sortedInsertLoopInfo: fn.sortedInsertLoopInfo } : {}),
-            ...(fn.sortedUpsertLoopInfo?.length ? { sortedUpsertLoopInfo: fn.sortedUpsertLoopInfo } : {}),
+            // The source node retains BigInt iteration counters for lowering. Only the ABI has the
+            // serializable, counter-free descriptor that can be published in an artifact.
+            ...(sourceAbi?.sortedUpsertLoopInfo?.length
+              ? { sortedUpsertLoopInfo: sourceAbi.sortedUpsertLoopInfo } : {}),
             dynamicReads: fn.dynamicReads ?? [],
             dynamicWrites: fn.dynamicWrites ?? [],
             ...(sourceAbi?.keccakPreimageParams?.length

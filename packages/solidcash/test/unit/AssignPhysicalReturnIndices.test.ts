@@ -9,6 +9,8 @@ import {
   vmapBatchWitnessFallback,
 } from '../../src/stateful/StatefulContract.js';
 import { encodeEntryCommitment } from '../../src/stateful/SortedList.js';
+import { resolveMaterializedPredOutUpdates } from '../../src/stateful/stb-materialized-predout-reconcile.js';
+import { writerBatchPlanMatchesPhysicalCarrier } from '../../src/stateful/writer-event-delegate-layout.js';
 import {
   assignPhysicalReturnIndices,
   assignedTailEnd,
@@ -2117,6 +2119,29 @@ describe('assignPhysicalReturnIndices', () => {
     }, 0)).toBe(6);
   });
 
+  it('rebinds a materialized PredOut by authenticated predecessor content', () => {
+    const lock = hexToBin(`aa20${'86'.repeat(32)}87`);
+    const target = hexToBin('42'.repeat(32));
+    const predecessor = `${'00'.repeat(32)}${'00'.repeat(32)}${'19'.repeat(8)}`;
+    const expected = `${'00'.repeat(32)}${'42'.repeat(32)}${'19'.repeat(8)}`;
+    const inputs = Array.from({ length: 10 }, () => ({}));
+    inputs[6] = {
+      token: { nft: { commitment: predecessor } },
+      unlocker: { generateLockingBytecode: () => lock },
+    };
+    const outputs = Array.from({ length: 26 }, () => ({
+      to: Uint8Array.of(0x51), token: undefined,
+    }));
+    // Same-address NEW/output noise must not be mistaken for the recreated predecessor.
+    outputs[17] = { to: lock, token: { nft: { commitment: `${'42'.repeat(32)}${'00'.repeat(32)}` } } };
+    outputs[25] = { to: lock, token: { nft: { commitment: expected } } };
+    expect(resolveMaterializedPredOutUpdates({
+      __internal__vmapBatchProof_0: 6n,
+      __internal__vmapBatchSlot_0: target,
+      __internal__vmapBatchPredOut_0: 17n,
+    }, { inputs, outputs }, 3)).toEqual({ __internal__vmapBatchPredOut_0: 25n });
+  });
+
   it('strips extra own-category none-cap tails outside event and return slots', () => {
     const outputs = [
       { token: { category: 'ft', nft: { capability: 'minting', commitment: '' } } },
@@ -2190,7 +2215,7 @@ describe('assignPhysicalReturnIndices', () => {
     })).toBe(true);
     expect(pinExactSortedBatchEntry({
       exact: false, conditionalLayoutSlot: true, linearSortedBatch: true,
-    })).toBe(true);
+    })).toBe(false);
     expect(pinExactSortedBatchEntry({
       exact: true, conditionalLayoutSlot: true, linearSortedBatch: false,
     })).toBe(false);
@@ -2287,6 +2312,9 @@ describe('assignPhysicalReturnIndices', () => {
     expect(skipCompilerOwnedInBlockCollectionStrip({
       preserveBlockLayoutWidth: true, pinnedEntryCount: 0,
     })).toBe(false);
+    expect(skipCompilerOwnedInBlockCollectionStrip({
+      preserveBlockLayoutWidth: true, pinnedEntryCount: 0, requiredEntryCount: 8,
+    })).toBe(true);
   });
 
   it('falls back to nested-callee sentinels for a vmap-batch slot with no planned batch', () => {
@@ -2410,6 +2438,51 @@ describe('assignPhysicalReturnIndices', () => {
       batchPredecessorOutputs: [{ outputBlockSlot: 9 }],
     };
     expect(() => inheritWriterBatchPlan(carrier, writer)).toThrow(/conflicting sorted-batch/);
+  });
+
+  it('excludes a different non-routed shared handler from the physical writer plan', () => {
+    const physical = { functionName: 'transferFrom' };
+
+    expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
+      functionName: 'approve',
+      sharedGroupIndex: 1,
+    })).toBe(false);
+    expect(writerBatchPlanMatchesPhysicalCarrier(physical, {
+      functionName: 'transferFrom',
+      sharedGroupIndex: 1,
+    })).toBe(true);
+    expect(writerBatchPlanMatchesPhysicalCarrier({
+      ...physical,
+      compilerRoute: {},
+    }, {
+      functionName: 'approve',
+      sharedGroupIndex: 1,
+    })).toBe(true);
+  });
+
+  it('rebases a fused writer trailing predecessor onto the physical carrier trailing band', () => {
+    const carrier = {
+      blockLayout: { blockSize: 8 },
+      internalArgs: { __internal__vmapBatchPredOut_0: -1n },
+      batchPredecessorOutputs: [] as Array<{ outputBlockSlot: number; collection: string }>,
+    };
+    const writer = {
+      blockLayout: { blockSize: 4 },
+      internalArgs: {
+        __internal__vmapBatchPredOut_0: 4n,
+        __internal__vmapBatchTrailingCount: 1n,
+      },
+      batchPredecessorOutputs: [{ outputBlockSlot: 4, collection: 'allowances' }],
+    };
+
+    expect(inheritWriterBatchPlan(carrier, writer)).toBe(true);
+    expect(carrier.batchPredecessorOutputs).toEqual([
+      { outputBlockSlot: 8, collection: 'allowances' },
+    ]);
+    expect(carrier.internalArgs).toMatchObject({
+      __internal__vmapBatchPredOut_0: 8n,
+      __internal__vmapBatchTrailingCount: 1n,
+    });
   });
 
   it('relocates only the planned INSERT PredOut and keeps leftover UPDATE sentinels', () => {
@@ -3661,6 +3734,11 @@ describe('assignPhysicalReturnIndices', () => {
     // One authenticated output and its terminal anchor occupy [23, 25).
     expect(continuationOutputBaseBeforeSuffix(25, 1)).toBe(23);
     expect(continuationOutputBaseBeforeSuffix(25, 6)).toBe(18);
+    expect(continuationOutputBaseBeforeSuffix(25, 8, 18)).toBe(18);
+    expect(continuationOutputBaseBeforeSuffix(25, 8, 19)).toBe(19);
+    // A 17-wide fixed block followed by one authenticated batch predecessor owns [0, 18). The probe output
+    // belongs immediately before the reverse-indexed suffix, not at index 17 where it would shift predOut.
+    expect(continuationOutputBaseBeforeSuffix(35, 17, 18)).toBe(18);
   });
 
   it('reuses a planner-owned value-chunk band before allocating an append-only run', () => {

@@ -17,6 +17,29 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
+  it('keeps fast default compilation direct and lean for a graph-free stateful contract', () => {
+    const options = { optimizeForCompilationSpeed: true };
+    const automatic = compileString(STATEFUL_LEAF, options);
+    const direct = compileString(STATEFUL_LEAF, { ...options, messageBus: false });
+    const optedIn = compileString(STATEFUL_LEAF, { ...options, messageBus: true });
+
+    expect(automatic.messageBus).toBeUndefined();
+    expect(automatic.compiler.options?.messageBus).toBe(false);
+    expect(automatic.bytecode).toBe(direct.bytecode);
+    expect(automatic.bytecode.length).toBeLessThan(optedIn.bytecode.length);
+    expect(optedIn.messageBus).toBeDefined();
+  });
+
+  it('keeps a local helper call on the direct route', () => {
+    const artifact = compileString(`contract Local {
+      int value;
+      function next(int current) internal pure returns (int) { return current + 1; }
+      function advance() public { value = next(value); require(value > 0); }
+    }`, { optimizeForCompilationSpeed: true });
+    expect(artifact.messageBus).toBeUndefined();
+    expect(artifact.compiler.options?.messageBus).toBe(false);
+  });
+
   it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();
@@ -34,6 +57,17 @@ describe('message-bus compilation selection', () => {
       .toBe(true);
     expect(artifact.messageBus?.verifierProgram?.inputs
       .some((input) => input.name === 'suppliedCallers')).toBe(true);
+  });
+
+  it('honors an explicit graph context for a graph-free participant in both compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifact = compileString(STATEFUL_LEAF, {
+        messageBusGraphContext: true,
+        optimizeForCompilationSpeed,
+      });
+      expect(artifact.messageBus?.route.inputs.some((input) => input.name === '__internal__graphCallers'))
+        .toBe(true);
+    }
   });
 
   it('binds a lazy delegate participant route to its own verifier', () => {
@@ -108,10 +142,12 @@ describe('message-bus compilation selection', () => {
     expect(artifact.messageBus).toMatchObject({
       convention: 'kernel-row-loop',
       available: false,
+      routeInBytecode: false,
       handlers: [expect.objectContaining({
         name: 'check', eligible: false, rejectionReason: 'KERNEL_LAYOUT',
       })],
     });
+    expect(artifact.messageBus?.admittedHandlerIds).toBeUndefined();
   });
 
   it('keeps direct mapping keys visible beside dynamic-array reads in explicit graph mode', () => {
@@ -617,8 +653,9 @@ describe('message-bus compilation selection', () => {
     });
   });
 
-  it('automatically selects message-bus planning for an external call graph', () => {
-    const artifact = compileString(`
+  it('automatically selects message-bus planning for an external call graph in both compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifact = compileString(`
       interface ISink { function set(int value) external; }
       contract Caller(address sink) {
         int calls;
@@ -628,13 +665,15 @@ describe('message-bus compilation selection', () => {
           require(value >= 0);
         }
       }
-    `);
-    expect(artifact.compiler.options?.messageBus).toBe(true);
-    expect(artifact.messageBus).toBeDefined();
+      `, { optimizeForCompilationSpeed });
+      expect(artifact.compiler.options?.messageBus).toBe(true);
+      expect(artifact.messageBus).toBeDefined();
+    }
   });
 
-  it('selects independently for each primary contract in a multi-artifact compile', () => {
-    const artifacts = compileStringMulti(`
+  it('selects independently for each primary contract in both multi-artifact compile modes', () => {
+    for (const optimizeForCompilationSpeed of [false, true]) {
+      const artifacts = compileStringMulti(`
       interface ISink { function set(int value) external; }
       contract Leaf { int value; function set(int next) public { value = next; require(next >= 0); } }
       contract Caller(address sink) {
@@ -645,9 +684,10 @@ describe('message-bus compilation selection', () => {
           require(value >= 0);
         }
       }
-    `);
-    expect(artifacts.Leaf.messageBus).toBeUndefined();
-    expect(artifacts.Caller.messageBus).toBeDefined();
+      `, { optimizeForCompilationSpeed });
+      expect(artifacts.Leaf.messageBus).toBeUndefined();
+      expect(artifacts.Caller.messageBus).toBeDefined();
+    }
   });
 
   it('binds every multi-artifact message-bus route to its participant verifier', () => {

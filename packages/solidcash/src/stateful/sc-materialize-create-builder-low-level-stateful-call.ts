@@ -43,6 +43,15 @@ export type MaterializeCreateBuilderLowLevelStatefulCallResult = {
   nestedByCallsite: Map<number, number>;
 };
 
+/** Preserve the selector-authenticated logical frame separately from the physical delegatecall payload. */
+export function publishPreparedKernelDelegateOwnerFrame(
+  group: Pick<ExternalCallUtxoGroup, 'logicalFunctionName' | 'logicalFunctionArgs'>,
+  frame: { abiFunction: Pick<AbiFunction, 'name'>; args: readonly FunctionArgument[] },
+): void {
+  group.logicalFunctionName = frame.abiFunction.name;
+  group.logicalFunctionArgs = [...frame.args];
+}
+
 /**
  * Materialize one stateful LLC into lowLevelCallUtxoGroups. For delegatecall,
  * optionally promote the kernel forwarding frame and filter active nested
@@ -63,6 +72,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
     preparedAtomicNodes: any[] | undefined;
     rootProducerPath: ValueChunkProducerPathDisposition;
     publicSelfAddress: Uint8Array;
+    authenticatedSelfAddress: Uint8Array;
     onChainState: any;
     [key: string]: any;
   },
@@ -70,7 +80,7 @@ export async function materializeCreateBuilderLowLevelStatefulCall(
   const {
     callInfo, callMode, lowLevelCallUtxoGroups, groupProxyMasterIndices,
     abiFunction, physicalAbiFunction, functionName, args, callIndex,
-    rootProducerPath, publicSelfAddress, onChainState,
+    rootProducerPath, publicSelfAddress, authenticatedSelfAddress, onChainState,
   } = params;
   let preparedAtomicNodes = params.preparedAtomicNodes;
 
@@ -192,6 +202,9 @@ if (!preparedAtomicNodes && abiFunction) {
       execution: promoted,
       implementationAbi: delegateAbi,
     });
+    publishPreparedKernelDelegateOwnerFrame(
+      lowLevelCallUtxoGroups[delegateGroupIndex]!, promotedDelegateOwnerFrame,
+    );
     delegateFn = promotedDelegateOwnerFrame.abiFunction;
     preparedAtomicNodes = [{
       contract: host.selfContract,
@@ -242,13 +255,16 @@ const delegateVisibleInputs = (delegateFn?.inputs ?? []).filter(
 // argument, graph-seeding, and return-carrier passes for this build epoch.
 const graphPlanningResults = createGraphPlanningProducerResultContext();
 // The implementation input authenticates code execution, but Solidity-visible calls execute in the
-// proxy/state-owner context. One exact pair drives both outgoing self-address arguments and callee
-// msg.sender keys; the executor identity remains separately pinned by the delegate block.
+// proxy/state-owner context. New graph routes authenticate the same public CREATE identity for address(this)
+// and the outgoing caller. Older routes retain their physical self projection. Storage and executor identities
+// remain separately pinned by the delegate block.
 const delegateCallerIdentity = Object.freeze({
   categoryId: host.categoryId,
-  lockingBytecode: binToHex(publicSelfAddress),
+  lockingBytecode: binToHex(authenticatedSelfAddress),
 });
-const delegateSelfAddress = hexToBin(delegateCallerIdentity.lockingBytecode);
+const delegateSelfAddress = callInfo.contract.inner.artifact.messageBus?.route.inputs.some(
+  (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
+) ? authenticatedSelfAddress : publicSelfAddress;
 const nestedExternalCalls: ExternalCallAbi[] = [];
 for (const nested of publishedNestedExternalCalls) {
   if (!nested.condition) {

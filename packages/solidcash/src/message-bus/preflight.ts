@@ -293,9 +293,16 @@ const convergeMessageBusMutableResourceOutputs = (
   let repairs = 0;
   const maximumRounds = candidateCount * 2 + 1;
   for (let round = 1; round <= maximumRounds; round += 1) {
-    const stateKey = [...ownedByBlock.values()].flatMap((owned) => [...owned].sort((a, b) => a - b))
+    const transaction = builder.buildLibauthTransaction();
+    // A resource covenant can be gated by another semantic output (most notably an event-slot scan). The owned
+    // commitments alone are therefore not a complete convergence state: after that prerequisite changes, the
+    // same `00` entry placeholder must be eligible for a new authenticated observation. Hashing the complete
+    // transaction keeps the shared fixpoint strict for truly repeated states while distinguishing that progress.
+    const transactionState = binToHex(hash256(encodeTransaction(transaction)));
+    const stateKey = `${transactionState}|${[...ownedByBlock.values()]
+      .flatMap((owned) => [...owned].sort((a, b) => a - b))
       .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
-      .join('|');
+      .join('|')}`;
     recordMonotonePass(
       commitmentLattice,
       seenStates,
@@ -320,7 +327,6 @@ const convergeMessageBusMutableResourceOutputs = (
       }
     }
 
-    const transaction = builder.buildLibauthTransaction();
     // constraint fixpoint: accumulate all OTC observations per output, then collapse with multi-way ranking.
     const proposalCandidates = new Map<number, Array<{
       commitment: Uint8Array; inputIndex: number; ip: number;
@@ -362,11 +368,18 @@ const convergeMessageBusMutableResourceOutputs = (
         });
       },
     });
-    for (const block of assembly.blocks) {
+    for (const [blockIndex, block] of assembly.blocks.entries()) {
       owned = ownedByBlock.get(block.participant)!;
       if (owned.size === 0) continue;
+      // A delegate participant's compiler-declared state block can be followed by authenticated logical-identity
+      // and executor inputs before the next participant begins. The executor is the input which actually runs the
+      // implementation covenant and exposes computed entry commitments; stopping at `blockLayout.blockSize`
+      // leaves those OTC witnesses invisible. Repair ownership remains restricted to `ownedByBlock` above, so
+      // widening only the observer span cannot authorize a suffix input to mutate an undeclared coordinate.
+      const observerEnd = assembly.blocks[blockIndex + 1]?.base
+        ?? Math.min(...assembly.verifierInputs, assembly.verifierInput);
       for (let inputIndex = block.base;
-        inputIndex < block.base + block.blockLayout.blockSize;
+        inputIndex < observerEnd;
         inputIndex += 1) {
         let eligible = observerEligibility.get(inputIndex);
         if (eligible === undefined) {

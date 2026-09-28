@@ -16,6 +16,7 @@ import {
   createReadOnlyDataNftUnlocker,
   createReadOnlyEntryNftUnlocker,
 } from './covenant-helpers.js';
+import { isScidIdentityCommitment } from './logical-identity.js';
 
 export interface LoadCreateBuilderExternalReadsHost {
   readonly artifact: Artifact;
@@ -72,7 +73,10 @@ export async function loadCreateBuilderExternalReads(
     }));
   }
   if (overrides?.callerIdentityUtxos !== undefined) {
-    externalReadUtxos = [...externalReadUtxos, ...overrides.callerIdentityUtxos];
+    // SCIDs have their own tail band and preservation rules. Keeping one in the ordinary read band lets its
+    // 1:1 recreation occupy an event/return coordinate during probe repair.
+    externalReadUtxos = [...externalReadUtxos, ...overrides.callerIdentityUtxos.filter((utxo) =>
+      !isScidIdentityCommitment(utxo.token?.nft?.commitment))];
   } else if (overrides?.callerLockingBytecode !== undefined && overrides?.msgSenderCategory === undefined
     && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1') {

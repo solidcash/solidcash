@@ -281,7 +281,12 @@ for (let groupIndex = 0; groupIndex < host.externalCallUtxoGroups.length; groupI
         })),
       });
     }
-    for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
+    const promotedTrailingEnd = Math.max(
+      0,
+      ...(group.batchPredecessorOutputs ?? []).map(({ outputBlockSlot }) => outputBlockSlot + 1),
+    );
+    const materializationEnd = Math.max(group.blockInputs.length, promotedTrailingEnd);
+    for (let si = dataNftEnd; si < materializationEnd; si++) {
       const input = group.blockInputs[si];
       const slot = group.blockLayout.slots[si];
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -343,6 +348,15 @@ for (let groupIndex = 0; groupIndex < host.externalCallUtxoGroups.length; groupI
             nft: { capability: 'mutable', commitment: batchPredecessor.commitment },
           },
         });
+        continue;
+      }
+
+      // A fused writer can contribute a trailing predecessor planned against a smaller logical
+      // function block. Promotion rebases it onto this carrier's trailing band, which may extend
+      // beyond the carrier's balanced input vector. Only explicitly planned outputs may occupy
+      // such coordinates; preserve any intervening coordinate as an inert alignment output.
+      if (!input) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         continue;
       }
 
@@ -614,8 +628,16 @@ for (let groupIndex = 0; groupIndex < host.externalCallUtxoGroups.length; groupI
         } else {
           // Placeholder: create event NFT with empty commitment so B's VM can
           // find the output structure. The iterative derivation will fill it in.
-          const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
-          const bAbiFunc = bArt?.abi?.find((f: any) => f.name === group.functionName);
+          // A proxy-forwarded participant owns the physical block, but the implementation owns the event ABI.
+          // Resolve the logical function first so an unlearned nested delegate emit receives an event-NFT probe
+          // rather than a pass-through copy of the unrelated input occupying that balanced slot.
+          const bArt = group.logicalArtifact
+            ?? group.logicalContract?.inner?.artifact
+            ?? group.externalContract?.inner?.artifact
+            ?? group.externalContract?.artifact;
+          const bAbiFunc = bArt?.abi?.find(
+            (f: any) => f.name === (group.logicalFunctionName ?? group.functionName),
+          );
           const bEmits: Array<{ eventSignature: string }> = bAbiFunc?.emits ?? [];
           if (eventIdx < bEmits.length) {
             const emitInfo = bEmits[eventIdx];

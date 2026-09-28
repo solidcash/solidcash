@@ -60,6 +60,7 @@ export interface NestedOutputReassertHost {
   readonly pendingReturnEventOutputs: readonly NestedReassertPendingReturnEvent[];
   readonly preserveBlockLayoutWidth: boolean;
   readonly pinnedEntrySlots: ReadonlySet<number>;
+  readonly requiredEntryOutputSlots: ReadonlySet<number>;
   readonly loopEntryVars: readonly NestedReassertLoopEntryVar[];
   readonly stateLayout: StateLayout;
   readonly categoryId: string;
@@ -136,6 +137,7 @@ export function stripSurplusEmptyCollectionEntriesForHost(
   if (skipCompilerOwnedInBlockCollectionStrip({
     preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
     pinnedEntryCount: host.pinnedEntrySlots.size,
+    requiredEntryCount: host.requiredEntryOutputSlots.size,
   })) return;
   const activeGroups = [
     ...host.externalCallUtxoGroups,
@@ -206,6 +208,7 @@ export function reassertNestedSameIndexMutables(
   if (skipCompilerOwnedInBlockCollectionStrip({
     preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
     pinnedEntryCount: host.pinnedEntrySlots.size,
+    requiredEntryCount: host.requiredEntryOutputSlots.size,
   })) return;
   const plannedInsertByPredecessor = new Map<number, {
     outputIndex: number; commitment?: string; newCommitment?: string;

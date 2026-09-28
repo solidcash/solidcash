@@ -226,9 +226,12 @@ const resolveArguments = (
     }
   }
   if (source.kind === 'selfAddress') {
-    // `selfAddress` is the compiler's active-state-owner projection. It is distinct from the public identity a
-    // nested callee observes as msg.sender when that participant publishes an identity anchor. Preserve the exact
-    // source bytes here; graphInvocationCallerIdentity independently authenticates the caller-facing identity.
+    if (sourceParticipant.artifact.messageBus?.route.inputs.some(
+      (input) => input.name === '__internal__graphSelfIdentityInput',
+    ) && sourceParticipant.logicalLockingBytecode !== undefined) {
+      return hexToBin(sourceParticipant.logicalLockingBytecode);
+    }
+    // Native/older routes without a public-self witness retain the physical owner projection.
     if (!sourceParticipant.lockingBytecode) {
       throw new Error('messageBus: participant has no authenticated state-owner locking bytecode');
     }
@@ -329,8 +332,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       || (call.addressParam !== undefined
         && !fn.inputs.some((input) => input.name === call.addressParam));
     if (targetIsRuntimeDerived) {
-      throw new Error(
-        `messageBus: resource-derived callsite ${call.callsiteId} occurrence ${occurrence} lacks a target proof`,
+      throw new MessageBusDiagnosticError(
+        'L3_TARGET_UNRESOLVED',
+        `resource-derived callsite ${call.callsiteId} occurrence ${occurrence} lacks a target proof; `
+          + `call chain ${diagnosticContext(call).callChain?.join(' -> ')} -> ${call.interfaceName}.${call.functionName}`,
+        diagnosticContext(call),
       );
     }
     const registered = options.targets[call.interfaceName];

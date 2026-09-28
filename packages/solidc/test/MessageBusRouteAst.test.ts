@@ -87,4 +87,44 @@ contract Token() {
     expect(assembled.debug?.bytecode).toBe(oracle.debug?.bytecode);
     expect(assembled.debug?.bytecode?.length).toBeGreaterThan(0);
   });
+
+  it('keeps graph-free ERC-20 leaves kernel-shaped in a graph-enabled project', () => {
+    const artifact = compileString(`
+pragma solidcash ^0.13.0;
+
+contract Token() {
+  mapping(address => uint) balances;
+  mapping(address => mapping(address => uint)) allowances;
+
+  function approve(address spender, uint value) public returns (bool) {
+    allowances[msg.sender][spender] = value;
+    return true;
+  }
+
+  function transferFrom(address from, address to, uint value) public returns (bool) {
+    require(allowances[from][msg.sender] >= value);
+    require(balances[from] >= value);
+    allowances[from][msg.sender] = allowances[from][msg.sender] - value;
+    balances[from] = balances[from] - value;
+    balances[to] = balances[to] + value;
+    return true;
+  }
+}
+`, {
+      messageBus: true,
+      messageBusKernel: true,
+      messageBusGraphContext: true,
+      forceStateful: true,
+      suppressWarnings: true,
+      commitmentLimit: 10_000_000,
+      maximumInputBytes: 10_000_000,
+    });
+
+    expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
+    expect(artifact.messageBus?.handlers.filter(({ name }) => ['approve', 'transferFrom'].includes(name)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'approve', eligible: true }),
+        expect.objectContaining({ name: 'transferFrom', eligible: true }),
+      ]));
+  });
 });

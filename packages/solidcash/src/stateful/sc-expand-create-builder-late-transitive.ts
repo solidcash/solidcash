@@ -14,9 +14,10 @@ import {
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
+import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import { MessageBusDiagnosticError } from '../message-bus/diagnostics.js';
 import type { UnlockableUtxo, Utxo } from '../interfaces.js';
-import { tryCashAddressToLockScript } from '../utils.js';
+import { addressToLockScript, tryCashAddressToLockScript } from '../utils.js';
 import {
   createDataNftUnlocker,
   createEntryNftUnlocker,
@@ -131,28 +132,33 @@ export async function expandCreateBuilderLateTransitive(
     const parent = expansionGroups[parentGroupIndex];
     const parentContract = parent.externalContract as any;
     const logicalParentContract = (parent.logicalContract ?? parentContract) as any;
+    const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
     // This layer expands an outgoing CALL made by `parent`. A delegate executor authenticates the code and
     // physical resources which produced that call, but Solidity-visible `address(this)` and the callee's
     // `msg.sender` are the authenticated state owner. Keep that owner as one indivisible pair throughout
     // argument resolution and route witness planning.
     const parentCallerIdentity = Object.freeze({
       categoryId: parentContract.categoryId,
-      lockingBytecode: parentContract.inner.lockingBytecode,
+      lockingBytecode: logicalParentArtifact.messageBus?.route.inputs.some(
+        (input: { name: string }) => input.name === '__internal__graphSelfIdentityInput',
+      ) ? binToHex(addressToLockScript(parentContract.target)) : parentContract.inner.lockingBytecode,
     });
     const parentOutgoingSelfAddress = hexToBin(parentCallerIdentity.lockingBytecode);
     // Expressions inside this invocation observe its incoming caller, not its own outgoing identity
     // and not the transaction signer. Keep this immutable frame value in authenticated-result refreshes too.
     const parentIncomingCallerAddress = parent.callerIdentity
       ? hexToBin(parent.callerIdentity.lockingBytecode) : undefined;
-    const logicalParentArtifact = parent.logicalArtifact ?? logicalParentContract.inner.artifact;
     const logicalParentFunctionName = parent.logicalFunctionName ?? parent.functionName;
     const logicalParentArgs = parent.logicalFunctionArgs ?? parent.functionArgs;
     const parentAtomicNode = preparedAtomicNodeByExternalGroup.get(parentGroupIndex);
-    const graphParentArgs = parentAtomicNode === undefined
+    const graphParentArgsRaw = parentAtomicNode === undefined
       ? logicalParentArgs : preparedAtomicNodes?.[parentAtomicNode]?.args ?? logicalParentArgs;
     const parentFn = (logicalParentArtifact.abi as readonly AbiFunction[])
       .find((candidate) => candidate.name === logicalParentFunctionName);
     if (!parentFn?.externalCalls?.length) continue;
+    const graphParentArgs = projectMessageBusHandlerArguments(
+      logicalParentArtifact, parentFn.name, parentFn.selector, graphParentArgsRaw,
+    );
     const graphPlanningResults = createGraphPlanningProducerResultContext();
     const parentState = await logicalParentContract.getState() as Record<string, StateValue>;
     // Collection entries are not part of scalar getState(). Resolve compiler-described reads from the
@@ -313,9 +319,7 @@ export async function expandCreateBuilderLateTransitive(
       if (childArgs === undefined) continue;
       const graphChildReturns = preparedAtomicNodes
         ? await expressionReturns(graphChildSources, [...graphParentArgs], true, iterationIndex) : childReturns;
-      const graphChildArgs = graphParentArgs === logicalParentArgs
-        ? childArgs
-        : logicalParentContract._resolveExternalArgs(
+      const graphChildArgs = logicalParentContract._resolveExternalArgs(
           graphChildSources,
           [...graphParentArgs], logicalParentArtifact, parentState,
           parentFn.inputs, graphChildReturns, iterationIndex, false, parentOutgoingSelfAddress,

@@ -400,6 +400,45 @@ export function projectAddressFieldsInStateValue(
 }
 
 /**
+ * Reproduce the address representation seen by a Solidity-compatible kernel handler after its row is decoded.
+ * Value addresses use the ABI-word lane; an address which selects an outgoing call target stays native because
+ * the caller covenant must compare that exact locking bytecode with the authenticated participant identity.
+ */
+export function projectMessageBusHandlerArguments(
+  artifact: Artifact,
+  functionName: string,
+  selector: string | undefined,
+  args: readonly FunctionArgument[],
+): FunctionArgument[] {
+  if (artifact.compiler?.options?.solidityImportCompat !== true
+    && artifact.compiler?.options?.evmCompat !== true) return [...args];
+  const handler = resolveMessageBusHandler(artifact, functionName, selector);
+  const abiFunction = resolveMessageBusAbiFunction(artifact, functionName, selector);
+  if (!handler || !abiFunction) return [...args];
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  const callTargetAddressIndexes = new Set<number>();
+  for (const call of abiFunction.externalCalls ?? []) {
+    if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
+      callTargetAddressIndexes.add(call.addressSource.paramIndex);
+    }
+  }
+  return args.map((argument, index) => {
+    if (callTargetAddressIndexes.has(index)) return argument;
+    const inputType = handler.inputs[index]?.type;
+    if (inputType === undefined) return argument;
+    if (structs?.some((definition) => definition.name === inputType)
+      && argument && typeof argument === 'object' && !(argument instanceof Uint8Array)) {
+      return projectAddressFieldsInStateValue(argument as StateValue, inputType, structs) as FunctionArgument;
+    }
+    if (inputType === 'address' || inputType === 'address payable') {
+      const bytes = coerceAddressBytes(argument as StateValue);
+      if (bytes !== undefined) return addressToGraphEmissionBytes(bytes);
+    }
+    return argument;
+  });
+}
+
+/**
  * Project address fields in an args vector to solidity ABI words (top-level and nested in structs).
  * Live batching uses a selective policy in `encodeMessageBatch` (call-target address params
  * stay native); this helper is the full-vector projector for tests and emission-side tooling.
@@ -940,31 +979,16 @@ export function encodeMessageBatch(
     // Address params used as IFoo(addr) call targets must stay native locking bytecode so emission
     // targets EQUALVERIFY against authenticated participant locks. Other address value-args under
     // solidity-compat use ABI words so nested returning addresses match constructed emission rows.
-    const abiFunction = resolveMessageBusAbiFunction(artifact, invocation.function, invocation.selector);
-    const callTargetAddressIndexes = new Set<number>();
-    for (const call of abiFunction?.externalCalls ?? []) {
-      if (call.addressSource?.kind === 'forward' && typeof call.addressSource.paramIndex === 'number') {
-        callTargetAddressIndexes.add(call.addressSource.paramIndex);
-      }
-    }
     const projectAddressValueArgs = artifact.compiler?.options?.solidityImportCompat === true
       || artifact.compiler?.options?.evmCompat === true;
+    const projectedArgs = projectAddressValueArgs
+      ? projectMessageBusHandlerArguments(artifact, invocation.function, invocation.selector, args)
+      : args;
     const encoded = args.map((arg, index) => {
       const inputType = handler.inputs[index].type;
       const leaves = signatureLeavesByInput[index];
-      // Coerce hex-string address leaves inside structs before pushdata encode (avoids UTF-8 of hex text).
-      let value: FunctionArgument = arg;
-      if (projectAddressValueArgs
-        && !callTargetAddressIndexes.has(index)
-        && structs?.some((definition) => definition.name === inputType)
-        && value && typeof value === 'object' && !(value instanceof Uint8Array)) {
-        value = projectAddressFieldsInStateValue(value as StateValue, inputType, structs) as FunctionArgument;
-      } else if (projectAddressValueArgs
-        && !callTargetAddressIndexes.has(index)
-        && (inputType === 'address' || inputType === 'address payable')) {
-        const bytes = coerceAddressBytes(value as StateValue);
-        if (bytes !== undefined) value = addressToGraphEmissionBytes(bytes);
-      }
+      // Coerce graph value-address lanes before pushdata encoding; call targets remain exact native locks.
+      const value = projectedArgs[index] ?? arg;
       if (leaves.length === 0 || isEntireTransactionSignatureType(inputType)) {
         return encodeFunctionArgument(value, inputType, structs);
       }
@@ -1025,6 +1049,12 @@ export function encodeMessageBatch(
       });
     });
     const tupleGroups = new Map<number, NonNullable<typeof handler.batchKeyWitnesses>>();
+    // Collection-key witnesses use the language's native key encoding. Solidity-compatible row payloads project
+    // address values to 32-byte graph-emission words, but that transport representation is not the mapping key
+    // (or the route input) and must never participate in physical entry identity comparisons.
+    const encodeCollectionKeyArgument = (inputIndex: number): FunctionArgument => encodeFunctionArgument(
+      args[inputIndex], handler.inputs[inputIndex].type, structs,
+    );
     for (const binding of handler.batchKeyWitnesses ?? []) {
       if (binding.entryTupleGroup === undefined) continue;
       const group = tupleGroups.get(binding.entryTupleGroup) ?? [];
@@ -1054,7 +1084,7 @@ export function encodeMessageBatch(
         }
         const encodedValue = binding.source === 'msgSender'
           ? encodeFunctionArgument(value, 'address', structs)
-          : encoded[binding.inputIndex];
+          : encodeCollectionKeyArgument(binding.inputIndex);
         if (!(encodedValue instanceof Uint8Array)) {
           throw new MessageBusDiagnosticError(
             'L3_RESOURCE_UNRESOLVED',
@@ -1102,8 +1132,8 @@ export function encodeMessageBatch(
         }
         const sharedValue = args[binding.inputIndex];
         const varyingValue = args[varying.inputIndex];
-        const sharedEncoded = encoded[binding.inputIndex];
-        const varyingEncoded = encoded[varying.inputIndex];
+        const sharedEncoded = encodeCollectionKeyArgument(binding.inputIndex);
+        const varyingEncoded = encodeCollectionKeyArgument(varying.inputIndex);
         if (!(sharedEncoded instanceof Uint8Array) || !(varyingEncoded instanceof Uint8Array)) {
           throw new MessageBusDiagnosticError(
             'L3_RESOURCE_UNRESOLVED', 'message-bus swappable collection keys are not byte-encodable',
@@ -1158,7 +1188,7 @@ export function encodeMessageBatch(
         ? encodeFunctionArgument(value, 'address', structs)
         : binding.source === 'expression'
           ? encodeFunctionArgument(value, routeInputType ?? 'bytes', structs)
-          : encoded[binding.inputIndex] as Uint8Array;
+          : encodeCollectionKeyArgument(binding.inputIndex);
       if (!(encodedValue instanceof Uint8Array)) {
         throw new MessageBusDiagnosticError(
           'L3_RESOURCE_UNRESOLVED',

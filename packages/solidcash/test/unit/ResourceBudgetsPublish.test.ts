@@ -30,7 +30,7 @@ describe('published resource budgets/published semantic-derivation ceiling resou
     expect(budgets.maximumBlobBytes).toBe(MAX_MESSAGE_BUS_BLOB_BYTES);
     expect(budgets.maximumDynamicChunks).toBe(256);
     expect(budgets.maximumValueContinuationChunks).toBe(256);
-    expect(budgets.maximumSemanticDerivationPasses).toBe(256);
+    expect(budgets.maximumSemanticDerivationPasses).toBe(906);
   });
 
   it('compiler stamps messageBus.resourceBudgets on kernel artifacts', () => {

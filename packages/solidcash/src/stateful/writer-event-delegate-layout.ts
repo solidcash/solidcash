@@ -213,18 +213,20 @@ export function pinExactSortedBatchEntry(parts: {
   conditionalLayoutSlot: boolean;
   linearSortedBatch: boolean;
 }): boolean {
-  // A linear sorted batch publishes every reached key as an in-block node. Pin those placeholders even when
-  // the layout slot is conditional, otherwise probe derivation treats an unobserved INSERT as a no-op delete
-  // and replaces the minted NFT with OP_TRUE.
-  return parts.linearSortedBatch || (parts.exact && !parts.conditionalLayoutSlot);
+  // A linear sorted batch publishes every reached key as an in-block node, but its structural slot||next seed
+  // is not exact until the value tail is also known. Pinning an unknown-value seed prevents trace derivation
+  // from completing values constructed inside the handler (for example a literal string in initialize()).
+  return parts.exact && (parts.linearSortedBatch || !parts.conditionalLayoutSlot);
 }
 
 /** Compiler-owned in-block vmap nodes are not leftover P'+NEW clones. */
 export function skipCompilerOwnedInBlockCollectionStrip(parts: {
   preserveBlockLayoutWidth: boolean;
   pinnedEntryCount: number;
+  requiredEntryCount?: number;
 }): boolean {
-  return parts.preserveBlockLayoutWidth && parts.pinnedEntryCount > 0;
+  return parts.preserveBlockLayoutWidth
+    && (parts.pinnedEntryCount > 0 || (parts.requiredEntryCount ?? 0) > 0);
 }
 
 /** Place a balanced-block output at a fixed offset, overwriting a prior pad rather than appending past it. */
@@ -436,8 +438,12 @@ export function inheritWriterBatchWitnesses<T>(
  * retain stale read-only topology witnesses after a sibling call writes the same participant.
  */
 export type PromotableWriterBatchPlan<T, P, I> = {
+  blockLayout?: { blockSize?: number; trailingBase?: number };
   internalArgs?: Record<string, T>;
-  compilerRoute?: { internalArgs?: Record<string, T> };
+  compilerRoute?: {
+    internalArgs?: Record<string, T>;
+    abiFunction?: { blockLayout?: { blockSize?: number; trailingBase?: number } };
+  };
   plannedEntryInserts?: I[];
   plannedEntryInsertHandles?: number[];
   relativeOutputInternalArgs?: string[];
@@ -493,6 +499,11 @@ export function inheritWriterBatchPlan<T, P, I = never>(
 ): boolean {
   if (!writer) return false;
   let changed = false;
+  const targetTrailingBase = groupLayoutTrailingBase(target);
+  const writerTrailingBase = groupLayoutTrailingBase(writer);
+  const rebaseWriterTrailingSlot = (slot: number): number => slot >= writerTrailingBase
+    ? targetTrailingBase + slot - writerTrailingBase
+    : slot;
   const copyExactPart = <K extends keyof PromotableWriterBatchPlan<T, P, I>>(field: K): void => {
     const incoming = writer[field];
     if (!writerBatchPlanPartPresent(incoming)) return;
@@ -542,7 +553,13 @@ export function inheritWriterBatchPlan<T, P, I = never>(
   };
   target.batchPredecessorOutputs = mergeKeyedArray(
     target.batchPredecessorOutputs,
-    writer.batchPredecessorOutputs,
+    writer.batchPredecessorOutputs?.map((value) => {
+      const predecessor = value as P & { outputBlockSlot: number };
+      const outputBlockSlot = rebaseWriterTrailingSlot(predecessor.outputBlockSlot);
+      return outputBlockSlot === predecessor.outputBlockSlot
+        ? value
+        : { ...predecessor, outputBlockSlot };
+    }),
     (value) => (value as { outputBlockSlot: number }).outputBlockSlot,
     'batchPredecessorOutputs',
   );
@@ -575,6 +592,14 @@ export function inheritWriterBatchPlan<T, P, I = never>(
     target.batchEntryCommitments, writer.batchEntryCommitments, 'batchEntryCommitments',
   );
   const writerArgs = { ...writer.compilerRoute?.internalArgs, ...writer.internalArgs };
+  if (targetTrailingBase !== writerTrailingBase) {
+    for (const [name, value] of Object.entries(writerArgs)) {
+      if (/^__internal__vmapBatchPredOut_\d+$/.test(name)
+        && typeof value === 'bigint' && value >= BigInt(writerTrailingBase)) {
+        writerArgs[name] = BigInt(rebaseWriterTrailingSlot(Number(value))) as T;
+      }
+    }
+  }
   if (!Object.keys(writerArgs).some(isWriterBatchWitnessName)) return changed;
   target.internalArgs = inheritWriterBatchWitnesses(target.internalArgs, writerArgs);
   if (target.compilerRoute) {
@@ -584,6 +609,21 @@ export function inheritWriterBatchPlan<T, P, I = never>(
     );
   }
   return true;
+}
+
+/**
+ * A shared logical call without a compiler-owned route is an alternative handler on the
+ * physical input, not an additional handler. Only the selected physical function can
+ * contribute its sorted-batch write plan. Routed calls may aggregate multiple handlers.
+ */
+export function writerBatchPlanMatchesPhysicalCarrier(
+  physical: { functionName?: string; compilerRoute?: unknown },
+  writer: { functionName?: string; sharedGroupIndex?: number; compilerRoute?: unknown },
+): boolean {
+  return writer.sharedGroupIndex === undefined
+    || physical.compilerRoute !== undefined
+    || writer.compilerRoute !== undefined
+    || writer.functionName === physical.functionName;
 }
 
 /**

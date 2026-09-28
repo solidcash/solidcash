@@ -11,6 +11,7 @@ import {
   type ExternalCallUtxoGroup,
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
+import { identityAnchorPlacement } from './stb-build-inputs.js';
 
 export interface SetFunderUtxosHost {
   funderUtxos: UnlockableUtxo[];
@@ -113,9 +114,8 @@ export function setFunderUtxos(
   debugInputAssembly('refresh-minting-band-relocated');
   host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
   debugInputAssembly('refresh-predecessors-placed');
-  // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
-  // identity from the LAST input, so that tail position must stay the caller's.
-  host.allInputs.push(...host.externalIdentityAnchorUtxos);
-  if (host.logicalIdentityUtxo) host.allInputs.push(host.logicalIdentityUtxo);
+  host.allInputs.push(...identityAnchorPlacement(
+    host.blockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
+  ).trailing);
   debugInputAssembly('refresh-identity-anchors-appended');
 }

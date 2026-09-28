@@ -177,9 +177,13 @@ export function constructCreateBuilderTransactionBuilder(
     && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')) {
     // Position it by ABI name: appends alone are only correct when every earlier hidden block ran, which a
     // probe (returnProbeOnly) and other partial builds do not guarantee.
-    finalArgs = materializeInternalFunctionArgument(
+    const materialized = materializeInternalFunctionArgument(
       finalArgs, abiFunction.inputs, '__internal__msgSenderCategory', resolvedMsgSenderCategory,
     );
+    // `buildStateInputUnlocker` was created against this array before transaction construction. Preserve its
+    // identity so later absolute-index rebinding (SCID anchors, returns, dynamic resources) updates the frame the
+    // closure actually serializes rather than a detached copy.
+    finalArgs.splice(0, finalArgs.length, ...materialized);
   }
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_MSG_SENDER_KEY === '1' && overrides?.returnProbeOnly === true) {

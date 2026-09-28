@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { addressToGraphEmissionBytes, encodePushdataValue } from '@solidcash/utils';
 import {
   encodeMessageBatch, encodeMessageBusArguments, projectGraphEmissionAddressArgs,
+  projectMessageBusHandlerArguments,
 } from '../../src/message-bus/message-bus.js';
 import { compileString } from 'solidc';
 
@@ -50,5 +51,26 @@ describe('projectGraphEmissionAddressArgs', () => {
     const word = addressToGraphEmissionBytes(lock);
     expect(argsHex.includes(binToHex(word))).toBe(true);
     expect(argsHex.includes(binToHex(lock))).toBe(false);
+  });
+
+  it('projects value addresses for handler replay while retaining native call-target locks', () => {
+    const artifact = compileString(`pragma solidity ^0.8.0;
+      interface ITarget { function ping() external; }
+      contract C {
+        function act(address value, address target) public {
+          ITarget(target).ping();
+          require(value != address(0));
+          require(true);
+        }
+      }`, {
+      forceStateful: true, messageBus: true, messageBusKernel: true,
+      solidityImportCompat: true, suppressWarnings: true,
+    });
+    const value = Uint8Array.of(0x76, 0xa9, 0x14, ...new Uint8Array(20).fill(0x31), 0x88, 0xac);
+    const target = Uint8Array.of(0xaa, 0x20, ...new Uint8Array(32).fill(0x42), 0x87);
+    const projected = projectMessageBusHandlerArguments(artifact, 'act', undefined, [value, target]);
+
+    expect(projected[0]).toEqual(addressToGraphEmissionBytes(value));
+    expect(projected[1]).toEqual(target);
   });
 });

@@ -14,6 +14,7 @@ import {
   externalReturnsForCallsites,
   producerResultOccurrenceIndex,
   repeatedExternalResultNeedsOccurrenceIdentity,
+  publishPreparedKernelDelegateOwnerFrame,
   resolvePreparedKernelDelegateExecution,
   resolvePreparedKernelDelegateOwnerFrame,
   resolvePublishedEntryBlockOffset, selectKernelDelegateForwardingGroupIndex,
@@ -602,6 +603,22 @@ describe('kernel delegate forwarding binding prerequisite', () => {
     expect(selected.abiFunction).toBe(logical);
     expect(selected.args).toEqual(execution.args);
     expect(selected.args).not.toBe(execution.args);
+  });
+
+  it('publishes the promoted logical arguments independently of the physical delegate payload', () => {
+    const physicalPayload = [bytes('11'.repeat(35))];
+    const logicalArgs = [bytes('22'.repeat(35))];
+    const group = { functionArgs: physicalPayload } as any;
+
+    publishPreparedKernelDelegateOwnerFrame(group, {
+      abiFunction: { name: 'apply' } as any,
+      args: logicalArgs,
+    });
+
+    expect(group.functionArgs).toBe(physicalPayload);
+    expect(group.logicalFunctionName).toBe('apply');
+    expect(group.logicalFunctionArgs).toEqual(logicalArgs);
+    expect(group.logicalFunctionArgs).not.toBe(logicalArgs);
   });
 
   it('fails closed for an ambiguous promoted owner or mismatched decoded arity', () => {

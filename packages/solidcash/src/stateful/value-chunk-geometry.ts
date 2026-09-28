@@ -538,9 +538,10 @@ export function valueChunkBandWidthForContinuationClaims(
 export function continuationOutputBaseBeforeSuffix(
   outputCount: number,
   authenticatedSuffixCount: number,
+  minimumFixedPrefix = 0,
 ): number {
   if (authenticatedSuffixCount <= 0) return outputCount;
-  return Math.max(0, outputCount - authenticatedSuffixCount - 1);
+  return Math.min(outputCount, Math.max(minimumFixedPrefix, outputCount - authenticatedSuffixCount - 1));
 }
 
 /** Prefer a planner-owned continuation band; allocate before the authenticated suffix only when none exists. */

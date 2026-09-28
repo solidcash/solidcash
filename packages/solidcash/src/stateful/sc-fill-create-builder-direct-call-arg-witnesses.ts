@@ -33,7 +33,8 @@ export interface FillCreateBuilderDirectCallArgWitnessesHost {
 
 export type CreateBuilderAnchorFillPosition = {
   argIndex: number;
-  band: number;
+  band?: number;
+  categoryId?: string;
   proxyRoute: boolean;
 };
 

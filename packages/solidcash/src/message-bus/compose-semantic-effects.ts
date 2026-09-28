@@ -22,6 +22,7 @@ import {
   type AtomicValueSlotEffect,
 } from './graph.js';
 import { deriveCompiledGraphPlan } from './worklist.js';
+import { discoverMessageBusComputedResourceOutputs } from './preflight.js';
 
 type CompiledGraphPlan = ReturnType<typeof deriveCompiledGraphPlan>;
 type PlanParticipant = CompiledGraphPlan['participants'][number];
@@ -61,6 +62,50 @@ function internalTokenCategory(token: TokenDetails): string {
   if (!token.nft) return category;
   const capability = { none: '', mutable: '01', minting: '02' }[token.nft.capability];
   return `${category}${capability}`;
+}
+
+/** Refresh resource claims discovered only after event relocation lets the implementation body execute. */
+function refreshDiscoveredMutableResourceEffects(
+  ctx: ObserveComposeSemanticEffectsContext,
+  effects: AtomicResourceSlotEffect[],
+  proposals: ReadonlyMap<number, Uint8Array>,
+): void {
+  const resourceOrder = new Map(ctx.resourceSlots.map((slot, index) => (
+    [`${slot.participant}:${slot.offset}`, index] as const
+  )));
+  for (const [absolute, proposedCommitment] of proposals) {
+    const slot = ctx.resourceSlots.find((candidate) => (
+      ctx.finalized.layout.participantInputs[candidate.participant] + candidate.offset === absolute
+    ));
+    if (slot === undefined) continue;
+    const input = ctx.provisional.inputs[absolute];
+    const output = ctx.provisional.outputs[absolute];
+    const inputMutable = input?.token?.nft?.capability === 'mutable';
+    const outputMutable = output?.token?.nft?.capability === 'mutable';
+    if (!input || !output || (!inputMutable && !outputMutable)) continue;
+    const inputLockingBytecode = input.unlocker.generateLockingBytecode();
+    const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+    const lockingBytecodeChanges = inputMutable && outputMutable
+      && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode);
+    const mode = inputMutable ? (outputMutable ? (lockingBytecodeChanges ? 5 : 0) : 2) : 1;
+    const activeToken = inputMutable ? input.token! : output.token!;
+    const refreshed: AtomicResourceSlotEffect = {
+      participant: slot.participant,
+      offset: slot.offset,
+      mode,
+      lockingBytecodeHex: binToHex(inputMutable ? inputLockingBytecode : outputLockingBytecode),
+      ...(mode === 5 && { outputLockingBytecodeHex: binToHex(outputLockingBytecode) }),
+      tokenCategoryHex: `${binToHex(hexToBin(activeToken.category).reverse())}01`,
+      inputCommitmentHex: inputMutable ? input.token!.nft!.commitment : '',
+      outputCommitmentHex: outputMutable ? binToHex(proposedCommitment) : '',
+    };
+    const prior = effects.findIndex((effect) => effect.participant === slot.participant
+      && effect.offset === slot.offset);
+    if (prior < 0) effects.push(refreshed);
+    else effects[prior] = refreshed;
+  }
+  effects.sort((left, right) => (resourceOrder.get(`${left.participant}:${left.offset}`) ?? Number.MAX_SAFE_INTEGER)
+    - (resourceOrder.get(`${right.participant}:${right.offset}`) ?? Number.MAX_SAFE_INTEGER));
 }
 
 export function observeComposeSemanticEffects(
@@ -448,6 +493,14 @@ export function observeComposeSemanticEffects(
     });
     ctx.rebalanceFeeTail(ctx.provisional, 'relocated compiler-authenticated event outputs');
   }
+  // Event slots are semantic prerequisites for implementations which both emit an event and update a mutable
+  // entry. The first resource probe can stop at the event-slot lookup before it reaches the entry covenant;
+  // relocation above makes that path executable without changing the already-stable event claim. Re-run the
+  // structurally bounded resource observation now and refresh precisely the claims it discovers, so the current
+  // semantic pass cannot admit a stale entry placeholder. Discovery is deliberately non-mutating: the next
+  // graph pass applies this compiler-authenticated semantic claim as a recipe, and the VM remains validation-only.
+  const postEventResourceProposals = discoverMessageBusComputedResourceOutputs(ctx.provisional);
+  refreshDiscoveredMutableResourceEffects(ctx, derivedResourceEffects, postEventResourceProposals);
   for (const slot of ctx.eventSlots()) {
     const outputIndex = ctx.finalized.layout.participantInputs[slot.participant] + slot.offset;
     const output = ctx.provisional.outputs[outputIndex];

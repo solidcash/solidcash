@@ -16,6 +16,7 @@ export interface FinalizeBuildJobsBandAndViewsHost {
   readonly jobEventsRedeemLock?: Uint8Array;
   readonly preserveBlockLayoutWidth: boolean;
   readonly pinnedEntrySlots: ReadonlySet<unknown>;
+  readonly requiredEntryOutputSlots: ReadonlySet<unknown>;
   viewTailRepackAttempted: boolean;
   builtReturnEventOutputIndices: Map<string, number>;
   getChunkableValueWriteBand(): { start: number; end: number; nNew: number } | undefined;
@@ -88,6 +89,7 @@ export function finalizeBuildJobsBandAndViews(
     && !skipCompilerOwnedInBlockCollectionStrip({
       preserveBlockLayoutWidth: host.preserveBlockLayoutWidth,
       pinnedEntryCount: host.pinnedEntrySlots.size,
+      requiredEntryCount: host.requiredEntryOutputSlots.size,
     });
   if (chunkBand && chunkLock && (shouldStripStagedSurplus || shouldStripLegacySurplus)) {
     stripSurplusValueChunkLocks(builder.outputs, chunkBand, chunkLock, host.allInputs);

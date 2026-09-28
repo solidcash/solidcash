@@ -267,8 +267,8 @@ describe('kernel graph result dependencies', () => {
       ],
     });
     expect(artifact.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
-      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 },
-      { consumerCallsiteId: 1, argument: 2, producerCallsiteId: 0, resultIndex: 1 },
+      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 1, argument: 2, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 1 },
     ]);
     const graphHandler = artifact.invocationAnalysis?.functions.find((fn) =>
       fn.name === '__message_bus_handler_apply');
@@ -324,16 +324,24 @@ describe('kernel graph result dependencies', () => {
       { callsiteId: 2, functionName: 'write', returnTypes: undefined },
     ]);
     expect(calls[2].argSources).toEqual([
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0 } },
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 1 } },
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 1, resultIndex: 0 } },
-      { kind: 'expression', expression: { kind: 'producerResult', callsiteId: 1, resultIndex: 1 } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0,
+      } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 1,
+      } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 0,
+      } },
+      { kind: 'expression', expression: {
+        kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 1,
+      } },
     ]);
     expect(artifact.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
-      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
-      { consumerCallsiteId: 2, argument: 1, producerCallsiteId: 0, resultIndex: 1 },
-      { consumerCallsiteId: 2, argument: 2, producerCallsiteId: 1, resultIndex: 0 },
-      { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1, resultIndex: 1 },
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 1, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 1 },
+      { consumerCallsiteId: 2, argument: 2, producerCallsiteId: 1, producerSourceCallsiteId: 1, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 3, producerCallsiteId: 1, producerSourceCallsiteId: 1, resultIndex: 1 },
     ]);
   });
 
@@ -386,11 +394,13 @@ describe('kernel graph result dependencies', () => {
       { kind: 'forward', paramIndex: 0 },
       {
         kind: 'expression',
-        expression: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256' },
+        expression: {
+          kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0, type: 'uint256',
+        },
       },
     ]);
     expect(first.abi.find((fn) => fn.name === 'apply')?.resultConsumers).toEqual([
-      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
     ]);
     expect(second.abi.find((fn) => fn.name === 'apply')?.externalCalls).toEqual(calls);
     expect(second.abi.find((fn) => fn.name === 'apply')?.resultConsumers)
@@ -440,7 +450,9 @@ describe('kernel graph result dependencies', () => {
     expect(JSON.parse(output)).toEqual({
       convention: 'kernel-row-loop', eligible: true,
       calls: [{ callsiteId: 0, name: 'read' }, { callsiteId: 1, name: 'write' }],
-      consumers: [{ consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, resultIndex: 0 }],
+      consumers: [{
+        consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0,
+      }],
       graphHandlers: 1,
     });
   }, 120_000);
@@ -562,13 +574,13 @@ describe('kernel graph result dependencies', () => {
       expression: {
         kind: 'ternary',
         condition: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
-        ifTrue: { kind: 'producerResult', callsiteId: 0, resultIndex: 0, type: 'uint256' },
-        ifFalse: { kind: 'producerResult', callsiteId: 1, resultIndex: 0, type: 'uint256' },
+        ifTrue: { kind: 'producerResult', callsiteId: 0, sourceCallsiteId: 0, resultIndex: 0, type: 'uint256' },
+        ifFalse: { kind: 'producerResult', callsiteId: 1, sourceCallsiteId: 1, resultIndex: 0, type: 'uint256' },
       },
     }]);
     expect(fn?.resultConsumers).toEqual([
-      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, resultIndex: 0 },
-      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 1, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 0, producerSourceCallsiteId: 0, resultIndex: 0 },
+      { consumerCallsiteId: 2, argument: 0, producerCallsiteId: 1, producerSourceCallsiteId: 1, resultIndex: 0 },
     ]);
   });
 });

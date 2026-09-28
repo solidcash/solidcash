@@ -183,18 +183,35 @@ export function deriveComposeInvocationPlan(
     args: descriptors[0].args,
     rootCaller,
     targets: {},
-    target: ({ callsiteId, batchLogicalIndex, occurrence }) => {
+    target: (context) => {
+      const { callsiteId, batchLogicalIndex, occurrence } = context;
       const descriptor = descriptors[next];
-      if (!descriptor) return undefined;
-      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return undefined;
+      const unresolved = (): undefined => {
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ATOMIC_PROMOTION === '1') {
+          console.error('atomic-prepared-target-mismatch', JSON.stringify({
+            owner: context.participant.artifact.contractName, function: context.function,
+            invocation: context.invocation, callsiteId, batchLogicalIndex, occurrence, next,
+            remaining: descriptors.length - next,
+            candidates: descriptors.slice(next, next + 3).map((candidate) => ({
+              owner: candidate.artifact.contractName, function: candidate.functionName,
+              callsiteId: candidate.callsiteId, sourceLogicalIndex: candidate.sourceLogicalIndex,
+              occurrenceIndex: candidate.occurrenceIndex, producerPath: candidate.producerPath,
+            })),
+          }));
+        }
+        return undefined;
+      };
+      if (!descriptor) return unresolved();
+      if (descriptor.callsiteId !== undefined && descriptor.callsiteId !== callsiteId) return unresolved();
       const descriptorLogical = descriptor.sourceLogicalIndex ?? descriptor.batchLogicalIndex;
       const descriptorOccurrence = descriptor.occurrenceIndex ?? descriptor.batchOccurrenceIndex;
       if (batchLogicalIndex !== undefined
         && descriptorLogical !== undefined
-        && descriptorLogical !== batchLogicalIndex) return undefined;
+        && descriptorLogical !== batchLogicalIndex) return unresolved();
       if (batchLogicalIndex !== undefined
         && descriptorOccurrence !== undefined
-        && descriptorOccurrence !== occurrence) return undefined;
+        && descriptorOccurrence !== occurrence) return unresolved();
       next += 1;
       return {
         participant: workParticipants[next - 1],

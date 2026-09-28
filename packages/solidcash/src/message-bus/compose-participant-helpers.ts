@@ -525,6 +525,11 @@ export const graphRouteContext = (
           + finalized.callManifest.participants[participant].returnOffset,
     ),
     __internal__graphBlockSize: BigInt(finalized.callManifest.participants[participant].maximumSize),
+    __internal__graphSelfIdentityInput: BigInt(
+      execution.logicalIdentityOffset !== undefined
+        && execution.logicalIdentityOffset > 0
+        ? finalized.layout.participantInputs[participant] + execution.logicalIdentityOffset : -1,
+    ),
     __internal__graphEmissions: concat(...emissions),
     __internal__graphCallers: concat(...callers),
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),

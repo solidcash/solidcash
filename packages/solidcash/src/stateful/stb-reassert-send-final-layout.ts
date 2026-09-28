@@ -22,6 +22,7 @@ export interface ReassertSendFinalLayoutHost {
   applyDerivedEntryOutputs(builder: TransactionBuilder): void;
   finalizeReverseSuffixJobsLayout(builder: TransactionBuilder): void;
   enforceDeclaredCollectionOutputCardinality(builder: TransactionBuilder): void;
+  learnFinalizedDelegateEvents(builder: TransactionBuilder): boolean;
   relocateCollidingDerivedValueChunkRuns(builder: TransactionBuilder): void;
   bindMaterializedValueChunkWitnesses(builder: TransactionBuilder): void;
   syncBuilderUnlockers(builder: TransactionBuilder): void;
@@ -78,6 +79,10 @@ export function reassertSendFinalLayout(
   // grow TXOUTPUTCOUNT. Pin reverse-suffix jobs as the last layout write in this pass.
   host.finalizeReverseSuffixJobsLayout(finalBuilder);
   host.enforceDeclaredCollectionOutputCardinality(finalBuilder);
+  // Delegate event values can only be observed after collection cardinality and all absolute coordinates have
+  // settled. Discovery is compiler-metadata-gated and replaces the existing fixed-value event placeholder in
+  // place, so it must not replay earlier broad ownership passes over these now-authenticated coordinates.
+  host.learnFinalizedDelegateEvents(finalBuilder);
   host.relocateCollidingDerivedValueChunkRuns(finalBuilder);
   // Bind only after every final materializer has settled physical coordinates. Kernel ownership is selected
   // by compiler resource identity; the provisional base is not allowed to override an authenticated run.

@@ -1178,10 +1178,10 @@ export async function assembleAtomicComposition(
           + `slots, expected balanced block size ${blockSize}`,
         );
       }
-      const fixedSize = transportedChunkCount > 0
-        ? participant.blockLayout!.trailingBase ?? blockSize
-        : participant.blockLayout!.fixedSuffix
-        ? blockSize : participant.blockLayout!.trailingBase ?? blockSize;
+      // `fixedSuffix` prevents compaction of the participant, but it does not erase the compiler-published
+      // trailing band. Computed chunk claims are validated against that band before `minimumActualSize` is forced
+      // back to the full block below; using blockSize here turns the valid range into an empty interval.
+      const fixedSize = participant.blockLayout!.trailingBase ?? blockSize;
       const computedValueChunkMetadata = local as TransactionBuilder & {
         __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
         __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
@@ -1524,9 +1524,10 @@ export async function assembleAtomicComposition(
               participant: participant.participant,
               carrier: 'sortedBatch' as const,
               collection: pred.witnessName,
-              roles: {
-                outputSlot: publishedBase + pred.physicalLocalOffset,
-              },
+              // PredOut references the already-produced P' output; it does not produce a second resource at
+              // that coordinate. The paired predOuts claim below retains the exact physical offset authority
+              // and participant-boundary validation without colliding with the resource which owns the output.
+              roles: {},
             })),
           ];
           deferredLayoutClaims.push({

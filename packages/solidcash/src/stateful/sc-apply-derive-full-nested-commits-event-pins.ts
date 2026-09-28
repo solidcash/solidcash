@@ -43,6 +43,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
   llc: any;
   nestedTrace: any[];
   nestedOutputBase: number;
+  implInputIndex: number;
   proxyGroup: ExternalCallUtxoGroup | undefined;
   chunkCategory: string | undefined;
   valueChunkWrites: any[];
@@ -54,7 +55,7 @@ export function applyDeriveFullNestedCommitsEventPins(params: {
   let commitmentProgressDelta = 0;
   let nestedPinProgressDelta = 0;
   const {
-    stb, probeBuilder2, llc, nestedTrace, nestedOutputBase, proxyGroup,
+    stb, probeBuilder2, llc, nestedTrace, nestedOutputBase, implInputIndex, proxyGroup,
     chunkCategory, valueChunkWrites, band, allChunks, pin,
   } = params;
 
@@ -166,6 +167,11 @@ const nestedEventSlots = (nestedFn?.blockLayout?.slots ?? []).filter(
 );
 const nestedEmits = nestedFn?.emits ?? [];
 if (proxyGroup && nestedEventSlots.length > 0 && nestedEmits.length > 0) {
+  // Delegate event opcodes are implementation-executor-relative even when state/value resources are embedded in
+  // the owning proxy block. The projected proxy layout reserves the corresponding physical slot, but using the
+  // proxy output base here probes a different coordinate and prevents the authenticated event commitment from
+  // ever being learned.
+  const nestedEventOutputBase = implInputIndex;
   // `commits` is deliberately first-write-wins for computed value chunks: several disjoint covenant
   // families can inspect the same speculative output coordinate while the routed layout converges.
   // An event slot is different. An empty message-bus identity carrier can be preservation-checked at
@@ -174,8 +180,8 @@ if (proxyGroup && nestedEventSlots.length > 0 && nestedEmits.length > 0) {
   // carrier's `SCID` commitment as the event and made the final delegate fail against its real blob.
   const nestedEventCommitments = extractCommitmentMapFromTrace(
     nestedTrace, {
-      min: nestedOutputBase + nestedEventSlots[0].offset,
-      max: nestedOutputBase + nestedEventSlots[nestedEventSlots.length - 1].offset + 1,
+      min: nestedEventOutputBase + nestedEventSlots[0].offset,
+      max: nestedEventOutputBase + nestedEventSlots[nestedEventSlots.length - 1].offset + 1,
     }, true, false, true,
   );
   const existingEventOutputs = llc.eventOutputs ?? proxyGroup.eventOutputs;
@@ -187,7 +193,7 @@ if (proxyGroup && nestedEventSlots.length > 0 && nestedEmits.length > 0) {
   for (let eventIndex = 0; eventIndex < nestedEventSlots.length; eventIndex++) {
     const emitInfo = nestedEmits[eventIndex];
     if (!emitInfo) continue;
-    const absoluteIndex = nestedOutputBase + nestedEventSlots[eventIndex].offset;
+    const absoluteIndex = nestedEventOutputBase + nestedEventSlots[eventIndex].offset;
     let commitment = nestedEventCommitments.get(absoluteIndex);
     const materializedCommitment = String(
       probeBuilder2.outputs[absoluteIndex]?.token?.nft?.commitment ?? '',

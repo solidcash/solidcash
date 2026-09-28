@@ -2028,6 +2028,70 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return this.usesMessageBusOwnerBlockBase() || this.usesProxyStateBlockBase();
   }
 
+  /** Push the visible self address without moving the physical storage owner. */
+  private emitSelfLockingBytecode(locationData: SingleLocationData): void {
+    const witness = '__internal__graphSelfIdentityInput';
+    const bandOrdinal = this.declaredBandOrdinal(witness);
+    const hasWitness = bandOrdinal !== undefined || this.stack.includes(witness);
+    this.emitMasterInputIndex(locationData);
+    if (!hasWitness) {
+      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      return;
+    }
+    // Retain the authenticated owner's category while inspecting the optional immutable CREATE anchor.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_TOALTSTACK, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    if (bandOrdinal !== undefined) {
+      this.emit(Op.OP_DEPTH, locationData);
+      this.emit(encodeInt(BigInt(bandOrdinal)), locationData);
+      this.emit(Op.OP_SUB, locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else {
+      this.emitPickTrackedFromBottom(witness, locationData);
+    }
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emit(Op.OP_FROMALTSTACK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // immutable anchor, exact owner category
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData); // [ownerLock, index, commitment]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(5n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44, 0x01]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData); // commitment suffix pins the physical owner
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /**
    * Emit opcodes to push a block slot's absolute index onto the stack.
    * Pushes 1 untracked value. Replaces the old base + offset + OP_PICK pattern.
@@ -6259,6 +6323,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // settlement can then follow this ordinary tracked local instead of addressing across that unknown prefix.
     if (this.compilerOptions.ownerAltAnchor === true && !this.isDefineSubTraversal
       && this.isCompilerMessageBusRoute(node)
+      && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
+      const proxyDepth = this.getStackIndex('__internal__proxyMasterIndex');
+      const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+      this.emit(encodeInt(BigInt(proxyDepth)), anchorLocation);
+      this.emit(Op.OP_PICK, anchorLocation);
+      this.pushToStack(PROXY_MASTER_ANCHOR_LOCAL);
+    }
+
+    // Published delegate bodies can execute behind OP_INVOKE, where late OP_INPUTINDEX reads are local to the
+    // invoked frame. Capture the authenticated physical proxy coordinate while the declared ABI frame is still
+    // exact; fixed entry-output paths can then derive the adjacent implementation block without reaching across
+    // an arbitrarily large mapping/array working frame.
+    if (this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true) < 0
       && this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
       const proxyDepth = this.getStackIndex('__internal__proxyMasterIndex');
       const anchorLocation: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
@@ -12750,6 +12827,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && (node.left.type instanceof BytesType || node.left.type instanceof AddressType)) {
       return this.emitBytesCompare(node);
     }
+    // Imported Solidity addresses have one logical 20-byte identity but can arrive in several physical BCH
+    // representations: a native P2PKH/P2SH locking bytecode, a raw 20-byte identity, or a right-aligned 32-byte
+    // ABI word. Graph handlers deliberately retain the ABI-word form for value-only address lanes, while
+    // msg.sender remains the authenticated native locking bytecode. Comparing those byte strings directly makes
+    // equal Solidity addresses unequal (for example a stored struct owner against msg.sender). Normalize both
+    // address operands before equality; the native SolidCash language keeps its exact-byte address semantics.
+    if ((this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat)
+      && (node.operator === BinaryOperator.EQ || node.operator === BinaryOperator.NE)
+      && node.left.type instanceof AddressType && node.right.type instanceof AddressType) {
+      const locationData = { location: node.location, positionHint: PositionHint.END };
+      node.left = this.visit(node.left);
+      this.emitGraphAddressIdentity(locationData);
+      node.right = this.visit(node.right);
+      this.emitGraphAddressIdentity(locationData);
+      this.emit(compileBinaryOp(node.operator, false), locationData);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+      return node;
+    }
     node.left = this.visit(node.left);
     const bothOperandsAreNumeric = isNumericType(node.left.type) && isNumericType(node.right.type);
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -12931,22 +13027,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
-    // `address(this)` is the cast the builder produces over the contract's own locking bytecode, i.e.
-    // `tx.inputs[this.activeInputIndex].lockingBytecode`. A proxy/delegate execution physically runs inside the
-    // implementation's input, so that input's locking bytecode is the EXECUTOR's covenant rather than the account
-    // the call was made to: the Solidity-visible self is the authenticated participant owner. A caller that passes
-    // `address(this)` as a direct graph argument already resolves it from that owner lane (the `selfAddress`
-    // argument source); resolve every OTHER use - struct fields, concatenations, comparisons - the same way, so
-    // one expression cannot acquire two identities inside a single compilation.
-    // MEASURED (marketplace `take job`): a delegated take-job serialised the executor's covenant into the escrow
-    // call record while the route witness, the participant's state entries and the callee's own record check all
-    // carry the owner's, so the callee rejected the whole transaction at a 287-byte OP_EQUALVERIFY.
+    // The builder lowers address(this) to the active input's locking bytecode. Routed execution instead uses
+    // the participant identity, including its authenticated CREATE anchor when present. Resolve nested values
+    // (struct fields, concatenations and comparisons) through the same projection as direct graph arguments.
     if (node.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
       && node.expression instanceof NullaryOpNode
       && node.expression.operator === NullaryOperator.INPUT_INDEX
       && this.selfLockingBytecodeNamesParticipantOwner()) {
-      this.emitMasterInputIndex(locationData);
-      this.emit(Op.OP_UTXOBYTECODE, locationData);
+      this.emitSelfLockingBytecode(locationData);
       this.pushToStack('(value)');
       return node;
     }
@@ -19821,12 +19909,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           || source?.kind === 'expression'
           || !(parameter instanceof IdentifierNode);
         if (useParticipantOwnerAddress) {
-          // Runtime graph handlers receive already-evaluated call arguments. For a delegate, the original
-          // `address(this)` value was evaluated at the implementation executor and cannot be trusted as the
-          // Solidity-visible caller identity. Reconstruct this exact compiler-labelled lane from the same
-          // authenticated participant owner used by state access and final call-manifest planning.
-          this.emitMasterInputIndex(locationData);
-          this.emit(Op.OP_UTXOBYTECODE, locationData);
+          // Reconstruct compiler-labelled self arguments in the authenticated participant context; an earlier
+          // executor-local evaluation must not replace the public identity used by the outgoing call.
+          this.emitSelfLockingBytecode(locationData);
           this.pushToStack('(__graph_arg_value)');
         } else if (evaluateArgument) {
           // An inline array normally uses the expression-stack representation (elements plus count). A graph
@@ -21415,25 +21500,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
     untrackedItemsAtEntry = 1,
   ): void {
-    const id = GenerateTargetTraversalWithLocation.SORTED_VALUE_OUTPUT_SUBROUTINE_ID;
-    this.bumpSubroutineUse(id);
-    // Delegate functions keep the proxy master index on the altstack. OP_INVOKE temporarily places its return
-    // address above that value, so this helper's category check would read the return address as the proxy index.
-    // Keep the delegate-sensitive verifier inline; ordinary functions still share the helper.
-    if (!this.currentFunctionIsDelegate && !this.usesMessageBusOwnerBlockBase()
-      && this.subroutineDefined.get(id)) {
-      // Copy the arbitrarily-positioned fields into the helper's canonical frame. Each copy increases the depth of
-      // the still-original fields by one. The original output index is copied last, then dropped after the helper
-      // consumes the five-item copied frame.
-      this.emit(encodeInt(BigInt(addrDepth)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(f1Depth + 1)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(f2Depth + 2)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(BigInt(f3Depth + 3)), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(4n), loc); this.emit(Op.OP_PICK, loc);
-      this.emit(encodeInt(id), loc); this.emit(Op.OP_INVOKE, loc);
-      this.emit(Op.OP_DROP, loc);
-      return;
-    }
+    // Keep output introspection in the caller's transaction frame. OP_INVOKE's isolated introspection frame can
+    // reinterpret an absolute output coordinate when the same function body is published through a generated
+    // delegate ABI (the body cache is shared by the ordinary and inferred-delegate variants). The verifier is
+    // deliberately small; inlining preserves the exact checks without making their coordinate context implicit.
     this.emitVerifySortedValueOutputInline(
       loc, addrDepth, f1Depth, f2Depth, f3Depth, false, untrackedItemsAtEntry,
     );
@@ -21443,6 +21513,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData, addrDepth: number, f1Depth: number, f2Depth: number, f3Depth: number,
     consumeFrame = false, untrackedItemsAtEntry = 1,
   ): void {
+    const verifierStartIp = this.getMostRecentInstructionPointer() + 1;
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_OUTPUTBYTECODE, loc);      // [.., outIdx, outbc]
     this.emit(encodeInt(BigInt(addrDepth + 1)), loc); this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);                                    // bytecode == entryAddr
@@ -21462,6 +21533,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A captured canonical helper owns its copied four-field frame; inline call sites own their surrounding fields.
     if (consumeFrame) {
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc);
+    }
+    // Every introspection coordinate above is absolute in the caller's transaction frame. Shared-span lowering
+    // would execute this fragment behind OP_INVOKE's isolated frame and reinterpret the output coordinate (for
+    // example, output 19 became output 3 in an inferred delegate body). Keep the complete verifier at its call
+    // site, including the category/master check, so optimization cannot split the authority across frames.
+    const verifierEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = verifierStartIp; ip <= verifierEndIp; ip += 1) {
+      this.requires.push({ ip, line: loc.location.start.line });
     }
   }
 
@@ -21897,6 +21976,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // absolute base. Ordinary mapping INSERTs keep reconstruct-from-trailingBase (registerUser / initialize).
     const preferAbsoluteDynBase = (this.currentFunction.entryAccesses ?? [])
       .some((entry) => entry.chunkableArrayValue === true);
+    const usesAnchoredDelegateTrailingBase = this.usesDelegateExecutorBlockBase()
+      && preferAbsoluteDynBase
+      && this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true) >= 0;
     const emitInsertReconstructedBase = (): void => {
       this.emitTrailingBlockBase(blockSize, loc, undefined, 5); // NEW outIdx; five raw predecessor fields are live
       // A balanced route's explicit trailingBase keeps the return-event coordinate as padding. Only compact the
@@ -21921,14 +22003,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the route's first trailing coordinate. Its hidden slot/proof/next/predOut vector authenticates that lane
       // independently; aggregate predecessor and preserved-dynamic counts describe sibling families and must not
       // shift this scalar node past the coordinate materialized by the SDK.
-      if (!routeScalarWitness && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
+      if (!routeScalarWitness && !usesAnchoredDelegateTrailingBase
+        && (preferAbsoluteDynBase || !this.usesDelegateTransactionSuffix())) {
         this.emitAddDynamicOutputsBeforeEntries(loc, 5);
       }
     };
     const explicitInsertBase = preferAbsoluteDynBase
       ? this.getStackIndex('__internal__dynamicChunkInputBase', true) : -1;
     if (explicitInsertBase >= 0) {
-      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+      // The sorted predecessor proof leaves five untracked fields above the compiler-modelled frame. Account for
+      // them when reading this hidden ABI witness; otherwise a published delegate body can interpret a neighbouring
+      // value as an absolute base and bypass the authenticated reconstruction arm.
+      this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc, 5);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(0n), loc);
       this.emit(Op.OP_GREATERTHANOREQUAL, loc);
@@ -24053,12 +24139,36 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData,
     extraStackOffset: number,
   ): void {
+    const coordinateStartIp = this.getMostRecentInstructionPointer() + 1;
     // In 1:1 block layout, output index = input index
     if (this.usesDelegateExecutorBlockBase()) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      const proxyMasterIndex = this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true);
+      const chunkableArrayEntry = (this.currentFunction.entryAccesses ?? [])
+        .some((entry) => entry.slotIndex === slotIndex && entry.chunkableArrayValue === true);
+      if (proxyMasterIndex >= 0 && chunkableArrayEntry) {
+        // A published function body executes behind OP_INVOKE, whose isolated introspection frame reports a local
+        // input index. Recover the physical implementation executor from the authenticated proxy block instead:
+        // proxy master + its state-data width + the co-spent implementation master.
+        // A published handler is invoked with the route's live caller band below its ABI arguments. A
+        // top-relative captured copy can therefore name a caller-band value (commonly zero), even though the
+        // authenticated ABI witness itself is correct. Its bottom ordinal remains stable across OP_INVOKE and
+        // across both direct and published handler mapping working stacks.
+        this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
+        this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      } else {
+        this.emit(Op.OP_INPUTINDEX, locationData);
+      }
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
+    // This coordinate can copy an authenticated proxy anchor from a large live mapping frame. Outlining only a
+    // prefix (PICK/ADD) changes that top-relative frame even if the verifier consuming the coordinate remains
+    // inline, so keep the complete coordinate calculation at the call site as one indivisible authority.
+    const coordinateEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = coordinateStartIp; ip <= coordinateEndIp; ip += 1) {
+      this.requires.push({ ip, line: locationData.location.start.line });
+    }
   }
 
   /**
@@ -29128,20 +29238,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     loc: SingleLocationData,
     delegate: boolean = false,
   ): void {
-    const emitIndex = (): void => {
-      if (delegate) this.emitMasterInputIndex(loc);
+    const emitIndex = (extraStackOffset = 0): void => {
+      if (delegate) this.emitMasterInputIndex(loc, extraStackOffset);
       else this.emit(Op.OP_INPUTINDEX, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_ADD, loc);
     };
     emitIndex();
     this.emit(Op.OP_UTXOBYTECODE, loc);
-    emitIndex();
+    // The input locking bytecode remains above the tracked frame until the equality consumes both values.
+    emitIndex(1);
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
     emitIndex();
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-    emitIndex();
+    // As above, account for the input token category retained for the comparison.
+    emitIndex(1);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
   }
@@ -34088,20 +34200,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else if (this.usesProxyStateBlockBase()) {
       if (!this.isDefineSubTraversal) {
         if (this.isCompilerMessageBusRoute()) {
-          // The route entry authenticated this owner witness before executing any handler. Its aggregate frame can
-          // leave runtime-only operands above the tracked ABI values, so recover the witness by stable bottom
-          // ordinal rather than guessing a physical distance from the executor's active input.
-          const routeAnchorIndex = this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true);
-          if (routeAnchorIndex >= 0) {
-            this.debugComputeBase('route-entry-anchor', PROXY_MASTER_ANCHOR_LOCAL,
-              routeAnchorIndex, extraStackOffset);
-            this.emit(encodeInt(BigInt(routeAnchorIndex + extraStackOffset)), locationData);
-            this.emit(Op.OP_PICK, locationData);
-          } else {
-            this.debugComputeBase('route-entry', '__internal__proxyMasterIndex',
-              this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
-            this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
-          }
+          // The aggregate route keeps runtime-only row, snapshot and mapping operands above its tracked ABI frame.
+          // A top-relative copy captured at entry therefore drifts as those operands accumulate. The authenticated
+          // proxy-master argument remains in the fixed caller band at the bottom of the frame, so address that
+          // original argument by its stable bottom ordinal. `extraStackOffset` only describes values above the
+          // frame and deliberately does not affect this coordinate.
+          this.debugComputeBase('route-entry', '__internal__proxyMasterIndex',
+            this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
+          this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         } else {
           // Ordinary delegate executors have the compact physical relation authenticated at entry.
           this.emit(Op.OP_INPUTINDEX, locationData);
@@ -34223,19 +34329,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitTrailingBlockBase(
     blockSize: number, locationData: SingleLocationData, trailingBase?: number, extraStackOffset = 0,
   ): void {
+    const coordinateStartIp = this.getMostRecentInstructionPointer() + 1;
     const localBase = trailingBase ?? this.currentFunction.blockLayout?.trailingBase ?? blockSize;
     if (this.usesDelegateExecutorBlockBase()) {
       // An ordinary delegate's trailing storage follows the complete co-spent implementation block. Output-only
       // slots such as events are implementation-relative too, so using only master/data/entry slots overlaps
       // their outputs. A compiler-owned message-bus route is different: its whole published block (including
       // the trailing band) belongs to the authenticated proxy master, while the executor sits after that block.
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      const proxyMasterIndex = this.getStackIndex(PROXY_MASTER_ANCHOR_LOCAL, true);
+      const hasChunkableArrayEntry = (this.currentFunction.entryAccesses ?? [])
+        .some((entry) => entry.chunkableArrayValue === true);
+      if (proxyMasterIndex >= 0 && hasChunkableArrayEntry) {
+        // Published bodies execute behind OP_INVOKE, where OP_INPUTINDEX is scoped to the invoked frame rather
+        // than the physical transaction input. Reconstruct the implementation executor from the authenticated
+        // proxy master captured at function entry, matching emitEntryOutputIndex's fixed-entry coordinate.
+        this.emit(encodeInt(BigInt(proxyMasterIndex + extraStackOffset)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
+        this.emit(Op.OP_ADD, locationData);
+      } else {
+        this.emit(Op.OP_INPUTINDEX, locationData);
+      }
       this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
       this.emitMasterInputIndex(locationData, extraStackOffset);
       this.emit(encodeInt(BigInt(localBase)), locationData);
     }
     this.emit(Op.OP_ADD, locationData);
+    // Keep the complete anchor-relative calculation inline: outlining a prefix changes the top-relative PICK
+    // depth and would silently turn the physical output coordinate back into an invoked-frame-local coordinate.
+    const coordinateEndIp = this.getMostRecentInstructionPointer();
+    for (let ip = coordinateStartIp; ip <= coordinateEndIp; ip += 1) {
+      this.requires.push({ ip, line: locationData.location.start.line });
+    }
   }
 
   /**
@@ -36396,9 +36522,55 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SPLIT, locationData);           // [physicalCaller, category, capability]
     this.emit(Op.OP_DROP, locationData);            // [physicalCaller, category]
 
-    // msg.sender is the exact locking bytecode of the authenticated calling contract's minting-master input.
-    // The category was only needed to find that input; do not substitute a logical identity anchor here.
     this.emit(Op.OP_DROP, locationData);            // [physicalCaller]
+    if (this.stack.includes('__internal__msgSenderAnchorIdx')) {
+      this.emitLogicalMsgSenderAnchorVerification(locationData);
+    }
+  }
+
+  /** An optional SCID witness binds a logical CREATE lock to the already-authenticated physical caller. */
+  private emitLogicalMsgSenderAnchorVerification(locationData: SingleLocationData): void {
+    this.emitPickTrackedFromBottom('__internal__msgSenderAnchorIdx', locationData); // [physical, anchorIdx]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);             // direct physical identity
+    this.emit(Op.OP_ELSE, locationData);
+
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+    this.emitPickTrackedFromBottom('__internal__msgSenderCategory', locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);      // immutable NFT, same category as physical caller
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData); // [physical, idx, commitment]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(40n), locationData);
+    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
+    this.emit(Op.OP_VERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(5n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(new Uint8Array([0x53, 0x43, 0x49, 0x44, 0x01]), locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(35n), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_PICK, locationData);             // physical minting-master lock
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOBYTECODE, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_NIP, locationData);              // [logicalCaller]
+    this.emit(Op.OP_ENDIF, locationData);
   }
 
   // ===== Address Balance Loop Support =====

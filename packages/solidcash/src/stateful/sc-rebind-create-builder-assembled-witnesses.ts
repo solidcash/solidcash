@@ -19,6 +19,7 @@ import {
   inheritWriterBatchPlan,
   isWriterBatchWitnessName,
   materializedPredOutBase,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 
 export type AssembledWitnessBag = {
@@ -114,7 +115,10 @@ export function rebindCreateBuilderAssembledWitnesses(
         || (candidate.plannedEntryInserts?.length ?? 0) > 0
         || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
           .some(([name]) => isWriterBatchWitnessName(name))));
-    for (const writer of writers) inheritWriterBatchPlan(group, writer);
+    for (const writer of writers) {
+      if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;
+      inheritWriterBatchPlan(group, writer);
+    }
     const hasPred = (group.batchPredecessorOutputs?.length ?? 0) > 0
       || Object.entries({ ...group.internalArgs, ...group.compilerRoute?.internalArgs })
         .some(([name, value]) => /^__internal__vmapBatchPredOut_\d+$/.test(name)
@@ -217,7 +221,9 @@ const returnWitnessTargetsChanged = refreshTopLevelReturnWitnesses();
 const refreshTopLevelIdentityAnchorWitnesses = (): boolean => {
   let changed = false;
   for (const position of topLevelAnchorFillPositions) {
-    const next = BigInt(builder.getIdentityAnchorInputIndex(position.band))
+    const next = BigInt(position.categoryId === undefined
+      ? builder.getIdentityAnchorInputIndex(position.band)
+      : builder.getIdentityAnchorInputIndexByCategory(position.categoryId))
       + (position.proxyRoute ? 1_000_000n : 0n);
     if (finalArgs[position.argIndex] === next) continue;
     finalArgs[position.argIndex] = next;

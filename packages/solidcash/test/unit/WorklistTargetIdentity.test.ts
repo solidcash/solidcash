@@ -80,6 +80,22 @@ describe('worklist Solidity target identity projection', () => {
     expect(plan(ambiguous.logical, ambiguous).invocations[1].targetLockingBytecode).toBe(ambiguous.logical);
   });
 
+  it('attributes a missing resource-derived target proof without accepting a registry fallback', () => {
+    const resourceRoot = compileString(`pragma solidity ^0.8.0;
+      interface LeafApi { function read() external view returns (uint256); }
+      contract ResourceRoot {
+        address leaf;
+        function check() public view returns (uint256) { return LeafApi(this.leaf).read(); }
+      }
+    `, KERNEL);
+    const deriveMissing = (): ReturnType<typeof deriveCompiledGraphPlan> => deriveCompiledGraphPlan({
+      root: { artifact: resourceRoot, lockingBytecode: `aa20${'11'.repeat(32)}87` },
+      function: 'check', targets: { LeafApi: { artifact: leaf, lockingBytecode: physical } },
+    });
+    expect(deriveMissing).toThrow(/resource-derived callsite 0 occurrence 0 lacks a target proof/);
+    expect(deriveMissing).toThrow(/0:ResourceRoot.check -> LeafApi.read/);
+  });
+
   it.each([
     ['physical', physical, 0, ''], ['logical', logical, identityOffset, ''],
     ['physical word', physical, 0, '00'.repeat(12)], ['logical word', logical, identityOffset, '00'.repeat(12)],

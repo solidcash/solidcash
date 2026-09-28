@@ -17,6 +17,7 @@ import { groupOwnsInBlockReturnEvent } from './value-chunk-geometry.js';
 import { defaultInternalFunctionArg } from './kernel-journal-helpers.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 import type { ExternalCallInfo } from './StatefulContract.js';
+import { isScidIdentityCommitment } from './logical-identity.js';
 import {
   type ValueChunkProducerPathDisposition,
 } from './ValueChunkProducerIdentity.js';
@@ -88,7 +89,9 @@ export type OrchestrateCreateBuilderExternalCallsResult = {
   pendingTokenCallInputFills: any[];
   pendingDelegateInputFills: any[];
   pendingDynamicChunkInputFills: any[];
-  topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[];
+  topLevelAnchorFillPositions: {
+    argIndex: number; band?: number; categoryId?: string; proxyRoute: boolean;
+  }[];
   topLevelReturnWitnessPlan: bigint[];
   topLevelReturnWitnessGroups: number[];
   externalOutStateUtxoGroups: ExternalCallUtxoGroup[];
@@ -165,7 +168,8 @@ const rootProducerPath: ValueChunkProducerPathDisposition = Object.freeze({
 const externalCallAnchorIndices = new Map<number, bigint>();
 // Callee identity anchors co-spent by this call, in band order, plus the deferred witness fills that name
 // them. The band is stable; the absolute input index is not known until the builder assembles its inputs.
-const identityAnchors: UnlockableUtxo[] = [];
+const identityAnchors: UnlockableUtxo[] = (overrides?.callerIdentityUtxos ?? []).filter((utxo: UnlockableUtxo) =>
+  isScidIdentityCommitment(utxo.token?.nft?.commitment));
 const identityAnchorBandByAddress = new Map<string, number>();
 const pendingAnchorFills: {
   group: {
@@ -175,7 +179,9 @@ const pendingAnchorFills: {
   };
   functionName: string;
   encodedArgs: any[];
-  positions: { argIndex: number; name: string; band: number; proxyRoute: boolean }[];
+  positions: {
+    argIndex: number; name: string; band?: number; categoryId?: string; proxyRoute: boolean;
+  }[];
 }[] = [];
 // A caller's dynamic entry band can grow while the transaction is assembled. Any nested master positions
 // computed before that final layout are provisional; retain their ABI names and categories so the concrete
@@ -206,7 +212,9 @@ const pendingDynamicChunkInputFills: {
   target?: UnlockableUtxo;
   root: boolean;
 }[] = [];
-const topLevelAnchorFillPositions: { argIndex: number; band: number; proxyRoute: boolean }[] = [];
+const topLevelAnchorFillPositions: {
+  argIndex: number; band?: number; categoryId?: string; proxyRoute: boolean;
+}[] = [];
 // Planned external-call return-event coordinates for this build, in returning-group order. The trailing ABI
 // frame is filled positionally, so these are re-placed by parameter NAME once the frame is complete.
 const topLevelReturnWitnessPlan: bigint[] = [];

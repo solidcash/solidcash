@@ -72,6 +72,29 @@ describe('layout-resolver', () => {
     expect(layout.participantOutputs[1]).toBe(participantBase);
   });
 
+  it('allows multiple sorted-batch witnesses to reference one physical predecessor output', () => {
+    const layout = resolveTransactionLayout({
+      participants: [{
+        participant: 0,
+        blockLayout: { blockSize: 88, trailingBase: 23, trailingCapacity: 64, slots: [] },
+      }],
+      predOutClaims: [
+        predOutClaimFromPhysicalRoute({
+          participant: 0,
+          witnessName: '__internal__vmapBatchPredOut_2',
+          physicalLocalOffset: 23,
+        }),
+        predOutClaimFromPhysicalRoute({
+          participant: 0,
+          witnessName: '__internal__vmapBatchPredOut_3',
+          physicalLocalOffset: 23,
+        }),
+      ],
+    });
+
+    expect(layout.predOuts.map(({ absoluteOutput }) => absoluteOutput)).toEqual([23, 23]);
+  });
+
   it('R5/layout-sentinel / PredOut: refuses any concreteLocalSlot that disagrees with physicalLocalOffset', () => {
     // Below trailingBase (historical 203↔222 class).
     expect(() => resolveTransactionLayout({

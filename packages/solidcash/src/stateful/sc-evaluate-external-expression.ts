@@ -220,6 +220,8 @@ executionCallerAddress?: FunctionArgument,
       // before zero-address handling because a zero ABI word still packs twenty bytes.
       if (solidityImportCompat && typeHint === 'uint160' && value.length === 32) return value.slice(12);
       if (typeHint === 'uint160' && isZeroAddressValue(value)) return new Uint8Array();
+      // Native artifacts retain their established unprojected representation.
+      if (typeHint === 'uint160' && value.length === 32) return value;
       if (typeHint === 'uint160') {
         if (isStandardLockingBytecode(value)) return value;
         const narrowed = value.length === 0 ? new Uint8Array(20)

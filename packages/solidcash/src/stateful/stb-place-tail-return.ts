@@ -23,6 +23,7 @@ import {
 import {
   inheritWriterBatchPlan,
   isWriterBatchWitnessName,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 
 export type PlaceTailReturnEvent = {
@@ -85,6 +86,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
         && (sibling.plannedEntryInserts?.length ?? 0) === 0
         && !Object.entries({ ...sibling.compilerRoute?.internalArgs, ...sibling.internalArgs })
           .some(([name]) => isWriterBatchWitnessName(name))) continue;
+      if (!writerBatchPlanMatchesPhysicalCarrier(tokenGroup, sibling)) continue;
       inheritWriterBatchPlan(tokenGroup, sibling);
     }
   }

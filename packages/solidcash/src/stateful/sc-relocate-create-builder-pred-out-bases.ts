@@ -18,6 +18,7 @@ import {
   inheritWriterBatchPlan,
   isWriterBatchWitnessName,
   materializedPredOutBase,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 import {
   chunkableWriterGroupIndex,
@@ -155,7 +156,10 @@ export function relocateCreateBuilderPredOutBases(params: {
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
           || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
-      for (const writer of writers) inheritWriterBatchPlan(group, writer);
+      for (const writer of writers) {
+        if (!writerBatchPlanMatchesPhysicalCarrier(group, writer)) continue;
+        inheritWriterBatchPlan(group, writer);
+      }
       if ((group?.batchPredecessorOutputs?.length ?? 0) === 0) continue;
       const postMaster = nestedMasterIndices[groupIdx];
       if (postMaster === undefined) continue;

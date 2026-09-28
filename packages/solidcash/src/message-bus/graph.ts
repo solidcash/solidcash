@@ -1746,10 +1746,20 @@ const resolveActiveCallerIdentity = (
     throw new Error('messageBus: active callerIdentity requires input-bytecode auth at the derived offset');
   }
   const delegate = caller.executionKind === 'delegate' || caller.executionKind === 1;
-  if (delegate) {
+  const publicSelf = caller.artifact.messageBus?.route?.inputs.some(
+    (input) => input.name === '__internal__graphSelfIdentityInput',
+  ) === true;
+  if (delegate || (publicSelf && caller.logicalLockingBytecode !== undefined
+    && caller.logicalLockingBytecode.toLowerCase() !== caller.lockingBytecode.toLowerCase())) {
+    const logical = caller.logicalLockingBytecode?.toLowerCase();
+    const logicalOffset = caller.logicalIdentityOffset;
+    if (logical === undefined || typeof logicalOffset !== 'number'
+      || !Number.isInteger(logicalOffset) || logicalOffset <= 0) {
+      throw new Error('messageBus: active public caller requires an authenticated logical identity');
+    }
     return {
-      version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0,
-      lockingBytecode: caller.lockingBytecode.toLowerCase(), offset: 0,
+      version: 1, role: 'active', auth: 'input-bytecode', authOffset: logicalOffset,
+      lockingBytecode: logical, offset: logicalOffset,
       sourceCallsiteProvenance: 'compiler',
     };
   }

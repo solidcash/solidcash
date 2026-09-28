@@ -209,7 +209,8 @@ export function extractExpectedOutputCommitmentFromTrace(
       continue;
     }
     const isPush = opcode !== undefined && opcode <= Op.OP_16;
-    if (opcode !== Op.OP_EQUALVERIFY) {
+    const isCommitmentComparison = opcode === Op.OP_EQUALVERIFY || opcode === Op.OP_EQUAL;
+    if (!isCommitmentComparison) {
       if (!isPush && opcode !== Op.OP_INVOKE) pendingOutputIndices.length = 0;
       continue;
     }

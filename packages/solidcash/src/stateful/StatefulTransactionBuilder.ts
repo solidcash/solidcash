@@ -782,6 +782,7 @@ import {
 } from './stb-build-inputs.js';
 import {
   applyLearnedWriterEvents,
+  learnFinalizedDelegateEvents,
   type ApplyLearnedWriterEventsHost,
 } from './stb-apply-learned-writer-events.js';
 import {
@@ -1884,6 +1885,7 @@ export class StatefulTransactionBuilder {
       pendingReturnEventOutputs: this.pendingReturnEventOutputs,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pinnedEntrySlots: this.pinnedEntrySlots,
+      requiredEntryOutputSlots: this.requiredEntryOutputSlots,
       loopEntryVars: this.loopEntryVars,
       stateLayout: this.stateLayout,
       categoryId: this.categoryId,
@@ -2908,6 +2910,7 @@ export class StatefulTransactionBuilder {
       jobEventsRedeemLock: this.jobEventsRedeemLock,
       preserveBlockLayoutWidth: this.preserveBlockLayoutWidth,
       pinnedEntrySlots: this.pinnedEntrySlots,
+      requiredEntryOutputSlots: this.requiredEntryOutputSlots,
       get viewTailRepackAttempted() { return self.viewTailRepackAttempted; },
       set viewTailRepackAttempted(value) { self.viewTailRepackAttempted = value; },
       builtReturnEventOutputIndices: this.builtReturnEventOutputIndices,
@@ -3106,6 +3109,7 @@ export class StatefulTransactionBuilder {
       enforceDeclaredCollectionOutputCardinality: (b) => {
         this._enforceDeclaredCollectionOutputCardinality(b);
       },
+      learnFinalizedDelegateEvents: (b) => this._learnFinalizedDelegateEvents(b),
       relocateCollidingDerivedValueChunkRuns: (b) => {
         this._relocateCollidingDerivedValueChunkRuns(b);
       },
@@ -3270,6 +3274,8 @@ export class StatefulTransactionBuilder {
       get lowLevelCallInputBase() { return self.lowLevelCallInputBase; },
       get compilerRouteDelegateBlock() { return self.compilerRouteDelegateBlock; },
       get preserveBlockLayoutWidth() { return self.preserveBlockLayoutWidth; },
+      get externalIdentityAnchorUtxos() { return self.externalIdentityAnchorUtxos; },
+      get logicalIdentityUtxo() { return self.logicalIdentityUtxo; },
       get loopEntriesBeforeDynamicChunks() { return self.loopEntriesBeforeDynamicChunks; },
       trailingLoopEntryOutputCount: () => this._trailingLoopEntryOutputCount(),
       delegateLoopEntryVars: () => this._delegateLoopEntryVars(),
@@ -3613,9 +3619,19 @@ export class StatefulTransactionBuilder {
   private _applyLearnedWriterEventsHost(): ApplyLearnedWriterEventsHost {
     return {
       externalCallUtxoGroups: this.externalCallUtxoGroups,
+      lowLevelCallUtxoGroups: this.lowLevelCallUtxoGroups,
+      provider: this.builderOptions.provider,
+      detachedEventReceipts: this.detachedEventReceipts,
+      registerDetachedEvent: (eventDef, lockingBytecode) => {
+        this.registerDetachedEvent(eventDef, lockingBytecode);
+      },
       findMintingInputIndex: (categoryId) => this.findMintingInputIndex(categoryId),
       getExternalCallMasterInputIndex: (groupIndex) => this.getExternalCallMasterInputIndex(groupIndex),
     };
+  }
+
+  private _learnFinalizedDelegateEvents(builder: TransactionBuilder): boolean {
+    return learnFinalizedDelegateEvents(this._applyLearnedWriterEventsHost(), builder);
   }
 
   private _applyLearnedWriterEvents(builder: TransactionBuilder): void {
@@ -5156,6 +5172,7 @@ export class StatefulTransactionBuilder {
     const insertAt = continuationOutputBaseBeforeSuffix(
       builder.outputs.length,
       authenticatedSuffixCount,
+      this._continuationProtectedOutputPrefix(),
     );
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PAD_HOLE === '1') {
@@ -5407,7 +5424,23 @@ export class StatefulTransactionBuilder {
     return continuationOutputBaseBeforeSuffix(
       builder.outputs.length,
       delegateDynamicCount + this.lateValueChunkOutputs.length,
+      this._continuationProtectedOutputPrefix(),
     );
+  }
+
+  /**
+   * First output coordinate after fixed-layout resources which must retain their published absolute indices.
+   * Sorted mapping batches can place authenticated predecessor/NEW nodes immediately after `blockSize`; using
+   * only the fixed block width lets a probe remainder split that trailing entry band and stale every predOut
+   * witness. The loop-entry planner is the authority for both the band's base and its concrete width. Protect
+   * every physically materialized entry: delegate-owned entries are excluded from the root's trailing ownership
+   * count, but they still occupy this builder's output frame and retain absolute predOut coordinates.
+   */
+  private _continuationProtectedOutputPrefix(): number {
+    const fixedBlockEnd = this.blockLayout?.blockSize ?? 0;
+    const materializedEntries = this._loopEntryOutputCount();
+    if (materializedEntries === 0) return fixedBlockEnd;
+    return Math.max(fixedBlockEnd, this.getLoopEntryOutputBase() + materializedEntries);
   }
 
   /** Pin a collection's loop-entry (NEW) commitment as known-exactly, so auto-derivation skips re-deriving it. */
@@ -6146,6 +6179,11 @@ export class StatefulTransactionBuilder {
     return n;
   }
 
+  /** Number of mapping-entry outputs owned by this builder's balanced trailing frame. */
+  getTrailingLoopEntryOutputCount(): number {
+    return this._trailingLoopEntryOutputCount();
+  }
+
   /**
    * The SDK derives this plan, but its coordinates must still be canonical before they decide output placement.
    * The route final flush independently authenticates each selected record against the resulting output.
@@ -6306,6 +6344,11 @@ export class StatefulTransactionBuilder {
     if (!anchor) return -1;
     return this.allInputs.findIndex((input) => input !== undefined
       && input.txid === anchor.txid && input.vout === anchor.vout);
+  }
+
+  /** Locate one co-spent immutable CREATE identity by its authenticated token category. */
+  getIdentityAnchorInputIndexByCategory(categoryId: string): number {
+    return findScidAnchorInputIndex(this.allInputs, categoryId);
   }
 
   /**

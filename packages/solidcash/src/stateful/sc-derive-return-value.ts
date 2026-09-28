@@ -31,6 +31,7 @@ import {
   normalizeJobEventAddresses,
   usesLegacyJobEventCompatibility,
 } from './legacy-job-event-wire.js';
+import { resolveLogicalIdentityFromAddresses } from './logical-identity.js';
 import { selectMappingEntryByKeys } from './mapping-key-lookup.js';
 import { decorateFunctionResult } from './public-result.js';
 import {
@@ -375,6 +376,17 @@ callerContract?: StatefulContract<Artifact>,
           generateUnlockingBytecode: () => new Uint8Array(),
         },
       }];
+      const callerIdentity = await resolveLogicalIdentityFromAddresses(
+        callerContract.inner.provider,
+        [callerContract.target],
+      );
+      if (callerIdentity !== undefined
+        && callerIdentity.categoryId.toLowerCase() === callerContract.categoryId.toLowerCase()) {
+        callerIdentityUtxos.push({
+          ...callerIdentity.anchor,
+          unlocker: callerIdentity.unlocker,
+        });
+      }
     }
   }
   const builder = await host.createBuilder(
@@ -548,6 +560,8 @@ callerContract?: StatefulContract<Artifact>,
       // the already-built transaction through the normal debugger to recover the source-mapped require.
       if ((builder as unknown as { __vmErrored?: boolean }).__vmErrored) {
         const derivationError = (builder as unknown as { __derivationError?: Error }).__derivationError;
+        if (derivationError && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_RETURN === '1') console.error('static-return-derivation-error', derivationError.message);
         if (derivationError) throw derivationError;
       }
       throw decodeError;

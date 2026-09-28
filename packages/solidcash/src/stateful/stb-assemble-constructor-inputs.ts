@@ -11,6 +11,7 @@ import {
   type ExternalCallUtxoGroup,
   type TokenContainerInfo,
 } from './external-call-utxo-group.js';
+import { identityAnchorPlacement } from './stb-build-inputs.js';
 
 export interface AssembleConstructorInputsHost {
   readonly stateLayout: StateLayout;
@@ -140,9 +141,10 @@ export function assembleConstructorInputs(
   debugInputAssembly('minting-band-relocated');
   host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
   debugInputAssembly('predecessors-placed');
-  // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
-  // identity from the LAST input, so that tail position must stay the caller's.
-  host.allInputs.push(...host.externalIdentityAnchorUtxos);
-  if (host.logicalIdentityUtxo) host.allInputs.push(host.logicalIdentityUtxo);
+  // Published identity slots are already populated by buildInputs. Only legacy/unrepresented anchors remain
+  // in the post-block tail, with the caller's logical identity last.
+  host.allInputs.push(...identityAnchorPlacement(
+    host.blockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
+  ).trailing);
   debugInputAssembly('identity-anchors-appended');
 }

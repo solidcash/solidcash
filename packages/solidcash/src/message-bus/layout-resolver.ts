@@ -612,24 +612,10 @@ export function assertResolvedClaimSlotExclusivity(layout: {
   for (const entry of layout.entryNews) {
     claim('output', entry.absoluteOutput, 1, `entryNEW:${entry.collection ?? ''}@p${entry.participant}`);
   }
-  // PredOut is a read of an existing output (often the entry NEW / predecessor), not a new exclusive produce.
-  const predOutNames = new Map<number, string>();
-  for (const pred of layout.predOuts) {
-    const prior = predOutNames.get(pred.absoluteOutput);
-    const label = `predOut:${pred.witnessName}@p${pred.participant}`;
-    if (prior !== undefined && prior !== label) {
-      throw new Error(
-        formatLayoutInvariant({
-          invariantId: 'claim-slot-collision',
-          resource: label,
-          expectedOutput: pred.absoluteOutput,
-          actualOutput: pred.absoluteOutput,
-          detail: `${prior} and ${label} both claim PredOut output ${pred.absoluteOutput}`,
-        }),
-      );
-    }
-    predOutNames.set(pred.absoluteOutput, label);
-  }
+  // PredOut is a reference to an existing output, not an exclusive producer claim. Multiple logical inserts in
+  // one sorted batch can share the same physical P' (P -> k1 -> k2 has one rewritten P and two NEW nodes), so
+  // aliases at one absolute output are valid. `predOutClaims` still validates every reference against its owning
+  // participant and the ownership checks above remain exclusive for the resources which produce that output.
 }
 
 /**

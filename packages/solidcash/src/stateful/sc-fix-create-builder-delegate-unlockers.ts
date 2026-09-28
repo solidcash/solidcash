@@ -28,6 +28,52 @@ import {
 } from './writer-event-delegate-layout.js';
 import { computedStateWriterGroupIndex } from './writer-group-selection.js';
 
+/**
+ * Select the optional SCID input which represents a nested call's authenticated caller subject.
+ *
+ * A category can have both a physical minting master and one or more immutable SCID records. Category presence
+ * alone therefore cannot select `msg.sender`: an owner call uses the physical master's locking bytecode even when
+ * an SCID for that category is co-spent. A logical caller uses the one anchor whose own locking bytecode is the
+ * compiler-resolved subject. Anything else is ambiguous or unauthenticated and must fail closed.
+ */
+export function callerIdentityAnchorBand(
+  callerSubjectLockingBytecode: string,
+  physicalCallerLockingBytecode: string,
+  anchors: readonly { band: number; lockingBytecode: string }[],
+): number | undefined {
+  const subject = callerSubjectLockingBytecode.toLowerCase();
+  const physical = physicalCallerLockingBytecode.toLowerCase();
+  if (subject === physical) return undefined;
+  const matches = anchors.filter((anchor) => anchor.lockingBytecode.toLowerCase() === subject);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Nested caller identity requires exactly one SCID anchor for ${subject}; found ${matches.length}.`,
+    );
+  }
+  return matches[0]!.band;
+}
+
+/** Compiler-owned bytes witnesses used to fold chunkable array pushes across selected route rows. */
+export function isRoutePushValueWitnessName(name: string): boolean {
+  return /^__internal__(?:leading|complete)PushValue_\d+$/.test(name);
+}
+
+/** Resolve a route-fold witness without relying on its position among other hidden ABI arguments. */
+export function resolveDelegatePushValueWitness(
+  name: string,
+  compilerRouteArgs: Readonly<Record<string, FunctionArgument>> | undefined,
+  groupArgs: Readonly<Record<string, FunctionArgument>> | undefined,
+  activeEntry: {
+    inputs: readonly { name: string }[];
+    args: readonly FunctionArgument[];
+  } | undefined,
+): FunctionArgument {
+  const published = compilerRouteArgs?.[name] ?? groupArgs?.[name];
+  if (published !== undefined) return published;
+  const entryIndex = activeEntry?.inputs.findIndex((input) => input.name === name) ?? -1;
+  return entryIndex < 0 ? new Uint8Array() : activeEntry!.args[entryIndex] ?? new Uint8Array();
+}
+
 export type FixCreateBuilderDelegateUnlockersHost = {
   readonly categoryId: string;
   readonly selfContract: any;
@@ -82,6 +128,9 @@ export async function fixCreateBuilderDelegateUnlockers(
   const directNestedIdentityWitness = host.directNestedIdentityWitness;
   const timingEnabled = params.timingEnabled;
   const publicSelfAddress = params.publicSelfAddress;
+  const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined
+    ?? publicSelfAddress;
+  const physicalSelfAddress = params.physicalSelfAddress as Uint8Array;
   const compilerRouteDelegateLayout = params.compilerRouteDelegateLayout;
   const returnEmitOutputIndex = params.returnEmitOutputIndex as number;
   const groupProxyMasterIndices = params.groupProxyMasterIndices as any;
@@ -90,6 +139,9 @@ export async function fixCreateBuilderDelegateUnlockers(
   const entryValueWitnesses = params.entryValueWitnesses as any;
   const pendingDynamicChunkInputFills = params.pendingDynamicChunkInputFills as any[];
   const pendingTokenCallInputFills = params.pendingTokenCallInputFills as any[];
+  const identityAnchors = params.identityAnchors as UnlockableUtxo[];
+  const entryArgs = params.entryArgs as FunctionArgument[];
+  const entryArtifact = params.entryArtifact as Artifact;
 
   // Fix data NFT unlockers with correct master input index
   let currentBase = lowLevelCallInputBase;
@@ -153,6 +205,10 @@ export async function fixCreateBuilderDelegateUnlockers(
       .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
       ?? bSameName[0];
     if (bFunc) {
+      const activeEntryDelegate = entryAbiFunction?.name === group.functionName
+        && (group.logicalArtifact ?? bArt).contractName === entryArtifact.contractName
+        ? { inputs: entryAbiFunction.inputs, args: entryArgs }
+        : undefined;
       // Persist UPDATE can seed compilerRoute.args from the last stored JobEvent
       // (Closed). Compiler-published argSources / logicalFunctionArgs are the emit
       // identity (withdrawCollateral type 16, not closeJob type 7).
@@ -200,7 +256,7 @@ export async function fixCreateBuilderDelegateUnlockers(
         })(),
       );
       const anchorFillPositions: {
-        argIndex: number; name: string; band: number; proxyRoute: boolean;
+        argIndex: number; name: string; band?: number; categoryId?: string; proxyRoute: boolean;
       }[] = [];
       if (timingEnabled) console.error('delegate-args-map-start', {
         groupLocalIdx, inputs: bFunc.inputs.length, visibleArgs: visibleFunctionArgs.length,
@@ -213,6 +269,14 @@ export async function fixCreateBuilderDelegateUnlockers(
         return value;
       };
       const encodedArgs: any[] = bFunc.inputs.map((inp, inpIndex) => {
+        if (inp.name === '__internal__messageBusOwnerBandInput') {
+          // A delegated route's owner band names the physical proxy state block, not its implementation
+          // executor. Resolve it from the finalized input layout just like __internal__proxyMasterIndex.
+          const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+          return BigInt(proxyExternalGroup === undefined
+            ? groupProxyMasterIndices[groupLocalIdx] ?? masterInputIndex
+            : nestedMasterIndices[proxyExternalGroup] ?? masterInputIndex);
+        }
         if (/^__internal__externalReturnOutputIdx\d*$/.test(inp.name)) {
           const nestedReturning = nestedGroups.filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
           const returnOrdinal = delegateReturnWitnessIndex;
@@ -340,6 +404,47 @@ export async function fixCreateBuilderDelegateUnlockers(
             nestedProxyGroup?.categoryId,
             nestedProxyGroup?.callerIdentity?.categoryId ?? host.categoryId,
           );
+        }
+        if (inp.name === '__internal__msgSenderAnchorIdx') {
+          const nestedProxyGroupIndex = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+          // A root proxy implementation preserves tx.origin, so it needs no SCID witness. A nested proxy
+          // preserves its caller's logical identity across the delegate boundary; authenticate that exact
+          // subject only when it differs from the physical parent which is already co-spent.
+          if (nestedProxyGroupIndex === undefined) return -1n;
+          const nestedProxyGroup = externalCallUtxoGroups[nestedProxyGroupIndex];
+          const parentGroupIndex = allGroupParentIndices[nestedProxyGroupIndex];
+          const physicalCallerLockingBytecode = parentGroupIndex !== undefined && parentGroupIndex >= 0
+            ? externalCallUtxoGroups[parentGroupIndex]?.externalContract.inner.lockingBytecode
+              ?? binToHex(physicalSelfAddress)
+            : binToHex(physicalSelfAddress);
+          const callerSubjectLockingBytecode = nestedProxyGroup.callerIdentity?.lockingBytecode
+            ?? physicalCallerLockingBytecode;
+          const needsAnchor = callerSubjectLockingBytecode.toLowerCase()
+            !== physicalCallerLockingBytecode.toLowerCase();
+          const rootLogicalCaller = needsAnchor
+            && (parentGroupIndex === undefined || parentGroupIndex < 0)
+            && callerSubjectLockingBytecode.toLowerCase() === binToHex(authenticatedSelfAddress).toLowerCase();
+          const band = needsAnchor && !rootLogicalCaller
+            ? callerIdentityAnchorBand(
+              callerSubjectLockingBytecode,
+              physicalCallerLockingBytecode,
+              identityAnchors.map((anchor, anchorBand) => ({
+                band: anchorBand,
+                lockingBytecode: binToHex(anchor.unlocker.generateLockingBytecode()),
+              })),
+            ) : undefined;
+          if (rootLogicalCaller) {
+            anchorFillPositions.push({
+              argIndex: inpIndex, name: inp.name,
+              categoryId: nestedProxyGroup.callerIdentity?.categoryId ?? host.categoryId,
+              proxyRoute: false,
+            });
+          } else if (band !== undefined) {
+            anchorFillPositions.push({
+              argIndex: inpIndex, name: inp.name, band, proxyRoute: false,
+            });
+          }
+          return -1n;
         }
         if (inp.name === '__internal__proxyMasterIndex') {
           const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
@@ -568,10 +673,13 @@ export async function fixCreateBuilderDelegateUnlockers(
           }
           return valueWitness;
         }
-        if (/^__internal__leadingPushValue_\d+$/.test(inp.name)) {
-          return group.compilerRoute?.internalArgs?.[inp.name]
-            ?? group.internalArgs?.[inp.name]
-            ?? new Uint8Array();
+        if (isRoutePushValueWitnessName(inp.name)) {
+          return resolveDelegatePushValueWitness(
+            inp.name,
+            group.compilerRoute?.internalArgs,
+            group.internalArgs,
+            activeEntryDelegate,
+          );
         }
         const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
         if (anchorWitness) {
@@ -687,6 +795,17 @@ export async function fixCreateBuilderDelegateUnlockers(
         });
       }
       group.internalArgNames = Object.freeze(bFunc.inputs.map((input) => input.name));
+      // Final-layout reconciliation operates on the carrier rather than this closure's private argument array.
+      // Publish the initially encoded batch frame just like later refreshes do, otherwise an unchanged INSERT
+      // witness is invisible and its absolute predecessor-output coordinate can never be rebound.
+      group.internalArgs = {
+        ...group.internalArgs,
+        ...Object.fromEntries(bFunc.inputs.flatMap((input, index) => (
+          input.name.startsWith('__internal__vmapBatch')
+            ? [[input.name, encodedArgs[index]!] as const]
+            : []
+        ))),
+      };
       group.refreshInternalArgs = (updates) => {
         group.internalArgs = { ...group.internalArgs, ...updates };
         // Probe-learned witnesses must survive later geometry/anchor refreshes. Keeping them only in this

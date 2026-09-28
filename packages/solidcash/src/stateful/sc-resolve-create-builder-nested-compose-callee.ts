@@ -10,6 +10,7 @@ import type {
   ExternalCallAbi,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
+import { projectMessageBusHandlerArguments } from '../message-bus/message-bus.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { tryCashAddressToLockScript } from '../utils.js';
 import {
@@ -269,7 +270,12 @@ export async function resolveCreateBuilderNestedComposeCallee(
   }
   const graphExpressionReturns = preparedAtomicNodes && needsExpressionReturns
     ? await host.resolveExternalExpressionReturns(
-      nestedSources, delegateVisibleArgs, callInfoContract, onChainState.state,
+      nestedSources,
+      projectMessageBusHandlerArguments(
+        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
+        delegateVisibleArgs,
+      ),
+      callInfoContract, onChainState.state,
       delegateVisibleInputs, delegateSelfAddress,
       publishedNestedExternalCalls,
       true,
@@ -278,7 +284,10 @@ export async function resolveCreateBuilderNestedComposeCallee(
     : nestedExpressionReturns;
   const graphNestedArgs = preparedAtomicNodes
     ? host.resolveExternalArgs(
-      nestedSources, delegateVisibleArgs, callInfoContract.inner.artifact, onChainState.state,
+      nestedSources, projectMessageBusHandlerArguments(
+        callInfoContract.inner.artifact, delegateFn?.name ?? '', delegateFn?.selector,
+        delegateVisibleArgs,
+      ), callInfoContract.inner.artifact, onChainState.state,
       delegateVisibleInputs, graphExpressionReturns, 0, false, delegateSelfAddress,
     ) ?? nestedArgs
     : nestedArgs;

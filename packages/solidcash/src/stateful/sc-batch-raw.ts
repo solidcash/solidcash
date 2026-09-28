@@ -55,6 +55,22 @@ import {
   type RouteExpressionKeyRow,
 } from './route-expression-key.js';
 
+/** Apply route-published dynamic metadata to one callable row without aliasing selectorless handlers. */
+export function mergePublishedMessageBusHandlerMetadata(
+  callable: AbiFunction,
+  publishedHandlers: readonly AbiFunction[],
+): AbiFunction {
+  const published = callable.selector !== undefined
+    ? publishedHandlers.find((handler) => handler.selector === callable.selector)
+    : publishedHandlers.find((handler) => handler.name === callable.name);
+  if (published === undefined) return callable;
+  return {
+    ...callable,
+    ...(published.dynamicReads !== undefined && { dynamicReads: published.dynamicReads }),
+    ...(published.dynamicWrites !== undefined && { dynamicWrites: published.dynamicWrites }),
+  };
+}
+
 export interface VmapCounterPermutationSpec {
   countName: string;
   boundOffset: bigint;
@@ -353,6 +369,7 @@ executionContextBinding?: BatchExecutionContextBinding,
   const canonicalBlobLineage = hasCanonicalBatchBlobLineage(blob);
   const effectiveRowArguments = rowArguments?.map((row) => ({
     ...row,
+    handler: mergePublishedMessageBusHandlerMetadata(row.handler, capability.handlers),
     args: [...row.args],
     internalArgs: { ...(row.internalArgs ?? {}) },
   }));
@@ -534,6 +551,7 @@ executionContextBinding?: BatchExecutionContextBinding,
       const value = resolvedCallerInternalWitnesses[input.name];
       if (value !== undefined) return value;
       if (input.name === '__internal__activeVerifierIndex') return -1n;
+      if (input.name === '__internal__graphSelfIdentityInput') return -1n;
       if (input.name === '__internal__messageBusOwnerBandInput') return BigInt(blockBase);
       // The aggregate route returns its concatenated result blob to graph consumers, but an ordinary local
       // `.batch()` does not materialize that route-level value as a return-event NFT. Semantic injection still
@@ -745,10 +763,15 @@ executionContextBinding?: BatchExecutionContextBinding,
         const selectedBatch = selected?.sortedBatchInfo?.find((batch) => batch.slotIndices.includes(directSlot));
         if (directAccess.operations.includes('write') && selectedBatch !== undefined) {
           activeRouteSortedBatchSlots.add(selectedSlot);
+          const publishedBatch = capability.route.sortedBatchInfo?.find((batch) =>
+            batch.collection === selectedBatch.collection);
           const activeBatch = activeRouteSortedBatches.get(selectedBatch.collection)
-            ?? { slots: new Set<number>(), linear: selectedBatch.linear === true };
+            ?? { slots: new Set<number>(), linear: publishedBatch?.linear === true };
           activeBatch.slots.add(selectedSlot);
-          activeBatch.linear ||= selectedBatch.linear === true;
+          // Runtime narrowing may select a direct handler whose ordinary ABI uses linear rank/row witnesses.
+          // The physical kernel route is the authority for its own ABI: do not synthesize witness families the
+          // published route did not expose merely because the selected source handler has richer geometry.
+          activeBatch.linear ||= publishedBatch?.linear === true;
           activeRouteSortedBatches.set(selectedBatch.collection, activeBatch);
         }
         const prior = activeRouteEntryOperations.get(selectedSlot) ?? [];

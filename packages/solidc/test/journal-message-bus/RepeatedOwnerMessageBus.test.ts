@@ -267,7 +267,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
   });
 
   it('uses the kernel row route rather than legacy runtime-count patch sites', () => {
-    const artifact = compileString(SOURCE);
+    const artifact = compileString(SOURCE, { forceStateful: true });
     expect(artifact.messageBus?.convention).toBe('kernel-row-loop');
     expect(artifact.messageBus?.route.inputs.map((input) => input.name)).toContain('batchBlob');
     expect(artifact.messageBus?.route.inputs.some((input) => /_r\d+$/.test(input.name))).toBe(false);

@@ -274,6 +274,11 @@ describe('atomic compiled invocation graph', () => {
     ];
     const actualSize = messageBus.minimumActualSizeForComputedValueChunkClaims(1, 8, 8, 72, claims);
     expect(actualSize).toBe(12);
+    // A fixed participant suffix disables compaction at the caller, but chunk claims still belong to the
+    // compiler-published trailing band rather than an empty range beginning at the full block size.
+    expect(messageBus.minimumActualSizeForComputedValueChunkClaims(
+      1, 8, 40, 106, [{ offset: 110, resourceIdentity: resourceA, resourcePart: 'chunk:0' }],
+    )).toBe(103);
     expect(messageBus.atomicMessageBusPhysicalLayout([8, actualSize, 5])).toMatchObject({
       participantInputs: [0, 8, 20],
       verifierInputs: [25, 26, 27],
@@ -1385,6 +1390,43 @@ describe('atomic compiled invocation graph', () => {
     expect(() => messageBus.graphInvocationCallerIdentity(
       activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
     )).toThrow(/does not match the authenticated parent target/);
+  });
+
+  it('uses the authenticated proxy identity as the active caller of a delegate external call', () => {
+    const activeCaller = plan();
+    activeCaller.participants[0] = {
+      ...activeCaller.participants[0],
+      artifact: {
+        ...activeCaller.participants[0].artifact,
+        messageBus: {
+          ...activeCaller.participants[0].artifact.messageBus!,
+          convention: 'kernel-row-loop',
+        },
+        abi: [{
+          name: 'run', selector: '11111111', inputs: [{ name: 'n', type: 'int' }], outputs: [],
+          externalCalls: [{
+            callsiteId: 7, interfaceName: 'IPeer', functionName: 'run', occurrence: 'once',
+            callerIdentity: {
+              version: 1, role: 'active', auth: 'input-bytecode', authOffset: 0xffff,
+            },
+          }],
+        }],
+      },
+      executionKind: 1,
+      logicalLockingBytecode: '54',
+      logicalIdentityOffset: 1,
+      executorLockingBytecode: '56',
+      executorOffset: 2,
+    };
+
+    const resolved = messageBus.graphInvocationCallerIdentity(
+      activeCaller.participants, activeCaller.invocations, activeCaller.invocations[1],
+    );
+    expect(resolved).toMatchObject({
+      role: 'active', lockingBytecode: '54', offset: 1, authOffset: 1,
+    });
+    expect(resolved.lockingBytecode).not.toBe(activeCaller.participants[0].lockingBytecode);
+    expect(resolved.lockingBytecode).not.toBe('56');
   });
 
   it('refuses to treat a delegate executor as caller when publication says owner', () => {

@@ -45,9 +45,42 @@ export interface BuildInputsHost {
   lowLevelCallInputBase?: number;
   compilerRouteDelegateBlock: boolean;
   preserveBlockLayoutWidth: boolean;
+  externalIdentityAnchorUtxos: readonly UnlockableUtxo[];
+  logicalIdentityUtxo?: UnlockableUtxo;
   loopEntriesBeforeDynamicChunks: boolean;
   trailingLoopEntryOutputCount(): number;
   delegateLoopEntryVars(): Array<{ collection: string; delegate?: boolean }>;
+}
+
+/**
+ * Identity slots are suffix-authenticated. Keep the caller's logical identity last, while allowing
+ * compiler-published identity slots before it to absorb callee anchors. Anchors which do not have a
+ * published slot remain in the legacy post-block tail.
+ */
+export function identityAnchorPlacement(
+  layout: FunctionBlockLayout | undefined,
+  externalAnchors: readonly UnlockableUtxo[],
+  logicalAnchor?: UnlockableUtxo,
+): { byOffset: ReadonlyMap<number, UnlockableUtxo>; trailing: UnlockableUtxo[] } {
+  const anchors = [...externalAnchors, ...(logicalAnchor ? [logicalAnchor] : [])];
+  const offsets = (layout?.slots ?? [])
+    .filter((slot) => slot.kind === 'identityAnchor')
+    .map((slot) => slot.offset)
+    .sort((left, right) => left - right);
+  const positionedCount = Math.min(offsets.length, anchors.length);
+  const positionedAnchors = anchors.slice(anchors.length - positionedCount);
+  const positionedOffsets = offsets.slice(offsets.length - positionedCount);
+  return {
+    byOffset: new Map(positionedOffsets.map((offset, index) => [offset, positionedAnchors[index]])),
+    trailing: anchors.slice(0, anchors.length - positionedCount),
+  };
+}
+
+/** Trailing state outputs precede independently preserved read/identity co-spends in the output frame. */
+export function orderPostBlockTrailingAndReadInputs<T>(
+  trailing: readonly T[], readOnly: readonly T[],
+): T[] {
+  return [...trailing, ...readOnly];
 }
 
 export function buildInputs(
@@ -70,8 +103,11 @@ lowLevelCallInputs: UnlockableUtxo[],
   // past the caller's complete block (compose already does this; plain `.send()` must match).
   const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
   const denseBlockLayout = host.blockLayout;
+  const identityPlacement = identityAnchorPlacement(
+    denseBlockLayout, host.externalIdentityAnchorUtxos, host.logicalIdentityUtxo,
+  );
   const useDensePlacement = denseBlockLayout !== undefined
-    && (host.funderUtxos.length > 0 || hasExternalGroups);
+    && (host.funderUtxos.length > 0 || hasExternalGroups || identityPlacement.byOffset.size > 0);
   if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
     ?.SOLIDC_DEBUG_INPUT_ORDER === '1') {
     console.error('input-order-guard', JSON.stringify({
@@ -233,6 +269,12 @@ lowLevelCallInputs: UnlockableUtxo[],
             }
           } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
           break;
+        case 'identityAnchor': {
+          const anchor = identityPlacement.byOffset.get(slot.offset);
+          if (anchor) positioned[slot.offset] = anchor;
+          else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
+          break;
+        }
         case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent': {
           const f = funderPool.shift();
           if (f) positioned[slot.offset] = f;
@@ -551,17 +593,22 @@ lowLevelCallInputs: UnlockableUtxo[],
       }
     }
     const postBlockParticipants = [
+      // Trailing state is emitted immediately after the complete fixed block. Keep its balancing inputs before
+      // read/identity preservation inputs, whose outputs remain 1:1 at their later coordinates. Reversing these
+      // bands lets a caller-identity recreation overwrite a newly inserted mapping node in return probes.
+      ...orderPostBlockTrailingAndReadInputs(
+        trailingRest,
       // Read-only co-spends the dense walk did not place in a `readOnlyDataNft` slot. Their OUTPUTS are
       // materialized unconditionally (`build()` emits one preservation output per read-only UTXO), so leaving
       // them out of the input list silently unbalances the frame and drops whatever identity they carry - a
       // `msg.sender`-keyed frame then resolves against nothing. The legacy ordering appends them; do the same
       // here instead of relying on a slot the published layout may not have.
-      ...host.readOnlyDataNftUtxos.slice(readOnlyIdx),
+        host.readOnlyDataNftUtxos.slice(readOnlyIdx),
+      ),
       ...gapInputs.slice(gapIdx),
       ...deferredExternalCallInputs,
       ...(splitActiveDelegateBand ? nestedLlcWithBlockPads : remainingLlc),
       ...host.lowLevelCallRawInputs,
-      ...trailingRest,
       ...host.trailingDisposalInputs.slice(trailingDisposalIdx),
     ];
     if (earlyInsertPredecessors.length > 0

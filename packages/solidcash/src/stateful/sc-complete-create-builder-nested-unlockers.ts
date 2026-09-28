@@ -22,6 +22,21 @@ import {
   resolveAbsolutePredOut,
 } from './writer-event-delegate-layout.js';
 import { computedStateWriterGroupIndex } from './writer-group-selection.js';
+import {
+  callerIdentityAnchorBand,
+  isRoutePushValueWitnessName,
+  resolveDelegatePushValueWitness,
+} from './sc-fix-create-builder-delegate-unlockers.js';
+
+/** Resolve compiler-published fold witnesses while completing an ordinary nested callee unlocker. */
+export function resolveNestedRoutePushValueWitness(
+  name: string,
+  compilerRouteArgs: Readonly<Record<string, FunctionArgument>> | undefined,
+  groupArgs: Readonly<Record<string, FunctionArgument>> | undefined,
+): FunctionArgument | undefined {
+  if (!isRoutePushValueWitnessName(name)) return undefined;
+  return resolveDelegatePushValueWitness(name, compilerRouteArgs, groupArgs, undefined);
+}
 
 export type CompleteCreateBuilderNestedUnlockersHost = {
   readonly categoryId: string;
@@ -31,6 +46,7 @@ export type CompleteCreateBuilderNestedUnlockersHost = {
     proxyAnchorSlots: Set<number>;
   }>;
   nestedFullState: (contract: any) => Promise<any>;
+  ensureNestedIdentityAnchorBand: (address: string) => Promise<number | undefined>;
   selectProxyForwardInput: (...args: any[]) => FunctionArgument;
   directNestedIdentityWitness: (...args: any[]) => any;
 };
@@ -72,6 +88,11 @@ export async function completeCreateBuilderNestedUnlockers(
   const pendingAnchorFills = params.pendingAnchorFills as any[];
   const pendingExternalCallInputFills = params.pendingExternalCallInputFills as any[];
   const entryAbiFunction = params.entryAbiFunction as AbiFunction | undefined;
+  const identityAnchors = params.identityAnchors as UnlockableUtxo[];
+  const publicSelfAddress = params.publicSelfAddress as Uint8Array;
+  const authenticatedSelfAddress = params.authenticatedSelfAddress as Uint8Array | undefined
+    ?? publicSelfAddress;
+  const physicalSelfAddress = params.physicalSelfAddress as Uint8Array;
 
   for (const groupIdx of returningExternalGroups) {
     const child = externalCallUtxoGroups[groupIdx];
@@ -129,13 +150,39 @@ export async function completeCreateBuilderNestedUnlockers(
       })(),
     );
     const childAnchorFillPositions: {
-      argIndex: number; name: string; band: number; proxyRoute: boolean;
+      argIndex: number; name: string; band?: number; categoryId?: string; proxyRoute: boolean;
     }[] = [];
     const childParentGroupIndex = allGroupParentIndices[groupIdx];
     const childCallerCategoryId = child.callerIdentity?.categoryId
       ?? (childParentGroupIndex !== undefined && childParentGroupIndex >= 0
         ? externalCallUtxoGroups[childParentGroupIndex]?.categoryId ?? host.categoryId
         : host.categoryId);
+    const childPhysicalCallerLockingBytecode = childParentGroupIndex !== undefined
+      && childParentGroupIndex >= 0
+      ? externalCallUtxoGroups[childParentGroupIndex]?.externalContract.inner.lockingBytecode
+        ?? binToHex(physicalSelfAddress)
+      : binToHex(physicalSelfAddress);
+    const childCallerSubjectLockingBytecode = child.callerIdentity?.lockingBytecode
+      ?? childPhysicalCallerLockingBytecode;
+    const needsMsgSenderAnchor = childFn.inputs.some((input) => input.name === '__internal__msgSenderAnchorIdx')
+      && childCallerSubjectLockingBytecode.toLowerCase() !== childPhysicalCallerLockingBytecode.toLowerCase();
+    const rootLogicalCaller = needsMsgSenderAnchor
+      && (childParentGroupIndex === undefined || childParentGroupIndex < 0)
+      && childCallerSubjectLockingBytecode.toLowerCase() === binToHex(authenticatedSelfAddress).toLowerCase();
+    if (needsMsgSenderAnchor && !rootLogicalCaller && childParentGroupIndex !== undefined
+      && childParentGroupIndex >= 0) {
+      const caller = externalCallUtxoGroups[childParentGroupIndex]?.externalContract;
+      if (caller) await host.ensureNestedIdentityAnchorBand(caller.target);
+    }
+    const childMsgSenderAnchorBand = needsMsgSenderAnchor && !rootLogicalCaller
+      ? callerIdentityAnchorBand(
+        childCallerSubjectLockingBytecode,
+        childPhysicalCallerLockingBytecode,
+        identityAnchors.map((anchor, band) => ({
+          band,
+          lockingBytecode: binToHex(anchor.unlocker.generateLockingBytecode()),
+        })),
+      ) : undefined;
     const encoded = childFn.inputs.map((input, inputIndex) => {
       if (!input.name.startsWith('__internal__')) {
         // A compiler route has its own visible ABI (`batchBlob` plus route witnesses), distinct from the
@@ -170,7 +217,14 @@ export async function completeCreateBuilderNestedUnlockers(
           ?? child.internalArgs?.[input.name]
           ?? -1n;
       }
+      const routePushValue = resolveNestedRoutePushValueWitness(
+        input.name,
+        child.compilerRoute?.internalArgs,
+        child.internalArgs,
+      );
+      if (routePushValue !== undefined) return routePushValue;
       if (['__internal__activeVerifierIndex', '__internal__graphFixedSize',
+        '__internal__graphSelfIdentityInput',
         '__internal__graphBlockSize', '__internal__graphSettlementBoundary',
         '__internal__blockhashInputIndex', '__internal__graphEmissions',
         '__internal__graphCallers', '__internal__graphCompletionPositions',
@@ -192,6 +246,20 @@ export async function completeCreateBuilderNestedUnlockers(
         // A transitive call is made by its immediate parent group, not the
         // root contract whose StatefulFunctionCall is building the graph.
         return hexToBin(childCallerCategoryId).reverse();
+      }
+      if (input.name === '__internal__msgSenderAnchorIdx') {
+        if (rootLogicalCaller) {
+          childAnchorFillPositions.push({
+            argIndex: inputIndex, name: input.name, categoryId: childCallerCategoryId,
+            proxyRoute: false,
+          });
+        } else if (childMsgSenderAnchorBand !== undefined) {
+          childAnchorFillPositions.push({
+            argIndex: inputIndex, name: input.name, band: childMsgSenderAnchorBand,
+            proxyRoute: false,
+          });
+        }
+        return -1n;
       }
       if (input.name === '__internal__delegateInputIndex') {
         const delegateGroup = child.delegateCallGroupIndex;
@@ -312,8 +380,7 @@ export async function completeCreateBuilderNestedUnlockers(
         return BigInt(nestedMasterIndices[physicalGroupIndex]);
       }
       if (input.name.startsWith('__internal__vmapBatch')
-        || input.name.startsWith('__internal__valueWitness_')
-        || input.name.startsWith('__internal__leadingPushValue_')) {
+        || input.name.startsWith('__internal__valueWitness_')) {
         const value = child.compilerRoute?.internalArgs?.[input.name] ?? child.internalArgs?.[input.name];
         if (value !== undefined) {
           // Proof positions remain callee-master-relative: the covenant adds OP_INPUTINDEX. Predecessor
@@ -334,8 +401,7 @@ export async function completeCreateBuilderNestedUnlockers(
           }
           return value;
         }
-        if (input.name.startsWith('__internal__valueWitness_')
-          || input.name.startsWith('__internal__leadingPushValue_')) return new Uint8Array();
+        if (input.name.startsWith('__internal__valueWitness_')) return new Uint8Array();
         if (/^__internal__vmapBatchRank_\d+$/.test(input.name)) return 0n;
         if (input.name.startsWith('__internal__vmapBatchRows_')) return new Uint8Array();
         if (/^__internal__vmapBatchSlot_\d+$/.test(input.name)) return new Uint8Array(32);

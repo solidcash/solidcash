@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { materializeInternalFunctionArgument } from '../../src/stateful/StatefulContract.js';
+import { sortedLoopSurplusFunderCount } from '../../src/stateful/sc-allocate-create-builder-funders-accounting.js';
+import { orderPostBlockTrailingAndReadInputs } from '../../src/stateful/stb-build-inputs.js';
 
 describe('stateful return argument materialization', () => {
   it('replaces a provisional return index without shifting later internal witnesses', () => {
@@ -50,5 +52,13 @@ describe('stateful return argument materialization', () => {
       '__internal__msgSenderAnchorIdx',
       -1n,
     )).toEqual([new Uint8Array(20), 5n, category, -1n, slot, 9n]);
+  });
+
+  it('balances a direct sorted-loop output before a return probe caller band', () => {
+    expect(sortedLoopSurplusFunderCount(1, 0, false)).toBe(1);
+    expect(sortedLoopSurplusFunderCount(2, 1, false)).toBe(1);
+    expect(sortedLoopSurplusFunderCount(1, 0, true)).toBe(0);
+    expect(orderPostBlockTrailingAndReadInputs(['new-entry-pad'], ['caller-identity']))
+      .toEqual(['new-entry-pad', 'caller-identity']);
   });
 });

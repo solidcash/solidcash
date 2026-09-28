@@ -23,6 +23,7 @@ import {
   isWriterBatchWitnessName,
   materializedPredOutBase,
   remapInsertPredOuts,
+  writerBatchPlanMatchesPhysicalCarrier,
 } from './writer-event-delegate-layout.js';
 import { physicalExternalCallFunction } from './writer-group-selection.js';
 
@@ -107,7 +108,9 @@ const refreshNestedIdentityAnchorWitnesses = (): boolean => {
     let fillChanged = false;
     const updates: Record<string, FunctionArgument> = {};
     for (const position of fill.positions) {
-      const next = BigInt(builder.getIdentityAnchorInputIndex(position.band))
+      const next = BigInt(position.categoryId === undefined
+        ? builder.getIdentityAnchorInputIndex(position.band)
+        : builder.getIdentityAnchorInputIndexByCategory(position.categoryId))
         + (position.proxyRoute ? 1_000_000n : 0n);
       if (fill.encodedArgs[position.argIndex] === next) continue;
       fill.encodedArgs[position.argIndex] = next;
@@ -269,7 +272,10 @@ if (pendingTokenCallInputFills.length > 0) {
           || (candidate.plannedEntryInserts?.length ?? 0) > 0
           || Object.entries({ ...candidate.compilerRoute?.internalArgs, ...candidate.internalArgs })
             .some(([name]) => isWriterBatchWitnessName(name))));
-      for (const writer of writers) inheritWriterBatchPlan(fill.tokenGroup, writer);
+      for (const writer of writers) {
+        if (!writerBatchPlanMatchesPhysicalCarrier(fill.tokenGroup, writer)) continue;
+        inheritWriterBatchPlan(fill.tokenGroup, writer);
+      }
       const hasPred = (fill.tokenGroup.batchPredecessorOutputs?.length ?? 0) > 0
         || Object.entries({
           ...fill.tokenGroup.internalArgs,

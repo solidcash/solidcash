@@ -37,6 +37,16 @@ export type AllocateCreateBuilderFundersHost = {
   markSharedFunder: (utxo: UnlockableUtxo) => void;
 };
 
+/** Inputs which balance sorted-loop outputs that do not consume their own predecessor. */
+export function sortedLoopSurplusFunderCount(
+  outputCount: number,
+  predecessorCount: number,
+  settlesInsideBalancedTrailingCapacity: boolean,
+): number {
+  if (settlesInsideBalancedTrailingCapacity) return 0;
+  return Math.max(0, outputCount - predecessorCount);
+}
+
 /**
  * Count output-only / missing-entry funder slots, scan msg.sender key collisions,
  * then install shared/mock/dummy funders onto the builder.
@@ -134,14 +144,14 @@ export async function allocateCreateBuilderFunders(
     }
     // A delegated sorted INSERT consumes fewer predecessor inputs than the entry outputs it creates. Legacy
     // geometry needs the exact output-only surplus before ordinary nested participant blocks. Compiler-routed
-    // delegates instead settle predecessor and surplus pads inside their published trailing capacity, so adding
-    // another funder would exceed the participant's balanced width.
-    if (externalCallUtxoGroups.some((group) => group.sharedGroupIndex === undefined)
-      && !compilerRouteDelegateLayout) {
-      const loopEntryOutputCount = [...sortedLoopCommitments.values()]
-        .reduce((count, commitments) => count + commitments.length, 0);
-      neededFunders += Math.max(0, loopEntryOutputCount - insertLoopPredecessors.length);
-    }
+    // routes instead settle predecessor and surplus pads inside their published trailing capacity, so adding
+    // another funder would exceed the participant's balanced width. This applies to direct participant routes
+    // as well as delegate routes: both use the same balanced trailing input placer.
+    neededFunders += sortedLoopSurplusFunderCount(
+      builder.getTrailingLoopEntryOutputCount(),
+      insertLoopPredecessors.length,
+      !!compilerRouteDelegateLayout || (effectiveBlockLayout.trailingCapacity ?? 0) > 0,
+    );
     neededFunders += effectiveBlockLayout.slots.filter(
       (s) => s.kind === 'entry'
         && !entryInfos.some((e) => e.slotIndex === s.slotIndex && e.exists && e.utxo !== undefined),

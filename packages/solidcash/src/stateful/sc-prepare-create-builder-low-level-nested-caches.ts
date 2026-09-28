@@ -46,6 +46,7 @@ export type PrepareCreateBuilderLowLevelNestedCachesResult = {
   nestedSortedListCache: Map<string, SortedList>;
   nestedAddressUtxos: (address: string) => Promise<Utxo[]>;
   nestedIdentity: (address: string) => Promise<any>;
+  ensureNestedIdentityAnchorBand: (address: string) => Promise<number | undefined>;
   resolveNestedIdentityAnchorBands: (...args: any[]) => Promise<any>;
   directNestedIdentityWitness: (...args: any[]) => bigint;
   nestedFullState: (contract: any) => Promise<OnChainState>;
@@ -154,6 +155,17 @@ const nestedIdentity = (address: string): Promise<Awaited<ReturnType<typeof reso
   }
   return pending;
 };
+const ensureNestedIdentityAnchorBand = async (address: string): Promise<number | undefined> => {
+  const bandKey = logicalIdentityBandKey(address);
+  const existing = identityAnchorBandByAddress.get(bandKey);
+  if (existing !== undefined) return existing;
+  const resolved = resolvedNestedIdentityCache.get(bandKey) ?? await nestedIdentity(address);
+  if (!resolved) return undefined;
+  const band = identityAnchors.length;
+  identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+  identityAnchorBandByAddress.set(bandKey, band);
+  return band;
+};
 const resolveNestedIdentityAnchorBands = async (
   ownerFunction: AbiFunction,
   visibleArgs: readonly FunctionArgument[],
@@ -200,16 +212,8 @@ const resolveNestedIdentityAnchorBands = async (
     if (sourceArgumentLock === spentLock) continue;
     // Direct identity is valid only when the spent master is locked at the Solidity-visible address.
     if (logicalLbc === spentLock) continue;
-    const bandKey = logicalIdentityBandKey(logicalAddress);
-    let band = identityAnchorBandByAddress.get(bandKey);
-    if (band === undefined) {
-      const resolved = resolvedNestedIdentityCache.get(bandKey)
-        ?? await nestedIdentity(logicalAddress);
-      if (!resolved) continue;
-      band = identityAnchors.length;
-      identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
-      identityAnchorBandByAddress.set(bandKey, band);
-    }
+    const band = await ensureNestedIdentityAnchorBand(logicalAddress);
+    if (band === undefined) continue;
     anchorBandBySlot.set(slot, band);
     if (nestedGroup?.functionName === '__forward' || nestedGroup?.delegateCallGroupIndex !== undefined) {
       proxyAnchorSlots.add(slot);
@@ -358,6 +362,7 @@ let nestedFunderIndex = 0;
     nestedSortedListCache,
     nestedAddressUtxos,
     nestedIdentity,
+    ensureNestedIdentityAnchorBand,
     resolveNestedIdentityAnchorBands,
     directNestedIdentityWitness,
     nestedFullState,

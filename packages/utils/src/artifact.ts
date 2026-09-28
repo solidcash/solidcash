@@ -1601,6 +1601,17 @@ export function buildMessageBusResourceBudgets(params: {
 }): MessageBusResourceBudgets {
   const dynCeiling = Math.max(256, params.trailingCapacity ?? 0);
   const rowCeiling = Math.max(1, params.maximumRows);
+  const journalCeiling = 256;
+  const eventCeiling = Math.max(rowCeiling * 4, 32);
+  const transferCeiling = Math.max(rowCeiling * 4, 32);
+  const returnCeiling = Math.max(rowCeiling, 8);
+  const externalEdgeCeiling = 64;
+  // The compose lattice may discover one mutable claim for every independently published resource axis, then
+  // requires one assembly pass and one confirmation pass. Publish that aggregate worst case rather than a
+  // smaller per-axis constant: a valid graph can remain within every individual budget while their sum exceeds
+  // any one axis (for example, a resource-heavy graph with 315 claims and 256 journal records).
+  const semanticDerivationCeiling = dynCeiling + dynCeiling + journalCeiling
+    + eventCeiling + transferCeiling + returnCeiling + externalEdgeCeiling + 2;
   return {
     version: 1,
     maximumRows: rowCeiling,
@@ -1608,12 +1619,12 @@ export function buildMessageBusResourceBudgets(params: {
     maximumBlobBytes: params.maximumBlobBytes ?? MAX_MESSAGE_BUS_BLOB_BYTES,
     maximumDynamicChunks: dynCeiling,
     maximumValueContinuationChunks: dynCeiling,
-    maximumJournalRecords: 256,
-    maximumEvents: Math.max(rowCeiling * 4, 32),
-    maximumTransfers: Math.max(rowCeiling * 4, 32),
-    maximumReturnCarriers: Math.max(rowCeiling, 8),
-    maximumExternalEdges: 64,
-    maximumSemanticDerivationPasses: 256,
+    maximumJournalRecords: journalCeiling,
+    maximumEvents: eventCeiling,
+    maximumTransfers: transferCeiling,
+    maximumReturnCarriers: returnCeiling,
+    maximumExternalEdges: externalEdgeCeiling,
+    maximumSemanticDerivationPasses: semanticDerivationCeiling,
   };
 }
 

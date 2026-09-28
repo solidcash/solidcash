@@ -1930,6 +1930,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphSettlementBoundary',
         '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable',
+        '__internal__graphSelfIdentityInput',
         '__internal__activeVerifierIndex',
         '__internal__lifecycleOwnerInput',
         '__internal__upgradeBytecode',
@@ -8837,19 +8838,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({
         interfaceName: node.callInfo.interfaceName,
         functionName: node.callInfo.functionName,
-        // Ordinary CALL/staticcall edges continue from the exact authenticated identity through which this
-        // participant entered. Delegate execution instead calls as its proxy/state owner, never its executor.
-        // `active` deliberately publishes a policy rather than guessing whether a future instance has a CREATE
-        // identity anchor; graph planning resolves it from the authenticated parent target.
+        // CALL/staticcall edges continue from the exact authenticated public identity through which this
+        // participant entered. This is also true while executing delegated code: the callee observes the proxy,
+        // never the implementation executor. `active` publishes that policy without guessing whether a future
+        // instance represents its public identity at the owner slot or at a CREATE/proxy identity anchor.
         callerIdentity: {
           version: 1,
-          role: this.compilerOptions.autoDelegate === true
-            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
-            ? 'owner' : 'active',
+          role: 'active',
           auth: 'input-bytecode',
-          authOffset: this.compilerOptions.autoDelegate === true
-            || this.currentFunction?.modifiers.includes(FunctionModifier.DELEGATE) === true
-            ? 0 : 0xffff,
+          authOffset: 0xffff,
         },
         ...(node.sourceEffectOrdinal !== undefined && {
           sourceEffectOrdinal: node.sourceEffectOrdinal,
@@ -10035,7 +10032,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       expression instanceof IdentifierNode
       && this.currentFunction?.parameters.some((parameter) => parameter.name === expression.name) === true
     );
-    if (isParam(node) || node instanceof IntLiteralNode || node instanceof BoolLiteralNode) return true;
+    if (isParam(node) || node instanceof IntLiteralNode || node instanceof BoolLiteralNode
+      || node instanceof StringLiteralNode || node instanceof HexLiteralNode) return true;
     if (node instanceof ArrayAccessNode) {
       return isParam(node.array) && (isParam(node.index) || node.index instanceof IntLiteralNode);
     }

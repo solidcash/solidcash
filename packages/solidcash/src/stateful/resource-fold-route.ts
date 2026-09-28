@@ -36,6 +36,21 @@ import {
 import { encodeStructArgument } from './legacy-job-event-wire.js';
 import { settlement } from './value-chunk-persist.js';
 
+/** Place a resolved complete array fold in its compiler-published hidden ABI slot by name. */
+export function materializeCompletePushValueWitness(
+  inputs: readonly { name: string }[],
+  args: FunctionArgument[],
+  slotIndex: number,
+  value: Uint8Array,
+): number {
+  const index = inputs.findIndex((input) => (
+    input.name === `__internal__completePushValue_${slotIndex}`
+      || input.name === '__internal__completePushValue'
+  ));
+  if (index >= 0) args[index] = value;
+  return index;
+}
+
 /** Optional settle-time ExecutionContext lookup for fold activation env (settle-time ExecutionContext). */
 export type FoldActivationEnvResolveOptions = {
   /** Compose participant / fold-row index for the journal key. */

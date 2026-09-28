@@ -101,6 +101,13 @@ export interface PerCallGenesisOptions {
   readonly senderLockingBytecode?: Uint8Array;
   /** Explicit state a caller seeds for fields the constructor does not write. */
   readonly initialState?: Record<string, StateValue>;
+  /**
+   * Sorted collections whose empty head sentinel the genesis mints because an entry writes them.
+   *
+   * A collection a constructor writes is already seeded by the constructor's own plan; a collection nothing writes
+   * at genesis but an entry later does has no such plan, so a deployment that runs such an entry names it here.
+   */
+  readonly headCollections?: readonly PerCallGenesisHeadCollection[];
   readonly maximumNftCommitmentBytes?: number;
   /** A bound on the learning iterations. Defaults to one per data NFT plus a convergence run. */
   readonly maximumIterations?: number;
@@ -117,6 +124,19 @@ export interface PerCallGenesisEntry {
   readonly collection: string;
   /** The node commitment, in hex, which the genesis transaction's entry output carries. */
   readonly commitment: string;
+  /**
+   * The collection's canonical signature, present when the artifact's layout does not publish the collection.
+   *
+   * A collection that only an entry writes is known from the entry, not from the genesis artifact's own layout; the
+   * signature is what derives the entry covenant the node sits at.
+   */
+  readonly signature?: string;
+}
+
+/** A sorted collection a genesis seeds with its empty head sentinel, named from the entry that later writes it. */
+export interface PerCallGenesisHeadCollection {
+  readonly name: string;
+  readonly signature: string;
 }
 
 /**
@@ -211,12 +231,32 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
   if (constructorAbi === undefined) {
-    return { master, commitments: zeroCommitments, entries: [], events: [] };
+    return { master, commitments: zeroCommitments, entries: headSentinelEntries(options, undefined), events: [] };
   }
 
   refuseUnservedShape(artifact, constructorAbi);
   const mapping = planConstructorMappingWrite(artifact, constructorAbi, options);
   return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mapping);
+}
+
+/**
+ * The empty head sentinel of every collection a deployment names as one an entry later writes.
+ *
+ * A genesis that runs no constructor write has no other record to start from, so a collection an entry writes
+ * needs its head minted here; a collection the constructor already plans is left to that plan, which carries the
+ * head it relinked. Every commitment is the shipped encoder's for the empty list.
+ */
+function headSentinelEntries(
+  options: PerCallGenesisOptions,
+  plannedCollection: string | undefined,
+): readonly PerCallGenesisEntry[] {
+  return (options.headCollections ?? [])
+    .filter((collection) => collection.name !== plannedCollection)
+    .map((collection) => ({
+      collection: collection.name,
+      signature: collection.signature,
+      commitment: binToHex(headSentinelCommitment()),
+    }));
 }
 
 /** The constructor ABI fields this module has no plan for; each is refused by the shape it names. */
@@ -579,12 +619,15 @@ function deriveConstructorFrame(
     // A genesis mints the list's post-write nodes: the head sentinel relinked to the new key and the node the
     // write created. The empty sentinel the derivation spends is the probe's synthetic predecessor, not a UTXO
     // the transaction has to spend.
-    entries: mapping === undefined
-      ? []
-      : [
-        { collection: mapping.collection, commitment: binToHex(mapping.write.written[0]!.after) },
-        { collection: mapping.collection, commitment: binToHex(mapping.created) },
-      ],
+    entries: [
+      ...(mapping === undefined
+        ? []
+        : [
+          { collection: mapping.collection, commitment: binToHex(mapping.write.written[0]!.after) },
+          { collection: mapping.collection, commitment: binToHex(mapping.created) },
+        ]),
+      ...headSentinelEntries(options, mapping?.collection),
+    ],
     // The event payloads are the ones the loop learned from the body's own comparisons, in emit order.
     events: eventShapes.map((shape, index) => ({
       eventName: shape.eventName,

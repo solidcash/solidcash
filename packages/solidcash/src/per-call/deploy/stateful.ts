@@ -76,6 +76,7 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
     provider: options.provider,
     constructorArgs: constructorValues,
     ...(options.initialState === undefined ? {} : { initialState: options.initialState }),
+    ...(options.headCollections === undefined ? {} : { headCollections: options.headCollections }),
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
   });
@@ -134,15 +135,17 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // created. Each sits at its collection's entry covenant, so a composition spends and recreates it under the
   // covenant's own rules; the collection's signature derives that lock.
   for (const entry of genesis.entries) {
-    const collection = artifact.stateLayout?.collections
-      ?.find((candidate) => candidate.name === entry.collection);
-    if (collection === undefined) {
+    // A collection the artifact's own layout publishes carries its signature; one only an entry writes is named by
+    // the deployment, which is where the genesis learned to seed its head.
+    const signature = entry.signature
+      ?? artifact.stateLayout?.collections?.find((candidate) => candidate.name === entry.collection)?.signature;
+    if (signature === undefined) {
       throw new PerCallDeployError(
         `genesis minted a node for collection "${entry.collection}", which the artifact does not publish`,
       );
     }
     builder.addOutput({
-      to: entryRecordLockingBytecode(categoryId, collection.signature),
+      to: entryRecordLockingBytecode(categoryId, signature),
       amount: dataNftAmount,
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
     });

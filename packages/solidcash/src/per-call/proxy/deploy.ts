@@ -38,6 +38,7 @@ import {
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
+import { headSentinelCommitment } from '../../stateful/SortedList.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
@@ -52,7 +53,7 @@ import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
 import { PerCallProxyDeployError } from './errors.js';
-import { hopEntryWrites, type HopEntryWrites } from './entry-writes.js';
+import { hopEntryWrites, mappingHeadCollection, type HopEntryWrites } from './entry-writes.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
@@ -392,17 +393,33 @@ export async function deployPerCallProxy(
   const implementationMaster = deployMaster(implementationArtifact, implementationCategory, validatorProgram);
   const proxyMaster = deployMaster(proxyArtifact, proxyCategory, validatorProgram);
 
+  // The records the entry's own body writes — mapping nodes today — are planned against the entry's published
+  // accesses and their stated values, so their commitments are declared outright rather than learned. A collection
+  // the entry writes has no record until then, so the proxy's genesis seeds its empty head; the implementation
+  // artifact is where that collection is published.
+  const entryWrites = hopEntryWrites({
+    artifact: implementationArtifact,
+    functionName: options.initialize.functionName,
+    ...(options.initialize.args === undefined ? {} : { args: options.initialize.args }),
+    callerLockingBytecode: options.callerLockingBytecode,
+  });
+  const headCollections = entryWrites === undefined
+    ? []
+    : [{ name: entryWrites.collection, signature: entryWrites.signature }];
+
   // 1. The implementation's genesis and pools.
   const implementation = await deployStatefulContract(
     implementationArtifact, [...(options.implementationArgs ?? [])],
     { ...options.implementationDeploy, provider },
   );
 
-  // 2. The proxy's genesis, its one record carrying the implementation's address.
+  // 2. The proxy's genesis, its one record carrying the implementation's address, and the empty head of any
+  // collection the entry writes.
   const proxy = await deployStatefulContract(proxyArtifact, [], {
     ...options.proxyDeploy,
     provider,
     initialState: { implementation: implementationMaster.address },
+    ...(headCollections.length === 0 ? {} : { headCollections }),
   });
 
   // The proxy's records are read back by enumerating the proxy's category and decoding each commitment through the
@@ -431,14 +448,6 @@ export async function deployPerCallProxy(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
   const recordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
-  // The records the entry's own body writes — mapping nodes today — are planned against the entry's published
-  // accesses and their stated values, so their commitments are declared outright rather than learned.
-  const entryWrites = hopEntryWrites({
-    artifact: implementationArtifact,
-    functionName: options.initialize.functionName,
-    ...(options.initialize.args === undefined ? {} : { args: options.initialize.args }),
-    callerLockingBytecode: options.callerLockingBytecode,
-  });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -947,10 +956,22 @@ interface BroadcastHopOptions {
 }
 
 /** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
-function participantUtxo(pools: { masters: readonly Utxo[]; validators: readonly Utxo[]; records: readonly Utxo[] },
-  id: string): Utxo | undefined {
+function participantUtxo(
+  pools: {
+    masters: readonly Utxo[]; validators: readonly Utxo[]; records: readonly Utxo[];
+    collectionNodes: readonly Utxo[];
+  },
+  id: string,
+): Utxo | undefined {
   const nftIndex = recordIndexOfRecord(id);
   if (nftIndex !== undefined) return pools.records[nftIndex];
+  const headCollection = mappingHeadCollection(id);
+  if (headCollection !== undefined) {
+    // The genesis minted the collection's empty head, and no write has moved it yet, so the live node carrying the
+    // empty list's own commitment is the one the hop spends.
+    const head = bytesToHexText(headSentinelCommitment());
+    return pools.collectionNodes.find((node) => node.token?.nft?.commitment === head);
+  }
   const pool = id === PROXY_MASTER_ID || id === IMPLEMENTATION_MASTER_ID ? pools.masters
     : id === VALIDATOR_ID ? pools.validators
       : undefined;

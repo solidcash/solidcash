@@ -5,6 +5,7 @@
 
 import type { Artifact, ExternalCallAbi } from '@solidcash/utils';
 import type { AddressType, Unlocker, Utxo, TransactionDetails } from '../interfaces.js';
+import type { PerCallGenesisHeadCollection } from '../per-call/deploy/genesis.js';
 import type { FunctionArgument, ConstructorArgument } from '../Argument.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { StateValueType } from '../types/state-inference.js';
@@ -16,6 +17,12 @@ export interface DeployOptions {
   funder: Unlocker;
   initialState?: Record<string, StateValueType>;
   initArgs?: FunctionArgument[];  // arguments for constructor {} block
+  /**
+   * Sorted collections whose empty head sentinel genesis mints, for a collection an entry writes before any
+   * constructor write touches it. Internal: a proxy's genesis starts the collection its implementation's entry
+   * writes, and the artifact's own layout carries no such collection.
+   */
+  headCollections?: readonly PerCallGenesisHeadCollection[];
   changeAddress: string;
   masterAmount?: bigint;   // default 1200n
   dataNftAmount?: bigint;  // default 1200n per data NFT

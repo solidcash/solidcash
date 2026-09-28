@@ -35,6 +35,14 @@ import {
 import type { TransactionLayout } from '../composer/layout.js';
 import { PerCallProxyDeployError } from './errors.js';
 
+/** The participant id a hop's layout holds for a collection's empty head. */
+const MAPPING_HEAD_PREFIX = 'mapping-head-';
+
+/** The collection a hop's participant id names when it is the empty head of one; `undefined` for any other id. */
+export function mappingHeadCollection(id: string): string | undefined {
+  return id.startsWith(MAPPING_HEAD_PREFIX) ? id.slice(MAPPING_HEAD_PREFIX.length) : undefined;
+}
+
 /** One sorted batch an entry performs, planned against the empty list's head sentinel. */
 interface HopMappingBatch {
   readonly collection: string;
@@ -72,6 +80,10 @@ export interface LaidHopEntryWrites {
 
 /** The writes one entry performs, with the ids the plan places. */
 export interface HopEntryWrites {
+  /** The collection the entry's batch writes, whose empty head the collection starts from. */
+  readonly collection: string;
+  /** The collection's canonical signature, which derives the entry covenant lock its nodes sit at. */
+  readonly signature: string;
   /** The participant ids the proxy's block holds for the entry's own writes. */
   readonly participantIds: readonly string[];
   lay(context: HopEntryWritesContext): LaidHopEntryWrites;
@@ -215,7 +227,7 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
   return {
     collection: collection.name,
     signature: collection.signature,
-    headId: `mapping-head-${collection.name}`,
+    headId: `${MAPPING_HEAD_PREFIX}${collection.name}`,
     plan,
   };
 }
@@ -237,6 +249,8 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   }
   const created = mapping.plan.written.filter((node) => !node.existed);
   return {
+    collection: mapping.collection,
+    signature: mapping.signature,
     participantIds: [mapping.headId],
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => {
       const headIndex = context.layout.participants.find((placed) => placed.id === mapping.headId)?.index;

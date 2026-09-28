@@ -86,6 +86,14 @@ export interface PerCallDeploymentSet {
   readonly validators: readonly Utxo[];
   /** The state records: one per data NFT, in data-NFT order, each carrying a parseable commitment. */
   readonly records: readonly Utxo[];
+  /**
+   * The collection nodes: mutable NFTs carrying a commitment that is not a data-NFT record's.
+   *
+   * A sorted collection is a chain of node UTXOs — the empty list's head sentinel and, once an entry writes it, the
+   * nodes it creates — each at its collection's entry covenant. They are not validators: a validator carries an
+   * empty commitment, which is what every composition recreates it with.
+   */
+  readonly collectionNodes: readonly Utxo[];
 }
 
 /**
@@ -119,10 +127,10 @@ function nftIndexOf(commitment: string, layout: StateLayout): number | undefined
 /**
  * Classifies a category's live UTXOs into the pools and records a per-call deployment mints.
  *
- * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, and a mutable NFT whose
- * commitment parses as the layout's pushdata encoding is a record at that data-NFT index. Records come back in
- * data-NFT order (the tag order a multi-NFT layout carries, otherwise by outpoint), so index `i` is genuinely
- * register `i`.
+ * A minting NFT is a master, a mutable NFT with an empty commitment is a validator, a mutable NFT whose commitment
+ * parses as the layout's pushdata encoding is a record at that data-NFT index, and any other mutable NFT is a
+ * collection node. Records come back in data-NFT order (the tag order a multi-NFT layout carries, otherwise by
+ * outpoint), so index `i` is genuinely register `i`.
  */
 export function classifyPerCallDeployment(
   utxos: readonly Utxo[],
@@ -130,6 +138,7 @@ export function classifyPerCallDeployment(
 ): PerCallDeploymentSet {
   const masters: Utxo[] = [];
   const validators: Utxo[] = [];
+  const collectionNodes: Utxo[] = [];
   const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
   for (const utxo of utxos) {
     const nft = utxo.token?.nft;
@@ -140,15 +149,17 @@ export function classifyPerCallDeployment(
     }
     if (nft.capability !== 'mutable') continue;
     const index = nftIndexOf(nft.commitment, layout);
-    if (index === undefined) validators.push(utxo);
-    else tagged.push({ utxo, nftIndex: index });
+    if (index !== undefined) tagged.push({ utxo, nftIndex: index });
+    else if (nft.commitment === '') validators.push(utxo);
+    else collectionNodes.push(utxo);
   }
   masters.sort((left, right) => left.vout - right.vout);
   validators.sort((left, right) => left.vout - right.vout);
+  collectionNodes.sort((left, right) => left.vout - right.vout);
   tagged.sort((left, right) => (isMultiDataNftLayout(layout)
     ? left.nftIndex - right.nftIndex
     : left.utxo.vout - right.utxo.vout));
-  return { masters, validators, records: tagged.map((entry) => entry.utxo) };
+  return { masters, validators, records: tagged.map((entry) => entry.utxo), collectionNodes };
 }
 
 /**

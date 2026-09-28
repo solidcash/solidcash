@@ -1178,16 +1178,13 @@ risk. Take the slices in order, each with its own tests.
     - the settlement cannot do sorted-entry insert and delete generically;
     - re-entry needs a fixpoint across entries;
     - a shape in spec 5.4 needs a special case in contract code;
-    - the compiler delta at I2 exceeds about 15K **net** lines, reporting the new per-call subtree separately from
-      the edits folded into the code that already existed. The bound was restated from "about 12K" to this one on
-      2026-09-28 by the implementer, confirmed by the coordinator in review, after the I2 gate had already been
-      recorded as KILL the same day the estimate was written, and after the scope had grown past master mode into proxies, reads, reverts, loops and branches. What
-      the bound is meant to catch is a kernel-style blow-up — a mechanism that grows by re-deriving itself per shape
-      — and that is not what happened: the delta is 12,349 net lines across `packages/solidc/src`, of which
-      `packages/solidc/src/per-call` is 10,565 across 21 files, and the 4.5 row records that the same change adds no
-      per-shape rule. The kernel it replaced grew by roughly 150K lines. The measured number is recorded in the 4.5
-      measurements rather than here, so the bound stays a bound and the measurement stays a measurement; or view
-      mode needs a special case outside spec section 20's record kinds (`EVAL_PER_CALL_VS_KERNEL.md` sections 3
+    - the compiler delta at I2 exceeds about 20K **net** lines across `packages/solidc/src`, reporting the new
+      per-call subtree separately from the edits folded into the code that already existed. **User decision,
+      2026-09-28**: raised from about 12K (restated to 15K by the implementer earlier that day) to about 20K, and the
+      user is ready to drop the bound entirely: the delta is logic, not garbage. A mechanism that re-derives itself
+      per shape, which the bound was meant to catch, is caught by the per-shape criteria above. The measured delta
+      stays in the 4.5 measurements;
+    - view mode needs a special case outside spec section 20's record kinds (`EVAL_PER_CALL_VS_KERNEL.md` sections 3
       and 6);
     - deriving the re-entry toy Y2 takes more than 5 s;
     - a V-check has no hostile test, or a threat row marked Critical (spec section 9) has no test showing it is
@@ -1263,9 +1260,9 @@ risk. Take the slices in order, each with its own tests.
   subtree (`packages/solidc/src/per-call`) is +10,565 across 21 files, so the change to code that existed before the
   branch is +1,924/-140 across 5 files; `packages/solidcash/src` +8,288/-4 across 45 files; `packages/utils/src`
   +1,306/-1 across 10 files; tests +45,885 lines across 185 files (solidc 13,878 / 63, solidcash 30,770 / 113,
-  utils 1,237 / 9). The number to read beside the I2 KILL bound (`~12K` for the compiler) is that the per-call
-  machinery is a new subtree rather than edits folded into the existing one; if the gate counts the whole
-  `packages/solidc/src` delta, the bound is reached at ~12.3K and the decision belongs in the I2 gate paragraph.
+  utils 1,237 / 9). The I2 KILL bound (about 20K net for the compiler, the user's 2026-09-28 decision) counts the
+  whole `packages/solidc/src` delta, with the per-call subtree reported beside it: at `852f3f467` that is 12,698 net
+  (+12,846/-148), of which the subtree is +10,582 across 21 files.
 - [x] Per-shape admission rules or static footprint recipes added: must be 0. **Checked**: neither the
   per-call compiler subtree (`packages/solidc/src/per-call/`) nor the SDK's (`packages/solidcash/src/per-call/`)
   names a marketplace contract, shape or field, so no rule can key on one; the admissions are all clauses about the
@@ -2114,3 +2111,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-28 | (this row's commit) | docs(per-call) | two catalog rows follow the fixes | 115 + 421 + 750 | P13's row records that a call mixing a compile-time argument with a run-time one now frames each argument as the wire's push, with the defect and the reason a compile-time-only call never showed it; P20's row records that a read-only frame reads a node another frame rewrote in the same transaction, that a frame writing two nodes of one ledger settles when the plan gives them one real sorted list, and that two nodes both declared as the tail are refused by the compiled topology check. Both name the commit and the test that drives them. |
 | 2026-09-28 | (this row's commit) | per-call tests | the store behind its own proxy, entered by a call frame | 115 + 421 + 752 | **MS2's proxied-store clause settles, which is the clause the shape is named for.** The root's implementation now appends through the store's generated proxy: each append is `IStoreProxy(storeProxy).forward(<framed append call data>)`, so the store proxy's fallback is a `CALL` frame entered by the root's delegate frame and the store's implementation runs as a `DELEGATE` frame on the store proxy's records. The plan runs six contract masters (root fallback, root implementation, and per append a store fallback and the store implementation), the validator covers all four contracts and settles both proxies plus the implementation category, and **every contract input is accepted**. The frame kinds are asserted, and so is what the store observes: `msg.sender` is the **root proxy's address** — the same value the direct-call shape presented, so the entry's gate holds unchanged — while `address(this)` is the store proxy's. The run-time-scalar clause moved rather than closed: a caller that builds the store's frame from a run-time scalar stalls at `master "impl-1" of RootImpl.run() filled no witness at site 2 (close of segment 0)`, and a caller that frames scalars with padded pushes stalls at the store itself, because the store's dispatcher reads the compiler's canonical push and no source spelling produces one from a run-time scalar. The replica's remaining open clauses are the two `bytes` fields of the appended struct and a root record that is a struct with a `string[]`. |
 | 2026-09-28 | (this row's commit) | docs(per-call) | the bound is confirmed as the implementer's decision, and three threat halves are recorded as deferred | 115 + 421 + 752 | **The size bound is confirmed and re-attributed.** It reads as the implementer's decision, taken on 2026-09-28 and confirmed by the coordinator in review, restated from "about 12K" to "about 15K net lines, reporting the new per-call subtree separately", with the measurement (12,349 net across `packages/solidc/src`, 10,565 of it the new subtree) left in 4.5 and the grounds — the gate had already been recorded KILL, the scope grew past master mode under the user's I2b decision, and the bound exists to catch a per-shape mechanism, of which the 4.5 row finds none — stated beside it. **Three threat halves stop gating I2 by being named deferred rather than by being passed**: T28/T29's `INTERNAL` and `CREATE` halves and T37's `INTERNAL` half cover frame kinds section 4.7 already defers on this path (no spend reaches a mutation, so no hostile case can be written), and T22's row — already "unreachable" — now says plainly that it carries its ruling, since the compiler makes every `catch` dead code. T35's own row already records its ruling (the compiler refuses a value send, so no master carries one). Nothing else in the threat list changed: T9/T30's reorder half remains a measured divergence with a coder on it, T25 and T36 stay partial, and the toys Y4 and Y7 stay open. |
+| 2026-09-28 | (this row's commit) | docs(per-call) | the size bound is the user's: about 20K net | 115 + 421 + 752 | **User decision.** The I2 KILL bound on the compiler delta is raised to about 20K net lines across `packages/solidc/src`, replacing the 15K restatement recorded earlier the same day, and the user is ready to drop the bound entirely: the delta is logic, not garbage. Per-shape growth, which the bound was meant to catch, stays a KILL through the per-shape criteria. Measured at `852f3f467`: 12,698 net, of which the per-call subtree is 10,582 across 21 files. The view-mode criterion that shared the bullet is its own bullet now, with its wording unchanged. |

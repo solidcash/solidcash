@@ -23,7 +23,7 @@
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
-import { FrameKind, validatorRedeemScript, type Artifact, type RecordEntry } from '@solidcash/utils';
+import { FrameKind, bytesEqual, validatorRedeemScript, type Artifact, type RecordEntry } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
@@ -36,6 +36,7 @@ import {
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftMaster,
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
+import { readComputedDeclaration } from '../deploy/declaration.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
@@ -101,10 +102,17 @@ export interface PerCallProxyDeployment {
     readonly completed: readonly FrameRequest[];
     /** Every participant's verdict, in input order. */
     readonly verdicts: readonly InitializeVerdict[];
-    /** True when every convention input — the masters and the validator — was accepted. */
+    /** True when every convention input — the masters, the validator and the record — was accepted. */
     readonly accepted: boolean;
+    /** The record's commitment after the entry ran: the value the entry itself computed for it. */
+    readonly writtenRecordCommitment: Uint8Array;
   };
 }
+
+/** The commitment size a deployment assumes when its provider publishes no limit. */
+const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 10_000_000;
+/** How many times the deployment rebuilds the initialize plan from the state it read back. */
+const MAXIMUM_INITIALIZE_ATTEMPTS = 4;
 
 const PROXY_MASTER_ID = 'proxy-master';
 const IMPLEMENTATION_MASTER_ID = 'implementation-master';
@@ -128,22 +136,24 @@ function entryName(artifact: Artifact, functionName: string): string {
   return `${artifact.contractName}.${functionName}()`;
 }
 
-/** Refuses a proxy that is not the landed shape: one `address implementation` field and a fallback body. */
+/**
+ * Refuses a proxy that is not the served shape: an `address implementation` field and a fallback body.
+ *
+ * The proxy's records are the implementation's records, so the proxy declares the implementation's fields beside
+ * its own; that the two agree is checked when the pair is handed to a deployment. What is checked here is the part
+ * only the proxy can answer: that it holds the address the fallback forwards to, and that a user's call reaches
+ * the fallback.
+ */
 function requireProxyShape(proxyArtifact: Artifact): void {
   if (proxyArtifact.stateLayout === undefined) {
     throw new PerCallProxyDeployError(`proxy "${proxyArtifact.contractName}" is not a stateful contract`);
   }
   const layout = proxyArtifact.stateLayout;
-  if (layout.dataNftCount !== 1 || (layout.variables ?? []).length !== 1) {
+  const field = (layout.variables ?? []).find((candidate) => candidate.name === 'implementation');
+  if (field === undefined || field.type !== 'address') {
     throw new PerCallProxyDeployError(
-      `proxy "${proxyArtifact.contractName}" must hold exactly one state variable, the implementation's address`,
-    );
-  }
-  const field = layout.variables[0]!;
-  if (field.name !== 'implementation' || field.type !== 'address') {
-    throw new PerCallProxyDeployError(
-      `proxy "${proxyArtifact.contractName}" holds "${field.name}: ${field.type}"; the implementation's address `
-      + 'must be the one address field named "implementation"',
+      `proxy "${proxyArtifact.contractName}" declares no address field named "implementation", so there is `
+      + 'nothing for its fallback to forward the call data it received to',
     );
   }
   if (!proxyArtifact.abi.some((entry) => entry.name === '__fallback')) {
@@ -151,6 +161,70 @@ function requireProxyShape(proxyArtifact: Artifact): void {
       `proxy "${proxyArtifact.contractName}" has no fallback, so it cannot forward the call data it received`,
     );
   }
+}
+
+/**
+ * Requires the implementation and the proxy to declare the same record fields.
+ *
+ * A frame's write rebuilds its contract's whole record commitment from the fields that contract declares, so a
+ * record the implementation and the proxy do not agree on loses whichever fields only one of them knows: the
+ * proxy's own `implementation` field would not survive the implementation's write, and the address the proxy reads
+ * its implementation from would be gone after the first call. The two layouts are therefore required to agree
+ * field by field - the same names, types and positions in the record - and a mismatch is refused here rather than
+ * discovered as a state a deployment can no longer call.
+ */
+function requireSharedLayout(implementationArtifact: Artifact, proxyArtifact: Artifact): void {
+  const implementation = implementationArtifact.stateLayout;
+  const proxy = proxyArtifact.stateLayout;
+  if (implementation === undefined || proxy === undefined) {
+    throw new PerCallProxyDeployError('both the implementation and the proxy must be stateful contracts');
+  }
+  const describe = (field: { name: string; type: string; nftIndex: number; fieldIndex: number }): string =>
+    `${field.name}: ${field.type} (data NFT ${field.nftIndex}, field ${field.fieldIndex})`;
+  if (implementation.dataNftCount !== proxy.dataNftCount) {
+    throw new PerCallProxyDeployError(
+      `the implementation "${implementationArtifact.contractName}" declares ${implementation.dataNftCount} `
+      + `data NFT(s) and the proxy "${proxyArtifact.contractName}" declares ${proxy.dataNftCount}; a delegate `
+      + "frame's write rebuilds the record from its own fields, so both must declare the same records",
+    );
+  }
+  const implementationFields = (implementation.variables ?? []).map(describe).sort();
+  const proxyFields = (proxy.variables ?? []).map(describe).sort();
+  if (implementationFields.join('\n') !== proxyFields.join('\n')) {
+    throw new PerCallProxyDeployError(
+      `the implementation "${implementationArtifact.contractName}" and the proxy `
+      + `"${proxyArtifact.contractName}" must declare the same record fields, because the implementation's write `
+      + `rebuilds the record from its own declaration: the implementation declares `
+      + `[${implementationFields.join(', ')}] and the proxy declares [${proxyFields.join(', ')}]`,
+    );
+  }
+}
+
+/** Why a learning attempt could not read the state the entry computed. */
+function describeReading(
+  reading: ReturnType<typeof readComputedDeclaration>,
+  written: Uint8Array,
+): string {
+  if (reading.ok) {
+    return `the entry closed against ${bytesToHexText(reading.declared)} rather than the record's `
+      + `${bytesToHexText(written)}`;
+  }
+  switch (reading.reason) {
+    case 'no-trace':
+      return `its frame failed without a traceable comparison (${String(reading.error)})`;
+    case 'not-a-close':
+      return `its frame stopped at opcode ${String(reading.opcode)} rather than a record close `
+        + `(${String(reading.error)})`;
+    case 'no-operands':
+      return 'its frame stopped on a comparison with no declared view';
+    default:
+      return `it computed a ${String(reading.length)}-byte value, which is not a record commitment`;
+  }
+}
+
+/** Bytes as lowercase hex, for a message. */
+function bytesToHexText(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /** A call's argument pushes: the selector first, then the values with the first parameter's push last. */
@@ -229,6 +303,7 @@ export async function deployPerCallProxy(
 ): Promise<PerCallProxyDeployment> {
   const { provider, implementationArtifact, proxyArtifact } = options;
   requireProxyShape(proxyArtifact);
+  requireSharedLayout(implementationArtifact, proxyArtifact);
   if (options.callerLockingBytecode.length !== 25) {
     throw new PerCallProxyDeployError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
@@ -269,23 +344,63 @@ export async function deployPerCallProxy(
   }
   const recordCommitment = hexToBin(commitment);
 
-  // 3. `initialize` through the proxy: a root frame on the proxy master, one DELEGATE edge to the implementation.
-  const plan = buildInitializePlan({
-    ...options, implementationArtifact, proxyArtifact, implementationMaster, proxyMaster,
-    proxyCategory, implementationCategory, recordCommitment,
-    recordLockingBytecode: stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid),
-  });
-
   const vm = options.vm ?? await providerMachine(provider);
-  const { host, draft } = createComposedDerivationHost({
-    vm, artifacts: [proxyArtifact, implementationArtifact], plan,
-  });
+  const maximumCommitmentBytes = provider.consensusLimits?.maximumNftCommitmentBytes
+    ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
+  const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
   const root: FrameRequest = {
     contract: proxyArtifact.contractName,
     functionName: entryName(proxyArtifact, '__fallback'),
     kind: FrameKind.ROOT,
     master: PROXY_MASTER_ID,
   };
+
+  // 3. `initialize` through the proxy: a root frame on the proxy master, one DELEGATE edge to the implementation.
+  //
+  // The state the entry leaves is not something the deployment can state in advance — the entry computes it — so
+  // the plan carries a candidate and the deployment reads the value the entry actually computed back out of the
+  // machine: the entry closes its record against the declaration the plan wrote, and the failed comparison leaves
+  // both the declaration and the computed value on the stack. Each attempt rebuilds the plan with the value that
+  // was read, so a writing entry converges in one step and a read-only one is accepted on the first attempt.
+  let writtenCommitment = recordCommitment;
+  let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
+  for (let attempt = 0; attempt < MAXIMUM_INITIALIZE_ATTEMPTS; attempt += 1) {
+    const plan = buildInitializePlan({
+      ...options, implementationArtifact, proxyArtifact, implementationMaster, proxyMaster,
+      proxyCategory, implementationCategory, recordCommitment, writtenCommitment,
+      recordLockingBytecode,
+    });
+    const candidate = createComposedDerivationHost({
+      vm, artifacts: [proxyArtifact, implementationArtifact], plan,
+    });
+    const implementationProgram = candidate.draft.programFor(IMPLEMENTATION_MASTER_ID);
+    const state = vm.evaluate({
+      inputIndex: participant(candidate.draft.layout, IMPLEMENTATION_MASTER_ID).index,
+      sourceOutputs: implementationProgram.sourceOutputs,
+      transaction: implementationProgram.transaction,
+    });
+    if (vm.stateSuccess(state) === true) {
+      composed = candidate;
+      break;
+    }
+    const reading = readComputedDeclaration({ vm, program: implementationProgram, maximumCommitmentBytes });
+    const describesCandidate = reading.ok
+      && bytesEqual(reading.declared, writtenCommitment);
+    if (!reading.ok || !describesCandidate) {
+      throw new PerCallProxyDeployError(
+        `the implementation's "${options.initialize.functionName}" entry did not settle through the proxy: `
+        + `${describeReading(reading, writtenCommitment)}`,
+      );
+    }
+    writtenCommitment = Uint8Array.from(reading.computed);
+  }
+  if (composed === undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${options.initialize.functionName}" entry did not settle through the proxy in `
+      + `${MAXIMUM_INITIALIZE_ATTEMPTS} attempts`,
+    );
+  }
+  const { host, draft } = composed;
   const derived = deriveComposition([root], host);
 
   const program = draft.programFor(PROXY_MASTER_ID);
@@ -313,6 +428,8 @@ export async function deployPerCallProxy(
     initialize: {
       transaction: program.transaction, sourceOutputs: program.sourceOutputs,
       draft, completed: derived.completed, verdicts, accepted,
+      // The commitment every record of the hop ends at, which the entry's own write computed.
+      writtenRecordCommitment: writtenCommitment,
     },
   };
 }
@@ -324,6 +441,8 @@ interface InitializePlanOptions extends PerCallProxyDeployOptions {
   readonly proxyCategory: Uint8Array;
   readonly implementationCategory: Uint8Array;
   readonly recordCommitment: Uint8Array;
+  /** The commitment the record is being asked to end at, which a writing entry's own computation replaces. */
+  readonly writtenCommitment: Uint8Array;
   /** The lock the proxy's genesis minted its record at: the data-NFT covenant the proxy's category derives. */
   readonly recordLockingBytecode: Uint8Array;
 }
@@ -352,10 +471,23 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
   ];
   const layout = layoutTransaction(blocks);
   const recordIndex = participant(layout, RECORD_ID).index;
+  // The record kept where the proxy read it before the call, and where the entry's write leaves it. The delegate
+  // frame's segment chains the two, and the proxy's own later segment continues from the written view: the record
+  // has no other frame between them.
   const recordKept: RecordEntry = {
     in: recordIndex, out: recordIndex,
     viewIn: options.recordCommitment, viewOut: options.recordCommitment,
   };
+  const recordWritten: RecordEntry = {
+    in: recordIndex, out: recordIndex,
+    viewIn: options.recordCommitment, viewOut: options.writtenCommitment,
+  };
+  const recordAfter: RecordEntry = {
+    in: recordIndex, out: recordIndex,
+    viewIn: options.writtenCommitment, viewOut: options.writtenCommitment,
+  };
+  const writes = !bytesEqual(options.recordCommitment, options.writtenCommitment);
+  const proxyMasterIndex = participant(layout, PROXY_MASTER_ID).index;
 
   const proxyMasterDraft: DraftMaster = {
     master: PROXY_MASTER_ID,
@@ -374,7 +506,7 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
       argumentPushes: pushes,
     }],
     retval: new Uint8Array(0),
-    segments: [[recordKept], []],
+    segments: [[recordKept], [writes ? recordAfter : recordKept]],
     events: [],
     sends: [],
     argumentPushes: [callData],
@@ -394,9 +526,9 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
     origin: USER_ID,
     calls: [],
     retval: new Uint8Array(0),
-    // A delegate frame runs on the caller's records; the entry reads the proxy's state through them, and this
-    // shape reads none of it, so it declares no segment of its own.
-    segments: [[]],
+    // A delegate frame runs on the caller's records, so the record it reads and writes is the caller's, which the
+    // segment declares: the entry's write is the view the proxy's later segment continues from.
+    segments: [[writes ? recordWritten : recordKept]],
     events: [],
     sends: [],
     argumentPushes: pushes,
@@ -428,9 +560,14 @@ function buildInitializePlan(options: InitializePlanOptions): CompositionDraftPl
       },
       [RECORD_ID]: {
         source: recordSource,
-        output: recordSource,
-        // The record is kept unchanged, so the covenant's read-only path authorizes its spend.
-        unlockingBytecode: stateRecordUnlockingBytecode(options.proxyDeploy.fundingUtxo.txid, 0, 0),
+        output: mutableSource(
+          options.recordLockingBytecode, proxyRecordAmount, options.proxyCategory, options.writtenCommitment,
+        ),
+        // The covenant's write path names the master of the record's category that authorizes the spend; a record
+        // the entry leaves unchanged is spent on the read-only path, which needs no master.
+        unlockingBytecode: stateRecordUnlockingBytecode(
+          options.proxyDeploy.fundingUtxo.txid, proxyMasterIndex, writes ? 1 : 0,
+        ),
       },
       [USER_ID]: {
         source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.proxyDeploy.fundingUtxo.satoshis },

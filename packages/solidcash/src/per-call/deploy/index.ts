@@ -4,6 +4,7 @@
  * deployment mints and how they are found again.
  */
 
+export * from './declaration.js';
 export * from './material.js';
 export * from './pool.js';
 export * from './genesis.js';

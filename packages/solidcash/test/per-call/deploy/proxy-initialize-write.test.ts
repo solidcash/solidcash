@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { FrameKind, buildPushdataCommitment, bytesToHex, chainCategory } from '@solidcash/utils';
-import { compileString, compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { FrameKind, buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
@@ -11,7 +11,7 @@ import {
 import {
   createComposedDerivationHost, participant, type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
-import { deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import {
@@ -20,37 +20,37 @@ import {
 } from '../shapes/harness.js';
 
 /**
- * A proxied `initialize` that writes a field, and the facts about the per-call compiler that stop it today.
+ * A proxied `initialize` that writes state.
  *
- * The proxy is the shape the convention compiles: one `address implementation` field and a fallback that
- * delegatecalls it with the call data the fallback received. The implementation's entry is an ordinary
- * state-writing entry, so when it runs as a delegate frame it reads and writes the record the proxy's genesis
- * minted. Making that settle needs two pieces of compiler support that are not there:
+ * The proxy's record is the record its implementation's entries read and write, so the two must declare the same
+ * fields: the implementation's write rebuilds the whole commitment from the fields its own source declares, and a
+ * field only the proxy declares would not survive it. The record therefore carries the proxy's own field — the one
+ * the fallback reads the implementation's address from — beside the implementation's fields, and every deployment
+ * here declares that shape on both sides.
  *
- *   - the admission binds a forwarded fallback's target to a value the contract holds as a state variable, so a
- *     proxy whose implementation address is a deployment-filled constant is refused at compile time;
- *   - the per-call master head does not leave the frame's caller as the state owner for a delegate body, so a
- *     body marked `delegate` is refused for the hidden `__internal__proxyMasterIndex` it carries, and an
- *     unmarked body verifies the accessed record's token category against the input that executes (the
- *     implementation's master) rather than against the frame's caller (the proxy's master). The record carries
- *     the proxy's category, so that comparison fails before the write is reached.
- *
- * This file pins each refusal and pins that the same deployment's genesis record is otherwise the shipped,
- * accepted shape. The assertions above the refusals flip when the delegate-frame record support lands.
+ * The tests drive the shipped deployment, composer, derivation and machine. The entry's own `Initializable` guard
+ * is what the second call trips, so the record a second call is offered is the one the first call left.
  */
-
-const SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   int public version;'
-  + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; }'
-  + ' }'
-  + ' contract Proxy {'
-  + '   address implementation;'
-  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
-  + ' }';
 
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
+
+const SHARED_STATE = ' address public implementation;'
+  + ' uint public initialized;'
+  + ' int public version;';
+
+const SOURCE = 'pragma solidcash ^0.13.0;'
+  + ` contract Impl {${SHARED_STATE}`
+  + '   function initialize(address expected) {'
+  + '     require(msg.sender == expected);'
+  + '     require(this.initialized == 0);'
+  + '     this.initialized = 1;'
+  + '     this.version = 7;'
+  + '   }'
+  + ' }'
+  + ` contract Proxy {${SHARED_STATE}`
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
 
 function provider(): MockNetworkProvider {
   return new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -86,65 +86,72 @@ function implementationAddress(artifacts: ReturnType<typeof compileStringMulti>)
   ).address;
 }
 
-describe('a proxied initialize that writes a field', () => {
-  it('mints the proxy record through the shipped deployment, and reads it back through the shipped decoder', async () => {
+/** The commitment the shipped encoder materializes from one state of the shared layout. */
+function commitment(
+  artifacts: ReturnType<typeof compileStringMulti>,
+  implementation: Uint8Array,
+  initialized: bigint,
+  version: bigint,
+): Uint8Array {
+  return new Uint8Array(Buffer.from(
+    buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
+}
+
+describe('a proxied initialize that writes state', () => {
+  it('mints the proxy record through the shipped deployment and reads it back through the shipped decoder', async () => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
     const network = provider();
     const { funder, proxyFunding, changeAddress } = await funded(network);
     const { deployPerCallStatefulContract } = await import('../../../src/per-call/deploy/stateful.js');
 
-    // `initialize` is not planned: only the proxy's own genesis is run, so the record it mints can be read back.
     const proxy = await deployPerCallStatefulContract(artifacts.Proxy!, [], {
       fundingUtxo: proxyFunding, funder, changeAddress, provider: network,
-      initialState: { implementation: implementationAddress(artifacts) },
+      initialState: { implementation: implementationAddress(artifacts), initialized: 0n, version: 0n },
     });
     const discovery = await readPerCallDeployment(network, proxy.categoryId, artifacts.Proxy!.stateLayout!);
-    const commitment = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
+    const commitmentBytes = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
 
-    // The record the shipped encoder materializes from the implementation's address, read back unchanged.
-    expect(bytesToHex(commitment)).toBe(
-      buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation: implementationAddress(artifacts) }, 0),
-    );
+    expect(bytesToHex(commitmentBytes)).toBe(bytesToHex(commitment(
+      artifacts, implementationAddress(artifacts), 0n, 0n,
+    )));
   });
 
-  it('refuses a proxy whose delegatecall target is a filled constant rather than a state variable', () => {
-    const literal = 'pragma solidcash ^0.13.0;'
-      + ' contract Proxy {'
-      + `   fallback(bytes input) external { address(0x${'ab'.repeat(35)}).delegatecall(input); require(true); }`
-      + ' }';
-    expect(() => compileString(literal, { composition: 'per-call' })).toThrowError(
-      /fallback and receive make the contract dispatch by selector/,
-    );
-  });
-
-  it('refuses a body marked to run against the caller\'s records, by the hidden operand it carries', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl { int public version;'
-      + ' function initialize(address expected) delegate { require(msg.sender == expected); this.version = 7; } }';
-    const artifact = compileString(source, { composition: 'per-call' }) as {
-      readonly composition?: { readonly refusedEntries?: readonly { readonly reason: string }[] };
-    };
-    const reasons = (artifact.composition?.refusedEntries ?? []).map((entry) => entry.reason).join(' | ');
-    expect(reasons).toContain("'__internal__proxyMasterIndex', which the master head does not supply");
-  });
-
-  it('fails the implementation master at the category guard its body emits for the accessed record', () => {
-    // The delegate hop laid out by hand, with the implementation's segment declaring the record it writes. The
-    // shipped composer builds the program and the shipped machine evaluates the implementation's master.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl { int public version; function initialize() { this.version = 7; require(true); } }'
-      + ' contract Proxy { address implementation;'
-      + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); } }';
-    const { artifacts, contracts } = compileAndDeploy(source, {
-      Proxy: 'proxy initialize write proxy', Impl: 'proxy initialize write impl',
+  it('settles the writing initialize through the proxy, and the record keeps the address it was called through', async () => {
+    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const network = provider();
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyArtifact: artifacts.Proxy!,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [deployerLock] },
+      callerLockingBytecode: deployerLock,
+      vm: compositionMachine(),
     });
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'Proxy.__fallback()']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+    // The state the entry itself computed: the flag set and the version written, with the address still there.
+    const written = commitment(artifacts, deployment.implementation.address, 1n, 7n);
+    expect(bytesToHex(deployment.initialize.writtenRecordCommitment)).toBe(bytesToHex(written));
+    const recordIndex = participant(deployment.initialize.draft.layout, 'proxy-record').index;
+    expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(written));
+  });
+
+  it('refuses a second initialize against the record the first one left, at the entry\'s own guard', () => {
+    // The record a second call is offered is the one the first call wrote: the flag is set, so the entry's own
+    // require refuses before it writes, and the plan declares the record unchanged.
+    const { artifacts, contracts } = compileAndDeploy(SOURCE, { Proxy: 'second call proxy', Impl: 'second call impl' });
     const proxyContract = contracts.Proxy!;
     const implContract = contracts.Impl!;
-    const layout = artifacts.Proxy!.stateLayout!;
-    const record = new Uint8Array(Buffer.from(
-      buildPushdataCommitment(layout, { implementation: implContract.address }, 0), 'hex'));
+    const implementation = implContract.address;
     const written = new Uint8Array(Buffer.from(
-      buildPushdataCommitment(artifacts.Impl!.stateLayout!, { version: 7n }, 0), 'hex'));
+      buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized: 1n, version: 7n }, 0), 'hex'));
     const selector = selectorOf(artifacts, 'Impl', 'initialize');
     const recordIndex = 2;
     const facts = (
@@ -158,23 +165,30 @@ describe('a proxied initialize that writes a field', () => {
       facts: facts('Proxy', '__fallback', FrameKind.ROOT, true),
       frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxyContract.address, value: 0n },
       enteredBy: 'user', origin: 'user',
-      calls: [{ kind: FrameKind.DELEGATE, callee: 'impl-1', target: implContract.address, value: 0n,
-        argumentPushes: [selector] }],
-      segments: [[{ in: recordIndex, out: recordIndex, viewIn: record, viewOut: record }], []],
-      argumentPushes: [encodeDataPush(selector)], dispatches: true,
+      calls: [{ kind: FrameKind.DELEGATE, callee: 'impl-1', target: implementation, value: 0n,
+        argumentPushes: [selector, encodeDataPush(USER_LOCK)] }],
+      segments: [
+        [{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }],
+        [{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }],
+      ],
+      // The fallback receives its call data as one `bytes` argument: the selector's push and the argument's.
+      argumentPushes: [new Uint8Array([...encodeDataPush(selector), ...encodeDataPush(USER_LOCK)])],
+      dispatches: true,
     });
     const implementationMaster = master({
       master: 'impl-1', contract: 'Impl', entry: 'initialize', program: implContract.program,
       facts: facts('Impl', 'initialize', FrameKind.DELEGATE, false),
       frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxyContract.address, value: 0n },
       enteredBy: 'proxy-1', origin: 'user',
-      segments: [[{ in: recordIndex, out: recordIndex, viewIn: record, viewOut: written }]],
-      argumentPushes: [selector],
+      segments: [[{ in: recordIndex, out: recordIndex, viewIn: written, viewOut: written }]],
+      // The forwarded call data is the selector's push followed by the entry's argument pushes, which is what the
+      // fallback received and handed to the implementation.
+      argumentPushes: [selector, encodeDataPush(USER_LOCK)],
     });
     const proxyCategoryHex = bytesToHex(proxyContract.category);
     const recordSource = {
       lockingBytecode: stateRecordLockingBytecode(proxyCategoryHex), valueSatoshis: 20_000n,
-      token: token(proxyContract.category, 'mutable', record),
+      token: token(proxyContract.category, 'mutable', written),
     };
     const validator = validatorFor(proxyContract.category);
     const plan: CompositionDraftPlan = {
@@ -190,9 +204,8 @@ describe('a proxied initialize that writes a field', () => {
         validator: { source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n,
           token: token(proxyContract.category, 'mutable') } },
         record: {
-          source: recordSource,
-          output: { ...recordSource, token: token(proxyContract.category, 'mutable', written) },
-          unlockingBytecode: stateRecordUnlockingBytecode(proxyCategoryHex, 0, 1),
+          source: recordSource, output: recordSource,
+          unlockingBytecode: stateRecordUnlockingBytecode(proxyCategoryHex, 0, 0),
         },
         user: userInput(),
       },
@@ -206,36 +219,26 @@ describe('a proxied initialize that writes a field', () => {
     const { draft } = createComposedDerivationHost({
       vm: compositionMachine(), artifacts: [artifacts.Proxy!, artifacts.Impl!], plan,
     });
-    expect(participant(draft.layout, 'record').index).toBe(recordIndex);
     const program = draft.programFor('impl-1');
-    const index = participant(draft.layout, 'impl-1').index;
     const vm = compositionMachine();
     const state = vm.evaluate({
-      inputIndex: index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+      inputIndex: participant(draft.layout, 'impl-1').index,
+      sourceOutputs: program.sourceOutputs,
+      transaction: program.transaction,
     });
-    // The implementation's master refuses: its own body checks the accessed record's category against the input
-    // that executes (the implementation's master), while the record carries the proxy's category, so the
-    // comparison fails before the write's own close is reached. The two values on the stack at the failing
-    // instruction are exactly those two categories.
     expect(vm.stateSuccess(state)).not.toBe(true);
     expect(String((state as { readonly error?: string }).error)).toContain('OP_VERIFY');
-    const trace = vm.debug(program) as readonly {
-      readonly ip: number; readonly stack: readonly Uint8Array[]; readonly error?: string;
-    }[];
-    const failed = trace.findIndex((entry) => entry.error !== undefined);
-    const atFailure = trace[failed - 1]!;
-    const compared = [atFailure.stack.at(-1)!, atFailure.stack.at(-2)!]
-      .map((bytes) => bytesToHex(bytes)).sort();
-    expect(compared).toStrictEqual([
-      bytesToHex(chainCategory(implContract.category)), bytesToHex(chainCategory(proxyContract.category)),
-    ].sort());
   });
 
-  it('stalls deriving the state-writing initialize at the implementation master', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+  it('refuses a proxy whose record does not declare the implementation\'s fields', async () => {
+    const mismatched = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl { int public version;'
+      + '   function initialize(address expected) { require(msg.sender == expected); this.version = 7; } }'
+      + ' contract Proxy { address implementation;'
+      + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); } }';
+    const { artifacts } = compileAndDeploy(mismatched, { Proxy: 'mismatch proxy', Impl: 'mismatch impl' });
     const network = provider();
     const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
-
     await expect(deployPerCallProxy({
       provider: network,
       implementationArtifact: artifacts.Impl!,
@@ -245,8 +248,16 @@ describe('a proxied initialize that writes a field', () => {
       initialize: { functionName: 'initialize', args: [deployerLock] },
       callerLockingBytecode: deployerLock,
       vm: compositionMachine(),
-    })).rejects.toThrowError(
-      /PER_CALL_DERIVATION_STALLED: master "implementation-master" of Impl\.initialize\(\)/,
+    })).rejects.toThrowError(PerCallProxyDeployError);
+  });
+
+  it('refuses a proxy whose delegatecall target is a filled constant rather than a value the contract holds', () => {
+    const literal = 'pragma solidcash ^0.13.0;'
+      + ' contract Proxy {'
+      + `   fallback(bytes input) external { address(0x${'ab'.repeat(35)}).delegatecall(input); require(true); }`
+      + ' }';
+    expect(() => compileStringMulti(literal, { composition: 'per-call' })).toThrowError(
+      /fallback and receive make the contract dispatch by selector/,
     );
   });
 });

@@ -57,6 +57,7 @@ import {
 import { encodeFunctionArgument, encodeFunctionArguments, type FunctionArgument } from '../../Argument.js';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
 
 /** Raised when a per-call genesis cannot be derived from the artifact. */
@@ -402,33 +403,11 @@ function learnDeclaration(
   events: readonly Uint8Array[],
   maximumCommitmentBytes: number,
 ): LearnedDeclarations {
-  const trace = vm.debug(program) as readonly {
-    readonly ip: number;
-    readonly instructions: readonly { readonly opcode: number }[];
-    readonly stack: readonly Uint8Array[];
-    readonly error?: string;
-  }[];
-  const failed = trace.findIndex((state) => state.error !== undefined);
-  if (failed <= 0) {
-    throw new PerCallGenesisError('the constructor probe failed without a traceable comparison');
+  const reading = readComputedDeclaration({ vm, program, maximumCommitmentBytes });
+  if (!reading.ok) {
+    throw new PerCallGenesisError(genesisReadingMessage(reading));
   }
-  const before = trace[failed - 1]!;
-  if (before.instructions[before.ip]?.opcode !== Opcodes.OP_EQUALVERIFY) {
-    throw new PerCallGenesisError(
-      `the constructor probe stopped at opcode ${String(before.instructions[before.ip]?.opcode)} rather than a `
-      + `declaration close (${String(trace[failed]!.error)}), so the values it computes cannot be read back`,
-    );
-  }
-  const declared = before.stack[before.stack.length - 1];
-  const computed = before.stack[before.stack.length - 2];
-  if (declared === undefined || computed === undefined) {
-    throw new PerCallGenesisError('the constructor probe stopped on a comparison with no declared view');
-  }
-  if (computed.length === 0 || computed.length > maximumCommitmentBytes) {
-    throw new PerCallGenesisError(
-      `the constructor computed a ${computed.length}-byte value, which is not a record or event commitment`,
-    );
-  }
+  const { declared, computed } = reading;
   const record = records.findIndex((view) => bytesEqual(view, declared));
   if (record >= 0) {
     const learned = [...records];
@@ -444,6 +423,26 @@ function learnDeclaration(
   throw new PerCallGenesisError(
     `the constructor probe closed against a declaration no derivation wrote: ${binToHex(declared)}`,
   );
+}
+
+/**
+ * How a genesis derivation reports a run whose stop it cannot read as a declaration close.
+ *
+ * The shared reader distinguishes the four ways that happens; the messages are the probe's own words for them.
+ */
+function genesisReadingMessage(reading: Extract<DeclarationReading, { readonly ok: false }>): string {
+  switch (reading.reason) {
+    case 'no-trace':
+      return 'the constructor probe failed without a traceable comparison';
+    case 'not-a-close':
+      return `the constructor probe stopped at opcode ${String(reading.opcode)} rather than a declaration close `
+        + `(${String(reading.error)}), so the values it computes cannot be read back`;
+    case 'no-operands':
+      return 'the constructor probe stopped on a comparison with no declared view';
+    default:
+      return `the constructor computed a ${String(reading.length)}-byte value, which is not a record or event `
+        + 'commitment';
+  }
 }
 
 /** Everything one derivation program is built from. */

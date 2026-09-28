@@ -26,13 +26,17 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
  * derives, and the machine accepts the record's own spend under that covenant beside the masters and the validator.
  */
 
+// The proxy's records are the implementation's records, so both declare the same fields: the implementation's
+// write rebuilds the record from its own declaration, and a field only one of them knew would not survive it.
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
+  + '   address implementation;'
   + '   int public version;'
   + '   function initialize(address expected) { require(msg.sender == expected); }'
   + ' }'
   + ' contract Proxy {'
   + '   address implementation;'
+  + '   int public version;'
   + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
   + ' }';
 

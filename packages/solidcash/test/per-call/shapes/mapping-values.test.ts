@@ -68,6 +68,8 @@ const SLOT = keyToSlotMulti([KEY]);
 const TAGS_ADDRESS = seededAddress('mapping values tags');
 const NOTES_ADDRESS = seededAddress('mapping values notes');
 const REGISTRY_ADDRESS = seededAddress('mapping values registry');
+/** A reading contract with a second entry beside the reader, so the head's value slot is derived from several bodies. */
+const LEDGER_ADDRESS = seededAddress('mapping values ledger');
 /** Two keys an initializer writes in one frame, each with a short value. */
 const INITIAL = [
   { key: encoder.encode('DA'), value: encoder.encode('DIGITAL_AUDIO') },
@@ -100,11 +102,21 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }'
   + ' contract InitHub {'
   + `   function run() { IRegistry(0x${hexOf(REGISTRY_ADDRESS)}).init(); require(true); }`
+  + ' }'
+  + ' interface ILedger { function check(string k, string v); }'
+  + ' contract Ledger {'
+  + '   mapping(string => string) ledger;'
+  + '   function check(string k, string v) { require(this.ledger[k] == v); }'
+  + '   function put(string k, string v) { this.ledger[k] = v; require(true); }'
+  + ' }'
+  + ' contract LedgerHub {'
+  + `   function run() { ILedger(0x${hexOf(LEDGER_ADDRESS)}).check("${text(KEY)}", "${text(LONG)}"); require(true); }`
   + ' }';
 
 const { artifacts, contracts } = compileAndDeploy(SOURCE, {
   SetHub: 'mapping values set hub', ReadHub: 'mapping values read hub', InitHub: 'mapping values init hub',
   Tags: 'mapping values tags', Notes: 'mapping values notes', Registry: 'mapping values registry',
+  LedgerHub: 'mapping values ledger hub', Ledger: 'mapping values ledger',
 });
 
 const HUB_MASTER = 'hub-1';
@@ -276,6 +288,51 @@ describe('a long mapping value read from the frame\'s block', () => {
     const outcome = compose([LONG]);
     expect(outcome.completed.map((frame) => frame.functionName))
       .toStrictEqual([entryName('Notes', 'check'), entryName('ReadHub', 'run')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.draft.blockOf(ENTRY_MASTER).values).toStrictEqual([LONG]);
+  });
+
+  it('refuses a listed value other than the one the node\'s hash names', () => {
+    expect(FORGED.length).toBe(LONG.length);
+    expect(() => compose([FORGED])).toThrow(STALL);
+  });
+
+  it('refuses a read whose block lists no value', () => {
+    expect(() => compose()).toThrow(STALL);
+  });
+});
+
+describe('a long mapping value read from a contract with several entries', () => {
+  // `Ledger.check` reads the long value while `Ledger.put` writes the same mapping, so the slot the reader takes is
+  // one the head derives from more than one body and the reader is not the writer issuing the value.
+  const node = encodeEntryCommitment(SLOT, ZERO_SLOT, encodeChunkableValueTail(LONG));
+  const shape = (values?: readonly Uint8Array[]): Shape => ({
+    hub: 'LedgerHub', entryContract: 'Ledger', entry: 'check', argumentPushes: [LONG, KEY], before: node, after: node,
+    ...(values === undefined ? {} : { values }),
+  });
+  const compose = (values?: readonly Uint8Array[]): ReturnType<typeof composeAndDerive> => composeAndDerive(
+    buildPlan(shape(values)).plan, [artifacts.LedgerHub!, artifacts.Ledger!], [rootOf('LedgerHub', 'run', HUB_MASTER)],
+  );
+
+  /** The read's own frame stops at the close of its one segment when the value it reads is not the one hashed. */
+  const STALL = 'PER_CALL_DERIVATION_STALLED: master "entry-1" of Ledger.check() filled no witness at site 0 '
+    + '(close of segment 0)';
+
+  it('compiles both entries, the reader taking the head\'s value slot', () => {
+    // The reader is a pure read at slot 0 while the writer is a write, so the value list is the reader's own slot
+    // rather than one the reading body itself issued.
+    const reader = artifacts.Ledger!.abi.find((entry) => entry.name === 'check')!;
+    const writer = artifacts.Ledger!.abi.find((entry) => entry.name === 'put')!;
+    expect(reader.entryAccesses?.map(({ slotIndex, operations }) => ({ slotIndex, operations })))
+      .toStrictEqual([{ slotIndex: 0, operations: ['read'] }]);
+    expect(writer.entryAccesses?.map(({ operations }) => operations)).toStrictEqual([['write']]);
+    expect(publishedRefusals(artifacts)).toStrictEqual([]);
+  });
+
+  it('settles when the block lists the value, and every contract input is accepted', () => {
+    const outcome = compose([LONG]);
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Ledger', 'check'), entryName('LedgerHub', 'run')]);
     expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.draft.blockOf(ENTRY_MASTER).values).toStrictEqual([LONG]);
   });

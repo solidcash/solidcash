@@ -200,7 +200,11 @@ export async function completeCreateBuilderNestedUnlockers(
           const logicalSelector = ((child.logicalArtifact ?? child.externalContract.inner.artifact)
             .abi as readonly AbiFunction[])
             .find((fn) => fn.name === child.logicalFunctionName)?.selector;
-          return selectProxyForwardInput(logicalSelector, child.functionArgs);
+          return selectProxyForwardInput(
+            logicalSelector, child.functionArgs,
+            child.delegateCallGroupIndex !== undefined
+              && lowLevelCallUtxoGroups[child.delegateCallGroupIndex]?.compilerRoute !== undefined,
+          );
         }
         return value;
       }

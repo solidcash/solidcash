@@ -291,14 +291,15 @@ export async function planCreateBuilderNestedComposeRoute(
   delegate.functionName = childCompilerRoute.abiFunction.name;
   delegate.functionArgs = childCompilerRoute.args;
   delegate.compilerRoute = childCompilerRoute;
-  // The proxy still executes its ordinary forwarder; only the co-spent implementation selects the
-  // compiler-owned batch route. The caller covenant pins the logical handler selector on the
-  // proxy unlocking (emitExtractUnlockingSelector); SCB1 lives on the implementation unlocker.
+  // The proxy's forwarder authenticates the selector on the co-spent implementation unlocker.
+  // For a compiler batch, both inputs therefore carry SCB1; the batch envelope binds the
+  // individual logical selectors and arguments.
   childFunctionName = '__forward';
   childFunctionArgs = [host.selectProxyForwardInput(
     (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
       .find((fn) => fn.name === nested.functionName)?.selector,
     [childCompilerRoute.selector],
+    true,
   )];
   childWritesState = true;
   childRequired = Array.from(

@@ -4538,7 +4538,7 @@ type PhysicalSelectorGroup = {
 /**
  * Bytes argument for a baked `__forward(bytes)` proxy. The caller covenant extracts the first 4-byte
  * unlocking push (skipping a short delegate-index prefix) and EQUALVERIFYs it against the logical
- * implementation selector. Compiler-route `SCB1` belongs on the co-spent implementation unlocker.
+ * implementation selector. A compiler route forwards `SCB1` through both proxy and implementation.
  */
 const COMPILER_ROUTE_SELECTOR_HEX = '53434231';
 
@@ -4549,12 +4549,14 @@ const isFunctionSelectorHex = (value: string | undefined): value is string => (
 export function selectProxyForwardInput(
   logicalSelectorHex: string | undefined,
   functionArgs: readonly FunctionArgument[] = [],
+  preferCompilerRoute = false,
 ): Uint8Array {
   const arg = functionArgs[0];
   const argHex = arg instanceof Uint8Array && arg.length === 4 ? binToHex(arg) : undefined;
+  if (preferCompilerRoute && argHex?.toLowerCase() === COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   // A shared proxy master is created by the first nested call (often a view) and later retargeted
   // to the state-writing handler. Prefer that 4-byte functionArgs selector over a stale logical name.
-  // Compiler-route SCB1 still belongs on the implementation unlocker, not this slot.
+  // A compiler route opts in above because the proxy itself verifies the implementation's SCB1 selector.
   if (argHex && argHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) return arg as Uint8Array;
   if (isFunctionSelectorHex(logicalSelectorHex)
     && logicalSelectorHex.toLowerCase() !== COMPILER_ROUTE_SELECTOR_HEX) {

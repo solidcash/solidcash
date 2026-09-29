@@ -29,6 +29,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * plus the element the artifact publishes for the append — and its commitments are what the body computed, which
  * the derivation learns from the body's close.
  *
+ * A sorted mapping's write is declared beside the run. A target the live list holds is spliced through a node the
+ * deployment already carries, so the hop spends and recreates that predecessor; a collection the deployment holds
+ * no node of has no head sentinel to splice through, so the hop mints the empty head in its own transaction — the
+ * shipped encoder's commitment, at the collection's own entry covenant — and declares it without an input.
+ *
  * The expected commitments here come from the shipped encoders (`encodePushdataValue` for the value,
  * `buildChunkCommitment` for a chunk, `chunkRecordLockingBytecode` for the value's collection covenant), and the
  * record is read back through the shipped pushdata decoder.
@@ -542,10 +547,19 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('refuses an insert over a mapping the deployment holds no node of, naming the missing head', async () => {
-    // A sorted list's first write splices through the empty head sentinel, which a deployment's own entry mints
-    // for the collection it writes. This deployment's entry never wrote the mapping, so the call has no head to
-    // plan the splice against and the hop refuses by name rather than planning against a node no UTXO carries.
+  it('plans a first insert against a head the hop creates, which the contract does not verify', async () => {
+    // A call into a collection the deployment holds no node of plans its first write against the empty list's head
+    // sentinel, which no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's
+    // commitment for the empty list, at the collection's own entry covenant, spending nothing for it — and declares
+    // the group's first record as the created head relinked to the new slot. The plan carries the head as
+    // `{in: 0xffff, out: <trailing>, viewOut: <zero slot || target slot>}` beside the created node, measured.
+    //
+    // The frame still refuses. The contract's single-target insert arm proves the splice against a proof INPUT at
+    // the predecessor's coordinate — it compares the predecessor output's bytecode with that input's and reads the
+    // input's record view — and the derivation takes that coordinate from the predecessor record's `in`. A record
+    // the transaction creates carries the create sentinel there, which the derivation reads as a signed number:
+    // measured, the machine is asked for UTXO index -32767 (0xffff read sign-magnitude) and refuses. The hop half
+    // is in place; the contract would have to state how a predecessor it does not spend proves its splice.
     const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
@@ -562,36 +576,66 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(
-      'the implementation\'s "register" entry writes mapping "members", and the deployment holds no node of that '
-      + 'collection, so this hop has no head to plan the write\'s splice against',
+      /the implementation's "register" entry did not settle through the proxy: frame "implementation-master"/,
     );
   });
 
-  it('refuses an append whose element source the artifact does not publish, naming the missing source', async () => {
-    // The body builds its struct value before the push, and the lowered construction clears the push's
-    // exactly-once proof, so the artifact publishes no element source: the hop refuses by name rather than
-    // guessing the element and sizing the run from it.
+  it('settles an insert whose value the body builds, the append sizing the run from its own push', async () => {
+    // The registration body is the whole shape at once: it builds its struct value from the call's own arguments,
+    // inserts it under a key the deployment does not hold, and appends the frame sender. The artifact publishes
+    // the append's element for the push beside the construction, so the hop states the run's width and the body's
+    // insert and value chunks settle together.
     const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
     const { deployment, network, artifacts, funding }
       = await deploy(CONSTRUCTED_BESIDE_SOURCE, [seeded.who, seeded], true);
     expect(deployment.initialize.accepted).toBe(true);
 
-    await expect(callPerCallProxyEntry({
+    const name = 'n'.repeat(80);
+    const bio = 'b'.repeat(80);
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'register',
-      args: [FRESH_LOCK, 'n'.repeat(80), 'b'.repeat(80)],
+      args: [FRESH_LOCK, name, bio],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      'the implementation\'s "register" entry writes dynamic "items" (address[]), whose appended element the '
-      + 'artifact publishes no source for, so the run of chunk records its write creates cannot be sized',
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    const value = encodePushdataValue(
+      { who: FRESH_LOCK, name, bio, up: 1n }, 'Member', artifacts.Impl!.structs,
     );
+    expect(value.length).toBeGreaterThan(60);
+    const slot = keyToSlotMulti([FRESH_LOCK]);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+
+    // The created node leads the trailing region, then the run the append creates, then the value's chunks.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(2 + valueChunks.length);
+    const created = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    const grown = encodePushdataValue([funding.deployerLock], 'address[]', artifacts.Impl!.structs);
+    expect(result.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
+    trailing.slice(2).forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 });
 

@@ -78,7 +78,7 @@ import {
 } from '../composer/chunk-plan.js';
 import {
   layOutMappingBatch, mappingValueChunkLock, planMappingBatch,
-  type MappingBatchPlan, type MappingNodePlacement,
+  type MappingBatchPlan, type MappingBatchRecord, type MappingNodePlacement, type MappingWrittenNode,
 } from '../composer/mapping-plan.js';
 import { PerCallProxyDeployError } from './errors.js';
 
@@ -656,16 +656,12 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
   const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];
   const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
+  // The empty list's head sentinel is what a first write splices through. A deployment's own entry mints it, and
+  // the genesis seeds it for that collection; a call into a collection the deployment holds no node of has only the
+  // sentinel's commitment to plan against, so the hop mints the head in its own transaction and spends nothing
+  // for it — the node the plan relinks is a record the transaction writes, not one it reads.
+  const createsHead = request.liveDeployment !== undefined && collectionNodes.length === 0;
   if (collectionNodes.length === 0) {
-    if (request.liveDeployment !== undefined) {
-      // A sorted list's first write splices through the empty head sentinel, which a deployment's own entry mints
-      // for the collection it writes. A call reads the deployment's nodes, so a collection it holds none of has no
-      // head to splice: the write is refused by name rather than planned against a node no live UTXO carries.
-      throw new PerCallProxyDeployError(
-        `the implementation's "${request.functionName}" entry writes mapping "${collection.name}", and the `
-        + 'deployment holds no node of that collection, so this hop has no head to plan the write\'s splice against',
-      );
-    }
     // The genesis mints the empty list's head sentinel, so a hop before it plans against that commitment.
     inventory.push(headSentinelCommitment());
   } else {
@@ -681,28 +677,21 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
       utxoBySlot.set(bytesToHex(decodeEntryCommitment(bytes).slot), node);
     }
   }
-  const plan = planMappingBatch({
+  const planned = planMappingBatch({
     writes, inventory,
     encodeValue: chunkable ? encodeChunkableValueTail : (encoded: Uint8Array) => encoded,
     ...(chunkable ? { chunkable: (value: Uint8Array) => value } : {}),
   });
 
-  const headCommitment = headSentinelCommitment();
-  const spent = plan.written.filter((node) => node.existed).map((node) => ({
-    slot: node.slot,
-    before: node.before,
-    // The empty head sentinel is named by its collection; any other spent node is named by its own slot.
-    id: bytesEqual(node.before, headCommitment)
-      ? `${MAPPING_HEAD_PREFIX}${collection.name}`
-      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`,
-  }));
   // A node the batch creates, and a target it rewrites, carry the value the body computed; a node it only relinks
-  // keeps its own value, so its end view is stated by the planner.
-  const targets = new Set(plan.groups.map((group) => bytesToHex(group.slot)));
+  // keeps its own value, so its end view is stated by the planner. The candidates are read from the plan the
+  // inventory fixed, before a created head is marked as one: the head's relink is structural — it is the target
+  // slot — so it is the planner's to state rather than the body's to compute.
+  const targets = new Set(planned.groups.map((group) => bytesToHex(group.slot)));
   const learningSlots: Uint8Array[] = [];
   const learningCandidates: Uint8Array[] = [];
   const learned = new Set<string>();
-  for (const group of plan.groups) {
+  for (const group of planned.groups) {
     for (const record of group.records) {
       const key = bytesToHex(record.slot);
       if (learned.has(key)) continue;
@@ -712,6 +701,16 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
       learningCandidates.push(record.viewOut);
     }
   }
+  const plan = createsHead ? withCreatedHead(planned) : planned;
+  const headCommitment = headSentinelCommitment();
+  const spent = plan.written.filter((node) => node.existed).map((node) => ({
+    slot: node.slot,
+    before: node.before,
+    // The empty head sentinel is named by its collection; any other spent node is named by its own slot.
+    id: bytesEqual(node.before, headCommitment)
+      ? `${MAPPING_HEAD_PREFIX}${collection.name}`
+      : `${MAPPING_NODE_PREFIX}${bytesToHex(node.slot)}`,
+  }));
   return {
     collection: collection.name,
     signature: collection.signature,
@@ -732,6 +731,36 @@ function nodeToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
 /** The identity one chunk of a value's run is keyed by: its node's slot and its index in the run. */
 function chunkKey(slot: Uint8Array, index: number): string {
   return `${bytesToHex(slot)}#${index}`;
+}
+
+/**
+ * The plan with its empty head sentinel turned into a record the hop creates rather than spends.
+ *
+ * A call into a collection the deployment holds no node of plans its first write against the empty list, whose head
+ * sentinel no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's commitment
+ * for the empty list, at the collection's own entry covenant, which is what the genesis mints and what the body's
+ * group walk reads — so the predecessor record declares no input and the hop lays it out at a trailing output. The
+ * relink the planner computed is unchanged; only where the head comes from is.
+ */
+function withCreatedHead(plan: MappingBatchPlan): MappingBatchPlan {
+  const sentinel = headSentinelCommitment();
+  const isHead = (commitment: Uint8Array): boolean => bytesEqual(commitment, sentinel);
+  return {
+    ...plan,
+    groups: plan.groups.map((group) => ({
+      ...group,
+      records: group.records.map((record): MappingBatchRecord => (
+        record.existed && isHead(record.viewIn)
+          ? { ...record, existed: false, viewIn: new Uint8Array(0) }
+          : record
+      )),
+    })),
+    written: plan.written.map((node): MappingWrittenNode => (
+      node.existed && isHead(node.before)
+        ? { ...node, existed: false, before: new Uint8Array(0) }
+        : node
+    )),
+  };
 }
 
 /** The batch plan with each value-dependent node's end view replaced by the commitment the body computed. */

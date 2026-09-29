@@ -81,6 +81,13 @@ const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function pay(int amount) { this.counter = this.counter + 1; this.transfer(msg.sender, amount); require(true); }'
   + ' }';
 
+/** The entry that reads its record, writes none, and sends. */
+const READING_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Sender {'
+  + '   int public limit;'
+  + '   function pay(int amount) { require(amount <= this.limit); this.transfer(msg.sender, amount); }'
+  + ' }';
+
 const compiledBySource = new Map<string, Artifact>();
 const compile = (source: string): Artifact => {
   let artifact = compiledBySource.get(source);
@@ -385,5 +392,43 @@ describe('a stateful entry that sends, compiled per-call', () => {
 
   it('is refused when the listed output carries another value', () => {
     expect(spend({ outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT + 1))] }).accepted).toBe(false);
+  });
+});
+
+describe('a stateful entry that reads its record, writes none, and sends, compiled per-call', () => {
+  const SEND_OUTPUT = 3;
+  const reading = deploy(READING_SOURCE);
+  const commitment = (limit: bigint): Uint8Array =>
+    new Uint8Array(Buffer.from(buildPushdataCommitment(reading.artifact.stateLayout!, { limit }, 0), 'hex'));
+  const HELD = commitment(20_000n);
+  const STATE_INDEX = 1;
+
+  const spend = (overrides: Partial<Spend> = {}): { accepted: boolean; objection?: string } => verdict({
+    source: READING_SOURCE,
+    block: baseBlock({
+      callerRef: 2,
+      originRef: 2,
+      sends: [SEND_OUTPUT],
+      segments: [[{ in: STATE_INDEX, out: STATE_INDEX, viewIn: HELD, viewOut: HELD }]],
+    }),
+    state: { committed: HELD, written: HELD },
+    outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
+    argumentPushes: payload(AMOUNT),
+    ...overrides,
+  });
+
+  it('is accepted when the segment declares the record kept and the send sits at the listed output', () => {
+    expect(spend()).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the record reads less than the amount', () => {
+    const LOW = commitment(1n);
+    expect(spend({
+      block: baseBlock({
+        callerRef: 2, originRef: 2, sends: [SEND_OUTPUT],
+        segments: [[{ in: STATE_INDEX, out: STATE_INDEX, viewIn: LOW, viewOut: LOW }]],
+      }),
+      state: { committed: LOW, written: LOW },
+    }).accepted).toBe(false);
   });
 });

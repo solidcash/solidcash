@@ -207,6 +207,57 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
   });
 });
 
+const READING_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Capped {'
+  + '   int public cap;'
+  + '   receive() external payable { require(true); }'
+  + '   function setCap(int c) { this.cap = c; }'
+  + '   function pay(int amount) { require(amount <= this.cap); this.transfer(msg.sender, amount); }'
+  + ' }'
+  + ' contract Ledger {'
+  + '   mapping(address => int) balances;'
+  + '   receive() external payable { this.balances[msg.sender] = this.balances[msg.sender] + msg.value; }'
+  + '   function withdraw(int amount) {'
+  + '     require(this.balances[msg.sender] >= amount);'
+  + '     this.balances[msg.sender] = this.balances[msg.sender] - amount;'
+  + '     this.transfer(msg.sender, amount);'
+  + '   }'
+  + ' }';
+
+const reading = compileStringMulti(READING_SOURCE, { composition: 'per-call' });
+
+describe('an entry that sends what its state allows', () => {
+  it('pays up to the cap its record holds, a record it reads and does not write', async () => {
+    const deployed = await deploy(reading.Capped!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const cap = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'setCap', args: [15_000n] });
+    expect(cap.accepted).toBe(true);
+
+    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
+    expect(over.accepted).toBe(false);
+    expect(over.broadcast).toBeUndefined();
+    const paid = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
+    expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(paid, deployed.callerLock)).toBe(15_000n);
+  });
+
+  it('withdraws what its mapping credits the sender, debiting the entry it reads', async () => {
+    const deployed = await deploy(reading.Ledger!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const withdrawal = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'withdraw', args: [15_000n],
+    });
+    expect(withdrawal.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(withdrawal, deployed.callerLock)).toBe(15_000n);
+    expect(containerValue(withdrawal, deployed.categoryId)).toBe(5_000n);
+    // The entry now credits 5,000, so a larger withdrawal is refused.
+    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [6_000n] });
+    expect(over.accepted).toBe(false);
+    expect(over.broadcast).toBeUndefined();
+  });
+});
+
 const PAYMENTS_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Payer {'
   + '   int public paid;'
@@ -593,10 +644,8 @@ const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Splitter {'
   + '   bytes25 public first;'
   + '   bytes25 public second;'
-  + '   int public forwarded;'
   + '   constructor(bytes25 a, bytes25 b) { this.first = a; this.second = b; }'
   + '   receive() external payable {'
-  + '     this.forwarded = this.forwarded + msg.value;'
   + '     this.transfer(this.first, msg.value / 2);'
   + '     this.transfer(this.second, msg.value - msg.value / 2);'
   + '   }'

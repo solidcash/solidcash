@@ -30879,11 +30879,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         callCount: this.perCallExecutionCallCount(),
       };
     }
-    const slot = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
-    this.emit(Op.OP_TOALTSTACK, loc); // the record the read is about, beneath the index its walk takes
-    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
-    this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_FROMALTSTACK, loc);
+    // By the frame's stable bottom ordinal: a site may hold working operands above the frame the model does not track.
+    this.emitPickTrackedFromBottom(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE, loc);
+    this.emit(Op.OP_SWAP, loc); // the count beneath the record the read is about
     return { runtimeCounts: true };
   }
 
@@ -31077,14 +31075,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     emitIndex('in');
     this.emit(Op.OP_UTXOBYTECODE, loc);
+    this.trackFrameOperand();
     emitIndex('out');
     this.emit(Op.OP_OUTPUTBYTECODE, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
+    this.untrackFrameOperand();
     emitIndex('in');
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.trackFrameOperand();
     emitIndex('out');
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
+    this.untrackFrameOperand();
   }
 
   private emitDataNftCommitmentPreservation(offset: number, loc: SingleLocationData): void {
@@ -31133,9 +31135,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     emitIndex('in');
     emitCommitment('in');
+    this.trackFrameOperand();
     emitIndex('out');
     emitCommitment('out');
     this.emit(Op.OP_EQUALVERIFY, loc);
+    this.untrackFrameOperand();
+  }
+
+  /**
+   * Tracks an operand a per-call site leaves above the frame before it picks the frame's record bases by depth.
+   * The direct convention's picks are left as they are.
+   */
+  private trackFrameOperand(): void {
+    if (this.readsRecordsFromFrame) this.pushToStack('(value)');
+  }
+
+  private untrackFrameOperand(): void {
+    if (this.readsRecordsFromFrame) this.popFromStack();
   }
 
   private emitDataNftOutputCommitment(offset: number, loc: SingleLocationData): void {

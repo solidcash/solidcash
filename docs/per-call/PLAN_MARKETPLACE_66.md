@@ -1512,6 +1512,20 @@ risk. Take the slices in order, each with its own tests.
     implementer**: the MANIFEST's totals line is the rows' sums; `solidc` is 508 (its four rows, and what
     `vitest.per-call.config.ts` counts at HEAD), where the line has twice been carried forward as 513. Released
     earlier: the composer's value-list helper. Not claimed: everything else.
+  - **Claimed by the parallel worker, from `b5f8845dd` (this round's hand-over, on its own recommendation to start
+    the `__raw__` design in parallel):** two items on that wall, both disjoint from the compiler work this round
+    holds (the per-body inline-assembly admission rule and the static low-level lowering it blocks):
+    - **the value-carrying half of `__raw__`** — `Unicrow.refund` / `sendEscrowShare` end in
+      `target.call{value: amount}("")`, and the measured state is that it is not a lowering tweak: the per-call body
+      must emit the send and the call record the direct path emits, and spec section 1 R3 makes a value sent to a
+      contract run the recipient's `receive()` on a master of the recipient, which a plain send output
+      (`this.transfer`, already served) does not do;
+    - **the call path's own side-cars** for `takeJob` — `buildRecoverySideCars` / `buildKeccakSideCars` and their
+      `computedWitnesses`, placed where the call path (`call/call.ts`) plans its inputs, so a user-entered entry
+      that hashes and recovers composes without the composer's help.
+    The commit that lands each item removes its line here. What this round holds and must not be duplicated: the
+    admission rule at `per-call/master/support.ts:864` (contract-wide to per-body) and the second
+    `LowerStaticLowLevelCalls` placement that resolves the nine refused entries' payloads.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

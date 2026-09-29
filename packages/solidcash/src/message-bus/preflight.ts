@@ -1912,6 +1912,7 @@ const evaluateEveryInput = (
         const tailCommitment = tailOutput?.token?.nft && binToHex(tailOutput.token.nft.commitment);
         console.error('message-bus-failure-point', JSON.stringify({
           inputIndex,
+          metrics: evaluated.metrics,
           ip: evaluated.ip,
           opcode: evaluated.instructions[evaluated.ip]?.opcode,
           programLength: evaluated.instructions.length,

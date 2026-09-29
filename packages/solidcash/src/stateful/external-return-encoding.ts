@@ -10,6 +10,7 @@ import {
   encodePushdataValue,
   peekPushdataEncodedLength,
   type Artifact,
+  type ExternalResultEncoding,
   type StateValue,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
@@ -185,6 +186,57 @@ export function isCanonicalEvmReturnBlob(
   } catch {
     return false;
   }
+}
+
+/** Recognize the one-push participant result vector using each invocation's own published wire format. */
+export function isCanonicalMixedReturnBlob(
+  candidate: Uint8Array,
+  typeGroups: readonly (readonly string[])[], encodings: readonly ExternalResultEncoding[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
+): boolean {
+  if (typeGroups.length === 0 || typeGroups.length !== encodings.length
+    || peekPushdataEncodedLength(candidate) !== candidate.length) return false;
+  try {
+    const outer = decodePushdataValue(candidate, 0, 'bytes');
+    if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== candidate.length) return false;
+    const vector = outer.value;
+    let cursor = 0;
+    for (let row = 0; row < typeGroups.length; row += 1) {
+      if (encodings[row] === 'evm-abi-v1') {
+        const decoded = decodeEvmInvocationResultPrefix(vector.subarray(cursor), typeGroups[row], structs, enums);
+        if (!decoded) return false;
+        cursor += decoded.bytesConsumed;
+      } else if (encodings[row] === 'compact-pushdata-v1') {
+        for (const type of typeGroups[row]) {
+          const decoded = decodePushdataValue(vector, cursor, type, structs);
+          const canonical = encodePushdataValue(decoded.value, type, structs);
+          if (canonical.length !== decoded.bytesConsumed
+            || canonical.some((byte, index) => byte !== vector[cursor + index])) return false;
+          cursor += decoded.bytesConsumed;
+        }
+      } else return false;
+    }
+    return cursor === vector.length;
+  } catch {
+    return false;
+  }
+}
+
+export function extractMixedReturnBlob(
+  trace: readonly AuthenticationProgramStateCommon[],
+  typeGroups: readonly (readonly string[])[], encodings: readonly ExternalResultEncoding[],
+  structs?: Artifact['structs'], enums?: Artifact['enums'],
+): string | undefined {
+  for (let traceIndex = trace.length - 1; traceIndex >= Math.max(0, trace.length - 96); traceIndex -= 1) {
+    const stack = trace[traceIndex].stack;
+    for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const candidate = stack[stackIndex];
+      if (isCanonicalMixedReturnBlob(candidate, typeGroups, encodings, structs, enums)) {
+        return binToHex(candidate);
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Select a compiler-framed mixed Solidity return, falling back to raw words only for all-static schemas. */

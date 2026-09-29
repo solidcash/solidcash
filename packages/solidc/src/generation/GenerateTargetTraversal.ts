@@ -4799,12 +4799,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Serialize the function body to bytecode data.
     //
-    // NOT peephole-optimised, unlike an entry point's body or a captured helper's. A user function's body is
-    // the one place a `require` can fail without being recorded as one - a library function's own require
-    // reaches the VM from in here. Folding instructions inside the body moves the reported pointer relative to
-    // its debug record and can land a failure on the wrong line. Keep the emitted instructions stable and retain
-    // the sub-traversal's detailed locations so nested OP_INVOKE failures remain line-addressable.
-    const bodyScript = normaliseScript(subTraversal.output);
+    // User-authored function bodies remain unoptimised so their nested require pointers stay stable. The
+    // compiler-generated detached message-bus verifier is different: its source is generated here, and the
+    // standard helper optimiser carries its rewritten location/require data. Run that pass on this large body
+    // so its repeated stack shuffles do not consume the transaction's BCH operation-density budget.
+    const generatedVerifierBody = func.name === '__message_bus_verify_atomic_program';
+    const optimisedVerifierBody = generatedVerifierBody
+      ? GenerateTargetTraversalWithLocation.optimisedHelperBody(subTraversal) : undefined;
+    const bodyScript = optimisedVerifierBody?.script ?? normaliseScript(subTraversal.output);
+    const bodyLocations = optimisedVerifierBody?.locationData
+      ?? GenerateTargetTraversalWithLocation.alignLocations(
+        subTraversal.locationData, bodyScript.length, locationData,
+      );
+    const bodyRequires = optimisedVerifierBody?.requires ?? subTraversal.requires;
+    const bodyLogs = optimisedVerifierBody?.logs ?? subTraversal.consoleLogs;
 
     // Unreachable functions are still compiled above: code-generation performs a number of important
     // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
@@ -4819,20 +4827,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.definedBodyRecords.push({
       outputIndex: this.output.length,
       script: bodyScript,
-      locationData: GenerateTargetTraversalWithLocation.alignLocations(
-        subTraversal.locationData, bodyScript.length, locationData,
-      ),
+      locationData: bodyLocations,
       functionId: func.functionId!,
     });
     this.invokedFunctionBytecodes.set(func.functionId!, scriptToBytecode(bodyScript));
     this.invokeDebugInfo.set(func.functionId!, {
       bytecode: binToHex(scriptToBytecode(bodyScript)),
       name: func.name,
-      requires: subTraversal.requires,
-      logs: subTraversal.consoleLogs,
-      sourceMap: generateSourceMap(GenerateTargetTraversalWithLocation.alignLocations(
-        subTraversal.locationData, bodyScript.length, locationData,
-      ), this.compilerOptions.sourceMap !== false),
+      requires: bodyRequires,
+      logs: bodyLogs,
+      sourceMap: generateSourceMap(bodyLocations, this.compilerOptions.sourceMap !== false),
     });
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
@@ -7717,7 +7721,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const unrollJournalDensity = (this.compilerOptions.maximumInputBytes ?? MAX_INPUT_BYTESIZE) > MAX_INPUT_BYTESIZE
       && isKernelReadCarrierBindingToken(readCarrierBox?.bindingToken)
       && (readCarrierBox?.expectedScopes?.length ?? 0) > 0;
-    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity) {
+    // The detached atomic verifier is spent once per graph participant, and its many deep local assignments
+    // consume the same operation-density budget as the transaction introspection they authenticate. Its body
+    // is already separately outlined/optimised, so trade some definition bytes for fewer executed rotations
+    // without changing the size-oriented lowering of ordinary user functions.
+    // Shallow replacements offer little runtime saving but their unrolled bytecode consumes the verifier's
+    // 10,000-byte covenant allowance. Reserve unrolling for the costly deep end of its frame.
+    const unrollAtomicVerifier = this.compilerOptions.__detachedVerifierUnrollDeepReplace === true
+      && this.currentFunction?.name === '__message_bus_verify_atomic_program'
+      && index >= 28;
+    if (index >= 14 && !UNROLL_DEEP_REPLACE && !unrollJournalDensity && !unrollAtomicVerifier) {
       const count = BigInt(index - 1);
       this.emit(encodeInt(count), locationData);
       this.emit(Op.OP_DUP, locationData);

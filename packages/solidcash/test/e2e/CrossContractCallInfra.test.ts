@@ -2,8 +2,8 @@
 // per-slot master index for under-declared interfaces.
 import { describe, it, expect } from 'vitest';
 import { compileStringMulti } from 'solidc';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { Contract, StatefulContract, messageBus } from '../../src/index.js';
+import { createBareP2pkhFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 
 describe('unbounded bytes return', () => {
@@ -139,7 +139,9 @@ describe('unbounded bytes return', () => {
             this.seen = returned; this.saved = value;
           }
         }`;
-      const arts = compileStringMulti(src, { solidityImportCompat: true });
+      const arts = compileStringMulti(src, {
+        solidityImportCompat: true, messageBus: true, messageBusGraphContext: true,
+      });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { marker: 0n }, { saltContract: true },
@@ -154,10 +156,16 @@ describe('unbounded bytes return', () => {
       );
       const aSc = StatefulContract.withCategory(a, ac);
       const bSc = StatefulContract.withCategory(b, bc);
-      await bSc.use(hexToBin(aAddr), VAL, 73n, wide)
-        .withExternalCall(aSc, 'echo', [VAL])
-        .withExternalCall(aSc, 'wide', [73n, wide])
-        .send();
+      const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+      await messageBus.compose({
+        calls: [
+          bSc.call.use(hexToBin(aAddr), VAL, 73n, wide),
+          aSc.call.echo(VAL),
+          aSc.call.wide(73n, wide),
+        ],
+        funder: fee,
+        changeAddress: fee.unlocker.generateLockingBytecode(),
+      }).send();
       const state = await bSc.getState();
       expect(binToHex(state.digest as Uint8Array)).toBe(
         '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',

@@ -36,7 +36,8 @@ import {
   KERNEL_ENTRY_JOURNAL_RECORD_SEGMENT_PREFIX,
   hasUniqueKernelJournalDispositionCommitment, kernelJournalDispositionManifestDigest,
   KernelJournalDispositionsAbi,
-  messageBusVerifierLockingBytecode, childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
+  MessageBusVerifierCapacityError, messageBusVerifierLockingBytecode,
+  childStateLayoutDigest, abiTypeString, implicitlyCastableSignature,
 } from '@solidcash/utils';
 import {
   generateArtifact, generateDeclarationArtifact, occurrenceInfoOf, resultArrayOutputOf,
@@ -3087,7 +3088,7 @@ function compileDetachedMessageBusVerifier(
 }
 
 function compileDetachedMessageBusVerifierUncached(
-  source: string, compilerOptions: CompilerOptions, lifecycle = false,
+  source: string, compilerOptions: CompilerOptions, lifecycle = false, unrollDeepReplace = true,
 ): MessageBusVerifierProgram {
   const started = Date.now();
   const chunkedArrays = compilerOptions.chunkedArrays ?? true;
@@ -3103,6 +3104,7 @@ function compileDetachedMessageBusVerifierUncached(
     ...compilerOptions,
     messageBus: false,
     __cheapAdmissionCodegen: false,
+    __detachedVerifierUnrollDeepReplace: unrollDeepReplace,
     optimizeForCompilationSpeed: true,
   });
   ast = ast.accept(traversal) as Ast;
@@ -3123,6 +3125,16 @@ function compileDetachedMessageBusVerifierUncached(
   // by verifyFunctionId, while diagnostics and existing tooling expect the canonical verifier name.
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (verify?.name === MESSAGE_BUS_VERIFY_ATOMIC_PROGRAM) verify.name = '__message_bus_verify_atomic';
+  try {
+    // Definition bytecode is embedded in the verifier covenant, not merely in this detached mini-contract.
+    // Favor lower operation density when it fits; preserve the proven compact lowering for larger shapes.
+    messageBusVerifierLockingBytecode(program, compilerOptions.maximumInputBytes);
+  } catch (error) {
+    if (unrollDeepReplace && error instanceof MessageBusVerifierCapacityError) {
+      return compileDetachedMessageBusVerifierUncached(source, compilerOptions, lifecycle, false);
+    }
+    throw error;
+  }
   profileLog('singlePass:verifier', started, { functions: program.functions.length });
   return program;
 }
@@ -10764,7 +10776,9 @@ function synthesizeMessageBusRoute(
             require(lifecycleMode == 0 && lifecycleCount == 0);
             cursor = cursor + 3;
           }
-          require(base < tx.inputs.length && base < tx.outputs.length);
+          // expectedBase = base + blockSize is already proved below tx.inputs.length above,
+          // and blockSize is positive, so base is necessarily a valid input index.
+          require(base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
           require(tx.inputs[base].tokenCategory.length >= 33
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
@@ -10831,15 +10845,12 @@ function synthesizeMessageBusRoute(
         require(tx.inputs[activeVerifier].tokenCategory.length == 33
           && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
           && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
-        bigint activeVerifierOutput = -1;
-        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
-          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
-            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
-            activeVerifierOutput = verifierOutput;
-          }
-        }
-        require(activeVerifierOutput >= 0
-          && tx.outputs[activeVerifierOutput].tokenAmount == tx.inputs[activeVerifier].tokenAmount
+        // This program is invoked by the verifier covenant, which separately requires
+        // recreation of its NFT at its own input index. The atomic prefix equation above
+        // places that input within the transaction, so an output search cannot select a
+        // different valid verifier output and only repeats the covenant's index binding.
+        bigint activeVerifierOutput = activeVerifier;
+        require(tx.outputs[activeVerifierOutput].tokenAmount == tx.inputs[activeVerifier].tokenAmount
           && tx.outputs[activeVerifierOutput].value == tx.inputs[activeVerifier].value);
         ${kernelLifecycleHandlers.size > 0 ? lifecycleVerification : ''}
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6
@@ -11420,7 +11431,8 @@ function synthesizeMessageBusRoute(
             consumedLocalRows = consumedLocalRows + 1;
           }
         }
-        require(invocationRows > 0 && rootSubtreeEnd + 1 == invocationRows);
+        // With no rows, rootSubtreeEnd retains 65535, so the root-subtree equality also rejects an empty graph.
+        require(rootSubtreeEnd + 1 == invocationRows);
         bigint physicalResourceEndpoints = 0;
         bigint physicalSatoshiContainers = 0;
         bigint physicalTokenContainers = 0;
@@ -11433,7 +11445,8 @@ function synthesizeMessageBusRoute(
         // Participant parsing already selected this output with both covenant identity and master category.
         // Re-scanning by locking bytecode alone aliases an ordinary BCH transfer to the participant whenever
         // its recipient is that same covenant, shifting the entire physical settlement window.
-        require(activeOutputBase != 65535);
+        // The selected participant already proved participantOutputBase >= 0 before assigning activeOutputBase.
+        // Keep 65535 available as a real output index; it is not an absent-output proof at this point.
         for (bigint slot = activeBase;
           slot < activeBase + activeBlockSize; slot = slot + 1) {
           bigint outputSlot = activeOutputBase + slot - activeBase;
@@ -11553,7 +11566,8 @@ function synthesizeMessageBusRoute(
         require(activeTokenRows == physicalTokenOutputs);
         require(activeDeploymentRows == activeDeploymentInvocations
           && settledDeploymentParents.length * 41 == activeDeploymentParents.length * 4);
-        require(activeSidecarRows * 2 == activeSidecarTargets.length);
+        // Each accepted sidecar row increments activeSidecarRows once and appends exactly one two-byte target.
+        // Both values are compiler-owned in this loop, so their length equality is invariant by construction.
         require(!(${atomicManifestV4Expression}) || transactionSignatureRows > 0);
         // Selector-derived lifecycle (activeLifecycleMode from the local batch) is independent of V4 KTS row
         // frames. The V4 participant suffix stays neutral (mode=0,count=0); non-zero wire lifecycle remains
@@ -11578,22 +11592,28 @@ function synthesizeMessageBusRoute(
           );
           lbcCursor = lbcCursor + 2 + lbcLength;
         }
-        require(lbcCursor == participantLbcs.length && suppliedSettlementTable == expectedSettlementTable);`}
+        // participantLbcs was assembled above from exactly participantCount length-prefixed entries. This loop
+        // consumes that same count with the same decoded lengths, so lbcCursor == participantLbcs.length is an
+        // invariant of construction; only the externally supplied settlement table needs verification here.
+        require(suppliedSettlementTable == expectedSettlementTable);`}
         if (activeReturnOutput == 65535) { require(localResultVector.length == 0); }
         else {
-          require(localResultVector.length <= 65535);
+          // Concatenating the vector already enforces BCH's much smaller maximum stack-item length, so the
+          // uint16 framing limit is unreachable here. Avoid a redundant verifier check on density-tight routes.
           bytes expectedCommitment;
           if (localResultVector.length <= 75) {
             expectedCommitment = bytes.concat(
-              toPaddedBytes(localResultVector.length, 2).slice(0, 1), localResultVector
+              toPaddedBytes(localResultVector.length, 1), localResultVector
             );
           } else if (localResultVector.length <= 255) {
             expectedCommitment = bytes.concat(
+              // Script numbers are signed-magnitude: 128..255 need two bytes before taking the low unsigned
+              // length octet used by OP_PUSHDATA1. A one-byte NUM2BIN overflows for those valid vectors.
               hex"4c", toPaddedBytes(localResultVector.length, 2).slice(0, 1), localResultVector
             );
           } else {
             expectedCommitment = bytes.concat(
-              hex"4d", toPaddedBytes(localResultVector.length, 3).slice(0, 2), localResultVector
+              hex"4d", toPaddedBytes(localResultVector.length, 2), localResultVector
             );
           }
           if (expectedCommitment.length > 128) {

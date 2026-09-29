@@ -14,6 +14,7 @@ import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import {
   extractEvmReturnCommitment,
+  extractMixedReturnBlob,
   isCanonicalEvmReturnBlob,
   isConstrainedEvmResultVector,
   probeRequireStatement,
@@ -366,10 +367,11 @@ export function messageBusReturnBlobFromTransaction(
       );
       return inner === undefined ? undefined : binToHex(scriptToBytecode([hexToBin(inner)]));
     }
-    // Mixed participant result vectors have independent per-row wire formats. Only the targeted return-output
-    // comparison is strong enough here until the trace selector can validate and split every row by its own
-    // encoding; do not reinterpret a coincidental live stack item using one artifact-wide mode.
-    if (!allCompactResults) return undefined;
+    // Mixed participants publish one compiler-framed vector, but each row uses its own encoding. Validate and
+    // split the whole frame before treating a live stack item as a convergence seed. The final VM still proves it.
+    if (!allCompactResults) return extractMixedReturnBlob(
+      candidateTrace, resultSchema.resultTypeGroups, resultSchema.resultEncodings, structs, enums,
+    );
     return extractPendingReturnCommitment(
       candidateTrace, resultSchema.resultTypes.length, resultSchema.resultTypes,
     );

@@ -39,6 +39,8 @@ export interface CompilerOptions {
    * Skip compiling ordinary entry-point bodies on that throwaway pass; the binder second pass emits them.
    */
   __cheapAdmissionCodegen?: boolean;
+  /** Internal detached-verifier codegen mode; the compiler retries the compact form if this exceeds script size. */
+  __detachedVerifierUnrollDeepReplace?: boolean;
   /**
    * Internal. compileFile / project compilation may memoize artifacts even when an importResolver is present.
    * compileString stays uncached unless SOLIDC_COMPILE_CACHE=1.

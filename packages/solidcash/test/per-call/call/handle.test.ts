@@ -95,8 +95,11 @@ describe('the call surface of a deployed per-call contract', () => {
   it('refuses a call the entry itself rejects, and broadcasts nothing', async () => {
     const { calls, handle, provider } = await deploy();
     const before = await recordCommitment(provider, handle.categoryId);
-    // `add(-1)` leaves the total below the entry's own `require(this.total >= 0)`.
-    await expect(calls.add(-1n)).rejects.toThrow(/was refused/);
+    // `add(-1)` leaves the total below the entry's own `require(this.total >= 0)`. The rejection names the
+    // refusing frame's own entry and source site rather than the opcode the run stopped on.
+    await expect(calls.add(-1n)).rejects.toThrow(
+      /PER_CALL_COMPOSITION_REFUSED: frame "master" of Tally\.add\(\) at line \d+/,
+    );
     // Nothing was broadcast, so the record still carries the commitment the deployment minted.
     expect(await recordCommitment(provider, handle.categoryId)).toBe(before);
   });

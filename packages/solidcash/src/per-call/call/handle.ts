@@ -24,7 +24,7 @@ import type Signer from '../../Signer.js';
 import { callPerCallEntry, PerCallCallError, type PerCallCallResult } from './call.js';
 import { callPerCallProxyEntry } from '../proxy/deploy.js';
 import { readPerCallEntry, PerCallReadError, type PerCallReadResult } from '../read/index.js';
-import { PerCallCompositionRefusedError } from '../composer/index.js';
+import { PerCallCompositionRefusedError, type CompositionRefusal } from '../composer/index.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface PerCallHandleContract {
@@ -62,6 +62,10 @@ export class PerCallFunctionCall {
   public async send(): Promise<TransactionDetails> {
     const result = await this.compose();
     if (result.broadcast === undefined) {
+      // A frame the machine refused is reported the way a refused read is: the entry's own source reason, read from
+      // the artifact's publication, rather than the opcode the run stopped on.
+      const refusal = (result as { readonly refusal?: CompositionRefusal }).refusal;
+      if (refusal?.innermost !== undefined) throw new PerCallCompositionRefusedError(refusal);
       const refused = result.verdicts.filter((verdict) => !verdict.accepted)
         .map((verdict) => `${verdict.id}: ${verdict.objection ?? 'refused'}`).join('; ');
       throw new PerCallCallError(

@@ -44,7 +44,8 @@ import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/So
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
-  createComposedDerivationHost, deriveComposition, layoutTransaction, participant, requireLearnedViews,
+  createComposedDerivationHost, deriveComposition, describeInnermost, layoutTransaction, participant,
+  reportCompositionRefusal, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftInput, type DraftMaster,
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
@@ -622,9 +623,17 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       ? writtenEvents.findIndex((candidate) => bytesEqual(reading.declared, candidate))
       : -1;
     if (!reading.ok || (learned < 0 && learnedExtra < 0 && learnedEvent < 0)) {
+      // The entry's frame refused before it closed anything, so the reading only says where it stopped. The
+      // machine's verdict is paired with the artifacts' own publication to attribute the entry's reason: the
+      // refusing frame is named, and for a dispatched body its `debug.functionDebug` requirement is the message.
+      const refusal = reportCompositionRefusal({
+        draft: candidate.draft, artifacts: [proxyArtifact, implementationArtifact], vm,
+      });
+      const attributed = refusal.innermost === undefined
+        ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
+        : describeInnermost(refusal.innermost);
       throw new PerCallProxyDeployError(
-        `the implementation's ${options.entryLabel} did not settle through the proxy: `
-        + `${describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))}`,
+        `the implementation's ${options.entryLabel} did not settle through the proxy: ${attributed}`,
       );
     }
     if (learned >= 0) {

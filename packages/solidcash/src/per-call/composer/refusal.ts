@@ -77,14 +77,25 @@ export class PerCallCompositionRefusedError extends Error {
   }
 }
 
-/** One line naming a refused frame and its reason, for an error message. */
-export function describeInnermost(frame: RefusedFrame | undefined): string {
-  if (frame === undefined) return 'the machine refused no frame';
-  const reason = frame.reason.error !== undefined
-    ? `revert ${frame.reason.error.name}(${frame.reason.error.parameters?.map((p) => p.type).join(', ') ?? '...'})`
-    : frame.reason.message ?? 'no source message';
+/** The source reason a frame's refusal carries: the error a `revert` named, or a `require`'s message. */
+export function describeFrameReason(reason: FrameRevertReason): string | undefined {
+  if (reason.error !== undefined) {
+    const declared = reason.error.parameters?.map((parameter) => parameter.type).join(', ') ?? '...';
+    return `revert ${reason.error.name}(${declared})`;
+  }
+  return reason.message;
+}
+
+/** One line naming a refused frame, its site and its own reason, with the machine's objection. */
+export function describeRefusedFrame(frame: RefusedFrame): string {
+  const reason = describeFrameReason(frame.reason) ?? 'no source message';
   const line = frame.reason.line === undefined ? '' : ` at line ${frame.reason.line}`;
   return `frame "${frame.master}" of ${frame.functionName}${line}: ${reason} (${frame.objection})`;
+}
+
+/** One line naming a refused frame and its reason, for an error message. */
+export function describeInnermost(frame: RefusedFrame | undefined): string {
+  return frame === undefined ? 'the machine refused no frame' : describeRefusedFrame(frame);
 }
 
 /** The offset a per-call master's debug pointers carry relative to the shipped program. */

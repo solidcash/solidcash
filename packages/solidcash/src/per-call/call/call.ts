@@ -58,11 +58,14 @@ import {
   PerCallComposerError,
   createComposedDerivationHost,
   deriveComposition,
+  describeRefusedFrame,
   layoutTransaction,
   participant,
   readPublishedStopSites,
+  reportCompositionRefusal,
   type CompositionDraft,
   type CompositionDraftPlan,
+  type CompositionRefusal,
   type ContractBlock,
   type DraftInput,
   type DraftMaster,
@@ -127,6 +130,11 @@ export interface PerCallCallResult {
   readonly verdicts: readonly PerCallCallVerdict[];
   /** True only when every participant was accepted. */
   readonly accepted: boolean;
+  /**
+   * The refusing frames' own reasons, present only when a frame was refused. The per-verdict objection of a
+   * refused master carries the same attribution; this is what a caller that wants the structured report reads.
+   */
+  readonly refusal?: CompositionRefusal;
   /** The commitment of every record after the entry ran, in data-NFT order. */
   readonly writtenCommitments: readonly Uint8Array[];
   /** The bytes the derived call records in the root frame's `retval` slot. Empty when the entry returns nothing. */
@@ -591,7 +599,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (transaction === undefined) {
     throw new PerCallCallError('the composer built no transaction for the call frame');
   }
-  const verdicts: PerCallCallVerdict[] = draft.layout.participants.map((placed) => {
+  const rawVerdicts: PerCallCallVerdict[] = draft.layout.participants.map((placed) => {
     const state = machine.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,
     });
@@ -605,7 +613,21 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           + ` (instruction ${(state as { readonly ip?: number }).ip ?? 0})`,
       };
   });
-  const accepted = verdicts.every((verdict) => verdict.accepted);
+  const accepted = rawVerdicts.every((verdict) => verdict.accepted);
+
+  // A refused frame is attributed to the reason its own artifact publishes for the entry it ran, so the objection
+  // names the entry's own message rather than the opcode the machine stopped on. A frame with nothing published
+  // falls back to its bare objection, which still names where it stopped. A refusal on a participant that is not a
+  // frame (the validator, a record) carries no source reason and is left to the bare verdict.
+  const report = accepted ? undefined : reportCompositionRefusal({ draft, artifacts: [artifact], vm: machine });
+  const refusal = report !== undefined && report.refusals.length > 0 ? report : undefined;
+  const reasons = new Map(
+    (refusal?.refusals ?? []).map((frame) => [frame.master, describeRefusedFrame(frame)]),
+  );
+  const verdicts: PerCallCallVerdict[] = rawVerdicts.map((verdict) => {
+    const reason = verdict.accepted ? undefined : reasons.get(verdict.id);
+    return reason === undefined ? verdict : { ...verdict, objection: reason };
+  });
 
   // The entry's own answer is the bytes the derived call records in the frame's `retval`, decoded through the same
   // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded.
@@ -650,6 +672,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     retval,
     values,
     value: values[0] ?? 0n,
+    ...(refusal === undefined ? {} : { refusal }),
     ...(broadcast === undefined ? {} : { broadcast }),
   };
 }

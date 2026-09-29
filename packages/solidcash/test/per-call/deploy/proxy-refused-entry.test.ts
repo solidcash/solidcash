@@ -214,3 +214,40 @@ describe('a hop whose implementation entry the compiler refused', () => {
     expect(deployment.initialize.accepted).toBe(true);
   });
 });
+
+// An implementation whose initialize guard publishes a message, so a hop that trips it is refused by the reason
+// the artifact publishes rather than the opcode the implementation's frame stopped on.
+const GUARDED_SOURCE = 'pragma solidcash ^0.13.0;\n'
+  + 'contract Impl {\n'
+  + '  address public implementation;\n'
+  + '  uint public initialized;\n'
+  + '  function initialize(address expected) {\n'
+  + '    require(msg.sender == expected, "wrong caller");\n'
+  + '    require(this.initialized == 0);\n'
+  + '    this.initialized = 1;\n'
+  + '  }\n'
+  + '}\n';
+
+describe('an initialize hop whose entry refuses', () => {
+  it('names the entry\'s own message rather than the opcode its frame stopped on', async () => {
+    const artifacts = compileStringMulti(GUARDED_SOURCE, COMPILE_OPTIONS);
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
+    // The hop's caller is the deployer's own lock, so an `expected` address that is not it trips the guard.
+    const wrongCaller = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x55));
+
+    const deployment = deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
+      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
+      initialize: { functionName: 'initialize', args: [wrongCaller] },
+      callerLockingBytecode: deployerLock,
+      vm: compositionMachine(),
+    });
+
+    await expect(deployment).rejects.toThrow(PerCallProxyDeployError);
+    await expect(deployment).rejects.toThrow(/wrong caller/);
+    await expect(deployment).rejects.toThrow(/Impl\.initialize\(\) at line \d+/);
+  });
+});

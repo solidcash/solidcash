@@ -26,6 +26,7 @@ import {
   findMessageBusHandlerByNameOrSelector,
   findMessageBusHandlerForInvocation,
 } from './graph-handler-join.js';
+import { terminalConditionalReturnBase } from './layout-resolver.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
@@ -515,7 +516,8 @@ export function finalizeAtomicInvocationGraph(
   const spans = plan.participants.map((participant, index) => {
     if (participant.lifecycle !== undefined) return participant.lifecycle.balancedSpan;
     const block = participant.blockLayout!;
-    const fixedSize = block.fixedSuffix ? block.blockSize : block.trailingBase ?? block.blockSize;
+    const fixedSize = block.fixedSuffix ? block.blockSize
+      : Math.min(block.trailingBase ?? block.blockSize, terminalConditionalReturnBase(block) ?? block.blockSize);
     const actualSize = actualSizes?.[index] ?? block.blockSize;
     if (!Number.isSafeInteger(actualSize) || actualSize < fixedSize || actualSize > block.blockSize) {
       throw new Error(
@@ -591,7 +593,8 @@ export function finalizeAtomicInvocationGraph(
     // trailingUsed=0 for FakeToken (artifact trailingBase 23 + identity +1), and the OUTPUTBYTECODE lock
     // loop then compared trailing NFT locks against the wrong schedule (take-job input 225 EQUALVERIFY).
     const fixedSize = participant.lifecycle === undefined
-      ? (participant.blockLayout!.trailingBase ?? maximumSize)
+      ? Math.min(participant.blockLayout!.trailingBase ?? maximumSize,
+        terminalConditionalReturnBase(participant.blockLayout!) ?? maximumSize)
       : 1 + lifecyclePrefix;
     const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');

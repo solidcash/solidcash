@@ -75,6 +75,7 @@ import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js
 import {
   applyParticipantAbsoluteWitnesses,
   resolveComposeTransactionLayoutAuthority,
+  terminalConditionalReturnBase,
   trailingCapacityExcludingFixedSuffix,
   type ComposeParticipantLayoutClaims,
   type SymbolicParticipantLayout,
@@ -1220,7 +1221,8 @@ export async function assembleAtomicComposition(
       // `fixedSuffix` prevents compaction of the participant, but it does not erase the compiler-published
       // trailing band. Computed chunk claims are validated against that band before `minimumActualSize` is forced
       // back to the full block below; using blockSize here turns the valid range into an empty interval.
-      const fixedSize = participant.blockLayout!.trailingBase ?? blockSize;
+      const fixedSize = Math.min(participant.blockLayout!.trailingBase ?? blockSize,
+        terminalConditionalReturnBase(participant.blockLayout!) ?? blockSize);
       const computedValueChunkMetadata = local as TransactionBuilder & {
         __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
         __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];

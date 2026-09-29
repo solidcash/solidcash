@@ -128,6 +128,27 @@ export function trailingCapacityExcludingFixedSuffix(params: {
   return Math.max(0, params.blockSize - trailingBase - fixedSuffix);
 }
 
+/** First offset of a terminal, row-indexed return band that an atomic block may compact. */
+export function terminalConditionalReturnBase(
+  layout: Pick<FunctionBlockLayout, 'blockSize' | 'slots'>,
+): number | undefined {
+  let nextOffset = layout.blockSize - 1;
+  let index = layout.slots.length - 1;
+  while (index >= 0) {
+    const slot = layout.slots[index];
+    if (slot.kind !== 'returnEvent' || slot.conditional !== true
+      || slot.slotIndex === undefined || slot.offset !== nextOffset) break;
+    nextOffset -= 1;
+    index -= 1;
+  }
+  const base = nextOffset + 1;
+  // A source-level return is the fixed aggregate coordinate. The optional suffix is only its distinct
+  // per-row channel; never make the participant master or the aggregate result itself compactable.
+  return base < layout.blockSize && layout.slots.some((slot) =>
+    slot.kind === 'returnEvent' && slot.slotIndex === undefined && slot.offset < base)
+    ? base : undefined;
+}
+
 /** Active value-chunk / continuation claim used when assigning absolute chunk bases. */
 export interface ActiveValueChunkClaim {
   participant: number;

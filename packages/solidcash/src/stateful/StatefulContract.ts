@@ -8168,9 +8168,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** Validate one Solidity-visible ABI frame without starting provider, state, or route work. */
-  _validateAbiFrame(abiFunction: AbiFunction, args: FunctionArgument[]): FunctionArgument[] {
+  _validateAbiFrame(
+    abiFunction: AbiFunction,
+    args: FunctionArgument[],
+    options: { implicitMsgSenderCategory?: boolean } = {},
+  ): FunctionArgument[] {
     const visibleInputs = abiFunction.inputs.filter((input) => !input.name.startsWith('__internal__'));
-    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length) {
+    // A direct compiler-owned batch route may carry other physical witnesses while leaving only its caller
+    // category for the builder to derive. Keep those supplied witnesses aligned with their actual ABI slots.
+    const implicitCallerInputs = options.implicitMsgSenderCategory
+      && abiFunction.name === '__message_bus1'
+      && abiFunction.inputs.some((input) => input.name === '__internal__msgSenderCategory')
+      ? abiFunction.inputs.filter((input) => input.name !== '__internal__msgSenderCategory') : undefined;
+    if (args.length !== visibleInputs.length && args.length !== abiFunction.inputs.length
+      && args.length !== implicitCallerInputs?.length) {
       throw new Error(
         `Incorrect number of arguments passed to function ${abiFunction.name}. `
         + `Expected ${visibleInputs.length} arguments (${visibleInputs.map((input) => input.type)}) `
@@ -8180,7 +8191,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // A caller normally supplies the compact visible frame. Contract.createUnlocker also accepts a complete
     // physical frame, so retain exact ABI indices when that form is used; internal parameters need not be a
     // suffix. External-target exclusions are keyed by ABI names to remain correct in either representation.
-    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs : visibleInputs;
+    const frameInputs = args.length === abiFunction.inputs.length ? abiFunction.inputs
+      : args.length === implicitCallerInputs?.length ? implicitCallerInputs : visibleInputs;
     const externalTargetNames = new Set((abiFunction.externalCalls ?? []).flatMap((call) => {
       if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
         const input = visibleInputs[call.addressSource.paramIndex];
@@ -8272,7 +8284,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let abiFunction = overrides?.abiFunction ?? physicalAbiFunction;
     // Stateful derivation can copy a supplied value into a larger state/row blob. Validate first so an invalid
     // bytesN reports its ABI error rather than an incidental PUSHDATA limit reached by that derived blob.
-    if (abiFunction) args = this._validateAbiFrame(abiFunction, args);
+    if (abiFunction) args = this._validateAbiFrame(abiFunction, args, {
+      implicitMsgSenderCategory: overrides?.compilerRouteSelector !== undefined,
+    });
     const valueChunkWriteStagingSession = new ValueChunkWriteStagingSession();
     for (const production of overrides?.valueChunkProductions ?? []) {
       if (!valueChunkWriteStagingSession.stageOwned(

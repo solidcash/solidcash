@@ -142,7 +142,9 @@ export async function applyOverrides(
   const validatePreparedFrames = (): void => {
     if (host.parentContract && host.functionArgs) {
       const selected = host.compilerRoute?.abiFunction ?? host.selectedAbiFunction();
-      if (selected) host.parentContract._validateAbiFrame(selected, host.functionArgs);
+      if (selected) host.parentContract._validateAbiFrame(selected, host.functionArgs, {
+        implicitMsgSenderCategory: host.compilerRoute?.abiFunction.name === '__message_bus1',
+      });
     }
     for (const call of host.callInfos) {
       if (call.type !== 'stateful') continue;

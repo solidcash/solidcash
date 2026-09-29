@@ -4960,13 +4960,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Check for OP_1-OP_16 (0x51-0x60) -> push (N-0x50) as 1-byte
     push(Op.OP_DUP);
     push(Op.OP_BIN2NUM);
-    push(Op.OP_DUP);
     push(encodeInt(0x51n));
-    push(Op.OP_GREATERTHANOREQUAL);
-    push(Op.OP_SWAP);
-    push(encodeInt(0x60n));
-    push(Op.OP_LESSTHANOREQUAL);
-    push(Op.OP_BOOLAND);
+    push(encodeInt(0x61n)); // OP_WITHIN uses an exclusive upper bound.
+    push(Op.OP_WITHIN);
     push(Op.OP_IF);
     push(Op.OP_BIN2NUM);
     push(encodeInt(0x50n));
@@ -18393,13 +18389,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Check for OP_1-OP_16 (0x51-0x60)
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_BIN2NUM, locationData);
-    this.emit(Op.OP_DUP, locationData);
     this.emit(encodeInt(0x51n), locationData);
-    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-    this.emit(Op.OP_SWAP, locationData);
-    this.emit(encodeInt(0x60n), locationData);
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_BOOLAND, locationData);
+    this.emit(encodeInt(0x61n), locationData); // OP_WITHIN uses an exclusive upper bound.
+    this.emit(Op.OP_WITHIN, locationData);
     this.emit(Op.OP_IF, locationData);
     // It's OP_N: value = byte - 0x50
     if (isIntLike) {

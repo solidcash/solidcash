@@ -183,6 +183,23 @@ describe('SDK struct constructor arguments', () => {
     expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
   });
 
+  it('decodes struct integer fields across the OP_1–OP_16 opcode boundary', () => {
+    const provider = createTestProvider();
+    const src = `contract C(Edge e) {
+      struct Edge { int zero; int sixteen; int seventeen; int negative; }
+      function f() {
+        require(e.zero == 0);
+        require(e.sixteen == 16);
+        require(e.seventeen == 17);
+        require(e.negative == -1);
+      }
+    }`;
+    const contract = new Contract(compileString(src), [{
+      zero: 0n, sixteen: 16n, seventeen: 17n, negative: -1n,
+    }], { provider });
+    expect(() => verifyTransaction(spend(contract, provider))).not.toThrow();
+  });
+
   it('struct-with-dynamic-array-field ctor arg (variable-width decode in a redeem-script slot)', () => {
     const provider = createTestProvider();
     const src = `contract C(Bag b) {

@@ -764,7 +764,8 @@ contract Auth {
     expect(artifact.messageBus?.maximumRows).toBeGreaterThan(1);
     const sidecars = artifact.messageBus?.route.blockLayout?.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar') ?? [];
-    expect(sidecars.length).toBeGreaterThanOrEqual(2 * (artifact.messageBus?.maximumRows ?? 0));
+    expect(sidecars.map((slot) => slot.slotIndex)).toEqual([0, 1]);
+    expect(sidecars.length).toBeLessThan(2 * (artifact.messageBus?.maximumRows ?? 0));
     const asm = routeAsm(artifact);
     expect(asm).toMatch(/OP_UNTIL|OP_BEGIN/);
   });

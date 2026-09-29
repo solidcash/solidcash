@@ -28,6 +28,7 @@ describe('kernel fixed function-pointer return layout', () => {
     `)).toMatchObject({
       eligible: true,
       outputs: [{ type: 'int256' }],
+      resultEncoding: 'evm-abi-v1',
     });
   });
 
@@ -67,6 +68,7 @@ describe('kernel fixed function-pointer return layout', () => {
     `)).toMatchObject({
       eligible: true,
       outputs: [{ type: 'int256' }, { type: 'uint256' }],
+      resultEncoding: 'evm-abi-v1',
     });
   });
 

@@ -15267,25 +15267,30 @@ function compileResolvedAst(
           const sourceAbi = selector === undefined
             ? artifact.abi.find((candidate) => candidate.name === fn.name)
             : artifact.abi.find((candidate) => candidate.selector === selector);
+          const physicalReturnTypes = fn.returnTypes.map((type, index) => (
+            type instanceof FunctionType && type.isExternal
+              && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0
+              ? new IntType(true, 256) : type
+          ));
+          const loweredSelfPointerResult = physicalReturnTypes.some((type, index) => type !== fn.returnTypes[index]);
           const outputs = fn.returnTypes.length > 0
-            ? fn.returnTypes.map((type, index) => ({
+            ? physicalReturnTypes.map((type) => ({
               // The fixed self-pointer result is deliberately published as its physical data layout. A functionId
               // is an immutable integer in this bytecode, not a portable external callable `(address, selector)`.
-              type: type instanceof FunctionType && type.isExternal
-                && (fn.returnedSelfFunctionTargetSets?.[index]?.length ?? 0) > 0
-                ? 'int256' : type.toString().replace(/address payable/g, 'address'),
+              type: type.toString().replace(/address payable/g, 'address'),
             }))
             : sourceAbi?.outputs === undefined ? undefined : [...sourceAbi.outputs];
           if (!outputs?.length) return {};
           const derived = fn.returnTypes.length > 0
-            ? externalResultEncoding(fn.returnTypes, mergedCompilerOptions)
+            ? externalResultEncoding(physicalReturnTypes, mergedCompilerOptions)
             : undefined;
-          if (sourceAbi?.resultEncoding && derived && sourceAbi.resultEncoding !== derived) {
+          if (sourceAbi?.resultEncoding && derived && sourceAbi.resultEncoding !== derived
+            && !loweredSelfPointerResult) {
             throw new Error(`Message-bus handler result encoding disagrees with ABI for ${fn.name}`);
           }
           return {
             outputs,
-            resultEncoding: sourceAbi?.resultEncoding ?? derived!,
+            resultEncoding: loweredSelfPointerResult ? derived! : sourceAbi?.resultEncoding ?? derived!,
           };
         })(),
         ...(fn.usesMsgValue && { usesMsgValue: true }),

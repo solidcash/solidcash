@@ -325,14 +325,12 @@ describe('reading a per-call record the contract already wrote', () => {
     });
     expect(result.accepted).toBe(false);
     // The read's refusal lands on the same surface a refused composition reports: the read frame is named, a source
-    // line is attributed, and the machine's objection is carried. What it does not resolve yet is the `require`'s
-    // own message: the artifact publishes it ("counter must be positive"), but the read's shifted failing
-    // instruction lands on the instruction after the guard, so the reason comes back without it.
+    // line is attributed, the machine's objection is carried, and so is the `require`'s own message.
     expect(result.refusal?.innermost?.master).toBe('read');
     expect(result.objection).toMatch(/frame "read" of Guarded\.current\(\) at line \d+/);
     expect(result.objection).toMatch(/OP_VERIFY/);
     expect(guarded.debug?.requires?.some((entry) => entry.message === 'counter must be positive')).toBe(true);
-    expect(result.refusal?.innermost?.reason.message).toBeUndefined();
+    expect(result.refusal?.innermost?.reason.message).toBe('counter must be positive');
     expect(result.values).toStrictEqual([]);
   });
 });

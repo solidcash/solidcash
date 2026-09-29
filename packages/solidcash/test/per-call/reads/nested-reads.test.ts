@@ -210,10 +210,9 @@ describe('reading a view that reads another contract\'s view off chain', () => {
     expect(result.refusal?.innermost?.functionName).toBe('B.grab()');
     expect(result.objection).toMatch(/frame "read-1" of B\.grab\(\) at line \d+/);
     expect(result.objection).toMatch(/OP_VERIFY/);
-    // The artifact publishes the callee's `require` message, but the read's shifted failing instruction lands past
-    // the guard, so the innermost reason carries no message (the same limitation the direct read reports).
+    // The artifact publishes the callee's `require` message, and the innermost reason carries it.
     expect(bArtifact.debug?.requires?.some((entry) => entry.message === 'v must be positive')).toBe(true);
-    expect(result.refusal?.innermost?.reason.message).toBeUndefined();
+    expect(result.refusal?.innermost?.reason.message).toBe('v must be positive');
     expect(result.values).toStrictEqual([]);
     expect(transactionCount(provider)).toBe(before);
   });

@@ -3110,7 +3110,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallReturnsValue = returnsValue;
     this.perCallMaxEventCount = tail.tail.maxEventCount;
     this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
-    this.emit([...buildMasterHeadScript({
+    this.emit(bytecodeToScript(Uint8Array.from(buildMasterHeadScript({
       blockOnTop,
       frameKinds,
       tail: tail.tail,
@@ -3124,7 +3124,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
       ...(fallbackAsEntry ? { callDataBandAsSingleItem: true } : {}),
-    }).script], loc);
+    }).script)), loc);
     this.pushToStack('__internal__frameSelf');
     this.pushToStack('__internal__frameValue');
     this.pushToStack('__internal__frameSender');
@@ -3569,7 +3569,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const script = buildBatchTargetsDerivationScript({
       keyDepths, ...derivation, segmentIndex: this.perCallBatchWriteSegment,
     });
-    this.emit([...script], loc);
+    this.emit(bytecodeToScript(script), loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
     for (const slot of slots) {
       for (const kind of BATCH_DERIVATION_SLOT_ORDER) {
@@ -36924,7 +36924,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // the record settlement uses. The category goes to the counter and comes back as the count it leaves.
       this.emit(Op.OP_INPUTINDEX, loc);
       this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
-      this.emit([...countMastersScript()], loc);
+      this.emit(bytecodeToScript(countMastersScript()), loc);
       this.emit(encodeInt(1n), loc);
       this.emit(Op.OP_NUMNOTEQUAL, loc);           // [cat, base, j, allowed, notAlone]
       this.emit(Op.OP_BOOLOR, loc);                // [cat, base, j, allowed']

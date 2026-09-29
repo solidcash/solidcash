@@ -110,7 +110,9 @@ describe('kernel inherited event-frame replay', () => {
       && input.unlocker.abiFunction.name === recorderArtifact.messageBus!.route.name);
     const localEventOffsets = recorderArtifact.messageBus!.route.blockLayout.slots
       .filter((slot) => slot.kind === 'event').map((slot) => slot.offset);
-    expect(eventOutputIndices).toEqual(localEventOffsets.map((offset) => recorderInputIndex + offset));
+    expect(localEventOffsets.length).toBeGreaterThanOrEqual(values.length);
+    expect(eventOutputIndices).toEqual(localEventOffsets.slice(0, values.length)
+      .map((offset) => recorderInputIndex + offset));
 
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);

@@ -28,8 +28,11 @@
  *
  * A sorted-mapping write is materialized the same way a record write is: the node the write consumes (the empty
  * list's head sentinel) is a probe input the body's own declaration closes against, and the node it creates is a
- * trailing output the segment declares. The node commitments come from the shipped planner (`planMappingWrite`)
- * against the empty list, so the genesis carries exactly what a composed write against the same inventory would.
+ * trailing output the segment declares. The structure comes from the shipped planner against the empty list, so
+ * the genesis carries exactly what a composed write against the same inventory would. A single write with a stated
+ * value uses `planMappingWrite`; several writes to one collection, which its sorted batch proves as one transition,
+ * use `planMappingBatch`, and each created node's value tail is what the body computes, learned from the body's own
+ * close exactly as a record write is.
  *
  * A dynamic value's write is planned from the source the artifact publishes for it: the constructor's arguments
  * state the value, the shipped chunk encoder sizes and commits the run, and the block declares the run at the
@@ -37,7 +40,7 @@
  * determine, is refused by name with that fact, because the run's width cannot be known without the value.
  *
  * A shape the constructor frame or the master head does not serve — a call, a value send, a hidden parameter, an
- * event emitted from a loop, a mapping write the planner cannot state in advance — is refused by name rather than
+ * event emitted from a loop, a mapping write that spans several collections — is refused by name rather than
  * probed, because this module has no plan for its witnesses. Everything else is the shipped deployment: the
  * placeholders are filled by `deployMaster`, the address is `addrV(category)`, and the master lock is the P2SH32 of
  * the filled program.
@@ -52,7 +55,6 @@ import {
   INDEX_NONE,
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,
-  blockInputSize,
   buildInitialStateCommitments,
   buildMasterUnlockingBytecode,
   bytesEqual,
@@ -79,7 +81,8 @@ import {
   layOutChunkRun, planChunkRun, type ChunkRecordPlacement, type ChunkRunPlan,
 } from '../composer/chunk-plan.js';
 import {
-  layOutMappingWrites, planMappingWrite, type MappingNodePlacement, type MappingWritePlan,
+  layOutMappingBatch, layOutMappingWrites, planMappingBatch, planMappingWrite,
+  type MappingBatchPlan, type MappingNodePlacement, type MappingNodePlacements, type MappingWritePlan,
 } from '../composer/mapping-plan.js';
 import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
@@ -271,7 +274,7 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   }
 
   refuseUnservedShape(artifact, constructorAbi);
-  const mapping = planConstructorMappingWrite(artifact, constructorAbi, options);
+  const mapping = planConstructorMapping(artifact, constructorAbi, options);
   const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
   return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mapping, dynamic);
 }
@@ -329,6 +332,7 @@ function refuseUnservedShape(
  * write against the same inventory would.
  */
 interface ConstructorMappingWrite {
+  readonly kind: 'single';
   readonly collection: string;
   /** The collection's canonical signature, whose hash the entry covenant pins. */
   readonly signature: string;
@@ -339,6 +343,32 @@ interface ConstructorMappingWrite {
   /** The shipped planner's plan: the sentinel relinked in place and the node the write creates. */
   readonly write: MappingWritePlan;
 }
+
+/**
+ * The nodes a constructor's sorted batch materializes, planned against the empty list's head sentinel.
+ *
+ * A genesis starts from an empty list, so every target is an insertion: the head is relinked to the lowest slot
+ * and each target's node is created at its own trailing output. The shipped batch planner decides the links and
+ * the group order the body's own batch derivation reads, so the probe's segment declares exactly the records a
+ * composed batch would. The values are the body's to compute, so each created node's commitment starts at the
+ * structural placeholder the planner produces (the right slot and successor, a placeholder tail) and is learned
+ * from the body's own close in `deriveConstructorFrame`.
+ */
+interface ConstructorMappingBatch {
+  readonly kind: 'batch';
+  readonly collection: string;
+  readonly signature: string;
+  readonly headBefore: Uint8Array;
+  /** The shipped batch planner's plan, with placeholder tails on the created nodes. */
+  readonly plan: MappingBatchPlan;
+  /** The created nodes' slots, in the order their groups first declare them. */
+  readonly createdSlots: readonly Uint8Array[];
+  /** The created records' placeholder commitments, in the order their groups first declare them. */
+  readonly placeholders: readonly Uint8Array[];
+}
+
+/** One constructor's mapping writes, planned as a single insertion or as one collection's sorted batch. */
+type ConstructorMapping = ConstructorMappingWrite | ConstructorMappingBatch;
 
 /** The constructor parameter names a key or value label can read, in declaration order. */
 function visibleConstructorInputs(constructorAbi: Artifact['abi'][number]): Artifact['abi'][number]['inputs'] {
@@ -359,45 +389,44 @@ function constructorArgumentByName(
   return encoded instanceof Uint8Array ? encoded : undefined;
 }
 
-/**
- * Plans the nodes the constructor's single mapping write materializes, or `undefined` when it writes none.
- *
- * The shape this serves is one collection written once: each key is a constructor argument, a `msg.sender` read, or
- * a compile-time expression the argument list resolves, and the value is a constructor argument or a compile-time
- * expression. Anything wider — several collections, several targets, a computed key or value — is refused by name
- * rather than planned approximately, because the probe's block would declare a record the derivation cannot read.
- */
-function planConstructorMappingWrite(
+/** One constructor mapping entry a plan serves, with the collection it belongs to. */
+interface ConstructorMappingAccess {
+  readonly access: NonNullable<Artifact['abi'][number]['entryAccesses']>[number];
+  readonly collection: NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
+  /** The encoded key(s) the access writes under, resolved from the argument list. */
+  readonly keys: readonly Uint8Array[];
+}
+
+/** The collection an entry access writes, refusing one the layout does not publish as a sorted collection. */
+function requireSortedCollection(
   artifact: Artifact,
-  constructorAbi: Artifact['abi'][number],
-  options: PerCallGenesisOptions,
-): ConstructorMappingWrite | undefined {
-  const accesses = constructorAbi.entryAccesses ?? [];
-  const batches = constructorAbi.sortedBatchInfo ?? [];
-  if (accesses.length === 0 && batches.length === 0) return undefined;
-  if (accesses.length !== 1 || batches.length !== 1 || (batches[0]!.slotIndices.length !== 1)) {
-    throw new PerCallGenesisError(
-      `the constructor of "${artifact.contractName}" writes ${accesses.length} mapping entry(ies) across `
-      + `${batches.length} collection(s), and this deployment plans exactly one write to one collection`,
-    );
-  }
-  const access = accesses[0]!;
-  const collections = artifact.stateLayout?.collections ?? [];
-  const collection = collections.find((candidate) => candidate.name === access.collection);
+  access: ConstructorMappingAccess['access'],
+): ConstructorMappingAccess['collection'] {
+  const collection = (artifact.stateLayout?.collections ?? [])
+    .find((candidate) => candidate.name === access.collection);
   if (collection === undefined || collection.sorted !== true) {
     throw new PerCallGenesisError(
       `the constructor of "${artifact.contractName}" writes mapping "${access.collection}", which the artifact does `
       + 'not publish as a sorted collection',
     );
   }
-  const writes = access.operations.filter((operation) => operation !== 'read');
-  if (writes.length !== 1 || writes[0] !== 'write') {
-    throw new PerCallGenesisError(
-      `the constructor of "${artifact.contractName}" touches mapping "${access.collection}" as `
-      + `${access.operations.join('/')}, and this deployment plans one write beside at most a read`,
-    );
-  }
+  return collection;
+}
 
+/**
+ * Resolves one entry access's keys from the constructor's arguments, its sender, or a compile-time expression.
+ *
+ * Each key is a constructor argument, a `msg.sender` read, or an expression the argument list evaluates with no
+ * state, which is the same resolution the single-write plan uses. A key the arguments do not determine is refused
+ * by name, because the probe's slot would name a node the body never writes.
+ */
+function resolveConstructorKeys(
+  artifact: Artifact,
+  constructorAbi: Artifact['abi'][number],
+  access: ConstructorMappingAccess['access'],
+  collection: ConstructorMappingAccess['collection'],
+  options: PerCallGenesisOptions,
+): readonly Uint8Array[] {
   const args = [...options.constructorArgs];
   const visible = visibleConstructorInputs(constructorAbi);
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
@@ -409,7 +438,7 @@ function planConstructorMappingWrite(
     );
   }
   const senderLock = options.senderLockingBytecode ?? rootCallerLockingBytecode();
-  const resolveKey = (index: number): Uint8Array => {
+  return access.keyParams.map((_param, index): Uint8Array => {
     const source = access.keySources?.[index];
     if (source?.kind === 'msgSender') return senderLock;
     const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
@@ -421,9 +450,76 @@ function planConstructorMappingWrite(
       `the constructor of "${artifact.contractName}" writes mapping "${access.collection}" at a key this deployment `
       + `cannot resolve from its arguments (${label ?? '<unnamed>'})`,
     );
-  };
-  const keys = access.keyParams.map((_param, index) => resolveKey(index));
+  });
+}
 
+/**
+ * Plans the nodes the constructor's mapping writes materialize, or `undefined` when it writes none.
+ *
+ * One collection written once with a stated value is the shipped single-write plan. Several writes to one
+ * collection, which its sorted batch proves as one transition, are planned by the shipped batch planner against
+ * the same empty list's head sentinel: the plan fixes each target's group, so the probe's segment declares exactly
+ * the records the body's own batch derivation walks. Anything wider — several collections, a key the arguments do
+ * not resolve, a value the batch cannot state — is refused by name rather than planned approximately.
+ */
+function planConstructorMapping(
+  artifact: Artifact,
+  constructorAbi: Artifact['abi'][number],
+  options: PerCallGenesisOptions,
+): ConstructorMapping | undefined {
+  const accesses = constructorAbi.entryAccesses ?? [];
+  const batches = constructorAbi.sortedBatchInfo ?? [];
+  if (accesses.length === 0 && batches.length === 0) return undefined;
+  const single = accesses.length === 1 && batches.length === 1 && batches[0]!.slotIndices.length === 1;
+  const collectionName = accesses[0]?.collection;
+  const oneCollection = collectionName !== undefined && accesses.every((a) => a.collection === collectionName);
+  if (!oneCollection || batches.length !== 1) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" writes ${accesses.length} mapping entry(ies) across `
+      + `${batches.length} collection(s), and this deployment plans one collection's sorted writes`,
+    );
+  }
+  const batch = batches[0]!;
+  const bySlot = new Map(accesses.map((access) => [access.slotIndex, access]));
+  const ordered = batch.slotIndices.map((slotIndex) => {
+    const access = bySlot.get(slotIndex);
+    if (access === undefined) {
+      throw new PerCallGenesisError(
+        `the constructor of "${artifact.contractName}" writes mapping "${collectionName}" at slot ${slotIndex}, `
+        + 'which no entry access publishes',
+      );
+    }
+    return access;
+  });
+  for (const access of ordered) {
+    const writes = access.operations.filter((operation) => operation !== 'read');
+    if (writes.length !== 1 || writes[0] !== 'write') {
+      throw new PerCallGenesisError(
+        `the constructor of "${artifact.contractName}" touches mapping "${access.collection}" as `
+        + `${access.operations.join('/')}, and this deployment plans one write beside at most a read`,
+      );
+    }
+  }
+  const resolved = ordered.map((access): ConstructorMappingAccess => {
+    const collection = requireSortedCollection(artifact, access);
+    return { access, collection, keys: resolveConstructorKeys(artifact, constructorAbi, access, collection, options) };
+  });
+
+  if (single) return planSingleMappingWrite(artifact, constructorAbi, resolved[0]!, options);
+  return planBatchMappingWrites(artifact, resolved);
+}
+
+/** The single-insertion plan: the shipped write planner against the empty list's head sentinel. */
+function planSingleMappingWrite(
+  artifact: Artifact,
+  constructorAbi: Artifact['abi'][number],
+  resolved: ConstructorMappingAccess,
+  options: PerCallGenesisOptions,
+): ConstructorMappingWrite {
+  const { access, collection } = resolved;
+  const args = [...options.constructorArgs];
+  const visible = visibleConstructorInputs(constructorAbi);
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
   const value = ((): Uint8Array => {
     if (access.valueParam !== undefined) {
       const byParam = constructorArgumentByName(constructorAbi, args, access.valueParam, structs);
@@ -438,10 +534,9 @@ function planConstructorMappingWrite(
       + 'cannot resolve from its arguments',
     );
   })();
-
   const headBefore = headSentinelCommitment();
   const plan = planMappingWrite({
-    keys,
+    keys: [...resolved.keys],
     value,
     inventory: [headBefore],
     encodeValue: (encoded) => encoded,
@@ -453,11 +548,76 @@ function planConstructorMappingWrite(
     );
   }
   return {
+    kind: 'single',
     collection: collection.name,
     signature: collection.signature,
     headBefore,
     created: plan.written[1]!.after,
     write: plan,
+  };
+}
+
+/**
+ * The batch plan: the shipped batch planner against the empty list, with placeholder value tails.
+ *
+ * Every target of an empty-list batch is an insertion, so the plan's created nodes are the targets and their
+ * commitments carry the right slot and successor with a one-byte placeholder tail. The bodies of the plan are the
+ * ones the body's own group walk expects, and each created commitment is replaced by the value the body computes
+ * once `deriveConstructorFrame` has learned it.
+ */
+function planBatchMappingWrites(
+  artifact: Artifact,
+  resolved: readonly ConstructorMappingAccess[],
+): ConstructorMappingBatch {
+  const collection = resolved[0]!.collection;
+  const headBefore = headSentinelCommitment();
+  const placeholder = new Uint8Array(1);
+  const plan = planMappingBatch({
+    writes: resolved.map((entry) => ({ keys: [...entry.keys], value: placeholder })),
+    inventory: [headBefore],
+    encodeValue: (encoded) => encoded,
+  });
+  const created = plan.written.filter((node) => !node.existed);
+  if (created.length !== resolved.length) {
+    throw new PerCallGenesisError(
+      `the constructor of "${artifact.contractName}" cannot be planned at genesis: writing `
+      + `"${collection.name}" is not an insertion into the empty list`,
+    );
+  }
+  return {
+    kind: 'batch',
+    collection: collection.name,
+    signature: collection.signature,
+    headBefore,
+    plan,
+    createdSlots: created.map((node) => node.slot),
+    placeholders: created.map((node) => node.after),
+  };
+}
+
+/**
+ * The batch plan with each created record's commitment replaced by the value the body computed.
+ *
+ * The structure — the slots, the successor each node carries, the group order — is the shipped planner's and never
+ * changes; only the value tail of a created node is what the loop learns, so only the created records' views are
+ * replaced. Every other record keeps the commitment the planner computed.
+ */
+function batchWithCommitments(
+  batch: ConstructorMappingBatch,
+  commitments: readonly Uint8Array[],
+): MappingBatchPlan {
+  const bySlot = new Map<string, Uint8Array>();
+  batch.createdSlots.forEach((slot, index) => {
+    bySlot.set(binToHex(slot), commitments[index] ?? batch.placeholders[index]!);
+  });
+  const viewOf = (slot: Uint8Array): Uint8Array => bySlot.get(binToHex(slot))!;
+  return {
+    ...batch.plan,
+    groups: batch.plan.groups.map((group) => ({
+      ...group,
+      records: group.records.map((record) => (record.existed ? record : { ...record, viewOut: viewOf(record.slot) })),
+    })),
+    written: batch.plan.written.map((node) => (node.existed ? node : { ...node, after: viewOf(node.slot) })),
   };
 }
 
@@ -558,7 +718,7 @@ function planConstructorDynamicWrites(
 function probeLayout(
   dataNftCount: number,
   eventCount: number,
-  hasMapping: boolean,
+  createdCount: number,
   chunkCount: number,
 ): {
   readonly caller: number;
@@ -569,8 +729,8 @@ function probeLayout(
   readonly events: readonly number[];
   /** The spent mapping head's index, or `-1` when the constructor writes no mapping. */
   readonly head: number;
-  /** The created mapping node's trailing output index, or `-1` when the constructor writes no mapping. */
-  readonly created: number;
+  /** The created mapping nodes' trailing output indices, in group order; empty when it writes no mapping. */
+  readonly created: readonly number[];
   /** The first chunk output's index, or `-1` when the constructor writes no dynamic value. */
   readonly chunkBase: number;
   /** How many chunk outputs the constructor's frames create. */
@@ -583,11 +743,13 @@ function probeLayout(
   const spare = 3 + dataNftCount;
   const events = Array.from({ length: eventCount }, (_, index) => 4 + dataNftCount + index);
   const base = 4 + dataNftCount + eventCount;
-  const chunkBase = chunkCount === 0 ? -1 : base + (hasMapping ? 2 : 0);
+  const hasMapping = createdCount > 0;
+  const created = Array.from({ length: createdCount }, (_, index) => base + 1 + index);
+  const chunkBase = chunkCount === 0 ? -1 : base + (hasMapping ? 1 + createdCount : 0);
   return {
     caller, master, records, validator, spare, events,
     head: hasMapping ? base : -1,
-    created: hasMapping ? base + 1 : -1,
+    created,
     chunkBase,
     chunkCount,
   };
@@ -655,17 +817,15 @@ const CHUNK_OUTPUT_SATOSHIS = 1_000n;
 /**
  * Lays the run of chunk records out for every dynamic value the constructor writes.
  *
- * The body addresses the run at one layout width past the record block its own frame declares, so the segment has
- * to carry exactly that many records before it; a constructor that also writes mapping nodes at a different width
- * is refused rather than placed at an ordinal the body does not read. The genesis starts from the empty value, so
- * every record is one the transaction creates at its own output, and the plan places them at the trailing indices
- * the probe layout gives the run.
+ * The genesis starts from the empty value, so every record is one the transaction creates at its own output, and
+ * the plan places them at the trailing indices the probe layout gives the run. They follow the contract's own
+ * data-NFT records and every record the mapping plan declares in the segment, which is the ordinal the body reads
+ * the run at: the machine's verdict is the authority, and a run laid elsewhere fails the body's own close.
  */
 function layOutConstructorChunks(
   options: PerCallGenesisOptions,
   constructorAbi: Artifact['abi'][number],
   dynamic: readonly ConstructorDynamicWrite[],
-  mapping: ConstructorMappingWrite | undefined,
   layout: ReturnType<typeof probeLayout>,
 ): readonly ChunkRecordPlacement[] {
   if (dynamic.length === 0) return [];
@@ -676,15 +836,10 @@ function layOutConstructorChunks(
       + 'to address its chunk run from',
     );
   }
-  const dataNftCount = options.artifact.stateLayout!.dataNftCount;
-  const leading = dataNftCount + (mapping === undefined ? 0 : mapping.write.written.length);
-  const expected = blockInputSize(blockLayout) - 1;
-  if (leading !== expected) {
-    throw new PerCallGenesisError(
-      `the constructor of "${options.artifact.contractName}" declares ${leading} record(s) before its dynamic run, `
-      + `but the body reads the run at ${expected}`,
-    );
-  }
+  // The run is declared after the contract's own data-NFT records and every record the mapping plan declares,
+  // which is the ordinal the body reads it at. The body's own verification is the authority on that ordinal: a
+  // run laid anywhere else fails its close, and the derivation reports the machine's refusal rather than placing
+  // a run the body does not read.
   const category = Uint8Array.from(options.category);
   let offset = 0;
   return dynamic.flatMap((write) => {
@@ -701,6 +856,31 @@ function layOutConstructorChunks(
 }
 
 /**
+ * The records the constructor's mapping plan declares, with each created node placed at its trailing output.
+ *
+ * The head sentinel is the one node the empty list holds, so it is spent and recreated at the probe's head index;
+ * every target the empty list does not hold is created at the trailing output the probe layout gave it. The
+ * commitments are the shipped planner's, with a batch's created nodes carrying the values the loop has learned.
+ */
+function layOutMapping(
+  mapping: ConstructorMapping,
+  nodeOuts: readonly Uint8Array[],
+  layout: ReturnType<typeof probeLayout>,
+): readonly RecordEntry[] {
+  const createdSlots = mapping.kind === 'single' ? [mapping.write.slot] : mapping.createdSlots;
+  const placements: MappingNodePlacements = {
+    placementOf: (slot): MappingNodePlacement | undefined => {
+      if (slot.every((byte) => byte === 0)) return { in: layout.head, out: layout.head };
+      const index = createdSlots.findIndex((candidate) => bytesEqual(candidate, slot));
+      return index < 0 ? undefined : { out: layout.created[index] };
+    },
+  };
+  return mapping.kind === 'single'
+    ? layOutMappingWrites([[mapping.write]], placements)[0]!
+    : layOutMappingBatch(batchWithCommitments(mapping, nodeOuts), placements);
+}
+
+/**
  * Runs the constructor frame against the machine and learns the commitments its body computes.
  *
  * Every iteration rebuilds the synthetic transaction from the current declarations, so the program the machine
@@ -711,7 +891,7 @@ function deriveConstructorFrame(
   master: DeployedMaster,
   zeroCommitments: readonly string[],
   constructorAbi: Artifact['abi'][number],
-  mapping: ConstructorMappingWrite | undefined,
+  mapping: ConstructorMapping | undefined,
   dynamic: readonly ConstructorDynamicWrite[],
 ): PerCallGenesis {
   const { artifact } = options;
@@ -742,8 +922,14 @@ function deriveConstructorFrame(
     };
   });
   const totalChunks = dynamic.reduce((sum, write) => sum + write.plan.written.chunks.length, 0);
-  const layout = probeLayout(dataNftCount, eventShapes.length, mapping !== undefined, totalChunks);
-  const chunkRecords = layOutConstructorChunks(options, constructorAbi, dynamic, mapping, layout);
+  const createdCount = mapping === undefined ? 0 : mapping.kind === 'single' ? 1 : mapping.createdSlots.length;
+  const layout = probeLayout(dataNftCount, eventShapes.length, createdCount, totalChunks);
+  const chunkRecords = layOutConstructorChunks(options, constructorAbi, dynamic, layout);
+
+  // The created mapping nodes start at the structural placeholder the batch planner produced, distinct from every
+  // record view and event payload, and are replaced with what the body computes as the loop learns them.
+  let nodeOuts: readonly Uint8Array[] = mapping === undefined ? []
+    : mapping.kind === 'single' ? [Uint8Array.from(mapping.created)] : [...mapping.placeholders];
 
   const preState = zeroCommitments.map((commitment) => new Uint8Array(hexToBin(commitment)));
   // Every record starts at the pre-state, so a record the constructor never writes passes both the body's
@@ -765,6 +951,7 @@ function deriveConstructorFrame(
   const build = (
     outs: readonly Uint8Array[],
     events: readonly Uint8Array[],
+    nodes: readonly Uint8Array[],
   ): VirtualMachineProgram => buildProbeProgram({
     artifact,
     category: Uint8Array.from(options.category),
@@ -779,23 +966,25 @@ function deriveConstructorFrame(
       lockingBytecode: shape.lockingBytecode,
       commitment: events[index]!,
     })),
-    ...(mapping === undefined ? {} : { mapping }),
+    ...(mapping === undefined ? {} : { mapping, nodeOuts: nodes }),
     chunks: chunkRecords,
     layout,
   });
 
-  const maximumIterations = options.maximumIterations ?? layout.events.length + dataNftCount + 2;
+  const maximumIterations = options.maximumIterations
+    ?? layout.events.length + dataNftCount + layout.created.length + 2;
   let accepted = false;
 
   for (let iteration = 0; iteration < maximumIterations; iteration += 1) {
-    const program = build(viewOuts, eventOuts);
+    const program = build(viewOuts, eventOuts, nodeOuts);
     if (vm.stateSuccess(vm.evaluate(program)) === true) {
       accepted = true;
       break;
     }
-    const learned = learnDeclaration(vm, program, viewOuts, eventOuts, maximumCommitmentBytes);
+    const learned = learnDeclaration(vm, program, viewOuts, eventOuts, nodeOuts, maximumCommitmentBytes);
     viewOuts = learned.records;
     eventOuts = learned.events;
+    nodeOuts = learned.nodes;
   }
 
   if (!accepted) {
@@ -812,12 +1001,7 @@ function deriveConstructorFrame(
     // write created. The empty sentinel the derivation spends is the probe's synthetic predecessor, not a UTXO
     // the transaction has to spend.
     entries: [
-      ...(mapping === undefined
-        ? []
-        : [
-          { collection: mapping.collection, commitment: binToHex(mapping.write.written[0]!.after) },
-          { collection: mapping.collection, commitment: binToHex(mapping.created) },
-        ]),
+      ...mappingEntries(mapping, nodeOuts),
       ...headSentinelEntries(options, mapping?.collection),
     ],
     // The chunk records the frame wrote, each at the value's own collection covenant carrying the commitment the
@@ -838,14 +1022,35 @@ function deriveConstructorFrame(
       lockingBytecode: shape.lockingBytecode,
       commitment: eventOuts[index]!,
     })),
-    program: build(viewOuts, eventOuts),
+    program: build(viewOuts, eventOuts, nodeOuts),
   };
 }
 
-/** The declarations one learning iteration carries: the record views and the event commitments. */
+/**
+ * The mapping nodes the genesis mints, in declaration order: the relinked head sentinel and the nodes the writes
+ * created. A batch rewrites one shared head whatever the target count, so the head appears once; every created
+ * node's commitment is the value the loop learned for it.
+ */
+function mappingEntries(
+  mapping: ConstructorMapping | undefined,
+  nodeOuts: readonly Uint8Array[],
+): readonly PerCallGenesisEntry[] {
+  if (mapping === undefined) return [];
+  const headAfter = mapping.kind === 'single'
+    ? mapping.write.written[0]!.after
+    : mapping.plan.written[0]!.after;
+  return [
+    { collection: mapping.collection, commitment: binToHex(headAfter) },
+    ...nodeOuts.map((commitment) => ({ collection: mapping.collection, commitment: binToHex(commitment) })),
+  ];
+}
+
+/** The declarations one learning iteration carries: the record views, the event payloads and the mapping nodes. */
 interface LearnedDeclarations {
   readonly records: readonly Uint8Array[];
   readonly events: readonly Uint8Array[];
+  /** The created sorted-mapping nodes, whose commitments are the values the bodies computed. */
+  readonly nodes: readonly Uint8Array[];
 }
 
 /**
@@ -862,6 +1067,7 @@ function learnDeclaration(
   program: VirtualMachineProgram,
   records: readonly Uint8Array[],
   events: readonly Uint8Array[],
+  nodes: readonly Uint8Array[],
   maximumCommitmentBytes: number,
 ): LearnedDeclarations {
   const reading = readComputedDeclaration({ vm, program, maximumCommitmentBytes });
@@ -873,13 +1079,19 @@ function learnDeclaration(
   if (record >= 0) {
     const learned = [...records];
     learned[record] = Uint8Array.from(computed);
-    return { records: learned, events };
+    return { records: learned, events, nodes };
   }
   const event = events.findIndex((commitment) => bytesEqual(commitment, declared));
   if (event >= 0) {
     const learned = [...events];
     learned[event] = Uint8Array.from(computed);
-    return { records, events: learned };
+    return { records, events: learned, nodes };
+  }
+  const node = nodes.findIndex((commitment) => bytesEqual(commitment, declared));
+  if (node >= 0) {
+    const learned = [...nodes];
+    learned[node] = Uint8Array.from(computed);
+    return { records, events, nodes: learned };
   }
   throw new PerCallGenesisError(
     `the constructor probe closed against a declaration no derivation wrote: ${binToHex(declared)}`,
@@ -920,7 +1132,9 @@ interface ProbeProgramOptions {
   /** One output per event the block lists: its covenant lock and the commitment it carries. */
   readonly events: readonly { readonly lockingBytecode: Uint8Array; readonly commitment: Uint8Array }[];
   /** The mapping nodes the constructor writes, or absent when it writes none. */
-  readonly mapping?: ConstructorMappingWrite;
+  readonly mapping?: ConstructorMapping;
+  /** The created mapping nodes' commitments, in group order; the values the loop has learned so far. */
+  readonly nodeOuts?: readonly Uint8Array[];
   /** The chunk records the constructor's dynamic writes create, in variable order. */
   readonly chunks: readonly ChunkRecordPlacement[];
   readonly layout: ReturnType<typeof probeLayout>;
@@ -947,17 +1161,9 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   // segment, after the data-NFT records the frame declares for its contract state: the block's group walk steps
   // over those first, then reads the target's group. Both commitments are the shipped planner's.
   const mapping = options.mapping;
-  const mappingEntries: readonly RecordEntry[] = mapping === undefined ? [] : layOutMappingWrites(
-    [[mapping.write]],
-    {
-      placementOf: (slot): MappingNodePlacement | undefined => {
-        // The sentinel's slot is all-zero; the created node carries the write's target slot, which is the only one
-        // the planner leaves with no predecessor recreated in place.
-        const zero = slot.every((byte) => byte === 0);
-        return zero ? { in: layout.head, out: layout.head } : { out: layout.created };
-      },
-    },
-  )[0]!;
+  const mappingEntries: readonly RecordEntry[] = mapping === undefined ? [] : layOutMapping(
+    mapping, options.nodeOuts ?? [], layout,
+  );
 
   const block: WitnessBlock = {
     kind: FrameKind.ROOT,
@@ -974,7 +1180,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
         kept(index, options.preState[nftIndex]!, options.viewOuts[nftIndex]!)
       )),
       ...mappingEntries,
-      // The run's records follow the contract's own, which is the ordinal the body reads the run at.
+      // The run's records follow the mapping's groups, which is the ordinal the body reads the run at.
       ...options.chunks.map((record) => record.entry),
     ]],
     events: [...layout.events],
@@ -985,7 +1191,7 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   const userLock = options.senderLockingBytecode;
 
   const slotCount = Math.max(
-    layout.created, layout.events.at(-1) ?? layout.spare, layout.chunkBase + layout.chunkCount - 1,
+    layout.created.at(-1) ?? -1, layout.events.at(-1) ?? layout.spare, layout.chunkBase + layout.chunkCount - 1,
   ) + 1;
   const sourceOutputs = new Array<VmOutput>(slotCount);
   const outputs = new Array<VmOutput>(slotCount);
@@ -1043,24 +1249,30 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
     sourceOutputs[index] = output;
   });
 
-  // The mapping nodes: the head sentinel the write splices through (spent and recreated in place) and the node the
-  // write creates (a trailing output). Both sit at the collection's entry covenant, carrying the category's mutable
-  // token, which is the shape the block's group walk and the settlement chain require.
+  // The mapping nodes: the head sentinel the write splices through (spent and recreated in place) and every node
+  // the writes create (a trailing output). All sit at the collection's entry covenant, carrying the category's
+  // mutable token, which is the shape the block's group walk and the settlement chain require.
   if (mapping !== undefined) {
     const nodeLock = entryRecordLockingBytecode(binToHex(category), mapping.signature);
     const node = (commitment: Uint8Array): VmOutput => ({
       lockingBytecode: nodeLock, valueSatoshis: 1_500n,
       token: { category, amount: 0n, nft: { capability: 'mutable', commitment } },
     });
+    const headAfter = mapping.kind === 'single'
+      ? mapping.write.written[0]!.after
+      : mapping.plan.written[0]!.after;
     inputs[layout.head] = plainInput(layout.head);
     sourceOutputs[layout.head] = node(mapping.headBefore);
-    outputs[layout.head] = node(mapping.write.written[0]!.after);
+    outputs[layout.head] = node(headAfter);
 
-    // The created node has no input to read: its index is the block's create sentinel, so the transaction's own
+    // A created node has no input to read: its index is the block's create sentinel, so the transaction's own
     // input there is a plain UTXO and only the output it writes carries the node's token.
-    inputs[layout.created] = plainInput(layout.created);
-    outputs[layout.created] = node(mapping.created);
-    sourceOutputs[layout.created] = plain();
+    const nodeOuts = options.nodeOuts ?? [];
+    layout.created.forEach((index, ordinal) => {
+      inputs[index] = plainInput(index);
+      outputs[index] = node(nodeOuts[ordinal]!);
+      sourceOutputs[index] = plain();
+    });
   }
 
   // The dynamic run's chunks: a created chunk has no input to read, so the transaction's own input at its index is

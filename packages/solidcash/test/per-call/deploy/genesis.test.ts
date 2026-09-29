@@ -13,7 +13,7 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, deployMaster, derivePerCallGenesis,
 } from '../../../src/per-call/deploy/index.js';
-import { planChunkRun, planMappingWrite } from '../../../src/per-call/composer/index.js';
+import { planChunkRun, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -504,7 +504,7 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
     expect(() => derivePerCallGenesis({
       artifact: multi, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
-    })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans exactly one write/);
+    })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans one collection/);
   });
 
   it('deploys through the shipped SDK entry point, minting the entry nodes at the collection covenant', async () => {
@@ -527,6 +527,153 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
     expect(commitments).toContain(Buffer.from(MAPPING_HEAD_AFTER).toString('hex'));
     expect(commitments).toContain(Buffer.from(MAPPING_CREATED).toString('hex'));
     expect(commitments).toContain(buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0));
+  });
+});
+
+/**
+ * A constructor that writes two keys of one mapping, which the body verifies as one sorted batch.
+ *
+ * The genesis starts from the empty list, so both targets insert: the batch planner relinks the shared head
+ * sentinel and creates one node per target. The values are the body's to compute, so each created node's
+ * commitment is learned from the body's own close rather than declared in advance.
+ */
+const BATCH_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Split {'
+  + '   int public count;'
+  + '   mapping(address => int) public balances;'
+  + '   constructor(address first, address second, int seed) {'
+  + '     this.count = seed + 1;'
+  + '     this.balances[first] = seed;'
+  + '     this.balances[second] = seed + 1;'
+  + '   }'
+  + '   function touch() { require(true); }'
+  + ' }';
+
+const batchArtifact = compileString(BATCH_SOURCE, { composition: 'per-call' });
+const batchLayout = batchArtifact.stateLayout!;
+const BATCH_FIRST = new Uint8Array(20).fill(0x31);
+const BATCH_SECOND = new Uint8Array(20).fill(0x32);
+const BATCH_SEED = 8n;
+
+/** The batch the shipped planner materializes for the constructor's two writes against the empty list. */
+const batchPlan = planMappingBatch({
+  writes: [
+    { keys: [BATCH_FIRST], value: BATCH_SEED },
+    { keys: [BATCH_SECOND], value: BATCH_SEED + 1n },
+  ],
+  inventory: [headSentinelCommitment()],
+  encodeValue: encodeIntegerValue,
+});
+
+/** The entry covenant the batch's nodes sit at. */
+const batchEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
+  buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(batchLayout.collections![0]!.signature)),
+)));
+
+const batchGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+  artifact: batchArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+  provider: compositionProvider(), constructorArgs: [BATCH_FIRST, BATCH_SECOND, BATCH_SEED],
+  senderLockingBytecode: OWNER_LOCK,
+});
+
+/** The index of the entry output carrying `commitment`, or `-1` when none carries it. */
+function batchEntryOutputIndex(program: VmProgram | undefined, commitment: Uint8Array): number {
+  return program!.transaction.outputs.findIndex((output) => (
+    bytesEqual(output.lockingBytecode, batchEntryLock)
+    && bytesEqual(output.token?.nft?.commitment ?? new Uint8Array(0), commitment)
+  ));
+}
+
+describe('a per-call genesis whose constructor writes one mapping as a sorted batch', () => {
+  it('mints the relinked head and both created nodes from the shipped batch planner', () => {
+    const genesis = batchGenesis();
+    expect(genesis.commitments).toStrictEqual([
+      buildPushdataCommitment(batchLayout, { count: BATCH_SEED + 1n }, 0),
+    ]);
+    expect(genesis.entries).toStrictEqual(batchPlan.written.map((node) => ({
+      collection: 'balances', commitment: Buffer.from(node.after).toString('hex'),
+    })));
+  });
+
+  it('builds a transaction whose entry outputs carry those commitments, accepted by the machine', () => {
+    const genesis = batchGenesis();
+    expect(batchPlan.written.every((node) => batchEntryOutputIndex(genesis.program, node.after) >= 0)).toBe(true);
+    expect(accepted(genesis.program)).toBe(true);
+  });
+
+  it('refuses a created node the frame did not compute', () => {
+    const genesis = batchGenesis();
+    const created = batchPlan.written.filter((node) => !node.existed);
+    const index = batchEntryOutputIndex(genesis.program, created[0]!.after);
+    expect(index).toBeGreaterThanOrEqual(0);
+    const wrong = new Uint8Array(created[0]!.after);
+    wrong[wrong.length - 1] = 0x7f;
+    expect(accepted(withOutputCommitment(genesis.program!, index, wrong))).toBe(false);
+  });
+
+  it('deploys through the shipped SDK entry point, minting the batch nodes at the collection covenant', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '13'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { categoryId } = await StatefulContract.deploy(
+      batchArtifact, [BATCH_FIRST, BATCH_SECOND, BATCH_SEED], {
+        provider,
+        fundingUtxo,
+        funder: funding.unlock.spend(alicePub, signature),
+        changeAddress: funding.address,
+      },
+    );
+
+    expect(categoryId).toBe(fundingUtxo.txid);
+    const minted = await provider.getUtxosByTokenCategory(categoryId);
+    const commitments = minted.map((utxo) => utxo.token?.nft?.commitment ?? '');
+    for (const node of batchPlan.written) {
+      expect(commitments).toContain(Buffer.from(node.after).toString('hex'));
+    }
+  });
+});
+
+/**
+ * A constructor that writes a dynamic value, a sorted batch and an event in one frame, the shape the marketplace
+ * token contract's constructor has.
+ *
+ * The dynamic value's chunk records and the batch's node records share one segment: the batch settlement holds
+ * the segment's records past its groups to the chunks the body pinned, so the running chunk width must count the
+ * dynamic-state chunks the same way it counts a sorted mapping's value chunks.
+ */
+const BATCH_DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Ledger {'
+  + '   string public label;'
+  + '   mapping(address => int) public balances;'
+  + '   event Moved(address who, int amount);'
+  + '   constructor(string text, address first, address second) {'
+  + '     this.label = text;'
+  + '     this.balances[first] = 1;'
+  + '     this.balances[second] = 2;'
+  + '     emit Moved(first, 1);'
+  + '   }'
+  + '   function touch() { require(true); }'
+  + ' }';
+
+const batchDynamicArtifact = compileString(BATCH_DYNAMIC_SOURCE, { composition: 'per-call' });
+
+describe('a per-call genesis whose constructor writes a dynamic value, a sorted batch and an event', () => {
+  const derive = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+    artifact: batchDynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: ['ledger', BATCH_FIRST, BATCH_SECOND],
+    senderLockingBytecode: OWNER_LOCK,
+  });
+
+  it('accepts the frame and carries the header, the batch nodes and the event', () => {
+    const genesis = derive();
+    expect(genesis.commitments).toHaveLength(1);
+    expect(genesis.entries).toHaveLength(3);
+    expect(genesis.chunks).toHaveLength(1);
+    expect(genesis.events).toHaveLength(1);
+    expect(accepted(genesis.program)).toBe(true);
   });
 });
 

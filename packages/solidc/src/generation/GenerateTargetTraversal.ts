@@ -7618,7 +7618,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return false;
     };
-    if (hasChunkableMappingWrite(node.body)) {
+    // A per-call frame that writes both a sorted mapping and a dynamic state value declares the value's chunk
+    // records in the same segment, past the batch's groups. The batch settlement holds those extra records to the
+    // chunks the body pinned, so the running chunk width must count the dynamic-state chunks too.
+    const countsDynamicChunkRecords = this.perCallMaster && (node.sortedBatchInfo?.length ?? 0) > 0
+      && ((node.dynamicWrites?.length ?? 0) > 0 || this.pendingDynamicWrites.size > 0);
+    if (hasChunkableMappingWrite(node.body) || countsDynamicChunkRecords) {
       // Mapping value chunks precede the entry node which references their digest even when the function has no
       // unrelated dynamic-state write. Keep one path-stable running width so the INSERT verifier can cross the
       // chunks produced by the value it has just authenticated.
@@ -30214,9 +30219,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // Returning-call bases do not pass through the ordinary reconstruction branch above.
         if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
+        const batchSlots = (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
+        const perCallInserts = this.perCallMaster && batchSlots.length > 0
+          && batchSlots.every((slot) => this.getStackIndex(`__internal__vmapBatchPredOut_${slot}`, true) >= 0);
         if (batchCountIdx >= 0) {
-          this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
-          this.emit(Op.OP_ADD, loc);
+          if (perCallInserts) {
+            // A per-call segment declares one record per target plus one more for every target spliced into a
+            // predecessor the empty list shares, so the run sits after the insert surplus rather than after the
+            // distinct-predecessor count (which is what the direct convention's Trailing operand carries).
+            this.emit(encodeInt(0n), loc);
+            for (const slot of batchSlots) {
+              this.emitPickCompilerRouteFrameValue(`__internal__vmapBatchPredOut_${slot}`, loc, 2);
+              this.emit(encodeInt(0n), loc);
+              this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+              this.emit(Op.OP_ADD, loc);
+            }
+            this.emit(Op.OP_ADD, loc);
+          } else {
+            this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
+            this.emit(Op.OP_ADD, loc);
+          }
         }
         if (this.runtimeLoopEntryOutputCountActive) {
           // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
@@ -30344,6 +30366,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.readsRecordsFromFrame) {
         this.emitVerifyChunkUtxoCount('(dyn_nnew)', true, loc);
         this.emitDynamicOldChunkConsumption(sv, loc);
+      }
+
+      // A per-call frame's sorted-batch settlement holds the segment's records past the batch's groups to the
+      // value chunks this body pinned; those records include this variable's dynamic-state chunks, so add nNew to
+      // the running chunk width before nNew is dropped. A direct frame's running width is a different quantity
+      // (the mapping-value chunks it places before a NEW node), so this stays a per-call adjustment.
+      if (this.perCallMaster && this.valueChunkTrailingCountActive) {
+        this.emitPickCompilerRouteFrameValue(
+          GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, loc,
+        );
+        this.emit(encodeInt(BigInt(this.getStackIndex('(dyn_nnew)') + 1)), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+        this.pushToStack('(value_chunk_trailing_count_next)');
+        this.emitReplaceCompilerRouteFrameValue(
+          GenerateTargetTraversalWithLocation.VALUE_CHUNK_TRAILING_COUNT, sv,
+        );
+        this.popFromStack();
       }
 
       // Drop nNew / chunk-address / loop i NOW, while the names still exist. A later

@@ -120,7 +120,7 @@ export interface RuntimeEntryAliasCandidate {
   inactive?: boolean;
 }
 
-/** A shared predecessor proof does not make two distinct sorted targets the same journal mutation. */
+/** Equal targets may reuse one proof input; a shared predecessor alone cannot merge distinct targets. */
 export function runtimeEntryAliasOwners(
   entries: readonly RuntimeEntryAliasCandidate[],
 ): ReadonlyMap<number, number> {
@@ -133,9 +133,11 @@ export function runtimeEntryAliasOwners(
       const owner = bySlot.get(ownerSlot);
       if (!owner || owner.inactive || owner.collection !== entry.collection
         || owner.proof === undefined || entry.proof === undefined) continue;
-      if (entry.target !== undefined && entry.target === owner.target
-        && sortedBatchOperationsMutate(entry.operations)
-        && sortedBatchOperationsMutate(owner.operations)) {
+      if (entry.proof === owner.proof && entry.target !== undefined && entry.target === owner.target
+        && ((sortedBatchOperationsMutate(entry.operations)
+            && sortedBatchOperationsMutate(owner.operations))
+          || (entry.operations.includes('read')
+            && owner.operations.some((operation) => operation === 'read' || operation === 'write')))) {
         owners.set(entry.slotIndex, ownerSlot);
         break;
       }

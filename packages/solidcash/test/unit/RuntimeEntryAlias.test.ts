@@ -87,7 +87,7 @@ describe('runtime entry proof aliases', () => {
     expect([...owners]).toEqual([[6, 5]]);
   });
 
-  it('does not encode equal read lanes as write aliases', () => {
+  it('shares one physical proof for equal read lanes', () => {
     const owners = runtimeEntryAliasOwners([
       {
         slotIndex: 8,
@@ -107,6 +107,23 @@ describe('runtime entry proof aliases', () => {
       },
     ]);
 
-    expect(owners.size).toBe(0);
+    expect([...owners]).toEqual([[9, 8]]);
+  });
+
+  it('shares an authenticated proof with an equal read lane', () => {
+    const entries = [
+      {
+        slotIndex: 10, collection: 'records', priorSlots: [], target: 'same-key',
+        proof: 'proof:11', operations: ['read', 'write'],
+      },
+      {
+        slotIndex: 11, collection: 'records', priorSlots: [10], target: 'same-key',
+        proof: 'proof:11', operations: ['read'],
+      },
+    ];
+    expect([...runtimeEntryAliasOwners(entries)]).toEqual([[11, 10]]);
+    expect(runtimeEntryAliasOwners(entries.map((entry) => (
+      entry.slotIndex === 11 ? { ...entry, proof: 'proof:12' } : entry
+    ))).size).toBe(0);
   });
 });

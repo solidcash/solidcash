@@ -28,6 +28,7 @@ import { stateUpdatesTouchNft } from './early-value-chunk-helpers.js';
 import type { EntryNftInfo, ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
 import { cloneToken } from './stb-output-utils.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import {
   canonicalWriterReturnCommitment,
   isCompilerDescribedMintingBandWriter,
@@ -559,12 +560,12 @@ for (let groupIndex = 0; groupIndex < host.externalCallUtxoGroups.length; groupI
         // State-writing bools (transferFrom) default to success. Views (arbitratorRegistered)
         // default to false so a missing precompute cannot admit an unregistered party.
         // A fused zero seed is unset, not false — SafeERC20 abi.decode(00) fails VERIFY.
-        const returnCommitment = canonicalWriterReturnCommitment({
+        const returnCommitment = returnEventNftCommitment(hexToBin(canonicalWriterReturnCommitment({
           pendingHex: re && re.commitment.length > 0 ? binToHex(re.commitment) : '',
           writesState: writerAbi?.writesState === true,
           evmBool,
           returnsBool: writerReturnsBool,
-        });
+        })));
         const identity = re?.identity ?? returnIdentity;
         addReturnOutput(builder, identity, {
           to: new Uint8Array([0x51]),
@@ -741,7 +742,7 @@ if (host.delegateEntriesAfterLowLevel) {
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: binToHex(re.commitment) },
+        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
       },
     });
   }

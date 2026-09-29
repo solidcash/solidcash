@@ -2,13 +2,13 @@
  * phase-boundary extract: STB build-phase extract — deferred delegate + primary/external return event materialization.
  */
 
-import { binToHex } from '@bitauth/libauth';
 import type { FunctionBlockLayout } from '@solidcash/utils';
 import type { Output, UnlockableUtxo, Utxo } from '../interfaces.js';
 import { calculateDust } from '../utils.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { isInsertBandDustToken } from './mutable-output-reassert.js';
 import { cloneToken } from './stb-output-utils.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 
 export type ReturnEventRecord = {
   categoryId: string;
@@ -50,7 +50,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: binToHex(re.commitment) },
+        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
       },
     });
   }
@@ -72,7 +72,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: binToHex(re.commitment) },
+        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
       },
     };
     output.amount = BigInt(Math.max(Number(output.amount), calculateDust(output)));
@@ -136,7 +136,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: binToHex(re.commitment) },
+        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
       },
     });
   }
@@ -147,7 +147,7 @@ export function materializeReturnEventOutputs(
       token: {
         amount: 0n,
         category: re.categoryId,
-        nft: { capability: 'none', commitment: binToHex(re.commitment) },
+        nft: { capability: 'none', commitment: returnEventNftCommitment(re.commitment) },
       },
     });
   }

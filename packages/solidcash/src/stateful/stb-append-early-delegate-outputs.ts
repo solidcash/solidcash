@@ -2,9 +2,9 @@
  * phase-boundary extract: STB build-phase extract — early delegate preservation band before external callees.
  */
 
-import { binToHex } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 
 export type DeferredDelegateReturnEvent = {
   categoryId: string;
@@ -64,7 +64,7 @@ export function appendEarlyDelegateOutputs(
         to: new Uint8Array([0x51]), amount: 800n,
         token: {
           amount: 0n, category: returnEvent.categoryId,
-          nft: { capability: 'none', commitment: binToHex(returnEvent.commitment) },
+          nft: { capability: 'none', commitment: returnEventNftCommitment(returnEvent.commitment) },
         },
       });
     }

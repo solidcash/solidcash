@@ -21,6 +21,7 @@ import { describeValueChunkWrites } from './writer-group-selection.js';
 
 export interface PushCreateBuilderDirectExternalCallGroupHost {
   deriveReturnValue(...args: any[]): Promise<unknown>;
+  resolveLoopArgs(occurrenceIndex: number): FunctionArgument[] | undefined;
   readonly callerCategoryId: string;
   readonly callerContract: unknown;
   readonly valueChunkWriteStagingSession: ValueChunkWriteStagingSession;
@@ -142,6 +143,8 @@ export async function pushCreateBuilderDirectExternalCallGroup(
   // the same way the nested-call path does, and only for a probe: a broadcast transaction executes its
   // callees and must not precompute.
   let directPrecomputedReturn: Uint8Array | undefined;
+  let resolveLoopReturnValue: ((occurrenceIndex: number) => Promise<StateValue>) | undefined;
+  let resolveLoopReturnCommitment: ((occurrenceIndex: number) => Promise<Uint8Array>) | undefined;
   if (returnProbeOnly === true && bReturnEventInBlock) {
     const precomputeArtifact = callInfo.externalContract.inner.artifact as Artifact;
     const rawCall = ec as { rawFunctionName?: string; rawSelector?: string };
@@ -187,6 +190,26 @@ export async function pushCreateBuilderDirectExternalCallGroup(
       // `true`), so a probe fabricates the same for a single `bool` result.
       if (directPrecomputedReturn === undefined && precomputeAbi.outputs[0].type === 'bool') {
         directPrecomputedReturn = encode(true);
+      }
+      if (ec.occurrence === 'loop' && ec.resultArrayOutput !== undefined) {
+        resolveLoopReturnValue = async (occurrenceIndex: number): Promise<StateValue> => {
+          const occurrenceArgs = host.resolveLoopArgs(occurrenceIndex);
+          if (!occurrenceArgs) {
+            throw new Error(
+              `Could not resolve arguments for occurrence ${occurrenceIndex} of `
+              + `${ec.interfaceName}.${ec.functionName}`,
+            );
+          }
+          return host.deriveReturnValue(
+            precomputeName, occurrenceArgs, undefined, precomputeAbi, undefined,
+            publicSelfAddress, host.callerCategoryId, host.callerContract,
+          ) as Promise<StateValue>;
+        };
+        resolveLoopReturnCommitment = async (occurrenceIndex: number): Promise<Uint8Array> => (
+          occurrenceIndex === 0 && directPrecomputedReturn !== undefined
+            ? directPrecomputedReturn
+            : encode(await resolveLoopReturnValue!(occurrenceIndex))
+        );
       }
     }
   }
@@ -241,6 +264,12 @@ export async function pushCreateBuilderDirectExternalCallGroup(
     ...(bReturnEventInBlock && { returnEventInBlock: true }),
     ...(directPrecomputedReturn !== undefined
       && { precomputedReturnCommitment: directPrecomputedReturn }),
+    ...(resolveLoopReturnCommitment && {
+      loopResultArrayOutput: ec.resultArrayOutput,
+      ...(ec.maximumOccurrences !== undefined && { loopMaximumOccurrences: ec.maximumOccurrences }),
+      resolveLoopReturnCommitment,
+      resolveLoopReturnValue,
+    }),
     ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
     ...(bDynamicChunkInputs.length > 0 && { ordinaryDynamicChunkInputs: bDynamicChunkInputs }),
     ...(bEntryLoopCommitments && {

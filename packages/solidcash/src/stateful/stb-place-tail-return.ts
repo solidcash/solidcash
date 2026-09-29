@@ -12,6 +12,7 @@ import {
   redirectViewTailOffOpReturn,
 } from './mutable-output-reassert.js';
 import { packTailReturnPlacements } from './physical-return-layout.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import { isViewReturnTailOutput } from './value-chunk-band-helpers.js';
 import {
   groupOwnsInBlockReturnEvent,
@@ -212,7 +213,7 @@ export function placeTailReturnAfterSwappedTokenBlock(
         placedIndex = host;
       }
       const rawCommitment = binToHex(event.commitment);
-      const commitment = rawCommitment === '' ? '0101' : rawCommitment;
+      const commitment = rawCommitment === '' ? '0101' : returnEventNftCommitment(event.commitment);
       const output: Output = {
         to: Uint8Array.of(0x51),
         amount: 800n,

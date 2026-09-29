@@ -6,6 +6,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { addressToLockScript } from '../utils.js';
 import { isScidIdentityCommitment } from './logical-identity.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import {
   commitmentHexOf,
   cloneToken,
@@ -279,7 +280,9 @@ export function matchMaterializedReturnOutputs(
     const output = outputs[index];
     if (!isViewReturnTailOutput(output)) return false;
     if (output.token?.category?.toLowerCase() !== expected.categoryId.toLowerCase()) return false;
-    const wanted = commitmentHexOf(expected.commitment).toLowerCase() || '0101';
+    const raw = typeof expected.commitment === 'string'
+      ? hexToBin(commitmentHexOf(expected.commitment)) : expected.commitment;
+    const wanted = raw.length === 0 ? '0101' : returnEventNftCommitment(raw);
     return commitmentHexOf(output.token.nft?.commitment).toLowerCase() === wanted;
   };
 

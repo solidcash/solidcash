@@ -419,6 +419,10 @@ if (externalCalls && externalCalls.length > 0 && resolvedExternalCalls) {
       await pushCreateBuilderDirectExternalCallGroupImpl(
         {
           deriveReturnValue: (...a: any[]) => (callInfo.externalContract as any)._deriveReturnValue(...a),
+          resolveLoopArgs: (occurrenceIndex: number) => host.resolveExternalArgs(
+            ec.argSources, args, host.inner.artifact, callerStateSnapshot, abiFunction?.inputs,
+            undefined, occurrenceIndex, false, publicSelfAddress,
+          ),
           callerCategoryId: host.categoryId,
           callerContract: host.callerContract,
           valueChunkWriteStagingSession,

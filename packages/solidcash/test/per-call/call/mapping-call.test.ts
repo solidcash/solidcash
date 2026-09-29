@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { bytesToHex } from '@solidcash/utils';
+import { bytesToHex, type Artifact } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -9,7 +9,9 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry } from '../../../src/per-call/call/index.js';
-import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import {
+  bytesToSlotValue, decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti,
+} from '../../../src/stateful/SortedList.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -50,6 +52,15 @@ const VALIDATOR_PROGRAM = perCallValidator.buildValidatorProgram();
 
 const SEED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 const RECIPIENT_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x44));
+/** The caller's own coin lock, which `msg.sender` resolves to: alice's P2PKH, the lock the harness signs. */
+const CALLER_LOCK = encodeLockingBytecodeP2pkh(alicePkh);
+/**
+ * A `to` lock whose slot sorts above the caller's.
+ *
+ * Slot order is little-endian, so this is not a byte-order comparison of the hashes. The insert's predecessor is
+ * the greatest slot below the target's, so this is what makes the caller's own node that predecessor.
+ */
+const RELINKED_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x02));
 
 /** The key bytes the body hashes for a `who` address, which is its 25-byte locking bytecode. */
 function keyOf(lock: Uint8Array): Uint8Array {
@@ -70,21 +81,21 @@ interface Deployed {
 }
 
 /** Deploys the contract through the shipped deployment and funds the caller's own coin at its P2PKH lock. */
-async function deploy(): Promise<Deployed> {
+async function deploy(artifact: Artifact = ledger, seed: Uint8Array = SEED_LOCK): Promise<Deployed> {
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
   await provider.addUtxo(funder.address, fundingUtxo);
 
-  const deployment = await deployStatefulContract(ledger, [SEED_LOCK], {
+  const deployment = await deployStatefulContract(artifact, [seed], {
     provider,
     fundingUtxo,
     funder: funder.unlock.spend(alicePub, signature),
     changeAddress: funder.address,
   });
 
-  const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
+  const callerLock = CALLER_LOCK;
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
   await provider.addUtxo(binToHex(callerLock), callerUtxo);
   return { provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH() };
@@ -252,5 +263,62 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     expect(bytesToHex(decodeEntryCommitment(created).slot)).toBe(bytesToHex(keyToSlotMulti([keyOf(callerLock)])));
     // The caller held nothing, so the entry's own body computed the amount it deposited.
     expect(result.values).toStrictEqual([5n]);
+  });
+
+  it('settles a batch whose updated node is also the insert target relinked predecessor', async () => {
+    // `transfer` debits the caller and credits an argument key in one batch. The caller's node sorts below the
+    // recipient's, so the recipient's insert relinks the caller's own node: one node is both an updated target and
+    // the insert's predecessor, and the batch declares it once per group that names it.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   constructor(address owner) { this.balances[owner] = 1000; }'
+      + '   function transfer(address to, uint amount) returns (uint) {'
+      + '     this.balances[msg.sender] = this.balances[msg.sender] - amount;'
+      + '     this.balances[to] = this.balances[to] + amount;'
+      + '     return this.balances[to];'
+      + '   }'
+      + ' }';
+    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    // The constructor seeds the caller's own key, so the caller's write rewrites a held node; the recipient's key
+    // is one the list does not hold, and the caller's node is the greatest slot below it.
+    const deployed = await deploy(token, CALLER_LOCK);
+    const genesis = await readPerCallDeployment(deployed.provider, deployed.categoryId, token.stateLayout!);
+    expect(genesis.nodesByCollection.get('balances') ?? []).toHaveLength(2);
+    const callerSlot = keyToSlotMulti([keyOf(CALLER_LOCK)]);
+    const recipientSlot = keyToSlotMulti([keyOf(RELINKED_LOCK)]);
+    expect(bytesToSlotValue(callerSlot) < bytesToSlotValue(recipientSlot)).toBe(true);
+
+    const result = await callPerCallEntry({
+      provider: deployed.provider, artifact: token, categoryId: deployed.categoryId, functionName: 'transfer',
+      args: [RELINKED_LOCK, 5n], callerUtxo: deployed.callerUtxo, callerLockingBytecode: deployed.callerLock,
+      funder: deployed.funder, vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    // The batch declares the caller's held node alone, and creates the recipient's node as a trailing output.
+    const nodeIds = result.draft.layout.participants
+      .filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    expect(result.draft.trailingOutputs).toHaveLength(1);
+
+    // The held node is rewritten where it sits: its own slot, the successor the insert relinked it to, and the
+    // balance the body debited.
+    const held = decodeEntryCommitment(nodeOutput(result, nodeIds[0]!.index));
+    expect(bytesToHex(held.slot)).toBe(bytesToHex(callerSlot));
+    expect(bytesToHex(held.nextKey)).toBe(bytesToHex(recipientSlot));
+    expect(bytesToHex(held.value)).toBe(bytesToHex(valueOf(995n)));
+
+    // The created node carries the recipient's slot and the balance the body credited, and takes the successor the
+    // rewritten node used to point at.
+    const created = decodeEntryCommitment(nodeOutput(result, result.draft.trailingOutputs[0]!.index));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(recipientSlot));
+    expect(bytesToHex(created.nextKey)).toBe('00'.repeat(32));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
+
+    // The entry returned the balance it credited.
+    expect(result.values).toStrictEqual([5n]);
+    expect(result.broadcast).toBeDefined();
   });
 });

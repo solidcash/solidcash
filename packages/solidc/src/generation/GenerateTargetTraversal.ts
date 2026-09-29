@@ -22895,26 +22895,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       // The written key's node sits where the frame declares it: an update rewrites the co-spent node in place,
       // so its output is the record the segment declares at the entry slot; an insert creates a trailing node,
-      // which the direct convention places at the entry slot's own output. A per-call frame rewrites the record
-      // by its position in the segment's declared list, because the node may have been created by an earlier
-      // frame and have no input for the frame's own base to reach.
+      // which the direct convention places at the entry slot's own output. A per-call frame addresses a spent
+      // record's output at the coordinate its own proof names, and names a record it never spent by its position
+      // in the segment's declared list.
       const declaredOrdinal = this.readsRecordsFromFrame && inBatch
         ? this.batchTargetOrdinal(slotIndex)
         : undefined;
       this.emit(Op.OP_IF, loc);
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
       if (declaredOrdinal !== undefined) {
-        // A record the transaction creates has no input for the frame's own base to reach: its declared input is
-        // the sentinel, so the coordinate the write proves the record at is negative. Such a record is named by
-        // its position in the segment's declared list instead, as a negative index so the shared close can tell
-        // it from the non-negative coordinates the other arms push. A record the frame spent keeps its coordinate.
+        // A per-call frame recreates a spent record where it spent it, so the output the write proves sits at the
+        // record's own coordinate — the input the proof names — not at a block offset from the frame's first
+        // declared record. A record the transaction creates has no input for the frame's own base to reach: its
+        // declared input is the sentinel, so the coordinate the write proves the record at is negative. Such a
+        // record is named by its position in the segment's declared list instead, as a negative index so the shared
+        // close can tell it from the non-negative coordinates the other arms push.
         this.emitCopyUpsertVMapWitness(`__internal__vmapBatchProof_${slotIndex}`, loc);
-        this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's input coordinate
-        this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emitMasterInputIndex(loc); this.emit(Op.OP_ADD, loc); // the record's own coordinate
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
         this.emit(Op.OP_IF, loc);
+        this.emit(Op.OP_DROP, loc); // a created record has no coordinate to resolve a view at
         this.emitDeclaredGroupRecordOrdinal(declaredOrdinal, 0, loc);
-        this.emit(Op.OP_ELSE, loc);
-        this.emitPerCallEntryIndex('out', slotIndex, loc);
         this.emit(Op.OP_ENDIF, loc);
       } else if (this.readsRecordsFromFrame) {
         this.emitPerCallEntryIndex('out', slotIndex, loc);

@@ -288,13 +288,27 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
       const entries: DraftRecordEntry[] = [];
       const learningCandidates: Uint8Array[] = [];
       const createdLearningIndex: number[] = [];
+      // A batch writes each node once, in its final form, but a node that is both a target and another target's
+      // relinked predecessor is declared once per group that names it. Every declaration of one node has to carry
+      // the same final form: the first continues from the inventory view, a later one continues from, and leaves,
+      // that final form. The final form is the value the body computes, learned at the node's first declaration.
+      const finalLearning = new Map<string, number>();
       for (const group of batch.plan.groups) {
         for (const record of group.records) {
-          const placed = placements.get(slotHex(record.slot));
-          const valueDependent = !record.existed || targetSlots.has(slotHex(record.slot));
+          const key = slotHex(record.slot);
+          const placed = placements.get(key);
+          const repeated = finalLearning.get(key);
+          if (repeated !== undefined) {
+            const final = context.learnedViews[repeated] ?? record.viewOut;
+            const input = placed?.in ?? INDEX_NONE;
+            entries.push({ in: input, out: placed?.out ?? input, viewIn: final, viewOut: final });
+            continue;
+          }
+          const valueDependent = !record.existed || targetSlots.has(key);
           if (valueDependent) {
             const learningIndex = learningCandidates.length;
             learningCandidates.push(record.viewOut);
+            finalLearning.set(key, learningIndex);
             if (!record.existed) createdLearningIndex.push(learningIndex);
             entries.push({
               in: record.existed ? placed?.in ?? INDEX_NONE : INDEX_NONE,

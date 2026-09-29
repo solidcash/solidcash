@@ -749,9 +749,14 @@ export function encodeMessageBatch(
   }
   const expectedBlobBytes = capability.convention === 'kernel-row-loop'
     ? ConsensusBch2026.maximumStackItemLength : MAX_MESSAGE_BUS_BLOB_BYTES;
+  const compilerPublished = artifact.compiler !== undefined || capability.resourceBudgets !== undefined;
   if (capability.selector !== '53434231'
     || !Number.isInteger(capability.maximumRows) || capability.maximumRows < 1
-    || capability.maximumBlobBytes !== expectedBlobBytes
+    || !Number.isSafeInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1
+    || capability.maximumBlobBytes > expectedBlobBytes
+    || (compilerPublished && capability.maximumBlobBytes !== expectedBlobBytes)
+    || (capability.resourceBudgets !== undefined
+      && capability.maximumBlobBytes !== capability.resourceBudgets.maximumBlobBytes)
     || (capability.minimumRows !== undefined && (!Number.isSafeInteger(capability.minimumRows)
       || capability.minimumRows < 1 || capability.minimumRows > capability.maximumRows))) {
     throw new MessageBusDiagnosticError(

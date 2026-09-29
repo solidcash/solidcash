@@ -1,6 +1,7 @@
 /* eslint-disable max-len */
 import {
-  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeAuthenticationInstructions,
+  encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -2959,6 +2960,7 @@ const evaluateEveryInput = (
       const windowStart = Math.max(0, evaluated.ip - 9);
       throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection), {
         ip: evaluated.ip,
+        instructions: evaluated.instructions,
         programLength: failingProgram.length,
         opcode: failingProgram[evaluated.ip]?.opcode,
         previousOpcode: failingProgram[evaluated.ip - 1]?.opcode,
@@ -3041,6 +3043,7 @@ export function mapMessageBusVmFailure(
   rawVmReason: string,
   failure?: {
     ip?: number; programLength?: number; opcode?: number; previousOpcode?: number;
+    instructions?: ReturnType<typeof decodeAuthenticationInstructions>;
     window?: readonly string[];
   },
 ): Error {
@@ -3106,9 +3109,69 @@ function describeMessageBusBatchRows(
       };
     }
   } | undefined;
+  // An exact decoded body is stronger than a source-map heuristic. Compare it to every participant's published
+  // function body, since a routed input can execute another participant's implementation. An ambiguous match does
+  // not authorize a require attribution.
+  const bodyRequireAttribution = (() => {
+    if (failure?.instructions === undefined || !Number.isSafeInteger(failure.ip)) return undefined;
+    const executedBody = binToHex(encodeAuthenticationInstructions(failure.instructions));
+    const matches: Array<{
+      artifactName: string;
+      selector: string;
+      requireStatement: { ip: number; line: number; message?: string };
+    }> = [];
+    const visited = new Set<unknown>();
+    const inspect = (candidate: unknown): void => {
+      if (candidate === undefined || candidate === null || visited.has(candidate)) return;
+      visited.add(candidate);
+      const artifact = candidate as {
+        contractName?: string;
+        functionBodies?: Record<string, string>;
+        debug?: { functionDebug?: Record<string, {
+          requires?: Array<{ ip: number; line: number; message?: string }>;
+        }> };
+        delegateArtifact?: unknown;
+      };
+      for (const [selector, body] of Object.entries(artifact.functionBodies ?? {})) {
+        if (body.toLowerCase() !== executedBody) continue;
+        const requireStatement = artifact.debug?.functionDebug?.[selector]?.requires
+          ?.find((entry) => entry.ip === failure.ip! - 1)
+          ?? artifact.debug?.functionDebug?.[selector]?.requires
+            ?.find((entry) => entry.ip === failure.ip);
+        if (requireStatement !== undefined) {
+          matches.push({ artifactName: artifact.contractName ?? 'contract', selector, requireStatement });
+        }
+      }
+      inspect(artifact.delegateArtifact);
+    };
+    for (const participant of builder.inputs as Array<{
+      unlocker?: { contract?: { artifact?: unknown } };
+    }>) inspect(participant.unlocker?.contract?.artifact);
+    const activeSelector = input?.unlocker?.abiFunction?.selector?.toLowerCase();
+    const activeMatches = activeSelector === undefined ? []
+      : matches.filter((match) => match.selector.toLowerCase() === activeSelector);
+    const selected = activeMatches.length > 0 ? activeMatches : matches;
+    const unique = new Map(selected.map((match) => [
+      `${match.artifactName}\u0000${match.selector}\u0000${match.requireStatement.ip}\u0000${match.requireStatement.line}`
+        + `\u0000${match.requireStatement.message ?? ''}`, match,
+    ]));
+    if (unique.size === 1) return { exact: [...unique.values()][0] };
+    // Several source functions can compile to byte-identical bodies. With no selector we cannot identify their
+    // source line, but a single named candidate can still give a clearly qualified diagnostic hint.
+    const messages = new Set([...unique.values()].map((match) => match.requireStatement.message)
+      .filter((message): message is string => message !== undefined));
+    return messages.size === 1 ? { possibleMessage: [...messages][0] } : undefined;
+  })();
   // Name the source predicate when the artifact maps this instruction to one. The compiler records requires per
   // function selector; libauth reports the state after the failure, so `ip - 1` is checked first.
-  const requireSite = detailedFailure ? ((): string => {
+  const exactRequire = bodyRequireAttribution?.exact;
+  const requireSite = exactRequire !== undefined
+    ? `; failing require in ${exactRequire.artifactName}:${exactRequire.requireStatement.line}`
+      + `${exactRequire.requireStatement.message === undefined
+        ? '' : ` (${exactRequire.requireStatement.message})`}`
+    : bodyRequireAttribution?.possibleMessage !== undefined
+      ? `; possible require reason from an equivalent function body: ${bodyRequireAttribution.possibleMessage}`
+    : detailedFailure ? ((): string => {
     // A proxied call executes the implementation's body, so the delegate artifact chain is searched too - the same
     // widening `probeRequireStatement` performs for probes.
     type ArtifactDebugView = {
@@ -3206,10 +3269,14 @@ function describeMessageBusBatchRows(
     const batchRows = describeMessageBusBatchRows(
       transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(), input?.unlocker?.contract?.artifact,
     );
-    return new Error(
+    const mapped = new Error(
       `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}${batchRows ?? ''}: `
       + `${rawVmReason}${requireSite}`,
     );
+    if (exactRequire !== undefined) {
+      Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });
+    }
+    return mapped;
   }
   const envelope = compilerRouteEnvelope(
     transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array(),
@@ -3279,10 +3346,14 @@ function describeMessageBusBatchRows(
     owner.length > 0 ? `participant ${owner}` : undefined,
     layoutWitnesses.length > 0 ? `layout ${layoutWitnesses.join(',')}` : undefined,
   ].filter((part): part is string => part !== undefined).join('; ') : '';
-  return new Error(
+  const mapped = new Error(
     `messageBus: BCH-2026 preflight failed at input ${inputIndex}${location}`
     + `${attribution.length > 0 ? ` (${attribution})` : ''}: ${rawVmReason}${requireSite}`,
   );
+  if (exactRequire !== undefined) {
+    Object.assign(mapped, { requireStatement: exactRequire.requireStatement, inputIndex });
+  }
+  return mapped;
 }
 
 /** Refuse any covenant failure in an exact, fully assembled transaction. */

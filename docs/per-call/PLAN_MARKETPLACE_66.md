@@ -1480,7 +1480,16 @@ risk. Take the slices in order, each with its own tests.
 - **Claims: work a second worker holds, so a round does not pick it up** (user direction, 2026-09-28: two
   workers in parallel, each in its own scratch copy, landing one commit per item). A claimed item is skipped when
   a round takes the next unticked item; the commit that lands it removes its line here.
-  - **Claimed by the parallel worker, from `6aa83c55f`:** the keccak compute side-car (`MarketplaceV1.takeJob`).
+  - **Claimed by the parallel worker, from `b6dfc61bf`, in this order:** (1) **send outputs named twice**: the
+    value floor adds each listed send's output value per master, and no rule keeps send outputs distinct the way
+    `V7_EVENT_OUTPUT_SHARED` keeps event outputs distinct, so one output may answer two sends; to be measured, and
+    if it holds, closed with a rule and its hostile cases. (2) **No placeholder reaches a transaction**: the
+    composer refuses a derived composition whose declarations still carry an unstated-view placeholder, the
+    failure `fd3352fa0` found going on chain silently. The call path stating untouched records kept instead of
+    unstated is left to the implementer, whose working tree holds `call.ts`. (3) **Diagnostics for emitted
+    script blobs**: one source location per instruction for a script a site emits whole, a name for an
+    `OP_DEFINE` body, and the refusal report's message lookup no longer assuming the source map and the program
+    differ only by the head. (4) The keccak compute side-car (`MarketplaceV1.takeJob`), after those three.
     **Handed back**: the verified-mapping write a call precedes, served in `6dd0bdfd8`, and the field-access key,
     served in `ed072744e`. Released earlier: the composer's value-list helper. Not claimed: everything else.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite

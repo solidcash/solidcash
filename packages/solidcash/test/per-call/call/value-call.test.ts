@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
+import { perCallValidator } from 'solidc';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import { satoshiContainerLockingBytecode } from '../../../src/per-call/deploy/index.js';
+import {
+  deployMaster, satoshiContainerLockingBytecode, stateRecordLockingBytecode,
+} from '../../../src/per-call/deploy/index.js';
 import {
   PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
 } from '../../../src/per-call/call/index.js';
@@ -200,5 +203,90 @@ describe('an entry that sends, paid from the contract\'s containers', () => {
     });
     expect(forward.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(forward, deployed.callerLock)).toBe(7_000n);
+  });
+});
+
+const PAYMENTS_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Payer {'
+  + '   int public paid;'
+  + '   receive() external payable { require(true); }'
+  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
+  + ' }'
+  + ' contract Vault {'
+  + '   int public received;'
+  + '   receive() external payable { this.received = this.received + msg.value; }'
+  + ' }'
+  + ' contract Closed {'
+  + '   int public count;'
+  + '   function touch(int by) { this.count = this.count + by; }'
+  + ' }';
+
+const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'per-call' });
+
+/** Deploys a second contract on a deployment's provider, funded from the same wallet. */
+async function deployBeside(deployed: Deployed, artifact: Artifact, fundingTxid: string): Promise<string> {
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: deployed.provider });
+  const fundingUtxo = { txid: fundingTxid, vout: 0, satoshis: 500_000n };
+  await deployed.provider.addUtxo(funder.address, fundingUtxo);
+  const deployment = await deployStatefulContract(artifact, [], {
+    provider: deployed.provider,
+    fundingUtxo,
+    funder: funder.unlock.spend(alicePub, signature),
+    changeAddress: funder.address,
+  });
+  return deployment.categoryId;
+}
+
+/** A contract's address: the validator address its category derives. */
+function addressOf(artifact: Artifact, categoryId: string): Uint8Array {
+  return deployMaster(artifact, hexToBin(categoryId), perCallValidator.buildValidatorProgram()).address;
+}
+
+describe('an entry that pays a contract through its receive()', () => {
+  it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
+    const deployed = await deploy(payments.Payer!);
+    const vaultCategory = await deployBeside(deployed, payments.Vault!, '47'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
+      externals: { Vault: { artifact: payments.Vault!, categoryId: vaultCategory } },
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Vault.__receive()', 'Payer.pay()']);
+    // The recipient booked the value it received, and its containers hold it.
+    const vaultRecord = binToHex(stateRecordLockingBytecode(vaultCategory));
+    const booked = result.broadcast!.outputs.find((output) => binToHex(output.lockingBytecode) === vaultRecord);
+    expect(binToHex(booked!.token!.nft!.commitment!)).toBe(
+      buildPushdataCommitment(payments.Vault!.stateLayout!, { received: 7_000n }, 0),
+    );
+    expect(containerValue(result, vaultCategory)).toBe(7_000n);
+    // The payer's deposit paid it, and the change stays in the payer's container.
+    expect(containerValue(result, deployed.categoryId)).toBe(13_000n);
+  });
+
+  it('is refused by name when the recipient has no receive()', async () => {
+    const deployed = await deploy(payments.Payer!);
+    const closedCategory = await deployBeside(deployed, payments.Closed!, '48'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await expect(callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(payments.Closed!, closedCategory), 7_000n],
+      externals: { Closed: { artifact: payments.Closed!, categoryId: closedCategory } },
+    })).rejects.toThrow(/contract "Closed" has no receive\(\), so the value entry "pay" sends it has no body to run/);
+  });
+
+  it('is refused by name when the recipient is not among the externals', async () => {
+    const deployed = await deploy(payments.Payer!);
+    const vaultCategory = await deployBeside(deployed, payments.Vault!, '49'.repeat(32));
+    await expect(callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
+    })).rejects.toThrow(/entry "pay" sends to the contract at [0-9a-f]+, which the call's externals do not name/);
   });
 });

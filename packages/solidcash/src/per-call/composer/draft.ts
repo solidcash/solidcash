@@ -176,6 +176,11 @@ export interface DraftInput {
    * execution wrote carries the commitment that execution computed, which no input describes, so the plan states it.
    */
   readonly output?: DraftSourceOutput;
+  /**
+   * True for an input the transaction spends into outputs the plan states, so it has no output of its own: a
+   * satoshi container a frame pays from.
+   */
+  readonly consumed?: boolean;
 }
 
 /** What a learned witness settles for one input: the unlocking bytecode it carries and the output it recreates. */
@@ -207,6 +212,11 @@ export interface DraftCall {
   readonly target: Uint8Array;
   readonly value: bigint;
   readonly argumentPushes: readonly Uint8Array[];
+  /**
+   * True for a call the body makes after its own code, which no stop site names: a value send to a contract. Its
+   * callee reference is filled when the draft is built, and its callee is derived as a request of its own.
+   */
+  readonly deferred?: boolean;
 }
 
 /** One execution as the plan intends it, without the witnesses the derivation produces. */
@@ -464,7 +474,7 @@ export function composeDraft(
       kind: call.kind,
       target: call.target,
       value: call.value,
-      calleeRef: UNFILLED_CALLEE_REF,
+      calleeRef: call.deferred === true ? requireIndex(indices, call.callee, 'callee') : UNFILLED_CALLEE_REF,
       argsHash: callArgsHash(call),
       result: callResultOf(call, retvals),
     }));
@@ -571,7 +581,7 @@ export function composeDraft(
   const transactionOutputs = (): ShippedVmProgram['transaction']['outputs'] => [
     ...participantIds.map(participantOutput),
     ...trailing.map((placed) => placed.output),
-    ...funderIds.map(outputOf),
+    ...funderIds.filter((id) => plan.inputs[id]?.consumed !== true).map(outputOf),
   ] as unknown as ShippedVmProgram['transaction']['outputs'];
 
   /** The unlocking bytecode of an input, with a master's block overridable by the one under evaluation. */

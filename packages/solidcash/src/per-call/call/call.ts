@@ -26,7 +26,10 @@
  * (`sendPerCallValue`), refused by name for a contract without one. An entry that sends pays from the contract's
  * containers: each send's lock and amount are learned from the body's own pin, the containers cover what the call
  * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
- * the containers cannot cover is refused by name, as the EVM reverts it; a send on a branch is not planned yet.
+ * the containers cannot cover is refused by name, as the EVM reverts it; a send on a branch is not planned yet. A
+ * send to a contract is a call into its `receive()`, made after the entry's own code: the call resolves the
+ * recipient from the send's published recipe, finds it among `externals`, and plans its `receive()` frame, whose
+ * containers take the value; a recipient with no `receive()` is refused by name.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -39,14 +42,19 @@
  */
 
 import {
-  bigIntToVmNumber, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, vmNumberToBigInt,
+  bigIntToVmNumber, binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin,
+  vmNumberToBigInt,
 } from '@bitauth/libauth';
 import {
   FrameKind,
   bytesEqual,
+  parsePushdataCommitment,
   sha256,
+  validatorAddress,
   validatorRedeemScript,
   type Artifact,
+  type ChildDeploymentValueRecipe,
+  type FixedBchTransferAbi,
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
@@ -127,6 +135,14 @@ export interface PerCallCallOptions {
   readonly validatorProgram?: Uint8Array;
   /** The value the call carries, in satoshis: the frame's `msg.value`. Only a payable entry takes one. */
   readonly value?: bigint;
+  /** The contracts the entry's value sends may pay, each found by the address its category derives. */
+  readonly externals?: Readonly<Record<string, PerCallExternal>>;
+}
+
+/** A deployed contract a call may pay: its per-call artifact and its category, as hex. */
+export interface PerCallExternal {
+  readonly artifact: Artifact;
+  readonly categoryId: string;
 }
 
 /** One participant's verdict, as the machine returned it. */
@@ -186,6 +202,65 @@ function containerInputId(index: number): string {
   return `container-${index}`;
 }
 
+/** The value a call into `receive()` records until the body's own site hands back the amount it computed. */
+const CALL_VALUE_SENTINEL = 1_234_567_901n;
+
+/** The master and the records of the `index`-th contract a call pays through its `receive()`. */
+function receiveMasterId(index: number): string {
+  return `receive-${index}`;
+}
+function receiveRecordId(index: number, nftIndex: number): string {
+  return `receive-${index}-record-${nftIndex}`;
+}
+
+/** A call record's eight-byte value, as the site compares the amount the body computed against it. */
+function recordValueBytes(value: bigint): Uint8Array {
+  const bytes = new Uint8Array(8);
+  let rest = value;
+  for (let index = 0; index < 8; index += 1) {
+    bytes[index] = Number(rest & 0xffn);
+    rest >>= 8n;
+  }
+  return bytes;
+}
+
+/** What a send's recipe reads, before the frame runs. */
+interface RecipientContext {
+  readonly args: readonly FunctionArgument[];
+  readonly inputs: readonly { readonly type: string }[];
+  readonly structs: readonly StructDefinitionInfo[] | undefined;
+  readonly callerLock: Uint8Array;
+  readonly state: readonly Record<string, StateValue>[];
+}
+
+/** The lock a send pays, from its published recipe, or undefined when only the running code holds it. */
+function sendRecipient(
+  recipe: ChildDeploymentValueRecipe | undefined, context: RecipientContext,
+): Uint8Array | undefined {
+  switch (recipe?.kind) {
+    case 'logicalCaller':
+      return context.callerLock;
+    case 'handlerInput': {
+      const argument = context.args[recipe.inputIndex];
+      const input = context.inputs[recipe.inputIndex];
+      if (argument === undefined || input === undefined) return undefined;
+      return argument instanceof Uint8Array
+        ? argument
+        : encodeFunctionArgument(argument, input.type, context.structs) as Uint8Array;
+    }
+    case 'bytesLiteral':
+      return hexToBin(recipe.value);
+    case 'cast':
+      return sendRecipient(recipe.operand, context);
+    case 'state': {
+      const held = context.state.find((values) => values[recipe.name] instanceof Uint8Array);
+      return held?.[recipe.name] as Uint8Array | undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** The record identity for data-NFT index `nftIndex`. */
 function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
@@ -216,6 +291,8 @@ interface CallEntry {
   /** How many sends the entry makes, and whether any of them runs on a branch. */
   readonly sends: number;
   readonly sendsConditionally: boolean;
+  /** The entry's sends, in the order its code makes them. */
+  readonly transfers: readonly FixedBchTransferAbi[];
 }
 
 /** The ABI name of `receive()`, the entry a value send runs. */
@@ -237,6 +314,7 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
     emits: entry.emits ?? [], payable: (entry.modifiers ?? []).includes('payable'),
     sends: entry.transferCount ?? 0,
     sendsConditionally: (entry.transfers ?? []).some((transfer) => transfer.condition !== undefined),
+    transfers: [...(entry.transfers ?? [])].sort((left, right) => left.transferIndex - right.transferIndex),
   };
 }
 
@@ -412,14 +490,88 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     leadingPushes: 1,
   });
 
-  // One block: the contract's master and its side-cars, its validator, and every record it reads and writes.
+  // Each send pays a user's lock as a listed send, or a contract through a call into its `receive()`: the body
+  // chooses by the lock, so each recipient is resolved from its recipe before the frame runs.
+  const recipientContext: RecipientContext = {
+    args: options.args ?? [],
+    inputs: entry.inputs,
+    structs,
+    callerLock: options.callerLockingBytecode,
+    state: records.map((record, nftIndex) => parsePushdataCommitment(binToHex(record.commitment), stateLayout, nftIndex)),
+  };
+  const recipients = entry.transfers.map((transfer) => sendRecipient(transfer.recipientRecipe, recipientContext));
+  const payees = await Promise.all(recipients.flatMap((lock) => {
+    if (lock === undefined || lock.length === 25) return [];
+    return [(async () => {
+      const found = Object.entries(options.externals ?? {}).find(([, external]) => bytesEqual(
+        validatorAddress(hexToBin(external.categoryId), validatorProgram), lock,
+      ));
+      if (found === undefined) {
+        throw new PerCallCallError(
+          `entry "${functionName}" sends to the contract at ${binToHex(lock)}, which the call's externals do not name`,
+        );
+      }
+      const [, external] = found;
+      const receive = external.artifact.abi.find((candidate) => candidate.name === RECEIVE_ENTRY);
+      if (receive === undefined) {
+        throw new PerCallCallError(
+          `contract "${external.artifact.contractName}" has no receive(), so the value entry "${functionName}" `
+          + 'sends it has no body to run',
+        );
+      }
+      const layout = external.artifact.stateLayout;
+      const receiveSites = publishedEntryOf(external.artifact, RECEIVE_ENTRY);
+      if (layout === undefined || (receive.emits ?? []).length > 0 || (receive.transferCount ?? 0) > 0
+        || (receiveSites?.calls.length ?? 0) > 0 || (layout.collections ?? []).length > 0) {
+        throw new PerCallCallError(
+          `contract "${external.artifact.contractName}"'s receive() is not planned yet: this call plans one that `
+          + 'writes only its own data records, with no event, send, call or mapping',
+        );
+      }
+      const recipientCategory = hexToBin(external.categoryId);
+      const set = await readPerCallDeployment(provider, external.categoryId, layout);
+      const recipientMaster = set.masters[0];
+      if (recipientMaster === undefined || set.records.length < layout.dataNftCount) {
+        throw new PerCallCallError(
+          `contract "${external.artifact.contractName}" at category ${external.categoryId} holds no master or not every `
+          + 'record its layout names',
+        );
+      }
+      return {
+        lock,
+        artifact: external.artifact,
+        categoryId: external.categoryId,
+        category: recipientCategory,
+        deployed: deployMaster(external.artifact, recipientCategory, validatorProgram),
+        master: recipientMaster,
+        records: Array.from({ length: layout.dataNftCount }, (_unused, nftIndex) => {
+          const utxo = set.records[nftIndex]!;
+          return { utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
+        }),
+        selector: new Uint8Array(hexToBin(receive.selector!)),
+        segmentCount: receiveSites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
+      };
+    })()];
+  }));
+  if (new Set(payees.map((payee) => payee.categoryId)).size !== payees.length) {
+    throw new PerCallCallError(
+      `entry "${functionName}" pays one contract through two calls, which would need two of its masters to take value`,
+    );
+  }
+
+  // One block for the contract: its master and its side-cars, its validator, and every record it reads and writes;
+  // then one block for each contract it pays, holding the master that runs its `receive()` and its records.
   const blocks: ContractBlock[] = [{
     contract: artifact.contractName,
     masters: [MASTER_ID],
     validator: { id: VALIDATOR_ID, settles: [] },
     state: [...recordIds, ...mappingIds],
     ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
-  }];
+  }, ...payees.map((payee, index) => ({
+    contract: payee.artifact.contractName,
+    masters: [receiveMasterId(index)],
+    state: payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
+  }))];
   const layout = layoutTransaction(blocks);
   const masterIndex = participant(layout, MASTER_ID).index;
   // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
@@ -450,7 +602,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   // starts from a sentinel lock and amount the body's own pin fails against, and the derivation learns what it
   // computed.
   const containerLock = satoshiContainerLockingBytecode(categoryId);
-  const sendCount = entry.sends;
+  const sendCount = recipients.filter((lock) => lock === undefined || lock.length === 25).length;
   const markerIndex = layout.participantCount + emits.length;
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
@@ -458,13 +610,17 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   ).slice(0, 20)));
   const sendAmountSentinels = sendIndices.map((_index, position) => bigIntToVmNumber(SEND_AMOUNT_SENTINEL
     + BigInt(position)));
-  const containers = sendCount > 0 ? await readSatoshiContainers(provider, categoryId) : [];
-  /** The containers the sends are paid from once every amount is known, and what the one before the sends keeps. */
+  const containers = entry.transfers.length > 0 ? await readSatoshiContainers(provider, categoryId) : [];
+  /**
+   * The containers the sends and the value calls are paid from once every amount is known, and what the contract's
+   * own container keeps: the one before the sends, or the change or the deposit on its own.
+   */
   const payFromContainers = (amounts: readonly (bigint | undefined)[]): { spent: readonly Utxo[]; kept: bigint } => {
     const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
-    if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: CONTAINER_MINIMUM_SATOSHIS };
+    const settle = (kept: bigint): bigint => (sendCount > 0 || kept > 0n ? atLeastMinimum(kept) : 0n);
+    if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: settle(value) };
     const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - value;
-    if (need <= 0n) return { spent: [], kept: atLeastMinimum(-need) };
+    if (need <= 0n) return { spent: [], kept: settle(-need) };
     const spent: Utxo[] = [];
     let total = 0n;
     for (const utxo of [...containers].sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))) {
@@ -478,14 +634,13 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         + `sends ${need} more than the call brings`,
       );
     }
-    return { spent, kept: atLeastMinimum(total - need) };
+    return { spent, kept: settle(total - need) };
   };
   // Created mapping nodes are the trailing outputs past the sends.
   const createdBase = markerIndex + (sendCount > 0 ? 1 + sendCount : 0);
-  // The value the call carries is paid into a container of the contract: the one before the sends, or its own.
-  const containerOutputs: DraftSourceOutput[] = value > 0n && sendCount === 0
-    ? [{ lockingBytecode: containerLock, valueSatoshis: value }]
-    : [];
+  // The value a call into a contract's `receive()` carries starts from a sentinel the body's own site fails
+  // against, until the derivation learns the amount the body computed.
+  const callValueSentinels = payees.map((_payee, index) => recordValueBytes(CALL_VALUE_SENTINEL + BigInt(index)));
 
   // A call-free entry runs in exactly one segment. Every segment declares the frame's state records and the mapping
   // records the entry writes, with each end commitment the body computes left unstated so the derivation learns it.
@@ -504,17 +659,23 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   const learningCandidates = probe?.learningCandidates ?? [];
   // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
   // frame's `retval`), plus the attempt that derives against every value learned.
-  const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + (returnsValue ? 1 : 0) + 3;
+  const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
+    + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
     learnedRetval: Uint8Array | undefined,
     learnedEvents: readonly (Uint8Array | undefined)[],
     learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[],
+    learnedCallAmounts: readonly (bigint | undefined)[],
   ): CompositionDraftPlan => {
-    const paying = payFromContainers(learnedSends.map((send) => send.amount));
+    const paying = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]);
+    const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
+    const ownContainer: DraftSourceOutput[] = paying.kept > 0n
+      ? [{ lockingBytecode: containerLock, valueSatoshis: paying.kept }]
+      : [];
     const sendOutputs: DraftSourceOutput[] = sendCount === 0 ? [] : [
-      { lockingBytecode: containerLock, valueSatoshis: paying.kept },
+      ...ownContainer,
       ...learnedSends.map((send, position) => ({
         lockingBytecode: send.lock ?? sendLockSentinels[position]!,
         valueSatoshis: send.amount ?? SEND_AMOUNT_SENTINEL + BigInt(position),
@@ -545,16 +706,27 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         kind: FrameKind.ROOT,
         callerIsUser: true,
         originEqualsCaller: true,
-        makesExternalCall: false,
+        makesExternalCall: payees.length > 0,
         mastersOfContract: 1,
       },
       frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value },
       enteredBy: CALLER_ID,
       origin: CALLER_ID,
-      calls: [],
+      // The calls into the contracts it pays, after its own code: each leaves a segment of its own with no record.
+      calls: payees.map((payee, index) => ({
+        kind: FrameKind.CALL,
+        callee: receiveMasterId(index),
+        target: payee.lock,
+        value: callValue(index),
+        argumentPushes: [payee.selector],
+        deferred: true,
+      })),
       // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
-      segments: Array.from({ length: segmentCount }, segment),
+      segments: [
+        ...Array.from({ length: segmentCount }, segment),
+        ...payees.map((): DraftRecordEntry[] => []),
+      ],
       events: eventIndices,
       sends: sendIndices,
       argumentPushes,
@@ -562,6 +734,36 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       // A root that carries call data is one a dispatcher selects an entry of.
       dispatches: true,
     };
+    // Each contract it pays runs its `receive()` in a message-call frame carrying the value, on its own records.
+    const payeeDrafts: DraftMaster[] = payees.map((payee, index) => ({
+      master: receiveMasterId(index),
+      contract: payee.artifact.contractName,
+      functionName: `${payee.artifact.contractName}.${RECEIVE_ENTRY}()`,
+      program: payee.deployed.script,
+      facts: {
+        contract: payee.artifact.contractName,
+        functionName: RECEIVE_ENTRY,
+        kind: FrameKind.CALL,
+        callerIsUser: false,
+        originEqualsCaller: false,
+        makesExternalCall: false,
+        mastersOfContract: 1,
+      },
+      frame: { kind: FrameKind.CALL, sender: deployed.address, self: payee.deployed.address, value: callValue(index) },
+      enteredBy: MASTER_ID,
+      origin: CALLER_ID,
+      calls: [],
+      retval: new Uint8Array(0),
+      segments: Array.from({ length: payee.segmentCount }, (): DraftRecordEntry[] =>
+        payee.records.map((record, nftIndex) => {
+          const at = recordIndex(receiveRecordId(index, nftIndex));
+          return { in: at, out: at, viewIn: record.commitment };
+        })),
+      events: [],
+      sends: [],
+      argumentPushes: [payee.selector],
+      redeemScript: payee.deployed.script,
+    }));
 
     const inputs: Record<string, DraftInput> = {
       [MASTER_ID]: { source: masterSource(deployed.lockingBytecode, category, master.satoshis) },
@@ -587,10 +789,27 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
+    payees.forEach((payee, index) => {
+      inputs[receiveMasterId(index)] = {
+        source: masterSource(payee.deployed.lockingBytecode, payee.category, payee.master.satoshis),
+      };
+      const payeeMasterIndex = recordIndex(receiveMasterId(index));
+      payee.records.forEach((record, nftIndex) => {
+        inputs[receiveRecordId(index, nftIndex)] = {
+          source: {
+            lockingBytecode: stateRecordLockingBytecode(payee.categoryId),
+            valueSatoshis: record.utxo.satoshis,
+            token: { category: payee.category, amount: 0n, nft: { capability: 'mutable', commitment: record.commitment } },
+          },
+          unlockingBytecode: stateRecordUnlockingBytecode(payee.categoryId, payeeMasterIndex, 1),
+        };
+      });
+    });
     paying.spent.forEach((utxo, position) => {
       inputs[containerInputId(position)] = {
         source: { lockingBytecode: containerLock, valueSatoshis: utxo.satoshis },
         unlockingBytecode: satoshiContainerUnlockingBytecode(categoryId, masterIndex),
+        consumed: true,
       };
     });
 
@@ -602,15 +821,21 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           id: containerInputId(position), index: layout.participantCount + 1 + position,
         })),
       ],
-      masters: [masterDraft],
+      masters: [masterDraft, ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
-        ...eventOutputs(learnedEvents), ...sendOutputs, ...(laid?.trailingOutputs ?? []), ...containerOutputs,
+        ...eventOutputs(learnedEvents), ...sendOutputs, ...(laid?.trailingOutputs ?? []),
+        // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
+        ...(sendCount === 0 ? ownContainer : []),
+        // Each contract it pays takes the value into a container of its own.
+        ...payees.map((payee, index) => ({
+          lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: callValue(index),
+        })),
       ],
       validator: {
         id: VALIDATOR_ID,
-        covers: [],
+        covers: payees.map((payee) => payee.artifact.contractName),
         settles: [{
           category,
           stateInputs: [...recordIds, ...mappingIds],
@@ -638,14 +863,24 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   let learnedRetval: Uint8Array | undefined;
   let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map(() => undefined);
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
+  let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
+  // The frames of the contracts it pays return nothing to it, so each is derived on its own before the root.
+  const payeeRequests: FrameRequest[] = payees.map((payee, index) => ({
+    contract: payee.artifact.contractName,
+    functionName: `${payee.artifact.contractName}.${RECEIVE_ENTRY}()`,
+    kind: FrameKind.CALL,
+    master: receiveMasterId(index),
+  }));
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents, learnedSends);
-    const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
+    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts);
+    const { host, draft: candidate } = createComposedDerivationHost({
+      vm: machine, artifacts: [artifact, ...payees.map((payee) => payee.artifact)], plan,
+    });
     draft = candidate;
     let stalled = false;
     try {
-      completed = deriveComposition([root], host).completed;
+      completed = deriveComposition([...payeeRequests, root], host).completed;
     } catch (error) {
       // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
       // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the
@@ -655,7 +890,8 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     }
     // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
     // derived, accepted or refused.
-    if (!returnsValue && learningCandidates.length === 0 && emits.length === 0 && sendCount === 0) {
+    if (!returnsValue && learningCandidates.length === 0 && emits.length === 0 && sendCount === 0
+      && payees.length === 0) {
       settled = true;
       break;
     }
@@ -695,6 +931,13 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           (index === lockPosition ? { ...send, lock: Uint8Array.from(reading.computed) } : send));
         continue;
       }
+      // A call's value is compared with the record's eight bytes below the amount the body computed on top.
+      const callPosition = callValueSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.computed));
+      const callAmount = vmNumberToBigInt(reading.declared, { requireMinimalEncoding: false });
+      if (callPosition >= 0 && typeof callAmount === 'bigint') {
+        learnedCallAmounts = learnedCallAmounts.map((amount, index) => (index === callPosition ? callAmount : amount));
+        continue;
+      }
       const amountPosition = sendAmountSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
       const amount = vmNumberToBigInt(reading.computed);
       if (amountPosition >= 0 && typeof amount === 'bigint') {
@@ -714,7 +957,8 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   const owed = learnedViews.some((view) => view === undefined)
     || (returnsValue && learnedRetval === undefined)
     || learnedEvents.some((view) => view === undefined)
-    || learnedSends.some((send) => send.lock === undefined || send.amount === undefined);
+    || learnedSends.some((send) => send.lock === undefined || send.amount === undefined)
+    || learnedCallAmounts.some((amount) => amount === undefined);
   if (!settled && owed) {
     if (mappingRecords !== undefined) {
       throw new PerCallCallError(
@@ -726,6 +970,12 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       throw new PerCallCallError(
         `entry "${functionName}" did not hand back every event payload it emits, so its frame cannot declare its `
         + 'event outputs',
+      );
+    }
+    if (learnedCallAmounts.some((amount) => amount === undefined)) {
+      throw new PerCallCallError(
+        `entry "${functionName}" did not hand back the amount of every value it sends to a contract, so its frame `
+        + 'cannot record the calls',
       );
     }
     if (learnedSends.some((send) => send.lock === undefined || send.amount === undefined)) {
@@ -745,7 +995,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     throw new PerCallCallError('the composer built no transaction for the call frame');
   }
   // The containers the sends are paid from sit after the caller's coin, and the machine is asked about them too.
-  const containerInputs = payFromContainers(learnedSends.map((send) => send.amount)).spent
+  const containerInputs = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]).spent
     .map((utxo, position) => ({
       id: containerInputId(position), index: draft!.layout.participantCount + 1 + position, utxo,
     }));
@@ -798,6 +1048,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     ...records.map((record, nftIndex) => [record.id, deployment.records[nftIndex]!] as const),
     ...(mappingRecords?.spentUtxos ?? []),
     ...Object.entries(sideCars.utxos),
+    ...payees.flatMap((payee, index) => [
+      [receiveMasterId(index), payee.master] as const,
+      ...payee.records.map((record, nftIndex) => [receiveRecordId(index, nftIndex), record.utxo] as const),
+    ]),
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry
   // never computed.
@@ -941,7 +1195,7 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   });
 
   const transaction = builder.buildLibauthTransaction();
-  const { binToHex, encodeTransaction, hash256 } = await import('@bitauth/libauth');
+  const { encodeTransaction, hash256 } = await import('@bitauth/libauth');
   const rawBytes = encodeTransaction(transaction);
   const rawHex = binToHex(rawBytes);
   const submitPrepared = provider.sendPreparedTransaction?.bind(provider);

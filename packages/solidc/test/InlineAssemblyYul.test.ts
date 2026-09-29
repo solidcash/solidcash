@@ -274,6 +274,11 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
       solidityImportCompat: true, messageBus: false,
     });
     expect(yul.bytecode).toBe(hand.bytecode);
+    const unreachable = compileString('contract C() { function f(uint a) returns (uint) {'
+      + ' assembly { mstore(0, a) return(0, 32) } return 5; } }', {
+      solidityImportCompat: true, messageBus: false,
+    });
+    expect(unreachable.bytecode).toBe(hand.bytecode);
   });
 
   it('constant-folds clz(x) (leading-zero count of a 256-bit word)', () => {

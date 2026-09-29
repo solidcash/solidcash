@@ -13514,7 +13514,11 @@ function compileResolvedAst(
     mergedCompilerOptions.solidityImportCompat ?? false,
     oracleDelegateExecutionContext,
   );
-  if (needsBlockOracle) ast = ast.accept(blockOracle) as Ast;
+  // Yul context builtins become ordinary block.* reads and gasleft() only after assembly lowering. The initial
+  // source survey cannot see those generated AST nodes, so resurvey only sources which actually had assembly.
+  if (needsBlockOracle || (needsInlineAssembly && surveyOptionalLowerings(ast).needsBlockOracle)) {
+    ast = ast.accept(blockOracle) as Ast;
+  }
 
   // Drop free/library functions the contract never reaches (OZ libraries ship many unused helpers). Runs last,
   // after every synthesis pass, so no reachable call is missed; conservative by name so nothing live is dropped.

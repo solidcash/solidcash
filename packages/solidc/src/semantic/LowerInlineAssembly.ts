@@ -3685,6 +3685,10 @@ export default class LowerInlineAssembly extends AstTraversal {
       const inner = visited instanceof BlockNode ? visited.statements ?? [] : undefined;
       if (wasAssembly && inner && inner.length > 0 && inner[inner.length - 1] instanceof ReturnNode) {
         out.push(...inner);
+        // A Yul return halts the function. Earlier named-return normalization may have appended a default
+        // return after the still-opaque assembly block; keeping that unreachable suffix changes the stack frame
+        // and duplicates the covenant even though the source never reaches it.
+        break;
       } else {
         out.push(visited);
       }

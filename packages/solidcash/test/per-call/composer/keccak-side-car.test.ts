@@ -15,10 +15,12 @@ import { USER_LOCK, composeAndDerive, rootOf, userInput } from '../shapes/harnes
 /**
  * A per-call master that hashes through keccak256 compute side-cars, composed and derived by the shipped composer.
  *
- * The entry hashes two of its arguments and compares each digest with a third. The composer reads each call's
- * preimage from the argument pushes, builds one side-car per call, and the layout places them after the master's
- * input in the order the body makes the calls. The machine's verdict on the master and each side-car is the
- * assertion; no coordinate is supplied by the test.
+ * `check` hashes two of its arguments and compares each digest with a third: the composer reads each call's preimage
+ * from the argument pushes. `digest` hashes values it computes, one call nested in the other as a signed-message
+ * digest is: the composer builds those side-cars around placeholders and the derivation learns each preimage from
+ * the body's own bind. The layout places one side-car per call after the master's input, in the order the body makes
+ * the calls. The machine's verdict on the master and each side-car is the assertion; no coordinate is supplied by the
+ * test.
  */
 
 const CATEGORY = seededCategory('composer keccak side-car');
@@ -32,6 +34,9 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     require(keccak256(left) == expected);'
   + '     require(keccak256(right) != expected);'
   + '   }'
+  + '   function digest(bytes prefix, bytes left, bytes right, bytes32 expected) {'
+  + '     require(keccak256(bytes.concat(prefix, keccak256(bytes.concat(left, right)))) == expected);'
+  + '   }'
   + '   function idle() { require(true); }'
   + ' }';
 
@@ -42,23 +47,22 @@ const PROGRAM = fillPlaceholders(
   ARTIFACT.composition!.placeholders,
   { category: categorySlotValue(CATEGORY), contractAddress: CONTRACT_ADDRESS, templateHash: TEMPLATE_HASH },
 );
-const ABI = ARTIFACT.abi.find((row) => row.name === 'check')!;
 const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'utf8'));
 
-/** The plan for one call: `left`, `right` and `expected` as arguments, and the side-cars hashing `hashed`. */
+/** The plan for one call of `entry` with `args`, first parameter first, and its side-cars hashing `hashed`. */
 function planOf(
-  left: Uint8Array,
-  right: Uint8Array,
-  expected: Uint8Array,
+  entry: string,
+  args: readonly Uint8Array[],
   hashed?: readonly Uint8Array[],
 ): CompositionDraftPlan {
+  const abi = ARTIFACT.abi.find((row) => row.name === entry)!;
   // The wire carries the first parameter's push last, after the dispatcher's selector.
-  const pushes = [hexToBin(ABI.selector!), expected, right, left];
-  const sideCars = buildKeccakSideCars(MASTER_ID, hashed ?? keccakPreimagesOf(ABI, pushes, 1));
+  const pushes = [hexToBin(abi.selector!), ...[...args].reverse()];
+  const sideCars = buildKeccakSideCars(MASTER_ID, hashed ?? keccakPreimagesOf(abi, pushes, 1));
   const master: DraftMaster = {
-    master: MASTER_ID, contract: 'Hasher', functionName: 'Hasher.check()', program: PROGRAM,
+    master: MASTER_ID, contract: 'Hasher', functionName: `Hasher.${entry}()`, program: PROGRAM,
     facts: {
-      contract: 'Hasher', functionName: 'check', kind: FrameKind.ROOT,
+      contract: 'Hasher', functionName: entry, kind: FrameKind.ROOT,
       callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 1,
     },
     frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: CONTRACT_ADDRESS, value: 0n },
@@ -79,12 +83,15 @@ function planOf(
       ...sideCars.inputs,
       user: userInput(),
     },
+    computedWitnesses: sideCars.computedWitnesses,
   };
 }
 
-const verdictsOf = (plan: CompositionDraftPlan): readonly string[] => composeAndDerive(
-  plan, [ARTIFACT], [rootOf('Hasher', 'check', MASTER_ID)],
+const verdictsOf = (entry: string, plan: CompositionDraftPlan): readonly string[] => composeAndDerive(
+  plan, [ARTIFACT], [rootOf('Hasher', entry, MASTER_ID)],
 ).verdicts.map((verdict) => `${verdict.participant}:${verdict.accepted ? 'accepted' : 'refused'}`);
+
+const ACCEPTED = [`${MASTER_ID}:accepted`, `${MASTER_ID}/keccak-0:accepted`, `${MASTER_ID}/keccak-1:accepted`];
 
 describe('a per-call master hashing through keccak256 compute side-cars', () => {
   const LEFT = utf8('per-call keccak left');
@@ -92,18 +99,29 @@ describe('a per-call master hashing through keccak256 compute side-cars', () => 
   const EXPECTED = keccak_256(LEFT);
 
   it('reads one side-car per call after its input, and every input accepts', () => {
-    expect(verdictsOf(planOf(LEFT, RIGHT, EXPECTED))).toStrictEqual([
-      `${MASTER_ID}:accepted`, `${MASTER_ID}/keccak-0:accepted`, `${MASTER_ID}/keccak-1:accepted`,
-    ]);
+    expect(verdictsOf('check', planOf('check', [LEFT, RIGHT, EXPECTED]))).toStrictEqual(ACCEPTED);
   });
 
   it('refuses side-cars that hash other bytes than the body binds, or in another order', () => {
-    expect(() => verdictsOf(planOf(LEFT, RIGHT, EXPECTED, [LEFT, LEFT]))).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    expect(() => verdictsOf(planOf(LEFT, RIGHT, EXPECTED, [RIGHT, LEFT]))).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => verdictsOf('check', planOf('check', [LEFT, RIGHT, EXPECTED], [LEFT, LEFT])))
+      .toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => verdictsOf('check', planOf('check', [LEFT, RIGHT, EXPECTED], [RIGHT, LEFT])))
+      .toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 
-  it('refuses by name a preimage the body computes', () => {
-    expect(() => keccakPreimagesOf({ ...ABI, keccakPreimageParams: ['left', null] }, [LEFT, RIGHT, EXPECTED]))
-      .toThrow(/computed preimage/);
+  describe('with preimages the body computes', () => {
+    const PREFIX = utf8('per-call signed digest:');
+    const INNER = keccak_256(Uint8Array.from([...LEFT, ...RIGHT]));
+    const DIGEST = keccak_256(Uint8Array.from([...PREFIX, ...INNER]));
+
+    it('learns each preimage from the body\'s bind, the nested call included, and every input accepts', () => {
+      expect(verdictsOf('digest', planOf('digest', [PREFIX, LEFT, RIGHT, DIGEST]))).toStrictEqual(ACCEPTED);
+    });
+
+    it('learns only what the body binds, so the master still refuses a digest its body rejects', () => {
+      expect(verdictsOf('digest', planOf('digest', [PREFIX, LEFT, RIGHT, INNER]))).toStrictEqual([
+        `${MASTER_ID}:refused`, `${MASTER_ID}/keccak-0:accepted`, `${MASTER_ID}/keccak-1:accepted`,
+      ]);
+    });
   });
 });

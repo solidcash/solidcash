@@ -20,12 +20,13 @@ import {
   decodeIntegerValue,
   ecrecoverComputeLockingBytecode,
   keccakComputeLockingBytecode,
+  sha256,
 } from '@solidcash/utils';
 import type { Output, Unlocker, Utxo } from '../../interfaces.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit }
   from '../../ecrecover/ecrecoverComputeSidecar.js';
 import { buildKeccakComputeSidecar } from '../../keccak/keccakComputeSidecar.js';
-import type { DraftInput, DraftSourceOutput } from './draft.js';
+import type { DraftComputedWitness, DraftInput, DraftSettledInput, DraftSourceOutput } from './draft.js';
 
 /** The value each side-car UTXO carries; the covenants' self-preservation only reads the lock and the token. */
 const SIDE_CAR_VALUE = 100_000n;
@@ -47,6 +48,8 @@ export interface RecoveryCall {
 export interface RecoverySideCars {
   readonly ids: readonly string[];
   readonly inputs: Readonly<Record<string, DraftInput>>;
+  /** The witnesses the body computes, which the plan hands the derivation to learn. */
+  readonly computedWitnesses: readonly DraftComputedWitness[];
 }
 
 /** The ABI row of a function that makes recovery calls, as the compiled artifact publishes it. */
@@ -148,7 +151,7 @@ export function buildRecoverySideCars(
       unlockingBytecode: unlockingOf(unlocker),
     };
   });
-  return { ids, inputs };
+  return { ids, inputs, computedWitnesses: [] };
 }
 
 /**
@@ -210,14 +213,14 @@ export interface KeccakAbiFunction {
 /**
  * The preimage of each keccak256 call an entry makes, read from the master's own argument pushes.
  *
- * The pushes are read as `recoveryCallsOf` reads them. A call whose preimage is not a named parameter of the entry
- * is refused rather than guessed: the side-car has to hash the bytes the body binds.
+ * The pushes are read as `recoveryCallsOf` reads them. A call whose preimage the body computes has no push to read,
+ * so its entry is `undefined`, and `buildKeccakSideCars` leaves that preimage to the derivation.
  */
 export function keccakPreimagesOf(
   abiFunction: KeccakAbiFunction,
   argumentPushes: readonly Uint8Array[],
   leadingPushes = 0,
-): readonly Uint8Array[] {
+): readonly (Uint8Array | undefined)[] {
   const params = abiFunction.keccakPreimageParams ?? [];
   if (params.length === 0) return [];
   const values = argumentPushes.slice(leadingPushes);
@@ -228,16 +231,18 @@ export function keccakPreimagesOf(
       + 'argument push(es)',
     );
   }
-  return params.map((name, call) => {
-    if (name === null) {
-      throw new PerCallEncodingError(
-        `keccak256 call ${call} hashes a computed preimage, which cannot be read from the entry's arguments`,
-      );
-    }
+  return params.map((name) => {
+    if (name === null) return undefined;
     const index = abiFunction.inputs.findIndex((input) => input.name === name);
     if (index < 0) throw new PerCallEncodingError(`the entry has no parameter '${name}'`);
     return values[parameterCount - 1 - index]!;
   });
+}
+
+/** A stateful keccak256 side-car's unlocking bytecode and recreated output, hashing `preimage`. */
+function keccakSideCarOver(preimage: Uint8Array, salt: Uint8Array): DraftSettledInput {
+  const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sideCarUtxo('K'), true);
+  return { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
 }
 
 /**
@@ -245,24 +250,29 @@ export function keccakPreimagesOf(
  *
  * Each follows the master's recovery side-cars in the block's list, so the body reads it at the step its own count
  * of calls names. The stateful covenant recreates the side-car at its own index, where a per-call body reads the
- * result; the ids are namespaced by the master.
+ * result; the ids are namespaced by the master. A side-car whose preimage the body computes hashes a placeholder,
+ * and its computed witness rebuilds it around the preimage the body binds. A side-car the body never reads keeps
+ * the placeholder and still holds its place, so the calls after it read theirs.
  */
 export function buildKeccakSideCars(
   master: string,
-  preimages: readonly Uint8Array[],
+  preimages: readonly (Uint8Array | undefined)[],
   salt: Uint8Array = SHARED_LIBRARY_SALT,
 ): RecoverySideCars {
   const ids: string[] = [];
   const inputs: Record<string, DraftInput> = {};
+  const computedWitnesses: DraftComputedWitness[] = [];
   preimages.forEach((preimage, index) => {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sideCarUtxo('K'), true);
     const id = `${master}/keccak-${index}`;
     ids.push(id);
-    inputs[id] = {
-      source: sideCarSource(keccakComputeLockingBytecode(salt, true)),
-      output: sideCarRecreation(recreate),
-      unlockingBytecode: unlockingOf(unlocker),
-    };
+    const source = sideCarSource(keccakComputeLockingBytecode(salt, true));
+    if (preimage !== undefined) {
+      inputs[id] = { source, ...keccakSideCarOver(preimage, salt) };
+      return;
+    }
+    const placeholder = sha256(new TextEncoder().encode(`per-call computed witness\u0000${id}`));
+    inputs[id] = { source, ...keccakSideCarOver(placeholder, salt) };
+    computedWitnesses.push({ master, placeholder, settle: (value) => ({ [id]: keccakSideCarOver(value, salt) }) });
   });
-  return { ids, inputs };
+  return { ids, inputs, computedWitnesses };
 }

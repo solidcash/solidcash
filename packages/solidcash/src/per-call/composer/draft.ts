@@ -23,7 +23,8 @@
  * the composer declare a placeholder, and the step that runs the body reads the value back from the body's own
  * failing close (the channel `deploy/declaration.ts` reads) and writes it into the declaration. A record's own
  * output, when the plan leaves it unstated, then carries the end of that declaration chain, so what the body wrote
- * reaches the transaction. A commitment the plan does state is authoritative and is never learned over.
+ * reaches the transaction. A commitment the plan does state is authoritative and is never learned over. A side-car
+ * witness the body computes, such as a keccak256 preimage, is learned the same way from the body's own bind.
  */
 
 import { createVirtualMachineBch2026 } from '@bitauth/libauth';
@@ -82,6 +83,9 @@ type DraftVirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
 
 /** The documented NFT commitment limit, the default bound on a value a derivation will learn. */
 const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 128;
+
+/** The machine's stack item limit, the bound on a side-car witness a derivation will learn. */
+const MAXIMUM_STACK_ITEM_BYTES = 10_000;
 
 /**
  * One record entry as a plan states it.
@@ -174,6 +178,27 @@ export interface DraftInput {
   readonly output?: DraftSourceOutput;
 }
 
+/** What a learned witness settles for one input: the unlocking bytecode it carries and the output it recreates. */
+export interface DraftSettledInput {
+  readonly unlockingBytecode: Uint8Array;
+  readonly output: DraftSourceOutput;
+}
+
+/**
+ * A value side-car inputs witness that a master's body computes rather than takes as an argument.
+ *
+ * The plan builds the side-cars around `placeholder`, a value the body never computes, so the body's bind compares
+ * what it computed with the placeholder and fails, and the derivation learns the value from that bind the way it
+ * learns an unstated view. `settle` then rebuilds every side-car the value witnesses.
+ */
+export interface DraftComputedWitness {
+  /** The master whose body binds the value. */
+  readonly master: string;
+  readonly placeholder: Uint8Array;
+  /** The side-cars the value witnesses, keyed by input id, rebuilt around the value the body computed. */
+  readonly settle: (value: Uint8Array) => Readonly<Record<string, DraftSettledInput>>;
+}
+
 /** One external call as the plan records it; the callee's index is the layout's to assign. */
 export interface DraftCall {
   readonly kind: FrameKindValue;
@@ -241,6 +266,8 @@ export interface CompositionDraftPlan {
   readonly sequenceNumber?: number;
   /** Every input the transaction spends, keyed by the identity the layout and the plan's calls use. */
   readonly inputs: Readonly<Record<string, DraftInput>>;
+  /** The side-car witnesses a body computes, each learned from the body's own bind. */
+  readonly computedWitnesses?: readonly DraftComputedWitness[];
   /**
    * The outputs no input recreates, in the order the plan states them. They fill the indices past the
    * participants, so a block's `events` or `sends` can name one.
@@ -399,6 +426,17 @@ export function composeDraft(
     unstatedByMaster.set(master.master, byPlaceholder);
   }
 
+  // The side-car witnesses no run has learned yet, by placeholder, and the side-cars the learned ones settled.
+  const unlearnedWitnesses = new Map<string, DraftComputedWitness>();
+  for (const witness of plan.computedWitnesses ?? []) {
+    const key = bytesToHex(witness.placeholder);
+    if (unlearnedWitnesses.has(key) || [...unstatedByMaster.values()].some((views) => views.has(key))) {
+      throw new CompositionDraftError(`a computed witness of "${witness.master}" reuses a placeholder`);
+    }
+    unlearnedWitnesses.set(key, witness);
+  }
+  const settled = new Map<string, DraftSettledInput>();
+
   const assembly = assembleComposition(toCompositionPlan(plan, normalizedSegments));
   const { layout } = assembly;
 
@@ -473,8 +511,9 @@ export function composeDraft(
     if (input === undefined) throw new CompositionDraftError(`input "${id}" has no source output`);
     return input.source;
   };
-  /** The output an input recreates: the plan's, or the input unchanged. */
-  const outputOf = (id: string): DraftSourceOutput => plan.inputs[id]?.output ?? sourceOf(id);
+  /** The output an input recreates: a learned witness's, the plan's, or the input unchanged. */
+  const outputOf = (id: string): DraftSourceOutput =>
+    settled.get(id)?.output ?? plan.inputs[id]?.output ?? sourceOf(id);
 
   const stateIds = new Set(
     layout.participants.filter((placed) => placed.kind === 'state').map((placed) => placed.id),
@@ -506,10 +545,11 @@ export function composeDraft(
    *
    * A record whose output the plan states keeps it. A record the plan leaves unstated carries the end of its own
    * declaration chain, so a written view the derivation learned reaches the transaction's output. A record no
-   * segment declares, and an input that is not a state record, recreate unchanged.
+   * segment declares, and an input that is not a state record, recreate unchanged. A side-car a learned witness
+   * settled recreates what the settling built.
    */
   const participantOutput = (id: string): DraftSourceOutput => {
-    const stated = plan.inputs[id]?.output;
+    const stated = settled.get(id)?.output ?? plan.inputs[id]?.output;
     if (stated !== undefined) return stated;
     const source = sourceOf(id);
     const recordIndex = stateIds.has(id) ? indices.get(id) : undefined;
@@ -526,7 +566,8 @@ export function composeDraft(
   const participantSet = new Set(participantIds);
   const funderIds = orderedIds.filter((id) => !participantSet.has(id));
   const sourceOutputs = orderedIds.map(sourceOf) as unknown as ShippedVmProgram['sourceOutputs'];
-  // Rebuilt on every run, so a record's output follows a written view the derivation learned.
+  // Rebuilt on every run, so a record's output follows a written view the derivation learned, and a side-car's the
+  // witness it learned.
   const transactionOutputs = (): ShippedVmProgram['transaction']['outputs'] => [
     ...participantIds.map(participantOutput),
     ...trailing.map((placed) => placed.output),
@@ -541,7 +582,7 @@ export function composeDraft(
     }
     const validator = validatorUnlocking.get(id);
     if (validator !== undefined) return validator;
-    const provided = plan.inputs[id]?.unlockingBytecode;
+    const provided = settled.get(id)?.unlockingBytecode ?? plan.inputs[id]?.unlockingBytecode;
     if (provided === undefined) {
       throw new CompositionDraftError(`input "${id}" is not a master or a validator, so it needs unlocking bytecode`);
     }
@@ -584,37 +625,52 @@ export function composeDraft(
   });
 
   /**
-   * Replaces every unstated written view the running program closes against with the value it computed.
+   * Replaces every unstated written view and every side-car witness the running program binds with the value it
+   * computed.
    *
    * A plan that leaves a segment's `viewOut` unstated has the composer declare a placeholder there, so the body's
    * own close compares the commitment it computed with that placeholder and fails, leaving both operands on the
-   * machine's stack. The close names its operands by position, and which side the declaration sits on depends on
-   * which of the run's checks the placeholder reached first, so both are matched against the placeholders and the
-   * other one is the computed value. A declaration the plan stated is never a placeholder, so a stated view that
-   * disagrees with the body is left as it is: the run makes no progress and the driver refuses.
+   * machine's stack. A side-car built around a placeholder witness fails the body's bind the same way. The close
+   * names its operands by position, and which side the declaration sits on depends on which of the run's checks the
+   * placeholder reached first, so both are matched against the placeholders and the other one is the computed value.
+   * A declaration the plan stated is never a placeholder, so a stated view that disagrees with the body is left as
+   * it is: the run makes no progress and the driver refuses.
    */
-  const learnUnstatedViews = (master: string, current: WitnessBlock): void => {
-    const byPlaceholder = unstatedByMaster.get(master);
-    if (byPlaceholder === undefined || byPlaceholder.size === 0) return;
-    // Each iteration learns at most one write, so the count taken now bounds the walk even as the map shrinks.
-    const attempts = byPlaceholder.size;
+  const learnComputedValues = (master: string, current: WitnessBlock): void => {
+    const views = unstatedByMaster.get(master) ?? new Map<string, UnstatedView>();
+    const isPlaceholder = (key: string): boolean => views.has(key) || unlearnedWitnesses.get(key)?.master === master;
+    // Each iteration learns at most one value, so the count taken now bounds the walk even as the maps shrink.
+    const attempts = views.size + [...unlearnedWitnesses.values()].filter((witness) => witness.master === master).length;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      // A preimage may outgrow any commitment: the reading takes the larger bound and a view is held to its own.
       const reading = readComputedDeclaration({
-        vm: learningMachine(), program: programOf(master, current), maximumCommitmentBytes,
+        vm: learningMachine(), program: programOf(master, current),
+        maximumCommitmentBytes: Math.max(maximumCommitmentBytes, MAXIMUM_STACK_ITEM_BYTES),
       });
       if (!reading.ok) return;
       const declared = bytesToHex(reading.declared);
       const computed = bytesToHex(reading.computed);
-      const declaredIsPlaceholder = byPlaceholder.get(declared);
-      const computedIsPlaceholder = byPlaceholder.get(computed);
       // A close names a declaration and the value it was compared with; both being placeholders is no close at all.
-      if ((declaredIsPlaceholder === undefined) === (computedIsPlaceholder === undefined)) return;
-      const unstated = declaredIsPlaceholder ?? computedIsPlaceholder!;
-      const learned = declaredIsPlaceholder === undefined ? reading.declared : reading.computed;
-      const entry = current.segments[unstated.segmentIndex]?.[unstated.entryIndex];
-      if (entry === undefined) return;
-      entry.viewOut = Uint8Array.from(learned);
-      byPlaceholder.delete(declaredIsPlaceholder === undefined ? computed : declared);
+      if (isPlaceholder(declared) === isPlaceholder(computed)) return;
+      const key = isPlaceholder(declared) ? declared : computed;
+      const learned = Uint8Array.from(key === declared ? reading.computed : reading.declared);
+      const view = views.get(key);
+      if (view !== undefined) {
+        if (reading.computed.length > maximumCommitmentBytes) return;
+        const entry = current.segments[view.segmentIndex]?.[view.entryIndex];
+        if (entry === undefined) return;
+        entry.viewOut = learned;
+        views.delete(key);
+        continue;
+      }
+      const witness = unlearnedWitnesses.get(key)!;
+      for (const [id, input] of Object.entries(witness.settle(learned))) {
+        if (plan.inputs[id] === undefined) {
+          throw new CompositionDraftError(`a computed witness of "${master}" settles "${id}", which the plan does not spend`);
+        }
+        settled.set(id, input);
+      }
+      unlearnedWitnesses.delete(key);
     }
   };
 
@@ -641,9 +697,10 @@ export function composeDraft(
         transaction: transactionFor({ master: master.master, block: current }),
       }),
       fill: (site, current) => {
-        // A run may stop on a written view the plan left unstated before it ever reaches this site. Learning it
-        // first is what lets the site be filled: the probe closes before the call the site names.
-        learnUnstatedViews(master.master, current);
+        // A run may stop on a written view the plan left unstated, or on a side-car witness its body computes,
+        // before it ever reaches this site. Learning it first is what lets the site be filled: the probe closes
+        // before the call the site names.
+        learnComputedValues(master.master, current);
         if (site.kind !== 'call') return {};
         const visit = site.repeated === true ? visits.get(site.site) ?? 0 : 0;
         // A repeated site's own `callIndex` is the position of its call's first record, so its visits fill the

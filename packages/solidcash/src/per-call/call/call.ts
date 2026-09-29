@@ -84,7 +84,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
-import { callEntryRecords, type LaidCallEntryRecords } from './entry-records.js';
+import { callEntryRecords, frameDataRecordIndices, type LaidCallEntryRecords } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
@@ -526,7 +526,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     }
     return { id: recordId(nftIndex), commitment: new Uint8Array(hexToBin(commitment)), utxo };
   });
-  const recordIds = records.map((record) => record.id);
+  // The records the frame declares, and the transaction spends, in the order the entry's own code reads them.
+  const declared = frameDataRecordIndices(artifact, entry.name).map((nftIndex) => records[nftIndex]!);
+  const recordIds = declared.map((record) => record.id);
 
   // The mapping nodes the entry writes, planned against the deployment's own classified inventory: the frame
   // declares the node a held key sits at, or the head sentinel a new key is spliced beside, exactly as the genesis
@@ -619,7 +621,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         category: recipientCategory,
         deployed: deployMaster(external.artifact, recipientCategory, validatorProgram),
         master: recipientMaster,
-        records: Array.from({ length: layout.dataNftCount }, (_unused, nftIndex) => {
+        // The records its body's frame declares, in the order its code reads them.
+        records: frameDataRecordIndices(external.artifact, body.name).map((nftIndex) => {
           const utxo = set.records[nftIndex]!;
           return { utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
         }),
@@ -887,7 +890,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       indexOf: indexOfParticipant,
     });
     const segment = (): DraftRecordEntry[] => [
-      ...records.map((record) => {
+      ...declared.map((record) => {
         const index = recordIndex(record.id);
         return { in: index, out: index, viewIn: record.commitment };
       }),
@@ -995,7 +998,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         unlockingBytecode: callerUnlocking(),
       },
     };
-    for (const record of records) {
+    for (const record of declared) {
       // The record's output is not stated: it carries the end of the declaration chain the derivation learns.
       inputs[record.id] = {
         source: {
@@ -1296,7 +1299,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         + 'frame cannot declare them',
       );
     }
-    if (mappingRecords !== undefined) {
+    if (mappingRecords !== undefined && learnedViews.some((view) => view === undefined)) {
       throw new PerCallCallError(
         `the call's write to mapping "${mappingRecords.collection}" did not hand back every node it rewrites, so the `
         + 'frame cannot declare their commitments',
@@ -1375,7 +1378,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const retval = learnedRetval ?? new Uint8Array(0);
   const values = learnedRetval === undefined ? [] : decodeReturnValues(retval, entry.outputs, structs);
 
+  // A record the entry does not declare is not spent, so it holds what it held.
   const writtenCommitments = records.map((record) => {
+    if (!declared.includes(record)) return record.commitment;
     const commitment = transaction.outputs[recordIndex(record.id)]?.token?.nft?.commitment;
     if (commitment === undefined) {
       throw new PerCallCallError(`the call's output for record "${record.id}" carries no commitment`);
@@ -1386,7 +1391,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const liveUtxos = new Map<string, Utxo>([
     [MASTER_ID, master],
     [VALIDATOR_ID, validator],
-    ...records.map((record, nftIndex) => [record.id, deployment.records[nftIndex]!] as const),
+    ...declared.map((record) => [record.id, record.utxo] as const),
     ...(mappingRecords?.spentUtxos ?? []),
     ...Object.entries(sideCars.utxos),
     ...payees.flatMap((payee, index) => [

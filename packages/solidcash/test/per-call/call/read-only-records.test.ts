@@ -1,0 +1,210 @@
+import { describe, expect, it } from 'vitest';
+import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
+import { parsePushdataCommitment, type Artifact } from '@solidcash/utils';
+import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { Contract, SignatureTemplate } from '../../../src/index.js';
+import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
+import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
+import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
+import { readPerCallEntry } from '../../../src/per-call/read/index.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { encodeFunctionArgument, type FunctionArgument } from '../../../src/Argument.js';
+import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
+import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+
+/**
+ * Calls whose entry reads a record it does not write, or names only some of its contract's records, through the
+ * shipped path.
+ *
+ * A per-call frame declares the data records its entry names, then the node of each mapping key the entry reads and
+ * does not write, and its body reads each at that place. An entry that reads a key and writes no mapping spends the
+ * key's node on the entry covenant's read-only path and keeps it; an entry that touches only a later data record
+ * spends that record and leaves the first unspent.
+ */
+
+const CATEGORY_HEX = '5a'.repeat(32);
+const CALLER_TXID = '5b'.repeat(32);
+
+const GATE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Gate {'
+  + '   int public passes;'
+  + '   mapping(address => int) allowance;'
+  + '   function grant(address who, int amount) { this.allowance[who] = amount; }'
+  + '   function pass(address who, int amount) {'
+  + '     require(amount <= this.allowance[who]);'
+  + '     this.passes = this.passes + 1;'
+  + '   }'
+  + '   function check(address who, int amount) { require(amount <= this.allowance[who]); }'
+  + ' }';
+
+/** Four 32-byte fields fill the first record, so the counter sits in the second. */
+const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Wide {'
+  + '   bytes32 public a;'
+  + '   bytes32 public b;'
+  + '   bytes32 public c;'
+  + '   bytes32 public d;'
+  + '   int public counter;'
+  + '   mapping(address => int) marks;'
+  + '   function bump() { this.counter = this.counter + 1; }'
+  + '   function mark(address who) { this.counter = this.counter + 1; this.marks[who] = this.counter; }'
+  + '   function setA(bytes32 v) { this.a = v; }'
+  + '   function counterOf() view returns (int) { return this.counter; }'
+  + ' }';
+
+const gate = compileStringMulti(GATE_SOURCE, { composition: 'per-call' }).Gate!;
+const wide = compileStringMulti(WIDE_SOURCE, { composition: 'per-call' }).Wide!;
+
+const HOLDER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x61));
+const STRANGER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x62));
+
+interface Deployed {
+  readonly artifact: Artifact;
+  readonly provider: MockNetworkProvider;
+  readonly categoryId: string;
+  readonly callerLock: Uint8Array;
+  readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
+}
+
+/** Deploys the contract through the shipped deployment and funds the caller's own coin at its P2PKH lock. */
+async function deploy(artifact: Artifact): Promise<Deployed> {
+  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+  const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
+  await provider.addUtxo(funder.address, fundingUtxo);
+  const deployment = await deployStatefulContract(artifact, [], {
+    provider,
+    fundingUtxo,
+    funder: funder.unlock.spend(alicePub, signature),
+    changeAddress: funder.address,
+  });
+  const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
+  await provider.addUtxo(binToHex(callerLock), { txid: CALLER_TXID, vout: 0, satoshis: 200_000n });
+  return { artifact, provider, categoryId: deployment.categoryId, callerLock, funder: signature.unlockP2PKH() };
+}
+
+/** Calls one entry with the caller's current coin: the largest tokenless UTXO at its lock, the last call's change. */
+async function call(
+  deployed: Deployed, functionName: string, args: readonly FunctionArgument[] = [],
+): Promise<PerCallCallResult> {
+  const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
+    .filter((utxo) => utxo.token === undefined)
+    .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
+  return callPerCallEntry({
+    provider: deployed.provider,
+    artifact: deployed.artifact,
+    categoryId: deployed.categoryId,
+    functionName,
+    args,
+    callerUtxo: coins[0]!,
+    callerLockingBytecode: deployed.callerLock,
+    funder: deployed.funder,
+    vm: compositionMachine(),
+  });
+}
+
+/** The live nodes of the allowance mapping, as the deployment's own classification reports them. */
+async function allowanceNodes(deployed: Deployed): Promise<readonly string[]> {
+  const deployment = await readPerCallDeployment(deployed.provider, deployed.categoryId, gate.stateLayout!);
+  return (deployment.nodesByCollection.get('allowance') ?? []).map((utxo) => utxo.token!.nft!.commitment);
+}
+
+/** The slot a key's node carries. */
+function slotOf(lock: Uint8Array): string {
+  return binToHex(keyToSlotMulti([encodeFunctionArgument(lock, 'address') as Uint8Array]));
+}
+
+describe('an entry that reads a mapping key it does not write', () => {
+  it('reads the key beside the data record it writes, and keeps the key\'s node', async () => {
+    const deployed = await deploy(gate);
+    expect((await call(deployed, 'grant', [HOLDER_LOCK, 500n])).accepted).toBe(true);
+    const granted = await allowanceNodes(deployed);
+
+    const passed = await call(deployed, 'pass', [HOLDER_LOCK, 400n]);
+    expect(passed.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(passed.broadcast).toBeDefined();
+    expect(parsePushdataCommitment(binToHex(passed.writtenCommitments[0]!), gate.stateLayout!, 0).passes).toBe(1n);
+    // The node the entry read is recreated as it was.
+    expect(await allowanceNodes(deployed)).toStrictEqual(granted);
+  });
+
+  it('is refused when the key it reads grants less', async () => {
+    const deployed = await deploy(gate);
+    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
+    const refused = await call(deployed, 'pass', [HOLDER_LOCK, 501n]);
+    expect(refused.accepted).toBe(false);
+    expect(refused.broadcast).toBeUndefined();
+  });
+
+  it('reads a key the list does not hold beside its predecessor, as the default', async () => {
+    const deployed = await deploy(gate);
+    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
+    const nodes = await allowanceNodes(deployed);
+    expect(nodes.some((node) => binToHex(decodeEntryCommitment(Uint8Array.from(Buffer.from(node, 'hex'))).slot)
+      === slotOf(STRANGER_LOCK))).toBe(false);
+
+    const zero = await call(deployed, 'pass', [STRANGER_LOCK, 0n]);
+    expect(zero.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    const one = await call(deployed, 'pass', [STRANGER_LOCK, 1n]);
+    expect(one.accepted).toBe(false);
+  });
+
+  it('reads the key in an entry that writes nothing', async () => {
+    const deployed = await deploy(gate);
+    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
+    const checked = await call(deployed, 'check', [HOLDER_LOCK, 500n]);
+    expect(checked.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect((await call(deployed, 'check', [HOLDER_LOCK, 501n])).accepted).toBe(false);
+  });
+});
+
+describe('an entry that touches only a later data record', () => {
+  it('writes that record and leaves the first unspent', async () => {
+    const deployed = await deploy(wide);
+    const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
+    const first = before.records[0]!.token!.nft!.commitment;
+
+    const bumped = await call(deployed, 'bump');
+    expect(bumped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    const ids = bumped.draft.layout.participants.map((placed) => placed.id);
+    expect(ids).toContain('record-1');
+    expect(ids).not.toContain('record-0');
+    expect(binToHex(bumped.writtenCommitments[0]!)).toBe(first);
+    expect(parsePushdataCommitment(binToHex(bumped.writtenCommitments[1]!), wide.stateLayout!, 1).counter).toBe(1n);
+    // The first record is still written through its own entry.
+    const set = await call(deployed, 'setA', [new Uint8Array(32).fill(7)]);
+    expect(set.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+  });
+
+  it('writes that record beside a mapping key, declaring the first kept ahead of the key\'s group', async () => {
+    const deployed = await deploy(wide);
+    const before = await readPerCallDeployment(deployed.provider, deployed.categoryId, wide.stateLayout!);
+    const first = before.records[0]!.token!.nft!.commitment;
+
+    const marked = await call(deployed, 'mark', [HOLDER_LOCK]);
+    expect(marked.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    // A batch's groups follow every data record, so the frame declares the one it names first and then the other.
+    const ids = marked.draft.layout.participants.map((placed) => placed.id);
+    expect(ids.indexOf('record-1')).toBeLessThan(ids.indexOf('record-0'));
+    expect(binToHex(marked.writtenCommitments[0]!)).toBe(first);
+    expect(parsePushdataCommitment(binToHex(marked.writtenCommitments[1]!), wide.stateLayout!, 1).counter).toBe(1n);
+  });
+
+  it('is read by a view that names only that record', async () => {
+    const deployed = await deploy(wide);
+    await call(deployed, 'bump');
+    await call(deployed, 'bump');
+    const read = await readPerCallEntry({
+      provider: deployed.provider,
+      artifact: wide,
+      categoryId: deployed.categoryId,
+      functionName: 'counterOf',
+      vm: compositionMachine(),
+    });
+    expect(read.accepted).toBe(true);
+    expect(read.value).toBe(2n);
+  });
+});

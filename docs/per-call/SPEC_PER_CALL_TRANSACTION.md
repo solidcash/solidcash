@@ -8,6 +8,13 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 
 ## 0. Changes
 
+### Since the implementation (2026-09-29)
+
+- **Which records a frame declares.** A frame declares the data records its entry names, in the order its code reads
+  them, and a record it does not declare is not spent (section 20). An entry that writes a verified mapping then
+  declares every other data record, because its batch's groups follow every data record; one that writes none then
+  declares the node of each mapping key it reads.
+
 ### Since the implementation (2026-09-28)
 
 - **Order.** The program derives the V6 order on chain and follows the record chains in it (section 7.2), so a
@@ -1656,6 +1663,14 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
   - A layout-compatibility rule for proxy upgrades is deferred (plan 4.7). The 66 do not upgrade.
 
 **In this model:**
+- **Which records a frame declares.**
+  - First, the data records its entry's block layout names, in that order: its code reads each at its place past the
+    first record the frame declares.
+  - An entry that writes a verified mapping then declares every other data record, kept, and then its batch's
+    groups, which its code names by ordinal past every data record. A key it reads beside the batch is not planned.
+  - An entry that writes none then declares one node, kept, for each mapping key it reads, in the order the layout
+    lists the entry's slots: its code reads each at its place past the records before it.
+  - A record the frame does not declare is not spent, so it keeps whatever it holds.
 - **Reads.**
   - A frame reads a node, or its strict predecessor as an absence proof (`slot < s(k) < next`, or `next = 0`), as a
     touched record with `viewIn == viewOut`. Its own code checks the proof, as today.

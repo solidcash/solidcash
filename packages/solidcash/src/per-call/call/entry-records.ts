@@ -16,14 +16,15 @@
  * are planned by the shipped batch planner (`planMappingBatch`) against that inventory, so the groups the segment
  * declares are the ones the body's own batch derivation walks.
  *
- * A shape this module has no plan for is refused by name: a write to several collections, an access that is only a
- * read, a key the call data does not resolve, a value type that chunks. Nothing here guesses at an ordinal the body
- * does not read.
+ * An entry that writes no mapping and only reads keys declares each node it reads, kept in place. A shape this
+ * module has no plan for is refused by name: a write to several collections, a read beside a write, a key the call
+ * data does not resolve, a value type that chunks. Nothing here guesses at an ordinal the body does not read.
  */
 
 import { hexToBin } from '@bitauth/libauth';
 import {
   INDEX_NONE,
+  VALUE_INLINE_LIMIT,
   buildEntryNftCovenantScript,
   bytesEqual,
   bytesToHex,
@@ -39,7 +40,7 @@ import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { createUnlockingBytecode } from '../../utils.js';
 import type { DraftInput, DraftRecordEntry, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import { planMappingBatch, type MappingBatchPlan, type MappingNodePlacement } from '../composer/mapping-plan.js';
-import { entryRecordLockingBytecode } from '../deploy/records.js';
+import { entryRecordLockingBytecode, entryRecordReadUnlock } from '../deploy/records.js';
 
 /** Raised when a call's mapping records cannot be planned from the artifact and the deployment. */
 export class PerCallCallRecordError extends Error {
@@ -97,15 +98,33 @@ export interface LaidCallEntryRecords {
   readonly learningCandidates: readonly Uint8Array[];
 }
 
-/** The mapping records one entry writes, with the ids its plan places. */
+/** The mapping records one entry reads or writes, with the ids its plan places. */
 export interface CallEntryRecords {
-  /** The collection the entry's batch writes. */
+  /** The collection the entry's batch writes, or the first one it reads when it writes none. */
   readonly collection: string;
   /** The participant ids the frame's block holds for the nodes the entry spends, in declaration order. */
   readonly participantIds: readonly string[];
   /** The live UTXO of each spent node, keyed by the participant id the frame places it under. */
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
   lay(context: CallEntryRecordsContext): LaidCallEntryRecords;
+}
+
+/**
+ * The data-NFT indices of the records a frame running an entry declares, in the order its code reads them: the ones
+ * its published block layout names. An entry that writes a verified mapping declares every other record after them,
+ * because its batch's groups follow every data record. An entry that publishes no layout declares every record.
+ */
+export function frameDataRecordIndices(artifact: Artifact, functionName: string): number[] {
+  const entry = artifact.abi.find((candidate) => candidate.name === functionName);
+  const all = Array.from({ length: artifact.stateLayout?.dataNftCount ?? 0 }, (_unused, nftIndex) => nftIndex);
+  const slots = entry?.blockLayout?.slots;
+  if (slots === undefined) return all;
+  const named = [...slots]
+    .filter((slot) => slot.kind === 'dataNft' && slot.nftIndex !== undefined)
+    .sort((left, right) => left.offset - right.offset)
+    .map((slot) => slot.nftIndex!);
+  if ((entry?.sortedBatchInfo ?? []).length === 0) return named;
+  return [...named, ...all.filter((nftIndex) => !named.includes(nftIndex))];
 }
 
 /** The participant id a spent mapping node is placed under, keyed by its slot so the live UTXO is findable again. */
@@ -338,8 +357,81 @@ function nodeToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
   return { category, amount: 0n, nft: { capability: 'mutable', commitment } };
 }
 
-/** Plans the mapping records an entry writes, or `undefined` when it touches no sorted collection. */
+/**
+ * The nodes an entry that writes no mapping reads: one kept record per fixed entry slot, or `undefined` when the
+ * entry writes a mapping or touches none.
+ *
+ * The body reads such a node at a fixed coordinate past the frame's data records, in the order the block layout
+ * lists the entry's slots, so the nodes are placed in that order. Each is spent on the entry covenant's read-only
+ * path, which recreates it in place, and is declared kept in every segment.
+ */
+function planCallMappingReads(request: CallEntryRecordsRequest): CallEntryRecords | undefined {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  const accesses = fn?.entryAccesses ?? [];
+  if (fn === undefined || accesses.length === 0 || (fn.sortedBatchInfo ?? []).length > 0) return undefined;
+  if (accesses.some((access) => access.operations.some((operation) => operation !== 'read'))) return undefined;
+  const slots = (fn.blockLayout?.slots ?? [])
+    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined)
+    .sort((left, right) => left.offset - right.offset);
+  if (accesses.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" reads a mapping key at no fixed entry slot, which a call does not declare `
+      + 'a node for',
+    );
+  }
+  const nodes = slots.map((slot) => {
+    const node = readEntryNode({ ...request, slotIndex: slot.slotIndex! });
+    // A value past the inline limit holds only its hash in the node, with the bytes in chunk records a call does not
+    // declare. A node read beside the key is never read for its value, so its width is free.
+    const tail = node.commitment.slice(64);
+    const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+    if (node.present && length > VALUE_INLINE_LIMIT) {
+      throw new PerCallCallRecordError(
+        `entry "${request.functionName}" reads a ${length}-byte value of mapping "${node.collection}" whose bytes sit `
+        + 'in chunk records, which a call does not declare',
+      );
+    }
+    // Two collections can hold the same slot, so the id names the collection too.
+    return { ...node, id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}` };
+  });
+  const outpoints = nodes.map((node) => `${node.utxo.txid}:${node.utxo.vout}`);
+  if (new Set(outpoints).size !== outpoints.length) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" reads two keys at one mapping node, which a call cannot spend twice`,
+    );
+  }
+  const category = new Uint8Array(hexToBin(request.categoryId));
+  return {
+    collection: nodes[0]!.collection,
+    participantIds: nodes.map((node) => node.id),
+    spentUtxos: new Map(nodes.map((node) => [node.id, node.utxo])),
+    lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => {
+      const inputs: Record<string, DraftInput> = {};
+      for (const node of nodes) {
+        const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(request.categoryId, node.signature);
+        inputs[node.id] = {
+          source: { lockingBytecode, valueSatoshis: node.utxo.satoshis, token: nodeToken(category, node.commitment) },
+          unlockingBytecode,
+        };
+      }
+      return {
+        entries: nodes.map((node) => {
+          const index = context.indexOf(node.id);
+          return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
+        }),
+        inputs,
+        trailingOutputs: [],
+        createdOutputs: [],
+        learningCandidates: [],
+      };
+    },
+  };
+}
+
+/** Plans the mapping records an entry reads or writes, or `undefined` when it touches no sorted collection. */
 export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRecords | undefined {
+  const reads = planCallMappingReads(request);
+  if (reads !== undefined) return reads;
   const batch = planCallMappingBatch(request);
   if (batch === undefined) return undefined;
   const spent = batch.plan.written.filter((node) => node.existed);

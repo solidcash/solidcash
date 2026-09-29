@@ -222,6 +222,12 @@ const READING_SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.balances[msg.sender] = this.balances[msg.sender] - amount;'
   + '     this.transfer(msg.sender, amount);'
   + '   }'
+  + ' }'
+  + ' contract Allowance {'
+  + '   mapping(address => int) limits;'
+  + '   receive() external payable { require(true); }'
+  + '   function setLimit(int v) { this.limits[msg.sender] = v; }'
+  + '   function pay(int amount) { require(amount <= this.limits[msg.sender]); this.transfer(msg.sender, amount); }'
   + ' }';
 
 const reading = compileStringMulti(READING_SOURCE, { composition: 'per-call' });
@@ -255,6 +261,22 @@ describe('an entry that sends what its state allows', () => {
     const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [6_000n] });
     expect(over.accepted).toBe(false);
     expect(over.broadcast).toBeUndefined();
+  });
+
+  it('pays up to the limit its mapping grants the sender, a key it reads and does not write', async () => {
+    const deployed = await deploy(reading.Allowance!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const limit = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'setLimit', args: [15_000n],
+    });
+    expect(limit.accepted).toBe(true);
+
+    const over = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_001n] });
+    expect(over.accepted).toBe(false);
+    expect(over.broadcast).toBeUndefined();
+    const paid = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'pay', args: [15_000n] });
+    expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(paid, deployed.callerLock)).toBe(15_000n);
   });
 });
 

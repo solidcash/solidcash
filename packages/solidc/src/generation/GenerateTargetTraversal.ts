@@ -2802,6 +2802,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitBytesNonEmpty(locationData);
   }
 
+  /**
+   * [] -> [1 if the read-only entry is present]. A per-call frame's sits at the coordinate its block declares; one an
+   * earlier frame created has no input, so its coordinate derives from the sentinel and names no input.
+   */
+  private emitReadOnlyEntryExistsCheck(slotIndex: number, locationData: SingleLocationData): void {
+    if (!this.readsRecordsFromFrame) {
+      this.emitSlotExistsCheck('entry', slotIndex, locationData);
+      return;
+    }
+    this.emitEntryInputIndex(slotIndex, locationData, 0);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_TXINPUTCOUNT, locationData);
+    this.emit(Op.OP_WITHIN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData);
+    this.emitBytesNonEmpty(locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /** [bytes] -> [1 if nonempty else 0]. Stack-neutral; shared when used >=2 times. */
   private emitBytesNonEmptyInline(locationData: SingleLocationData): void {
     this.emit(Op.OP_SIZE, locationData);
@@ -31021,15 +31044,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * Leaves the coordinate the frame's declaration puts an entry at, on top of whatever working area a site has
-   * built. The frame parks the declared input and output of the record its block opens with, so the entry the
-   * write targets sits one layout offset past that base. The pick addresses the frame by its stable bottom
-   * ordinal rather than a top-relative depth, which would have to be told the size of the working area.
+   * built. The frame parks the declared input and output of the record its block opens with, so the entry sits
+   * its per-call offset past that base. The pick addresses the frame by its stable bottom ordinal rather than a
+   * top-relative depth, which would have to be told the size of the working area.
    */
   private emitPerCallEntryIndex(side: 'in' | 'out', slotIndex: number, loc: SingleLocationData): void {
     const name = side === 'in' ? recordInputIndexSlotName() : recordOutputIndexSlotName();
     this.emitPickTrackedFromBottom(name, loc);
+    this.emit(encodeInt(BigInt(this.perCallEntryOffset(slotIndex))), loc);
+    this.emit(Op.OP_ADD, loc);
+  }
+
+  /**
+   * The offset of a fixed entry from the frame's record base: the frame declares the data records its entry names,
+   * then the node of each entry slot no batch writes, in the order the block layout lists them.
+   */
+  private perCallEntryOffset(slotIndex: number): number {
     const offset = this.getBlockSlotOffset('entry', slotIndex);
-    if (offset > 0) { this.emit(encodeInt(BigInt(offset)), loc); this.emit(Op.OP_ADD, loc); }
+    const batched = new Set(this.batchTargetSlots());
+    const earlier = this.currentFunction.blockLayout!.slots.filter((slot) => slot.kind === 'entry'
+      && slot.offset < offset && !batched.has(slot.slotIndex!)).length;
+    return this.compactOffsetMap.size + 1 + earlier;
   }
 
   /** Verify a data NFT preserves its locking bytecode and token category. */
@@ -38000,7 +38035,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
 
       // Check if entry exists via introspection
-      this.emitSlotExistsCheck('entry', i, locationData);
+      this.emitReadOnlyEntryExistsCheck(i, locationData);
 
       // If entry exists, verify preservation
       this.emit(Op.OP_IF, locationData);
@@ -38113,7 +38148,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.sortedWrittenCollections.has(this.entrySlots[i].collection)) continue;
 
       // Check if entry exists via introspection
-      this.emitSlotExistsCheck('entry', i, locationData);
+      this.emitReadOnlyEntryExistsCheck(i, locationData);
 
       this.emit(Op.OP_IF, locationData);
 

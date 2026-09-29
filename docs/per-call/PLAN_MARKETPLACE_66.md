@@ -1625,7 +1625,11 @@ risk. Take the slices in order, each with its own tests.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
   - **Claimed by the parallel worker, from `dc4c1bdc6`** (user direction 2026-09-29: work the items this round is
     not on, in a separate scratch copy): the ECDSA clauses of #41 `take job > sanity checks`, which no wall this
-    round holds covers. The value items held in the bullet above stay held.
+    round holds covers, and one census refusal. The value items held in the bullet above stay held.
+    - **`MarketplaceV1.refuseArbitration`'s census refusal** (#63-#65): its whitelist write sits in `_refund`'s
+      `if (byWorker)` arm, which `_refund(jobId_, false)` never runs; measured on a neutral reduction, the refusal
+      goes away when the arm does. The fix folds a branch on a literal-bound parameter after inlining (a new pass
+      beside the post-inline unroll in `compiler.ts`), not in `support.ts` or the batch derivation.
     - Measured before starting: the relaxed ladder harness does not check a revert's reason or a custom error's
       arguments (`revertedWith` passes any refusal that is not a construction failure, and `withArgs` passes
       through when no argument tuple is attached), so the two ECDSA items below are strict parity, not a wall.

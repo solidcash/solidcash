@@ -8321,8 +8321,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const registered = findDeploymentByLockingBytecode(
         this.inner.provider, contract.inner.lockingBytecode,
       );
+      // Raw UTXO fixtures and externally managed contracts may deliberately pin historical block registers.
+      // Only factory-registered mock deployments opt into the synthetic tip keeper; otherwise a plain read
+      // silently rewrites authenticated state before the caller can inspect or spend it.
+      if (!registered) return;
       const { syncMockBlockOracleDeployment } = await import('../oracle/blockOracleUpdater.js');
-      await syncMockBlockOracleDeployment(this.inner.provider, registered ?? { contract });
+      await syncMockBlockOracleDeployment(this.inner.provider, registered);
     };
     // The mock chain has no keeper. Refresh the state owner before reading it; nested participants are refreshed
     // lazily below, preserving one block context without scanning unrelated deployments on every SDK call.

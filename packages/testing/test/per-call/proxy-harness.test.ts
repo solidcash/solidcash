@@ -3,8 +3,8 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { compileStringMulti } from 'solidc';
-import { formatArtifact, parsePushdataCommitment } from '@solidcash/utils';
-import { perCallDeploy, type PerCallProxyDeployment } from 'solidcash';
+import { formatArtifact } from '@solidcash/utils';
+import { perCallDeploy, type PerCallProxyDeployment, type PerCallProxyHandle } from 'solidcash';
 import { upgrades } from '../../src/index.js';
 import { createHardhatRuntimeEnvironment } from '../../src/hre.js';
 import { resolveConfig } from '../../src/config.js';
@@ -16,7 +16,7 @@ import { resolveConfig } from '../../src/config.js';
  * per-call proxy deployment: the implementation's genesis, a proxy generated from the implementation's own record
  * layout, that proxy's genesis, and one `initialize` hop the deployer enters through the proxy. What comes back is
  * the handle a suite calls through - the implementation's entries, addressed and held by the proxy - with the
- * deployment's own record attached.
+ * deployment's own record nested as `proxyDeployment`.
  *
  * Everything here is driven by shipped code: the deployment mints and broadcasts the geneses and the hop, the
  * composer plans the delegate edge, the derivation resolves it and fills the witnesses, the machine accepts every
@@ -84,27 +84,28 @@ describe('the testing layer and a per-call contract behind upgrades.deployProxy'
 
       const deployment = await upgrades.deployProxy(
         hre.ethers.getContractFactory('Counter', signer) as never, [5n],
-      ) as unknown as PerCallProxyDeployment;
+      ) as unknown as PerCallProxyHandle;
+      const record = deployment.proxyDeployment;
 
       // The handle names the proxy: its own token category and the address its masters and records sit under.
-      expect(deployment.proxy.categoryId).toMatch(/^[0-9a-f]{64}$/);
-      expect(deployment.categoryId).toBe(deployment.proxy.categoryId);
+      expect(record.proxy.categoryId).toMatch(/^[0-9a-f]{64}$/);
+      expect(deployment.categoryId).toBe(record.proxy.categoryId);
       expect(await deployment.getAddress()).toMatch(/^[a-z]+:/);
 
       // The hop is the composition driven end to end and broadcast: the implementation's entry completes first,
       // the proxy that forwarded it last, and the machine accepted every participant.
-      expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      expect(record.initialize.completed.map((frame) => frame.functionName))
         .toStrictEqual(['Counter.initialize()', 'CounterProxy.__fallback()']);
-      expect(deployment.initialize.accepted).toBe(true);
-      expect(deployment.initialize.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(record.initialize.accepted).toBe(true);
+      expect(record.initialize.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
 
       // The state the hop left on chain is what the entry's own body computed: `initialize(5)` wrote 6.
-      const layout = deployment.proxy.contract.inner.artifact.stateLayout!;
+      const layout = record.proxy.contract.inner.artifact.stateLayout!;
       const provider = hre.ethers.provider;
-      expect(await recordTotal(provider, deployment.proxy.categoryId, layout)).toBe(6n);
+      expect(await recordTotal(provider, record.proxy.categoryId, layout)).toBe(6n);
 
       // A later entry is called the way a suite calls a contract - by name, on the handle - and its write lands.
       await (deployment as unknown as { bump: (by: bigint) => Promise<unknown> }).bump(4n);
-      expect(await recordTotal(provider, deployment.proxy.categoryId, layout)).toBe(10n);
+      expect(await recordTotal(provider, record.proxy.categoryId, layout)).toBe(10n);
     });
 });

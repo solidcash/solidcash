@@ -6309,8 +6309,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           ownerIsLastArgument: node.messageBusOwnerIsLastArgument,
         }));
       }
-      // Feature flag from CompilerOptions (normalized from explicit option or SOLIDC_OWNER_ALT_ANCHOR).
-      const ownerAnchorEnabled = this.compilerOptions.ownerAltAnchor === true;
       // Depth 0 only: route synthesis reports the owner as the call's LAST argument, so the top item at entry IS
       // the owner. A model-derived index is NOT usable here - the frame model does not contain the caller's band,
       // so any index it computes addresses a different runtime item (measured: it broke the three titles that
@@ -16399,9 +16397,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, loc); // [count, acc, elements]
     this.emit(encodeInt(BigInt(elementSize)), loc); this.emit(Op.OP_SPLIT, loc); // [count, acc, element, rest]
     this.emit(Op.OP_SWAP, loc); // [count, acc, rest, element]
-    if (elemType instanceof StructType) this.emitEvmStructDecode(elemType, loc);
-    else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
+    if (elemType instanceof StructType) {
+      this.emitEvmStructDecode(elemType, loc);
+      this.emitPushdataEncode(elemType, loc);
+    } else if (elemType instanceof ArrayType && elemType.bound !== undefined) {
       this.emitEvmStaticArrayInlineDecode(elemType, loc);
+      this.emitEncodeElementPacked(elemType, loc);
     } else {
       throw new Error(`evmCompat abi.decode: '${elemType.toString()}' is not a static composite`);
     }
@@ -16700,9 +16701,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (let i = 0; i < count; i += 1) {
       this.emit(encodeInt(BigInt(width)), loc); this.emit(Op.OP_SPLIT, loc); // [acc, element ABI, rest]
       this.emit(Op.OP_SWAP, loc); // [acc, rest, element ABI]
-      if (element instanceof StructType) this.emitEvmStructDecode(element, loc);
-      else if (element instanceof ArrayType && element.bound !== undefined) {
+      if (element instanceof StructType) {
+        this.emitEvmStructDecode(element, loc);
+        this.emitPushdataEncode(element, loc);
+      } else if (element instanceof ArrayType && element.bound !== undefined) {
         this.emitEvmStaticArrayInlineDecode(element, loc);
+        this.emitEncodeElementPacked(element, loc);
       } else {
         this.emitEvmWordToValue(element, loc);
         this.emitEncodeElementPacked(element, loc);
@@ -17521,14 +17525,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined
         && !this.isDynamicAbiType(single)) {
-        // a single fixed-size static array: the ABI is inline element words (no offset/length) -> array blob
-        this.emitEvmWordsToArray(single.elementType, locationData);
+        // A fixed-size ABI array has no offset/length. Composite elements span multiple words and need
+        // their recursive runtime framing; scalar elements retain the compact word-loop decoder.
+        if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+          this.emitEvmStaticArrayInlineDecode(single, locationData);
+        } else this.emitEvmWordsToArray(single.elementType, locationData);
+        return node;
+      }
+      if (node.schema.length === 1 && single instanceof ArrayType && single.bound !== undefined) {
+        this.emitEvmFixedArrayDecodeDynamic(single, locationData);
         return node;
       }
       if (node.schema.length === 1 && single instanceof ArrayType && single.bound === undefined) {
         // a single top-level array (offset is always 32); rebuild the SolidCash array blob
         if (this.isDynamicAbiType(single.elementType)) this.emitEvmDynamicArrayDecode(single.elementType, locationData);
-        else this.emitEvmArrayDecode(single.elementType, locationData);
+        else if (single.elementType instanceof StructType || single.elementType instanceof ArrayType) {
+          this.emitEvmStaticCompositeArrayDecode(single.elementType, locationData);
+        } else this.emitEvmArrayDecode(single.elementType, locationData);
         return node;
       }
       const hasDynamic = node.schema.some(
@@ -20028,7 +20041,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.popFromStack(2);
     this.pushToStack('(__graph_emission_row)');
-    const expected = '__internal__graphEmissions';
     this.debugRowAssembly('row-without-result');
     this.emitRowHeadCheck(locationData);
     // The prefix (row without its result frame) is what the returning path compares against the stream; asserting

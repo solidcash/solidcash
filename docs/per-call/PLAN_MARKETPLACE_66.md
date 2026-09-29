@@ -1623,8 +1623,15 @@ risk. Take the slices in order, each with its own tests.
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
   - **Claimed by the parallel worker, from `dc4c1bdc6`** (user direction 2026-09-29: work the items this round is
-    not on, in a separate scratch copy): the ECDSA clauses of #41 `take job > sanity checks`, which no wall this
-    round holds covers. The value items held in the bullet above stay held.
+    not on, in a separate scratch copy): MS3's one-call pull, and the ECDSA clauses of #41 `take job > sanity
+    checks`, which no wall this round holds covers. The value items held in the bullet above stay held.
+    - **MS3's one-call pull (I2b, first needed by L5's fan-in titles)**: the `Token.transferFrom` frame that writes
+      its data record and both balance nodes in one execution stalls at its first segment close, pinned by
+      `shapes/fan-in-with-result.test.ts` ("pins the one-call pull"). Root cause first; a fix that lands in
+      `batch-witness-derivation.ts` or `declared-view.ts` is merged around this round's hunks there.
+    - Measured before starting: the relaxed ladder harness does not check a revert's reason or a custom error's
+      arguments (`revertedWith` passes any refusal that is not a construction failure, and `withArgs` passes
+      through when no argument tuple is attached), so the two ECDSA items below are strict parity, not a wall.
     - **C13 (P18, G2 row 22): `ecrecover` returns address 0 for invalid input.** OZ `ECDSA.recover` over 65 zero
       bytes (`v = 0`) has to reach its own `revert ECDSAInvalidSignature()`, which needs a recovery the composer
       can witness as invalid rather than a pair it cannot split. Files: the per-call `ecrecover` emission in the

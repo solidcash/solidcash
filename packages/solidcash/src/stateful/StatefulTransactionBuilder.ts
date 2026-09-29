@@ -3903,6 +3903,16 @@ export class StatefulTransactionBuilder {
   /** Output-only collection coordinates which duplicate cleanup must not reclaim while they are provisional. */
   private _compilerOwnedTrailingEntryOutputIndices(): Set<number> {
     const indices = new Set<number>();
+    // A local sorted-map insert owns its trailing predecessor/NEW lane even while
+    // its provisional commitment matches the fixed entry output. Duplicate
+    // cleanup must not replace that lane with OP_TRUE before VM derivation has
+    // authenticated the final commitment.
+    for (const variable of this._trailingLoopEntryVars()) {
+      const count = (this.loopEntryCommitments.get(variable.collection) ?? []).length;
+      for (let ordinal = 0; ordinal < count; ordinal += 1) {
+        indices.add(this.getLoopEntryOutputIndex(variable.collection, ordinal));
+      }
+    }
     const add = (base: number, group: ExternalCallUtxoGroup): void => {
       if (base < 0) return;
       for (const planned of group.plannedEntryInserts ?? []) {

@@ -10173,14 +10173,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (predOutputs.length > 0) {
           batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
         }
-        // One source row can reach a sorted collection through several alias arms (the route's conditional write
-        // lanes). The compiler then emits that statement as a single INSERT: the predecessor is verified at its
-        // fixed entry coordinate and the one shared trailing lane carries the batch TARGET node.
+        // A single routed source row with one target (including several alias arms for the same key) emits an
+        // INSERT with its predecessor at the fixed entry coordinate and its NEW target in the trailing lane.
         // Publishing the predecessor there displaces the node the route checks at `trailingBase`, and naming a
         // trailing coordinate with `predOut` makes one coordinate carry two contradictory expectations.
-        // Distinct-key writes in one handler (add+remove) also have `slotIndices.length > 1` and one source row,
-        // but they need the trailing-predecessor model: each key keeps its own fixed TARGET and P' trails.
-        // Gate on a single unique sorted target so only alias-arm / same-key lanes take the insert-special path.
+        // Distinct-key writes in one handler (add+remove) need the trailing-predecessor model: each key keeps its
+        // own fixed TARGET and P' trails. Gate on one unique sorted target, not the number of physical lanes.
         // A batch fed by SEVERAL rows is a genuine batch and keeps the trailing-predecessor model even when the
         // rows happen to resolve to the same key at runtime (measured: FakeToken `_allowances`, approve +
         // transferFrom, equal target slots, trailing predecessor required).
@@ -10193,10 +10191,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .filter((slotIndex) => !batchAliasSkips.has(slotIndex) && !inactiveBatchSlots.has(slotIndex))
             .map((slotIndex) => binToHex(batchTargetSlots.get(slotIndex) ?? new Uint8Array())),
         );
-        const graphRouteOwnsSingleTarget = (entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)
-          ?.messageBusGraphExecution === true;
         const singleTargetRowBatch = predOutputs.length > 0
-          && (batch.slotIndices.length > 1 || graphRouteOwnsSingleTarget)
           && batchSourceRows.length === 1
           && uniqueBatchTargets.size === 1;
         const linearRows = batch.linear ? batch.slotIndices

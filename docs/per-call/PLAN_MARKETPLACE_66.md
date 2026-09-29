@@ -1529,12 +1529,16 @@ risk. Take the slices in order, each with its own tests.
   - **Claimed by the parallel worker, from `b5f8845dd` (this round's hand-over, on its own recommendation to start
     the `__raw__` design in parallel):** one item on that wall, disjoint from the compiler work this round
     holds (the per-body inline-assembly admission rule and the static low-level lowering it blocks):
-    - **the value-carrying half of `__raw__`, its contract arm**: a send to a user's lock is served (this row's
-      commit: `to.call{value: v}("")` lowers to the listed send, which requires a P2PKH lock as W2 says, and a
-      master's bodies may list different numbers of sends). What remains is a value for a contract: a `CALL` into
-      the recipient's `receive()` with `calls[k].value` (W2, R3), whose value accounting, the recipient master's
-      satoshi container, is spec open point 10. Until that is decided such a send fails closed at the listed
-      send's P2PKH check.
+    - **value sends to contracts, at EVM parity (spec 4b, user decision 2026-09-29)**: a value send to a
+      contract runs its `receive()` or fails, and the SDK composes it. In four slices, each landing with its
+      tests: (1) the recipient: `receive()` dispatched by its selector, payable bodies and the call-value check,
+      and conservation, `growth(X) == in(X) - out(X)`, checked by a master that settles alone and by the
+      validator (V7); (2) the sender: a value send to a contract is a `CALL` into `receive()` carrying `value`, and
+      sends are paid from the containers; (3) `address(this).balance`; (4) the SDK: a value send composed end to
+      end, the recipient's `receive()` found in its artifact or refused by name. Served before this: a send to a
+      user's lock (`4b68d71dc`). Files: the per-call head and bodies (`support.ts`, `frame-tail.ts`, the
+      generation pass), the validator's V7, and the composer; merged onto the implementer's working tree where
+      it holds the same files.
     The commit that lands each item removes its line here. What this round holds and must not be duplicated: the
     admission rule at `per-call/master/support.ts:864` (contract-wide to per-body) and the second
     `LowerStaticLowLevelCalls` placement that resolves the nine refused entries' payloads. **Landed**: the

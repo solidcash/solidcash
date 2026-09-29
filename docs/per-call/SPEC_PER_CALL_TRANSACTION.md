@@ -486,6 +486,37 @@ frame sees the same values. The SDK sets the locktime before it derives anything
 
 ---
 
+## 4b. Value (resolves open point 10)
+
+A contract's BCH follows the EVM's account model: a contract has a balance, value reaches it only as the
+`msg.value` a frame of it receives, and value leaves it only as a send or as the `msg.value` it passes to a callee.
+
+- **Balance.** X's balance is the value of its satoshi containers: the tokenless UTXOs at `containerX`, the
+  container covenant the direct convention already uses for X's category. A container is spent only beside a
+  master of X, so every change to X's balance runs X's code.
+- **Receiving.** A frame that carries value is a message call into a payable body: `receive()`, a `payable`
+  function, or a payable `fallback()`. A body that is not payable requires `value == 0`, the EVM's call-value
+  check. `receive()` is reached through the selector of `receive()`, which a value send's call data carries where
+  the EVM's is empty, so a master dispatches it like any other body.
+- **Sending.** `transfer(v)`, `send(v)` and `call{value: v}("")` to a P2PKH lock are a listed send (4a). To a
+  contract they are a `CALL` into its `receive()`, or its payable `fallback()` when it has no `receive()`, whose
+  call record carries `value = v`. A recipient with neither body cannot run the frame, so the transaction fails,
+  as in the EVM; the SDK finds the recipient's `receive()` in its artifact and refuses by name to compose a send
+  to a contract without one. A composed call cannot fail (T22), so `send` and `call` return `true` whenever the
+  transaction is valid.
+- **Conservation, per contract X.** `growth(X) == in(X) - out(X)`, where
+  - `growth(X)` is the value of X's container outputs less the value of the containers X spends;
+  - `in(X)` is the `value` of the frames entered into X from outside its context (`ROOT`, `CALL`, `CREATE`);
+  - `out(X)` is what X pays: its listed sends and the `value` of its `CALL` and `CREATE` records.
+  - X's master checks it when it settles X alone; the validator checks it otherwise (V7). Records keep exactly
+    their value, so a contract pays only from its containers: a send its balance cannot cover fails, as in the
+    EVM, and nobody else, the funder included, can move its balance.
+  - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
+    contract may pay out value it receives later in the same transaction. This is the one departure.
+- **`address(this).balance`** is X's balance as the EVM defines it inside the frame: the value of the
+  containers X spends, with this frame's `msg.value` already credited.
+
+---
 ## 5. Transaction layout
 
 | Region | Inputs | Outputs |
@@ -691,10 +722,10 @@ master made no `DELEGATE` or `INTERNAL` call; R4):
     minting NFTs, validators mutable ones), so the rule costs the convention nothing.
 - **S3.** The `catX` state UTXOs spent in the transaction are exactly the records the master touched.
 - **S4. Values.**
-  - Every record keeps at least its input value unless a listed send pays from it. In v1 a listed send pays from the
-    contract's state record (section 11), and the 66 make no BCH send, so the wire form does not carry the payer.
+  - Every record keeps exactly its input value. A contract pays its listed sends and the `msg.value` it passes
+    from its satoshi containers (4b), and the 66 make no BCH send.
   - Listed sends are paid exactly (T39).
-  - Value conservation beyond this is open point 10.
+  - Value is conserved per contract (4b).
 
 ### 7.2 Validator (`V_TEMPLATE`)
 
@@ -1125,7 +1156,8 @@ cost profile for this reason, and the program's fit inside the published 800-per
      - a `this.f()` whose callee writes a mapping is refused at compile time (`InvalidParameterTypeError`).
    - So the account mix-up of T23 fails closed today. Fixing either gap while keeping today's semantics would make it
      live.
-10. **BCH value accounting** across masters and state UTXOs. Preservation is in force (P2, V1, S4, D2). Payable
+10. **BCH value accounting** across masters and state UTXOs. **Resolved by section 4b**, which the text below
+    motivated. Preservation is in force (P2, V1, S4, D2). Payable
     calls, satoshi containers and conservation across sends are not specified; the 66 do not use them.
     - **The principle to prove** when they are: value leaves a contract's UTXOs only as a listed send or as
       `msg.value` passed to a callee, and enters only as `msg.value` it receives or as the funding of outputs it

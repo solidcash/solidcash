@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
-  buildChunkCommitment, bytesToHex, encodePushdataValue, parseChunkCommitment,
+  buildChunkCommitment, buildValueChunkCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue,
+  parseChunkCommitment, sha256, splitValueIntoValueChunks,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -10,8 +11,10 @@ import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
   chunkRecordLockingBytecode, readPerCallDeployment, readPerCallState,
 } from '../../../src/per-call/deploy/index.js';
+import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -73,6 +76,29 @@ const REGISTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function register(address who, string name_, string bio_) {'
   + '     require(this.members[who].up == 0);'
   + '     this.members[who] = Member(who, name_, bio_, 1);'
+  + '     this.items.push(msg.sender);'
+  + '   }'
+  + ' }';
+
+/**
+ * The append beside an update of a mapping node the live list holds, whose new value crosses the inline limit.
+ *
+ * The value a long entry writes lives in continuation chunks at the value's own covenant, so the hop declares a
+ * run of chunk records beside the dynamic value's run. Both runs are open in one segment; each is addressed by the
+ * rule the body uses for it.
+ */
+const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; string name; string bio; uint up; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   address[] public items;'
+  + '   function initialize() {'
+  + '     this.members[msg.sender] = Member(msg.sender, "n", "b", 1);'
+  + '     this.items.push(msg.sender);'
+  + '   }'
+  + '   function rename(string name_, string bio_) {'
+  + '     this.members[msg.sender] = Member(msg.sender, name_, bio_, 2);'
   + '     this.items.push(msg.sender);'
   + '   }'
   + ' }';
@@ -319,10 +345,80 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('refuses a chunked mapping value beside the append, naming the two runs it cannot place', async () => {
-    // The registration shape: the mapping value is longer than a node's tail holds, so it needs its own run of
-    // chunk records, and the dynamic value needs another. Both runs start one layout width past the record block,
-    // so the hop cannot declare them at both bands; the write is refused by name rather than laid out at one.
+  it('settles a chunked mapping value the live list holds beside the append, and broadcasts it', async () => {
+    // Both open runs are declared in one segment: the dynamic value's chunk, then the run of chunk records the
+    // mapping value takes. A per-call body locates a dynamic run at the ordinal its own arithmetic names and a
+    // mapping value's run by address, so the two families are declared in the order the compiler emits them and
+    // both settle.
+    const { deployment, network, artifacts, funding } = await deploy(LONG_UPDATE_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const name = 'n'.repeat(80);
+    const bio = 'b'.repeat(80);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'rename',
+      args: [name, bio],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The value the entry's own body computed, and the run its node takes in the shipped encoders' form.
+    const value = encodePushdataValue(
+      { who: funding.deployerLock, name, bio, up: 2n }, 'Member', artifacts.Impl!.structs,
+    );
+    expect(value.length).toBeGreaterThan(60);
+    const slot = keyToSlotMulti([funding.deployerLock]);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+    expect(valueChunks.length).toBeGreaterThan(0);
+
+    // Every value chunk is a trailing output at the value's own collection covenant, carrying its own piece.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(valueChunks.length);
+    trailing.forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+
+    // The dynamic value's run is the live chunk recreated in place, carrying the array the append grew.
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const chunkIds = result.draft.layout.participants
+      .filter((placed) => placed.id.startsWith('dynamic-chunk-'));
+    expect(chunkIds).toHaveLength(1);
+    expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+
+    // The node the write rewrote carries the value's own tail, read back through the shipped decoder.
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const node = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(node.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+  });
+
+  it('refuses an insert of a mapping target beside the append, naming the record the run addresses', async () => {
+    // A target the live list does not hold makes its group two records: the relinked predecessor and the created
+    // node. A per-call body derives the dynamic run's ordinal from the batch's operands, which advance past a
+    // target's group by one, so the run addresses the created node — whose lock is the entry covenant, not the
+    // run's own — and no declared position for the run puts it back. The insert is refused by name.
     const { deployment, network, artifacts, funding } = await deploy(REGISTER_CALL_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
@@ -339,8 +435,9 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(
-      'writes a mapping value that needs a run of chunk records beside a dynamic value, and this hop cannot '
-      + 'declare both runs at the ordinals the body addresses',
+      'the implementation\'s "register" entry inserts a mapping target the live list does not hold beside a '
+      + 'dynamic value, and an insert group declares the relinked predecessor and the created node, so the '
+      + 'ordinal the dynamic run is addressed at names the created node rather than the run',
     );
   });
 });

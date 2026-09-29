@@ -920,14 +920,18 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   const batch = planHopMappingBatch(request);
   const dynamic = planHopDynamicRun(request);
   if (batch === undefined && dynamic === undefined) return undefined;
-  // A mapping value past the node's inline limit takes its own run of chunk records, and a dynamic value takes
-  // another; the body addresses each run at the band its own source fixes, and a frame that declares both cannot
-  // place them at both bands. Each run is served on its own, and a mapping value the node holds inline is served
-  // beside a dynamic run, but the two runs together are refused by name rather than laid out at one of the bands.
-  if (batch !== undefined && dynamic !== undefined && batch.plan.chunks.length > 0) {
+  // A per-call body locates a dynamic run at the ordinal its own arithmetic derives from the batch's operands, and
+  // a target the live list does not hold makes the batch's group two records — the relinked predecessor and the
+  // created node — where the body advances the run's base by one. The ordinal the run addresses then names the
+  // created node, whose lock is the entry covenant rather than the run's own, so the body's address pin fails and
+  // no declared position for the run puts it back. A target the list holds makes the group one record, which the
+  // base already accounts for, so that shape is served; a target that splices a predecessor is refused by name.
+  if (batch !== undefined && dynamic !== undefined && request.liveDeployment !== undefined
+    && batch.plan.written.some((node) => !node.existed)) {
     throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes a mapping value that needs a run of chunk `
-      + 'records beside a dynamic value, and this hop cannot declare both runs at the ordinals the body addresses',
+      `the implementation's "${request.functionName}" entry inserts a mapping target the live list does not hold `
+      + 'beside a dynamic value, and an insert group declares the relinked predecessor and the created node, so '
+      + 'the ordinal the dynamic run is addressed at names the created node rather than the run',
     );
   }
   const spentUtxos = new Map<string, Utxo>();
@@ -948,18 +952,23 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
     ],
     spentUtxos,
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => {
-      // A dynamic run's records follow every record the mapping plan declares, one step past them: the chunks the
-      // deployment held are participants the frame spends and recreates in place, and the chunks the write grows
-      // are trailing outputs past them.
-      const mappingCreated = batch === undefined ? 0 : batch.plan.written.filter((node) => !node.existed).length;
-      const mappingChunks = batch?.plan.chunks.length ?? 0;
-      const trailingBase = context.createdBase + mappingCreated + mappingChunks;
-      const dynamicBase = batch?.learningCandidates.length ?? 0;
+      // The record families that fill the trailing region are laid out in the order the compiler emits them: the
+      // batch's records, then a dynamic value's chunks, then a chunkable mapping value's chunks. A created record's
+      // declared index has to be the output the trailing region allocates it, so the families' indices are
+      // allocated in that same order — every created node, then the chunks the dynamic run grows, then the value
+      // chunks. The chunks a dynamic run keeps are participants the frame spends and recreates in place.
+      const plan = batch?.plan;
+      const created = plan === undefined ? [] : plan.written.filter((node) => !node.existed);
       const keptCount = dynamic?.plan.spent.chunks.length ?? 0;
+      const dynamicCreatedCount = dynamic === undefined ? 0 : dynamic.plan.written.chunks.length - keptCount;
+      const dynamicCreatedBase = context.createdBase + created.length;
+      const chunkBase = dynamicCreatedBase + dynamicCreatedCount;
+      const dynamicBase = batch?.learningCandidates.length ?? 0;
+
       const dynamicLaid = dynamic === undefined ? undefined : layOutChunkRun({
         plan: dynamic.plan,
         category: context.category,
-        base: keptCount === 0 ? trailingBase : context.indexOf(dynamic.spent[0]!.id),
+        base: keptCount === 0 ? chunkBase : context.indexOf(dynamic.spent[0]!.id),
         writer: context.proxyMasterIndex,
         valueSatoshis: context.recordAmount,
       });
@@ -969,9 +978,13 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
       (dynamicLaid?.records ?? []).forEach((record, offset) => {
         const learned = context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut;
         if (record.role !== 'kept') {
-          // A created chunk declares no input and is written at the trailing output its own position names.
-          const out = trailingBase + (offset - keptCount);
-          dynamicEntries.push({ in: INDEX_NONE, out, viewIn: new Uint8Array(0), viewOut: learned });
+          // A created chunk declares no input: it is a trailing output at the index its family allocates.
+          dynamicEntries.push({
+            in: INDEX_NONE,
+            out: dynamicCreatedBase + (offset - keptCount),
+            viewIn: new Uint8Array(0),
+            viewOut: learned,
+          });
           dynamicOutputs.push({
             lockingBytecode: record.output!.lockingBytecode,
             valueSatoshis: record.output!.valueSatoshis,
@@ -983,12 +996,18 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         const lockingBytecode = record.input!.source.lockingBytecode;
         dynamicEntries.push({ in: record.index, out: record.index, viewIn: record.viewIn, viewOut: learned });
         dynamicInputs[spent.id] = {
-          source: { lockingBytecode, valueSatoshis: spent.utxo.satoshis, token: nodeToken(context.category, record.viewIn) },
-          output: { lockingBytecode, valueSatoshis: spent.utxo.satoshis, token: nodeToken(context.category, learned) },
+          source: {
+            lockingBytecode, valueSatoshis: spent.utxo.satoshis,
+            token: nodeToken(context.category, record.viewIn),
+          },
+          output: {
+            lockingBytecode, valueSatoshis: spent.utxo.satoshis,
+            token: nodeToken(context.category, learned),
+          },
           unlockingBytecode: record.input!.unlockingBytecode,
         };
       });
-      if (batch === undefined) {
+      if (batch === undefined || plan === undefined) {
         return {
           entries: dynamicEntries,
           inputs: dynamicInputs,
@@ -996,8 +1015,6 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
           createdOutputs: dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
         };
       }
-      const { plan } = batch;
-      const created = plan.written.filter((node) => !node.existed);
       const afterBySlot = new Map(plan.written.map((node) => [bytesToHex(node.slot), node.after]));
       const learnedBySlot = new Map<string, Uint8Array>();
       batch.learningSlots.forEach((slot, index) => {
@@ -1012,9 +1029,6 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
       created.forEach((node, position) => {
         placements.set(bytesToHex(node.slot), { out: context.createdBase + position });
       });
-      // A long value's chunks are created records too, one output each past the created nodes. They sit past the
-      // value's own node, at the indices the segment declares them at.
-      const chunkBase = context.createdBase + created.length;
       const chunkPosition = new Map(plan.chunks.map((chunk, position) => [chunkKey(chunk.slot, chunk.index), position]));
       const entries = layOutMappingBatch(withLearnedViews(plan, learnedBySlot), {
         placementOf: (slot) => placements.get(bytesToHex(slot)),
@@ -1026,6 +1040,8 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
       // A value-dependent node's end view is the body's to compute; every other node keeps the planner's own.
       const writtenOf = (slot: Uint8Array): Uint8Array =>
         learnedBySlot.get(bytesToHex(slot)) ?? afterBySlot.get(bytesToHex(slot))!;
+      const valueChunkEntries = entries.slice(entries.length - plan.chunks.length);
+      const groupEntries = entries.slice(0, entries.length - plan.chunks.length);
 
       const covenant = buildEntryNftCovenantScript(context.category, computeCollectionHash(batch.signature));
       const lock = scriptToLockingBytecode(covenant, 'p2sh32');
@@ -1048,8 +1064,8 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
           unlockingBytecode,
         };
       }
-      // A created node has no input, so it is a trailing output past the events, at the index it declares. A long
-      // value's chunks follow it, each at the value's own collection covenant carrying the bytes the body wrote.
+      // A created node has no input, so it is a trailing output past the events, at the index it declares. The
+      // dynamic run's grown chunks and then the value chunks follow it, each carrying what the body computed.
       const trailingOutputs: DraftSourceOutput[] = created.map((node): DraftSourceOutput => ({
         lockingBytecode: lock, valueSatoshis: context.recordAmount,
         token: nodeToken(context.category, writtenOf(node.slot)),
@@ -1067,14 +1083,15 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
           (_unused, slot) => batch.valueWitnesses.get(slot) ?? new Uint8Array(0),
         );
       return {
-        entries: [...entries, ...dynamicEntries],
+        entries: [...groupEntries, ...dynamicEntries, ...valueChunkEntries],
         inputs,
-        trailingOutputs: [...trailingOutputs, ...chunkOutputs, ...dynamicOutputs],
+        trailingOutputs: [...trailingOutputs, ...dynamicOutputs, ...chunkOutputs],
         // The created records the transaction writes, in first-declaration order: every created node, then the run
-        // of chunk records a long value takes, then a dynamic value's own run.
+        // the dynamic value grew, then the run of chunk records a long mapping value takes.
         createdOutputs: [
-          ...entries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
+          ...groupEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
           ...dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
+          ...valueChunkEntries.map((entry) => entry.out),
         ],
         ...(valueSlots === undefined ? {} : { values: valueSlots }),
       };

@@ -45,6 +45,8 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   deployMaster,
+  eventLockingBytecode,
+  eventSentinel,
   readComputedDeclaration,
   readPerCallDeployment,
   stateRecordLockingBytecode,
@@ -142,6 +144,9 @@ const MASTER_ID = 'master';
 const VALIDATOR_ID = 'validator';
 const CALLER_ID = 'caller';
 
+/** The satoshi value an event output carries, matching the genesis's own event outputs. */
+const EVENT_OUTPUT_SATOSHIS = 1_000n;
+
 /** The record identity for data-NFT index `nftIndex`. */
 function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
@@ -165,6 +170,8 @@ interface CallEntry {
   readonly selector: string;
   readonly inputs: readonly { readonly name: string; readonly type: string }[];
   readonly outputs: readonly { readonly type: string }[];
+  /** The events the entry emits, which its frame declares one output per, in emit order. */
+  readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
 }
 
 /** The ABI row a call names, refusing an entry the artifact does not publish. */
@@ -178,7 +185,10 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
       `entry "${functionName}" publishes no selector, so its frame cannot be dispatched to`,
     );
   }
-  return { name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [] };
+  return {
+    name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
+    emits: entry.emits ?? [],
+  };
 }
 
 /** The stop-site entry one identity publishes, or `undefined` when the artifact publishes none for it. */
@@ -341,8 +351,32 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   }];
   const layout = layoutTransaction(blocks);
   const masterIndex = participant(layout, MASTER_ID).index;
-  // Created mapping nodes are the first trailing outputs: the frame emits no events and makes no value sends.
-  const createdBase = layout.participantCount;
+  // The trailing region is events first, then the created mapping nodes. An entry that emits declares one output
+  // per emit, in emit order, at the covenant the body rebuilds; each output's commitment is the payload the body
+  // computes, so the frame starts it from a sentinel the body's own comparison fails against and the derivation
+  // learns what the body computed. An entry that emits nothing leaves the region to the created nodes, as before.
+  const eventDefinitions = new Map((artifact.events ?? []).map((definition) => [definition.signature, definition]));
+  const emits = [...entry.emits].sort((left, right) => left.emitIndex - right.emitIndex);
+  const maximumCommitmentBytes = Math.max(
+    stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
+  );
+  const eventSentinels = emits.map((_emit, position) => eventSentinel(
+    category, artifact.contractName, position, maximumCommitmentBytes,
+  ));
+  const eventIndices = emits.map((_emit, position) => layout.participantCount + position);
+  const eventOutputs = (commitments: readonly (Uint8Array | undefined)[]): DraftSourceOutput[] =>
+    emits.map((emit, position) => ({
+      lockingBytecode: eventLockingBytecode(
+        category, emit.eventSignature, eventDefinitions.get(emit.eventSignature)?.anonymous === true,
+      ),
+      valueSatoshis: EVENT_OUTPUT_SATOSHIS,
+      token: {
+        category, amount: 0n,
+        nft: { capability: 'none', commitment: commitments[position] ?? eventSentinels[position]! },
+      },
+    }));
+  // Created mapping nodes are the trailing outputs past the events: the frame makes no value sends.
+  const createdBase = layout.participantCount + emits.length;
 
   // A call-free entry runs in exactly one segment. Every segment declares the frame's state records and the mapping
   // records the entry writes, with each end commitment the body computes left unstated so the derivation learns it.
@@ -359,13 +393,14 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
-  // One attempt per value the body computes (each mapping node, and the frame's `retval`), plus the attempt that
-  // derives against every value learned.
-  const maximumAttempts = learningCandidates.length + (returnsValue ? 1 : 0) + 3;
+  // One attempt per value the body computes (each mapping node, each event and the frame's `retval`), plus the
+  // attempt that derives against every value learned.
+  const maximumAttempts = learningCandidates.length + emits.length + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
     learnedRetval: Uint8Array | undefined,
+    learnedEvents: readonly (Uint8Array | undefined)[],
   ): CompositionDraftPlan => {
     const laid = mappingRecords?.lay({
       createdBase,
@@ -402,7 +437,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
       segments: Array.from({ length: segmentCount }, segment),
-      events: [],
+      events: eventIndices,
       sends: [],
       argumentPushes: entryArgumentPushes(entry, options.args ?? [], structs, functionName),
       redeemScript: deployed.script,
@@ -439,7 +474,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       userInputs: [{ id: CALLER_ID, index: layout.participantCount }],
       masters: [masterDraft],
       inputs,
-      trailingOutputs: laid?.trailingOutputs ?? [],
+      trailingOutputs: [...eventOutputs(learnedEvents), ...(laid?.trailingOutputs ?? [])],
       validator: {
         id: VALIDATOR_ID,
         covers: [],
@@ -468,12 +503,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   let completed: readonly FrameRequest[] = [];
   let learnedViews: readonly (Uint8Array | undefined)[] = learningCandidates.map(() => undefined);
   let learnedRetval: Uint8Array | undefined;
-  const maximumCommitmentBytes = Math.max(
-    stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
-  );
+  let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map(() => undefined);
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(learnedViews, learnedRetval);
+    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents);
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
     draft = candidate;
     let stalled = false;
@@ -486,9 +519,9 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
       stalled = true;
     }
-    // A void entry that writes no mapping leaves nothing to learn: the plan is the one just derived, accepted or
-    // refused.
-    if (!returnsValue && learningCandidates.length === 0) {
+    // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
+    // derived, accepted or refused.
+    if (!returnsValue && learningCandidates.length === 0 && emits.length === 0) {
       settled = true;
       break;
     }
@@ -516,6 +549,12 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           (index === position ? Uint8Array.from(reading.computed) : view));
         continue;
       }
+      const eventPosition = eventSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
+      if (eventPosition >= 0) {
+        learnedEvents = learnedEvents.map((view, index) =>
+          (index === eventPosition ? Uint8Array.from(reading.computed) : view));
+        continue;
+      }
       // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
       break;
     }
@@ -526,12 +565,20 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (draft === undefined) {
     throw new PerCallCallError('the composer built no draft for the call frame');
   }
-  const owed = learnedViews.some((view) => view === undefined) || (returnsValue && learnedRetval === undefined);
+  const owed = learnedViews.some((view) => view === undefined)
+    || (returnsValue && learnedRetval === undefined)
+    || learnedEvents.some((view) => view === undefined);
   if (!settled && owed) {
     if (mappingRecords !== undefined) {
       throw new PerCallCallError(
         `the call's write to mapping "${mappingRecords.collection}" did not hand back every node it rewrites, so the `
         + 'frame cannot declare their commitments',
+      );
+    }
+    if (learnedEvents.some((view) => view === undefined)) {
+      throw new PerCallCallError(
+        `entry "${functionName}" did not hand back every event payload it emits, so its frame cannot declare its `
+        + 'event outputs',
       );
     }
     throw new PerCallCallError(
@@ -552,7 +599,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       ? { id: placed.id, index: placed.index, accepted: true }
       : {
         id: placed.id, index: placed.index, accepted: false,
-        objection: String((state as { readonly error?: unknown }).error),
+        // The objection names the instruction the machine stopped at, so a refused body can be located in the
+        // program's own debug rather than read as an unattributed opcode failure.
+        objection: `${String((state as { readonly error?: unknown }).error)}`
+          + ` (instruction ${(state as { readonly ip?: number }).ip ?? 0})`,
       };
   });
   const accepted = verdicts.every((verdict) => verdict.accepted);

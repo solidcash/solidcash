@@ -14,7 +14,7 @@ import {
 } from '../../../src/stateful/SortedList.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
+import { aliceAddress, alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
  * Calling an entry on a deployed per-call contract that keeps a mapping.
@@ -318,6 +318,65 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
 
     // The entry returned the balance it credited.
+    expect(result.values).toStrictEqual([5n]);
+    expect(result.broadcast).toBeDefined();
+  });
+
+  it('settles a two-target batch beside an event, seeded to the caller by the constructor', async () => {
+    // A token's own shape: the constructor seeds `balances[msg.sender]`, and `transfer` debits the caller while
+    // crediting an argument key in one batch, then emits. The genesis binds the constructor's frame caller to the
+    // deployer's coin, so the seeded node is the caller's and the call reads and rewrites it; the entry's event
+    // is declared as a trailing output and its payload is learned from the body's own comparison.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   uint total;'
+      + '   mapping(address => uint) balances;'
+      + '   mapping(address => mapping(address => uint)) allowances;'
+      + '   event Moved(address indexed who, uint amount);'
+      + '   constructor() { this.balances[msg.sender] = 1000; this.total = 1000; }'
+      + '   function transfer(address to, uint amount) returns (uint) {'
+      + '     this.balances[msg.sender] = this.balances[msg.sender] - amount;'
+      + '     this.balances[to] = this.balances[to] + amount;'
+      + '     emit Moved(to, amount);'
+      + '     return this.balances[to];'
+      + '   }'
+      + ' }';
+    const token = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+
+    // The deployer's own coin funds the genesis and is the frame's caller, exactly as a signer's coin does a call.
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(aliceAddress, fundingUtxo);
+    const deployment = await deployStatefulContract(token, [], {
+      provider, fundingUtxo, funder: signature.unlockP2PKH(), changeAddress: aliceAddress,
+    });
+    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(binToHex(CALLER_LOCK), callerUtxo);
+
+    // The constructor seeded the caller's key, so the caller's write rewrites a held node and the recipient's
+    // insert relinks it: the same coordinate the case above covers, now with the entry emitting beside it.
+    const genesis = await readPerCallDeployment(provider, deployment.categoryId, token.stateLayout!);
+    expect(genesis.nodesByCollection.get('balances') ?? []).toHaveLength(2);
+    // The constructor never writes `allowances`, so the genesis mints its empty head: a first insert into that
+    // collection later splices beside it.
+    expect(genesis.nodesByCollection.get('allowances') ?? []).toHaveLength(1);
+
+    const result = await callPerCallEntry({
+      provider, artifact: token, categoryId: deployment.categoryId, functionName: 'transfer',
+      args: [RELINKED_LOCK, 5n], callerUtxo, callerLockingBytecode: CALLER_LOCK,
+      funder: signature.unlockP2PKH(), vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    // The trailing region holds the entry's event first, then the created recipient node.
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    expect(result.draft.trailingOutputs).toHaveLength(2);
+
+    const created = decodeEntryCommitment(nodeOutput(result, result.draft.trailingOutputs[1]!.index));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(valueOf(5n)));
     expect(result.values).toStrictEqual([5n]);
     expect(result.broadcast).toBeDefined();
   });

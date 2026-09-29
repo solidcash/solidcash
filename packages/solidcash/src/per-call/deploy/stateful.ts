@@ -69,14 +69,28 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
   // between the constructor and the initial state cannot see that this contract takes any: the values arrive as
   // `initArgs`. A caller that reaches `StatefulContract.deploy` directly passes them as the constructor args.
   const constructorValues = constructorArgs.length > 0 ? constructorArgs : (options.initArgs ?? []);
+  // The constructor's own frame is entered by the deployer, whose coin funds the genesis. A body that reads
+  // `msg.sender` therefore resolves to the funder's lock, not the placeholder a frame with no stated caller uses:
+  // a constructor that writes `balances[msg.sender]` (a token's mint) would otherwise seed the placeholder key.
+  const funderLock = options.funder.generateLockingBytecode();
+  const senderLockingBytecode = funderLock.length === 25 ? funderLock : undefined;
+  // Every sorted collection an entry can write needs its empty head sentinel minted here, because a first insert
+  // splices beside it. A collection the constructor's own plan writes carries the head that plan relinked, and the
+  // genesis filters that one out; a caller that names extra collections (a proxy's) keeps its own too.
+  const declaredHeads = (artifact.stateLayout?.collections ?? [])
+    .filter((collection) => collection.sorted === true)
+    .map((collection) => ({ name: collection.name, signature: collection.signature }));
+  const headCollections = [...(options.headCollections ?? []), ...declaredHeads]
+    .filter((collection, index, all) => all.findIndex((other) => other.name === collection.name) === index);
   const genesis = derivePerCallGenesis({
     artifact,
     category,
     validatorProgram,
     provider: options.provider,
     constructorArgs: constructorValues,
+    ...(senderLockingBytecode === undefined ? {} : { senderLockingBytecode }),
     ...(options.initialState === undefined ? {} : { initialState: options.initialState }),
-    ...(options.headCollections === undefined ? {} : { headCollections: options.headCollections }),
+    ...(headCollections.length === 0 ? {} : { headCollections }),
     ...(options.provider.consensusLimits?.maximumNftCommitmentBytes === undefined
       ? {} : { maximumNftCommitmentBytes: options.provider.consensusLimits.maximumNftCommitmentBytes }),
   });

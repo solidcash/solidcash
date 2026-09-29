@@ -154,6 +154,8 @@ describe('calling an entry on a deployed per-call contract', () => {
     const master = result.verdicts.find((verdict) => verdict.id === 'master');
     expect(master?.accepted).toBe(false);
     expect(master?.objection).toMatch(/OP_VERIFY/);
+    // The objection locates the failure, so a refused body can be read against the program's own debug.
+    expect(master?.objection).toMatch(/\(instruction \d+\)/);
     // A refused call has no transaction to broadcast.
     expect(result.broadcast).toBeUndefined();
   });

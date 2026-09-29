@@ -23068,11 +23068,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset; the created node's successor is now on top
       this.emit(Op.OP_ADD, loc);
       if (this.perCallMaster) {
-        // A predecessor the transaction creates carries the create sentinel in its `in` field, so the proof
-        // coordinate lands below every input and there is no spent record to read. Such a predecessor is the empty
-        // list's head, whose slot and link are the collection's zero slot, so the write judges the target's gap
-        // against that head rather than against a record the transaction holds.
-        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        // A created predecessor is the INSERT leg: its output is real (predOut >= 0) while the proof coordinate
+        // is the create sentinel, which names no input, so the empty list's head is the collection's zero slot
+        // relinked to the target. An UPDATE keeps the declared record even when an earlier frame created it, so the
+        // sentinel alone cannot tell the two apart and the sentinel plus the predecessor's own output does.
+        this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${slotIndex}`, loc);
+        this.emit(Op.OP_0, loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+        this.emit(Op.OP_OVER, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_BOOLAND, loc);
         this.emit(Op.OP_IF, loc);
         {
           this.emit(Op.OP_DROP, loc); // the created coordinate names no input
@@ -25146,14 +25149,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // No proof-input bytecode comparison: a created predecessor has no input to compare the output with.
         };
         if (this.perCallMaster) {
-          // The predecessor's `in` field is the create sentinel exactly when the derivation's coordinate is below
-          // every input; a spent predecessor's coordinate is its real input index.
-          proofIndex(slot); bin(Op.OP_DUP); bin(Op.OP_0); bin(Op.OP_LESSTHAN);
+          // A created predecessor is the INSERT leg: its output is real (predOut >= 0) while the proof coordinate
+          // is the create sentinel, which names no input. An UPDATE keeps the spent arm, whose own leg requires
+          // the -1 sentinel, so a created target is never read as a created predecessor.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL);
+          proofIndex(slot); bin(Op.OP_0); bin(Op.OP_LESSTHAN);
+          bin(Op.OP_BOOLAND);
           bin(Op.OP_IF);
-          bin(Op.OP_DROP); // the created coordinate names no input
           createdPredecessorArm();
           bin(Op.OP_ELSE);
-          bin(Op.OP_DROP);
           spentPredecessorArm();
           bin(Op.OP_ENDIF);
         } else {

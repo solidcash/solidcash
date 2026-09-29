@@ -254,7 +254,7 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect(deployment.initialize.accepted).toBe(true);
 
     // The entry reads the mapping under one key and writes it under another: two mapping entries, one of them
-    // written. The compiler refuses the body by name rather than let a hop compose the write from a foreign key.
+    // written. The hop declares only the batch's records, so it refuses the read beside it by name.
     const detached = 'pragma solidcash ^0.13.0;'
       + ' contract Impl {'
       + '   struct Member { address who; uint up; uint down; }'
@@ -295,9 +295,8 @@ describe('a proxied call whose mapping value is built from the node it writes', 
       changeAddress: detachedFunding.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(
-      'the implementation\'s "bump" entry is refused by the compiler (Impl.bump()): the body touches 2 mapping '
-      + 'entries and writes 1 of them, and a master derives the operands only when every entry is one of the '
-      + 'batch targets',
+      'the implementation\'s "bump" entry reads mapping "members" beside the batch it writes, which this hop does not '
+      + 'declare',
     );
   });
 });

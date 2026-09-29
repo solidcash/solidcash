@@ -186,9 +186,10 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     expect(result.broadcast).toBeDefined();
   });
 
-  it('refuses a key the entry only reads beside its write, naming the fact', async () => {
-    // `move` writes `to` but reads `from` beside that write. The batch declares one group per write, so the read
-    // has no ordinal of its own and the call has no node to declare it with.
+  it('refuses a key the entry only reads beside its write when the write relinks its node, naming the fact', async () => {
+    // `move` writes `to` but reads `from` beside that write. The read's node is declared kept ahead of the batch's
+    // groups, but `to` sorts right above `from` and is spliced in beside it, so the insert relinks the node the read
+    // spends: one UTXO, two records.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
@@ -215,7 +216,7 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       provider, artifact: moving, categoryId: deployment.categoryId, functionName: 'move',
       args: [SEED_LOCK, RECIPIENT_LOCK, 5n], callerUtxo, callerLockingBytecode: callerLock,
       funder: signature.unlockP2PKH(), vm: compositionMachine(),
-    })).rejects.toThrow(/reads a mapping key outside the write batch/);
+    })).rejects.toThrow(/reads a key at a mapping node it also spends for another key/);
   });
 
   it('resolves a caller-keyed write the artifact publishes as an expression label', async () => {

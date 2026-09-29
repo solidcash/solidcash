@@ -499,8 +499,7 @@ function derivableTargetBatches(
   const batches = entry.sortedBatchInfo ?? [];
   if (batches.length === 0) return undefined;
   const accesses = entry.entryAccesses ?? [];
-  const written = batches.reduce((total, batch) => total + batch.slotIndices.length, 0);
-  if (accesses.length !== written) return undefined;
+  if (accesses.some((access) => readsOutsideBatch(access, batches) === false)) return undefined;
   const derivable: DerivableTargetBatch[] = [];
   for (const batch of batches) {
     for (const slot of batch.slotIndices) {
@@ -519,12 +518,26 @@ function derivableTargetBatches(
 }
 
 /**
+ * Whether an access outside every batch is a key the body only reads at a fixed slot (`true`), one it writes or
+ * reads in a loop (`false`), or `undefined` for a batch target. A key read beside the batch is a kept record the
+ * frame declares ahead of the batch's groups, which fixes the value the body saw.
+ */
+function readsOutsideBatch(
+  access: NonNullable<FunctionDefinitionNode['entryAccesses']>[number],
+  batches: NonNullable<FunctionDefinitionNode['sortedBatchInfo']>,
+): boolean | undefined {
+  if (access.slotIndex !== undefined && batches.some((batch) => batch.slotIndices.includes(access.slotIndex!))) {
+    return undefined;
+  }
+  return access.inLoop !== true && access.operations.every((operation) => operation === 'read');
+}
+
+/**
  * Whether an access is one write, optionally beside the read the write's own expression performs.
  *
  * A read of a sorted entry and the write of that same entry are one transition on one node: the frame declares one
  * record group for the target, which fixes both the value the write started from and the node it produces. A read
- * of an entry the execution does not write is a different matter — nothing in the frame fixes the value it saw —
- * and stays refused.
+ * of an entry the execution does not write is a separate access, a kept record of its own.
  *
  * A `delete` is that same one transition. A sorted mapping's delete lowers to an upsert of the value type's
  * default (`visitMappingDelete` routes it through `emitSortedValueUpsert`), so codegen emits a write of the target
@@ -593,9 +606,10 @@ export function derivableBatchWitnessNames(
  * A body that writes a mapping carries the direct convention's batch operands. A per-call master derives those
  * from the records its own frame declares, which it can do for every collection the body writes when each entry is
  * one write to a distinct target whose key the body holds where the derivation runs, with at most the read of that
- * same target beside it. Anything wider — a batched or aliased write, a read of an entry the execution does not
- * write, a key the body computes rather than holds — makes the record a segment declares, or the value it carries,
- * a fact the frame does not fix. Each refusal names the access and the fact that stops it.
+ * same target beside it, and every other entry a key it only reads at a fixed slot. Anything wider (a batched or
+ * aliased write, a write or a loop read outside the batch, a key the body computes rather than holds) makes the
+ * record a segment declares, or the value it carries, a fact the frame does not fix. Each refusal names the access
+ * and the fact that stops it.
  */
 function unsupportedBatchWriteShape(
   entry: FunctionDefinitionNode,
@@ -624,9 +638,11 @@ function unsupportedBatchWriteShape(
     const resolved = resolveBatchKeys(entry, slot, constants);
     if (resolved.kind === 'refusal') return resolved.reason;
   }
-  if (accesses.length !== slots.length) {
-    return `the body touches ${accesses.length} mapping entries and writes ${slots.length} of them, `
-      + 'and a master derives the operands only when every entry is one of the batch targets';
+  const outside = accesses.find((access) => readsOutsideBatch(access, batches) === false);
+  if (outside !== undefined) {
+    return `the body touches mapping "${outside.collection}" outside its batch as ${outside.operations.join('/')}`
+      + `${outside.inLoop === true ? ' in a loop' : ''}, and a master derives the operands beside a key it only `
+      + 'reads at a fixed slot';
   }
   return 'the body writes a mapping in a shape whose record the master cannot read back from its own frame: its '
     + 'segment would not fix which transition ran';

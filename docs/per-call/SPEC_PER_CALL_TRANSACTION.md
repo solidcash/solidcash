@@ -12,8 +12,8 @@ Revision 12, 2026-09-25. Security assessment behind revisions 6-9: [`AUDIT_MSG_S
 
 - **Which records a frame declares.** A frame declares the data records its entry names, in the order its code reads
   them, and a record it does not declare is not spent (section 20). An entry that writes a verified mapping then
-  declares every other data record, because its batch's groups follow every data record; one that writes none then
-  declares the node of each mapping key it reads.
+  declares every other data record, because its batch's groups follow every data record. Either then declares the
+  node of each mapping key it only reads, ahead of any batch's groups.
 
 ### Since the implementation (2026-09-28)
 
@@ -1666,10 +1666,11 @@ pins `C` with the mutable capability. A record's view is its whole commitment.
 - **Which records a frame declares.**
   - First, the data records its entry's block layout names, in that order: its code reads each at its place past the
     first record the frame declares.
-  - An entry that writes a verified mapping then declares every other data record, kept, and then its batch's
-    groups, which its code names by ordinal past every data record. A key it reads beside the batch is not planned.
-  - An entry that writes none then declares one node, kept, for each mapping key it reads, in the order the layout
-    lists the entry's slots: its code reads each at its place past the records before it.
+  - An entry that writes a verified mapping then declares every other data record, kept.
+  - Then one node, kept, for each mapping key the entry only reads, in the order the layout lists the entry's slots:
+    its code reads each at its place past the records before it. A node the batch also spends, such as the node a
+    key the batch splices in relinks, cannot be declared twice, so that call is refused.
+  - Then the batch's groups, which its code names by ordinal past every record before them.
   - A record the frame does not declare is not spent, so it keeps whatever it holds.
 - **Reads.**
   - A frame reads a node, or its strict predecessor as an absence proof (`slot < s(k) < next`, or `next = 0`), as a

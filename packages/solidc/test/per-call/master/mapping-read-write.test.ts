@@ -203,8 +203,9 @@ describe('a per-call master whose entry reads and rewrites one mapping entry', (
   });
 
   // A segment that declares no record is refused in `mapping-write.test.ts`; the read does not reach that check.
-  it('refuses a read of one entry beside a write of another', () => {
-    // The read's entry is not a target of the batch, so the frame does not fix the value it saw.
+  it('serves a read of one entry beside a write of another', () => {
+    // The read's entry is not a target of the batch: the frame declares its node kept ahead of the batch's groups,
+    // which fixes the value it saw.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Move {'
       + '   mapping(address => uint) balances;'
@@ -213,7 +214,7 @@ describe('a per-call master whose entry reads and rewrites one mapping entry', (
       + '     balances[to] = mine + amount;'
       + '   }'
       + ' }';
-    expect(refusalMessageOf(source)).toContain('touches 2 mapping entries and writes 1 of them');
+    expect(refusalMessageOf(source)).toBe('');
   });
 
   it('admits the read/write entry beside other entry points of the same master', () => {

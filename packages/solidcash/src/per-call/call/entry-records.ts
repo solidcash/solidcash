@@ -16,8 +16,8 @@
  * are planned by the shipped batch planner (`planMappingBatch`) against that inventory, so the groups the segment
  * declares are the ones the body's own batch derivation walks.
  *
- * An entry that writes no mapping and only reads keys declares each node it reads, kept in place. A shape this
- * module has no plan for is refused by name: a write to several collections, a read beside a write, a key the call
+ * A key an entry only reads is declared as its node, kept in place, ahead of any batch's groups. A shape this module
+ * has no plan for is refused by name: a write to several collections, a write outside a sorted batch, a key the call
  * data does not resolve, a value type that chunks. Nothing here guesses at an ordinal the body does not read.
  */
 
@@ -299,14 +299,10 @@ function planCallMappingBatch(request: CallEntryRecordsRequest): CallMappingBatc
       + 'as a sorted collection',
     );
   }
-  // Every access has to be one of the batch's targets: a key the entry only reads has no group of its own, so the
-  // frame would have no ordinal to declare its node at.
-  const slots = new Set(batch.slotIndices);
-  if (accesses.length !== batch.slotIndices.length
-    || accesses.some((access) => access.slotIndex === undefined || !slots.has(access.slotIndex))) {
+  // A key the entry only reads beside the batch is a kept node of its own, planned by `planReadNodes`.
+  if (batch.slotIndices.some((slotIndex) => !accesses.some((access) => access.slotIndex === slotIndex))) {
     throw new PerCallCallRecordError(
-      `entry "${request.functionName}" reads a mapping key outside the write batch it proves, which a call does `
-      + 'not declare a node for',
+      `entry "${request.functionName}"'s sorted batch names a slot its entry accesses do not describe`,
     );
   }
   if (collection.chunkableValue === true) {
@@ -357,29 +353,39 @@ function nodeToken(category: Uint8Array, commitment: Uint8Array): DraftToken {
   return { category, amount: 0n, nft: { capability: 'mutable', commitment } };
 }
 
+/** A node an entry reads and does not write, under the participant id its frame places it at. */
+interface ReadNode extends ReadEntryNode {
+  readonly id: string;
+}
+
 /**
- * The nodes an entry that writes no mapping reads: one kept record per fixed entry slot, or `undefined` when the
- * entry writes a mapping or touches none.
+ * The nodes an entry reads and does not write: one kept record per fixed entry slot no batch writes.
  *
  * The body reads such a node at a fixed coordinate past the frame's data records, in the order the block layout
- * lists the entry's slots, so the nodes are placed in that order. Each is spent on the entry covenant's read-only
- * path, which recreates it in place, and is declared kept in every segment.
+ * lists the entry's slots, and beside a batch ahead of its groups, so the nodes are placed in that order. Each is
+ * spent on the entry covenant's read-only path, which recreates it in place, and is declared kept in every segment.
  */
-function planCallMappingReads(request: CallEntryRecordsRequest): CallEntryRecords | undefined {
-  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
-  const accesses = fn?.entryAccesses ?? [];
-  if (fn === undefined || accesses.length === 0 || (fn.sortedBatchInfo ?? []).length > 0) return undefined;
-  if (accesses.some((access) => access.operations.some((operation) => operation !== 'read'))) return undefined;
+function planReadNodes(request: CallEntryRecordsRequest, fn: AbiFunction): readonly ReadNode[] {
+  const batched = new Set((fn.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  const reads = (fn.entryAccesses ?? [])
+    .filter((access) => access.slotIndex === undefined || !batched.has(access.slotIndex));
+  const written = reads.find((access) => access.operations.some((operation) => operation !== 'read'));
+  if (written !== undefined) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" touches mapping "${written.collection}" as ${written.operations.join('/')} `
+      + 'outside a sorted batch, which a call does not plan',
+    );
+  }
   const slots = (fn.blockLayout?.slots ?? [])
-    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined)
+    .filter((slot) => slot.kind === 'entry' && slot.slotIndex !== undefined && !batched.has(slot.slotIndex))
     .sort((left, right) => left.offset - right.offset);
-  if (accesses.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
+  if (reads.some((access) => !slots.some((slot) => slot.slotIndex === access.slotIndex))) {
     throw new PerCallCallRecordError(
       `entry "${request.functionName}" reads a mapping key at no fixed entry slot, which a call does not declare `
       + 'a node for',
     );
   }
-  const nodes = slots.map((slot) => {
+  return slots.map((slot) => {
     const node = readEntryNode({ ...request, slotIndex: slot.slotIndex! });
     // A value past the inline limit holds only its hash in the node, with the bytes in chunk records a call does not
     // declare. A node read beside the key is never read for its value, so its width is free.
@@ -394,46 +400,62 @@ function planCallMappingReads(request: CallEntryRecordsRequest): CallEntryRecord
     // Two collections can hold the same slot, so the id names the collection too.
     return { ...node, id: `mapping-read-${node.collection}-${bytesToHex(node.slot)}` };
   });
-  const outpoints = nodes.map((node) => `${node.utxo.txid}:${node.utxo.vout}`);
-  if (new Set(outpoints).size !== outpoints.length) {
-    throw new PerCallCallRecordError(
-      `entry "${request.functionName}" reads two keys at one mapping node, which a call cannot spend twice`,
-    );
-  }
-  const category = new Uint8Array(hexToBin(request.categoryId));
-  return {
-    collection: nodes[0]!.collection,
-    participantIds: nodes.map((node) => node.id),
-    spentUtxos: new Map(nodes.map((node) => [node.id, node.utxo])),
-    lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => {
-      const inputs: Record<string, DraftInput> = {};
-      for (const node of nodes) {
-        const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(request.categoryId, node.signature);
-        inputs[node.id] = {
-          source: { lockingBytecode, valueSatoshis: node.utxo.satoshis, token: nodeToken(category, node.commitment) },
-          unlockingBytecode,
-        };
-      }
-      return {
-        entries: nodes.map((node) => {
-          const index = context.indexOf(node.id);
-          return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
-        }),
-        inputs,
-        trailingOutputs: [],
-        createdOutputs: [],
-        learningCandidates: [],
-      };
-    },
-  };
 }
 
-/** Plans the mapping records an entry reads or writes, or `undefined` when it touches no sorted collection. */
+/** The read nodes' kept declarations and their read-only spends. */
+function layReadNodes(
+  request: CallEntryRecordsRequest,
+  nodes: readonly ReadNode[],
+  context: CallEntryRecordsContext,
+): { readonly entries: readonly DraftRecordEntry[]; readonly inputs: Readonly<Record<string, DraftInput>> } {
+  const category = new Uint8Array(hexToBin(request.categoryId));
+  const inputs: Record<string, DraftInput> = {};
+  for (const node of nodes) {
+    const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(request.categoryId, node.signature);
+    inputs[node.id] = {
+      source: { lockingBytecode, valueSatoshis: node.utxo.satoshis, token: nodeToken(category, node.commitment) },
+      unlockingBytecode,
+    };
+  }
+  const entries = nodes.map((node): DraftRecordEntry => {
+    const index = context.indexOf(node.id);
+    return { in: index, out: index, viewIn: node.commitment, viewOut: node.commitment };
+  });
+  return { entries, inputs };
+}
+
+/** Refuses by name a node two of the entry's records would spend. */
+function requireDistinctNodes(request: CallEntryRecordsRequest, utxos: readonly Utxo[]): void {
+  const outpoints = utxos.map((utxo) => `${utxo.txid}:${utxo.vout}`);
+  if (new Set(outpoints).size !== outpoints.length) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" reads a key at a mapping node it also spends for another key, which a call `
+      + 'cannot spend twice',
+    );
+  }
+}
+
+/**
+ * Plans the mapping records an entry reads or writes, or `undefined` when it touches no sorted collection: the node
+ * of each key it only reads, then its batch's groups.
+ */
 export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRecords | undefined {
-  const reads = planCallMappingReads(request);
-  if (reads !== undefined) return reads;
-  const batch = planCallMappingBatch(request);
-  if (batch === undefined) return undefined;
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) return undefined;
+  const reads = planReadNodes(request, fn);
+  const batch = (fn.sortedBatchInfo ?? []).length > 0 ? planCallMappingBatch(request) : undefined;
+  if (batch === undefined) {
+    if (reads.length === 0) return undefined;
+    requireDistinctNodes(request, reads.map((node) => node.utxo));
+    return {
+      collection: reads[0]!.collection,
+      participantIds: reads.map((node) => node.id),
+      spentUtxos: new Map(reads.map((node) => [node.id, node.utxo])),
+      lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => ({
+        ...layReadNodes(request, reads, context), trailingOutputs: [], createdOutputs: [], learningCandidates: [],
+      }),
+    };
+  }
   const spent = batch.plan.written.filter((node) => node.existed);
   const created = batch.plan.written.filter((node) => !node.existed);
   const targetSlots = new Set(batch.plan.groups.map((group) => bytesToHex(group.slot)));
@@ -443,15 +465,18 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
     const utxo = batch.utxoBySlot.get(slotHex(node.slot));
     if (utxo !== undefined) spentUtxos.set(mappingNodeParticipantId(node.slot), utxo);
   }
+  requireDistinctNodes(request, [...reads.map((node) => node.utxo), ...spentUtxos.values()]);
   const lock = entryRecordLockingBytecode(request.categoryId, batch.signature);
   const covenant = scriptToBytecode(
     buildEntryNftCovenantScript(hexToBin(request.categoryId), computeCollectionHash(batch.signature)),
   );
   return {
     collection: batch.collection,
-    participantIds: spent.map((node) => mappingNodeParticipantId(node.slot)),
-    spentUtxos,
+    // The nodes it only reads come first, so they sit past the frame's data records where its code reads them.
+    participantIds: [...reads.map((node) => node.id), ...spent.map((node) => mappingNodeParticipantId(node.slot))],
+    spentUtxos: new Map([...reads.map((node) => [node.id, node.utxo] as const), ...spentUtxos]),
     lay: (context: CallEntryRecordsContext): LaidCallEntryRecords => {
+      const read = layReadNodes(request, reads, context);
       const placements = new Map<string, MappingNodePlacement>();
       for (const node of spent) {
         const index = context.indexOf(mappingNodeParticipantId(node.slot));
@@ -524,8 +549,9 @@ export function callEntryRecords(request: CallEntryRecordsRequest): CallEntryRec
         token: nodeToken(category, context.learnedViews[createdLearningIndex[position]!] ?? node.after),
       }));
       return {
-        entries,
-        inputs,
+        // The read nodes lead the batch's groups, which its code counts past them.
+        entries: [...read.entries, ...entries],
+        inputs: { ...read.inputs, ...inputs },
         trailingOutputs,
         createdOutputs: created.map((_node, position) => context.createdBase + position),
         learningCandidates,

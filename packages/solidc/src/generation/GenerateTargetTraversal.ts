@@ -3655,15 +3655,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return keyDepth;
       });
     });
-    // The write's segment declares the frame's own data-NFT state records before any target's group, so the
-    // derivation steps over them; a delegate frame declares the records of the layout it mirrors, which is its
-    // caller's. A frame that runs on another contract's records addresses them from the input the head parked as
-    // their owner, so its proof operands are measured from that input too.
+    // The write's segment declares the frame's own data-NFT state records, and the node of each key the body only
+    // reads, before any target's group, so the derivation steps over them; a delegate frame declares the records of
+    // the layout it mirrors, which is its caller's. A frame that runs on another contract's records addresses them
+    // from the input the head parked as their owner, so its proof operands are measured from that input too.
     const ownerOrdinal = this.readsRecordsFromFrame && this.stack.includes(categoryOwnerSlotName())
       ? this.stack.length - this.getStackIndex(categoryOwnerSlotName())
       : undefined;
     const derivation = {
-      leadingRecords: this.dataNftCount,
+      leadingRecords: this.perCallRecordsBeforeGroups(),
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
     };
     const script = buildBatchTargetsDerivationScript({
@@ -24967,7 +24967,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const leadings: number[] = [];
     if ((node.sortedBatchInfo?.length ?? 0) > 0 && this.perCallSegmentIndex === this.perCallBatchWriteSegment) {
-      leadings.push(this.dataNftCount);
+      leadings.push(this.perCallRecordsBeforeGroups());
     }
     if (atEnd && this.perCallWritesDynamicField()) leadings.push(this.perCallDynamicChunkWidth() - 1);
     const leading = leadings.length === 0 ? {} : { leading: Math.min(...leadings) };
@@ -30939,7 +30939,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitDeclaredGroupRecordOrdinal(
     declaredOrdinal: number, recordOffset: number, locationData: SingleLocationData,
   ): void {
-    this.emit(encodeInt(BigInt(-(this.dataNftCount + declaredOrdinal + recordOffset + 1))), locationData);
+    this.emit(encodeInt(BigInt(-(this.perCallRecordsBeforeGroups() + declaredOrdinal + recordOffset + 1))),
+      locationData);
     for (const prior of this.batchTargetSlots().slice(0, declaredOrdinal)) {
       this.emitCopyUpsertVMapWitness(`__internal__vmapBatchPredOut_${prior}`, locationData);
       this.emit(encodeInt(0n), locationData);
@@ -31057,14 +31058,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   /**
    * The offset of a fixed entry from the frame's record base: the frame declares the data records its entry names,
-   * then the node of each entry slot no batch writes, in the order the block layout lists them.
+   * or every one beside a batch, then the node of each entry slot no batch writes, in the order the block layout
+   * lists them.
    */
   private perCallEntryOffset(slotIndex: number): number {
     const offset = this.getBlockSlotOffset('entry', slotIndex);
     const batched = new Set(this.batchTargetSlots());
     const earlier = this.currentFunction.blockLayout!.slots.filter((slot) => slot.kind === 'entry'
       && slot.offset < offset && !batched.has(slot.slotIndex!)).length;
-    return this.compactOffsetMap.size + 1 + earlier;
+    return (batched.size > 0 ? this.dataNftCount : this.compactOffsetMap.size) + 1 + earlier;
+  }
+
+  /**
+   * The records a per-call frame declares before its batch's groups: every data record, then the node of each
+   * entry slot no batch writes.
+   */
+  private perCallRecordsBeforeGroups(): number {
+    const batched = new Set(this.batchTargetSlots());
+    return this.dataNftCount + (this.currentFunction.blockLayout?.slots ?? []).filter((slot) =>
+      slot.kind === 'entry' && slot.slotIndex !== undefined && !batched.has(slot.slotIndex)).length;
   }
 
   /** Verify a data NFT preserves its locking bytecode and token category. */

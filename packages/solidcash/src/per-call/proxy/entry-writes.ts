@@ -571,6 +571,13 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     );
   }
   const batch = batches[0]!;
+  const read = accesses.find((access) => access.slotIndex === undefined || !batch.slotIndices.includes(access.slotIndex));
+  if (read !== undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry reads mapping "${read.collection}" beside the batch it `
+      + 'writes, which this hop does not declare',
+    );
+  }
   const collection = request.artifact.stateLayout?.collections
     ?.find((candidate) => candidate.name === batch.collection);
   if (collection === undefined || collection.sorted !== true) {

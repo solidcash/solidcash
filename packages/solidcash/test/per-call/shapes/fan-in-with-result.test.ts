@@ -56,16 +56,16 @@ import {
  *
  * The root approves the escrow on the token, reads a fee from a store with a read-only frame, then makes one
  * payable call with value 0 carrying both a struct (whose first member is a `string`) and the fee. The escrow
- * calls a third contract, writes its own record after that call, reads the token balance, moves the token (the
- * allowance down, the payer's balance down, the payee's up), and returns an id the root stores after the call.
- * The escrow and the root each emit.
+ * calls a third contract, writes its own record after that call, reads the token balance, pulls the token in one
+ * `transferFrom` (the allowance down, the payer's balance down, the payee's up), and returns an id the root stores
+ * after the call. The escrow and the root each emit.
  *
- * The escrow keeps each token write to one key. Four shapes the replica's earlier revisions treated as walls now
- * settle in the cases below: a callee frame that writes two ledger nodes of one collection (its segment declares
- * one group per target, and the two nodes must form a single sorted list), a call that mixes a compile-time
- * argument with a run-time one, a read-only frame that reads a node another frame wrote in the same
- * transaction (it closes the node against the view its own segment declares), and the flow's natural one-call
- * pull, whose groups follow the order the compiler publishes the batch's targets in.
+ * The pull writes three nodes of one ledger in one execution: they form one sorted list, and the frame declares one
+ * group per target in the order the compiler publishes the batch's targets. Shapes the replica's earlier revisions
+ * treated as walls settle in the cases below: a callee frame that writes two ledger nodes of one collection, a call
+ * that mixes a compile-time argument with a run-time one, a read-only frame that reads a node another frame wrote in
+ * the same transaction (it closes the node against the view its own segment declares), and the one-call pull with a
+ * data record beside its nodes.
  *
  * Nothing here supplies an index: the layout places every participant, the token's ledger nodes come from the
  * shipped planner (`planMappingWrite`/`layOutMappingWrites`) at the collection's entry covenant, and the struct
@@ -91,11 +91,9 @@ const ARBITER_MASTER = 'arbiter-1';
 const ESCROW_MASTER = 'escrow-1';
 const APPROVE_MASTER = 'approve-1';
 const BALANCE_BEFORE_MASTER = 'balanceBefore-1';
-const SPEND_MASTER = 'spend-1';
-const DEBIT_MASTER = 'debit-1';
-const CREDIT_MASTER = 'credit-1';
-/** The token's five frames, so each frame's facts report how many masters its contract has. */
-const TOKEN_MASTERS = 5;
+const PULL_MASTER = 'pull-1';
+/** The token's three frames, so each frame's facts report how many masters its contract has. */
+const TOKEN_MASTERS = 3;
 const VALIDATOR_ID = 'validator';
 const USER_ID = 'user';
 
@@ -125,25 +123,17 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IToken {'
   + '   function approve(int amount);'
   + '   function balanceOf() view returns (int);'
-  + '   function spend(int amount);'
-  + '   function debit(int amount);'
-  + '   function credit(int amount) returns (int);'
+  + '   function transferFrom(int amount) returns (int);'
   + ' }'
   + ' interface IEscrow { function pay(Rec r, int fee) returns (int); }'
   + ' contract Token {'
   + '   mapping(bytes32 => int) ledger;'
   + `   function approve(int amount) { this.ledger[hex"${hexOf(SPENDER_KEY)}"] = amount; require(true); }`
   + `   function balanceOf() view returns (int) { return this.ledger[hex"${hexOf(ESCROW_ACCOUNT)}"]; }`
-  + '   function spend(int amount) {'
+  + '   function transferFrom(int amount) returns (int) {'
   + `     require(this.ledger[hex"${hexOf(SPENDER_KEY)}"] >= amount);`
   + `     this.ledger[hex"${hexOf(SPENDER_KEY)}"] = this.ledger[hex"${hexOf(SPENDER_KEY)}"] - amount;`
-  + '     require(true);'
-  + '   }'
-  + '   function debit(int amount) {'
   + `     this.ledger[hex"${hexOf(ROOT_ACCOUNT)}"] = this.ledger[hex"${hexOf(ROOT_ACCOUNT)}"] - amount;`
-  + '     require(true);'
-  + '   }'
-  + '   function credit(int amount) returns (int) {'
   + `     this.ledger[hex"${hexOf(ESCROW_ACCOUNT)}"] = this.ledger[hex"${hexOf(ESCROW_ACCOUNT)}"] + amount;`
   + '     require(true);'
   + `     return this.ledger[hex"${hexOf(ESCROW_ACCOUNT)}"];`
@@ -161,9 +151,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `     IArbiter(0x${hexOf(ARBITER_ADDRESS)}).setArbitrator(0x${hexOf(ROOT_ADDRESS)});`
   + '     this.last = fee;'
   + `     int before = IToken(0x${hexOf(TOKEN_ADDRESS)}).balanceOf();`
-  + `     IToken(0x${hexOf(TOKEN_ADDRESS)}).spend(fee);`
-  + `     IToken(0x${hexOf(TOKEN_ADDRESS)}).debit(fee);`
-  + `     int after = IToken(0x${hexOf(TOKEN_ADDRESS)}).credit(fee);`
+  + `     int after = IToken(0x${hexOf(TOKEN_ADDRESS)}).transferFrom(fee);`
   + '     emit Paid(fee + 10, fee);'
   + '     require(after == before + fee);'
   + '     return fee + 10;'
@@ -216,13 +204,23 @@ const ALLOWANCE_SLOT = keyToSlotMulti([SPENDER_KEY]);
 const ROOT_BALANCE_SLOT = keyToSlotMulti([ROOT_ACCOUNT]);
 const ESCROW_BALANCE_SLOT = keyToSlotMulti([ESCROW_ACCOUNT]);
 
-const ALLOWANCE_BEFORE = node(ALLOWANCE_SLOT, 0n);
-const ALLOWANCE_APPROVED = node(ALLOWANCE_SLOT, FEE);
-const ALLOWANCE_AFTER = node(ALLOWANCE_SLOT, 0n);
-const ROOT_BALANCE_BEFORE = node(ROOT_BALANCE_SLOT, ROOT_BALANCE);
-const ROOT_BALANCE_AFTER = node(ROOT_BALANCE_SLOT, ROOT_BALANCE - FEE);
-const ESCROW_BALANCE_BEFORE = node(ESCROW_BALANCE_SLOT, 0n);
-const ESCROW_BALANCE_AFTER = node(ESCROW_BALANCE_SLOT, FEE);
+/** The ledger's slots in list order: each node links the next slot, and the last one the zero sentinel. */
+const LEDGER_SLOTS = [ALLOWANCE_SLOT, ROOT_BALANCE_SLOT, ESCROW_BALANCE_SLOT]
+  .sort((left, right) => (bytesToSlotValue(left) < bytesToSlotValue(right) ? -1 : 1));
+
+/** One node of the flow's three-node ledger: its slot, the next slot of the list and its value tail. */
+function ledgerNode(slot: Uint8Array, value: bigint): Uint8Array {
+  const at = LEDGER_SLOTS.findIndex((listed) => bytesToHex(listed) === bytesToHex(slot));
+  return encodeEntryCommitment(slot, LEDGER_SLOTS[at + 1] ?? ZERO_SLOT, encodeIntegerValue(value));
+}
+
+const ALLOWANCE_BEFORE = ledgerNode(ALLOWANCE_SLOT, 0n);
+const ALLOWANCE_APPROVED = ledgerNode(ALLOWANCE_SLOT, FEE);
+const ALLOWANCE_AFTER = ledgerNode(ALLOWANCE_SLOT, 0n);
+const ROOT_BALANCE_BEFORE = ledgerNode(ROOT_BALANCE_SLOT, ROOT_BALANCE);
+const ROOT_BALANCE_AFTER = ledgerNode(ROOT_BALANCE_SLOT, ROOT_BALANCE - FEE);
+const ESCROW_BALANCE_BEFORE = ledgerNode(ESCROW_BALANCE_SLOT, 0n);
+const ESCROW_BALANCE_AFTER = ledgerNode(ESCROW_BALANCE_SLOT, FEE);
 
 /** The ledger collection's entry covenant, and the write-path unlocking a node's spend carries. */
 const LEDGER_COLLECTION = built.artifacts.Token!.stateLayout!.collections![0]!;
@@ -301,7 +299,7 @@ interface Built {
   readonly base: number;
 }
 
-/** The plan: root, store read, escrow (arbiter call, record write, token moves) and the token's five frames. */
+/** The plan: root, store read, escrow (arbiter call, record write, token pull) and the token's three frames. */
 function buildPlan(): Built {
   const root = built.contracts.Root!;
   const store = built.contracts.Store!;
@@ -313,9 +311,7 @@ function buildPlan(): Built {
   const setArbitratorSelector = selectorOf(built.artifacts, 'Arbiter', 'setArbitrator');
   const approveSelector = selectorOf(built.artifacts, 'Token', 'approve');
   const balanceOfSelector = selectorOf(built.artifacts, 'Token', 'balanceOf');
-  const spendSelector = selectorOf(built.artifacts, 'Token', 'spend');
-  const debitSelector = selectorOf(built.artifacts, 'Token', 'debit');
-  const creditSelector = selectorOf(built.artifacts, 'Token', 'credit');
+  const pullSelector = selectorOf(built.artifacts, 'Token', 'transferFrom');
   const paySelector = selectorOf(built.artifacts, 'Escrow', 'pay');
 
   const feePush = encodeIntegerValue(FEE);
@@ -325,9 +321,7 @@ function buildPlan(): Built {
   const approvePushes = [approveSelector, feePush];
   const setArbitratorPushes = [setArbitratorSelector, ROOT_ADDRESS];
   const balancePushes = [balanceOfSelector];
-  const spendPushes = [spendSelector, feePush];
-  const debitPushes = [debitSelector, feePush];
-  const creditPushes = [creditSelector, feePush];
+  const pullPushes = [pullSelector, feePush];
 
   const blocks: CompositionDraftPlan['blocks'] = [
     { contract: 'Root', masters: [ROOT_MASTER], validator: { id: VALIDATOR_ID, settles: [] }, state: [ROOT_RECORD_ID] },
@@ -336,7 +330,7 @@ function buildPlan(): Built {
     { contract: 'Escrow', masters: [ESCROW_MASTER], state: [ESCROW_RECORD_ID] },
     {
       contract: 'Token',
-      masters: [APPROVE_MASTER, BALANCE_BEFORE_MASTER, SPEND_MASTER, DEBIT_MASTER, CREDIT_MASTER],
+      masters: [APPROVE_MASTER, BALANCE_BEFORE_MASTER, PULL_MASTER],
       state: [ALLOWANCE_NODE_ID, ROOT_BALANCE_NODE_ID, ESCROW_BALANCE_NODE_ID],
     },
   ];
@@ -344,22 +338,22 @@ function buildPlan(): Built {
   const indexOf = (id: string): number => participant(layout, id).index;
   const base = layout.participantCount;
 
-  // The ledger writes, each one key: the root approves, then the escrow spends and moves both balances.
-  const approveWrite = planMappingWrite({
-    keys: [SPENDER_KEY], value: FEE, inventory: [ALLOWANCE_BEFORE], encodeValue: (n) => encodeIntegerValue(n),
-  });
-  const spendWrite = planMappingWrite({
-    keys: [SPENDER_KEY], value: 0n, inventory: [approveWrite.written[0]!.after],
-    encodeValue: (n) => encodeIntegerValue(n),
-  });
-  const debitWrite = planMappingWrite({
-    keys: [ROOT_ACCOUNT], value: ROOT_BALANCE - FEE, inventory: [ROOT_BALANCE_BEFORE],
-    encodeValue: (n) => encodeIntegerValue(n),
-  });
-  const creditWrite = planMappingWrite({
-    keys: [ESCROW_ACCOUNT], value: FEE, inventory: [ESCROW_BALANCE_BEFORE],
-    encodeValue: (n) => encodeIntegerValue(n),
-  });
+  // The ledger writes against the whole three-node list: the root approves, then one pull spends the allowance and
+  // moves both balances, each write an update in place.
+  const write = (key: Uint8Array, value: bigint, inventory: readonly Uint8Array[]): ReturnType<typeof planMappingWrite> =>
+    planMappingWrite({ keys: [key], value, inventory: [...inventory], encodeValue: (n) => encodeIntegerValue(n) });
+  const approveWrite = write(SPENDER_KEY, FEE, [ALLOWANCE_BEFORE, ROOT_BALANCE_BEFORE, ESCROW_BALANCE_BEFORE]);
+  const approved = [approveWrite.written[0]!.after, ROOT_BALANCE_BEFORE, ESCROW_BALANCE_BEFORE];
+  const pullWrites = new Map<string, ReturnType<typeof planMappingWrite>>([
+    [`lit:0x${hexOf(SPENDER_KEY)}`, write(SPENDER_KEY, 0n, approved)],
+    [`lit:0x${hexOf(ROOT_ACCOUNT)}`, write(ROOT_ACCOUNT, ROOT_BALANCE - FEE, approved)],
+    [`lit:0x${hexOf(ESCROW_ACCOUNT)}`, write(ESCROW_ACCOUNT, FEE, approved)],
+  ]);
+  // The pull's groups follow the order the compiler publishes the batch's targets in.
+  const pull = built.artifacts.Token!.abi.find((entry) => entry.name === 'transferFrom')!;
+  const keyOf = (slotIndex: number): string =>
+    pull.entryAccesses!.find((access) => access.slotIndex === slotIndex)!.keyParams[0]!;
+  const pullTargets = pull.sortedBatchInfo![0]!.slotIndices.map((slotIndex) => pullWrites.get(keyOf(slotIndex))!);
 
   const placements = new Map<string, MappingNodePlacement>([
     [bytesToHex(ALLOWANCE_SLOT), { in: indexOf(ALLOWANCE_NODE_ID), out: indexOf(ALLOWANCE_NODE_ID) }],
@@ -446,16 +440,8 @@ function buildPlan(): Built {
           argumentPushes: balancePushes,
         },
         {
-          kind: FrameKind.CALL, callee: SPEND_MASTER, target: tokenContract.address, value: 0n,
-          argumentPushes: spendPushes,
-        },
-        {
-          kind: FrameKind.CALL, callee: DEBIT_MASTER, target: tokenContract.address, value: 0n,
-          argumentPushes: debitPushes,
-        },
-        {
-          kind: FrameKind.CALL, callee: CREDIT_MASTER, target: tokenContract.address, value: 0n,
-          argumentPushes: creditPushes,
+          kind: FrameKind.CALL, callee: PULL_MASTER, target: tokenContract.address, value: 0n,
+          argumentPushes: pullPushes,
         },
       ],
       argumentPushes: payPushes,
@@ -463,8 +449,6 @@ function buildPlan(): Built {
       segments: [
         [escrowRecord(ESCROW_BEFORE, ESCROW_BEFORE)],
         [escrowRecord(ESCROW_BEFORE, ESCROW_AFTER)],
-        [escrowRecord(ESCROW_AFTER, ESCROW_AFTER)],
-        [escrowRecord(ESCROW_AFTER, ESCROW_AFTER)],
         [escrowRecord(ESCROW_AFTER, ESCROW_AFTER)],
         [escrowRecord(ESCROW_AFTER, ESCROW_AFTER)],
       ],
@@ -498,27 +482,18 @@ function buildPlan(): Built {
     sender: escrow.address, pushes: balancePushes, segments: [[balanceRead]],
     retval: encodeResultList([encodeIntegerValue(0n)]),
   });
-  const spendMaster = tokenMaster({
-    master: SPEND_MASTER, entry: 'spend', kind: FrameKind.CALL, enteredBy: ESCROW_MASTER, sender: escrow.address,
-    pushes: spendPushes, segments: [groupsOf([spendWrite])],
-  });
-  const debitMaster = tokenMaster({
-    master: DEBIT_MASTER, entry: 'debit', kind: FrameKind.CALL, enteredBy: ESCROW_MASTER, sender: escrow.address,
-    pushes: debitPushes, segments: [groupsOf([debitWrite])],
-  });
-  const creditMaster = tokenMaster({
-    master: CREDIT_MASTER, entry: 'credit', kind: FrameKind.CALL, enteredBy: ESCROW_MASTER, sender: escrow.address,
-    pushes: creditPushes, segments: [groupsOf([creditWrite])],
+  const pullMaster = tokenMaster({
+    master: PULL_MASTER, entry: 'transferFrom', kind: FrameKind.CALL, enteredBy: ESCROW_MASTER,
+    sender: escrow.address, pushes: pullPushes, segments: [groupsOf(pullTargets)],
     retval: encodeResultList([encodeIntegerValue(FEE)]),
   });
 
-  const unlock = ledgerUnlock(indexOf(SPEND_MASTER));
+  const unlock = ledgerUnlock(indexOf(PULL_MASTER));
 
   const plan: CompositionDraftPlan = {
     blocks,
     userInputs: userInputs([USER_ID], layout.funderInputBase),
-    masters: [rootMaster, storeMaster, arbiterMaster, escrowMaster, approveMaster, balanceBeforeMaster,
-      spendMaster, debitMaster, creditMaster],
+    masters: [rootMaster, storeMaster, arbiterMaster, escrowMaster, approveMaster, balanceBeforeMaster, pullMaster],
     inputs: {
       [ROOT_MASTER]: { source: masterInput(root) },
       [STORE_MASTER]: { source: masterInput(store) },
@@ -526,9 +501,7 @@ function buildPlan(): Built {
       [ESCROW_MASTER]: { source: masterInput(escrow) },
       [APPROVE_MASTER]: { source: masterInput(tokenContract) },
       [BALANCE_BEFORE_MASTER]: { source: masterInput(tokenContract) },
-      [SPEND_MASTER]: { source: masterInput(tokenContract) },
-      [DEBIT_MASTER]: { source: masterInput(tokenContract) },
-      [CREDIT_MASTER]: { source: masterInput(tokenContract) },
+      [PULL_MASTER]: { source: masterInput(tokenContract) },
       [VALIDATOR_ID]: validatorInput(root.category),
       [ROOT_RECORD_ID]: stateRecord(root.category, ROOT_BEFORE, ROOT_AFTER, indexOf(ROOT_MASTER), 1),
       [STORE_RECORD_ID]: stateRecord(store.category, STORE_FEE, STORE_FEE, indexOf(STORE_MASTER), 0),
@@ -588,8 +561,7 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
     expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('Store', 'getFee'), entryName('Token', 'approve'),
-      entryName('Arbiter', 'setArbitrator'), entryName('Token', 'balanceOf'), entryName('Token', 'spend'),
-      entryName('Token', 'debit'), entryName('Token', 'credit'),
+      entryName('Arbiter', 'setArbitrator'), entryName('Token', 'balanceOf'), entryName('Token', 'transferFrom'),
       entryName('Escrow', 'pay'), entryName('Root', 'run'),
     ]);
   });
@@ -613,19 +585,21 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
     expect(bytesToHex(ARBITER_AFTER)).not.toBe(bytesToHex(ARBITER_BEFORE));
     // The escrow's record is declared once per segment; the write is after the arbiter call, not before it.
     expect(outcome.draft.blockOf(ESCROW_MASTER).segments.map((segment) => segment[0]!.viewOut))
-      .toStrictEqual([ESCROW_BEFORE, ESCROW_AFTER, ESCROW_AFTER, ESCROW_AFTER, ESCROW_AFTER, ESCROW_AFTER]);
+      .toStrictEqual([ESCROW_BEFORE, ESCROW_AFTER, ESCROW_AFTER, ESCROW_AFTER]);
   });
 
-  it('pulls the token against the allowance the root wrote, moving both balances', () => {
+  it('pulls the token in one call against the allowance the root wrote, moving both balances', () => {
     const { outcome } = settledFlow();
     const outputAt = (id: string): Uint8Array =>
       new Uint8Array(outcome.transaction.outputs[participant(outcome.draft.layout, id).index]!.token!.nft!.commitment);
     expect(bytesToHex(outputAt(ALLOWANCE_NODE_ID))).toBe(bytesToHex(ALLOWANCE_AFTER));
     expect(bytesToHex(outputAt(ROOT_BALANCE_NODE_ID))).toBe(bytesToHex(ROOT_BALANCE_AFTER));
     expect(bytesToHex(outputAt(ESCROW_BALANCE_NODE_ID))).toBe(bytesToHex(ESCROW_BALANCE_AFTER));
-    // The balances are what the shipped encoder materializes for the values the pull computed.
-    expect(bytesToHex(ROOT_BALANCE_AFTER)).toBe(bytesToHex(node(ROOT_BALANCE_SLOT, ROOT_BALANCE - FEE)));
-    expect(bytesToHex(ESCROW_BALANCE_AFTER)).toBe(bytesToHex(node(ESCROW_BALANCE_SLOT, FEE)));
+    // One frame wrote all three nodes, each keeping its place in the list.
+    const pullFrame = outcome.draft.blockOf(PULL_MASTER);
+    expect(pullFrame.segments).toHaveLength(1);
+    expect(pullFrame.segments[0]!.map((entry) => bytesToHex(entry.viewOut)).sort()).toStrictEqual(
+      [ALLOWANCE_AFTER, ROOT_BALANCE_AFTER, ESCROW_BALANCE_AFTER].map((view) => bytesToHex(view)).sort());
     expect(bytesToHex(ALLOWANCE_APPROVED)).not.toBe(bytesToHex(ALLOWANCE_BEFORE));
   });
 

@@ -694,6 +694,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** A locally constructed key array has a loop-carried resize/read schedule the bounded replay pass cannot
    * represent. Kernel admission refuses only this handler rather than letting later route synthesis fail. */
   messageBusUnboundedConstructedArray?: boolean;
+  /** A fixed loop over a locally allocated mapping-key array was unrolled for direct execution. The kernel
+   * route cannot yet authenticate that array's key provenance, even though the resulting writes look static. */
+  messageBusUnprovenFixedLocalMappingKey?: boolean;
   /** Pre-admission saw the narrow local-vector shape; final kernel admission still requires emitted provenance. */
   messageBusConstructedKeyVectorCandidate?: boolean;
   /**

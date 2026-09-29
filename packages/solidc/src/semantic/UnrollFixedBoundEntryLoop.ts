@@ -76,6 +76,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
 
   private currentFunction = '';
+  private currentFunctionNode?: FunctionDefinitionNode;
   private currentGraphRuntime = false;
 
   constructor(
@@ -161,14 +162,17 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const prevName = this.currentFunction;
+    const prevNode = this.currentFunctionNode;
     const prevGraphRuntime = this.currentGraphRuntime;
     this.currentFunction = node.name;
+    this.currentFunctionNode = node;
     this.currentGraphRuntime = node.graphRuntimeEmissionHandler === true;
     const mutationScan = this.collectMutatedNames(node.body);
     // Graph-mode unrolling only expands pointer-table loops. Skip every other function so a contract with one
     // graph edge does not try-unroll every sibling handler that merely contains a C-style loop.
     if ((this.indirectCallsOnly && !mutationScan.hasIndirectCall) || !mutationScan.hasCandidateLoop) {
       this.currentFunction = prevName;
+      this.currentFunctionNode = prevNode;
       this.currentGraphRuntime = prevGraphRuntime;
       return node;
     }
@@ -184,6 +188,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     this.newArrayLocalSizes = prevNewArr;
     this.mutatedNames = prevMutated;
     this.currentFunction = prevName;
+    this.currentFunctionNode = prevNode;
     this.currentGraphRuntime = prevGraphRuntime;
     return node;
   }
@@ -322,6 +327,15 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
     const hasIndirectCall = this.hasIndirectCall(bodyStmts);
     const hasMappingWrite = this.hasMappingWrite(bodyStmts);
+    const readsFixedLocalArray = hasMappingWrite && this.anyNode(bodyStmts, (node) => {
+      if (!(node instanceof ArrayAssignNode || node instanceof MappingAssignNode
+        || node instanceof MappingFieldAssignNode || node instanceof MappingDeleteNode)
+        || !this.mappingNames.has(node.name)) return false;
+      const keys = node instanceof ArrayAssignNode ? [node.index] : node.keys;
+      return keys.some((key) => this.anyNode([key], (part) =>
+        part instanceof ArrayAccessNode && part.array instanceof IdentifierNode
+        && this.newArrayLocalSizes.has(part.array.name)));
+    });
     if (this.indirectCallsOnly ? !hasIndirectCall
       : (!hasMappingWrite && !this.hasKeccakCall(bodyStmts)
         && !this.hasChildDeployment(bodyStmts))) return undefined;
@@ -362,6 +376,9 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
         result.push(this.visit(block) as StatementNode);
       }
       if (replay.escape === 'break') break;
+    }
+    if (readsFixedLocalArray && this.currentFunctionNode) {
+      this.currentFunctionNode.messageBusUnprovenFixedLocalMappingKey = true;
     }
     return result;
   }

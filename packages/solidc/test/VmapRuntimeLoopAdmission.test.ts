@@ -33,7 +33,7 @@ contract Store {
     expect(artifact.abi.some((fn) => fn.name === 'refund')).toBe(true);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
       eligible: false,
-      rejectionReason: 'verified-mapping-runtime-loop-write-unsupported',
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
   });
 
@@ -63,7 +63,7 @@ contract Store {
     `, OPTIONS);
     expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'refund')).toMatchObject({
       eligible: false,
-      rejectionReason: 'verified-mapping-runtime-loop-write-unsupported',
+      rejectionReason: 'KERNEL_UNBOUNDED_KEY',
     });
   });
 

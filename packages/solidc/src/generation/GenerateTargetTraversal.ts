@@ -5265,6 +5265,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
+    // A speed-hinted body combining dynamic writes with authenticated collection reads needs stable source
+    // instruction pointers for derivation. The contract survey already records that mixed journal shape; do
+    // not move its source spans into shared OP_DEFINE bodies during the faster compilation path.
+    if (this.compilerOptions.optimizeForCompilationSpeed === true
+      && this.currentContractRequiresTraceStableBodies) return;
     // Speed-hinted / trace-stable compiles used to skip outlining entirely. Large contracts still repeat
     // helper tails across bodies; a single cheap attempt recovers those bytes. Require-site anchors
     // below keep SDK instruction-pointer attribution intact.

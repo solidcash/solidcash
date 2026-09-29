@@ -36,12 +36,14 @@ describe('authenticated hashed return probes', () => {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const expected = encodeEvmInvocationResult([[2n, 3n, 4n, 5n, 6n]], ['uint16[5]']);
+    const digest = sha256(expected);
     const output = transaction.outputs.find((candidate) => candidate.token?.nft
-      && binToHex(candidate.token.nft.commitment) === binToHex(expected));
+      && binToHex(candidate.token.nft.commitment) === binToHex(digest));
     expect(output).toBeDefined();
-    // Direct dependency probes retain raw bytes for decoding. The same compiler covenant authenticates
-    // the production-sized digest; verify both the real return and a tampered commitment in the VM.
-    output!.token!.nft!.commitment = sha256(expected);
+    // Direct dependency probes retain raw bytes for decoding. The physical return NFT carries the digest
+    // because the five-word EVM result exceeds the 128-byte commitment limit. Verify the published digest
+    // and a tampered commitment against the same covenant in the VM.
+    expect(output!.token!.nft!.commitment).toHaveLength(32);
     const vm = createVirtualMachineBch2026ForProvider(provider);
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: 0, sourceOutputs, transaction }))).toBe(true);
     output!.token!.nft!.commitment[0] ^= 1;

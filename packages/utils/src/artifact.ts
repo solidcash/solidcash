@@ -785,6 +785,18 @@ export interface RequireStatement {
   ip: number; // instruction pointer
   line: number; // line in the source code
   message?: string; // custom message for failing `require` statement
+  /** Where each argument of the custom error a `revert` names sits when it fails, in declared order. */
+  arguments?: readonly RevertArgumentSource[];
+}
+
+/**
+ * One argument of a failing `revert <Error>(...)`: `depth` items below the top of the stack or the bytes `push`
+ * names, then through `then`, a conversion's bytecode. `{}` is an argument the compiler cannot place.
+ */
+export interface RevertArgumentSource {
+  depth?: number;
+  push?: string;
+  then?: string;
 }
 
 export interface StateVariableInfo {

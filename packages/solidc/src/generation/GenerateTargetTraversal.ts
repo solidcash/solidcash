@@ -1,6 +1,6 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
+import { hexToBin, binToHex, encodeDataPush, utf8ToBin } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
@@ -31,6 +31,7 @@ import {
   FullLocationData,
   LogEntry,
   RequireStatement,
+  RevertArgumentSource,
   PositionHint,
   SingleLocationData,
   StackItem,
@@ -8901,6 +8902,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitRevert(node: RevertNode): Node {
+    // Read before the failure is pushed: the arguments' places are the ones the failing state holds.
+    const argumentSources = this.revertArgumentSources(node);
     // Emit OP_0 OP_VERIFY (unconditional failure)
     this.emit(encodeBool(false), { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(revert)');
@@ -8910,10 +8913,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ip: this.getMostRecentInstructionPointer(),
       line: node.location.start.line,
       message: node.message ?? (node.errorName ? `revert ${node.errorName}(...)` : undefined),
+      ...(argumentSources === undefined ? {} : { arguments: argumentSources }),
     });
 
     this.popFromStack();
     return node;
+  }
+
+  /**
+   * Where each argument of a `revert <Error>(...)` sits when the revert fails, in the error's declared order.
+   *
+   * The site emits no argument (there is no revert data on BCH), so a reader of the failing state recovers a
+   * variable from its place on the stack, runs a cast's own conversion over it, and takes a literal as the bytes it
+   * would push. Any other expression is not evaluated here, so it is published as unplaced.
+   */
+  private revertArgumentSources(node: RevertNode): RevertArgumentSource[] | undefined {
+    if (node.errorName === undefined || node.args.length === 0) return undefined;
+    const declared = node.errorDefinition?.parameters.map((parameter) => parameter.name);
+    const ordered = node.fieldNames !== undefined && declared !== undefined
+      ? declared.map((name) => node.args[node.fieldNames!.indexOf(name)])
+      : node.args;
+    return ordered.map((arg) => (arg === undefined ? {} : this.revertArgumentSource(arg)));
+  }
+
+  private revertArgumentSource(arg: ExpressionNode): RevertArgumentSource {
+    const value = arg instanceof CastNode ? arg.expression : arg;
+    let source: RevertArgumentSource | undefined;
+    if (value instanceof IdentifierNode) {
+      const depth = this.getStackIndex(value.name, true);
+      if (depth >= 0) source = { depth };
+    } else if (value instanceof IntLiteralNode) {
+      source = { push: binToHex(encodeInt(value.value)) };
+    } else if (value instanceof BoolLiteralNode) {
+      source = { push: value.value ? '01' : '' };
+    } else if (value instanceof HexLiteralNode) {
+      source = { push: binToHex(value.value) };
+    } else if (value instanceof StringLiteralNode) {
+      source = { push: binToHex(utf8ToBin(value.value)) };
+    }
+    if (source === undefined) return {};
+    if (arg instanceof CastNode && arg.expression.type !== undefined) {
+      const conversion = compileCast(
+        arg.expression.type as Type, arg.type, arg.isUnsafe, this.compilerOptions.solidityImportCompat ?? false,
+      );
+      if (conversion.length > 0) source = { ...source, then: binToHex(scriptToBytecode(conversion)) };
+    }
+    return source;
   }
 
   visitAssert(node: AssertNode): Node {

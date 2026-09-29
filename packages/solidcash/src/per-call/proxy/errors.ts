@@ -5,7 +5,11 @@
 export class PerCallProxyDeployError extends Error {
   public readonly name = 'PerCallProxyDeployError';
 
-  public constructor(message: string) {
+  /**
+   * `errorArgs` are the values the refusing frame's custom error was raised with, when the refusal report could
+   * read them, as a Solidity-style matcher reads them (`revertedWithCustomError(...).withArgs(...)`).
+   */
+  public constructor(message: string, public readonly errorArgs?: readonly unknown[]) {
     super(message);
   }
 }

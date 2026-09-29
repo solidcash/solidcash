@@ -927,6 +927,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
       throw new PerCallProxyDeployError(
         `the implementation's ${options.entryLabel} did not settle through the proxy: ${attributed}`
         + sizedRunClause(entryWrites),
+        refusal.innermost?.reason.arguments,
       );
     }
     if (learned >= 0) {

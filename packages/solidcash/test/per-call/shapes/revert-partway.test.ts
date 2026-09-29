@@ -37,7 +37,8 @@ import {
  * own check then fails. Nothing settles: the derivation stalls at the failing frame, the report names that frame
  * and its source line, and no accepted transaction carries the write. A second shape nests the failing check one
  * call deeper, so the report must name the innermost frame rather than the root. A third shape reverts with a
- * declared error carrying arguments, pinning what the compiler publishes and what it says about those arguments.
+ * declared error carrying arguments, pinning what the compiler publishes, what it says about those arguments and
+ * the values the report reads back.
  *
  * Every shape is driven the shipped way: compile with `compileStringMulti`, deploy with `deployMaster`, lay out
  * with `layoutTransaction`/`participant`, derive with `createComposedDerivationHost`/`deriveComposition`, and ask
@@ -459,6 +460,8 @@ describe('a revert with a declared error carrying arguments', () => {
     ]);
     expect(innermost.objection).toContain('OP_VERIFY');
     expect(innermost.objection).not.toMatch(/[0-9]/);
+    // The values are not in the objection, but the compiler publishes where the revert leaves them.
+    expect(innermost.reason.arguments).toStrictEqual([7n, 3n]);
   });
 
   it('type-checks the arguments: a mismatched count is refused at compile time', () => {

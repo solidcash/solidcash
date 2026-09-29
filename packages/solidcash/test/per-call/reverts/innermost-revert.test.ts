@@ -204,10 +204,24 @@ describe('a refused composition reports its innermost frame reason', () => {
       { name: 'available', type: 'int256' },
     ]);
     expect(innermost.reason.line).toBe(lineOf(text, 'revert InsufficientBalance'));
-    // What the machine itself reports is only a bare verification failure: the arguments' values are not on chain.
+    // The machine's own objection is a bare verification failure; the values come from where the compiler says the
+    // revert leaves them, here the literals it names.
     expect(innermost.objection).toContain('OP_VERIFY');
+    expect(innermost.reason.arguments).toStrictEqual([100n, 50n]);
 
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('reads the values a revert raised from the failing state: a run-time value and a cast', () => {
+    // Neither value is a literal: the first is what the running transaction holds, the second a cast whose own
+    // conversion the report replays over the bytes the variable holds.
+    const body = 'int requested = tx.inputs.length; bytes4 tag = 0x01020304; '
+      + 'require(requested > 0); revert InsufficientBalance(requested, int(tag));';
+    const { draft, artifacts, vm } = build(body, 'require(true);');
+    const report = reportCompositionRefusal({ draft, artifacts: [artifacts.Caller!, artifacts.Callee!], vm });
+    const inputs = draft.programFor(CALLER_MASTER).transaction.inputs.length;
+    expect(report.innermost!.reason.error!.name).toBe('InsufficientBalance');
+    expect(report.innermost!.reason.arguments).toStrictEqual([BigInt(inputs), 0x04030201n]);
   });
 
   it('reports the callee\'s reason, not the caller\'s, when both frames refuse', () => {

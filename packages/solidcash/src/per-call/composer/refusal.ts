@@ -8,10 +8,10 @@
  * `require`, or the custom error a `revert` named.
  *
  * A source `revert <Error>(...)` is emitted as an unconditional `OP_0 OP_VERIFY`: the compiler type-checks the
- * error's arguments but does not evaluate them (there is no revert-data channel on BCH), and publishes only the
- * error's name in the debug message and the error's declared argument list on `artifact.errors`. So the report
- * names the error and its declared parameters; the values passed at the revert site are not on chain and cannot be
- * recovered from the machine.
+ * error's arguments but does not evaluate them (there is no revert-data channel on BCH). It publishes the error's
+ * name in the debug message, its declared argument list on `artifact.errors`, and where each argument sits when the
+ * revert fails: a variable's place on the stack, a literal's bytes, and a cast's own conversion. The report reads
+ * the values from the failing state, and names only the declared parameters of an argument it cannot place.
  *
  * The debug metadata is written before a per-call master's head is emitted in front of the body, so its pointers
  * are offset from the shipped program by the head's own length. The offset is exactly the difference between the
@@ -19,9 +19,13 @@
  * assumed: without it an objection's instruction pointer lands on an unrelated instruction.
  */
 
-import { createVirtualMachineBch2026, decodeAuthenticationInstructions } from '@bitauth/libauth';
-import { sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement }
-  from '@solidcash/utils';
+import {
+  binToHex, binToUtf8, createVirtualMachineBch2026, decodeAuthenticationInstructions, encodeDataPush, hexToBin,
+  vmNumberToBigInt,
+} from '@bitauth/libauth';
+import {
+  sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement, type RevertArgumentSource,
+} from '@solidcash/utils';
 import type { CompositionDraft } from './draft.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -43,7 +47,12 @@ export interface FrameRevertReason {
   readonly message?: string;
   /** The custom error a `revert` named, with its declared argument list. */
   readonly error?: DeclaredRevertError;
+  /** The values the `revert` named, in declared order, when every one of them could be read. */
+  readonly arguments?: readonly RevertArgumentValue[];
 }
+
+/** A decoded argument: an integer, a boolean, a string, or other bytes as `0x`-prefixed hex. */
+export type RevertArgumentValue = bigint | boolean | string;
 
 /** One frame the machine refused. */
 export interface RefusedFrame {
@@ -74,6 +83,11 @@ export class PerCallCompositionRefusedError extends Error {
 
   public constructor(public readonly report: CompositionRefusal) {
     super(`PER_CALL_COMPOSITION_REFUSED: ${describeInnermost(report.innermost)}`);
+  }
+
+  /** The innermost frame's custom error arguments, as a Solidity-style matcher reads them. */
+  public get errorArgs(): readonly RevertArgumentValue[] | undefined {
+    return this.report.innermost?.reason.arguments;
   }
 }
 
@@ -123,6 +137,60 @@ function declaredError(artifact: Artifact, message: string): DeclaredRevertError
   };
 }
 
+/** Runs a published conversion over one stack item, on the machine itself, and returns what it leaves on top. */
+function convert(item: Uint8Array, conversion: Uint8Array): Uint8Array | undefined {
+  const vm = createVirtualMachineBch2026(false);
+  const state = vm.evaluate({
+    inputIndex: 0,
+    sourceOutputs: [{ lockingBytecode: conversion, valueSatoshis: 1_000n }],
+    transaction: {
+      version: 2, locktime: 0,
+      inputs: [{
+        outpointIndex: 0, outpointTransactionHash: new Uint8Array(32), sequenceNumber: 0,
+        unlockingBytecode: encodeDataPush(item),
+      }],
+      outputs: [{ lockingBytecode: Uint8Array.of(0x51), valueSatoshis: 1_000n }],
+    },
+  }) as { readonly stack?: readonly Uint8Array[]; readonly error?: unknown };
+  return state.error === undefined ? state.stack?.at(-1) : undefined;
+}
+
+/** One argument's value, decoded the way its declared type reads a stack item. */
+function decodeArgument(item: Uint8Array, type: string): RevertArgumentValue | undefined {
+  if (/^u?int\d*$/.test(type)) {
+    const value = vmNumberToBigInt(item, { requireMinimalEncoding: false });
+    return typeof value === 'bigint' ? value : undefined;
+  }
+  if (type === 'bool') return item.some((byte) => byte !== 0);
+  if (type === 'string') return binToUtf8(item);
+  return `0x${binToHex(item)}`;
+}
+
+/**
+ * The values a failing `revert` named, from the places the compiler published and the failing state's stack.
+ *
+ * All or nothing: an argument the compiler could not place, or a declaration the error ABI does not resolve, leaves
+ * the values unreported rather than reporting some of them.
+ */
+function revertArguments(
+  sources: readonly RevertArgumentSource[] | undefined,
+  parameters: ErrorDefinitionAbi['parameters'] | undefined,
+  stack: readonly Uint8Array[] | undefined,
+): RevertArgumentValue[] | undefined {
+  if (sources === undefined || parameters === undefined || sources.length !== parameters.length) return undefined;
+  const values: RevertArgumentValue[] = [];
+  for (const [index, source] of sources.entries()) {
+    let item = source.depth !== undefined
+      ? stack?.[stack.length - 1 - source.depth]
+      : source.push !== undefined ? hexToBin(source.push) : undefined;
+    if (item !== undefined && source.then !== undefined) item = convert(item, hexToBin(source.then));
+    const value = item === undefined ? undefined : decodeArgument(item, parameters[index]!.type);
+    if (value === undefined) return undefined;
+    values.push(value);
+  }
+  return values;
+}
+
 /** The requirement recorded at `index`, or at the instruction before it, which libauth reports for some opcodes. */
 function requirementAt(
   requirements: readonly RequireStatement[],
@@ -156,6 +224,7 @@ export function frameRevertReason(
   program: Uint8Array,
   ip: number | undefined,
   functionName?: string,
+  stack?: readonly Uint8Array[],
 ): FrameRevertReason {
   if (artifact?.debug === undefined || ip === undefined) return {};
   const selector = entrySelector(artifact, functionName);
@@ -173,10 +242,12 @@ export function frameRevertReason(
   const line = matched?.line ?? sourceMapToLocationData(sourceMap)[inBody ? ip : debugIndex]?.location?.start.line;
   const message = matched?.message;
   const error = message === undefined ? undefined : declaredError(artifact, message);
+  const values = revertArguments(matched?.arguments, error?.parameters, stack);
   return {
     ...(line === undefined ? {} : { line }),
     ...(message === undefined ? {} : { message }),
     ...(error === undefined ? {} : { error }),
+    ...(values === undefined ? {} : { arguments: values }),
   };
 }
 
@@ -238,7 +309,7 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
       inputIndex: placed.index, sourceOutputs: shared.sourceOutputs, transaction: shared.transaction,
     });
     if (vm.stateSuccess(state) === true) continue;
-    const typed = state as { readonly ip?: number; readonly error?: unknown };
+    const typed = state as { readonly ip?: number; readonly error?: unknown; readonly stack?: readonly Uint8Array[] };
     const run = draft.runs.find((candidate) => candidate.master === placed.id);
     const artifact = artifacts.find((candidate) => candidate.contractName === placed.contract);
     refusals.push({
@@ -248,7 +319,9 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
       index: placed.index,
       depth: depths.get(placed.id) ?? 0,
       objection: typed.error === undefined ? 'the machine refused without a reason' : String(typed.error),
-      reason: frameRevertReason(artifact, run?.program ?? new Uint8Array(0), typed.ip, run?.functionName),
+      reason: frameRevertReason(
+        artifact, run?.program ?? new Uint8Array(0), typed.ip, run?.functionName, typed.stack,
+      ),
     });
   }
 

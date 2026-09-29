@@ -24,6 +24,7 @@ const IMPL_CATEGORY = '66'.repeat(32);
 const PROXY_CATEGORY = '67'.repeat(32);
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' error Short(int requested, int available);'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   uint public initialized;'
@@ -36,6 +37,11 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + '   function add(int by) { this.total = this.total + by; require(this.total >= 0, "total negative"); }'
   + '   function put(int by) { this.total = this.total + by; require(this.total >= 0); }'
+  + '   function take(int by) {'
+  + '     int held = this.total;'
+  + '     if (by > held) { revert Short(by, held); }'
+  + '     this.total = held - by;'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -134,5 +140,29 @@ describe('a hop whose implementation entry refuses', () => {
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
     })).rejects.toThrow(/Impl\.put\(\)[\s\S]*at line \d+/);
+  });
+
+  it('carries the values the entry\'s custom error was raised with', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoin(network);
+
+    const refused = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'take',
+      args: [100n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    }).then(() => undefined, (error: unknown) => error as { message: string; errorArgs?: readonly unknown[] });
+
+    expect(refused?.message).toMatch(/revert Short\(int256, int256\)/);
+    // The initialize hop left `total` at 5, which the entry read and raised beside the amount it was asked for.
+    expect(refused?.errorArgs).toStrictEqual([100n, 5n]);
   });
 });

@@ -16,8 +16,6 @@ import {
   stateRecordUnlockingBytecode,
 } from '../../../src/per-call/deploy/index.js';
 import {
-  createComposedDerivationHost,
-  deriveComposition,
   layOutMappingWrites,
   participant,
   planMappingWrite,
@@ -554,14 +552,23 @@ function buildSingleRecordPlan(locktime: number): CompositionDraftPlan {
   };
 }
 
+let singleRun: { readonly plan: CompositionDraftPlan; readonly outcome: ReturnType<typeof composeAndDerive> } | undefined;
+/** The single-record composition, derived once: the settle reads it and the refusal copies the outputs it changes. */
+function derivedSingle(): NonNullable<typeof singleRun> {
+  if (singleRun === undefined) {
+    const plan = buildSingleRecordPlan(LOCKTIME_AFTER_PAYMENT);
+    singleRun = { plan, outcome: composeAndDerive(plan, SINGLE_ARTIFACTS, [rootOf('Root', 'enter', ROOT_MASTER)]) };
+  }
+  return singleRun;
+}
+
 describe('the same composition over one data-NFT state record', () => {
   it('settles: the frame that only reads the record closes against its own declaration', () => {
     // One record, read by the read-only frame and written by the `challenge` frame. The reading frame's segment
     // declares the record kept, and its close holds it to that declaration: the transaction's own output carries
     // the value the other frame writes, so a close that read the transaction would refuse a spend the design
     // wants. Every contract input is accepted, and the record's output carries what `challenge` computed.
-    const plan = buildSingleRecordPlan(LOCKTIME_AFTER_PAYMENT);
-    const outcome = composeAndDerive(plan, SINGLE_ARTIFACTS, [rootOf('Root', 'enter', ROOT_MASTER)]);
+    const { plan, outcome } = derivedSingle();
 
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('Escrow', 'paidAt'), entryName('Escrow', 'challenge'),
@@ -582,11 +589,7 @@ describe('the same composition over one data-NFT state record', () => {
   });
 
   it('refuses a record output no frame computed, on the same composition', () => {
-    const plan = buildSingleRecordPlan(LOCKTIME_AFTER_PAYMENT);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: SINGLE_ARTIFACTS, plan,
-    });
-    deriveComposition([rootOf('Root', 'enter', ROOT_MASTER)], host);
+    const { plan, outcome: { draft } } = derivedSingle();
     const recordIndex = planRecordIndex(plan);
     const program = draft.programFor(CHALLENGE_MASTER);
     const wrong = singleRecordOf(PAYMENT_BLOCK + 100n);

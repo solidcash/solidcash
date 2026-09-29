@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind, bytesToHex } from '@solidcash/utils';
 import {
-  createComposedDerivationHost, deriveComposition, layOutChunkRun, participant, planChunkRun,
+  layOutChunkRun, participant, planChunkRun,
   type CompositionDraftPlan, type DraftRecordEntry,
 } from '../../../../solidcash/src/per-call/composer/index.js';
 import { compositionMachine } from '../machine.js';
@@ -203,15 +203,9 @@ describe('a per-call master whose dynamic write shares the frame with a call', (
   });
 
   it('refuses a chunk output whose commitment the body did not compute', () => {
-    // The control: the derivation completes, then the run's kept output carries a commitment the body never
-    // computed, so the master recomputes the chunk and refuses it.
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(),
-      artifacts: [artifacts.Appender!, artifacts.Callee!],
-      plan: built.plan,
-    });
-    deriveComposition([rootOf('Appender', 'append', APP_MASTER)], host);
-    const program = draft.programFor(APP_MASTER);
+    // The control: the settled derivation's run output carries a commitment the body never computed, so the master
+    // recomputes the chunk and refuses it.
+    const program = outcome.draft.programFor(APP_MASTER);
     const outputs = program.transaction.outputs.map((output, index) => index === built.base
       ? { ...output, token: { ...output.token, nft: { ...output.token!.nft!, commitment: new Uint8Array([7]) } } }
       : output);

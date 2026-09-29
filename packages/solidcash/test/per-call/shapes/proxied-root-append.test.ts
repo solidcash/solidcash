@@ -25,7 +25,7 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
 import {
-  chunkRecordId, createComposedDerivationHost, deriveComposition, layOutChunkRun, participant,
+  chunkRecordId, createComposedDerivationHost, layOutChunkRun, participant,
   planChunkRun, readPublishedStopSites, reportCompositionRefusal,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
@@ -579,11 +579,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
   });
 
   it('refuses a record output no frame computed, on the same composition', () => {
-    const built = buildAppend();
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: built.artifacts, plan: built.plan,
-    });
-    deriveComposition([built.root], host);
+    const { built, outcome: { draft } } = settledAppend();
     const program = draft.programFor(PROXY_MASTER);
     const wrong = recordOf(built.setup, COUNT_BEFORE + 100n);
     const transaction = {

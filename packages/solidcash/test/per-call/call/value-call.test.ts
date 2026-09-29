@@ -1,22 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { buildPushdataCommitment, bytesToHex, type Artifact } from '@solidcash/utils';
-import { perCallValidator } from 'solidc';
-import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
+import { binToHex } from '@bitauth/libauth';
+import { buildPushdataCommitment, bytesToHex } from '@solidcash/utils';
+import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { Contract, SignatureTemplate } from '../../../src/index.js';
-import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
-import {
-  deployMaster, satoshiContainerLockingBytecode, stateRecordLockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+import { satoshiContainerLockingBytecode, stateRecordLockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
 } from '../../../src/per-call/call/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
-import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
-import { fundShippedFacets } from '../shapes/harness.js';
+import { addressOf, callerOf, containerValue, currentCaller, deploy, deployBeside } from './value-harness.js';
 
 /**
  * Value carried by a call into a deployed per-call contract (spec 4b), through the shipped path.
@@ -27,8 +19,6 @@ import { fundShippedFacets } from '../shapes/harness.js';
  * `receive()` nor a payable `fallback()`.
  */
 
-const CATEGORY_HEX = '35'.repeat(32);
-const CALLER_TXID = '46'.repeat(32);
 const AMOUNT = 10_000n;
 
 const SOURCE = 'pragma solidcash ^0.13.0;'
@@ -47,60 +37,6 @@ const PLAIN_SOURCE = 'pragma solidcash ^0.13.0;'
 
 const vault = compileStringMulti(SOURCE, { composition: 'per-call' }).Vault!;
 const plain = compileStringMulti(PLAIN_SOURCE, { composition: 'per-call' }).Plain!;
-
-interface Deployed {
-  readonly artifact: Artifact;
-  readonly provider: MockNetworkProvider;
-  readonly categoryId: string;
-  readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
-  readonly callerLock: Uint8Array;
-  readonly funder: ReturnType<SignatureTemplate['unlockP2PKH']>;
-}
-
-/** Deploys the contract through the shipped deployment and funds the caller's own coin at its P2PKH lock. */
-async function deploy(artifact: Artifact): Promise<Deployed> {
-  const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-  const signature = new SignatureTemplate(alicePriv);
-  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
-  await provider.addUtxo(funder.address, fundingUtxo);
-  const deployment = await deployStatefulContract(artifact, [], {
-    provider,
-    fundingUtxo,
-    funder: funder.unlock.spend(alicePub, signature),
-    changeAddress: funder.address,
-  });
-  const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
-  const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
-  await provider.addUtxo(binToHex(callerLock), callerUtxo);
-  // The calls broadcast, so each composition's facet input needs a live UTXO at the facet's lock.
-  await fundShippedFacets(provider);
-  return {
-    artifact, provider, categoryId: deployment.categoryId, callerUtxo, callerLock, funder: signature.unlockP2PKH(),
-  };
-}
-
-/** The call's options, less the entry and the value. */
-function callerOf(deployed: Deployed): Parameters<typeof sendPerCallValue>[0] {
-  return {
-    provider: deployed.provider,
-    artifact: deployed.artifact,
-    categoryId: deployed.categoryId,
-    callerUtxo: deployed.callerUtxo,
-    callerLockingBytecode: deployed.callerLock,
-    funder: deployed.funder,
-    vm: compositionMachine(),
-    value: 0n,
-  };
-}
-
-/** The value the broadcast pays into the contract's containers. */
-function containerValue(result: PerCallCallResult, categoryId: string): bigint {
-  const lock = binToHex(satoshiContainerLockingBytecode(categoryId));
-  return (result.broadcast?.outputs ?? [])
-    .filter((output) => binToHex(output.lockingBytecode) === lock)
-    .reduce((sum, output) => sum + output.valueSatoshis, 0n);
-}
 
 /** The record commitment the shipped encoder materializes for one balance. */
 function received(value: bigint): string {
@@ -156,14 +92,6 @@ const WALLET_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'per-call' }).Wallet!;
-
-/** The caller's options with its current coin: the largest tokenless UTXO at its lock, the last call's change. */
-async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendPerCallValue>[0]> {
-  const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
-    .filter((utxo) => utxo.token === undefined)
-    .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
-  return { ...callerOf(deployed), callerUtxo: coins[0]! };
-}
 
 /** The value the broadcast pays to the caller's own lock outside its change, which is the last output. */
 function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint {
@@ -299,26 +227,6 @@ const PAYMENTS_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 
 const payments = compileStringMulti(PAYMENTS_SOURCE, { composition: 'per-call' });
-
-/** Deploys a second contract on a deployment's provider, funded from the same wallet. */
-async function deployBeside(deployed: Deployed, artifact: Artifact, fundingTxid: string): Promise<string> {
-  const signature = new SignatureTemplate(alicePriv);
-  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: deployed.provider });
-  const fundingUtxo = { txid: fundingTxid, vout: 0, satoshis: 500_000n };
-  await deployed.provider.addUtxo(funder.address, fundingUtxo);
-  const deployment = await deployStatefulContract(artifact, [], {
-    provider: deployed.provider,
-    fundingUtxo,
-    funder: funder.unlock.spend(alicePub, signature),
-    changeAddress: funder.address,
-  });
-  return deployment.categoryId;
-}
-
-/** A contract's address: the validator address its category derives. */
-function addressOf(artifact: Artifact, categoryId: string): Uint8Array {
-  return deployMaster(artifact, hexToBin(categoryId), perCallValidator.buildValidatorProgram()).address;
-}
 
 describe('an entry that pays a contract through its receive()', () => {
   it('runs the recipient\'s receive() with the value, paid from the payer\'s containers', async () => {
@@ -571,188 +479,3 @@ describe('an entry that sends on a branch', () => {
     expect(containerValue(result, secondCategory)).toBe(8_000n);
   });
 });
-
-const PAID_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Tipped {'
-  + '   int public tips;'
-  + '   event Tip(int amount);'
-  + '   receive() external payable { this.tips = this.tips + msg.value; emit Tip(msg.value); }'
-  + ' }'
-  + ' contract Bank {'
-  + '   mapping(address => uint) balances;'
-  + '   constructor(address owner) { this.balances[owner] = 1; }'
-  + '   receive() external payable { this.balances[msg.sender] = this.balances[msg.sender] + msg.value; }'
-  + ' }'
-  + ' contract Payer {'
-  + '   int public paid;'
-  + '   receive() external payable { require(true); }'
-  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
-  + ' }';
-
-const paidBodies = compileStringMulti(PAID_BODIES_SOURCE, { composition: 'per-call' });
-
-/** Deploys a contract with constructor arguments on a deployment's provider, funded from the same wallet. */
-async function deployBesideWith(
-  deployed: Deployed, artifact: Artifact, args: readonly Uint8Array[], fundingTxid: string,
-): Promise<string> {
-  const signature = new SignatureTemplate(alicePriv);
-  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: deployed.provider });
-  const fundingUtxo = { txid: fundingTxid, vout: 0, satoshis: 500_000n };
-  await deployed.provider.addUtxo(funder.address, fundingUtxo);
-  const deployment = await deployStatefulContract(artifact, [...args], {
-    provider: deployed.provider,
-    fundingUtxo,
-    funder: funder.unlock.spend(alicePub, signature),
-    changeAddress: funder.address,
-  });
-  return deployment.categoryId;
-}
-
-describe('a paid receive() that emits or writes a mapping', () => {
-  it('lists the event the paid body emits, learned from its own program', async () => {
-    const deployed = await deploy(paidBodies.Payer!);
-    const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-
-    const result = await callPerCallEntry({
-      ...(await currentCaller(deployed)),
-      functionName: 'pay',
-      args: [addressOf(paidBodies.Tipped!, tippedCategory), 6_000n],
-      externals: { Tipped: { artifact: paidBodies.Tipped!, categoryId: tippedCategory } },
-    });
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Tipped.__receive()', 'Payer.pay()']);
-    // The event is an immutable NFT of the paid contract's own category.
-    const events = result.broadcast!.outputs.filter((output) => output.token !== undefined
-      && binToHex(output.token.category) === tippedCategory && output.token.nft?.capability === 'none');
-    expect(events).toHaveLength(1);
-    expect(containerValue(result, tippedCategory)).toBe(6_000n);
-  });
-
-  it('writes the paid body\'s mapping entry, created on the first payment and updated on the next', async () => {
-    const deployed = await deploy(paidBodies.Payer!);
-    const bankCategory = await deployBesideWith(deployed, paidBodies.Bank!, [deployed.callerLock], '4f'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    const externals = { Bank: { artifact: paidBodies.Bank!, categoryId: bankCategory } };
-    const to = addressOf(paidBodies.Bank!, bankCategory);
-
-    const first = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 7_000n], externals,
-    });
-    expect(first.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(containerValue(first, bankCategory)).toBe(7_000n);
-
-    const second = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
-    });
-    expect(second.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(containerValue(second, bankCategory)).toBe(3_000n);
-  });
-});
-
-const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Splitter {'
-  + '   bytes25 public first;'
-  + '   bytes25 public second;'
-  + '   constructor(bytes25 a, bytes25 b) { this.first = a; this.second = b; }'
-  + '   receive() external payable {'
-  + '     this.transfer(this.first, msg.value / 2);'
-  + '     this.transfer(this.second, msg.value - msg.value / 2);'
-  + '   }'
-  + ' }'
-  + ' contract Doubler {'
-  + '   bytes25 public to;'
-  + '   int public paid;'
-  + '   constructor(bytes25 a) { this.to = a; }'
-  + '   function deposit() payable { require(msg.value > 0); }'
-  + '   receive() external payable { this.paid = this.paid + 1; this.transfer(this.to, msg.value * 2); }'
-  + ' }'
-  + ' contract Tipper {'
-  + '   bytes25 public first;'
-  + '   bytes25 public second;'
-  + '   constructor(bytes25 a, bytes25 b) { this.first = a; this.second = b; }'
-  + '   receive() external payable {'
-  + '     if (msg.value > 5000) { this.transfer(this.first, 1000); }'
-  + '     this.transfer(this.second, 500);'
-  + '   }'
-  + ' }'
-  + ' contract Payer {'
-  + '   int public paid;'
-  + '   receive() external payable { require(true); }'
-  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
-  + ' }';
-
-const sendingBodies = compileStringMulti(SENDING_BODIES_SOURCE, { composition: 'per-call' });
-const FIRST_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x31));
-const SECOND_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x32));
-
-/** The value the broadcast pays to one lock. */
-function paidTo(result: PerCallCallResult, lock: Uint8Array): bigint {
-  return (result.broadcast?.outputs ?? [])
-    .filter((output) => binToHex(output.lockingBytecode) === binToHex(lock))
-    .reduce((sum, output) => sum + output.valueSatoshis, 0n);
-}
-
-describe('a paid receive() that sends', () => {
-  it('forwards what it receives to the users its records name', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
-    const splitterCategory = await deployBesideWith(
-      deployed, sendingBodies.Splitter!, [FIRST_LOCK, SECOND_LOCK], '50'.repeat(32),
-    );
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-
-    const result = await callPerCallEntry({
-      ...(await currentCaller(deployed)),
-      functionName: 'pay',
-      args: [addressOf(sendingBodies.Splitter!, splitterCategory), 9_001n],
-      externals: { Splitter: { artifact: sendingBodies.Splitter!, categoryId: splitterCategory } },
-    });
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(paidTo(result, FIRST_LOCK)).toBe(4_500n);
-    expect(paidTo(result, SECOND_LOCK)).toBe(4_501n);
-  });
-
-  it('pays out more than it receives from its own containers, and is refused by name when they cannot', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
-    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(32));
-    const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
-    const to = addressOf(sendingBodies.Doubler!, doublerCategory);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    // Before its deposit it holds nothing, so what it sends beyond what it receives has no container to come from.
-    await expect(callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
-    })).rejects.toThrow(/contract "Doubler" holds 0 satoshis in its containers/);
-    const doubler = { ...deployed, artifact: sendingBodies.Doubler!, categoryId: doublerCategory };
-    const deposit = await callPerCallEntry({ ...(await currentCaller(doubler)), functionName: 'deposit', value: 8_000n });
-    expect(deposit.accepted).toBe(true);
-
-    // As the EVM pays from its balance.
-    const result = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
-    });
-    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(paidTo(result, FIRST_LOCK)).toBe(6_000n);
-    // The 3,000 it received and 3,000 of its deposit paid the send; the rest of the deposit stays in its container.
-    expect(containerValue(result, doublerCategory)).toBe(5_000n);
-  });
-
-  it('lists only the send it makes when one of its sends is on a branch not taken', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
-    const tipperCategory = await deployBesideWith(
-      deployed, sendingBodies.Tipper!, [FIRST_LOCK, SECOND_LOCK], '53'.repeat(32),
-    );
-    const externals = { Tipper: { artifact: sendingBodies.Tipper!, categoryId: tipperCategory } };
-    const to = addressOf(sendingBodies.Tipper!, tipperCategory);
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-
-    // A branch taken makes every send, as the splitter's do.
-    const skipped = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
-    });
-    expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(paidTo(skipped, FIRST_LOCK)).toBe(0n);
-    expect(paidTo(skipped, SECOND_LOCK)).toBe(500n);
-    expect(containerValue(skipped, tipperCategory)).toBe(2_500n);
-  });
-});
-

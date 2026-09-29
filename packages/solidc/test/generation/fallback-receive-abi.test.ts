@@ -172,6 +172,7 @@ describe('Fallback/Receive ABI metadata', () => {
     expect(forward!.lowLevelCalls).toEqual([{
       callMode: 'delegatecall', dataParamIndex: 1, occurrence: 'once',
       target: { kind: 'parameter', name: 'target' },
+      targetSource: { kind: 'forward', paramIndex: 0 },
     }]);
   });
 
@@ -189,6 +190,7 @@ describe('Fallback/Receive ABI metadata', () => {
     expect(forward!.lowLevelCalls).toEqual([{
       callMode: 'delegatecall', dataParamIndex: 1, occurrence: 'conditional', maximumOccurrences: 1,
       target: { kind: 'parameter', name: 'target' },
+      targetSource: { kind: 'forward', paramIndex: 0 },
     }]);
   });
 });

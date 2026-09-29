@@ -17364,7 +17364,7 @@ const SHARED_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
 const SHARED_LEXER_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
 const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
 
-// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 344, ...)`). Guarded at install time by
+// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 345, ...)`). Guarded at install time by
 // rule name so a grammar regen that shifts decision numbers silently falls back to ATN prediction.
 const STATEMENT_DECISION = 167;
 const STATEMENT_ALT_PLACEHOLDER = 1;
@@ -17386,9 +17386,9 @@ const STATEMENT_ALT_DELETE = 22;
 const STATEMENT_ALT_ASSERT = 21;
 const STATEMENT_ALT_REVERT = 20;
 const STATEMENT_ALT_CONSOLE = 14;
-const EXPRESSION_PREFIX_DECISION = 344;
-const EXPRESSION_POSTFIX_LOOP_DECISION = 360;
-const EXPRESSION_POSTFIX_INNER_DECISION = 359;
+const EXPRESSION_PREFIX_DECISION = 345;
+const EXPRESSION_POSTFIX_LOOP_DECISION = 361;
+const EXPRESSION_POSTFIX_INNER_DECISION = 360;
 const EXPRESSION_POSTFIX_CONTINUE = 1;
 const EXPRESSION_POSTFIX_STOP = 2;
 const EXPRESSION_POSTFIX_INDEXED = 12;

@@ -7840,8 +7840,14 @@ export default class AstBuilder
     return node;
   }
 
-  visitAssertStatement(ctx: AssertStatementContext): AssertNode {
-    const expression = this.visit(ctx.expression()) as ExpressionNode;
+  visitAssertStatement(ctx: AssertStatementContext): StatementNode {
+    const expressionCtx = ctx.expression();
+    if (!expressionCtx) {
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const expression = this.visit(expressionCtx) as ExpressionNode;
     const node = new AssertNode(expression);
     node.location = Location.fromCtx(ctx);
     return node;

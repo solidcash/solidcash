@@ -869,6 +869,7 @@ revertStatement
 
 assertStatement
     : 'assert' '(' expression ')' ';'
+    | 'assert' ';'
     ;
 
 consoleParameter

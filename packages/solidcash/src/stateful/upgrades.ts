@@ -1,7 +1,7 @@
 import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import {
   Artifact, AbiFunction, asmToBytecode, attachDecodedAccessors, buildEventNftCovenantScript,
-  computeEventNameHash, decodedAddressEncoding,
+  computeEventNameHash,
 } from '@solidcash/utils';
 import {
   ContractFactory, DeployedContract, DeployContractOptions,
@@ -478,8 +478,7 @@ function wrapDispatch<TImpl extends Artifact>(handle: ProxyContract<TImpl>): Pro
               value as import('@solidcash/utils').StateValue | undefined, storageName, args.length, implArtifact,
             );
             const getter = (implArtifact.abi as readonly AbiFunction[]).find((entry) => entry.name === prop);
-            if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array
-              && decodedAddressEncoding(result) !== 'evm-abi-v1') {
+            if (getter?.outputs?.[0]?.type === 'address' && value instanceof Uint8Array) {
               const cashaddr = lockingBytecodeToCashAddress({
                 bytecode: value,
                 prefix: getNetworkPrefix(target.proxy.inner.provider.network),

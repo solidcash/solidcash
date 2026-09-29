@@ -354,6 +354,19 @@ export async function completeCreateBuilderNestedUnlockers(
         };
         return BigInt(physicalReturnIndexForGroup.get(returnGroupIndex) ?? -1);
       }
+      const returnPreimageWitness = input.name.match(/^__internal__externalReturnPreimage(\d*)$/);
+      if (returnPreimageWitness) {
+        const outputIndexName = input.name.replace('externalReturnPreimage', 'externalReturnOutputIdx');
+        const slot = externalReturnParamSlot(outputIndexName, childFn.externalCalls);
+        const nestedGroupIndex = slot === undefined ? undefined : childNestedGroupIndexForSlot(slot);
+        if (nestedGroupIndex === undefined) return new Uint8Array();
+        const returnGroupIndex = logicalReturnGroupIndex(externalCallUtxoGroups, nestedGroupIndex);
+        child.returnPreimageWitnessGroups = {
+          ...child.returnPreimageWitnessGroups, [input.name]: returnGroupIndex,
+        };
+        return externalCallUtxoGroups[returnGroupIndex]?.precomputedReturnCommitment
+          ?? new Uint8Array();
+      }
       const callInputWitness = input.name.match(/^__internal__callInputIndex(\d*)$/);
       if (callInputWitness) {
         const callIndex = callInputWitness[1] === '' ? 0 : Number(callInputWitness[1]);

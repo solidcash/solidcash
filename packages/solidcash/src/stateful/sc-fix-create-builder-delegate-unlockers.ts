@@ -281,6 +281,17 @@ export async function fixCreateBuilderDelegateUnlockers(
             ? groupProxyMasterIndices[groupLocalIdx] ?? masterInputIndex
             : nestedMasterIndices[proxyExternalGroup] ?? masterInputIndex);
         }
+        if (/^__internal__externalReturnPreimage\d*$/.test(inp.name)) {
+          const outputIndexName = inp.name.replace('externalReturnPreimage', 'externalReturnOutputIdx');
+          const slot = externalReturnParamSlot(outputIndexName, (bFunc as AbiFunction).externalCalls);
+          const nestedGroup = slot === undefined ? undefined : nestedGroupIndexForSlot(slot);
+          if (nestedGroup === undefined) return new Uint8Array();
+          group.returnPreimageWitnessGroups = {
+            ...group.returnPreimageWitnessGroups, [inp.name]: nestedGroup,
+          };
+          return externalCallUtxoGroups[nestedGroup]?.precomputedReturnCommitment
+            ?? new Uint8Array();
+        }
         if (/^__internal__externalReturnOutputIdx\d*$/.test(inp.name)) {
           const nestedReturning = nestedGroups.filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
           const returnOrdinal = delegateReturnWitnessIndex;

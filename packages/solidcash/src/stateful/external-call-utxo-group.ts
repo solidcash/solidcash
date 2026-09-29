@@ -298,6 +298,8 @@ export interface ExternalCallUtxoGroup {
   internalArgNames?: readonly string[];
   /** Hidden return-output ABI witness -> logical external-call group supplying that return. */
   returnWitnessGroups?: Record<string, number>;
+  /** Hidden raw return-preimage ABI witness -> logical external-call group supplying that return. */
+  returnPreimageWitnessGroups?: Record<string, number>;
   /** Hidden minting-input ABI witness -> category whose final master coordinate it names. */
   mintingInputWitnessCategories?: Record<string, string>;
   /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */

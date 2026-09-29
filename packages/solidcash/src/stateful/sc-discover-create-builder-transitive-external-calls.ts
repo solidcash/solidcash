@@ -2,11 +2,14 @@
  * phase-boundary extract: SC _createBuilder extract — discover transitive B→C external-call groups.
  */
 
-import type { AbiInput, ExternalCallAbi, StateLayout } from '@solidcash/utils';
+import { hexToBin } from '@bitauth/libauth';
+import type { Artifact, StateLayout, StateValue } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { UnlockableUtxo } from '../interfaces.js';
 import { createDataNftUnlocker } from './covenant-helpers.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { resolveExternalResultEncoding } from './solidityAbi.js';
 import type { ExternalGroupMeta } from './stateful-lifecycle-types.js';
 
 export type TransitiveExternalContract = {
@@ -16,12 +19,13 @@ export type TransitiveExternalContract = {
     dataNftUtxos: UnlockableUtxo[];
   }>;
   inner: {
-    artifact: { abi: readonly { externalCalls?: readonly ExternalCallAbi[]; inputs: readonly AbiInput[]; name: string }[] };
+    artifact: Artifact;
     stateLayout?: StateLayout;
     lockingBytecode: string;
   };
   _externalRegistry: Map<string, unknown>;
   _resolveExternalArgs(...args: any[]): FunctionArgument[] | undefined;
+  _deriveReturnValue(...args: any[]): Promise<StateValue>;
 };
 
 /**
@@ -91,6 +95,34 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
 
       const cStateLayout = cContract.inner.stateLayout!;
       const cRequiredNftIndices = bEc.requiredDataNftIndices;
+      const cAbiFunction = cContract.inner.artifact.abi.find((candidate) =>
+        candidate.name === bEc.functionName);
+      // The ordinary transitive A→B→C discovery path does not pass through nested graph expansion. Seed a
+      // read-only C result here so B can decode it while its own return is derived. This is an advancing seed,
+      // never a substitute for final transaction validation: state-writing/unknown callees still use VM proof.
+      let precomputedReturnCommitment: Uint8Array | undefined;
+      if (bEc.hasReturnValues && cAbiFunction?.writesState === false
+        && cAbiFunction.outputs?.length === 1) {
+        try {
+          const value = await cContract._deriveReturnValue(
+            bEc.functionName, cArgs ?? [], undefined, cAbiFunction, undefined,
+            hexToBin(bContract.inner.lockingBytecode), bContract.categoryId,
+          );
+          const returnEncoding = resolveExternalResultEncoding(
+            cAbiFunction.resultEncoding, cContract.inner.artifact,
+            cAbiFunction.outputs.map((output) => output.type),
+            `function '${cAbiFunction.name}' result`,
+          );
+          precomputedReturnCommitment = encodeExternalReturnValue(
+            value, cAbiFunction.outputs[0].type,
+            cContract.inner.artifact.structs ?? cContract.inner.artifact.stateLayout?.structs,
+            returnEncoding === 'evm-abi-v1', cContract.inner.artifact.enums,
+          );
+        } catch {
+          // A speculative read can depend on a later graph effect or an unavailable context. Its real
+          // transaction still has the ordinary VM-derived return path; no unproven value is published.
+        }
+      }
 
       const cDataNfts: UnlockableUtxo[] = [];
       for (const nftIndex of cRequiredNftIndices) {
@@ -121,6 +153,7 @@ export async function discoverCreateBuilderTransitiveExternalCalls(
           lockingBytecode: bContract.inner.lockingBytecode,
         },
         logicalFunctionName: bEc.functionName,
+        ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
         ...(bEc.callMode && { callMode: bEc.callMode }),
       });
 

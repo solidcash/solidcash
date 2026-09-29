@@ -3,9 +3,11 @@
  * owner has materialized.
  */
 
+import { binToHex } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
-import type { UnlockableUtxo } from '../interfaces.js';
+import { isContractUnlocker, type UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 import {
   matchMaterializedReturnOutputs,
   type MaterializedReturnExpectation,
@@ -94,9 +96,22 @@ export function reconcileMaterializedReturnWitnesses(
   }
   const changedCarriers = new Set<ExternalCallUtxoGroup>();
   for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
-    if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
-    const updates: Record<string, bigint> = {};
-    for (const [name, groupIdx] of Object.entries(carrier.returnWitnessGroups)) {
+    if (!carrier.refreshInternalArgs
+      || (!carrier.returnWitnessGroups && !carrier.returnPreimageWitnessGroups)) continue;
+    const updates: Record<string, bigint | Uint8Array> = {};
+    for (const [name, groupIdx] of Object.entries(carrier.returnPreimageWitnessGroups ?? {})) {
+      const identity = `external-call:${logicalReturnGroupIndex(host.externalCallUtxoGroups, groupIdx)}`;
+      const exact = host.pendingReturnEventOutputs.find((event) => event.identity === identity);
+      const first = host.pendingReturnEventOutputs.find((event) => event.identity === `${identity}:0`);
+      const event = exact?.provisional && first ? first : exact ?? first;
+      const raw = event?.commitment ?? host.externalCallUtxoGroups[groupIdx]?.precomputedReturnCommitment;
+      if (raw && raw.length > 128
+        && (!(carrier.internalArgs?.[name] instanceof Uint8Array)
+          || binToHex(carrier.internalArgs[name] as Uint8Array) !== binToHex(raw))) {
+        updates[name] = raw.slice();
+      }
+    }
+    for (const [name, groupIdx] of Object.entries(carrier.returnWitnessGroups ?? {})) {
       const outputIndex = resolved.get(groupIdx);
       if (outputIndex === undefined || carrier.internalArgs?.[name] === BigInt(outputIndex)) continue;
       updates[name] = BigInt(outputIndex);
@@ -105,6 +120,40 @@ export function reconcileMaterializedReturnWitnesses(
     carrier.refreshInternalArgs(updates, { shiftPredOut: false });
     changedCarriers.add(carrier);
     changed = true;
+  }
+  // A long return's NFT contains only SHA256(raw). Every caller that decodes it carries raw as a hidden
+  // witness, and its covenant verifies the digest before using those bytes. Bind that witness from the
+  // materialized return output rather than from a guessed graph ordinal (which can differ for transitive
+  // and delegate groups).
+  for (const input of builder.inputs) {
+    const unlocker = input.unlocker;
+    if (!isContractUnlocker(unlocker)) continue;
+    const refreshed: number[] = [];
+    for (const [paramIndex, param] of unlocker.abiFunction.inputs.entries()) {
+      const suffix = /^__internal__externalReturnPreimage(\d*)$/.exec(param.name)?.[1];
+      if (suffix === undefined) continue;
+      const indexName = `__internal__externalReturnOutputIdx${suffix}`;
+      const indexPosition = unlocker.abiFunction.inputs.findIndex((candidate) => candidate.name === indexName);
+      if (indexPosition < 0) continue;
+      const outputIndex = Number(unlocker.params[indexPosition]);
+      const output = builder.outputs[outputIndex];
+      const token = output?.token;
+      if (!token?.nft) continue;
+      const actual = token.nft.commitment.toLowerCase();
+      const raw = host.pendingReturnEventOutputs.find((event) =>
+        event.categoryId.toLowerCase() === token.category.toLowerCase()
+        && event.commitment.length > 128
+        && (returnEventNftCommitment(event.commitment) === actual
+          || binToHex(event.commitment) === actual))?.commitment;
+      if (!raw || unlocker.params[paramIndex] instanceof Uint8Array
+        && binToHex(unlocker.params[paramIndex] as Uint8Array) === binToHex(raw)) continue;
+      unlocker.params[paramIndex] = raw.slice();
+      refreshed.push(paramIndex);
+    }
+    if (refreshed.length > 0) {
+      unlocker.syncEncodedArgsFromParams?.(refreshed);
+      changed = true;
+    }
   }
   if (!changed) return false;
 

@@ -1,4 +1,4 @@
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
@@ -134,12 +134,12 @@ describe('kernel nested fixed-array return materialization', () => {
     expect(producerResult, `producer result output ${producerResult.outputIndex}`).toMatchObject({
       category: producerSetup.categoryId,
       capability: 'none',
-      commitment: expectedProducerResult,
+      commitment: binToHex(sha256.hash(hexToBin(expectedProducerResult))),
     });
     expect(intermediateResult, `intermediate result output ${intermediateResult.outputIndex}`).toMatchObject({
       category: consumerSetup.categoryId,
       capability: 'none',
-      commitment: expectedIntermediateResult,
+      commitment: binToHex(sha256.hash(hexToBin(expectedIntermediateResult))),
     });
 
     const vm = createVirtualMachineBch2026ForProvider(provider);
@@ -156,5 +156,36 @@ describe('kernel nested fixed-array return materialization', () => {
       })}`)
         .toBe(true);
     }
+    const returnPreimageWitness = (contractName: string) => {
+      const inputIndex = builder.inputs.findIndex((candidate) => 'contract' in candidate.unlocker
+        && candidate.unlocker.contract.artifact.contractName === contractName);
+      expect(inputIndex).toBeGreaterThanOrEqual(0);
+      const unlocker = builder.inputs[inputIndex].unlocker;
+      if (!('params' in unlocker)) throw new Error(`${contractName} has no return witness`);
+      const argumentIndex = unlocker.abiFunction.inputs.findIndex((argument) =>
+        argument.name === '__internal__externalReturnPreimage');
+      expect(argumentIndex).toBeGreaterThanOrEqual(0);
+      const value = unlocker.params[argumentIndex];
+      if (!(value instanceof Uint8Array)) throw new Error(`${contractName} return witness is not bytes`);
+      return { inputIndex, unlocker, argumentIndex, value };
+    };
+    const producerWitness = returnPreimageWitness('ArrayConsumer');
+    const intermediateWitness = returnPreimageWitness('ArrayInvoker');
+    expect(binToHex(producerWitness.value)).toBe(expectedProducerResult);
+    expect(binToHex(intermediateWitness.value)).toBe(expectedIntermediateResult);
+
+    const forged = intermediateWitness.value.slice();
+    forged[31] ^= 1;
+    intermediateWitness.unlocker.params[intermediateWitness.argumentIndex] = forged;
+    intermediateWitness.unlocker.syncEncodedArgsFromParams?.([intermediateWitness.argumentIndex]);
+    const forgedTransaction = builder.buildLibauthTransaction();
+    const forgedState = vm.evaluate({
+      inputIndex: intermediateWitness.inputIndex,
+      sourceOutputs: generateLibauthSourceOutputs(builder.inputs),
+      transaction: forgedTransaction,
+    });
+    expect(vm.stateSuccess(forgedState)).not.toBe(true);
+    intermediateWitness.unlocker.params[intermediateWitness.argumentIndex] = intermediateWitness.value;
+    intermediateWitness.unlocker.syncEncodedArgsFromParams?.([intermediateWitness.argumentIndex]);
   }, 180_000);
 });

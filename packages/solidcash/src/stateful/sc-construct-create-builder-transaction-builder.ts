@@ -346,6 +346,15 @@ export function constructCreateBuilderTransactionBuilder(
       if (name === undefined) break;
       const position = abiFunction!.inputs.findIndex((input) => input.name === name);
       if (position < 0 || position >= finalArgs.length) continue;
+      const preimageName = name.replace('externalReturnOutputIdx', 'externalReturnPreimage');
+      const preimagePosition = abiFunction!.inputs.findIndex((input) => input.name === preimageName);
+      const preimage = builder.getExternalCallReturnPreimage(groupIdx);
+      if (preimagePosition >= 0 && preimage && preimage.length > 128
+        && (!(finalArgs[preimagePosition] instanceof Uint8Array)
+          || binToHex(finalArgs[preimagePosition] as Uint8Array) !== binToHex(preimage))) {
+        finalArgs[preimagePosition] = preimage.slice();
+        changed = true;
+      }
       const built = builder.getBuiltExternalCallReturnEventOutputIndex(groupIdx);
       const authoritative = built >= 0 ? built : builder.getExternalCallReturnEventOutputIndex(groupIdx);
       if (authoritative < 0) continue;

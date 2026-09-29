@@ -134,6 +134,7 @@ import {
   type KernelEntryJournalSettlementOutputPlanEntry,
 } from './KernelEntryJournal.js';
 import { resolveExternalResultEncoding } from './solidityAbi.js';
+import { encodeExternalReturnValue } from './external-return-encoding.js';
 import {
   buildKeccakComputeSidecar, extractKeccakPreimageFromTrace,
 } from '../keccak/keccakComputeSidecar.js';
@@ -5728,6 +5729,23 @@ export class StatefulTransactionBuilder {
   seedPrecomputedReturnEvents(
     returning: ReadonlyArray<{ hasReturnValues?: boolean } | undefined> = [],
   ): this {
+    const typedArrayPlaceholder = (group: ExternalCallUtxoGroup): Uint8Array | undefined => {
+      const artifact = group.logicalArtifact ?? group.externalContract.inner.artifact as Artifact;
+      const functionName = group.logicalFunctionName ?? group.functionName;
+      const abi = artifact.abi.find((candidate) => candidate.name === functionName);
+      const output = abi?.outputs?.length === 1 ? abi.outputs[0] : undefined;
+      if (!output || !/\[\d+\]$/.test(output.type)) return undefined;
+      try {
+        return encodeExternalReturnValue(
+          getDefaultStateValue(output.type, artifact.structs ?? artifact.stateLayout?.structs),
+          output.type, artifact.structs ?? artifact.stateLayout?.structs,
+          resolveExternalResultEncoding(abi?.resultEncoding, artifact, [output.type],
+            `function '${functionName}' result`) === 'evm-abi-v1', artifact.enums,
+        );
+      } catch {
+        return undefined;
+      }
+    };
     const initialized = new Set<number>();
     for (const [groupIdx, group] of this.externalCallUtxoGroups.entries()) {
       const returns = returning[groupIdx]?.hasReturnValues === true
@@ -5747,7 +5765,8 @@ export class StatefulTransactionBuilder {
         ));
       const physical = this.externalCallUtxoGroups[physicalGroupIdx];
       const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
-      const fallback = physical.precomputedReturnCommitment ?? new Uint8Array([0]);
+      const fallback = physical.precomputedReturnCommitment
+        ?? typedArrayPlaceholder(physical) ?? new Uint8Array([0]);
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_RETURN === '1') {
         console.error('seed-precomputed-returns', {
@@ -5763,7 +5782,7 @@ export class StatefulTransactionBuilder {
             loopWidth: candidate.loopReturnCommitments?.length,
             parts: (candidate.loopReturnCommitments?.length
               ? candidate.loopReturnCommitments
-              : [candidate.precomputedReturnCommitment ?? fallback]
+              : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback]
             ).map((part) => ({
               bytes: part.length,
               hasDigital: binToHex(part).includes('44494749'),
@@ -5775,7 +5794,7 @@ export class StatefulTransactionBuilder {
       for (const { candidate, candidateIdx } of family) {
         const parts = candidate.loopReturnCommitments?.length
           ? candidate.loopReturnCommitments
-          : [candidate.precomputedReturnCommitment ?? fallback];
+          : [candidate.precomputedReturnCommitment ?? typedArrayPlaceholder(candidate) ?? fallback];
         for (const [partIndex, part] of parts.entries()) {
           this.setReturnEventOutput(
             physical.categoryId,
@@ -7087,6 +7106,17 @@ export class StatefulTransactionBuilder {
     const returnIdentity = `external-call:${logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx)}`;
     const tailOrder = this.tailReturnEventOutputs().findIndex((re) => re.identity === returnIdentity);
     return tailOrder < 0 ? -1 : this.getReturnEventOutputBase() + tailOrder;
+  }
+
+  /** Raw long-return value retained for a caller's hash-checked ABI preimage witness. */
+  getExternalCallReturnPreimage(groupIdx: number): Uint8Array | undefined {
+    const group = this.externalCallUtxoGroups[groupIdx];
+    if (!group) return undefined;
+    const identity = `external-call:${logicalReturnGroupIndex(this.externalCallUtxoGroups, groupIdx)}`;
+    const exact = this.pendingReturnEventOutputs.find((event) => event.identity === identity);
+    const first = this.pendingReturnEventOutputs.find((event) => event.identity === `${identity}:0`);
+    const event = exact?.provisional && first ? first : exact ?? first;
+    return event?.commitment ?? group.precomputedReturnCommitment;
   }
 
   /**

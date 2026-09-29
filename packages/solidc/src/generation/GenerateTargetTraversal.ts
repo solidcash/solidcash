@@ -267,7 +267,7 @@ import {
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { isKernelSafeNativeAssembly } from '../semantic/NativeAssemblyKernelSafety.js';
 import {
-  externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
+  evmStaticResultBytes, externalResultEncoding, isEvmAbiWordType, isEvmExternalResultSchemaDecodable,
 } from '../semantic/ExternalResultEncoding.js';
 import { analyseContractInvocations, walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 import { cloneNode, cloneNodeReplacing } from '../ast/clone.js';
@@ -19337,6 +19337,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
       // Stack: [return_blob] (1 untracked)
+
+      if (!node.opaqueReturn
+        && externalResultEncoding(returnTypes, this.compilerOptions) === 'evm-abi-v1'
+        && (evmStaticResultBytes(returnTypes) ?? 0) > 128) {
+        const preimageParamName = returningSlotCount === 1
+          ? '__internal__externalReturnPreimage'
+          : `__internal__externalReturnPreimage${returnSlotIndex}`;
+        // The output carries SHA256(raw), not raw: authenticate the caller's raw witness before ABI decoding.
+        // One untracked output commitment is above the tracked parameters at this point.
+        this.emit(encodeInt(BigInt(this.getStackIndex(preimageParamName) + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData); // [digest, raw]
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_SHA256, locationData); // [digest, raw, SHA256(raw)]
+        this.emit(Op.OP_ROT, locationData); // [raw, SHA256(raw), digest]
+        this.emit(Op.OP_EQUALVERIFY, locationData); // [raw]
+      }
 
       if (node.opaqueReturn) {
         // EVM-parity `(bool success, bytes data) = addr.call(payload)`: the whole return-event commitment is

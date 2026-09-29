@@ -2,7 +2,7 @@
  * phase-boundary extract: SC _deriveFullTransactionState extract — Phase 1 return-event blob + event discovery/progress.
  */
 
-import { binToHex, hexToBin, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import { binToHex, hexToBin, sha256, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
 import type { AbiFunction } from '@solidcash/utils';
 import {
   Op,
@@ -16,6 +16,7 @@ import { isCompilerDescribedRouteEventCommitment } from './compiler-described-ro
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
 import {
   extractEvmScalarReturnCommitment,
+  isCanonicalEvmReturnVector,
   selectEvmScalarReturnCommitment,
 } from './external-return-encoding.js';
 import {
@@ -143,6 +144,29 @@ export function deriveFullPhase1ReturnAndEvents(
         || returnCommitments.every((commitment) => /^0+$/.test(commitment)))) {
         returnCommitments = [expectedCommitment];
       }
+      // A long ABI return cannot fit in an NFT commitment. The generated covenant compares the
+      // SHA256 of its raw return against this output instead. At the dedicated output read, the
+      // adjacent stack word is that expected digest; recover its exact preimage from the same
+      // trace only when the digest and declared ABI shape both match. The completed transaction
+      // still has to pass the covenant VM proof with the resulting output.
+      if (calleeReturnEncoding === 'evm-abi-v1' && calleeReturnTypes.length === 1) {
+        const expectedDigests = new Set(fullTraceRet.flatMap((state) => {
+          if (state.instructions[state.ip]?.opcode !== Op.OP_OUTPUTTOKENCOMMITMENT
+            || state.stack.length < 2
+            || Number(decodeScriptNumber(state.stack.at(-1)!)) !== inBlockIdx) return [];
+          const candidate = state.stack.at(-2)!;
+          return candidate.length === 32 ? [binToHex(candidate)] : [];
+        }));
+        if (expectedDigests.size > 0) {
+          const rawReturn = fullTraceRet.flatMap((state) => state.stack).find((candidate) =>
+            candidate.length > 128
+            && isCanonicalEvmReturnVector(candidate, calleeReturnTypes,
+              calleeReturnArtifact.structs ?? calleeReturnArtifact.stateLayout?.structs,
+              calleeReturnArtifact.enums)
+            && expectedDigests.has(binToHex(sha256.hash(candidate))));
+          if (rawReturn) returnCommitments = [binToHex(rawReturn)];
+        }
+      }
     }
     // An exact return-output comparison binds the result to the compiler-assigned channel. A schema-shaped
     // stack value is only fallback evidence: mappings and state serialization can leave canonical pushdata
@@ -182,6 +206,15 @@ export function deriveFullPhase1ReturnAndEvents(
     // Keep the provisional advancing value until the callee actually reads its dedicated output.
     if (fullTraceRet.at(-1)?.error && !reachedReturnCommitmentRead
       && returnCommitments?.every((commitment) => /^0+$/.test(commitment))) {
+      returnCommitments = undefined;
+    }
+    // A failed probe can leave a scalar `true` (0151) or a prior callee's result on the stack. Neither is an
+    // authenticated fixed-array return merely because it was the last complete push observed. Keep the typed
+    // provisional slot until the callee reaches its own return comparison.
+    if (returnCommitments?.length && calleeReturnEncoding === 'evm-abi-v1'
+      && !isCanonicalEvmReturnVector(hexToBin(returnCommitments[0]), calleeReturnTypes,
+        calleeReturnArtifact.structs ?? calleeReturnArtifact.stateLayout?.structs,
+        calleeReturnArtifact.enums)) {
       returnCommitments = undefined;
     }
     if (['SOLIDC_DEBUG_ROUTE', 'SOLIDC_DEBUG_RETURN'].some((name) =>

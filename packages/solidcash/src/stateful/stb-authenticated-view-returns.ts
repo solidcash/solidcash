@@ -4,7 +4,7 @@
  */
 
 import type { FunctionBlockLayout } from '@solidcash/utils';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { Output, UnlockableUtxo } from '../interfaces.js';
 import type { ExternalCallUtxoGroup } from './external-call-utxo-group.js';
@@ -22,6 +22,7 @@ import {
   isAllZeroCommitment,
   parseExternalCallReturnCoordinate,
 } from './value-chunk-geometry.js';
+import { returnEventNftCommitment } from './return-event-nft-commitment.js';
 
 export type AuthenticatedViewReturnEvent = {
   categoryId: string;
@@ -74,7 +75,7 @@ export function ensureAuthenticatedViewReturns(
     if (raw === '' || isAllZeroCommitment(raw) || raw === '0101') continue;
     byGroup.set(coordinate.groupIndex, {
       categoryId: event.categoryId,
-      commitment: raw,
+      commitment: returnEventNftCommitment(event.commitment),
       identity: event.identity,
     });
   }
@@ -88,7 +89,7 @@ export function ensureAuthenticatedViewReturns(
     if (raw === '' || isAllZeroCommitment(raw) || raw === '0101') continue;
     byGroup.set(groupIdx, {
       categoryId: group.categoryId,
-      commitment: raw,
+      commitment: returnEventNftCommitment(hexToBin(raw)),
       identity: `external-call:${groupIdx}`,
     });
   }
@@ -103,7 +104,7 @@ export function ensureAuthenticatedViewReturns(
     for (const carrier of [...host.externalCallUtxoGroups, ...host.lowLevelCallUtxoGroups]) {
       if (!carrier.returnWitnessGroups) continue;
       for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
-        if (owner !== groupIdx) continue;
+        if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
         const rawIdx = carrier.internalArgs?.[name]
           ?? carrier.compilerRoute?.internalArgs?.[name];
         const index = typeof rawIdx === 'bigint' ? Number(rawIdx)
@@ -190,7 +191,7 @@ export function ensureAuthenticatedViewReturns(
         if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
         const updates: Record<string, bigint> = {};
         for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
-          if (owner !== groupIdx) continue;
+          if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
           if (carrier.internalArgs?.[name] === BigInt(returnHost)) continue;
           updates[name] = BigInt(returnHost);
         }
@@ -224,7 +225,7 @@ export function ensureAuthenticatedViewReturns(
       if (!carrier.returnWitnessGroups || !carrier.refreshInternalArgs) continue;
       const updates: Record<string, bigint> = {};
       for (const [name, owner] of Object.entries(carrier.returnWitnessGroups)) {
-        if (owner !== groupIdx) continue;
+        if (owner !== groupIdx || !/^__internal__externalReturnOutputIdx\d*$/.test(name)) continue;
         if (carrier.internalArgs?.[name] === BigInt(returnHost)) continue;
         updates[name] = BigInt(returnHost);
       }

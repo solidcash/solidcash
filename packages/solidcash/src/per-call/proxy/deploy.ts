@@ -30,7 +30,9 @@
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
-import { FrameKind, bytesEqual, validatorRedeemScript, type Artifact, type RecordEntry } from '@solidcash/utils';
+import {
+  FrameKind, bytesEqual, validatorRedeemScript, type Artifact, type RecordEntry, type StateValue,
+} from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
   encodeFunctionArgument, encodeFunctionArguments, type ConstructorArgument, type FunctionArgument,
@@ -1115,6 +1117,12 @@ export interface PerCallProxyCallResult {
   readonly writtenCommitments: readonly Uint8Array[];
   /** The payload of each event the entry emitted, in emit order. */
   readonly writtenEventCommitments: readonly Uint8Array[];
+  /** Empty: the hop records no `retval` for the implementation frame it delegates into, so it carries no return. */
+  readonly retval: Uint8Array;
+  /** Empty: no value an implementation entry returns is handed back through the hop. */
+  readonly values: readonly StateValue[];
+  /** Zero: no value an implementation entry returns is handed back through the hop. */
+  readonly value: StateValue;
   readonly broadcast?: TransactionDetails;
 }
 
@@ -1137,6 +1145,16 @@ export async function callPerCallProxyEntry(
   if (!implementationArtifact.abi.some((entry) => entry.name === options.functionName)) {
     throw new PerCallProxyDeployError(
       `implementation "${implementationArtifact.contractName}" publishes no entry "${options.functionName}"`,
+    );
+  }
+  // The hop delegates into the implementation frame, whose `retval` no stage records: the proxy's own frame settles
+  // the records the entry wrote, never the value it returned, so a returning entry cannot be handed back here.
+  const returned = implementationArtifact.abi
+    .find((entry) => entry.name === options.functionName)?.outputs ?? [];
+  if (returned.length > 0) {
+    throw new PerCallProxyDeployError(
+      `entry "${options.functionName}" returns ${returned.length} value(s), which a call through the proxy hop does `
+      + 'not carry: the hop records no `retval` for the implementation frame it delegates into',
     );
   }
   requireServedEntry(implementationArtifact, options.functionName,
@@ -1247,6 +1265,7 @@ export async function callPerCallProxyEntry(
     transaction: settled.program.transaction, sourceOutputs: settled.program.sourceOutputs,
     draft: settled.draft, completed: settled.completed, verdicts: settled.verdicts,
     accepted: settled.accepted, writtenCommitments: settled.writtenCommitments,
-    writtenEventCommitments: settled.writtenEventCommitments, broadcast,
+    writtenEventCommitments: settled.writtenEventCommitments,
+    retval: new Uint8Array(0), values: [], value: 0n, broadcast,
   };
 }

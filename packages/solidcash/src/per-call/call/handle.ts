@@ -7,9 +7,11 @@
  * read path runs it — derived and evaluated locally, never broadcast — so awaiting such a call yields the entry's
  * returned value the same way the direct convention's probe does.
  *
- * What this surface covers today: a single contract's entry, entered by a signer, with no external calls. A call's
- * fluent modifiers (a time lock, an age lock, an extra output) have no per-call equivalent here yet and are not
- * aliased; the entry's own arguments are the whole of what it takes.
+ * What this surface covers today: a single contract's entry, entered by a signer, with no external calls. A writing
+ * entry that returns a value is carried, and the decoded value is on the call result (`PerCallCallResult.values`); an
+ * entry reached through the proxy hop that returns a value is refused, because no stage records the implementation
+ * frame's `retval`. A call's fluent modifiers (a time lock, an age lock, an extra output) have no per-call equivalent
+ * here yet and are not aliased; the entry's own arguments are the whole of what it takes.
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
@@ -73,6 +75,8 @@ export class PerCallFunctionCall {
     }
     const callerUtxo = await callerCoin(provider, signer);
     if (proxyImplementationCategoryId !== undefined) {
+      // The hop delegates into the implementation frame, whose `retval` no stage records, so a returning entry is
+      // refused by `callPerCallProxyEntry` rather than silently losing the value it computed.
       return callPerCallProxyEntry({
         provider,
         implementationArtifact: artifact,

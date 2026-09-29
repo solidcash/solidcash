@@ -436,13 +436,13 @@ function readSegments(
 }
 
 /**
- * Decodes the bytes a read frame recorded, through the shipped pushdata decoder.
+ * Decodes the bytes a frame recorded, through the shipped pushdata decoder.
  *
  * The entry's `return` leaves each value's canonical push concatenated in declaration order, which is the same
  * field encoding a state commitment carries, so the recorded bytes decode with `decodePushdataValue` at each
- * declared type.
+ * declared type. A call path that records the same blob in a root frame's `retval` decodes it here too.
  */
-function decodeReturnValues(
+export function decodeReturnValues(
   retval: Uint8Array,
   outputs: readonly { readonly type: string }[],
   structs: readonly StructDefinitionInfo[] | undefined,

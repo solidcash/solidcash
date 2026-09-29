@@ -36,9 +36,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Ledger {'
   + '   mapping(address => uint) balances;'
   + '   constructor(address owner) { this.balances[owner] = 1; }'
-  + '   function deposit(address who, uint amount) {'
+  + '   function deposit(address who, uint amount) returns (uint) {'
   + '     this.balances[who] = this.balances[who] + amount;'
   + '     require(amount <= 1000000);'
+  + '     return this.balances[who];'
   + '   }'
   + '   function balanceOf(address who) view returns (uint) { return this.balances[who]; }'
   + ' }';
@@ -146,6 +147,9 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       .find((placed) => placed.id === nodeIds[0])!.index);
     expect(bytesToHex(decodeEntryCommitment(spent).nextKey)).toBe(bytesToHex(decoded.slot));
 
+    // The entry also returned the value it wrote: the frame's `retval` carries it, read back through the shipped
+    // decoder beside the node the same frame settled.
+    expect(result.values).toStrictEqual([77n]);
     expect(result.broadcast).toBeDefined();
   });
 
@@ -166,6 +170,8 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
     const decoded = decodeEntryCommitment(written);
     expect(bytesToHex(decoded.slot)).toBe(bytesToHex(keyToSlotMulti([keyOf(SEED_LOCK)])));
     expect(bytesToHex(decoded.value)).toBe(bytesToHex(valueOf(11n)));
+    // The entry returned the balance it wrote, so the same frame settles its mapping node and its `retval`.
+    expect(result.values).toStrictEqual([11n]);
     expect(result.broadcast).toBeDefined();
   });
 

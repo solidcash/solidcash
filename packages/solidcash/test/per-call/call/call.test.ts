@@ -30,12 +30,14 @@ const CATEGORY_HEX = '33'.repeat(32);
 const CALLER_TXID = '44'.repeat(32);
 
 // Two entries: the master dispatches by selector, so a user's frame leads with the entry's own selector.
+// `bump` writes the record and returns the value it wrote, so the frame settles both its write and its `retval`.
 const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Counter {'
   + '   int public counter;'
-  + '   function bump(int by) {'
+  + '   function bump(int by) returns (int) {'
   + '     this.counter = this.counter + by;'
   + '     require(this.counter <= 10);'
+  + '     return this.counter;'
   + '   }'
   + '   function current() view returns (int) { return this.counter; }'
   + ' }';
@@ -118,6 +120,11 @@ describe('calling an entry on a deployed per-call contract', () => {
     // The entry's own body computed the write: the record ends at the commitment the shipped encoder materializes.
     const written = commitment(3n);
     expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(written));
+
+    // The entry's own answer is the value it returned, read back out of the frame's `retval` and decoded with the
+    // shipped decoder: no value the SDK guessed.
+    expect(result.values).toStrictEqual([3n]);
+    expect(result.value).toBe(3n);
 
     // The broadcast transaction exists and its outputs recreate the master, the validator and the record.
     const { broadcast } = result;

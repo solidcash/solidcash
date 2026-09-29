@@ -16,17 +16,24 @@
  * caller can state, so the plan starts it from a structural candidate and the derivation's close hands the value
  * back.
  *
- * What is not covered: an entry that calls another contract (the plan names no callee frames) and an entry that
- * returns a value (the root frame's `retval` is empty here).
+ * An entry that returns a value is carried the same way: the frame's `retval` starts from a candidate the body's
+ * own return comparison fails against, the derivation reads the blob the body computed back out of that close, and
+ * the plan is rebuilt with it. The bytes are the entry's own answer, decoded with the shipped decoder into the call
+ * result.
+ *
+ * What is not covered: an entry that calls another contract (the plan names no callee frames), and a returning
+ * entry reached through a proxy hop, whose frame records no `retval` for the implementation frame it delegates
+ * into (that hop is `callPerCallProxyEntry`, which the handle routes to).
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind,
   bytesEqual,
-  bytesToHex,
+  sha256,
   validatorRedeemScript,
   type Artifact,
+  type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import {
@@ -44,6 +51,7 @@ import {
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
 import { callEntryRecords } from './entry-records.js';
+import { decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
   createComposedDerivationHost,
@@ -119,6 +127,12 @@ export interface PerCallCallResult {
   readonly accepted: boolean;
   /** The commitment of every record after the entry ran, in data-NFT order. */
   readonly writtenCommitments: readonly Uint8Array[];
+  /** The bytes the derived call records in the root frame's `retval` slot. Empty when the entry returns nothing. */
+  readonly retval: Uint8Array;
+  /** The entry's returned values, decoded with the shipped decoder, in declaration order. */
+  readonly values: readonly StateValue[];
+  /** The first returned value, for the common single-value call. */
+  readonly value: StateValue;
   /** The provider's receipt for the call, present only when every participant was accepted. */
   readonly broadcast?: TransactionDetails;
 }
@@ -131,6 +145,18 @@ const CALLER_ID = 'caller';
 /** The record identity for data-NFT index `nftIndex`. */
 function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
+}
+
+/**
+ * The frame's `retval` candidate before the entry's own computation is known.
+ *
+ * The entry's body compares the blob its own `return` built against the frame's `retval`, so the slot has to hold a
+ * value for the run to reach that comparison. Domain-separating it by the contract and the entry keeps it a value
+ * the body never produces, and distinct from every segment view placeholder the composer writes, which is what
+ * lets the failing close name the operand that is the answer.
+ */
+function retvalPlaceholder(contract: string, functionName: string): Uint8Array {
+  return sha256(new TextEncoder().encode(`per-call call retval\u0000${contract}\u0000${functionName}`));
 }
 
 /** The ABI row a call names, with the fields a frame is built from. */
@@ -233,11 +259,11 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     );
   }
   const entry = requireEntry(artifact, functionName);
-  if (entry.outputs.length > 0) {
-    throw new PerCallCallError(
-      `entry "${functionName}" returns ${entry.outputs.length} value(s), which this call path does not record`,
-    );
-  }
+  // An entry that returns a value settles it against the frame's `retval`, exactly as a read does: the plan starts
+  // the slot from a candidate the body's own return comparison fails against, and the derivation reads back the
+  // blob the body computed. A void entry requires the slot empty, so nothing is learned for it.
+  const returnsValue = entry.outputs.length > 0;
+  const retvalPlaceholderBytes = returnsValue ? retvalPlaceholder(artifact.contractName, entry.name) : undefined;
   // A master dispatches over its bodies; a user's frame leads its call data with the selector only when there is
   // more than one body to choose between (a single body plus, when the contract has one, its constructor), or when
   // the sole body is a forwarding fallback, whose parameter is the band itself. A master with one body is entered
@@ -333,10 +359,14 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
-  // One attempt per value the body computes, plus the attempt that derives against every value learned.
-  const maximumAttempts = learningCandidates.length + 3;
+  // One attempt per value the body computes (each mapping node, and the frame's `retval`), plus the attempt that
+  // derives against every value learned.
+  const maximumAttempts = learningCandidates.length + (returnsValue ? 1 : 0) + 3;
 
-  const buildPlan = (learnedViews: readonly (Uint8Array | undefined)[]): CompositionDraftPlan => {
+  const buildPlan = (
+    learnedViews: readonly (Uint8Array | undefined)[],
+    learnedRetval: Uint8Array | undefined,
+  ): CompositionDraftPlan => {
     const laid = mappingRecords?.lay({
       createdBase,
       masterIndex,
@@ -369,7 +399,8 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       enteredBy: CALLER_ID,
       origin: CALLER_ID,
       calls: [],
-      retval: new Uint8Array(0),
+      // A returning entry's slot starts from the candidate its own comparison fails against; a void entry's is empty.
+      retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
       segments: Array.from({ length: segmentCount }, segment),
       events: [],
       sends: [],
@@ -436,9 +467,13 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   let draft: CompositionDraft | undefined;
   let completed: readonly FrameRequest[] = [];
   let learnedViews: readonly (Uint8Array | undefined)[] = learningCandidates.map(() => undefined);
+  let learnedRetval: Uint8Array | undefined;
+  const maximumCommitmentBytes = Math.max(
+    stateLayout.commitmentLimit ?? 0, provider.consensusLimits?.maximumNftCommitmentBytes ?? 0, 32,
+  );
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(learnedViews);
+    const plan = buildPlan(learnedViews, learnedRetval);
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
     draft = candidate;
     let stalled = false;
@@ -451,36 +486,56 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
       stalled = true;
     }
-    if (learningCandidates.length === 0) {
+    // A void entry that writes no mapping leaves nothing to learn: the plan is the one just derived, accepted or
+    // refused.
+    if (!returnsValue && learningCandidates.length === 0) {
       settled = true;
       break;
     }
-    // A node the body computes reads its declaration, decides update from insert on the declared slot, and then
-    // closes against the declared end view. The candidate is that declaration, so the close names it and the value
-    // the body computed sits beside it: learning it and rebuilding is what states the node the body wrote.
+    // A value the body computes reads a declaration and closes against it, and the failing close leaves the
+    // declaration on the stack beside the value the body computed. The frame's `retval` is one such declaration —
+    // whichever operand carries the candidate this call wrote — and a mapping node's end view is another, named by
+    // the candidate the close matched. Learning the value and rebuilding is what states it.
     const reading = readComputedDeclaration({
       vm: machine,
       program: candidate.programFor(MASTER_ID),
-      maximumCommitmentBytes: stateLayout.commitmentLimit ?? 128,
+      maximumCommitmentBytes,
     });
-    const declared = reading.ok ? bytesToHex(reading.declared) : undefined;
-    const position = declared === undefined ? -1
-      : learningCandidates.findIndex((candidateView) => bytesToHex(candidateView) === declared);
-    if (reading.ok && position >= 0) {
-      learnedViews = learnedViews.map((view, index) =>
-        (index === position ? Uint8Array.from(reading.computed) : view));
-      continue;
+    if (reading.ok) {
+      if (retvalPlaceholderBytes !== undefined && bytesEqual(reading.computed, retvalPlaceholderBytes)) {
+        learnedRetval = Uint8Array.from(reading.declared);
+        continue;
+      }
+      if (retvalPlaceholderBytes !== undefined && bytesEqual(reading.declared, retvalPlaceholderBytes)) {
+        learnedRetval = Uint8Array.from(reading.computed);
+        continue;
+      }
+      const position = learningCandidates.findIndex((candidateView) => bytesEqual(candidateView, reading.declared));
+      if (position >= 0) {
+        learnedViews = learnedViews.map((view, index) =>
+          (index === position ? Uint8Array.from(reading.computed) : view));
+        continue;
+      }
+      // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
+      break;
     }
-    if (!stalled) settled = true;
+    // The run left no declaration close to read: it either converged, or refused before writing anything owed.
+    settled = true;
     break;
   }
   if (draft === undefined) {
     throw new PerCallCallError('the composer built no draft for the call frame');
   }
-  if (!settled) {
+  const owed = learnedViews.some((view) => view === undefined) || (returnsValue && learnedRetval === undefined);
+  if (!settled && owed) {
+    if (mappingRecords !== undefined) {
+      throw new PerCallCallError(
+        `the call's write to mapping "${mappingRecords.collection}" did not hand back every node it rewrites, so the `
+        + 'frame cannot declare their commitments',
+      );
+    }
     throw new PerCallCallError(
-      `the call's write to mapping "${mappingRecords!.collection}" did not hand back every node it rewrites, so the `
-      + 'frame cannot declare their commitments',
+      `entry "${functionName}" did not hand back the value it returns, so its frame's \`retval\` cannot be stated`,
     );
   }
 
@@ -501,6 +556,11 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       };
   });
   const accepted = verdicts.every((verdict) => verdict.accepted);
+
+  // The entry's own answer is the bytes the derived call records in the frame's `retval`, decoded through the same
+  // shipped decoder the read path uses. A call the entry refused never reached its return, so no value was recorded.
+  const retval = learnedRetval ?? new Uint8Array(0);
+  const values = learnedRetval === undefined ? [] : decodeReturnValues(retval, entry.outputs, structs);
 
   const writtenCommitments = records.map((record) => {
     const commitment = transaction.outputs[recordIndex(record.id)]?.token?.nft?.commitment;
@@ -537,6 +597,9 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     verdicts,
     accepted,
     writtenCommitments,
+    retval,
+    values,
+    value: values[0] ?? 0n,
     ...(broadcast === undefined ? {} : { broadcast }),
   };
 }

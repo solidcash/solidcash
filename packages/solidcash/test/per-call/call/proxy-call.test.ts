@@ -38,6 +38,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.total = 5;'
   + '   }'
   + '   function add(int by) { this.total = this.total + by; require(this.total >= 0); }'
+  + '   function peek() view returns (int) { return this.total; }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
@@ -168,5 +169,27 @@ describe('a call into a per-call implementation through its proxy', () => {
     })).rejects.toThrow(/publishes no entry "noSuchEntry"/);
 
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
+  });
+
+  it('refuses a returning entry, naming the fact the hop lacks: it records no implementation `retval`', async () => {
+    // The hop delegates into the implementation frame, whose `retval` no stage records, so a value an entry returns
+    // cannot be handed back through this call; the refusal names that rather than losing the value silently.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoins(network);
+
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'peek',
+      args: [],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(/records no `retval` for the implementation frame/);
   });
 });

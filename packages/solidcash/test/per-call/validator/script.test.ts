@@ -165,12 +165,16 @@ function inputVerdict(
   };
 }
 
-/** How the machine decided the validator's inputs. The head runs first: it is what binds the facets. */
+/**
+ * How the machine decided the validator's inputs; every one must accept. The facets are asked first: a facet refuses
+ * a call cycle at once, while the head's ordered visit only stops at the relaxed budget (minutes per case).
+ */
 function machineVerdict(
   transaction: ModelledTransaction,
   validatorIndex: number,
 ): { accepted: boolean; objection?: string } {
-  for (const inputIndex of validatorInputs(validatorIndex)) {
+  const [head, ...facets] = validatorInputs(validatorIndex);
+  for (const inputIndex of [...facets, head!]) {
     if (inputIndex >= transaction.inputs.length) continue;
     const verdict = inputVerdict(transaction, inputIndex);
     if (!verdict.accepted) return verdict;

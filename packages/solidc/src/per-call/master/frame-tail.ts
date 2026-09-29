@@ -73,6 +73,11 @@ export interface MasterCallSite {
    */
   readonly targetFromStack?: boolean;
   /**
+   * True when the call passes value the caller's own code computes, which the record's `value` must carry; without
+   * it the call passes none and the record carries zero.
+   */
+  readonly valueFromStack?: boolean;
+  /**
    * The interface the call goes through, when the source names one. Kept for the published stop-site table, which
    * a driver uses to name the callee; the head's own checks never read it.
    */

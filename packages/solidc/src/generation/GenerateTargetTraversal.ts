@@ -81,6 +81,8 @@ import {
   kernelJournalDispositionManifestDigest,
   blockInputSize,
   FrameKind,
+  computeFunctionSelector,
+  computeFunctionSignature,
   type AbiFunction,
 } from '@solidcash/utils';
 import {
@@ -565,6 +567,21 @@ const PER_CALL_FRAME_SLOT_NAMES = [
   '__internal__frameValue',
   '__internal__frameSelf',
 ] as const;
+
+/**
+ * The call a per-call value send to a contract makes: a message call into the recipient's `receive()`, reached by
+ * the selector every contract's `receive()` has, carrying no argument. Its target and value are the recipient and
+ * the amount the body computed.
+ */
+const PER_CALL_RECEIVE_SITE: MasterCallSite = {
+  kind: FrameKind.CALL,
+  selector: computeFunctionSelector(computeFunctionSignature('__receive', [])),
+  target: new Uint8Array(0),
+  targetFromStack: true,
+  valueFromStack: true,
+  arguments: [],
+  functionName: '__receive',
+};
 
 /**
  * Hidden invocation operand carrying the caller's contract address into a per-call subroutine.
@@ -1052,6 +1069,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the body's own control flow so every path reaches the epilogue with the same stack.
    */
   private static readonly PER_CALL_CALLS_MADE = '__internal__perCallCallsMade';
+  /** How many listed sends a per-call body's value sends have made, which names the next listed output. */
+  private static readonly PER_CALL_SENDS_MADE = '__internal__perCallSendsMade';
   private perCallCallsMadeActive = false;
   private perCallSegmentIndex = 0;
   /**
@@ -3085,6 +3104,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
     // item, so the call arm has no selector left to drop.
     const callDataSelectorUnconsumed = dispatchBodyCount === 1 && !fallbackAsEntry;
+    const soleEntrySelector = callDataSelectorUnconsumed
+      ? (entries[0] ?? node.constructorDef)?.functionSelector
+      : undefined;
     // The head checks the whole tail, so it has to fix the event region's size and the send count. Every body the
     // dispatcher can run, the constructor included, fixes them; a shape whose counts the bodies do not fix refuses
     // by name here.
@@ -3134,6 +3156,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
+      ...(soleEntrySelector === undefined ? {} : { soleEntrySelector }),
       ...(fallbackAsEntry ? { callDataBandAsSingleItem: true } : {}),
     }).script)), loc);
     this.pushToStack('__internal__frameSelf');
@@ -3482,6 +3505,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * was made there: a listed output no code pins would otherwise count toward the value a record may give up (V7).
    */
   private emitPerCallUnusedSendSlotsCheck(node: FunctionDefinitionNode): void {
+    // A body that sends pins the number of sends it listed where it makes them.
+    if ((node.transferInfos?.length ?? 0) > 0) return;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     for (let position = node.transferInfos?.length ?? 0; this.stack.includes(sendOutputSlotName(position));
       position += 1) {
@@ -7582,9 +7607,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // record a site binds, the segment a read resolves against and the count the body pins are all that one
     // number. Allocated before the body's own control flow, and only for such a body, so a shape whose positions
     // are fixed keeps byte-identical code and no slot.
+    // A body that sends pays a contract through a call into its `receive()` after its own code, so how many calls
+    // it makes is a fact of the recipients rather than of its source.
     this.perCallCallsMadeActive = this.perCallMaster && !this.isDefineSubTraversal
       && this.stack.includes(callCountSlotName())
-      && callsVaryOnPaths(this.currentFunction.body);
+      && (callsVaryOnPaths(this.currentFunction.body) || (node.transferInfos?.length ?? 0) > 0);
     if (this.perCallCallsMadeActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
       this.pushToStack(GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE);
@@ -31777,6 +31804,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * 3. Verify output has no tokens (OP_OUTPUTTOKENCATEGORY == empty)
    */
   private emitTransferCovenantVerification(node: FunctionDefinitionNode): void {
+    if (this.perCallMaster) {
+      this.emitPerCallValueSends(node);
+      return;
+    }
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
 
     for (const transfer of this.pendingTransfers) {
@@ -31864,6 +31895,128 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Note: cleanup deferred to emitTransferCleanup() (called after emitValuePreservation)
+  }
+
+  /**
+   * A per-call body's value sends, made once its own code has run and its last segment is closed (spec 4b).
+   *
+   * A send to a user's lock is a listed send: the next listed output pays that lock the amount, with no token. A
+   * send to any other lock is a call into the recipient's `receive()` carrying the amount, bound at the next call
+   * record, and the segment after it runs no code of this frame, so its records are kept. The EVM runs `transfer`
+   * and `send` with a stipend that keeps `receive()` from writing or calling back, so running it after the
+   * sender's own code is the same execution. The block lists exactly the sends made.
+   */
+  private emitPerCallValueSends(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.body.location, positionHint: PositionHint.END };
+    const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
+    this.emit(Op.OP_0, loc);
+    this.pushToStack(sendsMade);
+    for (const transfer of this.pendingTransfers) {
+      const { transferIndex, lockingBytecodeStackName: lock, amountStackName: amount } = transfer;
+      if (this.getStackIndex(lock, true) < 0 || this.getStackIndex(amount, true) < 0) {
+        throw new TransferFrameUnavailableError(node, transferIndex);
+      }
+      // A send on a branch the execution did not take leaves its lock empty and makes no send and no call.
+      const conditional = this.conditionalTransferIndices.has(transferIndex);
+      if (conditional) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(lock))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_IF, loc);
+      }
+      // A user's lock is the only 25-byte lock a send pays; the listed send asserts its shape once it is pinned.
+      this.emit(encodeInt(BigInt(this.getStackIndex(lock))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_SIZE, loc);
+      this.emit(Op.OP_NIP, loc);
+      this.emit(encodeInt(25n), loc);
+      this.emit(Op.OP_NUMEQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emitPerCallListedSend(lock, amount, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emitPerCallReceiveCall(node, lock, amount, loc);
+      this.emit(Op.OP_ENDIF, loc);
+      if (conditional) this.emit(Op.OP_ENDIF, loc);
+    }
+    // The block lists exactly the sends made.
+    this.emit(encodeInt(BigInt(this.getStackIndex(sendCountSlotName()))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.stack.splice(this.getStackIndex(sendsMade), 1);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
+  }
+
+  /** Pins the next listed output to a user's lock and amount, and counts the send. */
+  private emitPerCallListedSend(lock: string, amount: string, loc: SingleLocationData): void {
+    const sendsMade = GenerateTargetTraversalWithLocation.PER_CALL_SENDS_MADE;
+    // The output the next send is listed at: the region position the number of sends made names.
+    const base = this.getStackIndex(sendOutputSlotName(0));
+    this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(BigInt(base)), loc);
+    this.emit(Op.OP_ADD, loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(send_output)');
+    const pinned = (valueOf: () => void, outputOp: Op): void => {
+      valueOf();
+      this.emit(encodeInt(BigInt(this.getStackIndex('(send_output)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(outputOp, loc);
+      this.pushToStack('(value)');
+      this.emit(Op.OP_EQUALVERIFY, loc);
+      this.popFromStack(2);
+    };
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+    };
+    pinned(() => pick(lock), Op.OP_OUTPUTBYTECODE);
+    pinned(() => pick(amount), Op.OP_OUTPUTVALUE);
+    pinned(() => { this.emit(Op.OP_0, loc); this.pushToStack('(value)'); }, Op.OP_OUTPUTTOKENCATEGORY);
+    // A send pays a P2PKH lock (W2); a value for a contract is a call into its `receive()` (T35).
+    pick(lock);
+    this.emit(bytecodeToScript(assertP2pkhShapeScript()), loc);
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, loc);
+    this.popFromStack();
+    this.emit(encodeInt(BigInt(this.getStackIndex(sendsMade))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(sends_made)');
+    this.emit(Op.OP_1ADD, loc);
+    this.emitReplace(this.getStackIndex(sendsMade), this.currentFunction);
+    this.popFromStack();
+  }
+
+  /**
+   * Binds the next call record to a call into the recipient's `receive()` carrying the amount, counts the call, and
+   * keeps the records of the segment after it, where this frame runs no code.
+   */
+  private emitPerCallReceiveCall(
+    node: FunctionDefinitionNode, lock: string, amount: string, loc: SingleLocationData,
+  ): void {
+    const callsMade = GenerateTargetTraversalWithLocation.PER_CALL_CALLS_MADE;
+    const pick = (name: string): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+    };
+    pick(callsMade);
+    pick(lock);
+    pick(amount);
+    this.emit(bytecodeToScript(callSiteCheckScript(PER_CALL_RECEIVE_SITE, 0, false, {
+      targetFromStack: true, valueFromStack: true, indexFromStack: true,
+    })), loc);
+    this.popFromStack(3);
+    this.emitPerCallCountOneCall(node, loc);
+    if (this.isDefineSubTraversal || (this.stateVariables.length === 0 && this.collectionCount === 0)) return;
+    this.emit(encodeInt(BigInt(this.getStackIndex(callsMade))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(bytecodeToScript(declaredRecordsKeptScript({ runtimeCounts: true, exempt: 0 })), loc);
   }
 
   /**

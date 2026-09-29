@@ -877,26 +877,11 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
     })).toThrowError(/the call from "hub-1" to "proxy-1" does not begin with a 4-byte selector/);
   });
 
-  it('settles the forwarding spelling: a caller without the interface hands the proxy the item it forwards', () => {
-    // The same implementation, reached by a caller that spells `forward(bytes)` and hands the entry's argument push
-    // over. The fallback forwards the band it received, so the delegate frame carries the forwarding selector and
-    // the argument push on to the implementation, whose one parameter reads that argument.
-    const built = buildHubCall(true);
-    const outcome = settleOutcome(built);
-    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
-    expect(rejected).toStrictEqual([]);
-    // The run and the events are the ones the typed spelling wrote: the item the forwarding caller handed over is
-    // the element the implementation pushed.
-    const final = built.stages[APPEND_COUNT]!;
-    expect(outcome.transaction.outputs[participant(outcome.draft.layout, RECORD_ID).index]!.token?.nft?.commitment)
-      .toStrictEqual(recordCommitment(built.layout, built.impl.address, final));
-    const eventIndices = outcome.draft.assembly.outputs.eventIndices;
-    expect(eventIndices).toHaveLength(APPEND_COUNT);
-    eventIndices.forEach((index) => {
-      expect(outcome.transaction.outputs[index]!.token?.nft).toStrictEqual({
-        capability: 'none', commitment: built.eventPayload,
-      });
-    });
+  it('refuses the forwarding spelling: the implementation has no entry for the selector a caller forwards', () => {
+    // A caller that spells `forward(bytes)` hands the proxy the item, and the fallback forwards the band it received
+    // with that selector. The implementation's one entry requires its own selector, as the EVM's dispatcher does, so
+    // a frame whose selector names no entry of it is refused rather than run as `append()`.
+    expect(() => settleOutcome(buildHubCall(true)))
+      .toThrowError(/PER_CALL_DERIVATION_STALLED: master "impl-1" of Impl\.append\(\) filled no witness at site 0/);
   });
 });

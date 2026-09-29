@@ -180,10 +180,11 @@ function evaluate(options: CompositionOptions = {}): { accepted: boolean; object
       outpointIndex: 0,
       outpointTransactionHash: new Uint8Array(32).fill(2),
       sequenceNumber: 0xffffffff,
-      // The delegate call carries the callee's call data: the selector the fallback forwarded.
+      // The delegate call carries the callee's call data: the selector the fallback forwarded, which a master with
+      // one entry requires to be that entry's own.
       unlockingBytecode: new Uint8Array([
         ...encodeDataPush(encodeWitnessBlock(implBlock)),
-        ...encodeDataPush(new Uint8Array([0x12, 0x34, 0x56, 0x78])),
+        ...encodeDataPush(hexToBin(implArtifact.abi.find((row) => row.name === 'increment')!.selector!)),
         ...encodeDataPush(implProgram),
       ]),
     },

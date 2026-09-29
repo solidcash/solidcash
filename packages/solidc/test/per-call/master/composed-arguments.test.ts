@@ -254,9 +254,9 @@ describe('a caller that passes an argument to its callee', () => {
   });
 
   it('is refused when the callee\'s call data carries a different selector', () => {
-    // A single-entry callee drops the selector it is entered with, so it accepts a foreign one; the caller's
-    // site is what refuses it.
-    expect(accepted(WITH_ARGUMENT, { calleeSelector: OTHER_SELECTOR }, CALLEE_INDEX)).toBe(true);
+    // A single-entry callee requires the selector it is entered with to be its own entry's, and the caller's site
+    // requires the one its record hashes.
+    expect(accepted(WITH_ARGUMENT, { calleeSelector: OTHER_SELECTOR }, CALLEE_INDEX)).toBe(false);
     expect(accepted(WITH_ARGUMENT, { calleeSelector: OTHER_SELECTOR }, CALLER_INDEX)).toBe(false);
   });
 });

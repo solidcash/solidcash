@@ -8,6 +8,14 @@
  */
 
 import { encodeDataPush, hexToBin, Opcodes } from '@bitauth/libauth';
+import {
+  WITNESS_BLOCK_HEADER_LENGTH,
+  dropPrefix,
+  readOwnWitnessBlockScript,
+  takeFixedWidthField,
+  takeLengthPrefixedField,
+  takeLengthPrefixedField32,
+} from './witness-reader.js';
 
 /** The covenant bytes before the first category push. */
 const COVENANT_PREFIX = hexToBin('63ce01207f5288');
@@ -83,6 +91,40 @@ export function containerGrowthScript(): number[] {
     Opcodes.OP_1ADD,
     Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_GREATERTHANOREQUAL,
     Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, Opcodes.OP_NIP,
+  ];
+}
+
+/**
+ * Leaves the value the frame's call records pass on: what the running master pays through its calls.
+ *
+ * Entry `[...]`, exit `[..., paid]`. Each record's `value` is bound at the site that made the call, so their sum is
+ * what the master's own code passes; the block is read again from the master's own input.
+ */
+export function callValuesScript(): number[] {
+  return [
+    ...readOwnWitnessBlockScript(),
+    ...dropPrefix(WITNESS_BLOCK_HEADER_LENGTH),
+    ...takeLengthPrefixedField(), Opcodes.OP_NIP, // sender
+    ...takeLengthPrefixedField(), Opcodes.OP_NIP, // self
+    ...takeFixedWidthField(8), Opcodes.OP_NIP, // value
+    ...takeLengthPrefixedField32(), Opcodes.OP_NIP, // retval
+    // [count, paid, tail]
+    ...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_ROT,
+    Opcodes.OP_2, Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_GREATERTHAN,
+    Opcodes.OP_IF,
+    Opcodes.OP_BEGIN,
+    ...takeFixedWidthField(1), Opcodes.OP_NIP, // kind
+    ...takeLengthPrefixedField(), Opcodes.OP_NIP, // target
+    ...takeFixedWidthField(8), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, // value
+    Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP,
+    ...takeFixedWidthField(2), Opcodes.OP_NIP, // calleeRef
+    ...takeFixedWidthField(32), Opcodes.OP_NIP, // argsHash
+    ...takeLengthPrefixedField32(), Opcodes.OP_NIP, // result
+    Opcodes.OP_ROT, Opcodes.OP_1SUB, Opcodes.OP_ROT, Opcodes.OP_ROT,
+    Opcodes.OP_2, Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_LESSTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_ENDIF,
     Opcodes.OP_DROP, Opcodes.OP_NIP,
   ];
 }

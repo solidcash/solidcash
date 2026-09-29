@@ -106,8 +106,10 @@ describe('a compiled per-call master', () => {
     // The head branches on the frame kind: 0 is a user's frame, 1 a message call.
     expect(contains(script, [0x57, 0x79, 0x81, 0x00, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 0 NUMEQUAL IF
     expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9c, 0x63])).toBe(true); // OP_7 PICK BIN2NUM 1 NUMEQUAL IF
-    // The call arm requires kind 1, then removes the call data's unconsumed selector from the bottom.
-    expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9d, 0x74, 0x8c, 0x7a, 0x75])).toBe(true);
+    // The call arm requires kind 1, then takes the call data's unconsumed selector from the bottom and requires it
+    // to be the entry's own: OP_DEPTH OP_1SUB OP_ROLL <selector> OP_EQUALVERIFY.
+    const selector = [...Buffer.from(compile().abi.find((row) => row.name === 'bump')!.selector!, 'hex')];
+    expect(contains(script, [0x57, 0x79, 0x81, 0x51, 0x9d, 0x74, 0x8c, 0x7a, 0x04, ...selector, 0x88])).toBe(true);
     // A caller reference is never this input: OP_5 PICK BIN2NUM INPUTINDEX NUMNOTEQUAL VERIFY.
     expect(contains(script, [0x55, 0x79, 0x81, 0xc0, 0x9e, 0x69])).toBe(true);
     // The root arm binds origin to the caller and requires no value.

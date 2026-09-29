@@ -69,6 +69,8 @@ export function callSiteCheckScript(
   options: {
     readonly digestFromStack?: boolean;
     readonly targetFromStack?: boolean;
+    /** True when the record's value is the one the caller left beneath the target. */
+    readonly valueFromStack?: boolean;
     readonly indexFromStack?: boolean;
     /**
      * True when the caller forwards its own call data, so it holds no compile-time selector to compare.
@@ -81,6 +83,7 @@ export function callSiteCheckScript(
 ): Uint8Array {
   const digestFromStack = options.digestFromStack === true;
   const targetFromStack = options.targetFromStack === true;
+  const valueFromStack = options.valueFromStack === true;
   const indexFromStack = options.indexFromStack === true;
   const skipSelectorCheck = options.skipSelectorCheck === true;
   const bytes: number[] = [];
@@ -88,6 +91,7 @@ export function callSiteCheckScript(
   // The values the caller computed go where the walk can reach them: beneath the walk's own scratch, on the
   // alternate stack. The target is retrieved before the digest, so it is parked last and comes up first.
   if (digestFromStack) emit(Opcodes.OP_TOALTSTACK);
+  if (valueFromStack) emit(Opcodes.OP_TOALTSTACK);
   if (targetFromStack) emit(Opcodes.OP_TOALTSTACK);
   // The caller's own block, read from the first push of its own unlocking bytecode.
   emit(...readOwnWitnessBlockScript());
@@ -111,7 +115,7 @@ export function callSiteCheckScript(
   } else {
     for (let earlier = 0; earlier < index; earlier += 1) emit(...skipCallRecord());
   }
-  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack, skipSelectorCheck }));
+  emit(...bindCallRecord(site, usesResult, { digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck }));
   return new Uint8Array(bytes);
 }
 
@@ -132,9 +136,9 @@ function bindCallRecord(
   site: MasterCallSite,
   usesResult: boolean,
   options: { readonly digestFromStack: boolean; readonly targetFromStack: boolean;
-    readonly skipSelectorCheck: boolean },
+    readonly valueFromStack: boolean; readonly skipSelectorCheck: boolean },
 ): number[] {
-  const { digestFromStack, targetFromStack, skipSelectorCheck } = options;
+  const { digestFromStack, targetFromStack, valueFromStack, skipSelectorCheck } = options;
   const bytes: number[] = [];
   const emit = (...ops: readonly (number | Uint8Array)[]): void => { pushAll(bytes, ops); };
 
@@ -146,8 +150,14 @@ function bindCallRecord(
   if (targetFromStack) emit(Opcodes.OP_FROMALTSTACK);
   else emit(...encodeDataPush(site.target));
   emit(Opcodes.OP_EQUALVERIFY);
-  // value: no site passes value, so the record carries none; the validator binds the callee's value to it.
-  emit(...takeFixedWidthField(8), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY);
+  // value: the amount the caller's code computed, as the record's eight bytes, or none for a call that passes
+  // none; the validator binds the callee's value to it.
+  emit(...takeFixedWidthField(8), Opcodes.OP_SWAP);
+  if (valueFromStack) {
+    emit(Opcodes.OP_FROMALTSTACK, ...encodeDataPush(scriptNumber(8)), Opcodes.OP_NUM2BIN, Opcodes.OP_EQUALVERIFY);
+  } else {
+    emit(Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY);
+  }
   // calleeRef: a master never calls itself. Parked while the arguments hash is read, so it is on hand for the
   // callee's own bytes.
   emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,

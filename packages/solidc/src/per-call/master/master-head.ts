@@ -52,7 +52,7 @@ import {
   type MasterCallSite,
   type MasterTailShape,
 } from './frame-tail.js';
-import { containerGrowthScript, selfContainerLockScript } from './value.js';
+import { callValuesScript, containerGrowthScript, selfContainerLockScript } from './value.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -209,6 +209,11 @@ export interface MasterHeadOptions {
    */
   readonly callDataSelectorUnconsumed?: boolean;
   /**
+   * The sole entry's selector, when the call data's selector is left unconsumed: a call arm requires the frame's
+   * selector to be it, so a call meant for another entry, `receive()` among them, is not run by this one.
+   */
+  readonly soleEntrySelector?: Uint8Array;
+  /**
    * True when the sole entry is a fallback that forwards the call data it received, so the body's one parameter is
    * the frame's whole call-data band rather than a single argument push.
    *
@@ -317,6 +322,7 @@ class HeadEmitter {
   private readonly admittedKinds: readonly number[];
   private readonly composed: boolean;
   private readonly callDataSelectorUnconsumed: boolean;
+  private readonly soleEntrySelector: Uint8Array | undefined;
   private readonly settlesOwnRecords: boolean;
   private readonly keepsRecordIndices: boolean;
   private readonly returnsValue: boolean;
@@ -331,6 +337,7 @@ class HeadEmitter {
     this.reservesValidatorHashSlot = options.reservesValidatorHashSlot === true;
     this.admittedKinds = options.frameKinds ?? [FRAME_KIND_ROOT];
     this.callDataSelectorUnconsumed = options.callDataSelectorUnconsumed === true;
+    this.soleEntrySelector = options.soleEntrySelector;
     this.settlesOwnRecords = options.settlesOwnRecords === true;
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
@@ -738,7 +745,7 @@ class HeadEmitter {
     // The call data's selector leads the frame's argument pushes, below the constructor arguments and the frame
     // values. A body with a single entry never reads it, so the head removes it here rather than leaving a stray
     // item the final stack cannot clean.
-    if (this.callDataSelectorUnconsumed) this.dropBottom();
+    if (this.callDataSelectorUnconsumed) this.dropCallSelector();
   }
 
   /**
@@ -748,7 +755,7 @@ class HeadEmitter {
   private assertStaticFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_STATIC);
     if (this.acceptsValue) this.assertZeroValue();
-    if (this.callDataSelectorUnconsumed) this.dropBottom();
+    if (this.callDataSelectorUnconsumed) this.dropCallSelector();
   }
 
   /**
@@ -758,7 +765,18 @@ class HeadEmitter {
    */
   private assertDelegateFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_DELEGATE);
-    if (this.callDataSelectorUnconsumed) this.dropBottom();
+    if (this.callDataSelectorUnconsumed) this.dropCallSelector();
+  }
+
+  /** Removes the call data's selector, requiring it to be the sole entry's own when the head knows it. */
+  private dropCallSelector(): void {
+    if (this.soleEntrySelector === undefined) {
+      this.dropBottom();
+      return;
+    }
+    this.emitOp(Opcodes.OP_DEPTH, Opcodes.OP_1SUB, Opcodes.OP_ROLL);
+    this.emitBytes(encodeDataPush(this.soleEntrySelector));
+    this.emitOp(Opcodes.OP_EQUALVERIFY);
   }
 
   /** Requires the frame's `kind` to be `kind`; the shared arm of the two callee frame kinds. */
@@ -884,10 +902,11 @@ class HeadEmitter {
    * The frame's value against the master's own containers (spec 4b), with the send region on the stack.
    *
    * The value is non-negative, and zero unless some body is payable. A frame that settles alone may receive value
-   * and pay its sends from the containers: their growth plus what the sends pay covers the value. A frame that does
-   * not takes no value and lists no send, since the validator does not account for containers yet. The output
+   * and pay from the containers: their growth plus what its sends and its calls pay covers the value. A frame that
+   * does not takes no value and lists no send, since the validator does not account for containers yet. The output
    * before the first send is one of the master's containers and the sends follow it in a run, so the sends of two
-   * contracts' frames never overlap and no output is counted twice. Consumes the settle-alone flag.
+   * contracts' frames never overlap and no output is counted twice. A master that sends may pay a contract through a
+   * call into its `receive()`, whose record carries the value. Consumes the settle-alone flag.
    */
   private valueChecks(): void {
     const sends = this.tailShape.sendCount;
@@ -942,6 +961,10 @@ class HeadEmitter {
     }
     this.emitBytes(new Uint8Array(containerGrowthScript()));
     this.replaceTop('net');
+    if (sends > 0) {
+      this.emitBytes(new Uint8Array(callValuesScript()));
+      this.emitOp(Opcodes.OP_ADD);
+    }
     for (let position = 0; position < sends; position += 1) {
       this.emitBranch(
         () => this.sendListedAt(position),

@@ -202,6 +202,7 @@ import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMe
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
 import RedesugarImportedStructFieldWrites from './semantic/RedesugarImportedStructFieldWrites.js';
 import CoalesceStructFieldArrayWrites from './semantic/CoalesceStructFieldArrayWrites.js';
+import CoalesceStateArrayStructFieldWrites from './semantic/CoalesceStateArrayStructFieldWrites.js';
 import CoalesceMappingEntryFieldWrites from './semantic/CoalesceMappingEntryFieldWrites.js';
 import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
@@ -13617,6 +13618,7 @@ function compileResolvedAst(
   const shouldDesugarDynamicArrayCopy = needsLoop || !(rootSourceCoversProgram(ast) && !code.includes('[]'));
   const dynamicArrayCopyDesugar = new DesugarDynamicArrayCopyCast();
   if (shouldDesugarDynamicArrayCopy) ast = ast.accept(dynamicArrayCopyDesugar) as Ast;
+  ast = ast.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once. The copy-cast pass immediately
   // above can synthesize such a loop from loop-free source, so its admission predicate must carry through here.
@@ -17089,6 +17091,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new InlineMappingReturnFunctions()) as Ast;
     singleAst = singleAst.accept(new LowerMappingStorageAlias()) as Ast;
     singleAst = singleAst.accept(new DesugarDynamicArrayCopyCast()) as Ast;
+    singleAst = singleAst.accept(new CoalesceStateArrayStructFieldWrites()) as Ast;
     singleAst = singleAst.accept(new CacheDynamicArrayInLoop()) as Ast;
     singleAst = singleAst.accept(new CacheMappingEntryInLoop()) as Ast;
     singleAst = singleAst.accept(new IfConvertConditionalEntryOp()) as Ast;

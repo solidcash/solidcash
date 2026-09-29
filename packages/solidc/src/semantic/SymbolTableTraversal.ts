@@ -16146,16 +16146,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Return event (output-only)
     if (node.returnTypes.length > 0) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
-      // A message-bus route's ordinary return event commits the aggregate result vector. External callers,
-      // however, consume one ABI result per logical invocation (and loop callers address those results as
-      // base+i). Reserve a separate, compiler-authored result band so the route can authenticate each manifest
-      // row without asking callers to reinterpret or recover the aggregate commitment. The unindexed slot above
-      // remains the aggregate coordinate; indexed slots are the caller-visible row coordinates.
-      if (node.messageBusRoute) {
-        for (let row = 0; row < (node.messageBusMaximumRows ?? 1); row += 1) {
-          slots.push({ kind: 'returnEvent', offset: offset++, slotIndex: row, conditional: true });
-        }
-      }
+      // The message-bus route commits its complete result vector here. Atomic graph derivation extracts each
+      // logical invocation's typed result from that authenticated vector; no per-row return NFT is consumed or
+      // materialized. Reserving maximumRows additional output-only slots merely pads every returning route,
+      // including direct batches, and makes its covenant scan those inert transaction outputs.
     }
 
     // Low-level call slots. Ordinary address.call / staticcall use a runtime __internal__callInputIndex

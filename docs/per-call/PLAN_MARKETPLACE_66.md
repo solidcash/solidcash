@@ -1525,6 +1525,11 @@ risk. Take the slices in order, each with its own tests.
     it addresses the created node and fails the chunk covenant's address pin (measured; the update shape settles and
     the deployment path's insert settles). Serving it means the run's base stating the group's declared width, or the
     run addressed by a rule the group's width cannot move. It is the wall the fixture's 50-title group stands on.
+  - **Claimed by this round, from `16688ad76`:** the element source of a dynamic-array write in a **non-constructor**
+    entry. The artifact publishes `dynamicWriteSources` only for a constructor (`Artifact.ts`), so a hop that must
+    size the run of chunk records an entry's append creates has nothing to read and refuses by name — measured on the
+    fixture's job-post writer (`writes dynamic "<var>" (<Type>) a value whose element this hop cannot state`). The
+    work is the publication in the same vocabulary the constructor's sources use, plus the hop's consumption of it.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

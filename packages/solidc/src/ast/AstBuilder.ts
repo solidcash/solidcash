@@ -7792,8 +7792,15 @@ export default class AstBuilder
     return true;
   }
 
-  visitSelfdestructStatement(ctx: SelfdestructStatementContext): SelfdestructStatementNode {
-    const recipient = this.visit(ctx.expression()) as ExpressionNode;
+  visitSelfdestructStatement(ctx: SelfdestructStatementContext): StatementNode {
+    const recipientCtx = ctx.expression();
+    if (!recipientCtx) {
+      // A discarded reference to the builtin does not invoke the lifecycle operation.
+      const node = new BlockNode([]);
+      node.location = Location.fromCtx(ctx);
+      return node;
+    }
+    const recipient = this.visit(recipientCtx) as ExpressionNode;
     const node = new SelfdestructStatementNode(recipient);
     node.location = Location.fromCtx(ctx);
     return node;

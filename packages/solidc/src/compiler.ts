@@ -17364,7 +17364,7 @@ const SHARED_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
 const SHARED_LEXER_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
 const parseProfileTotals = { files: 0, sllFails: 0, bytes: 0, ms: 0 };
 
-// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 343, ...)`). Guarded at install time by
+// SolidCashParser.expression() prefix switch (`adaptivePredict(..., 344, ...)`). Guarded at install time by
 // rule name so a grammar regen that shifts decision numbers silently falls back to ATN prediction.
 const STATEMENT_DECISION = 167;
 const STATEMENT_ALT_PLACEHOLDER = 1;
@@ -17386,9 +17386,9 @@ const STATEMENT_ALT_DELETE = 22;
 const STATEMENT_ALT_ASSERT = 21;
 const STATEMENT_ALT_REVERT = 20;
 const STATEMENT_ALT_CONSOLE = 14;
-const EXPRESSION_PREFIX_DECISION = 343;
-const EXPRESSION_POSTFIX_LOOP_DECISION = 359;
-const EXPRESSION_POSTFIX_INNER_DECISION = 358;
+const EXPRESSION_PREFIX_DECISION = 344;
+const EXPRESSION_POSTFIX_LOOP_DECISION = 360;
+const EXPRESSION_POSTFIX_INNER_DECISION = 359;
 const EXPRESSION_POSTFIX_CONTINUE = 1;
 const EXPRESSION_POSTFIX_STOP = 2;
 const EXPRESSION_POSTFIX_INDEXED = 12;
@@ -17429,12 +17429,12 @@ const EXPRESSION_ALT_THIS = 16;
 const EXPRESSION_ALT_NULLARY = 17;
 const EXPRESSION_ALT_IDENTIFIER = 18;
 const EXPRESSION_ALT_LITERAL = 19;
-// yulBlock / yulStatement / yulExpression (`adaptivePredict(..., 265/266/277, ...)`).
-const YUL_BLOCK_LOOP_DECISION = 265;
+// yulBlock / yulStatement / yulExpression (`adaptivePredict(..., 266/267/278, ...)`).
+const YUL_BLOCK_LOOP_DECISION = 266;
 const YUL_BLOCK_LOOP_CONTINUE = 1;
 const YUL_BLOCK_LOOP_STOP = 2;
-const YUL_STATEMENT_DECISION = 266;
-const YUL_EXPRESSION_DECISION = 277;
+const YUL_STATEMENT_DECISION = 267;
+const YUL_EXPRESSION_DECISION = 278;
 const YUL_STMT_NESTED_BLOCK = 1;
 const YUL_STMT_LET = 2;
 const YUL_STMT_ASSIGN = 3;

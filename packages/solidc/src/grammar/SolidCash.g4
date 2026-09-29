@@ -578,6 +578,7 @@ returnStatement
 // the selfdestruct modifier). Implies the modifier on the enclosing function.
 selfdestructStatement
     : 'selfdestruct' '(' expression ')' ';'
+    | 'selfdestruct' ';'
     ;
 
 emitStatement

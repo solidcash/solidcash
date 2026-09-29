@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
-import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
+import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
+import { bytesToHex, encodeChunkableValueTail, encodePushdataValue } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { participant, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
+import {
+  mappingValueChunkLock, participant, planMappingBatch, planMappingWrite,
+} from '../../../src/per-call/composer/index.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
@@ -66,6 +68,24 @@ const COUNTER_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   mapping(address => uint) balances;'
   + '   function initialize(address who) { this.balances[who] = this.balances[who] + 1; }'
   + ' }';
+
+/**
+ * A struct value with dynamic fields, written from the entry's own arguments.
+ *
+ * The struct's pushdata encoding runs past the 60 bytes a node's tail holds inline, so the write keeps the value's
+ * length and digest in the node and its bytes in a run of chunk records.
+ */
+const STRUCT_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct User { address who; string name; string bio; int up; int down; }'
+  + '   mapping(address => User) users;'
+  + '   function initialize(string name_, string bio_) {'
+  + '     this.users[msg.sender] = User(msg.sender, name_, bio_, 0, 0);'
+  + '   }'
+  + ' }';
+
+const STRUCT_NAME = 'n'.repeat(30);
+const STRUCT_BIO = 'b'.repeat(30);
 
 const CALLER_TXID = '33'.repeat(32);
 const SECOND_CALLER_TXID = '44'.repeat(32);
@@ -281,6 +301,50 @@ describe('a proxied initialize that writes a sorted mapping', () => {
       const output = deployment.initialize.draft.trailingOutputs[position]!;
       expect(bytesToHex(hop!.outputs[output.index]!.token!.nft!.commitment)).toBe(bytesToHex(node.after));
     });
+    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a struct value past the inline limit, declaring the run of chunks it wrote', async () => {
+    const { deployment, network, artifacts, funding } = await deploy(STRUCT_SOURCE, [STRUCT_NAME, STRUCT_BIO], true);
+
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The value the entry's own body computed from its caller and arguments, in the shipped struct encoding, and
+    // the node and chunk records the shipped batch planner derives from it.
+    const value = encodePushdataValue(
+      { who: funding.deployerLock, name: STRUCT_NAME, bio: STRUCT_BIO, up: 0n, down: 0n },
+      'User', artifacts.Impl!.structs,
+    );
+    expect(value.length).toBeGreaterThan(60);
+    const who = encodeFunctionArgument(funding.deployerLock, 'address') as Uint8Array;
+    const plan = planMappingBatch({
+      writes: [{ keys: [who], value }],
+      inventory: [headSentinelCommitment()],
+      encodeValue: encodeChunkableValueTail,
+      chunkable: (raw) => raw,
+    });
+    expect(plan.chunks.length).toBeGreaterThan(0);
+
+    // The created node is the first created record, its tail carrying the value's length and digest; the run of
+    // chunks follows it at the value's own collection covenant, each carrying the bytes past the node's head.
+    const created = plan.written.filter((node) => !node.existed);
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(created.length + plan.chunks.length);
+    expect(bytesToHex(trailing[0]!.output.token!.nft!.commitment)).toBe(bytesToHex(created[0]!.after));
+    expect(bytesToHex(decodeEntryCommitment(created[0]!.after).slot)).toBe(bytesToHex(keyToSlotMulti([who])));
+    const users = artifacts.Impl!.stateLayout!.collections!.find((collection) => collection.name === 'users')!.name;
+    plan.chunks.forEach((chunk, position) => {
+      const output = trailing[created.length + position]!;
+      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(chunk.commitment));
+      const chunkLock = mappingValueChunkLock(hexToBin(PROXY_CATEGORY), users, chunk);
+      expect(bytesToHex(output.output.lockingBytecode)).toBe(bytesToHex(chunkLock));
+    });
+
+    const hop = deployment.initialize.broadcast;
+    expect(hop).toBeDefined();
     expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 

@@ -1,4 +1,5 @@
 import { Type, PrimitiveType, BytesType, MappingType, ArrayType, StructType, EnumType, ValueType, TupleType, FunctionBlockLayout, LibraryCallArg, JournalSettlementIdentityAbi, ConstructedKeyVectorV1Abi, AffineRecursiveFrameV1Abi } from '@solidcash/utils';
+import type { AbiFunction } from '@solidcash/utils';
 import type { ChildDeploymentValueRecipe } from '@solidcash/utils';
 import { TimeOp } from './Globals.js';
 import AstVisitor from './AstVisitor.js';
@@ -449,6 +450,8 @@ export type KernelReadCarrierSyntheticParameterRole =
   | 'old-values-witness';
 
 export class FunctionDefinitionNode extends Node implements Named {
+  /** Exact source-level dense slice proof, captured before array/mapping lowering changes the body shape. */
+  mappingArrayPagination?: NonNullable<AbiFunction['mappingArrayPagination']>;
   symbolTable?: SymbolTable;
   // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
   // this is false; undefined remains the conservative value for compiler-synthesized functions created later.

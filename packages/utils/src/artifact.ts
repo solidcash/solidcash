@@ -478,6 +478,13 @@ export interface DelegateForwardingAbi {
 
 export interface AbiFunction {
   name: string;
+  /** Proven dense slice of one mapping-backed dynamic array. Absent unless the complete source body matches. */
+  mappingArrayPagination?: {
+    collection: string;
+    keyParams: readonly string[];
+    indexParam: string;
+    limitParam: string;
+  };
   /** Dominating source assignment to a public struct argument before it is consumed by a state write. */
   argumentFieldUpdates?: readonly {
     parameter: string; fieldPath: readonly string[]; source: 'blockTimestamp';

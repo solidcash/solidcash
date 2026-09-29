@@ -2988,6 +2988,7 @@ export function generateArtifact(
 
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
+    ...(func.mappingArrayPagination && { mappingArrayPagination: func.mappingArrayPagination }),
     ...(func.functionSelector && { selector: binToHex(func.functionSelector) }),
     // A caller several OP_INVOKE edges above a runtime journal receives a physical copy of the leaf's hidden
     // context so generated calls have one typed frame. Those forwarded operands are route-owned implementation

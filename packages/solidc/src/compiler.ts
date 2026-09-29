@@ -196,6 +196,7 @@ import CacheMappingEntryInLoop from './semantic/CacheMappingEntryInLoop.js';
 import DesugarDynamicArrayCopyCast from './semantic/DesugarDynamicArrayCopyCast.js';
 import IfConvertConditionalEntryOp from './semantic/IfConvertConditionalEntryOp.js';
 import SynthesizeBlockOracle from './semantic/SynthesizeBlockOracle.js';
+import detectMappingArrayPagination from './semantic/DetectMappingArrayPagination.js';
 import PruneUnreachableFreeFunctions from './semantic/PruneUnreachableFreeFunctions.js';
 import PruneUnreachableMsgDataMethods from './semantic/PruneUnreachableMsgDataMethods.js';
 import RedesugarImportedUsingForCalls from './semantic/RedesugarImportedUsingForCalls.js';
@@ -12645,6 +12646,7 @@ function compileResolvedAst(
     || (mergedCompilerOptions.solidityImportCompat && hasRootOverride)) {
     ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
   }
+  detectMappingArrayPagination(ast.contract);
 
   // OpenZeppelin upgradeable bases reserve future EVM storage slots with private fixed arrays named `__gap`.
   // They carry no runtime value and are never read; materializing them in CashToken commitments can consume

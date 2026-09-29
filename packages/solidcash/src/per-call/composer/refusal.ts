@@ -20,7 +20,8 @@
  */
 
 import { createVirtualMachineBch2026, decodeAuthenticationInstructions } from '@bitauth/libauth';
-import { sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi } from '@solidcash/utils';
+import { sourceMapToLocationData, type Artifact, type ErrorDefinitionAbi, type RequireStatement }
+  from '@solidcash/utils';
 import type { CompositionDraft } from './draft.js';
 
 type VirtualMachine = ReturnType<typeof createVirtualMachineBch2026>;
@@ -111,29 +112,54 @@ function declaredError(artifact: Artifact, message: string): DeclaredRevertError
   };
 }
 
+/** The requirement recorded at `index`, or at the instruction before it, which libauth reports for some opcodes. */
+function requirementAt(
+  requirements: readonly RequireStatement[],
+  index: number,
+): RequireStatement | undefined {
+  // libauth reports the state at the instruction that follows a failed operation for some opcodes and on the
+  // failing instruction for others, so both neighbours are tried rather than assuming one.
+  return requirements.find((entry) => entry.ip === index) ?? requirements.find((entry) => entry.ip === index - 1);
+}
+
+/** The selector the published entry identity names, so its own debug metadata can be looked up. */
+function entrySelector(artifact: Artifact, functionName: string | undefined): string | undefined {
+  if (functionName === undefined) return undefined;
+  return artifact.abi.find((entry) => entry.name === functionName
+    || `${artifact.contractName}.${entry.name}()` === functionName)?.selector;
+}
+
 /**
  * The reason a frame's program refused, read from the frame's artifact and the machine's failing instruction.
  *
- * The failing instruction pointer is shifted by the head's offset first, so it indexes the artifact's debug
- * metadata rather than the shipped program. A recorded `require` at that pointer gives the source line and the
- * compiler's message; a message that names a custom error is resolved against the artifact's error ABI. When
- * nothing is recorded there, the source map alone gives the line.
+ * A dispatched entry's body runs through `OP_INVOKE`, which reports its failing pointer relative to the invoked
+ * body rather than the whole program, and the compiler publishes that body's own `requires` and source map under
+ * `debug.functionDebug`, keyed by the entry's selector. An entry compiled inline publishes its `requires` on the
+ * artifact instead, with pointers offset from the shipped program by the emitted head's own length. Both are read,
+ * so a refusal names the entry's own message. A recorded `require` at the failing pointer gives the source line and
+ * the compiler's message; a message that names a custom error is resolved against the artifact's error ABI. When
+ * nothing is recorded there, the source map that indexes the pointer gives the line.
  */
 export function frameRevertReason(
   artifact: Artifact | undefined,
   program: Uint8Array,
   ip: number | undefined,
+  functionName?: string,
 ): FrameRevertReason {
   if (artifact?.debug === undefined || ip === undefined) return {};
+  const selector = entrySelector(artifact, functionName);
+  const body = selector === undefined ? undefined : artifact.debug.functionDebug?.[selector];
   const debugIndex = ip + debugSkew(artifact, program);
-  const requirements = artifact.debug.requires ?? [];
-  // libauth reports the state at the instruction that follows a failed operation for some opcodes and on the
-  // failing instruction for others, so both neighbours are tried rather than assuming one.
-  const matched = requirements.find((entry) => entry.ip === debugIndex)
-    ?? requirements.find((entry) => entry.ip === debugIndex - 1);
 
-  const locations = sourceMapToLocationData(artifact.debug.sourceMap);
-  const line = matched?.line ?? locations[debugIndex]?.location?.start.line;
+  // A body's requirements index the raw pointer; the artifact's index the pointer shifted by the emitted head.
+  const matched = (body === undefined ? undefined : requirementAt(body.requires, ip))
+    ?? requirementAt(artifact.debug.requires ?? [], debugIndex);
+
+  // Prefer the source map that indexes whichever pointer the reason was read at. A dispatched body always indexes
+  // the raw pointer, whether or not a requirement matched there.
+  const inBody = body !== undefined;
+  const sourceMap = inBody ? body.sourceMap : artifact.debug.sourceMap;
+  const line = matched?.line ?? sourceMapToLocationData(sourceMap)[inBody ? ip : debugIndex]?.location?.start.line;
   const message = matched?.message;
   const error = message === undefined ? undefined : declaredError(artifact, message);
   return {
@@ -211,7 +237,7 @@ export function reportCompositionRefusal(options: CompositionRefusalOptions): Co
       index: placed.index,
       depth: depths.get(placed.id) ?? 0,
       objection: typed.error === undefined ? 'the machine refused without a reason' : String(typed.error),
-      reason: frameRevertReason(artifact, run?.program ?? new Uint8Array(0), typed.ip),
+      reason: frameRevertReason(artifact, run?.program ?? new Uint8Array(0), typed.ip, run?.functionName),
     });
   }
 

@@ -23,7 +23,8 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import type Signer from '../../Signer.js';
 import { callPerCallEntry, PerCallCallError, type PerCallCallResult } from './call.js';
 import { callPerCallProxyEntry } from '../proxy/deploy.js';
-import { readPerCallEntry, type PerCallReadResult } from '../read/index.js';
+import { readPerCallEntry, PerCallReadError, type PerCallReadResult } from '../read/index.js';
+import { PerCallCompositionRefusedError } from '../composer/index.js';
 
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface PerCallHandleContract {
@@ -127,9 +128,27 @@ export class PerCallFunctionCall {
     onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
     const run: Promise<TransactionDetails | StateValue> = this.isRead()
-      ? this.staticCall().then((read) => read.value)
+      ? this.readValue()
       : this.send();
     return run.then(onFulfilled, onRejected);
+  }
+
+  /**
+   * The value a read answers with, or the refusal it raised.
+   *
+   * A read the machine did not accept computed no answer, so it rejects the way a refused composition reports:
+   * the frame's own reason is named, and a caller reads it off the error the same way a direct-convention read
+   * reports a failing `require`.
+   */
+  private async readValue(): Promise<StateValue> {
+    const read = await this.staticCall();
+    if (!read.accepted) {
+      if (read.refusal !== undefined) throw new PerCallCompositionRefusedError(read.refusal);
+      throw new PerCallReadError(
+        `the read of "${this.functionName}" was refused, so it returned no value: ${read.objection ?? 'refused'}`,
+      );
+    }
+    return read.value;
   }
 
   /** The rejection arm of `then`, so a refused call can be handled where it is awaited. */

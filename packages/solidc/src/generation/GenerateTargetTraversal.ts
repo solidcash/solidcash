@@ -11675,15 +11675,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ecrecoverLayoutBasis?.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 0n,
     );
     const evmKeccakCallIndex = ordinaryKeccakCalls + j;
-    const evmKeccakBatchIndex = Math.floor(evmKeccakCallIndex / 3);
-    const evmKeccakWithinBatch = evmKeccakCallIndex % 3;
+    // A per-call frame co-spends one stateful side-car per projection, unbatched: the stateless covenant
+    // self-preserves at an offset from the end of the outputs, which the frame's trailing outputs move.
+    const evmKeccakBatchIndex = this.perCallMaster ? 0 : Math.floor(evmKeccakCallIndex / 3);
+    const evmKeccakWithinBatch = this.perCallMaster ? 0 : evmKeccakCallIndex % 3;
     const totalStatefulKeccakCalls = ordinaryKeccakCalls
       + (ecrecoverLayoutBasis?.ecrecoverEvmCallCount ?? 0);
-    const evmKeccakBatchWidth = Math.min(3, totalStatefulKeccakCalls - evmKeccakBatchIndex * 3);
+    const evmKeccakBatchWidth = this.perCallMaster ? 1 : Math.min(3, totalStatefulKeccakCalls - evmKeccakBatchIndex * 3);
     const ecrecoverKeccakSlot = (ecrecoverLayoutBasis?.blockLayout?.slots ?? []).find(
       (slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === evmKeccakBatchIndex,
     );
-    const statefulEvmKeccak = ecrecoverKeccakSlot !== undefined;
+    const statefulEvmKeccak = this.perCallMaster || ecrecoverKeccakSlot !== undefined;
     const keccakIdx = (isOutput = false, extra = 0): void => {
       if (loop) { emitLoopSideCarIndex(3n, extra); return; }
       if (this.perCallMaster) {

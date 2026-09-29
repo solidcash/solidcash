@@ -141,7 +141,7 @@ function recoverySideCarsOver(
     [ids.b]: { unlockingBytecode: unlockingOf(unlockerB), output: sideCarRecreation(recreateB) },
   };
   if (ids.k !== undefined) {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, sideCarUtxo('K'), false);
+    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, sideCarUtxo('K'), true);
     settled[ids.k] = { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
   }
   return settled;
@@ -229,7 +229,7 @@ export function buildRecoverySideCars(
     };
     if (ids.k !== undefined) {
       keccakIds.push(ids.k);
-      sources[ids.k] = sideCarSource(keccakComputeLockingBytecode(salt, false));
+      sources[ids.k] = sideCarSource(keccakComputeLockingBytecode(salt, true));
     }
     const over = (scalars: RecoveryScalars): Record<string, DraftSettledInput> =>
       recoverySideCarsOver(scalars, salt, ids);

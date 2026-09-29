@@ -321,12 +321,14 @@ function pairAt(witness: EcrecoverWitness, chunkA: number): { readonly a: SideCa
   };
 }
 
-/** The keccak side-car the EVM projection reads its address from. */
+/** The keccak side-car the EVM projection reads its address from, on the stateful covenant a per-call frame checks. */
 function keccakCar(preimage: Uint8Array): SideCar {
-  const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, SHARED_LIBRARY_SALT, dummySideCar(false) as never, false);
+  const { unlocker, recreate } = buildKeccakComputeSidecar(
+    preimage, SHARED_LIBRARY_SALT, dummySideCar(false) as never, true,
+  );
   return {
     unlockingBytecode: unlocker.generateUnlockingBytecode({} as never),
-    lock: keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, false),
+    lock: keccakComputeLockingBytecode(SHARED_LIBRARY_SALT, true),
     commitment: hexToBin(recreate.token!.nft!.commitment),
   };
 }

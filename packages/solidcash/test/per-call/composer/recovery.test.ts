@@ -234,7 +234,10 @@ describe('a composed per-call recovery', () => {
   });
 
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
-    const test = recoveryCase(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+    // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
+    // from the end of the outputs.
+    const evm = recoveryCase(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+    const test = { ...evm, plan: { ...evm.plan, trailingOutputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: 1_000n }] } };
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);

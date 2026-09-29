@@ -1120,6 +1120,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallProxyFallback = false;
   /** True when this traversal compiles a dispatched per-call fallback, which the dispatcher hands its input on top. */
   private perCallFallbackInputOnTop = false;
+  /** True when the master has one entry and no dispatcher, so a user's frame to it carries no selector. */
+  private perCallSoleEntry = false;
   /** Long-value slots the head parks, which a body reads its own witness out of. */
   private perCallValueWitnessCount = 0;
 
@@ -3108,6 +3110,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
     // item, and any other fallback is reached through the dispatcher, so neither leaves a selector to drop.
     const callDataSelectorUnconsumed = dispatchBodyCount === 1 && node.fallbackDef === undefined;
+    this.perCallSoleEntry = callDataSelectorUnconsumed;
     const soleEntrySelector = callDataSelectorUnconsumed
       ? (entries[0] ?? node.constructorDef)?.functionSelector
       : undefined;
@@ -3854,7 +3857,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       msgDataCollector.visit(f);
       if (msgDataCollector.found) break;
     }
-    this.contractUsesMsgData = msgDataCollector.found;
+    // A per-call master reads its call data from its own input wherever a body asks, so it keeps no redeem length.
+    this.contractUsesMsgData = msgDataCollector.found && !this.perCallMaster;
     const msgSigCollector = new MsgSigUsageCollector();
     for (const f of allNodeFunctions) {
       msgSigCollector.visit(f);
@@ -3874,10 +3878,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.contractUsesMsgValue = msgValueCollector.found;
 
-    // Also set contractUsesMsgData if fallback has a bytes parameter; a dispatched per-call fallback is handed the
-    // frame's call data by the dispatcher instead.
-    if (node.fallbackDef && node.fallbackDef.parameters.length > 0
-      && (!this.perCallMaster || this.perCallProxyFallback)) {
+    // Also set contractUsesMsgData if fallback has a bytes parameter; a per-call fallback is handed the frame's call
+    // data by its head or its dispatcher instead.
+    if (node.fallbackDef && node.fallbackDef.parameters.length > 0 && !this.perCallMaster) {
       this.contractUsesMsgData = true;
     }
 
@@ -5369,6 +5372,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // widening or it can count a body with the old arity and silently select a different extraction plan.
       probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
       probe.perCallProxyFallback = this.perCallProxyFallback;
+      probe.perCallSoleEntry = this.perCallSoleEntry;
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
       this.structSkipTypes = new Map(probe.structSkipTypes);
@@ -5542,22 +5546,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_LESSTHANOREQUAL, loc);
     this.emit(Op.OP_UNTIL, loc);
     this.emit(Op.OP_ENDIF, loc);
-    if (fallback.parameters.length > 0) {
-      this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(Op.OP_INPUTBYTECODE, loc);
-      this.emit(bytecodeToScript(dropLastPushScript()), loc);
-      this.emit(bytecodeToScript(dropFirstPushScript()), loc);
-      this.emit(Op.OP_DUP, loc);
-      this.emit(encodeDataPush(PER_CALL_RECEIVE_SITE.selector), loc);
-      this.emit(Op.OP_EQUAL, loc);
-      this.emit(Op.OP_IF, loc);
-      this.emit(Op.OP_DROP, loc);
-      this.emit(Op.OP_0, loc);
-      this.emit(Op.OP_ENDIF, loc);
-    }
+    if (fallback.parameters.length > 0) this.emitPerCallCallData(loc);
     this.emit(fallback.functionSelector!, loc);
     this.emit(Op.OP_INVOKE, loc);
     if (knownFunctions.length > 0) this.emit(Op.OP_ENDIF, loc);
+  }
+
+  /**
+   * Leaves a per-call frame's call data: the pushes between its witness block and its redeem script, the selector's
+   * push first. A value send's, the selector of `receive()` alone, is the EVM's empty call data.
+   */
+  private emitPerCallCallData(loc: SingleLocationData): void {
+    this.emit(Op.OP_INPUTINDEX, loc);
+    this.emit(Op.OP_INPUTBYTECODE, loc);
+    this.emit(bytecodeToScript(dropLastPushScript()), loc);
+    this.emit(bytecodeToScript(dropFirstPushScript()), loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(encodeDataPush(PER_CALL_RECEIVE_SITE.selector), loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -38464,6 +38474,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., msgData]
    */
   private emitMsgData(locationData: SingleLocationData): void {
+    // A per-call frame's call data is its own input's; a master with one entry has no selector in a user's frame, so
+    // its call data would not be the one a caller's frame carries.
+    if (this.perCallMaster) {
+      if (this.perCallSoleEntry) {
+        throw new SolidcDiagnosticError(
+          'PER_CALL_CODEGEN_UNAVAILABLE',
+          'msg.data in a master with one entry: a user\'s frame to it carries no selector, so its call data is not '
+          + 'the call data a caller\'s frame carries',
+          { function: this.currentFunction?.name },
+        );
+      }
+      this.emitPerCallCallData(locationData);
+      return;
+    }
     if (this.stack.includes('__internal__handlerMsgData')) {
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), locationData);
       this.emit(Op.OP_PICK, locationData);

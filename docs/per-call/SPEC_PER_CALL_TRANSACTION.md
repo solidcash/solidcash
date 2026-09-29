@@ -506,6 +506,9 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
     reaches the fallback as call data like any other.
   - A contract whose only body is a fallback forwarding its call data to an address it holds is the proxy
     (section 11): its head leaves the band as the fallback's parameter and dispatches nothing.
+  - `msg.data` is the same band, read from the frame's own input wherever a body asks: empty for a value send. A
+    master with one entry and no fallback is entered by a user without a selector, so its band would differ between
+    a user's frame and a caller's; `msg.data` there is refused by name.
 - **Sending.** `transfer(v)`, `send(v)` and `call{value: v}("")` to a P2PKH lock are a listed send (4a). To any
   other lock they are a `CALL` carrying the selector of `receive()` alone, whose call record carries `value = v`:
   the recipient runs its `receive()`, else its payable `fallback()`. The sender's own code chooses by the lock's

@@ -35,7 +35,7 @@ import {
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import type { StateValueType } from '../types/state-inference.js';
 import {
-  addressToLockScript, randomUtxo, scriptToLockingBytecode,
+  addressToLockScript, lockingBytecodeToSolidityAddressPayload, randomUtxo, scriptToLockingBytecode,
 } from '../utils.js';
 import {
   createDataNftUnlocker,
@@ -60,6 +60,7 @@ import {
   SortedList,
 } from './SortedList.js';
 import { artifactUsesSolidityAbi } from './solidityAbi.js';
+import { encodeExternalReturnValues } from './external-return-encoding.js';
 import type {
   DeployFromOptions, DeployFromResult,
 } from './stateful-lifecycle-types.js';
@@ -181,9 +182,18 @@ export async function deployFromStatefulContract<T extends Artifact>(
         const b = toLockingBytecode(deployFunctionArgs[addressArgIndices[1]]);
         if (a && b) {
           const [token0, token1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-          const packed = new Uint8Array(token0.length + token1.length);
-          packed.set(token0, 0);
-          packed.set(token1, token0.length);
+          // The source-level address comparison sorts the original BCH values. Solidity-compatible
+          // abi.encodePacked then narrows each address to its canonical 20-byte payload; native SolidCash
+          // instead packs the full locking bytecode. Keep the off-chain CREATE2 prediction identical.
+          const solidityAbi = artifactUsesSolidityAbi(factory.inner.artifact);
+          const packed0 = solidityAbi ? lockingBytecodeToSolidityAddressPayload(token0) : token0;
+          const packed1 = solidityAbi ? lockingBytecodeToSolidityAddressPayload(token1) : token1;
+          if (!packed0 || !packed1) {
+            throw new Error('Computed CREATE2 salt needs canonical address arguments for Solidity ABI packing.');
+          }
+          const packed = new Uint8Array(packed0.length + packed1.length);
+          packed.set(packed0, 0);
+          packed.set(packed1, packed0.length);
           childSalt = keccak_256(packed);
         }
       }
@@ -536,6 +546,10 @@ export async function deployFromStatefulContract<T extends Artifact>(
   // Value tails known off-chain for deploy+vmap: create3 children[salt]=category; createPair getPair=pair LBC.
   const fundingCatValue = hexToBin(fundingUtxos[0].txid).reverse();
   const pairAddressValue = addressToLockScript(childContracts[0].address);
+  const predictedAddressReturn = encodeExternalReturnValues(
+    [pairAddressValue], ['address'], factoryLayout.structs,
+    artifactUsesSolidityAbi(factory.inner.artifact), factory.inner.artifact.enums,
+  );
   const valueTailFor = (collection: NonNullable<typeof factoryLayout.collections>[number]): Uint8Array => {
     if (collection.valueType === 'bytes32') return fundingCatValue;
     if (collection.valueType === 'address' || collection.valueType.startsWith('address ')) {
@@ -896,7 +910,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
         category: factory.categoryId, amount: 0n,
         nft: {
           capability: 'none',
-          commitment: binToHex(encodePushdataValue(pairAddressValue, 'address', factoryLayout.structs)),
+          commitment: binToHex(predictedAddressReturn),
         },
       },
     }]
@@ -1297,7 +1311,7 @@ export async function deployFromStatefulContract<T extends Artifact>(
       // The child address is already fixed by the funding category, constructor, and computed salt. For a
       // returning deploy such as createPair, it is therefore an authoritative seed even when an earlier vmap
       // verify prevents the derivation trace from reaching the return-event comparison.
-      const seedReturn = encodePushdataValue(pairAddressValue, 'address', factoryLayout.structs);
+      const seedReturn = predictedAddressReturn;
       builder.addOutput({
         to: new Uint8Array([0x51]),
         amount: 800n,

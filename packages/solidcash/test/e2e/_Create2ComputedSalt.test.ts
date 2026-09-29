@@ -10,7 +10,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import type { Utxo } from '../../src/interfaces.js';
-import { addressToLockScript } from '../../src/utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../../src/utils.js';
 
 const SCRATCH = '/tmp/grok-goal-f077261f25bd/implementer';
 
@@ -169,12 +169,15 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
         fundingUtxo: fundC, funder, changeAddress: p2pkh.address, fee: 30_000n,
       });
       expect(result.tx.txid).toBeDefined();
-      // Offline salt for parity check
+      // Offline Solidity ABI salt for parity check: packed addresses are 20-byte identities, not BCH scripts.
       const a = addressToLockScript(tokenA);
       const b = addressToLockScript(tokenB);
       const [t0, t1] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-      const packed = new Uint8Array(t0.length + t1.length);
-      packed.set(t0, 0); packed.set(t1, t0.length);
+      const identity0 = lockingBytecodeToSolidityAddressPayload(t0)!;
+      const identity1 = lockingBytecodeToSolidityAddressPayload(t1)!;
+      const packed = new Uint8Array(identity0.length + identity1.length);
+      packed.set(identity0, 0); packed.set(identity1, identity0.length);
+      expect(packed).toHaveLength(40);
       const salt = keccak_256(packed);
       const expected = new Contract(childArt, [], {
         provider, addressType: 'p2sh32', category: hexToBin(result.childCategoryId), salt,
@@ -204,7 +207,7 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
       await (factory as any).setBoth(new SignatureTemplate(alicePriv), tokenA, tokenB, pairAddr).send();
       const ab = await (factory as any).getPair(tokenA, tokenB);
       const ba = await (factory as any).getPair(tokenB, tokenA);
-      const exp = binToHex(addressToLockScript(pairAddr));
+      const exp = binToHex(lockingBytecodeToSolidityAddressPayload(addressToLockScript(pairAddr))!);
       const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
       const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
       writeFileSync(`${SCRATCH}/create2-C0.log`, `OK AB=${abHex} BA=${baHex} exp=${exp}\n`);
@@ -256,13 +259,15 @@ describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation 
       const sc = factory as any;
       const ab = await sc.getPair(tokenA, tokenB);
       const ba = await sc.getPair(tokenB, tokenA);
-      const expectedLbc = addressToLockScript(result.child.address);
+      const expectedIdentity = lockingBytecodeToSolidityAddressPayload(
+        addressToLockScript(result.child.address),
+      )!;
       const abHex = ab instanceof Uint8Array ? binToHex(ab) : binToHex(addressToLockScript(String(ab)));
       const baHex = ba instanceof Uint8Array ? binToHex(ba) : binToHex(addressToLockScript(String(ba)));
       writeFileSync(`${SCRATCH}/create2-C.log`,
-        `OK child=${result.child.address}\nAB=${abHex}\nBA=${baHex}\nexp=${binToHex(expectedLbc)}\n`);
-      expect(abHex).toBe(binToHex(expectedLbc));
-      expect(baHex).toBe(binToHex(expectedLbc));
+        `OK child=${result.child.address}\nAB=${abHex}\nBA=${baHex}\nexp=${binToHex(expectedIdentity)}\n`);
+      expect(abHex).toBe(binToHex(expectedIdentity));
+      expect(baHex).toBe(binToHex(expectedIdentity));
     } catch (e: any) {
       writeFileSync(`${SCRATCH}/create2-C.log`, `ERR ${e?.message ?? e}\n`);
       throw e;

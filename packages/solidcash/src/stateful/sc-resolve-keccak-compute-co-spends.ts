@@ -7,13 +7,14 @@ import {
   KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH_LEGACY,
   keccakComputeLockingBytecode,
   keccakComputeLockingBytecodeLegacy,
-  type AbiFunction,
+  type AbiFunction, type Artifact,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type { Output, UnlockableUtxo, Unlocker, Utxo } from '../interfaces.js';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import { buildKeccakComputeSidecar } from '../keccak/keccakComputeSidecar.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, lockingBytecodeToSolidityAddressPayload } from '../utils.js';
+import { artifactUsesSolidityAbi } from './solidityAbi.js';
 import {
   computeSideCarStandIn,
   hasOutpoint,
@@ -22,6 +23,7 @@ import {
 export interface ResolveKeccakComputeCoSpendsHost {
   readonly categoryId: string;
   readonly inner: {
+    artifact: Artifact;
     bytecode: string;
     provider: NetworkProvider & {
       getUtxosForLockingBytecode(lockingBytecode: Uint8Array): Promise<Utxo[]>;
@@ -151,9 +153,15 @@ export async function resolveKeccakComputeCoSpends(
       const b = toLbc(args[addressIndices[1]]);
       if (a && b) {
         const [first, second] = binToHex(a) < binToHex(b) ? [a, b] : [b, a];
-        const packed = new Uint8Array(first.length + second.length);
-        packed.set(first, 0);
-        packed.set(second, first.length);
+        const solidityAbi = artifactUsesSolidityAbi(host.inner.artifact);
+        const packedFirst = solidityAbi ? lockingBytecodeToSolidityAddressPayload(first) : first;
+        const packedSecond = solidityAbi ? lockingBytecodeToSolidityAddressPayload(second) : second;
+        if (!packedFirst || !packedSecond) {
+          throw new Error('Solidity ABI keccak preimage needs canonical address arguments.');
+        }
+        const packed = new Uint8Array(packedFirst.length + packedSecond.length);
+        packed.set(packedFirst, 0);
+        packed.set(packedSecond, packedFirst.length);
         preimages[0] = packed;
       }
     }

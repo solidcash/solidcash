@@ -1559,6 +1559,17 @@ risk. Take the slices in order, each with its own tests.
     size the run of chunk records an entry's append creates has nothing to read and refuses by name — measured on the
     fixture's job-post writer (`writes dynamic "<var>" (<Type>) a value whose element this hop cannot state`). The
     work is the publication in the same vocabulary the constructor's sources use, plus the hop's consumption of it.
+    **Landed** (`288778f6a`, `b61825b63`, `b53823f89`), with the hop consuming it (`b15dd1514`).
+  - **Claimed by this round, from `77be80d8c`:** the two publication gaps the ladder's remaining fifty-three titles
+    stand on, both measured on the real bodies — `userAddresses` (`address[]`, pushed from the sender beside a
+    mapping assign) and `jobs` (`JobPost[]`, pushed with no argument and then filled through a storage pointer)
+    still publish no element source, so a hop cannot size their runs. One agent is diagnosing which statement of
+    each real body charges the variable and narrowing it where that is honest.
+  - **Claimed by this round, from `77be80d8c`:** the composed frame's refusal for a **created** predecessor. The
+    hop plans the created head correctly and the compiler serves the isolated shape (its single-target insert arm
+    reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
+    an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
+    One agent is finding the failing invariant, on the SDK side if the placement is wrong.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

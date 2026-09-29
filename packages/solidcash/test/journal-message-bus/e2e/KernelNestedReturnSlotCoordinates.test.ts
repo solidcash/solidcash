@@ -2,6 +2,8 @@ import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { resolveParticipantAbsoluteWitnesses } from '../../../src/message-bus/layout-resolver.js';
+import { decodeLayoutCoordinate } from '../../../src/message-bus/layout-sentinels.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -46,12 +48,20 @@ describe('kernel nested return-slot coordinates', () => {
       rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
     );
 
-    const localReturnBlock = {
-      blockSize: 2,
-      slots: [{ kind: 'master', offset: 0 }, { kind: 'returnEvent', offset: 1 }],
-    };
-    expect(rootArtifact.messageBus?.route.blockLayout).toMatchObject(localReturnBlock);
-    expect(leafArtifact.messageBus?.route.blockLayout).toMatchObject(localReturnBlock);
+    for (const artifact of [rootArtifact, leafArtifact]) {
+      const bus = artifact.messageBus!;
+      const layout = bus.route.blockLayout!;
+      // The direct result is still block-local at offset 1. The kernel additionally reserves one conditional
+      // return lane for each possible row; all of those lanes must remain local to this participant.
+      expect(layout.blockSize).toBe(2 + bus.maximumRows);
+      expect(layout.slots).toEqual([
+        { kind: 'master', offset: 0 },
+        { kind: 'returnEvent', offset: 1 },
+        ...Array.from({ length: bus.maximumRows }, (_, slotIndex) => ({
+          kind: 'returnEvent', offset: slotIndex + 2, slotIndex, conditional: true,
+        })),
+      ]);
+    }
 
     const callsiteId = rootArtifact.abi.find((entry) => entry.name === 'read')!
       .externalCalls!.find((call) => call.functionName === 'read')!.callsiteId!;
@@ -151,8 +161,19 @@ describe('kernel nested return-slot coordinates', () => {
     );
     expect(dynamicBasePosition).toBeGreaterThanOrEqual(0);
     expect(typeof routeUnlocker.params[dynamicBasePosition]).toBe('bigint');
-    const dynamicBase = Number(routeUnlocker.params[dynamicBasePosition] as bigint);
-    expect(dynamicBase).toBeGreaterThanOrEqual(0);
+    const layout = storeArtifact.messageBus!.route.blockLayout!;
+    const expected = resolveParticipantAbsoluteWitnesses({
+      participant: 0,
+      publishedBase: routeInputIndex,
+      blockSize: layout.blockSize,
+      trailingBase: layout.trailingBase!,
+      trailingCapacity: layout.trailingCapacity,
+      dynChunkCount: 1,
+    });
+    const dynamicBase = Number(expected.dynamicChunkInputBase);
+    expect(decodeLayoutCoordinate(routeUnlocker.params[dynamicBasePosition] as bigint)).toEqual({
+      kind: 'inactive', preservedIndex: dynamicBase,
+    });
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     expect(sourceOutputs[dynamicBase]?.token).toMatchObject({
       category: hexToBin(storeSetup.categoryId),

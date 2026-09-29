@@ -517,14 +517,18 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
     contract's sends from its containers and refuses one its balance cannot cover, as the EVM reverts it.
   - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
     contract may pay out value it receives later in the same transaction. This is the one departure.
-- **What the master checks today.** A master with a payable body requires its containers' growth to cover its
-  frame's value when it settles alone, and a frame whose master does not settle alone, or a `STATIC` or
-  `DELEGATE` frame, carries no value until V7 accounts for containers. A master with no payable body requires every
-  frame's value to be zero. A call site passes no value yet, so it requires its record's `value` to be zero.
-- **A send's payer (open).** A listed send is an output index, and nothing ties it to the frame that pays it, so
-  two frames can list one output and both count it: two purchases from one seller pay the seller once. Before the
-  containers pay a send, each frame's sends have to be its own. The proposed rule puts a frame's sends right after
-  one of its own container outputs, in a run, which makes the sends of two contracts disjoint.
+- **What the master checks today.** A master that receives or pays value holds a frame that settles alone against
+  its own containers: their growth plus what the frame's listed sends pay covers the value the frame receives, so
+  the contract pays its sends from them. A frame whose master does not settle alone, or a `STATIC` or `DELEGATE`
+  frame, takes no value and lists no send until V7 accounts for containers. A master with no payable body requires
+  every frame's value to be zero. A call site passes no value yet, so it requires its record's `value` to be zero.
+- **A send's payer.** A listed send is an output index, so on its own nothing ties it to the frame that pays it:
+  two frames could list one output and both count it, and two purchases from one seller would pay the seller once.
+  A frame's sends therefore follow one of its own contract's containers, in a run: the output before the first send
+  is at the container lock of the master's category, and each later send is the next output. Two contracts' runs
+  never overlap, since the output before one run would have to be the other's send or the other's container, and
+  two frames of one contract do not settle alone, so they list no send. A covenant outside this convention that
+  counts an output by its position alone can still count one of these sends; that attribution is its own.
 - **`address(this).balance`** is X's balance as the EVM defines it inside the frame: the value of the
   containers X spends, with this frame's `msg.value` already credited.
 
@@ -534,8 +538,8 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 | Region | Inputs | Outputs |
 | --- | --- | --- |
 | One block per contract, in order of first entry | Its masters (the ladder); then, in the owner's block only, its validator; then the contract's touched state UTXOs | Each recreated, or its successor, at the same index |
-| Trailing | (none) | Events, value sends, then created UTXOs (new entries, chunks, containers) |
-| Fee | Funder inputs, including every root caller's signed input | Change |
+| Trailing | (none) | Events, each sending frame's container and then its value sends, then created UTXOs (new entries, chunks, containers) |
+| Fee | Funder inputs, including every root caller's signed input, and the containers a frame pays from | Change |
 
 ### 5.1 `ABBA` inputs
 

@@ -5,7 +5,8 @@
  * ladder, each master's recovery side-cars immediately after it, then, when the contract is a group's first root,
  * its validator, then the contract's touched state UTXOs. Every participant recreates at the same index it was
  * spent at, so an input index is also its output index. Funder inputs follow the blocks, and every output that is
- * not a participant — events, value sends, created records, then change — is trailing.
+ * not a participant — events, value sends, created records, then change — is trailing. Each frame's value sends
+ * follow one of its contract's containers, which binds them to the frame.
  */
 
 /** A contract's block, in the order its members are placed. */
@@ -54,6 +55,11 @@ export interface TrailingOutputCounts {
   readonly events: number;
   /** One output per value send to a user. */
   readonly sends: number;
+  /**
+   * How many sends each sending frame lists, in plan order, summing to `sends`. Each run follows one of its
+   * contract's containers. When absent, the sends are one frame's run.
+   */
+  readonly sendRuns?: readonly number[];
   /** One output per created record: a new mapping entry, chunk or container. */
   readonly created: number;
 }
@@ -63,6 +69,8 @@ export interface OutputRegions {
   /** Index of the first trailing output: one past the last participant. */
   readonly trailingBase: number;
   readonly eventIndices: readonly number[];
+  /** The container each run of sends follows, one per sending frame. */
+  readonly sendContainerIndices: readonly number[];
   readonly sendIndices: readonly number[];
   readonly createdIndices: readonly number[];
   /** The funder's change output, after every created record. */
@@ -135,7 +143,7 @@ export function participant(layout: TransactionLayout, id: string): PlacedPartic
   return placed;
 }
 
-/** Allocates the trailing outputs: events, then value sends, then created records, then change. */
+/** Allocates the trailing outputs: events, each frame's container and value sends, created records, then change. */
 export function allocateOutputRegions(layout: TransactionLayout, counts: TrailingOutputCounts): OutputRegions {
   let cursor = layout.participantCount;
   const allocate = (count: number): readonly number[] => {
@@ -144,11 +152,21 @@ export function allocateOutputRegions(layout: TransactionLayout, counts: Trailin
     return indices;
   };
   const eventIndices = allocate(counts.events);
-  const sendIndices = allocate(counts.sends);
+  const runs = counts.sendRuns ?? (counts.sends > 0 ? [counts.sends] : []);
+  if (runs.reduce((sum, run) => sum + run, 0) !== counts.sends || runs.some((run) => run <= 0)) {
+    throw new Error(`composer layout: send runs [${runs.join(', ')}] do not make ${counts.sends} sends`);
+  }
+  const sendContainerIndices: number[] = [];
+  const sendIndices: number[] = [];
+  for (const run of runs) {
+    sendContainerIndices.push(...allocate(1));
+    sendIndices.push(...allocate(run));
+  }
   const createdIndices = allocate(counts.created);
   return {
     trailingBase: layout.participantCount,
     eventIndices,
+    sendContainerIndices,
     sendIndices,
     createdIndices,
     changeIndex: cursor,

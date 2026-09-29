@@ -52,7 +52,7 @@ import {
   type MasterCallSite,
   type MasterTailShape,
 } from './frame-tail.js';
-import { containerGrowthScript } from './value.js';
+import { containerGrowthScript, selfContainerLockScript } from './value.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -256,7 +256,8 @@ export interface MasterHeadOptions {
   readonly returnsValue?: boolean;
   /**
    * True when some body the master serves is payable. A frame may then carry value, which the growth of the
-   * master's containers must cover (spec 4b); otherwise every frame carries none.
+   * master's containers must cover (spec 4b); otherwise every frame carries none. A master that sends accounts
+   * for its containers too, since they pay its sends.
    */
   readonly acceptsValue?: boolean;
 }
@@ -320,6 +321,8 @@ class HeadEmitter {
   private readonly keepsRecordIndices: boolean;
   private readonly returnsValue: boolean;
   private readonly acceptsValue: boolean;
+  /** True when the master receives or pays value, so its frames are held against its containers. */
+  private readonly handlesValue: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -332,6 +335,7 @@ class HeadEmitter {
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
     this.acceptsValue = options.acceptsValue === true;
+    this.handlesValue = this.acceptsValue || this.tailShape.sendCount > 0;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -407,6 +411,7 @@ class HeadEmitter {
     else this.standaloneFrameChecks();
     this.leaveValueSlots();
     this.leaveSendSlots();
+    if (this.handlesValue) this.valueChecks();
     this.leaveEventSlots();
     this.leaveRecordSlots();
     this.leaveCallCountSlot();
@@ -591,11 +596,12 @@ class HeadEmitter {
     this.assertSenderIsTheCallersLock();
     this.assertOriginIsTheCallersLock();
     this.assertSelfEqualsReservedAddress();
-    if (this.acceptsValue) this.assertValueCovered();
-    else this.assertZeroValue();
+    if (!this.handlesValue) this.assertZeroValue();
     this.emitSingleMasterCheck();
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
+    // A standalone frame is its contract's only master, so it settles its value alone.
+    if (this.handlesValue) this.pushAlone(true);
   }
 
   /**
@@ -618,9 +624,13 @@ class HeadEmitter {
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
-    if (!this.acceptsValue) this.assertZeroValue();
+    if (!this.handlesValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
-    if (this.acceptsValue) this.assertValueCovered();
+    // Whether the frame settles alone is parked while the frame values are reordered, then left above them.
+    if (this.handlesValue) {
+      this.emitOp(Opcodes.OP_TOALTSTACK);
+      this.pop(1);
+    }
     this.dropName('kind');
     this.dropName('callerRef');
     this.dropName('originRef');
@@ -629,6 +639,10 @@ class HeadEmitter {
     this.emitOp(Opcodes.OP_3, Opcodes.OP_ROLL, Opcodes.OP_1, Opcodes.OP_ROLL);
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
+    if (this.handlesValue) {
+      this.emitOp(Opcodes.OP_FROMALTSTACK);
+      this.push('alone');
+    }
   }
 
   /**
@@ -799,6 +813,7 @@ class HeadEmitter {
     if (this.admittedKinds.some((kind) => kind !== FRAME_KIND_ROOT)) this.assertFrameKindRoot();
     if (this.callCount === 0) this.assertSelfSettlement();
     this.emitSingleMasterCheck();
+    if (this.handlesValue) this.pushAlone(true);
   }
 
   /** Settles the segments' records when the master stands alone and the compiler asks for it. */
@@ -823,15 +838,14 @@ class HeadEmitter {
    * contract's settlement, so a master that made one never settles its own. A message or read-only call runs on
    * the callee's own records, which its own master or validator settles, so such a caller still settles its own.
    *
-   * A frame whose master does not settle alone carries no value: the validator does not account for containers.
+   * A master that handles value leaves whether the frame settles alone, which its value checks read.
    */
   private assertSelfSettlementWhenAlone(): void {
-    const notAlone = (): void => { if (this.acceptsValue) this.assertZeroValue(); };
     if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC)) {
-      notAlone();
+      if (this.handlesValue) this.pushAlone(false);
       return;
     }
-    if (!this.settlesOwnRecords && !this.acceptsValue) return;
+    if (!this.settlesOwnRecords && !this.handlesValue) return;
     this.emitBranch(
       () => {
         this.emitInputIndex();
@@ -850,10 +864,108 @@ class HeadEmitter {
         this.emitOp(Opcodes.OP_BOOLAND);
         this.pop(2);
         this.push('bool');
+        if (this.handlesValue) {
+          this.replaceTop('alone');
+          this.dup();
+        }
       },
       () => this.assertSelfSettlement(),
-      notAlone,
+      () => {},
     );
+  }
+
+  /** Leaves whether the frame settles alone as a constant, where the transaction does not decide it. */
+  private pushAlone(alone: boolean): void {
+    this.emitOp(alone ? Opcodes.OP_1 : Opcodes.OP_0);
+    this.push('alone');
+  }
+
+  /**
+   * The frame's value against the master's own containers (spec 4b), with the send region on the stack.
+   *
+   * The value is non-negative, and zero unless some body is payable. A frame that settles alone may receive value
+   * and pay its sends from the containers: their growth plus what the sends pay covers the value. A frame that does
+   * not takes no value and lists no send, since the validator does not account for containers yet. The output
+   * before the first send is one of the master's containers and the sends follow it in a run, so the sends of two
+   * contracts' frames never overlap and no output is counted twice. Consumes the settle-alone flag.
+   */
+  private valueChecks(): void {
+    const sends = this.tailShape.sendCount;
+    this.pick('value');
+    if (this.acceptsValue) {
+      this.emitOp(Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+      this.pop(1);
+    } else {
+      this.emit0();
+      this.numequalVerify();
+    }
+    this.emitBranch(
+      () => {
+        this.pick('alone');
+        this.emitOp(Opcodes.OP_NOT);
+      },
+      () => {
+        if (this.acceptsValue) this.assertZeroValue();
+        if (sends > 0) {
+          this.pick(sendCountSlotName());
+          this.emit0();
+          this.numequalVerify();
+        }
+      },
+      () => {},
+    );
+    this.emitBytes(new Uint8Array(selfContainerLockScript()));
+    this.push('lock');
+    if (sends > 0) {
+      this.emitBranch(
+        () => this.sendListedAt(0),
+        () => {
+          this.pick(sendOutputSlotName(0));
+          this.emitOp(Opcodes.OP_1SUB, Opcodes.OP_OUTPUTBYTECODE);
+          this.pick('lock');
+          this.equalVerify();
+        },
+        () => {},
+      );
+      for (let position = 1; position < sends; position += 1) {
+        this.emitBranch(
+          () => this.sendListedAt(position),
+          () => {
+            this.pick(sendOutputSlotName(position));
+            this.pick(sendOutputSlotName(position - 1));
+            this.emitOp(Opcodes.OP_1ADD);
+            this.numequalVerify();
+          },
+          () => {},
+        );
+      }
+    }
+    this.emitBytes(new Uint8Array(containerGrowthScript()));
+    this.replaceTop('net');
+    for (let position = 0; position < sends; position += 1) {
+      this.emitBranch(
+        () => this.sendListedAt(position),
+        () => {
+          this.pick(sendOutputSlotName(position));
+          this.emitOp(Opcodes.OP_OUTPUTVALUE, Opcodes.OP_ADD);
+          this.pop(1);
+        },
+        () => {},
+      );
+    }
+    this.pick('value');
+    this.emitOp(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+    this.pop(2);
+    this.dropName('alone');
+  }
+
+  /** Pushes whether the block lists a send at `position`. */
+  private sendListedAt(position: number): void {
+    this.pick(sendCountSlotName());
+    this.pushNumber(position);
+    this.emitOp(Opcodes.OP_GREATERTHAN);
+    this.pop(2);
+    this.push('bool');
   }
 
   /** The prologue proved the active input carries the contract's category with minting; require exactly one such. */
@@ -977,16 +1089,6 @@ class HeadEmitter {
     this.pick('value');
     this.emit0();
     this.numequalVerify();
-  }
-
-  /** Requires the frame's value to be non-negative and covered by the growth of the master's containers (4b). */
-  private assertValueCovered(): void {
-    this.pick('value');
-    this.emitOp(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-    this.emitBytes(new Uint8Array(containerGrowthScript()));
-    this.push('growth');
-    this.emitOp(Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY);
-    this.pop(2);
   }
 
   private pushCategorySlot(): void {

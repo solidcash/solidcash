@@ -139,3 +139,66 @@ describe('a call to a payable entry carrying value', () => {
     expect(plainCall.accepted).toBe(true);
   });
 });
+
+const WALLET_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Wallet {'
+  + '   int public paid;'
+  + '   receive() external payable { require(true); }'
+  + '   function withdraw(int amount) { this.paid = this.paid + amount; this.transfer(msg.sender, amount); }'
+  + '   function forward() payable { this.paid = this.paid + msg.value; this.transfer(msg.sender, msg.value); }'
+  + ' }';
+
+const wallet = compileStringMulti(WALLET_SOURCE, { composition: 'per-call' }).Wallet!;
+
+/** The caller's options with its current coin: the largest tokenless UTXO at its lock, the last call's change. */
+async function currentCaller(deployed: Deployed): Promise<Parameters<typeof sendPerCallValue>[0]> {
+  const coins = (await deployed.provider.getUtxosForLockingBytecode(deployed.callerLock))
+    .filter((utxo) => utxo.token === undefined)
+    .sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1));
+  return { ...callerOf(deployed), callerUtxo: coins[0]! };
+}
+
+/** The value the broadcast pays to the caller's own lock outside its change, which is the last output. */
+function paidToCaller(result: PerCallCallResult, callerLock: Uint8Array): bigint {
+  const outputs = result.broadcast?.outputs ?? [];
+  return outputs.slice(0, -1)
+    .filter((output) => binToHex(output.lockingBytecode) === binToHex(callerLock))
+    .reduce((sum, output) => sum + output.valueSatoshis, 0n);
+}
+
+describe('an entry that sends, paid from the contract\'s containers', () => {
+  it('withdraws what a deposit put in, and keeps the change in a container', async () => {
+    const deployed = await deploy(wallet);
+    const deposit = await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    expect(deposit.accepted).toBe(true);
+
+    const withdrawal = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'withdraw', args: [15_000n],
+    });
+    expect(withdrawal.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(withdrawal, deployed.callerLock)).toBe(15_000n);
+    // The deposit's container is spent and the change is kept in the one the send follows.
+    expect(containerValue(withdrawal, deployed.categoryId)).toBe(5_000n);
+    const containerLock = binToHex(satoshiContainerLockingBytecode(deployed.categoryId));
+    const containerIndex = withdrawal.broadcast!.outputs
+      .findIndex((output) => binToHex(output.lockingBytecode) === containerLock);
+    expect(binToHex(withdrawal.broadcast!.outputs[containerIndex + 1]!.lockingBytecode))
+      .toBe(binToHex(deployed.callerLock));
+  });
+
+  it('is refused by name when the containers cannot cover the send', async () => {
+    const deployed = await deploy(wallet);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 5_000n });
+    await expect(callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'withdraw', args: [10_000n] }))
+      .rejects.toThrow(/contract "Wallet" holds 5000 satoshis in its containers, and entry "withdraw" sends 10000 more/);
+  });
+
+  it('forwards the value a payable entry receives without touching the containers', async () => {
+    const deployed = await deploy(wallet);
+    const forward = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'forward', value: 7_000n,
+    });
+    expect(forward.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(forward, deployed.callerLock)).toBe(7_000n);
+  });
+});

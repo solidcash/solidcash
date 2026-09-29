@@ -23,7 +23,10 @@
  *
  * A call to a payable entry may carry value: the frame's `msg.value`, paid by the caller into a satoshi container
  * of the contract, whose growth the master requires to cover it (spec 4b). A value send is a call to `receive()`
- * (`sendPerCallValue`), refused by name for a contract without one.
+ * (`sendPerCallValue`), refused by name for a contract without one. An entry that sends pays from the contract's
+ * containers: each send's lock and amount are learned from the body's own pin, the containers cover what the call
+ * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
+ * the containers cannot cover is refused by name, as the EVM reverts it; a send on a branch is not planned yet.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -35,7 +38,9 @@
  * (a proxy whose fallback carries the delegated result does carry it; that hop is `callPerCallProxyEntry`).
  */
 
-import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
+import {
+  bigIntToVmNumber, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2pkh, hexToBin, vmNumberToBigInt,
+} from '@bitauth/libauth';
 import {
   FrameKind,
   bytesEqual,
@@ -58,7 +63,9 @@ import {
   eventSentinel,
   readComputedDeclaration,
   readPerCallDeployment,
+  readSatoshiContainers,
   satoshiContainerLockingBytecode,
+  satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
@@ -168,6 +175,17 @@ const CALLER_ID = 'caller';
 /** The satoshi value an event output carries, matching the genesis's own event outputs. */
 const EVENT_OUTPUT_SATOSHIS = 1_000n;
 
+/** The least a container before a frame's sends keeps; the caller tops it up past the change. */
+const CONTAINER_MINIMUM_SATOSHIS = 1_000n;
+
+/** The amount a send output carries until the body's own pin hands back the one it computed. */
+const SEND_AMOUNT_SENTINEL = 1_234_567_891n;
+
+/** The identity of the `index`-th container a call spends. */
+function containerInputId(index: number): string {
+  return `container-${index}`;
+}
+
 /** The record identity for data-NFT index `nftIndex`. */
 function recordId(nftIndex: number): string {
   return `record-${nftIndex}`;
@@ -195,6 +213,9 @@ interface CallEntry {
   readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
   /** True when the entry is payable, so a call to it may carry value. */
   readonly payable: boolean;
+  /** How many sends the entry makes, and whether any of them runs on a branch. */
+  readonly sends: number;
+  readonly sendsConditionally: boolean;
 }
 
 /** The ABI name of `receive()`, the entry a value send runs. */
@@ -214,6 +235,8 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
   return {
     name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
     emits: entry.emits ?? [], payable: (entry.modifiers ?? []).includes('payable'),
+    sends: entry.transferCount ?? 0,
+    sendsConditionally: (entry.transfers ?? []).some((transfer) => transfer.condition !== undefined),
   };
 }
 
@@ -299,6 +322,11 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (value < 0n) throw new PerCallCallError(`a call carries no negative value; got ${value}`);
   if (value > 0n && !entry.payable) {
     throw new PerCallCallError(`entry "${functionName}" is not payable, so a call to it carries no value`);
+  }
+  if (entry.sendsConditionally) {
+    throw new PerCallCallError(
+      `entry "${functionName}" sends on a branch its execution decides, which this call path does not plan yet`,
+    );
   }
   // An entry that returns a value settles it against the frame's `retval`, exactly as a read does: the plan starts
   // the slot from a candidate the body's own return comparison fails against, and the derivation reads back the
@@ -418,11 +446,45 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         nft: { capability: 'none', commitment: commitments[position] ?? eventSentinels[position]! },
       },
     }));
-  // Created mapping nodes are the trailing outputs past the events: the frame makes no value sends.
-  const createdBase = layout.participantCount + emits.length;
-  // The value the call carries is paid into a container of the contract, after the created nodes.
-  const containerOutputs: DraftSourceOutput[] = value > 0n
-    ? [{ lockingBytecode: satoshiContainerLockingBytecode(categoryId), valueSatoshis: value }]
+  // The sends follow the events: one of the contract's containers, then one output per send, in a run. Each send
+  // starts from a sentinel lock and amount the body's own pin fails against, and the derivation learns what it
+  // computed.
+  const containerLock = satoshiContainerLockingBytecode(categoryId);
+  const sendCount = entry.sends;
+  const markerIndex = layout.participantCount + emits.length;
+  const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
+  const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
+    new TextEncoder().encode(`per-call send lock\u0000${artifact.contractName}\u0000${entry.name}\u0000${position}`),
+  ).slice(0, 20)));
+  const sendAmountSentinels = sendIndices.map((_index, position) => bigIntToVmNumber(SEND_AMOUNT_SENTINEL
+    + BigInt(position)));
+  const containers = sendCount > 0 ? await readSatoshiContainers(provider, categoryId) : [];
+  /** The containers the sends are paid from once every amount is known, and what the one before the sends keeps. */
+  const payFromContainers = (amounts: readonly (bigint | undefined)[]): { spent: readonly Utxo[]; kept: bigint } => {
+    const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
+    if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: CONTAINER_MINIMUM_SATOSHIS };
+    const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - value;
+    if (need <= 0n) return { spent: [], kept: atLeastMinimum(-need) };
+    const spent: Utxo[] = [];
+    let total = 0n;
+    for (const utxo of [...containers].sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))) {
+      if (total >= need) break;
+      spent.push(utxo);
+      total += utxo.satoshis;
+    }
+    if (total < need) {
+      throw new PerCallCallError(
+        `contract "${artifact.contractName}" holds ${total} satoshis in its containers, and entry "${functionName}" `
+        + `sends ${need} more than the call brings`,
+      );
+    }
+    return { spent, kept: atLeastMinimum(total - need) };
+  };
+  // Created mapping nodes are the trailing outputs past the sends.
+  const createdBase = markerIndex + (sendCount > 0 ? 1 + sendCount : 0);
+  // The value the call carries is paid into a container of the contract: the one before the sends, or its own.
+  const containerOutputs: DraftSourceOutput[] = value > 0n && sendCount === 0
+    ? [{ lockingBytecode: containerLock, valueSatoshis: value }]
     : [];
 
   // A call-free entry runs in exactly one segment. Every segment declares the frame's state records and the mapping
@@ -440,15 +502,24 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
-  // One attempt per value the body computes (each mapping node, each event and the frame's `retval`), plus the
-  // attempt that derives against every value learned.
-  const maximumAttempts = learningCandidates.length + emits.length + (returnsValue ? 1 : 0) + 3;
+  // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
+  // frame's `retval`), plus the attempt that derives against every value learned.
+  const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
     learnedRetval: Uint8Array | undefined,
     learnedEvents: readonly (Uint8Array | undefined)[],
+    learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[],
   ): CompositionDraftPlan => {
+    const paying = payFromContainers(learnedSends.map((send) => send.amount));
+    const sendOutputs: DraftSourceOutput[] = sendCount === 0 ? [] : [
+      { lockingBytecode: containerLock, valueSatoshis: paying.kept },
+      ...learnedSends.map((send, position) => ({
+        lockingBytecode: send.lock ?? sendLockSentinels[position]!,
+        valueSatoshis: send.amount ?? SEND_AMOUNT_SENTINEL + BigInt(position),
+      })),
+    ];
     const laid = mappingRecords?.lay({
       createdBase,
       masterIndex,
@@ -485,7 +556,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       retval: learnedRetval ?? retvalPlaceholderBytes ?? new Uint8Array(0),
       segments: Array.from({ length: segmentCount }, segment),
       events: eventIndices,
-      sends: [],
+      sends: sendIndices,
       argumentPushes,
       redeemScript: deployed.script,
       // A root that carries call data is one a dispatcher selects an entry of.
@@ -516,14 +587,27 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
     Object.assign(inputs, sideCars.inputs);
+    paying.spent.forEach((utxo, position) => {
+      inputs[containerInputId(position)] = {
+        source: { lockingBytecode: containerLock, valueSatoshis: utxo.satoshis },
+        unlockingBytecode: satoshiContainerUnlockingBytecode(categoryId, masterIndex),
+      };
+    });
 
     return {
       blocks,
-      userInputs: [{ id: CALLER_ID, index: layout.participantCount }],
+      userInputs: [
+        { id: CALLER_ID, index: layout.participantCount },
+        ...paying.spent.map((_utxo, position) => ({
+          id: containerInputId(position), index: layout.participantCount + 1 + position,
+        })),
+      ],
       masters: [masterDraft],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
-      trailingOutputs: [...eventOutputs(learnedEvents), ...(laid?.trailingOutputs ?? []), ...containerOutputs],
+      trailingOutputs: [
+        ...eventOutputs(learnedEvents), ...sendOutputs, ...(laid?.trailingOutputs ?? []), ...containerOutputs,
+      ],
       validator: {
         id: VALIDATOR_ID,
         covers: [],
@@ -553,9 +637,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   let learnedViews: readonly (Uint8Array | undefined)[] = learningCandidates.map(() => undefined);
   let learnedRetval: Uint8Array | undefined;
   let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map(() => undefined);
+  let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents);
+    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents, learnedSends);
     const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
     draft = candidate;
     let stalled = false;
@@ -570,7 +655,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     }
     // A void entry that writes no mapping and emits nothing leaves nothing to learn: the plan is the one just
     // derived, accepted or refused.
-    if (!returnsValue && learningCandidates.length === 0 && emits.length === 0) {
+    if (!returnsValue && learningCandidates.length === 0 && emits.length === 0 && sendCount === 0) {
       settled = true;
       break;
     }
@@ -604,6 +689,18 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           (index === eventPosition ? Uint8Array.from(reading.computed) : view));
         continue;
       }
+      const lockPosition = sendLockSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
+      if (lockPosition >= 0) {
+        learnedSends = learnedSends.map((send, index) =>
+          (index === lockPosition ? { ...send, lock: Uint8Array.from(reading.computed) } : send));
+        continue;
+      }
+      const amountPosition = sendAmountSentinels.findIndex((sentinel) => bytesEqual(sentinel, reading.declared));
+      const amount = vmNumberToBigInt(reading.computed);
+      if (amountPosition >= 0 && typeof amount === 'bigint') {
+        learnedSends = learnedSends.map((send, index) => (index === amountPosition ? { ...send, amount } : send));
+        continue;
+      }
       // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
       break;
     }
@@ -616,7 +713,8 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   }
   const owed = learnedViews.some((view) => view === undefined)
     || (returnsValue && learnedRetval === undefined)
-    || learnedEvents.some((view) => view === undefined);
+    || learnedEvents.some((view) => view === undefined)
+    || learnedSends.some((send) => send.lock === undefined || send.amount === undefined);
   if (!settled && owed) {
     if (mappingRecords !== undefined) {
       throw new PerCallCallError(
@@ -630,6 +728,12 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         + 'event outputs',
       );
     }
+    if (learnedSends.some((send) => send.lock === undefined || send.amount === undefined)) {
+      throw new PerCallCallError(
+        `entry "${functionName}" did not hand back the lock and amount of every send it makes, so its frame `
+        + 'cannot list its send outputs',
+      );
+    }
     throw new PerCallCallError(
       `entry "${functionName}" did not hand back the value it returns, so its frame's \`retval\` cannot be stated`,
     );
@@ -640,7 +744,12 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (transaction === undefined) {
     throw new PerCallCallError('the composer built no transaction for the call frame');
   }
-  const rawVerdicts: PerCallCallVerdict[] = draft.layout.participants.map((placed) => {
+  // The containers the sends are paid from sit after the caller's coin, and the machine is asked about them too.
+  const containerInputs = payFromContainers(learnedSends.map((send) => send.amount)).spent
+    .map((utxo, position) => ({
+      id: containerInputId(position), index: draft!.layout.participantCount + 1 + position, utxo,
+    }));
+  const rawVerdicts: PerCallCallVerdict[] = [...draft.layout.participants, ...containerInputs].map((placed) => {
     const state = machine.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,
     });
@@ -701,6 +810,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     program,
     draft,
     liveUtxos,
+    containerInputs,
   }) : undefined;
 
   return {
@@ -749,6 +859,8 @@ interface BroadcastCallOptions {
   readonly draft: CompositionDraft;
   /** The live UTXO each participant sits on, read back by category. */
   readonly liveUtxos: ReadonlyMap<string, Utxo>;
+  /** The containers the call's sends are paid from, at the indices after the caller's coin. */
+  readonly containerInputs: readonly { readonly index: number; readonly utxo: Utxo }[];
 }
 
 /**
@@ -809,6 +921,14 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   // The caller's own coin funds the call and is the frame's root caller; its signature is a real one over the real
   // transaction, which the root's `msg.sender` binding and the provider both check.
   builder.addInput(options.callerUtxo, options.funder);
+  for (const { index, utxo } of options.containerInputs) {
+    const source = program.sourceOutputs[index];
+    const unlockingBytecode = derivedInputs[index]?.unlockingBytecode;
+    if (source === undefined || unlockingBytecode === undefined) {
+      throw new PerCallCallError(`the derived call carries no container input at ${index}`);
+    }
+    builder.addInput(utxo, rawUnlocker(source.lockingBytecode, unlockingBytecode));
+  }
 
   // Every participant recreates in place, so anything the composer placed after them is trailing. The caller's
   // recreated output is replaced by its change below, which is the only non-participant the plan has.

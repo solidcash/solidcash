@@ -260,6 +260,7 @@ function resolveOutputRegions(
   const regions = allocateOutputRegions(layout, {
     events: declaredEvents.length,
     sends: declaredSends.length,
+    sendRuns: plan.masters.map((master) => master.sends.length).filter((run) => run > 0),
     created: created.length,
   });
   if (!sameIndices(declaredEvents, regions.eventIndices)) {

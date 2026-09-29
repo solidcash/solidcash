@@ -4,8 +4,8 @@ import {
   hash256, Opcodes,
 } from '@bitauth/libauth';
 import {
-  ByteWriter, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION, encodeWitnessBlock, sha256,
-  validatorAddress, type WitnessBlock,
+  ByteWriter, WITNESS_BLOCK_MAGIC, WITNESS_BLOCK_VERSION, buildSatoshiContainerCovenantScript, encodeWitnessBlock,
+  scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { buildMasterHeadScript, type MasterHeadOptions } from '../../../src/per-call/master/master-head.js';
 import { findPlaceholderOffsets } from '../../../src/per-call/master/master-program.js';
@@ -39,6 +39,10 @@ const USER_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x22));
 const EVENT_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x33));
 /** A lock that is not a P2PKH, for a send output that should be refused. */
 const OTHER_LOCK = encodeLockingBytecodeP2sh32(hash256(new Uint8Array([1, 2, 3])));
+/** The contract's container lock: a frame's sends follow one of its containers. */
+const CONTAINER_LOCK = encodeLockingBytecodeP2sh32(
+  hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY))),
+);
 
 const MASTER_INDEX = 0;
 const USER_INDEX = 1;
@@ -288,11 +292,15 @@ describe('a master whose tail carries an event', () => {
 });
 
 describe('a master whose tail carries a value send', () => {
+  /** One of the contract's containers, which the frame's sends follow. */
+  const marker: VmOutput = { lockingBytecode: CONTAINER_LOCK, valueSatoshis: 1_000n };
+  const payment = (lock: Uint8Array = USER_LOCK): VmOutput => ({ lockingBytecode: lock, valueSatoshis: PAYMENT });
+
   it('is accepted when the send sits at the listed output', () => {
     expect(verdict({
       tail: { maxEventCount: 0, sendCount: 1 },
-      block: baseBlock({ sends: [1] }),
-      outputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: PAYMENT }],
+      block: baseBlock({ sends: [2] }),
+      outputs: [marker, payment()],
     })).toStrictEqual({ accepted: true });
   });
 
@@ -301,9 +309,33 @@ describe('a master whose tail carries a value send', () => {
     // body to pin rather than checking a shape: a contract's lock reads like a user's at this level.
     expect(verdict({
       tail: { maxEventCount: 0, sendCount: 1 },
-      block: baseBlock({ sends: [1] }),
-      outputs: [{ lockingBytecode: OTHER_LOCK, valueSatoshis: PAYMENT }],
+      block: baseBlock({ sends: [2] }),
+      outputs: [marker, payment(OTHER_LOCK)],
     })).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the output before the send is not one of the contract\'s containers', () => {
+    expect(verdict({
+      tail: { maxEventCount: 0, sendCount: 1 },
+      block: baseBlock({ sends: [1] }),
+      outputs: [payment()],
+    }).accepted).toBe(false);
+    expect(verdict({
+      tail: { maxEventCount: 0, sendCount: 1 },
+      block: baseBlock({ sends: [2] }),
+      outputs: [payment(), payment()],
+    }).accepted).toBe(false);
+  });
+
+  it('is refused when two listed sends are not a run, or name one output twice', () => {
+    const tail = { maxEventCount: 0, sendCount: 2 };
+    expect(verdict({ tail, block: baseBlock({ sends: [2, 3] }), outputs: [marker, payment(), payment()] }))
+      .toStrictEqual({ accepted: true });
+    expect(verdict({
+      tail, block: baseBlock({ sends: [2, 4] }), outputs: [marker, payment(), payment(), payment()],
+    }).accepted).toBe(false);
+    expect(verdict({ tail, block: baseBlock({ sends: [2, 2] }), outputs: [marker, payment()] }).accepted)
+      .toBe(false);
   });
 
   it('is accepted when the block lists fewer sends than the region holds', () => {

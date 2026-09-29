@@ -4,8 +4,8 @@ import {
   hash256,
 } from '@bitauth/libauth';
 import {
-  asmToScript, buildPushdataCommitment, encodeArgumentList, encodeIntegerValue, encodeWitnessBlock,
-  scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
+  asmToScript, buildPushdataCommitment, buildSatoshiContainerCovenantScript, encodeArgumentList, encodeIntegerValue,
+  encodeWitnessBlock, scriptToBytecode, sha256, validatorAddress, type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString } from '../../../src/compiler.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
@@ -209,6 +209,11 @@ function verdict(spend: Spend): { accepted: boolean; objection?: string } {
 
 /** A filler output the send does not sit at, so a read of the wrong index finds the wrong lock. */
 const FILLER: VmOutput = { lockingBytecode: USER_LOCK, valueSatoshis: 1_000n };
+/** One of the contract's containers: a frame's sends follow one, which binds them to the frame. */
+const MARKER: VmOutput = {
+  lockingBytecode: encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(CATEGORY)))),
+  valueSatoshis: 1_000n,
+};
 /** The send output: an ordinary payment of the amount to a lock the body computes. */
 const sendOutput = (lock: Uint8Array, value: bigint): VmOutput =>
   ({ lockingBytecode: lock, valueSatoshis: value });
@@ -219,7 +224,7 @@ describe('an entry that sends to a run-time lock, compiled per-call', () => {
   const spend = (overrides: Partial<Spend> = {}): { accepted: boolean; objection?: string } => verdict({
     source: SOURCE,
     block: baseBlock({ sends: [SEND_OUTPUT] }),
-    outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
+    outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
     argumentPushes: payload(AMOUNT),
     ...overrides,
   });
@@ -229,13 +234,17 @@ describe('an entry that sends to a run-time lock, compiled per-call', () => {
   });
 
   it('is refused when the listed output carries another lock', () => {
-    expect(spend({ outputs: [FILLER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))] }).accepted).toBe(false);
+    expect(spend({ outputs: [MARKER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))] }).accepted).toBe(false);
     // The control: the lock the body computed is accepted beside it.
     expect(spend().accepted).toBe(true);
   });
 
   it('is refused when the listed output carries another value', () => {
-    expect(spend({ outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT + 1))] }).accepted).toBe(false);
+    expect(spend({ outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT + 1))] }).accepted).toBe(false);
+  });
+
+  it('is refused when the output before the send is not one of the contract\'s containers', () => {
+    expect(spend({ outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))] }).accepted).toBe(false);
   });
 
   it('is refused when the witness lists no send although the entry makes one', () => {
@@ -246,7 +255,7 @@ describe('an entry that sends to a run-time lock, compiled per-call', () => {
     // The send sits at output 2 but the record names output 1, where the filler holds another value.
     expect(spend({
       block: baseBlock({ sends: [1] }),
-      outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
+      outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
     }).accepted).toBe(false);
   });
 });
@@ -256,7 +265,7 @@ describe('an entry that pays a lock its caller names, compiled per-call', () => 
   const spend = (to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
     source: NAMED_SOURCE,
     block: baseBlock({ sends: [SEND_OUTPUT] }),
-    outputs: [FILLER, sendOutput(to, BigInt(AMOUNT))],
+    outputs: [MARKER, sendOutput(to, BigInt(AMOUNT))],
     // The first parameter's push lands last.
     argumentPushes: encodeArgumentList([encodeIntegerValue(BigInt(AMOUNT)), to]),
   });
@@ -274,7 +283,7 @@ describe('an entry that pays through a value-carrying low-level call, compiled p
   const spend = (source: string, to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
     source,
     block: baseBlock({ sends: [SEND_OUTPUT] }),
-    outputs: [FILLER, sendOutput(to, BigInt(AMOUNT))],
+    outputs: [MARKER, sendOutput(to, BigInt(AMOUNT))],
     argumentPushes: encodeArgumentList([encodeIntegerValue(BigInt(AMOUNT)), to]),
   });
 
@@ -299,14 +308,14 @@ describe('two dispatched entries of which one sends, compiled per-call', () => {
   });
 
   it('reads the sending body\'s own slot of the region the head parks', () => {
-    expect(spend('pay', [SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))])).toStrictEqual({ accepted: true });
-    expect(spend('pay', [SEND_OUTPUT], [FILLER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
+    expect(spend('pay', [SEND_OUTPUT], [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))])).toStrictEqual({ accepted: true });
+    expect(spend('pay', [SEND_OUTPUT], [MARKER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
   });
 
   it('requires the region empty behind the body that sends nothing', () => {
     expect(spend('idle', [], [FILLER])).toStrictEqual({ accepted: true });
     // A send listed for a body that makes none is an output no code pins, which would count toward a record's floor.
-    expect(spend('idle', [SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
+    expect(spend('idle', [SEND_OUTPUT], [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
   });
 });
 
@@ -322,7 +331,7 @@ describe('an entry whose send runs on one branch, compiled per-call', () => {
   });
 
   it('is accepted when the send is taken and listed', () => {
-    expect(spend([SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))], AMOUNT))
+    expect(spend([SEND_OUTPUT], [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))], AMOUNT))
       .toStrictEqual({ accepted: true });
   });
 
@@ -332,7 +341,7 @@ describe('an entry whose send runs on one branch, compiled per-call', () => {
   });
 
   it('is refused when the witness lists a send the execution did not make', () => {
-    expect(spend([SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))], 0).accepted).toBe(false);
+    expect(spend([SEND_OUTPUT], [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))], 0).accepted).toBe(false);
     // The control: the same spend with no send listed is accepted, the position holding the sentinel.
     expect(spend([], [FILLER], 0)).toStrictEqual({ accepted: true });
   });
@@ -357,7 +366,7 @@ describe('a stateful entry that sends, compiled per-call', () => {
       segments: [[{ in: STATE_INDEX, out: STATE_INDEX, viewIn: COMMITTED, viewOut: WRITTEN }]],
     }),
     state: { committed: COMMITTED, written: WRITTEN },
-    outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
+    outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
     argumentPushes: payload(AMOUNT),
     ...overrides,
   });
@@ -371,10 +380,10 @@ describe('a stateful entry that sends, compiled per-call', () => {
   });
 
   it('is refused when the listed output carries another lock', () => {
-    expect(spend({ outputs: [FILLER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))] }).accepted).toBe(false);
+    expect(spend({ outputs: [MARKER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))] }).accepted).toBe(false);
   });
 
   it('is refused when the listed output carries another value', () => {
-    expect(spend({ outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT + 1))] }).accepted).toBe(false);
+    expect(spend({ outputs: [MARKER, sendOutput(USER_LOCK, BigInt(AMOUNT + 1))] }).accepted).toBe(false);
   });
 });

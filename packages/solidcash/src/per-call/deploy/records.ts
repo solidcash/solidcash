@@ -30,7 +30,7 @@ import { encodeFunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { getDataNftLockingBytecode } from '../../stateful/covenant-helpers.js';
-import { createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
+import { createUnlockingBytecode, scriptToAddress, scriptToLockingBytecode } from '../../utils.js';
 
 /** Raised when a per-call deployment's records cannot be read. */
 export class PerCallRecordError extends Error {
@@ -58,6 +58,24 @@ export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
  */
 export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array {
   return scriptToLockingBytecode(buildSatoshiContainerCovenantScript(hexToBin(categoryId)), 'p2sh32');
+}
+
+/**
+ * The unlocking a satoshi container carries on its master path: the minting NFT at `masterInputIndex` authorizes
+ * the spend, and that master's own checks account for the value.
+ */
+export function satoshiContainerUnlockingBytecode(categoryId: string, masterInputIndex: number): Uint8Array {
+  const bytecode = scriptToBytecode(buildSatoshiContainerCovenantScript(hexToBin(categoryId)));
+  const args = [1n, BigInt(masterInputIndex)].map((value) => encodeFunctionArgument(value, 'bigint') as Uint8Array);
+  return createUnlockingBytecode('p2sh32', bytecode, args);
+}
+
+/** The contract's satoshi containers: the tokenless UTXOs at its container lock, which hold its balance. */
+export async function readSatoshiContainers(provider: NetworkProvider, categoryId: string): Promise<readonly Utxo[]> {
+  const address = scriptToAddress(
+    buildSatoshiContainerCovenantScript(hexToBin(categoryId)), provider.network, 'p2sh32', true,
+  );
+  return (await provider.getUtxos(address)).filter((utxo) => utxo.token === undefined);
 }
 
 /**

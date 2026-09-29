@@ -43,17 +43,26 @@ export function containerLockScript(): number[] {
 }
 
 /**
- * Leaves the growth of the running master's containers over the transaction.
+ * Leaves the container lock of the running master's own category.
  *
- * Entry `[...]`, exit `[..., growth]`: the value of the outputs at the container lock less the value of the inputs
- * at it. The category is the running input's own, which the prologue pinned, so a master accounts for the
- * containers its own presence opens.
+ * Entry `[...]`, exit `[..., lock]`. The category is the running input's own, which the prologue pinned, so a master
+ * accounts for the containers its own presence opens.
  */
-export function containerGrowthScript(): number[] {
+export function selfContainerLockScript(): number[] {
   return [
     Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY,
     ...encodeDataPush(new Uint8Array([32])), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
     ...containerLockScript(),
+  ];
+}
+
+/**
+ * Leaves the growth of the containers at a lock over the transaction.
+ *
+ * Entry `[..., lock]`, exit `[..., growth]`: the value of the outputs at the lock less the value of the inputs at it.
+ */
+export function containerGrowthScript(): number[] {
+  return [
     // [lock, growth, index]
     Opcodes.OP_0, Opcodes.OP_0,
     Opcodes.OP_BEGIN,

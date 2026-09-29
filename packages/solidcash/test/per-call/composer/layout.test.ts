@@ -121,9 +121,21 @@ describe('block layout', () => {
 
     expect(regions.trailingBase).toBe(6);
     expect(regions.eventIndices).toEqual([6]);
-    expect(regions.sendIndices).toEqual([7]);
-    expect(regions.createdIndices).toEqual([8, 9]);
-    expect(regions.changeIndex).toBe(10);
+    // The send follows one of its contract's containers.
+    expect(regions.sendContainerIndices).toEqual([7]);
+    expect(regions.sendIndices).toEqual([8]);
+    expect(regions.createdIndices).toEqual([9, 10]);
+    expect(regions.changeIndex).toBe(11);
+  });
+
+  it('puts a container before each sending frame\'s run of sends', () => {
+    const layout = layoutTransaction(shapes[4]!.blocks);
+
+    const regions = allocateOutputRegions(layout, { events: 0, sends: 3, sendRuns: [2, 1], created: 0 });
+
+    expect(regions.sendContainerIndices).toEqual([6, 9]);
+    expect(regions.sendIndices).toEqual([7, 8, 10]);
+    expect(regions.changeIndex).toBe(11);
   });
 
   it('places a master\'s recovery side-cars immediately after its own input', () => {

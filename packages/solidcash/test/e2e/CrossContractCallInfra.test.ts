@@ -156,6 +156,10 @@ describe('unbounded bytes return', () => {
       );
       const aSc = StatefulContract.withCategory(a, ac);
       const bSc = StatefulContract.withCategory(b, bc);
+      await expect(bSc.use(hexToBin(aAddr), VAL, 73n, wide)
+        .withExternalCall(aSc, 'echo', [VAL])
+        .withExternalCall(aSc, 'wide', [73n, wide])
+        .send()).rejects.toThrow(/both return values.*messageBus\.compose/);
       const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
       await messageBus.compose({
         calls: [

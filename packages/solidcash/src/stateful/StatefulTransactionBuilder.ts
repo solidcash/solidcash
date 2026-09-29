@@ -148,6 +148,10 @@ import {
 import {
   absoluteValueChunkOutputBaseFromResolve,
 } from '../message-bus/layout-resolver.js';
+export {
+  collectionValuePhysicalBindings,
+  planCompilerTrailingResources,
+} from './compiler-trailing-resources.js';
 import {
   allowsFinalizationVmRepairs,
   refuseFinalizationVmRepairsIfRecipe,

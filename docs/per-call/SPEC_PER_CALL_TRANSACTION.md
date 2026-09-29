@@ -501,14 +501,19 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
 - **Sending.** `transfer(v)`, `send(v)` and `call{value: v}("")` to a P2PKH lock are a listed send (4a). To any
   other lock they are a `CALL` into the recipient's `receive()`, whose call record carries `value = v`. The
   sender's own code chooses by the lock's length, so no witness chooses it. The call is made after the sender's own
-  code, as its frame's last calls: the EVM runs `transfer` and `send` with a stipend that keeps `receive()` from
-  writing or calling back, so for them this is the EVM's own execution, and for `call{value: v}("")` it departs
-  only when the recipient calls back into the sender or reads its state. A recipient with no `receive()` cannot
-  run the frame: a master with one entry requires the call's selector to be that entry's own, and a dispatcher has
+  code, as its frame's last calls. A recipient with no `receive()` cannot run the frame: a master with one entry requires the call's selector to be that entry's own, and a dispatcher has
   no entry for it, so the transaction fails, as in the EVM; the SDK finds the recipient's `receive()` in its
   artifact and refuses by name to compose a send to a contract without one. A payable `fallback()` does not take
   value yet. A composed call cannot fail (T22), so `send` and `call` return `true` whenever the transaction is
   valid.
+- **No gas, so no stipend.** BCH has no counterpart of gas, so `receive()` and `fallback()` are more permissive
+  than in the EVM: whichever spelling sent the value, the recipient's body may write state, emit, send and call,
+  where the EVM's `transfer` and `send` give it a 2300-gas stipend, enough for little more than an event.
+  - A contract that relied on the stipend to keep a recipient from re-entering it has no such guard here.
+  - The recipient runs after the sender's own code, so it never sees the sender mid-execution, and a recipient that
+    calls back makes the sender a contract with two masters in the transaction, which the validator settles.
+  - Running the recipient after the sender's own code is the EVM's order for a recipient that neither calls back
+    into the sender nor reads its state; for one that does, it is a departure.
 - **Conservation, per contract X.** `growth(X) >= in(X) - out(X)`, where
   - `growth(X)` is the value of X's container outputs less the value of the containers X spends;
   - `in(X)` is the `value` of the frames entered into X from outside its context (`ROOT`, `CALL`, `CREATE`);
@@ -520,14 +525,17 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
     its code sends, while value from outside it, a funder paying one of its sends or value placed in a container
     directly, is a gift, as a balance forced on a contract is in the EVM. The SDK composes the equality: it pays a
     contract's sends from its containers and refuses one its balance cannot cover, as the EVM reverts it.
+  - The inequality is kept for now and is to be revisited (user direction 2026-09-29): holding a contract to the
+    equality on chain would refuse a funder's gift, which the EVM cannot refuse either.
   - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
     contract may pay out value it receives later in the same transaction. This is one departure; the order of a
     value call (Sending) is the other.
 - **What the master checks today.** A master that receives or pays value holds a frame that settles alone against
   its own containers: their growth plus what the frame's listed sends and the records of its calls pay covers the
-  value the frame receives, so the contract pays its sends and its value calls from them. A frame whose master does not settle alone, or a `STATIC` or `DELEGATE`
-  frame, takes no value and lists no send until V7 accounts for containers. A master with no payable body requires
-  every frame's value to be zero. A call site passes no value yet, so it requires its record's `value` to be zero.
+  value the frame receives, so the contract pays its sends and its value calls from them. A frame whose master
+  does not settle alone, or a `STATIC` or `DELEGATE` frame, takes no value and lists no send until V7 accounts for
+  containers. A master with no payable body requires every frame's value to be zero. A value send's call into
+  `receive()` binds its record's `value` to the amount; any other call site requires it to be zero.
 - **A send's payer.** A listed send is an output index, so on its own nothing ties it to the frame that pays it:
   two frames could list one output and both count it, and two purchases from one seller would pay the seller once.
   A frame's sends therefore follow one of its own contract's containers, in a run: the output before the first send

@@ -431,7 +431,9 @@ export async function deployPerCallProxy(
     ...(options.initialize.args === undefined ? {} : { args: options.initialize.args }),
     callerLockingBytecode: options.callerLockingBytecode,
   });
-  const headCollections = entryWrites === undefined
+  // A sorted collection the entry writes has no node until it does, so the proxy's genesis seeds its empty head;
+  // a dynamic value's run has no head, so a write that only appends to one seeds nothing.
+  const headCollections = entryWrites?.collection === undefined || entryWrites.signature === undefined
     ? []
     : [{ name: entryWrites.collection, signature: entryWrites.signature }];
 
@@ -539,6 +541,7 @@ export async function deployPerCallProxy(
     implementationCategoryId: implementation.categoryId,
     program,
     draft,
+    ...(entryWrites === undefined ? {} : { spentUtxos: entryWrites.spentUtxos }),
   });
 
   return {
@@ -966,6 +969,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // A delegate frame runs on the caller's records, so the records it reads and writes are the caller's, which
     // the segment declares: the entry's write is the view the proxy's later segment continues from.
     segments: implementationSegments,
+    ...(laidWrites?.values === undefined ? {} : { values: laidWrites.values }),
     events: eventIndices,
     sends: [],
     argumentPushes: pushes,
@@ -1067,6 +1071,13 @@ interface BroadcastHopOptions {
   /** The derived hop: the specification every input's unlocking bytecode and every output is taken from. */
   readonly program: ShippedVmProgram;
   readonly draft: CompositionDraft;
+  /**
+   * The UTXO each participant the entry spends sits on, when its id does not name one the pools can be searched for.
+   *
+   * A dynamic value's chunk id carries neither a slot nor a collection, so the hop hands the live outpoint back
+   * rather than have the rebuild search the category for it again.
+   */
+  readonly spentUtxos?: ReadonlyMap<string, Utxo>;
 }
 
 /** The live UTXO a participant sits on, read back by category so no genesis output index is assumed. */
@@ -1143,8 +1154,8 @@ async function broadcastHop(options: BroadcastHopOptions): Promise<TransactionDe
   for (const placed of draft.layout.participants) {
     const source = program.sourceOutputs[placed.index];
     const unlockingBytecode = program.transaction.inputs[placed.index]?.unlockingBytecode;
-    const real = participantUtxo(
-      placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id);
+    const real = options.spentUtxos?.get(placed.id)
+      ?? participantUtxo(placed.id === IMPLEMENTATION_MASTER_ID ? implementationPools : proxyPools, placed.id);
     if (source === undefined || unlockingBytecode === undefined) {
       throw new PerCallProxyDeployError(
         `the derived hop carries no input for participant "${placed.id}"`);
@@ -1349,7 +1360,15 @@ export async function callPerCallProxyEntry(
     functionName: options.functionName,
     ...(options.args === undefined ? {} : { args: options.args }),
     callerLockingBytecode: options.callerLockingBytecode,
-    nodesByCollection: proxyPools.nodesByCollection,
+    // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
+    // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the
+    // latter — a mapping node's value chunks sit at their own root-salted covenant, not at the collection's.
+    liveDeployment: {
+      category: proxyCategory,
+      recordCommitments,
+      chunks: [...proxyPools.chunks, ...proxyPools.collectionNodes],
+      nodesByCollection: proxyPools.nodesByCollection,
+    },
   });
   const settled = await settleHop({
     vm,
@@ -1397,6 +1416,7 @@ export async function callPerCallProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
+    ...(entryWrites === undefined ? {} : { spentUtxos: entryWrites.spentUtxos }),
   });
 
   const retval = settled.retval;

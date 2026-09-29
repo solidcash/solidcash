@@ -145,8 +145,13 @@ export function generateProxySource(implementationArtifact: Artifact): string {
     // frame writes past its own declaration.
     lines.push(`  address external ${IMPLEMENTATION_FIELD};`);
   }
+  // The fallback consumes the delegated call's result through the pair binding, so the record its own frame keeps
+  // for the call carries the bytes the implementation frame returned. A bare call statement drops them, and a
+  // returning entry's frame compares the slot against the value its own body computed, so the two would disagree
+  // and the hop could not be derived at all.
   lines.push(
-    `  fallback(bytes input) external { this.${IMPLEMENTATION_FIELD}.delegatecall(input); require(true); }`,
+    `  fallback(bytes input) external { (bool ok, bytes returned) = this.${IMPLEMENTATION_FIELD}`
+    + '.delegatecall(input); require(ok); require(returned.length >= 0); }',
   );
   lines.push('}');
   return lines.join('\n');

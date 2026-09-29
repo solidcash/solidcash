@@ -27,28 +27,37 @@
  *
  * A dynamic-state write is the same shape one level out: the value is not in a node but in a run of chunk records
  * at its own collection covenant, and the hop declares that run exactly as the body addresses it. The run's width
- * has to be stated because a run laid out at another width is not the run the body reads, and an entry that
- * appends to an address array the frame's own sender is the one width an entry's own facts fix without reading
- * prior state. Every other shape is refused by name rather than sized by guessing.
+ * has to be stated because a run laid out at another width is not the run the body reads; it is the value the write
+ * starts from — the deployment's live chunks for a call, the empty value a genesis minted for a deployment's own
+ * first hop — plus the element the frame appends. Every other shape is refused by name rather than sized by
+ * guessing.
  *
  * A shape this module has no plan for — a write to several collections, several dynamic variables — is refused by
  * the fact that is missing.
  */
 
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   INDEX_NONE,
+  VALUE_HEAD_SIZE,
   VALUE_INLINE_LIMIT,
   buildEntryNftCovenantScript,
   bytesEqual,
   bytesToHex,
+  chunkCountForLength,
   computeCollectionHash,
   decodePushdataValue,
   dynamicChunkSignature,
+  dynamicLenKey,
   encodeChunkableValueTail,
   encodePushdataValue,
   getDefaultStateValue,
+  joinChunks,
+  joinValueChunks,
   parseArrayTypeString,
+  parseChunkCommitment,
+  parsePushdataCommitment,
+  parseValueChunkCommitment,
   scriptToBytecode,
   type AbiFunction,
   type Artifact,
@@ -101,6 +110,13 @@ interface HopMappingBatch {
   readonly learningCandidates: readonly Uint8Array[];
   /** The live UTXO of each spent node, keyed by slot, where the deployment reads one. */
   readonly utxoBySlot: ReadonlyMap<string, Utxo>;
+  /**
+   * The long value each value-witness slot reads, keyed by the entry access's slot index.
+   *
+   * A body that reads a value its node's tail cannot hold takes the value itself from its frame's block, so the
+   * hop hands it to the plan the same way the deployment's classification hands a node over.
+   */
+  readonly valueWitnesses: ReadonlyMap<number, Uint8Array>;
 }
 
 /** Everything the entry's own writes are planned from. */
@@ -111,12 +127,26 @@ export interface HopEntryWritesRequest {
   /** The frame's caller lock, which a `msg.sender` key resolves to. */
   readonly callerLockingBytecode: Uint8Array;
   /**
-   * Each sorted collection's live nodes, from the deployment's own classification.
+   * The deployment the hop runs against, when it is a call rather than a deployment's own first hop.
    *
-   * A genesis hop runs before the proxy's genesis, so its collection holds only the empty head sentinel the proxy
-   * is about to mint; a later call reads the nodes the collection has grown. Absent means the empty head alone.
+   * A genesis hop runs before the proxy's genesis, so its collections hold only the empty head sentinel the proxy
+   * is about to mint and its dynamic values are the empty ones; a later call reads the records, nodes and chunks
+   * the deployment has grown, which is what lets it plan a write that starts from a live value. Absent means the
+   * deployment path, whose writes start from the empty state.
    */
-  readonly nodesByCollection?: ReadonlyMap<string, readonly Utxo[]>;
+  readonly liveDeployment?: HopLiveDeployment;
+}
+
+/** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
+export interface HopLiveDeployment {
+  /** The deployed category, which a record's covenant and a value chunk's lock are derived from. */
+  readonly category: Uint8Array;
+  /** The data-NFT records' commitments, in data-NFT order; a dynamic value's live length is read from its own. */
+  readonly recordCommitments: readonly Uint8Array[];
+  /** Every chunk UTXO the deployment holds: a dynamic value's chunks and a mapping value's chunks. */
+  readonly chunks: readonly Utxo[];
+  /** Each sorted collection's own node UTXOs, keyed by collection name. */
+  readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
 }
 
 /** The coordinates a hop's entry writes need to be placed: the layout, the created region and the writer. */
@@ -138,23 +168,34 @@ export interface LaidHopEntryWrites {
   readonly inputs: Readonly<Record<string, DraftInput>>;
   readonly trailingOutputs: readonly DraftSourceOutput[];
   readonly createdOutputs: readonly number[];
+  /** The long value each value-witness slot reads, in slot order, where the body reads one from its frame. */
+  readonly values?: readonly Uint8Array[];
 }
 
 /** The writes one entry performs, with the ids the plan places. */
 export interface HopEntryWrites {
   /**
-   * The collection the entry writes, whose empty head the deployment seeds.
+   * The sorted collection the entry batches into, when it writes one; the deployment seeds its empty head.
    *
-   * A sorted batch names its mapping; a dynamic-state write names the value's own chunk collection, which the
-   * deployment seeds the same way. When an entry does both, the mapping's head is the one that is seeded.
+   * A sorted list has no node until something writes it, so a deployment that a later entry writes has to mint the
+   * list's empty head. A dynamic value's chunks have no head — the empty value is no chunk at all — so a write that
+   * only appends to one names no collection here and the deployment seeds nothing.
    */
-  readonly collection: string;
+  readonly collection?: string;
   /** The collection's canonical signature, which derives the entry covenant lock its records sit at. */
-  readonly signature: string;
+  readonly signature?: string;
   /** The participant ids the proxy's block holds for the nodes the entry spends; a created run has none. */
   readonly participantIds: readonly string[];
   /** The placeholder each value-dependent record's declaration starts from, in learning order. */
   readonly learningCandidates: readonly Uint8Array[];
+  /**
+   * The live UTXO each participant the entry spends sits on, keyed by its id.
+   *
+   * A node's id names its own slot or its collection's empty head, which the deployment's classification already
+   * places; a dynamic value's chunk carries no such name, so its outpoint is handed back here rather than searched
+   * for again when the hop is rebuilt for the broadcast.
+   */
+  readonly spentUtxos: ReadonlyMap<string, Utxo>;
   lay(context: HopEntryWritesContext): LaidHopEntryWrites;
 }
 
@@ -195,8 +236,8 @@ interface ValueResolutionContext {
   readonly callerLockingBytecode: Uint8Array;
   /** The sorted collections the artifact publishes, which a `map:` read names. */
   readonly collections?: readonly ArtifactCollection[];
-  /** Each collection's live nodes, which a field the source reads back out of the entry's own node comes from. */
-  readonly nodesByCollection?: ReadonlyMap<string, readonly Utxo[]>;
+  /** The live deployment, which a field the source reads back out of the entry's own node comes from. */
+  readonly liveDeployment?: HopLiveDeployment;
 }
 
 /** A supplied argument, coerced to the raw form the field's declared type encodes. */
@@ -305,17 +346,66 @@ function nodeKey(label: string, context: ValueResolutionContext): Uint8Array | u
 /** One collection as the artifact's state layout publishes it. */
 type ArtifactCollection = NonNullable<NonNullable<Artifact['stateLayout']>['collections']>[number];
 
-/** The raw bytes a collection node holds, for a value the tail keeps inline; `undefined` when it does not. */
-function inlineNodeValue(
-  collection: ArtifactCollection | undefined,
-  tail: Uint8Array,
+/** The lock a value's continuation chunks sit at: the collection's own value-chunk covenant, salted with the node. */
+function valueChunkLock(
+  category: Uint8Array,
+  collection: string,
+  slot: Uint8Array,
+  root: Uint8Array,
+): Uint8Array {
+  return mappingValueChunkLock(category, collection, { slot, root });
+}
+
+/**
+ * The whole value a collection node holds, inline or across its continuation chunks.
+ *
+ * A chunkable value's tail is a four-byte length followed, while the value fits, by the value itself. A longer
+ * value keeps a digest and its first bytes in the tail and the rest in chunks at the value's own covenant, salted
+ * with the collection, the node's slot and that digest, which is what tells one node's chunks from another's. The
+ * length is the authority: the chunks are joined and the result truncated to it, so a set that does not account
+ * for the whole value is refused rather than read short.
+ */
+function joinedNodeValue(
+  collection: ArtifactCollection,
+  commitment: Uint8Array,
+  deployment: HopLiveDeployment,
 ): Uint8Array | undefined {
-  if (collection?.chunkableValue !== true) return tail;
-  // A chunkable value's tail is a four-byte length and, when the value fits, the value itself. A longer value's
-  // bytes live in continuation chunks the hop is not handed, so only the inline form can be read back.
+  const { slot, value: tail } = decodeEntryCommitment(commitment);
+  if (collection.chunkableValue !== true) return tail;
   if (tail.length < 4) return undefined;
   const length = new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
-  return tail.length === 4 + length && length <= VALUE_INLINE_LIMIT ? tail.slice(4) : undefined;
+  if (tail.length === 4 + length && length <= VALUE_INLINE_LIMIT) return tail.slice(4);
+  if (tail.length < 4 + 32 + VALUE_HEAD_SIZE) return undefined;
+  const root = tail.slice(4, 4 + 32);
+  const head = tail.slice(4 + 32, 4 + 32 + VALUE_HEAD_SIZE);
+  const lock = bytesToHex(valueChunkLock(deployment.category, collection.name, slot, root));
+  const chunks = deployment.chunks
+    .filter((utxo) => {
+      const nft = utxo.token?.nft;
+      return nft?.commitment !== undefined && utxo.lockingBytecode !== undefined
+        && bytesToHex(utxo.lockingBytecode) === lock;
+    })
+    .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment!))
+    .sort((left, right) => left.chunkIndex - right.chunkIndex);
+  if (chunks.length === 0) return undefined;
+  try {
+    return joinValueChunks(head, chunks, length);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The live node a collection holds for a slot, as the deployment's own classification reports it. */
+function liveNode(
+  collection: ArtifactCollection,
+  slot: Uint8Array,
+  deployment: HopLiveDeployment,
+): Utxo | undefined {
+  const slotHex = bytesToHex(slot);
+  return (deployment.nodesByCollection.get(collection.name) ?? []).find((candidate) => {
+    const commitment = candidate.token?.nft?.commitment;
+    return commitment !== undefined && bytesToHex(decodeEntryCommitment(hexToBin(commitment)).slot) === slotHex;
+  });
 }
 
 /**
@@ -323,10 +413,10 @@ function inlineNodeValue(
  *
  * The compiler publishes `field:<name>(map:<collection>(<key>))` for a field the body leaves as it was, so the
  * field's value is whatever the collection's node for that key holds. The node is the deployment's own
- * classification, and its value is decoded through the shipped entry-commitment and pushdata decoders. A key the
- * list does not hold is the type's default, which is what the body's own read of an absent key yields, so that is
- * stated rather than refused. A node whose value is held in continuation chunks cannot be decoded from the hop's
- * inputs and is refused by name rather than assumed.
+ * classification, and its value is decoded through the shipped entry-commitment and pushdata decoders, joined
+ * across its continuation chunks when the value does not fit the tail. A key the list does not hold is the type's
+ * default, which is what the body's own read of an absent key yields, so that is stated rather than refused. A
+ * node whose value cannot be reassembled from the hop's own inputs is refused by name rather than assumed.
  */
 function nodeFieldValue(
   fieldName: string,
@@ -349,19 +439,18 @@ function nodeFieldValue(
       + `"${collectionName}" at a key this hop cannot resolve (${keyLabel})`,
     );
   }
-  const slot = bytesToHex(keyToSlotMulti([key]));
-  const node = (context.nodesByCollection?.get(collection.name) ?? []).find((candidate) => {
-    const commitment = candidate.token?.nft?.commitment;
-    return commitment !== undefined && bytesToHex(decodeEntryCommitment(hexToBin(commitment)).slot) === slot;
-  });
+  const deployment = context.liveDeployment;
+  if (deployment === undefined) return getDefaultStateValue(fieldType, context.structs);
+  const node = liveNode(collection, keyToSlotMulti([key]), deployment);
   if (node === undefined) return getDefaultStateValue(fieldType, context.structs);
   const commitment = node.token?.nft?.commitment;
   if (commitment === undefined) return undefined;
-  const raw = inlineNodeValue(collection, decodeEntryCommitment(new Uint8Array(hexToBin(commitment))).value);
+  const raw = joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), deployment);
   if (raw === undefined) {
     throw new PerCallProxyDeployError(
-      `the implementation's "${context.fn.name}" entry reads field "${fieldName}" of the node "${collectionName}" `
-      + 'holds, whose value lives in continuation chunks this hop is not handed',
+      `the implementation's "${context.fn.name}" entry reads field "${fieldName}" of the node mapping `
+      + `"${collectionName}" holds for this key, whose value this hop cannot reassemble from the deployment's `
+      + 'chunks',
     );
   }
   const decoded = decodePushdataValue(raw, 0, collection.valueType, context.structs).value;
@@ -493,7 +582,7 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     fn, args, structs, callerLockingBytecode: request.callerLockingBytecode,
     ...(request.artifact.stateLayout?.collections === undefined
       ? {} : { collections: request.artifact.stateLayout.collections }),
-    ...(request.nodesByCollection === undefined ? {} : { nodesByCollection: request.nodesByCollection }),
+    ...(request.liveDeployment === undefined ? {} : { liveDeployment: request.liveDeployment }),
   };
 
   const writes = ordered.map((access) => {
@@ -539,8 +628,29 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     return { keys: access.keyParams.map((_param, index) => resolveKey(access, index)), value: new Uint8Array(1) };
   });
 
-  const collectionNodes = request.nodesByCollection?.get(collection.name) ?? [];
-  const inventory: Uint8Array[] = [];
+  // A body that reads a value the node's tail cannot hold takes the value itself from its frame's block, one slot
+  // per entry access that reads one. The hop supplies the slot, so the witness is the node's own whole value,
+  // joined across its continuation chunks exactly as the field read is.
+  const valueWitnesses = new Map<number, Uint8Array>();
+  if (chunkable && request.liveDeployment !== undefined) {
+    for (const access of ordered) {
+      if (access.slotIndex === undefined || !access.operations.includes('read')) continue;
+      const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
+      const node = liveNode(collection, keyToSlotMulti([...keys]), request.liveDeployment);
+      const commitment = node?.token?.nft?.commitment;
+      if (commitment === undefined) continue;
+      const value = joinedNodeValue(collection, new Uint8Array(hexToBin(commitment)), request.liveDeployment);
+      if (value === undefined) {
+        throw new PerCallProxyDeployError(
+          `the implementation's "${request.functionName}" entry reads mapping "${access.collection}" a value this `
+          + "hop cannot reassemble from the node the deployment holds, so it cannot witness the body's read",
+        );
+      }
+      valueWitnesses.set(access.slotIndex, value);
+    }
+  }
+
+  const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];  const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
   if (collectionNodes.length === 0) {
     // The genesis mints the empty list's head sentinel, so a hop before it plans against that commitment.
@@ -597,6 +707,7 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     learningSlots,
     learningCandidates,
     utxoBySlot,
+    valueWitnesses,
   };
 }
 
@@ -638,6 +749,103 @@ interface HopDynamicRun {
   /** The declared type, which the run's collection covenant is derived from. */
   readonly type: string;
   readonly plan: ChunkRunPlan;
+  /**
+   * The live chunk each spent record sits on, in run order, with the id the hop's block holds it under.
+   *
+   * A deployment's own first hop starts from the empty value its genesis minted, so it spends none; a call starts
+   * from the chunks the deployment holds, and each of them the frame spends and recreates in place.
+   */
+  readonly spent: readonly { readonly id: string; readonly utxo: Utxo }[];
+}
+
+/** The participant id a hop's block holds for one chunk of a dynamic value's run. */
+export function dynamicChunkId(variable: string, index: number): string {
+  return `dynamic-chunk-${variable}-${index}`;
+}
+
+/** The lock a dynamic value's chunk sits at, which its own collection covenant derives. */
+function dynamicChunkLock(category: Uint8Array, variable: string, type: string): Uint8Array {
+  return scriptToLockingBytecode(
+    buildEntryNftCovenantScript(category, computeCollectionHash(dynamicChunkSignature(variable, type))),
+    'p2sh32',
+  );
+}
+
+/** The live value a dynamic variable holds, and the chunk UTXOs it is held in, in chunk order. */
+interface LiveDynamicValue {
+  readonly value: Uint8Array;
+  readonly chunks: readonly { readonly utxo: Utxo; readonly index: number }[];
+}
+
+/**
+ * Reads a dynamic variable's live value out of the deployment's record and chunks.
+ *
+ * The data NFT that declares a dynamic variable carries the value's byte length and nothing else, so it is the
+ * authority for how many chunks the deployment holds and how many bytes they account for. The chunks are the ones
+ * at the variable's own collection covenant; a set that does not match the record's length is refused rather than
+ * joined short, because a run planned from a partial value would be a run the body does not address.
+ */
+function liveDynamicValue(
+  deployment: HopLiveDeployment,
+  layout: NonNullable<Artifact['stateLayout']>,
+  variable: string,
+  type: string,
+  nftIndex: number,
+): LiveDynamicValue {
+  const commitment = deployment.recordCommitments[nftIndex];
+  if (commitment === undefined) {
+    throw new PerCallProxyDeployError(
+      `the deployment holds no record declaring dynamic "${variable}", so this hop cannot read the value its `
+      + 'write starts from',
+    );
+  }
+  const decoded = parsePushdataCommitment(binToHex(commitment), layout, nftIndex);
+  const length = Number(decoded[dynamicLenKey(variable)] ?? 0n);
+  const lock = bytesToHex(dynamicChunkLock(deployment.category, variable, type));
+  const chunks: { readonly utxo: Utxo; readonly chunkIndex: number; readonly chunkData: Uint8Array }[] = [];
+  for (const utxo of deployment.chunks) {
+    const nft = utxo.token?.nft;
+    if (nft?.commitment === undefined || utxo.lockingBytecode === undefined
+      || bytesToHex(utxo.lockingBytecode) !== lock) continue;
+    try {
+      chunks.push({ utxo, ...parseChunkCommitment(nft.commitment) });
+    } catch {
+      throw new PerCallProxyDeployError(
+        `the deployment holds a record at dynamic "${variable}"'s collection covenant whose commitment is not a `
+        + 'chunk, so this hop cannot read the value its write starts from',
+      );
+    }
+  }
+  chunks.sort((left, right) => left.chunkIndex - right.chunkIndex);
+  if (chunks.length !== chunkCountForLength(length)) {
+    throw new PerCallProxyDeployError(
+      `the deployment's dynamic "${variable}" declares ${length} byte(s), which is `
+      + `${chunkCountForLength(length)} chunk(s), but ${chunks.length} chunk(s) sit at its collection covenant`,
+    );
+  }
+  chunks.forEach((chunk, index) => {
+    if (chunk.chunkIndex !== index) {
+      throw new PerCallProxyDeployError(
+        `the deployment's dynamic "${variable}" holds chunk ${chunk.chunkIndex} where chunk ${index} belongs`,
+      );
+    }
+  });
+  return {
+    value: joinChunks(chunks.map((chunk) => chunk.chunkData), length),
+    chunks: chunks.map((chunk) => ({ utxo: chunk.utxo, index: chunk.chunkIndex })),
+  };
+}
+
+/** The value an append produces: the elements the value already holds, then the frame's own sender. */
+function appendedElementValue(
+  live: Uint8Array,
+  type: string,
+  sender: Uint8Array,
+  structs: Artifact['structs'],
+): Uint8Array {
+  const decoded = live.length === 0 ? [] : decodePushdataValue(live, 0, type, structs).value;
+  const elements = Array.isArray(decoded) ? decoded as StateValue[] : [];
+  return encodePushdataValue([...elements, sender] as StateValue[], type, structs);
 }
 
 /**
@@ -650,12 +858,12 @@ interface HopDynamicRun {
  * derives and the derivation learns the body's own value from its close.
  *
  * What the hop must state is the run's width, because a run laid out at the wrong width is not one the body
- * addresses. This plans the one width an entry's own facts determine without reading prior state: a write to a
- * dynamic array of the frame's own address type, whose frame is a deployment's first call, starts from the empty
- * value the proxy's genesis minted and appends the frame sender. A single address element fills one chunk whatever
- * its bytes, so the run is exactly one chunk wide, and a body that wrote more than one element is refused by the
- * body's own pin rather than settled at a width the hop guessed. Every other shape — several dynamic variables, a
- * live value the hop is not handed, an element type that could straddle a chunk boundary — is refused by name.
+ * addresses. This plans the one width an entry's own facts determine: a write to a dynamic array of the frame's own
+ * address type that appends the frame sender, starting from the value the deployment holds — the empty one its
+ * genesis minted for a deployment's own first hop, or the one its record and chunks carry for a later call. The
+ * run's spent side is those live chunks, which the frame spends and recreates; a write that would shorten the run
+ * is refused by name, and so is every other shape — several dynamic variables, an element type the frame does not
+ * fix, a live set that does not match the record's own length.
  */
 function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | undefined {
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
@@ -669,14 +877,6 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
     );
   }
   const variable = variables[0]!;
-  // A later call starts from the value the deployed record holds; a hop is handed that record's chunks by neither
-  // the deployment path nor the call path today, so the run's spent side cannot be planned here.
-  if (request.nodesByCollection !== undefined) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes dynamic "${variable}", whose live value a hop `
-      + 'is not handed the deployed chunks for',
-    );
-  }
   const layout = request.artifact.stateLayout;
   const declared = layout?.variables.find((candidate) => candidate.name === variable);
   if (declared === undefined || declared.dynamic !== true) {
@@ -696,9 +896,23 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
     );
   }
   const structs = request.artifact.structs ?? layout?.structs;
-  const written = encodePushdataValue([request.callerLockingBytecode] as StateValue[], declared.type, structs);
-  const plan = planChunkRun({ layout, variable, spent: new Uint8Array(0), written });
-  return { variable, type: declared.type, plan };
+  const live = request.liveDeployment === undefined ? undefined
+    : liveDynamicValue(request.liveDeployment, layout!, variable, declared.type, declared.nftIndex);
+  const spent = live?.value ?? new Uint8Array(0);
+  const written = appendedElementValue(spent, declared.type, request.callerLockingBytecode, structs);
+  const plan = planChunkRun({ layout, variable, spent, written });
+  if (plan.spent.chunks.length > plan.written.chunks.length) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" a value shorter than the `
+      + 'one the deployment holds, which this hop does not plan',
+    );
+  }
+  return {
+    variable,
+    type: declared.type,
+    plan,
+    spent: (live?.chunks ?? []).map((chunk, index) => ({ id: dynamicChunkId(variable, index), utxo: chunk.utxo })),
+  };
 }
 
 /** Plans the entry's own writes, with the ids the plan places. */
@@ -706,42 +920,80 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   const batch = planHopMappingBatch(request);
   const dynamic = planHopDynamicRun(request);
   if (batch === undefined && dynamic === undefined) return undefined;
+  // A mapping value past the node's inline limit takes its own run of chunk records, and a dynamic value takes
+  // another; the body addresses each run at the band its own source fixes, and a frame that declares both cannot
+  // place them at both bands. Each run is served on its own, and a mapping value the node holds inline is served
+  // beside a dynamic run, but the two runs together are refused by name rather than laid out at one of the bands.
+  if (batch !== undefined && dynamic !== undefined && batch.plan.chunks.length > 0) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes a mapping value that needs a run of chunk `
+      + 'records beside a dynamic value, and this hop cannot declare both runs at the ordinals the body addresses',
+    );
+  }
+  const spentUtxos = new Map<string, Utxo>();
+  for (const node of batch?.spent ?? []) {
+    const utxo = batch!.utxoBySlot.get(bytesToHex(node.slot));
+    if (utxo !== undefined) spentUtxos.set(node.id, utxo);
+  }
+  for (const chunk of dynamic?.spent ?? []) spentUtxos.set(chunk.id, chunk.utxo);
   return {
-    collection: batch?.collection ?? dynamic!.variable,
-    signature: batch?.signature
-      ?? dynamicChunkSignature(dynamic!.variable, dynamic!.type),
-    participantIds: batch?.spent.map((node) => node.id) ?? [],
+    ...(batch === undefined ? {} : { collection: batch.collection, signature: batch.signature }),
+    participantIds: [
+      ...(batch?.spent.map((node) => node.id) ?? []),
+      ...(dynamic?.spent.map((chunk) => chunk.id) ?? []),
+    ],
     learningCandidates: [
       ...(batch?.learningCandidates ?? []),
       ...(dynamic?.plan.written.chunks ?? []),
     ],
+    spentUtxos,
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => {
+      // A dynamic run's records follow every record the mapping plan declares, one step past them: the chunks the
+      // deployment held are participants the frame spends and recreates in place, and the chunks the write grows
+      // are trailing outputs past them.
+      const mappingCreated = batch === undefined ? 0 : batch.plan.written.filter((node) => !node.existed).length;
+      const mappingChunks = batch?.plan.chunks.length ?? 0;
+      const trailingBase = context.createdBase + mappingCreated + mappingChunks;
+      const dynamicBase = batch?.learningCandidates.length ?? 0;
+      const keptCount = dynamic?.plan.spent.chunks.length ?? 0;
       const dynamicLaid = dynamic === undefined ? undefined : layOutChunkRun({
         plan: dynamic.plan,
         category: context.category,
-        base: context.createdBase + (batch === undefined ? 0
-          : batch.plan.written.filter((node) => !node.existed).length + batch.plan.chunks.length),
+        base: keptCount === 0 ? trailingBase : context.indexOf(dynamic.spent[0]!.id),
         writer: context.proxyMasterIndex,
         valueSatoshis: context.recordAmount,
       });
-      const dynamicBase = batch?.learningCandidates.length ?? 0;
-      const dynamicEntries: RecordEntry[] = (dynamicLaid?.records ?? []).map((record, offset) => ({
-        in: INDEX_NONE,
-        out: record.index,
-        viewIn: new Uint8Array(0),
-        viewOut: context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut,
-      }));
-      const dynamicOutputs: DraftSourceOutput[] = (dynamicLaid?.records ?? []).map((record, offset) => ({
-        lockingBytecode: record.output!.lockingBytecode,
-        valueSatoshis: record.output!.valueSatoshis,
-        token: nodeToken(context.category, context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut),
-      }));
+      const dynamicEntries: RecordEntry[] = [];
+      const dynamicOutputs: DraftSourceOutput[] = [];
+      const dynamicInputs: Record<string, DraftInput> = {};
+      (dynamicLaid?.records ?? []).forEach((record, offset) => {
+        const learned = context.learnedViews[dynamicBase + offset] ?? record.entry.viewOut;
+        if (record.role !== 'kept') {
+          // A created chunk declares no input and is written at the trailing output its own position names.
+          const out = trailingBase + (offset - keptCount);
+          dynamicEntries.push({ in: INDEX_NONE, out, viewIn: new Uint8Array(0), viewOut: learned });
+          dynamicOutputs.push({
+            lockingBytecode: record.output!.lockingBytecode,
+            valueSatoshis: record.output!.valueSatoshis,
+            token: nodeToken(context.category, learned),
+          });
+          return;
+        }
+        const spent = dynamic!.spent[offset]!;
+        const lockingBytecode = record.input!.source.lockingBytecode;
+        dynamicEntries.push({ in: record.index, out: record.index, viewIn: record.viewIn, viewOut: learned });
+        dynamicInputs[spent.id] = {
+          source: { lockingBytecode, valueSatoshis: spent.utxo.satoshis, token: nodeToken(context.category, record.viewIn) },
+          output: { lockingBytecode, valueSatoshis: spent.utxo.satoshis, token: nodeToken(context.category, learned) },
+          unlockingBytecode: record.input!.unlockingBytecode,
+        };
+      });
       if (batch === undefined) {
         return {
           entries: dynamicEntries,
-          inputs: {},
+          inputs: dynamicInputs,
           trailingOutputs: dynamicOutputs,
-          createdOutputs: dynamicEntries.map((entry) => entry.out),
+          createdOutputs: dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
         };
       }
       const { plan } = batch;
@@ -781,7 +1033,7 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         encodeFunctionArgument(1n, 'bigint') as Uint8Array,
         encodeFunctionArgument(BigInt(context.proxyMasterIndex), 'bigint') as Uint8Array,
       ]);
-      const inputs: Record<string, DraftInput> = {};
+      const inputs: Record<string, DraftInput> = { ...dynamicInputs };
       for (const node of batch.spent) {
         const satoshis = batch.utxoBySlot.get(bytesToHex(node.slot))?.satoshis ?? context.recordAmount;
         inputs[node.id] = {
@@ -807,6 +1059,13 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         valueSatoshis: context.recordAmount,
         token: nodeToken(context.category, chunk.commitment),
       }));
+      // The value witnesses the frame's block lists, in slot order: a slot the entry does not read stays empty,
+      // and the head parks one slot per value its master runs a body of.
+      const valueSlots = batch.valueWitnesses.size === 0 ? undefined
+        : Array.from(
+          { length: Math.max(...batch.valueWitnesses.keys()) + 1 },
+          (_unused, slot) => batch.valueWitnesses.get(slot) ?? new Uint8Array(0),
+        );
       return {
         entries: [...entries, ...dynamicEntries],
         inputs,
@@ -815,8 +1074,9 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
         // of chunk records a long value takes, then a dynamic value's own run.
         createdOutputs: [
           ...entries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
-          ...dynamicEntries.map((entry) => entry.out),
+          ...dynamicEntries.filter((entry) => entry.in === INDEX_NONE).map((entry) => entry.out),
         ],
+        ...(valueSlots === undefined ? {} : { values: valueSlots }),
       };
     },
   };

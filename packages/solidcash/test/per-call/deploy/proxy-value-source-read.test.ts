@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { bytesToHex, decodePushdataValue } from '@solidcash/utils';
+import { bytesToHex, decodePushdataValue, joinValueChunks, parseValueChunkCommitment, VALUE_HEAD_SIZE } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
+import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
@@ -76,8 +77,9 @@ async function heldValue(
   key: Uint8Array,
   valueType: string,
   structs: ReturnType<typeof compileStringMulti>[string]['structs'],
+  source = SOURCE,
 ): Promise<Record<string, unknown> | undefined> {
-  const layout = buildProxyArtifact(compileStringMulti(SOURCE, { composition: 'per-call' }).Impl!).stateLayout!;
+  const layout = buildProxyArtifact(compileStringMulti(source, { composition: 'per-call' }).Impl!).stateLayout!;
   const pools = await readPerCallDeployment(network, categoryId, layout);
   const slot = bytesToHex(keyToSlotMulti([key]));
   const node = pools.collectionNodes.find((candidate) => {
@@ -87,9 +89,23 @@ async function heldValue(
   });
   if (node === undefined) return undefined;
   const tail = decodeEntryCommitment(hexToBin(node.token!.nft!.commitment)).value;
-  // A chunkable collection's tail is a four-byte length followed by the value while the value fits inline.
+  // A chunkable collection's tail is a four-byte length followed, while the value fits, by the value itself; a
+  // longer value keeps a digest and its first bytes there and the rest in chunks at the value's own covenant.
   const length = new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
-  const raw = tail.slice(4, 4 + length);
+  const raw = tail.length === 4 + length
+    ? tail.slice(4)
+    : (() => {
+      const root = tail.slice(4, 36);
+      const lock = bytesToHex(mappingValueChunkLock(
+        hexToBin(categoryId), 'members', { slot: hexToBin(slot), root },
+      ));
+      const chunks = [...pools.chunks, ...pools.collectionNodes]
+        .filter((utxo) => utxo.lockingBytecode !== undefined
+          && bytesToHex(utxo.lockingBytecode) === lock)
+        .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment!))
+        .sort((left, right) => left.chunkIndex - right.chunkIndex);
+      return joinValueChunks(tail.slice(36, 36 + VALUE_HEAD_SIZE), chunks, length);
+    })();
   return decodePushdataValue(raw, 0, valueType, structs).value as Record<string, unknown>;
 }
 
@@ -146,9 +162,10 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('refuses a field read out of a node whose value lives in continuation chunks', async () => {
+  it('reads a field out of a node whose value lives in continuation chunks, and witnesses the read', async () => {
     // A struct whose named field is long enough that the node's value crosses the inline limit: its bytes live in
-    // continuation chunks the hop is not handed, so the field cannot be read back and the write is refused.
+    // continuation chunks, so the hop reassembles the node's whole value from them to compose the write, and hands
+    // the same value to the frame's block as the value witness the body's own read takes.
     const long = 'n'.repeat(100);
     const longSource = 'pragma solidcash ^0.13.0;'
       + ' contract Impl {'
@@ -177,18 +194,110 @@ describe('a proxied call whose mapping value is built from the node it writes', 
     });
     expect(deployment.initialize.accepted).toBe(true);
 
-    await expect(callPerCallProxyEntry({
+    const renamed = 'm'.repeat(100);
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'rename',
-      args: [funding.deployerLock, long],
+      args: [funding.deployerLock, renamed],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(/whose value lives in continuation chunks this hop is not handed/);
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The frame lists the value witness its body reads, and the composed node carries the renamed value with the
+    // fields the node already held.
+    const after = await heldValue(
+      network, deployment.proxy.categoryId, funding.deployerLock, 'Member', artifacts.Impl!.structs);
+    expect(after?.name).toBe(renamed);
+    expect(after?.up).toBe(1n);
+    expect([...after?.who as Uint8Array]).toStrictEqual([...funding.deployerLock]);
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('refuses a field read the master cannot derive operands for, rather than composing a partial value', async () => {
+    // An entry that reads one mapping entry and writes another names two mapping entries, and a master derives the
+    // operands only when every entry it touches is one of the batch targets. The compiler refuses the body itself,
+    // before any hop is built, so the write cannot be composed against a key whose value the hop never sees.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   struct Member { address who; uint up; uint down; }'
+      + '   address public implementation;'
+      + '   mapping(address => Member) public members;'
+      + '   function initialize(address who) { this.members[who] = Member(who, 1, 0); }'
+      + '   function bump(address who) { this.members[who].up = this.members[who].up + 1; }'
+      + ' }';
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funding = await funded(network);
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      implementationDeploy: {
+        fundingUtxo: funding.implFunding, funder: funding.funder, changeAddress: funding.changeAddress,
+      },
+      proxyDeploy: {
+        fundingUtxo: funding.proxyFunding, funder: funding.funder, changeAddress: funding.changeAddress,
+      },
+      initialize: { functionName: 'initialize', args: [funding.deployerLock] },
+      callerLockingBytecode: funding.deployerLock,
+      callerFunding: { utxo: funding.callerUtxo, funder: funding.signature.unlockP2PKH() },
+      vm: compositionMachine(),
+    });
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The entry reads the mapping under one key and writes it under another: two mapping entries, one of them
+    // written. The compiler refuses the body by name rather than let a hop compose the write from a foreign key.
+    const detached = 'pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   struct Member { address who; uint up; uint down; }'
+      + '   address public implementation;'
+      + '   mapping(address => Member) public members;'
+      + '   function initialize(address who) { this.members[who] = Member(who, 1, 0); }'
+      + '   function bump(address who) { this.members[msg.sender].up = this.members[who].up + 1; }'
+      + ' }';
+    const detachedArtifacts = compileStringMulti(detached, { composition: 'per-call' });
+    const detachedNetwork = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const detachedFunding = await funded(detachedNetwork);
+    const detachedDeployment = await deployPerCallProxy({
+      provider: detachedNetwork,
+      implementationArtifact: detachedArtifacts.Impl!,
+      implementationDeploy: {
+        fundingUtxo: detachedFunding.implFunding, funder: detachedFunding.funder,
+        changeAddress: detachedFunding.changeAddress,
+      },
+      proxyDeploy: {
+        fundingUtxo: detachedFunding.proxyFunding, funder: detachedFunding.funder,
+        changeAddress: detachedFunding.changeAddress,
+      },
+      initialize: { functionName: 'initialize', args: [detachedFunding.deployerLock] },
+      callerLockingBytecode: detachedFunding.deployerLock,
+      callerFunding: { utxo: detachedFunding.callerUtxo, funder: detachedFunding.signature.unlockP2PKH() },
+      vm: compositionMachine(),
+    });
+    await expect(callPerCallProxyEntry({
+      provider: detachedNetwork,
+      implementationArtifact: detachedArtifacts.Impl!,
+      proxyCategoryId: detachedDeployment.proxy.categoryId,
+      implementationCategoryId: detachedDeployment.implementation.categoryId,
+      functionName: 'bump',
+      args: [detachedFunding.deployerLock],
+      callerUtxo: detachedFunding.callUtxo,
+      callerLockingBytecode: detachedFunding.deployerLock,
+      funder: detachedFunding.signature.unlockP2PKH(),
+      changeAddress: detachedFunding.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(
+      'the implementation\'s "bump" entry is refused by the compiler (Impl.bump()): the body touches 2 mapping '
+      + 'entries and writes 1 of them, and a master derives the operands only when every entry is one of the '
+      + 'batch targets',
+    );
   });
 });

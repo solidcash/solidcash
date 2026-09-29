@@ -48,10 +48,10 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
 
-// A proxy whose fallback *carries* the delegated call's result. The forwarded call's result is what the
-// implementation's entry computed, so a fallback that binds it lets the hop record a returning entry's value in the
-// call record. The generated closure shape — a bare `this.implementation.delegatecall(input)` that drops the
-// result — records no result, and the hop has no way to express the value through that record.
+// A proxy whose fallback *carries* the delegated call's result, declared explicitly so a hop can also be driven
+// through a hand-written proxy. The forwarded call's result is what the implementation's entry computed, and
+// binding it lets the hop record a returning entry's value in the call record; a fallback that drops the result
+// with a bare `delegatecall(input)` statement is refused by name.
 const PROPAGATING_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract PropagatingProxy {'
   + '   address public implementation;'
@@ -65,6 +65,17 @@ const PROPAGATING_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' }';
 const propagatingProxy = compileStringMulti(
   PROPAGATING_PROXY_SOURCE, { composition: 'per-call' }).PropagatingProxy!;
+
+// The shape whose fallback drops the delegated result, which a caller can still write by hand. Kept as a compiled
+// artifact rather than the generated source so the refusal it trips stays pinned while the generated shape moves.
+const BARE_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract BareProxy {'
+  + '   address public implementation;'
+  + '   uint public initialized;'
+  + '   int public total;'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+const bareProxy = compileStringMulti(BARE_PROXY_SOURCE, { composition: 'per-call' }).BareProxy!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
 function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
@@ -234,12 +245,46 @@ describe('a call into a per-call implementation through its proxy', () => {
     })));
   });
 
-  it('refuses a returning entry through a proxy whose fallback records no result, naming that shape', async () => {
-    // The generated closure shape forwards with a bare `delegatecall(input)`, so the caller's own program binds the
-    // call record's result to empty while the implementation frame records the value it computed; the two cannot
-    // both hold. The refusal names the proxy shape rather than the value being lost silently.
+  it('carries the value a returning entry computed through the generated closure shape', async () => {
+    // The generated proxy's fallback consumes the delegated result, so the forwarded call records what the
+    // implementation entry computed and the hop carries it exactly as the hand-written shape does.
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployedWithCallerCoins(network);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: funded.proxyArtifact,
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'bump',
+      args: [4n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual([`${impl.contractName}.bump()`, 'ImplProxy.__fallback()']);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.values).toStrictEqual([12n]);
+    expect(result.value).toBe(12n);
+    expect(result.retval.length).toBeGreaterThan(0);
+    // The record still carries the write the entry computed, which is not the value it returned.
+    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
+      implementation: implementationAddress(), initialized: 1n, total: 9n,
+    })));
+  });
+
+  it('refuses a returning entry through a fallback that records no result, naming that shape', async () => {
+    // A fallback that drops the delegated result with a bare `delegatecall(input)` statement binds the call record's
+    // result to empty while the implementation frame records the value it computed; the two cannot both hold. The
+    // refusal names the proxy shape rather than the value being lost silently.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoins(network, bareProxy);
     const before = await recordState(network, funded.proxyCategoryId);
 
     await expect(callPerCallProxyEntry({

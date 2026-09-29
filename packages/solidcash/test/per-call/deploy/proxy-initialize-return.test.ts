@@ -14,9 +14,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * The deployment hop is the same hop a later call takes, so a returning entry is carried the way a direct call
  * carries one: the implementation frame's `retval` is learned from the body's own close and the deployment reports
- * the decoded value. The value travels in the caller's call record, so a proxy whose forwarded call records a
- * result (a fallback that consumes the delegated result) carries it, and the generated closure shape — a bare
- * `delegatecall(input)` that drops the result — is refused by name.
+ * the decoded value. The value travels in the caller's call record, so the proxy's forwarded call has to record the
+ * delegated call's result: the generated closure shape consumes it, and a proxy whose fallback drops it with a bare
+ * `delegatecall(input)` statement is refused by name.
  */
 
 const IMPL_CATEGORY = '55'.repeat(32);
@@ -46,10 +46,19 @@ const PROPAGATING_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
+const BARE_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract BareProxy {'
+  + '   address public implementation;'
+  + '   uint public initialized;'
+  + '   int public total;'
+  + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+  + ' }';
+
 const artifacts = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
 const propagatingProxy = compileStringMulti(
   PROPAGATING_PROXY_SOURCE, { composition: 'per-call' }).PropagatingProxy!;
+const bareProxy = compileStringMulti(BARE_PROXY_SOURCE, { composition: 'per-call' }).BareProxy!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
 function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
@@ -107,20 +116,43 @@ describe('an initialize hop whose entry returns a value', () => {
       })));
   });
 
-  it('refuses the same hop through the generated closure shape, naming the shape rather than losing the value',
-    async () => {
-      const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-      const half = await deploymentHalf(network);
+  it('carries the value through the generated closure shape, which consumes the delegated result', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const half = await deploymentHalf(network);
 
-      await expect(deployPerCallProxy({
-        provider: network,
-        implementationArtifact: impl,
-        proxyArtifact: buildProxyArtifact(impl),
-        implementationDeploy: half.implementationDeploy,
-        proxyDeploy: half.proxyDeploy,
-        initialize: { functionName: 'initialize', args: [4n] },
-        callerLockingBytecode: half.callerLockingBytecode,
-        vm: compositionMachine(),
-      })).rejects.toThrow(/returns a value, which a call through this proxy hop does not carry/);
+    const deployment = await deployPerCallProxy({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      implementationDeploy: half.implementationDeploy,
+      proxyDeploy: half.proxyDeploy,
+      initialize: { functionName: 'initialize', args: [4n] },
+      callerLockingBytecode: half.callerLockingBytecode,
+      vm: compositionMachine(),
     });
+
+    expect(deployment.initialize.accepted).toBe(true);
+    expect(deployment.initialize.values).toStrictEqual([12n]);
+    expect(deployment.initialize.value).toBe(12n);
+    expect(deployment.initialize.retval.length).toBeGreaterThan(0);
+  });
+
+  it('refuses the same hop through a fallback that drops the delegated result, naming the shape', async () => {
+    // The generated shape consumed the result, so the refusal now covers a proxy a caller writes by hand: its bare
+    // `delegatecall(input)` bind nothing, the call record's result stays empty while the implementation frame's
+    // `retval` holds the value its body computed, and the two cannot both hold.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const half = await deploymentHalf(network);
+
+    await expect(deployPerCallProxy({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: bareProxy,
+      implementationDeploy: half.implementationDeploy,
+      proxyDeploy: half.proxyDeploy,
+      initialize: { functionName: 'initialize', args: [4n] },
+      callerLockingBytecode: half.callerLockingBytecode,
+      vm: compositionMachine(),
+    })).rejects.toThrow(/returns a value, which a call through this proxy hop does not carry/);
+  });
 });

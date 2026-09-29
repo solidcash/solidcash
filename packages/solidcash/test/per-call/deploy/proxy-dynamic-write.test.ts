@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
-import { buildChunkCommitment, encodePushdataValue } from '@solidcash/utils';
+import {
+  buildChunkCommitment, bytesToHex, encodePushdataValue, parseChunkCommitment,
+} from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { chunkRecordLockingBytecode, readPerCallState } from '../../../src/per-call/deploy/index.js';
+import {
+  chunkRecordLockingBytecode, readPerCallDeployment, readPerCallState,
+} from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -28,6 +33,7 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 const IMPL_CATEGORY = '11'.repeat(32);
 const PROXY_CATEGORY = '22'.repeat(32);
 const CALLER_TXID = '33'.repeat(32);
+const SECOND_CALLER_TXID = '44'.repeat(32);
 
 /** The append the deployment's initialize makes: one element, the frame's own sender. */
 const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -35,6 +41,40 @@ const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   address public implementation;'
   + '   address[] public items;'
   + '   function initialize() { this.items.push(msg.sender); }'
+  + ' }';
+
+/** The same append, made again by a later call against the live array the deployment holds. */
+const APPEND_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   address[] public items;'
+  + '   function initialize() { this.items.push(msg.sender); }'
+  + '   function appendOne() { this.items.push(msg.sender); }'
+  + ' }';
+
+/** A mapping entry whose value the node holds inline, written beside the append the way a counter is bumped. */
+const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   address[] public items;'
+  + '   mapping(address => uint) public counts;'
+  + '   function initialize(address who) { this.counts[who] = this.counts[who] + 1; this.items.push(msg.sender); }'
+  + '   function again(address who) { this.counts[who] = this.counts[who] + 1; this.items.push(msg.sender); }'
+  + ' }';
+
+/** The marketplace's registration shape: an append beside a struct-valued mapping entry whose value chunks. */
+const REGISTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; string name; string bio; uint up; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   address[] public items;'
+  + '   function initialize() { this.items.push(msg.sender); }'
+  + '   function register(address who, string name_, string bio_) {'
+  + '     require(this.members[who].up == 0);'
+  + '     this.members[who] = Member(who, name_, bio_, 1);'
+  + '     this.items.push(msg.sender);'
+  + '   }'
   + ' }';
 
 /** The same append beside a sorted-mapping write, which the hop plans as a batch. */
@@ -64,11 +104,13 @@ interface Funding {
   readonly implFunding: { txid: string; vout: number; satoshis: bigint };
   readonly proxyFunding: { txid: string; vout: number; satoshis: bigint };
   readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
+  /** A second coin, for a call the deployment's own hop did not already spend. */
+  readonly callUtxo: { txid: string; vout: number; satoshis: bigint };
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
 }
 
-/** Funds the two genesis UTXOs and, when the hop is broadcast, the deployer's own coin. */
+/** Funds the two genesis UTXOs and, when the hop is broadcast, the deployer's own coins. */
 async function funded(network: MockNetworkProvider, withCaller = false): Promise<Funding> {
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -78,12 +120,16 @@ async function funded(network: MockNetworkProvider, withCaller = false): Promise
   // A root frame binds `msg.sender` to the lock of the input its caller reference names, so the caller's own coin
   // has to sit at exactly the deployer lock the witness sender is bound to.
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 100_000n };
+  const callUtxo = { txid: SECOND_CALLER_TXID, vout: 0, satoshis: 100_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
-  if (withCaller) await network.addUtxo(binToHex(deployerLock), callerUtxo);
+  if (withCaller) {
+    await network.addUtxo(binToHex(deployerLock), callerUtxo);
+    await network.addUtxo(binToHex(deployerLock), callUtxo);
+  }
   return {
     network, signature, funder: funder.unlock.spend(alicePub, signature),
-    implFunding, proxyFunding, callerUtxo, deployerLock, changeAddress: funder.address,
+    implFunding, proxyFunding, callerUtxo, callUtxo, deployerLock, changeAddress: funder.address,
   };
 }
 
@@ -197,4 +243,120 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       + ' }';
     await expect(deploy(wide)).rejects.toThrow(/did not settle through the proxy/);
   });
+
+  it('keeps the chunk the deployment holds and writes the grown value through a later call', async () => {
+    const { deployment, network, artifacts, layout, funding }
+      = await deploy(APPEND_CALL_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+    const lock = chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', 'address[]');
+    expect(await liveChunks(network, deployment.proxy.categoryId, layout, lock)).toHaveLength(1);
+
+    // The deployment's hop created the run's only chunk; the call spends that live chunk and recreates it with the
+    // value the append produced, so the run stays one chunk wide and no chunk is created.
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'appendOne',
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+    const spentIds = result.draft.layout.participants
+      .filter((placed) => placed.id.startsWith('dynamic-chunk-'))
+      .map((placed) => placed.id);
+    expect(spentIds).toHaveLength(1);
+    expect(result.draft.trailingOutputs).toStrictEqual([]);
+
+    // The record's length and the live chunk's bytes are the grown value, read back through the shipped decoders.
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!['items$len']).toBe(BigInt(grown.length));
+    const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
+    expect(chunks).toHaveLength(1);
+    expect(bytesToHex(chunks[0]!.data)).toBe(bytesToHex(grown));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a read-modify-write mapping entry beside the append, the node and the chunk both live', async () => {
+    // The mapping value is one the node holds inline, so the hop declares the rewritten node and the run of the
+    // dynamic value together: the value needs no run of its own, and the two families do not contend for a band.
+    const { deployment, network, artifacts, layout, funding }
+      = await deploy(COUNTER_BESIDE_SOURCE, [encodeLockingBytecodeP2pkh(alicePkh)], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'again',
+      args: [funding.deployerLock],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const lock = chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', 'address[]');
+    const chunks = await liveChunks(network, deployment.proxy.categoryId, layout, lock);
+    expect(bytesToHex(chunks[0]!.data)).toBe(bytesToHex(grown));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('refuses a chunked mapping value beside the append, naming the two runs it cannot place', async () => {
+    // The registration shape: the mapping value is longer than a node's tail holds, so it needs its own run of
+    // chunk records, and the dynamic value needs another. Both runs start one layout width past the record block,
+    // so the hop cannot declare them at both bands; the write is refused by name rather than laid out at one.
+    const { deployment, network, artifacts, funding } = await deploy(REGISTER_CALL_SOURCE, [], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'register',
+      args: [funding.deployerLock, 'n'.repeat(80), 'b'.repeat(80)],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(
+      'writes a mapping value that needs a run of chunk records beside a dynamic value, and this hop cannot '
+      + 'declare both runs at the ordinals the body addresses',
+    );
+  });
 });
+
+/** The live chunks at one lock, in chunk order, each with the bytes its commitment decodes to. */
+async function liveChunks(
+  network: MockNetworkProvider,
+  categoryId: string,
+  layout: NonNullable<ReturnType<typeof buildProxyArtifact>['stateLayout']>,
+  lock: Uint8Array,
+): Promise<readonly { readonly index: number; readonly data: Uint8Array }[]> {
+  const pools = await readPerCallDeployment(network, categoryId, layout);
+  return [...pools.chunks, ...pools.collectionNodes]
+    .filter((utxo) => utxo.lockingBytecode !== undefined
+      && bytesToHex(utxo.lockingBytecode) === bytesToHex(lock))
+    .map((utxo) => parseChunkCommitment(utxo.token!.nft!.commitment!))
+    .map((chunk) => ({ index: chunk.chunkIndex, data: chunk.chunkData }))
+    .sort((left, right) => left.index - right.index);
+}

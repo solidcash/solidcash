@@ -13372,10 +13372,12 @@ function compileResolvedAst(
   }
 
   // Break/continue expansion (before semantic analysis)
-  // DesugarReturnInLoop introduces a synthetic break after this survey was taken. Expand control flow whenever
-  // that lowering ran as well as when the source already contained break/continue; otherwise a direct compile of
-  // `for (...) { state++; if (done) return state; }` leaves the synthetic break raw and executes the loop tail.
-  if (needsBreakContinue || needsReturnInLoop) ast = expandBreakContinue(ast);
+  // DesugarReturnInLoop and LowerTailRecursion can introduce synthetic breaks after the survey was taken.
+  // Expand those too: an unlowered break in a recursive base case becomes a no-op in codegen, so the
+  // recursive tail runs even after the base result was selected.
+  if (needsBreakContinue || needsReturnInLoop || needsTailRecursion || earlyEntryFeatures?.needsTailRecursion) {
+    ast = expandBreakContinue(ast);
+  }
 
   // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
   if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;

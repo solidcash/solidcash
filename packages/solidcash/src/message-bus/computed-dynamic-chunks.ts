@@ -1,4 +1,7 @@
-import { binToHex, vmNumberToBigInt, type AuthenticationProgramStateCommon } from '@bitauth/libauth';
+import {
+  binToHex, encodeTransaction, hash256, vmNumberToBigInt,
+  type AuthenticationProgramStateCommon, type Transaction,
+} from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { parseChunkCommitment } from '@solidcash/utils';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
@@ -69,6 +72,19 @@ export function gateWouldApplyDynamicChunkRepairsIfRecipe(
   );
 }
 
+/** Include prerequisite output changes even when this chunk still has the same placeholder. */
+export function dynamicChunkConvergenceStateKey(
+  transaction: Transaction,
+  ownedOutputs: readonly number[],
+): string {
+  const transactionState = binToHex(hash256(encodeTransaction(transaction)));
+  return `${transactionState}|${ownedOutputs
+    .map((outputIndex) => `${outputIndex}:${binToHex(
+      transaction.outputs[outputIndex]?.token?.nft?.commitment ?? new Uint8Array(),
+    )}`)
+    .join('|')}`;
+}
+
 /**
  * Converge top-level dynamic-storage chunk commitments on the complete atomic graph.
  *
@@ -130,23 +146,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   }
 
   const ownedOutputs = [...owners.keys()].sort((a, b) => a - b);
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_CONVERGE === '1') {
-    console.error('dynamic-chunk-converge-owners', JSON.stringify({
-      blocks: assembly.blocks.map((block) => ({
-        base: block.base,
-        blockSize: block.blockLayout.blockSize,
-        trailingBase: block.blockLayout.trailingBase,
-        trailingCapacity: block.blockLayout.trailingCapacity,
-      })),
-      ownedOutputs,
-      placeholders: ownedOutputs.map((outputIndex) => ({
-        outputIndex,
-        commitment: builder.outputs[outputIndex]?.token?.nft?.commitment ?? '',
-        category: String(builder.outputs[outputIndex]?.token?.category ?? '').slice(0, 16),
-      })),
-    }));
-  }
   if (owners.size === 0) {
     return freezeGeometry({ repairs: 0, rounds: 0, ownedOutputs, authenticatedOutputs: [], outputs: [] });
   }
@@ -159,9 +158,10 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
   const maximumRounds = owners.size * 2 + 1;
   let repairs = 0;
   for (let round = 1; round <= maximumRounds; round += 1) {
-    const stateKey = ownedOutputs
-      .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
-      .join('|');
+    const transaction = builder.buildLibauthTransaction();
+    // Earlier resource or event repairs can open a later chunk equality without changing this chunk's
+    // placeholder. A chunk-only key would skip the newly reachable proof in the shared fixpoint session.
+    const stateKey = dynamicChunkConvergenceStateKey(transaction, ownedOutputs);
     recordMonotonePass(
       commitmentLattice,
       seenStates,
@@ -186,7 +186,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       });
     }
 
-    const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const commitmentProposals = new Map<number, Uint8Array>();
     const inputIndices = new Set([...owners.values()].flatMap((indices) => [...indices]));
@@ -230,18 +229,6 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
     }
     for (const outputIndex of commitmentProposals.keys()) authenticatedOutputs.add(outputIndex);
 
-    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-      ?.SOLIDC_DEBUG_DYNAMIC_CHUNK_CONVERGE === '1') {
-      console.error('dynamic-chunk-converge-round', JSON.stringify({
-        round,
-        observers: [...inputIndices],
-        proposals: [...commitmentProposals.entries()].map(([outputIndex, expected]) => ({
-          outputIndex,
-          expected: binToHex(expected),
-          current: builder.outputs[outputIndex]?.token?.nft?.commitment ?? '',
-        })),
-      }));
-    }
     gateWouldApplyDynamicChunkRepairsIfRecipe(builder, commitmentProposals);
     let changed = false;
     for (const [outputIndex, expected] of commitmentProposals) {
@@ -255,9 +242,7 @@ export function convergeMessageBusComputedDynamicChunkOutputs(
       changed = true;
     }
     if (!changed) {
-      const finalKey = ownedOutputs
-        .map((outputIndex) => `${outputIndex}:${builder.outputs[outputIndex]?.token?.nft?.commitment ?? ''}`)
-        .join('|');
+      const finalKey = dynamicChunkConvergenceStateKey(builder.buildLibauthTransaction(), ownedOutputs);
       finalizeMonotonePass(commitmentLattice, finalKey);
       return freezeGeometry({
         repairs,

@@ -13,7 +13,13 @@ const fixtures = {
   UniswapV2Pair: 'uniswapv2/UniswapV2Pair.sol',
 };
 
+const selected = process.argv.slice(2);
+for (const name of selected) {
+  if (!(name in fixtures)) throw new Error(`Unknown Mistswap fixture: ${name}`);
+}
+
 for (const [name, source] of Object.entries(fixtures)) {
+  if (selected.length > 0 && !selected.includes(name)) continue;
   const artifact = compileFile(path.join(sourceDir, source), {
     solidityImportCompat: true,
     ecrecover: 'p2pkh',

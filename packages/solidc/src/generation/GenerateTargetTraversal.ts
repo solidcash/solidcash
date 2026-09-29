@@ -29004,6 +29004,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const returningExternalSlots = this.externalCallSlots
         .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch
           && !this.isExternalCallSlotLoopNested(slot));
+      const explicitDynamicBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
       if (this.usesDelegateTransactionSuffix()) {
         // Legacy delegate chunks are the last covenant-managed output family, immediately before the mandatory
         // change output. A compiler-owned route instead publishes a balanced participant block, so its chunks use
@@ -29018,18 +29019,34 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_SUB, loc);
         }
       } else if (returningExternalSlots.length > 0) {
-        // Returning co-spends publish their event after every callee block and before this caller's dynamic
-        // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
-        // callee widths: an interface may legally under-declare state, so only the runtime index reflects the
-        // physical transaction footprint.
+        // A published dynamic band is already an authenticated physical coordinate. Prefer it even when the
+        // function also declares returning calls: a conditional call may be inactive, leaving its return-event
+        // witness at -1 while the dynamic write still occurs (MasterChef.deposit).
         const lastReturnSlot = returningExternalSlots[returningExternalSlots.length - 1];
         const returnParamName = returningExternalSlots.length === 1
           ? '__internal__externalReturnOutputIdx'
           : `__internal__externalReturnOutputIdx${lastReturnSlot.returnSlotIndex}`;
-        this.emitPickCompilerRouteFrameValue(returnParamName, loc);
-        this.emit(Op.OP_1ADD, loc);
+        const emitAfterReturnEvent = (): void => {
+          // Returning co-spends publish their event after every callee block and before this caller's dynamic
+          // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
+          // callee widths: an interface may legally under-declare state.
+          this.emitPickCompilerRouteFrameValue(returnParamName, loc);
+          this.emit(Op.OP_1ADD, loc);
+          this.emitAddCollectionIterCounts(loc);
+        };
+        if (explicitDynamicBase >= 0) {
+          this.emitPickCompilerRouteFrameValue('__internal__dynamicChunkInputBase', loc);
+          this.emit(Op.OP_DUP, loc);
+          this.emit(encodeInt(0n), loc);
+          this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+          this.emit(Op.OP_IF, loc);
+          // The explicit base already includes collection-iteration inputs.
+          this.emit(Op.OP_ELSE, loc);
+          this.emit(Op.OP_DROP, loc);
+          emitAfterReturnEvent();
+          this.emit(Op.OP_ENDIF, loc);
+        } else emitAfterReturnEvent();
       } else {
-        const explicitDynamicBase = this.getStackIndex('__internal__dynamicChunkInputBase', true);
         const emitReconstructedBase = (): void => {
           this.emitTrailingBlockBase(blockSize, loc);
           // Non-returning, non-loop callee blocks still precede local dynamic chunks.
@@ -29062,8 +29079,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       if (!this.usesDelegateTransactionSuffix()) {
-        // Returning-call bases do not pass through the ordinary reconstruction branch above.
-        if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
+        // Returning-call bases include collection-iteration inputs within emitAfterReturnEvent above; an
+        // explicit dynamic base already includes them and must not count them again.
         const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
         if (batchCountIdx >= 0) {
           this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);

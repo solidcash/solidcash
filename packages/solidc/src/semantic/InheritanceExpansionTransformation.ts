@@ -11,6 +11,7 @@ import {
   UnaryOpNode,
   CastNode,
   FunctionCallNode,
+  MethodCallNode,
   TernaryOpNode,
   ArrayNode,
   ArrayAccessNode,
@@ -1880,6 +1881,16 @@ export function substituteInExpression(
       expr.identifier = qualified;
     }
     expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    return expr;
+  }
+
+  if (expr instanceof MethodCallNode) {
+    expr.object = substituteInExpression(expr.object, subs);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    if (expr.callOptions?.value) expr.callOptions.value = substituteInExpression(expr.callOptions.value, subs);
+    if (expr.callOptions?.gas) expr.callOptions.gas = substituteInExpression(expr.callOptions.gas, subs);
+    if (expr.callOptions?.salt) expr.callOptions.salt = substituteInExpression(expr.callOptions.salt, subs);
+    if (expr.runtimeSelector) expr.runtimeSelector = substituteInExpression(expr.runtimeSelector, subs);
     return expr;
   }
 

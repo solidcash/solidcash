@@ -519,6 +519,7 @@ type InternalCompilerOptions = CompilerOptions & {
   /** How many call records every entry's tail holds, which the master head's walk is fixed to. */
   __perCallCallCount?: number;
   __perCallRefusedEntries?: Map<string, string>;
+  __perCallBalanceReaders?: readonly string[];
   __perCallEntryCallRepeats?: Map<string, boolean>;
   /** The stop-site table a driver derives the master from, one entry per entry point. */
   __perCallStopSites?: PublishedPerCallStopSites;
@@ -14138,6 +14139,7 @@ function compileResolvedAst(
     (mergedCompilerOptions as InternalCompilerOptions).__perCallRefusedEntries = new Map(
       (assessment.refusedEntries ?? []).map((entry) => [entry.entryName, entry.reason]),
     );
+    (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders = assessment.balanceReaders ?? [];
     (mergedCompilerOptions as InternalCompilerOptions).__perCallReservesValidatorHash = true;
     // The stop sites a builder resumes from, published per entry so a driver can look one up by the identity its
     // `FrameRequest.functionName` carries. Each entry publishes its own calls, so a driver names the callees that
@@ -14266,6 +14268,13 @@ function compileResolvedAst(
         functionName: `${ast.contract.name}.${name}()`,
         reason,
       }));
+    }
+    // The entries that read their own balance: a builder spends every container of the contract for them.
+    const balanceReaders = (mergedCompilerOptions as InternalCompilerOptions).__perCallBalanceReaders ?? [];
+    if (balanceReaders.length > 0) {
+      const publication = artifact.composition as NonNullable<typeof artifact.composition>
+        & { balanceReaders: string[] };
+      publication.balanceReaders = balanceReaders.map((name) => `${ast.contract.name}.${name}()`);
     }
   }
   let verifiedKernelEntryJournal:

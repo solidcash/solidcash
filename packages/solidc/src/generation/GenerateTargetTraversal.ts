@@ -290,7 +290,7 @@ import {
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteSegment,
-  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER,
+  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -16706,6 +16706,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return node;
     }
 
+    // A per-call contract's own balance is the value of its satoshi containers (spec 4b).
+    if (this.perCallMaster && node.name === 'balance' && node.expression.type instanceof AddressType
+      && isOwnAddress(node.expression)) {
+      this.emitPerCallOwnBalance(locationData);
+      return node;
+    }
+
     // Handle .balance on AddressType - loop over inputs summing matching values
     if (node.name === 'balance' && node.expression.type instanceof AddressType) {
       node.expression = this.visit(node.expression);
@@ -19645,6 +19652,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // this.balance - get own category, derive satoshi container lbc, loop over inputs
+    if (node.name === 'balance' && !node.stateVariable && this.perCallMaster) {
+      this.emitPerCallOwnBalance(locationData);
+      return node;
+    }
     if (node.name === 'balance' && !node.stateVariable) {
       // Get own category (32 bytes, strip capability flag)
       this.emitMasterInputIndex(locationData);
@@ -31895,6 +31906,42 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Note: cleanup deferred to emitTransferCleanup() (called after emitValuePreservation)
+  }
+
+  /**
+   * `address(this).balance` in a per-call frame (spec 4b): the value of the containers the transaction spends at the
+   * container lock of the contract whose records the frame runs on, the caller's for a delegate frame, with the
+   * frame's value credited and the sends the body has made so far taken out, as the EVM's balance stands there.
+   */
+  private emitPerCallOwnBalance(loc: SingleLocationData): void {
+    const owner = categoryOwnerSlotName();
+    if (!this.stack.includes(owner) || !this.stack.includes('__internal__frameValue')) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the balance is read where the frame's slots are not, while compiling '${this.currentFunction?.name ?? 'unknown'}'`,
+        {},
+      );
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex(owner))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, loc);
+    this.emit(encodeInt(32n), loc);
+    this.emit(Op.OP_SPLIT, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.pushToStack('(value)');
+    this.emitSatoshiContainerLbc(loc);
+    this.emitBalanceLoop(false, loc);
+    const add = (name: string, op: Op): void => {
+      this.emit(encodeInt(BigInt(this.getStackIndex(name))), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(value)');
+      this.emit(op, loc);
+      this.popFromStack(2);
+      this.pushToStack('(value)');
+    };
+    add('__internal__frameValue', Op.OP_ADD);
+    // Every send's amount slot holds zero until its statement runs, so the sum is what the body has sent so far.
+    for (const transfer of this.pendingTransfers) add(transfer.amountStackName, Op.OP_SUB);
   }
 
   /**

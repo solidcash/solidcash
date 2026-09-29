@@ -11,6 +11,7 @@
  */
 
 import {
+  AddressType,
   ArrayType,
   FixedType,
   FrameKind,
@@ -74,7 +75,7 @@ import {
   VariableDefinitionNode,
   WhileNode,
 } from '../../ast/AST.js';
-import { NullaryOperator } from '../../ast/Operator.js';
+import { NullaryOperator, UnaryOperator } from '../../ast/Operator.js';
 import { walkInvocationAst } from '../../analysis/InvocationAnalysis.js';
 import { countTransfersMinMax } from '../../semantic/branchOps.js';
 import type { MasterCallSite, MasterTailShape, SiteArgument } from './frame-tail.js';
@@ -783,6 +784,34 @@ export interface PerCallMasterShapeAssessment {
    * published so a builder reports which function is unsupported instead of the whole contract.
    */
   readonly refusedEntries?: readonly { readonly entryName: string; readonly reason: string }[];
+  /**
+   * The entries that read their own contract's balance, directly or through a body they reach: a builder spends
+   * every container of the contract for them, since the balance a frame reads is the containers its transaction
+   * spends.
+   */
+  readonly balanceReaders?: readonly string[];
+}
+
+/** True when an address expression is the contract's own, `address(this)`, whatever casts wrap it. */
+export function isOwnAddress(expression: ExpressionNode): boolean {
+  let current: ExpressionNode = expression;
+  while (current instanceof CastNode) current = current.expression;
+  return current instanceof UnaryOpNode && current.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+    && current.expression instanceof NullaryOpNode && current.expression.operator === NullaryOperator.INPUT_INDEX;
+}
+
+/** Whether a body reads its own contract's balance, and whether it reads another address's. */
+function balanceReads(body: BlockNode | undefined): { readonly own: boolean; readonly other: boolean } {
+  let own = false;
+  let other = false;
+  walkInvocationAst(body, (node) => {
+    if (node instanceof StateAccessNode && node.name === 'balance' && node.stateVariable === undefined) own = true;
+    if (node instanceof FieldAccessNode && node.name === 'balance' && node.expression.type instanceof AddressType) {
+      if (isOwnAddress(node.expression)) own = true;
+      else other = true;
+    }
+  });
+  return { own, other };
 }
 
 /**
@@ -947,7 +976,29 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       refuseBody(fn, 'the body makes an external call and is invoked as its own subroutine, so the call sites it '
         + 'makes have no entry to bind their records to');
     }
+    // A balance is the value of containers a transaction spends; another address's shows only in the inputs its
+    // transaction happens to spend, which is no account balance at all.
+    const reads = balanceReads(fn.body);
+    if (reads.other) {
+      refuseBody(fn, 'the body reads the balance of an address other than its own, which a transaction shows only '
+        + 'in the inputs it spends');
+    }
+    if (reads.own && invoked.has(fn.name)) {
+      refuseBody(fn, 'the body reads its contract\'s balance and is invoked as its own subroutine, which has no '
+        + 'frame to read it from');
+    }
   }
+  // The entries that read their own balance, through any body they reach.
+  const readsOwn = new Set(entryBodies.filter((fn) => balanceReads(fn.body).own).map((fn) => fn.name));
+  const reachesReader = (name: string, seen: Set<string> = new Set()): boolean => {
+    if (readsOwn.has(name)) return true;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return [...(invokes.get(name) ?? [])].some((next) => reachesReader(next, seen));
+  };
+  const balanceReaders = [...entryPoints, ...(contract.constructorDef ? [contract.constructorDef] : [])]
+    .filter((fn) => reachesReader(fn.name))
+    .map((fn) => fn.name);
   // The head parks the frame's `retval` whenever any entry returns a value; a returning entry compares the value
   // its own code computed against it, and a void entry requires it empty. Each returning entry's shape is checked
   // one by one.
@@ -1015,6 +1066,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
       callCount: 0,
       tail: tail.tail,
       ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
+      ...(balanceReaders.length > 0 ? { balanceReaders } : {}),
     };
   }
   return {
@@ -1023,6 +1075,7 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     callCount,
     tail: tail.tail,
     ...(refusals.size > 0 ? { refusedEntries: renderRefusals(contract, entryPoints, refusals) } : {}),
+    ...(balanceReaders.length > 0 ? { balanceReaders } : {}),
   };
 }
 

@@ -610,7 +610,13 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   ).slice(0, 20)));
   const sendAmountSentinels = sendIndices.map((_index, position) => bigIntToVmNumber(SEND_AMOUNT_SENTINEL
     + BigInt(position)));
-  const containers = entry.transfers.length > 0 ? await readSatoshiContainers(provider, categoryId) : [];
+  // An entry that reads its own balance reads the containers its transaction spends, so it spends every one.
+  const readsBalance = (
+    (artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders ?? []
+  ).includes(`${artifact.contractName}.${entry.name}()`);
+  const containers = entry.transfers.length > 0 || readsBalance
+    ? await readSatoshiContainers(provider, categoryId)
+    : [];
   /**
    * The containers the sends and the value calls are paid from once every amount is known, and what the contract's
    * own container keeps: the one before the sends, or the change or the deposit on its own.
@@ -618,8 +624,19 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   const payFromContainers = (amounts: readonly (bigint | undefined)[]): { spent: readonly Utxo[]; kept: bigint } => {
     const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
     const settle = (kept: bigint): bigint => (sendCount > 0 || kept > 0n ? atLeastMinimum(kept) : 0n);
-    if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: settle(value) };
+    const every = readsBalance ? containers : [];
+    const everyTotal = every.reduce<bigint>((sum, utxo) => sum + utxo.satoshis, 0n);
+    if (amounts.some((amount) => amount === undefined)) return { spent: every, kept: settle(everyTotal + value) };
     const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - value;
+    if (readsBalance) {
+      if (everyTotal < need) {
+        throw new PerCallCallError(
+          `contract "${artifact.contractName}" holds ${everyTotal} satoshis in its containers, and entry `
+          + `"${functionName}" sends ${need} more than the call brings`,
+        );
+      }
+      return { spent: every, kept: settle(everyTotal - need) };
+    }
     if (need <= 0n) return { spent: [], kept: settle(-need) };
     const spent: Utxo[] = [];
     let total = 0n;

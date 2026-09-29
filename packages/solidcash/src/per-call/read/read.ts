@@ -50,6 +50,9 @@ import {
   entryRecordReadUnlock,
   readComputedDeclaration,
   readPerCallDeployment,
+  readSatoshiContainers,
+  satoshiContainerLockingBytecode,
+  satoshiContainerUnlockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type DeployedMaster,
@@ -72,6 +75,7 @@ import {
   type DraftInput,
   type DraftMaster,
   type DraftRecordEntry,
+  type DraftSourceOutput,
   type PublishedCallSite,
   type PublishedEntryStopSites,
 } from '../composer/index.js';
@@ -745,11 +749,38 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     }
   }
 
+  // A frame that reads its own balance reads the containers its transaction spends, so the read spends every
+  // container of that contract and recreates their value in one, which leaves its balance where it was.
+  const containerInputs: { readonly id: string; readonly index: number }[] = [];
+  const containerOutputs: DraftSourceOutput[] = [];
+  const balanceContracts = new Set<string>();
+  for (const frame of frames) {
+    const readers = (frame.artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders;
+    if (!(readers ?? []).includes(`${frame.contract}.${frame.entry.name}()`)) continue;
+    if (balanceContracts.has(frame.categoryId)) continue;
+    balanceContracts.add(frame.categoryId);
+    const lock = satoshiContainerLockingBytecode(frame.categoryId);
+    const masterIndex = participant(layout, frame.master).index;
+    let total = 0n;
+    for (const utxo of await readSatoshiContainers(provider, frame.categoryId)) {
+      const id = `container-${containerInputs.length}`;
+      inputs[id] = {
+        source: { lockingBytecode: lock, valueSatoshis: utxo.satoshis },
+        unlockingBytecode: satoshiContainerUnlockingBytecode(frame.categoryId, masterIndex),
+        consumed: true,
+      };
+      containerInputs.push({ id, index: layout.participantCount + containerInputs.length });
+      total += utxo.satoshis;
+    }
+    if (total > 0n) containerOutputs.push({ lockingBytecode: lock, valueSatoshis: total });
+  }
+
   const plan: CompositionDraftPlan = {
     blocks,
-    userInputs: [],
+    userInputs: containerInputs,
     masters,
     inputs,
+    ...(containerOutputs.length === 0 ? {} : { trailingOutputs: containerOutputs }),
     validator: {
       id: VALIDATOR_ID,
       covers: [...new Set(frames.slice(1).map((frame) => frame.contract))],

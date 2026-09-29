@@ -543,8 +543,14 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   never overlap, since the output before one run would have to be the other's send or the other's container, and
   two frames of one contract do not settle alone, so they list no send. A covenant outside this convention that
   counts an output by its position alone can still count one of these sends; that attribution is its own.
-- **`address(this).balance`** is X's balance as the EVM defines it inside the frame: the value of the
-  containers X spends, with this frame's `msg.value` already credited.
+- **`address(this).balance`** is X's balance as the EVM's stands at that point of the frame: the value of the
+  containers the transaction spends at X's container lock (the context contract's, in a `DELEGATE` frame), with
+  the frame's `msg.value` credited and the sends the body has made so far taken out.
+  - A transaction shows only the containers it spends, so the value is a lower bound its composer chooses. The
+    compiler publishes the entries that read their balance (`composition.balanceReaders`), and the SDK spends every
+    container of the contract for them, which makes the read the whole balance; a hostile composer may present
+    fewer. A contract should not price anything by its balance, the advice the EVM's forced balances already give.
+  - A read of another address's balance is refused by name: a transaction shows no account balance for it.
 
 ---
 ## 5. Transaction layout

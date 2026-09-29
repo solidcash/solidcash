@@ -13,6 +13,7 @@ import {
 import {
   PerCallCallError, callPerCallEntry, sendPerCallValue, type PerCallCallResult,
 } from '../../../src/per-call/call/index.js';
+import { readPerCallEntry } from '../../../src/per-call/read/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -288,5 +289,36 @@ describe('an entry that pays a contract through its receive()', () => {
       functionName: 'pay',
       args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
     })).rejects.toThrow(/entry "pay" sends to the contract at [0-9a-f]+, which the call's externals do not name/);
+  });
+});
+
+const TILL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Till {'
+  + '   int public emptied;'
+  + '   receive() external payable { require(true); }'
+  + '   function holding() view returns (int) { return address(this).balance; }'
+  + '   function empty() { this.emptied = this.emptied + 1; this.transfer(msg.sender, address(this).balance); }'
+  + ' }';
+
+const till = compileStringMulti(TILL_SOURCE, { composition: 'per-call' }).Till!;
+
+describe('an entry that reads its own balance', () => {
+  it('reads every container the contract holds, and pays all of it out', async () => {
+    const deployed = await deploy(till);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 5_000n });
+
+    const read = await readPerCallEntry({
+      provider: deployed.provider, artifact: till, categoryId: deployed.categoryId, functionName: 'holding',
+      vm: compositionMachine(),
+    });
+    expect(read.accepted).toBe(true);
+    expect(read.value).toBe(25_000n);
+
+    const emptied = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'empty' });
+    expect(emptied.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(emptied, deployed.callerLock)).toBe(25_000n);
+    // Both containers are spent; the one the send follows keeps only what the caller put in to stand it up.
+    expect(containerValue(emptied, deployed.categoryId)).toBe(1_000n);
   });
 });

@@ -591,18 +591,18 @@ holding minting NFTs, whose unlocking bytecode carries the A7 blocks), so B need
   and a method no known interface names. The `code.length` gate is served through the general P2SH-only extractor,
   so a plain-account or zero-address target fails the script rather than answering zero (that boundary is pinned).
   `address(this).balance` constant-folded for value 0 (spec 17; section 23 rows 9-11).
-- [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22). **Measured, and still not met**
-  (`b382ff160` pinned it; `aac352885` and `a91a6c396` moved the per-call path from refusing every such body to
-  serving it). The compiler now admits and emits a body that calls `ecrecover` and reads the co-spent pair at the
-  master's own input plus `1 + 2i`/`2 + 2i`, and the composer places those inputs, builds them from the call's own
-  argument pushes through the shipped witness and side-car builders, and shifts every later participant. Measured on
-  the machine: a valid `ecrecoverPubKey` is accepted at the master and both side-car inputs, a valid `ecrecoverEvm`
-  at the master and all three, and a recovery whose key is not the source's is rejected by the master's own compare.
-  **Neither convention implements the zero-address rule**, and the per-call measurement now says why: the pair
-  commits whatever key its witnessed `(hash, v, r, s)` recovers, so a `v` outside 27/28 cannot be split at all, an
-  out-of-range `s` recovers a non-matching key, and the all-zero digest cannot be witnessed (`Cannot find square
-  root`). A recovery call whose argument the code computes is served (`101cb6131`), and so is a delegate frame's
-  side-car placement (after its own input, not the records' owner); a loop over one stays open;
+- [ ] C13 `ecrecover` returns address 0 for invalid input (spec 23 row 22). **Met on the per-call path for every
+  argument the precompile refuses by range; open for an `r` off the curve and a recovery at infinity** (`b382ff160`
+  pinned it; `aac352885` and `a91a6c396` moved the per-call path from refusing every such body to serving it; log
+  row "a recovery the precompile refuses answers the zero address"). The compiler emits a body that calls
+  `ecrecover` and reads the co-spent pair at the master's own input plus `1 + 2i`/`2 + 2i`, and the composer places
+  those inputs, builds them from the call's own argument pushes through the shipped witness and side-car builders,
+  and shifts every later participant. No pair recovers from the arguments the precompile refuses, so the per-call
+  body tests them itself: for a `v` outside 27/28, or an `r` or `s` outside [1, n), it answers the zero address,
+  empty as `address(0)` is, without reading its pair, and the composer co-spends a placeholder pair there. An `r` in
+  range but off the curve still sends the body to a pair none recovers, and so would a recovery at infinity; the
+  direct convention has no zero-address rule. A recovery call whose argument the code computes is served
+  (`101cb6131`), and so is a delegate frame's side-car placement; a loop over one stays open;
   `master/ecrecover-invalid-input.test.ts` pins each input shape beside a direct-path control.
 - [ ] C14 Fix: a public function that reads `msg.sender` and writes state fails `OP_VERIFY` when called internally
   (spec open point 9).
@@ -785,11 +785,11 @@ risk. Take the slices in order, each with its own tests.
   references, and the report names the contract, the entry, the depth, the source line and the custom error the
   artifact publishes (name and declared parameter list); a nested revert reports the callee rather than the caller,
   both frames are reported when both refuse, and the provider is asserted to have seen no transaction. **The
-  arguments are the gap, and it is the compiler's**: a custom error's values are not evaluated (`revert
-  InsufficientBalance(100, 50)` is emitted as a failing verify and the compiler warns that error arguments are
-  type-checked but not evaluated), so the report carries the error and its parameter list but not the values it was
-  raised with. The helper is not yet wired into the derivation, which still stalls before it asks the machine -
-  wiring it would change a stall semantics that several suites pin as the stall it is.
+  arguments are served** (`6635f1170`): a custom error's values are still not evaluated on chain (`revert
+  InsufficientBalance(100, 50)` is a failing verify), but the compiler publishes where each argument sits when the
+  revert fails and the report reads the values from the failing state (log row "a revert's arguments are read from
+  the failing state"). The helper is not yet wired into the derivation, which still stalls before it asks the
+  machine - wiring it would change a stall semantics that several suites pin as the stall it is.
 - [x] E4 Reads: view calls as `STATIC` `ROOT` frames off-chain, nested views, and reverts from reads. Landed
   (`4ab50885e`): `readPerCallEntry` classifies the contract's live records through the deployment layer, plans a
   static root over them, learns the returned bytes from the frame's own return comparison, derives the composition
@@ -978,9 +978,10 @@ risk. Take the slices in order, each with its own tests.
   - [ ] Row 19: Reverts from view calls (6).
   - [ ] Row 20: Un-awaited sends and matchers.
   - [ ] Row 21: Live event listener raced against 1 s.
-  - [ ] Row 22: `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value. Measured: all three are refused by
-    name with the same reason as any other `ecrecover` body, so no invalid-input rule is exercised
-    (`master/ecrecover-invalid-input.test.ts`).
+  - [ ] Row 22: `ecrecover` on `"0x"`, 65 zero bytes (v = 0), a 20-byte value. Measured on the per-call path: 65
+    zero bytes answers the zero address, so a body shaped like OZ's `recover` reaches its own revert (log row "a
+    recovery the precompile refuses answers the zero address"), and `"0x"` stops at OZ's length check, whose
+    argument the refusal report carries (E3). The ladder title stands behind the hop wall and is not run here.
   - [ ] Row 23: Records growing within one transaction and across 30 transactions.
   - [ ] Row 24: `string => string` mapping set and delete.
   - [ ] Row 25: Deep chains, four calls below M plus proxy hops, about 24 masters.
@@ -1559,7 +1560,9 @@ risk. Take the slices in order, each with its own tests.
   - **The parallel worker's earlier items, done and released** (its active claims are the bullet below). **Done**:
     `MarketplaceV1.takeJob`'s keccak path on the composer side (`447ab2e01`, `55b96c95b`, `101cb6131`), the EVM
     projection's keccak side-car recreating at its own index (`fc52c36aa`), and a delegate frame's side-cars read
-    after its own input (`0a0a3d1e7`). **Released**: a keccak256 compute side-car in a per-call constructor
+    after its own input (`0a0a3d1e7`), and the ECDSA clauses of #41 `take job > sanity checks`, strict parity the
+    relaxed harness does not check: E3's argument half (`6635f1170`) and C13's range cases (log row "a recovery the
+    precompile refuses answers the zero address"). **Released**: a keccak256 compute side-car in a per-call constructor
     (`EACCToken`'s EIP-712 constructor): the fixture's compile does not build the token, and the other half of that
     contract's refusal, inline assembly, is this round's per-body admission rule. Taking it up needs the constructor
     guard in `support.ts` narrowed to a loop and the genesis co-spend in `deploy/genesis.ts`. Also released: the
@@ -1626,16 +1629,13 @@ risk. Take the slices in order, each with its own tests.
     reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
-  - **Claimed by the parallel worker, from `dc4c1bdc6`** (user direction 2026-09-29: work the items this round is
-    not on, in a separate scratch copy): the ECDSA clauses of #41 `take job > sanity checks`, which no wall this
-    round holds covers. The value items held in the bullet above stay held.
-    - Measured before starting: the relaxed ladder harness does not check a revert's reason or a custom error's
-      arguments (`revertedWith` passes any refusal that is not a construction failure, and `withArgs` passes
-      through when no argument tuple is attached), so the ECDSA item below is strict parity, not a wall.
-    - **C13 (P18, G2 row 22): `ecrecover` returns address 0 for invalid input.** OZ `ECDSA.recover` over 65 zero
-      bytes (`v = 0`) has to reach its own `revert ECDSAInvalidSignature()`, which needs a recovery the composer
-      can witness as invalid rather than a pair it cannot split. Files: the per-call `ecrecover` emission in the
-      compiler, `src/ecrecover/` and `composer/recovery.ts`.
+  - **Claimed by the parallel worker, from `6b07357ce`:** C14, measured on the per-call path first. An entry that
+    reads `msg.sender` and writes a scalar settles when another entry calls it, through `f()` or `this.f()`. What
+    fails is an internal call to an entry that writes a mapping: the whole compile throws `InvalidParameterTypeError`
+    (the callee's batch witnesses are not the call's arguments), in both conventions, when the message bus is off
+    and the contract declares no internal helper. The void-helper inliner that inlines the called entry runs there
+    only when one exists: an unrelated private helper makes the same source compile. Files: the inliner gate in
+    `compiler.ts`.
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a
@@ -2609,3 +2609,4 @@ writing frame computed, with a record output no frame computed refused by the va
 | 2026-09-29 | 2ce840bcc, c2357b1f1, d6cdc439d (+ the read fix of this round) | per-call | the ladder is still 14/66, but the wall moved a full step: the hop plans the calls and cannot find the callee's deployment | n/a | **The canonical ladder at the built state above (9 sources, 7 artifacts, census 2 — `FakeToken.transferFrom` served): 14 passed | 52 failed (66).** Times: full run **3105.0 s** (`Duration`), first title (the fixture's deployment) **316.0 s**, slowest next `arbitrate 80-20` **84.2 s**, sum of the 66 per-test times **3091.2 s**, median **53.6 s**; the per-title table is the `m1-run-11.log` section of `probes/LADDER_TIMES.md`. The count is unchanged and the wall is not: the hop's `the call ... runs conditional, and the hop declares one record per call the source fixes` refusal is gone, and **40** titles now stop one step further on `the call to "MarketplaceDataV1.arbitratorRegistered" targets aa20…, and none of the deployment's contracts sits at that address`, with **9** more reaching it through an expected-revert assertion — so all 49 are the same wall: the calling entry's own state names its callee at the address of a *proxied* per-call deployment, and the hop has no live deployment to read there. **3** titles fail on a read whose key an index arithmetic names (`getArbitrators`/`getUsers` over `map[id + i]`), where the earlier `undefined` decode is gone. Scoreboard unchanged (14 green). Logs: `{SCRATCH}/ladder/m1-run-11.log`, `{SCRATCH}/ladder/m1-compile-11.log`. |
 | 2026-09-29 | (this row's commit) | per-call | a helper arm a literal argument rules out is dropped, and the census is 0 | 115 + 614 + 966 (+2 testing) | **`MarketplaceV1.refuseArbitration` is served, and with `171b7a8ca` serving `Unicrow.pay` the census is 0: every entry of the seven marketplace roots compiles per-call.** Its refusal (a mapping write whose key reads `jobs[jobId_].roles.worker`, an element of a dynamic state array) came from code that never runs there: the entry inlines `_refund(jobId_, false)`, and the whitelist update sits in `_refund`'s `if (byWorker)` arm. Measured on a neutral reduction with the ladder's options: with the arm the entry is refused with the census's exact reason, without it the entry is served, and the entry that passes `true` (`refund`) is served either way. A new pass, `FoldConstantBoolBranches`, drops the arm a branch never runs when its condition is a boolean literal or a local declared once with one and never assigned, which is what every inliner leaves for a literal argument; it keeps the branch node for an arm that runs, so later passes see the shape they expect (unwrapping the arm into a bare block broke `refund`'s memory-array key), and leaves a compiler-owned flush alone. It runs after the helper inliners, and once earlier on the message-bus path, before the entry witnesses are injected from the writes a body makes. **Measured** by compiling each of the seven real roots with the ladder's options: at `171b7a8ca` the one refusal is `refuseArbitration`, and with the pass there is none, every other root unchanged; the full compiler suite differs from HEAD only by the new case passing (5,847 cases, the 246 pre-existing failures identical); both per-call suites pass. Pinned by `master/inlined-literal-branch.test.ts`: the `false` entry is served and publishes no whitelist access, the `true` entry keeps it, and a non-literal argument keeps the refusal. |
 | 2026-09-29 | (this row's commit) | per-call | a revert's arguments are read from the failing state | 115 + 614 + 984 (+2 testing) | **E3's argument half: a refused composition reports the values its custom error was raised with, with no change to any program.** A `revert <Error>(...)` stays an unconditional `OP_0 OP_VERIFY` (there is no revert data on BCH), so nothing is evaluated on chain; instead the compiler publishes, beside the site's message, where each argument sits when the revert fails, in the error's declared order: a variable's depth on the stack (read before the failure is pushed, the place the failing state still holds), a literal's own bytes, and a cast's own conversion bytecode (`compileCast`, so `uint256(bytes32)` under Solidity compatibility replays `OP_REVERSEBYTES OP_BIN2NUM`). Any other expression is published as unplaced. The refusal report reads the values from the machine's failing state, replays a conversion on the machine itself and decodes by the declared type; it reports all of them or none. A proxy hop's refused implementation entry carries them as `errorArgs` on its error, which the testing layer's `revertedWithCustomError(...).withArgs(...)` already reads, so that matcher becomes strict wherever the values are known and stays as lenient as before where they are not. **Measured**: a callee reverting with literals reports `[100n, 50n]`; one reverting with the transaction's input count and `int(bytes4 0x01020304)` reports the count and `0x04030201n`; MS10's `Rejected(7, 3)` reports `[7n, 3n]`; a proxied entry's `Short(by, held)` carries `[100n, 5n]`. The full compiler suite matches its baseline (no bytecode change). The MANIFEST's `reads/` and `call/` rows are refreshed from the run, which also counts the cases `9d2b17549`, `75582e31d` and `d0dff7673` added (five of them skipped). |
+| 2026-09-29 | (this row's commit) | per-call | a recovery the precompile refuses answers the zero address | 115 + 617 + 985 (+2 testing) | **C13 for every argument the EVM's precompile refuses by range: a per-call body answers `address(0)` and reads no pair.** No side-car pair recovers from those arguments (a `v` outside 27/28 fails the checkpoint covenant's parity binding, and an `r` of 0 has no square root), so a call like OZ's `recover` over 65 zero bytes could not be formed at all: the derivation stopped on `the body binds a 96-byte recovery argument` before the body could reach its own revert. The per-call body now tests the four arguments before it reads its pair (`v` in 27/28, `r` and `s` as unsigned little-endian words in [1, n)) and otherwise drops them for the zero address, empty as `address(0)` is. The composer co-spends a placeholder pair there, a valid pair over drawn scalars as it already co-spends for a recovery the body never reaches; a computed recovery's placeholder is simply never bound. **Measured** on the machine: a `v` of 0, an `s` of n or 2^256 - 1, an `r` of n, an `r` or `s` of 0, and the all-zero digest and words each answer the zero address with the master and both side-cars accepting, while an `s` of n - 1 binds the pair; the bare name in the ladder's mode compares equal to `address(0)`; and through the shipped call path an entry that recovers from a 65-zero-byte signature is refused by its own `revert InvalidSignature()`, its placeholder pair accepting (with HEAD's compiler the same call throws the 96-byte error). **Open**: an `r` in range but off the curve still sends the body to a pair none recovers, where the precompile answers zero (serving it needs a witness that `-(r^3 + 7)` is a square mod p, a few operations for the body to check), a recovery at infinity likewise, and the direct convention has no zero-address rule. The full compiler suite moves by the four new cases and nothing else. Releases the parallel worker's ECDSA claim, and claims C14 in its place. |

@@ -335,6 +335,9 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
+/** The secp256k1 group order; the EVM's `ecrecover` refuses an `r` or `s` outside [1, n). */
+const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
 /**
  * Diagnostic switch for compute/participant block-base resolution. A block base is addressed by a stack index,
  * and an index that is one slot off silently reads a NEIGHBOURING frame value (measured: a route handler read
@@ -11996,6 +11999,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[p] = this.visit(node.parameters[p]);
       if (reverseEvmScalars && p !== 1) this.emit(Op.OP_REVERSEBYTES, loc);
     }
+    // A per-call body answers the EVM's zero address for a recovery its precompile refuses, without reading the
+    // pair: the pair the composer co-spends there is one the body never binds.
+    const zeroOnRefusal = this.perCallMaster;
+    if (zeroOnRefusal) {
+      this.emitRecoveryAccepted(loc);
+      this.emit(Op.OP_IF, loc);
+    }
     this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_CAT, loc); // [.., argBlob]
     // Sync the tracker to the VM: four argument copies were physically collapsed to one argBlob. Every later
     // tracked read (loop counters, scoped compute bases, and caller-frame values) must use that physical width.
@@ -12125,6 +12135,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(encodeInt(12n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_NIP, loc); // [R[12:32] = addr20]
     }
+    if (zeroOnRefusal) {
+      // [hash, v, r, s] -> the zero address, empty as `address(0)` is.
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
     if (loop) {
       // The tracker was already reconciled to the pre-arg baseline (popFromStack 3 + 1), so just track the result,
       // then advance the loop counter so the next iteration reads the next recovery pair.
@@ -12137,6 +12153,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.dropCapturedComputeSidecarBlockBase(capturedComputeBase, node);
     return node;
+  }
+
+  /**
+   * Whether the EVM's precompile recovers from these arguments: `v` is 27 or 28, and `r` and `s`, read as unsigned
+   * little-endian words, are in [1, n). Stack: [hash, v, r, s] -> [hash, v, r, s, accepted].
+   */
+  private emitRecoveryAccepted(loc: SingleLocationData): void {
+    this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(encodeInt(27n), loc); this.emit(encodeInt(29n), loc); this.emit(Op.OP_WITHIN, loc);
+    // r sits under s and the flag, then s under the flag.
+    for (const depth of [2n, 1n]) {
+      this.emit(encodeInt(depth), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(hexToBin('00'), loc); this.emit(Op.OP_CAT, loc); this.emit(Op.OP_BIN2NUM, loc);
+      this.emit(encodeInt(1n), loc); this.emit(encodeInt(SECP256K1_ORDER), loc); this.emit(Op.OP_WITHIN, loc);
+      this.emit(Op.OP_BOOLAND, loc);
+    }
   }
 
   visitFunctionCall(node: FunctionCallNode): Node {

@@ -35,11 +35,11 @@ import { publishedRefusals } from './refused-entry.js';
  * input shape and drive a real spend on the BCH-2026 machine, with the machine's own verdict as the assertion.
  *
  * The side-car is signature-independent and self-verifying: as docs/ecrecover.md records, it commits whatever key
- * its witnessed `(hash, v, r, s)` recover, and the master compares that key against the source's. So the per-call
- * path has no zero-address sentinel. Measured here: a `v` outside 27/28 is refused by the covenant's own parity
- * binding so no pair can be co-spent at all; an all-zero digest makes the witness's square root fail, so no pair
- * is built; an out-of-range `s` yields a key that is not the expected signer, so the master's comparison rejects
- * the spend. None of them answers address zero, and the invalid-input rule the design asks for is not reachable.
+ * its witnessed `(hash, v, r, s)` recover, and the master compares that key against the source's. No pair recovers
+ * from the arguments the precompile refuses (a `v` outside 27/28 fails the checkpoint covenant's parity binding, an
+ * `r` of 0 has no square root), so the per-call body tests them itself: for a `v` outside 27/28, or an `r` or `s`
+ * outside [1, n), it answers the zero address, empty as `address(0)` is, without reading the pair the composer
+ * co-spends there. An `r` in range but off the curve is still open: the body binds a pair, and none recovers.
  *
  * The direct-convention control compiles the same valid source, where the call is served and marked as recovery
  * compute - so what the per-call cases below show is the per-call convention's own behaviour.
@@ -441,13 +441,93 @@ describe('a per-call body that recovers a signer', () => {
   });
 });
 
+/** The secp256k1 group order. */
+const ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+/** A 32-byte little-endian word, the form the builtin takes its scalars in. */
+function leWord(value: bigint): Uint8Array {
+  const word = new Uint8Array(32);
+  for (let index = 0; index < 32; index += 1, value >>= 8n) word[index] = Number(value & 0xffn);
+  return word;
+}
+
+/** A master whose body requires its recovery to answer the zero address. */
+const zeroProgram = (args: { h: Uint8Array; v: number; r: Uint8Array; s: Uint8Array }): Uint8Array =>
+  compileRecoverySource(args, 'pubkey(0x)', 'pubkey');
+
 describe('the EVM invalid-input rule on the per-call path', () => {
+  it('answers the zero address for a recovery id outside 27/28, binding no pair', () => {
+    // The body reads no pair here, so the signer's own pair holds the place, unbound, and accepts on its own.
+    const { a, b } = signerPairOnce();
+    const spend = buildSpend(zeroProgram({ ...signer, v: 0 }), [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
+    });
+    // The control: the recovery the precompile accepts answers the signer's key.
+    expect(verdicts(buildSpend(zeroProgram(signer), [a, b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+  });
+
+  it('answers the zero address for an r or s outside [1, n), and reads the pair at n - 1', () => {
+    const { a, b } = signerPairOnce();
+    const outside = [
+      { ...signer, s: new Uint8Array(32).fill(0xff) }, { ...signer, s: leWord(ORDER) }, { ...signer, r: leWord(ORDER) },
+      { ...signer, s: leWord(0n) }, { ...signer, r: leWord(0n) },
+    ];
+    for (const args of outside) {
+      expect(verdicts(buildSpend(zeroProgram(args), [a, b]), [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: true });
+    }
+    // In range, the body binds the pair, which recovers the signer's own arguments rather than these.
+    const inRange = buildSpend(zeroProgram({ ...signer, s: leWord(ORDER - 1n) }), [a, b]);
+    expect(verdicts(inRange, [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+  });
+
+  it('answers the zero address for the all-zero digest and words, from which no pair recovers', () => {
+    const zero = new Uint8Array(32);
+    expect(() => computeEcrecoverWitness(zero, 0, zero, zero)).toThrow(/Cannot find square root/);
+    const { a, b } = signerPairOnce();
+    const spend = buildSpend(zeroProgram({ h: zero, v: 0, r: zero, s: zero }), [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
+      [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
+    });
+  });
+
+  it('answers address(0) through the bare name in P2PKH mode, as a Solidity port compares it', () => {
+    const word = `bytes32(0x${'11'.repeat(32)})`;
+    const artifacts = compilePerCall('pragma solidity ^0.8.0;'
+      + ' contract Auth {'
+      + '   function check() public pure {'
+      + `     require(ecrecover(${word}, 0, ${word}, ${word}) == address(0));`
+      + '   }'
+      + ' }', { solidityImportCompat: true, ecrecover: 'p2pkh' });
+    expect(publishedRefusals(artifacts)).toStrictEqual([]);
+    const { a, b } = signerPairOnce();
+    expect(verdicts(buildSpend(masterProgram(artifacts, 'Auth'), [a, b]), [MASTER_INDEX]))
+      .toStrictEqual({ [MASTER_INDEX]: true });
+  });
+
+  it('has no pair for an r in range but off the curve, which the body still binds', () => {
+    // The open failure path: no y has y^2 = r^3 + 7, so no pair recovers, and the range check sends the body to one.
+    let x = 1n;
+    const offCurve = (): boolean => {
+      try {
+        computeEcrecoverWitness(signer.h, 27, leWord(x), signer.s);
+        return false;
+      } catch (error) {
+        return /Cannot find square root/.test(String(error));
+      }
+    };
+    while (!offCurve()) x += 1n;
+    const { a, b } = signerPairOnce();
+    const spend = buildSpend(zeroProgram({ ...signer, v: 27, r: leWord(x) }), [a, b]);
+    expect(verdicts(spend, [MASTER_INDEX])).toStrictEqual({ [MASTER_INDEX]: false });
+  });
+
   it('has no pair for a recovery id outside 27/28: the checkpoint covenant refuses it', () => {
     // Side-car A verifies `Ry mod 2 == v - 27` on its own budget, so a recovery id outside 27/28 fails `OP_VERIFY`
     // at every split; the split probe reports its generic no-split message because a covenant error reads as an
     // over-budget split. B alone re-derives no parity, so its own script accepts - but the transaction that spends
-    // the pair cannot validate while A fails, so no spend can carry a `v` outside 27/28. Every such id fails the
-    // same way, and the probe tries every split, so `v = 0` stands for them.
+    // the pair cannot validate while A fails, which is why the body answers such an id itself (above). Every such
+    // id fails the same way, and the probe tries every split, so `v = 0` stands for them.
     const v = 0;
     const witness = computeEcrecoverWitness(signer.h, v, signer.r, signer.s);
     expect(() => probeEcrecoverSplit(
@@ -458,35 +538,4 @@ describe('the EVM invalid-input rule on the per-call path', () => {
     expect(verdicts(spend, [A_INDEX, B_INDEX])).toStrictEqual({ [A_INDEX]: false, [B_INDEX]: true });
   });
 
-  it('has no pair for the all-zero digest and words: the witness has no square root', () => {
-    // `r = 0` has no `y` with `y^2 = r^3 + 7`, so the SDK cannot build a side-car for the spelling of "no
-    // signature" at all; the body still compiles, but no spend can be formed for it.
-    const zero = new Uint8Array(32);
-    expect(() => computeEcrecoverWitness(zero, 0, zero, zero)).toThrow(/Cannot find square root/);
-    const program = compileRecoverySource({ h: zero, v: 0, r: zero, s: zero }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
-    expect(program.length).toBeGreaterThan(0);
-  });
-
-  it('answers a non-matching key for an out-of-range s rather than address zero', async () => {
-    // `s` above the curve order is used verbatim, so a key is recovered - just not the signer's. The master's
-    // comparison rejects the spend; nothing answers the zero address. The out-of-range witness decomposes on its
-    // own, so a signer is drawn until its ladder splits too.
-    const outOfRange = new Uint8Array(32).fill(0xff);
-    let drawn = signer;
-    let witness = computeEcrecoverWitness(drawn.h, drawn.v, drawn.r, outOfRange);
-    for (let attempt = 0; !splits(witness); attempt += 1) {
-      if (attempt >= 200) throw new Error('no out-of-range witness with a two-covenant split after 200 draws');
-      drawn = await splittableSigner();
-      witness = computeEcrecoverWitness(drawn.h, drawn.v, drawn.r, outOfRange);
-    }
-    const program = compileRecoverySource(
-      { ...drawn, s: outOfRange }, `pubkey(0x${binToHex(drawn.owner)})`, 'pubkey',
-    );
-    const { a, b } = recoveryPair(witness);
-    const spend = buildSpend(program, [a, b]);
-    expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
-      [MASTER_INDEX]: false, [A_INDEX]: true, [B_INDEX]: true,
-    });
-    expect(binToHex(witness.compressedQ)).not.toBe(binToHex(drawn.witness.compressedQ));
-  }, 120_000);
 });

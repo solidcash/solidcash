@@ -73,11 +73,21 @@ let guard: Artifact;
 beforeAll(() => {
   signer = splittableSigner();
   guard = compileStringMulti('pragma solidcash ^0.13.0;'
+    + ' error InvalidSignature();'
     + ' contract Guard {'
     + '   int public counter;'
     + '   function bump(bytes prefix, bytes left, int v, bytes32 r, bytes32 s) {'
     + '     bytes32 h = keccak256(bytes.concat(prefix, keccak256(left)));'
     + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(0x${binToHex(signer.owner)}));`
+    + '     this.counter = this.counter + 1;'
+    + '   }'
+    + '   function take(bytes32 h, bytes signature) {'
+    + '     bytes32 r = bytes32(signature.slice(0, 32));'
+    + '     bytes32 s = bytes32(signature.slice(32, 64));'
+    + '     int v = int(signature.slice(64, 65));'
+    + '     pubkey recovered = ecrecoverPubKey(h, v, r, s);'
+    + '     if (recovered == pubkey(0x)) { revert InvalidSignature(); }'
+    + `     require(recovered == pubkey(0x${binToHex(signer.owner)}));`
     + '     this.counter = this.counter + 1;'
     + '   }'
     + '   function current() view returns (int) { return this.counter; }'
@@ -150,6 +160,30 @@ describe('a call whose entry hashes and recovers through compute side-cars', () 
     expect(second.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(bytesToHex(second.writtenCommitments[0]!)).toBe(commitment(2n));
     expect(second.broadcast).toBeDefined();
+  }, 120_000);
+
+  it('answers the zero address for a signature of 65 zero bytes, so the body reaches its own revert', async () => {
+    // `v` is 0, which the precompile refuses: the body reads no pair and its own `revert` is the refusal, while
+    // the placeholder pair the call co-spends accepts on its own.
+    const deployed = await deploy();
+    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 300_000n };
+    await deployed.provider.addUtxo(binToHex(deployed.callerLock), callerUtxo);
+    const refused = await callPerCallEntry({
+      provider: deployed.provider,
+      artifact: guard,
+      categoryId: deployed.categoryId,
+      functionName: 'take',
+      args: [DIGEST, new Uint8Array(65)],
+      callerUtxo,
+      callerLockingBytecode: deployed.callerLock,
+      funder: deployed.funder,
+      vm: compositionMachine(),
+    });
+    expect(refused.refusal?.innermost?.reason.error?.name).toBe('InvalidSignature');
+    const accepted = new Map(refused.verdicts.map((verdict) => [verdict.id, verdict.accepted]));
+    expect([accepted.get('master'), accepted.get('master/recovery-A0'), accepted.get('master/recovery-B0')])
+      .toStrictEqual([false, true, true]);
+    expect(refused.broadcast).toBeUndefined();
   }, 120_000);
 
   it('refuses by name a call on a network whose side-car pool is short', async () => {

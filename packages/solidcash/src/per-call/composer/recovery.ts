@@ -11,7 +11,9 @@
  * only resolves each call's scalars from the master's own argument pushes and shapes the two inputs a draft takes.
  * The salt brands the side-car; the compiled check strips it before hashing the covenant, so any salt the caller
  * states works. Scalars the body computes are learned from the body's own bind: the pair is built over placeholder
- * scalars and rebuilt over the ones the body binds.
+ * scalars and rebuilt over the ones the body binds. For scalars the EVM's precompile refuses by range (a `v`
+ * outside 27/28, an `r` or `s` outside [1, n)) the body answers the zero address without reading its pair, so a
+ * placeholder pair holds the place.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
@@ -188,6 +190,19 @@ function recoveryScalarsOf(blob: Uint8Array): RecoveryScalars {
   return { hash: blob.slice(0, 32), v: blob[32]!, r: blob.slice(33, 65), s: blob.slice(65) };
 }
 
+/**
+ * Whether a body recovers from these scalars, as it tests them: `v` 27 or 28, and `r` and `s`, read as unsigned
+ * little-endian words, in [1, n). For any others it answers the zero address without reading its pair.
+ */
+function bodyRecovers(scalars: RecoveryScalars): boolean {
+  const inRange = (word: Uint8Array): boolean => {
+    let value = 0n;
+    for (let index = word.length - 1; index >= 0; index -= 1) value = (value << 8n) | BigInt(word[index]!);
+    return value >= 1n && value < secp256k1.CURVE.n;
+  };
+  return (scalars.v === 27 || scalars.v === 28) && inRange(scalars.r) && inRange(scalars.s);
+}
+
 /** A 32-byte little-endian word, the form the recovery builtin reads its scalars in. */
 function littleEndianWord(value: bigint): Uint8Array {
   const word = new Uint8Array(32);
@@ -274,6 +289,8 @@ export function buildRecoverySideCars(
         master, placeholder: placeholder.argument, settle: (value) => over(recoveryScalarsOf(value)),
       });
       settled = placeholder.settled;
+    } else if (!bodyRecovers(call)) {
+      settled = placeholderRecovery(`${master}/recovery-${index}`, over).settled;
     } else {
       settled = over(call);
     }

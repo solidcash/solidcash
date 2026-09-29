@@ -442,11 +442,16 @@ describe('the recovery side-cars the composer places', () => {
 });
 
 describe('the EVM invalid-input rule through the composer', () => {
-  // A recovery id outside 27/28 and an out-of-range `s` reach the same split probe and pair builders the compiler
-  // suite drives directly (`master/ecrecover-invalid-input.test.ts`), which pins both.
-  it('refuses to build a pair for the all-zero digest and words', () => {
+  // No pair recovers from these scalars, and the body answers the zero address for them without reading one, so
+  // the composer co-spends a placeholder pair that holds the place (`master/ecrecover-invalid-input.test.ts` pins
+  // each range the body tests).
+  it('co-spends a placeholder pair where the body answers the zero address, and every input accepts', () => {
     const zero = new Uint8Array(32);
-    expect(() => recoveryCase({ h: zero, v: 0, r: zero, s: zero }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'))
-      .toThrow(/Cannot find square root/);
+    for (const scalars of [{ h: zero, v: 0, r: zero, s: zero }, { ...signer, v: 0 }]) {
+      const test = recoveryCase(scalars, 'pubkey(0x)', 'pubkey');
+      const verdicts = verdictsOf(test);
+      expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
+      for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
+    }
   });
 });

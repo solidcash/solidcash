@@ -1491,8 +1491,8 @@ export class StatefulTransactionBuilder {
   }> = [];
   /** Last VM pin redeem lock for the jobEvents band (emitValueChunkP2sh32). */
   private jobEventsRedeemLock?: Uint8Array;
-  /** Persist band must start after the executing emit dest (INPUTINDEX+4). */
-  private forcedJobEventsBandStart?: number;
+  /** A selected writer's persisted continuation band starts after its emitted event output. */
+  private forcedChunkableValueWriteBandStart?: number;
   /** True while building one balanced participant of an atomic composition (its blocks are concatenated). */
   private composedParticipant = false;
   private composedBlockBase?: number;
@@ -2020,7 +2020,7 @@ export class StatefulTransactionBuilder {
     return {
       ...this._scaledPreserveEmitHost(),
       pendingJobEventsPredecessors: this.pendingJobEventsPredecessors,
-      forcedJobEventsBandStart: this.forcedJobEventsBandStart,
+      forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       detachedEventReceipts: this.detachedEventReceipts,
       builderOptions: this.builderOptions,
       ensureDistinctJobEventNfts: (builder) => {
@@ -3417,7 +3417,7 @@ export class StatefulTransactionBuilder {
       derivedChunkOutputs: this.derivedChunkOutputs,
       allInputs: this.allInputs,
       composedParticipant: this.composedParticipant,
-      forcedJobEventsBandStart: this.forcedJobEventsBandStart,
+      forcedChunkableValueWriteBandStart: this.forcedChunkableValueWriteBandStart,
       mintingOutputSwap: this.mintingOutputSwap,
       chunkableValueWriteExecution: () => this._chunkableValueWriteExecution(),
       chunkableValueWriteGroups: () => this._chunkableValueWriteGroups(),
@@ -4984,7 +4984,7 @@ export class StatefulTransactionBuilder {
       ?? this.jobEventsRedeemLock
       ?? (categoryId ? persistedJobEventsLock(categoryId) : undefined);
     if (!value || !lock) return 0;
-    if (this.bumpPublishJobEventsWidth(valueChunkCountFor(value))) this._refreshInputs();
+    if (this.bumpChunkableValueWriteWidth(valueChunkCountFor(value))) this._refreshInputs();
     const live = this.getChunkableValueWriteBand() ?? band;
     return seedChunksFromPersistedValue(
       (outputIndex, chunk) => this.setDerivedChunkOutput(outputIndex, {

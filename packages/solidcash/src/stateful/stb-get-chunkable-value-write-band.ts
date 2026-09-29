@@ -41,7 +41,7 @@ export interface GetChunkableValueWriteBandHost {
   readonly derivedChunkOutputs: ReadonlyMap<number, DerivedChunkOutputObservation>;
   readonly allInputs: readonly UnlockableUtxo[];
   readonly composedParticipant: boolean;
-  readonly forcedJobEventsBandStart?: number;
+  readonly forcedChunkableValueWriteBandStart?: number;
   readonly mintingOutputSwap?: { from: number; width: number; categoryId: string };
   chunkableValueWriteExecution(): ChunkableValueWriteExecution | undefined;
   chunkableValueWriteGroups(): ChunkableValueWriteGroups;
@@ -136,9 +136,9 @@ export function getChunkableValueWriteBand(
   );
   const insertShift = persistWidth > 0 ? 0
     : (plannedInserts > 0 || valueChunkEntryCount === 0 ? 1 : 0);
-  // Persist dest is INPUTINDEX+event.offset of the executing publishJobEvent.
-  // The value-chunk band is impl+blockSize. If those disagree, dest can land
-  // on a persist predecessor (output 20/21) and mutable conservation fails.
+  // The selected writer's event output is executor+event.offset. The value-chunk band is
+  // executor+blockSize; keep both coordinates in the layout so it cannot land on a
+  // persisted predecessor and violate mutable-token conservation.
   if (persistWidth > 0) {
     const emitImpl = host.chunkableValueWriteInputIndex();
     const emitOffset = (publishFn as AbiFunction | undefined)?.blockLayout?.slots
@@ -146,7 +146,7 @@ export function getChunkableValueWriteBand(
     if (emitImpl >= 0) bases.push(emitImpl + emitOffset + 1);
   }
   const layoutStart = bases.length > 0 ? Math.max(...bases) + insertShift : undefined;
-  const forcedStart = host.forcedJobEventsBandStart;
+  const forcedStart = host.forcedChunkableValueWriteBandStart;
   const publishImpl = host.chunkableValueWriteInputIndex();
   const tokenWriter = host.externalCallUtxoGroups.find((group) =>
     isCompilerDescribedMintingBandWriter(group, true, host.messageBusConvention));

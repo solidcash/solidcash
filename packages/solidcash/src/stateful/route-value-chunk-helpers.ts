@@ -530,7 +530,7 @@ export function deriveRouteValueChunks(
         ...chunk,
         categoryId: group.categoryId,
       })));
-      if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
+      if (stb.bumpChunkableValueWriteWidth(allChunks.length)) stb._refreshInputs();
     }
   }
   const resourceIdentity = resourceSelection.status === 'exact'

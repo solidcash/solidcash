@@ -48,7 +48,7 @@ import { placeChunkableWriterEventOutput } from './writer-event-delegate-layout.
 
 export interface NestedEmitEventsHost extends ScaledPreserveEmitHost {
   readonly pendingJobEventsPredecessors: UnlockableUtxo[];
-  forcedJobEventsBandStart?: number;
+  forcedChunkableValueWriteBandStart?: number;
   detachedEventReceipts: Array<{ eventSignature: string; commitment: string }>;
   readonly builderOptions: { provider: object };
   ensureDistinctJobEventNfts(builder: TransactionBuilder): void;
@@ -318,7 +318,7 @@ export function reassertNestedEmitEvents(
   if (!placed && !legacyEventFallback) return;
   host.ensureDistinctJobEventNfts(builder);
   if (persistEmit && dest >= 0) {
-    host.forcedJobEventsBandStart = dest + 1;
+    host.forcedChunkableValueWriteBandStart = dest + 1;
     host.placeJobEventsPredecessorInputs(host.pendingJobEventsPredecessors);
     host.materializeJobEventsBand(builder);
     host.reassertPersistedJobEventsOneToOnes(builder, dest);

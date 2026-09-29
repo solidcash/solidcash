@@ -437,7 +437,7 @@ if (chunkCategory && allChunks.length > 0) {
       categoryId: chunkCategory,
     })));
   }
-  if (stb.bumpPublishJobEventsWidth(allChunks.length)) stb._refreshInputs();
+  if (stb.bumpChunkableValueWriteWidth(allChunks.length)) stb._refreshInputs();
   if (lastExtractedComputedValue) {
     const selection = selectValueChunkWriteCategory(valueChunkWrites.filter(
       (write) => write.categoryId.toLowerCase() === chunkCategory.toLowerCase(),

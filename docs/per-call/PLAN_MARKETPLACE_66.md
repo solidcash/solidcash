@@ -1460,6 +1460,17 @@ risk. Take the slices in order, each with its own tests.
   marketplace replica so far is the arbitration shape: twenty calls and twenty-one masters, depth four, its heaviest
   case 4.8 s and the whole file 14.5 s (`shapes/deep-arbitration.test.ts`). The market transaction's own size waits
   for the project compile.
+- [x] The validator split across inputs (spec section 24). **Measured** at the split's landing, on the
+  reference composition's published-density case with the chain profile (`maximumInputBytes = 10_000`, density
+  `800`): the single script it replaced was **11,833 bytes of program / 11,917 of unlocking** (over the cap), the
+  head is **8,248 / 8,332** and the facet **4,882 / 4,885** (both under it), with operation cost 2,923,107 of
+  6,698,400 (43.6%) in the head and 3,024,653 of 3,940,800 (76.8%) in the facet. Every participant of a composed
+  caller/callee pair is accepted under that profile
+  (`packages/solidcash/test/per-call/validator/consensus-limits.test.ts`, which also asserts the mock's caps are
+  lifted and that moving the lock at `head + 1` is refused). **Still over at wider widths**: the facet's operation
+  cost grows super-linearly with the composition while its byte budget is fixed — 9 masters 1.18×/2.82×, 16 masters
+  8.16×, 24 masters 19.35× — so the split alone does not make a twenty-four-master composition fit; the walks
+  themselves have to be split further, each part's share bounded. Recorded for Phase R rather than fitted here.
 - [ ] Chunk outputs per `jobEvents` append, and over 30 updates of one job.
 - [ ] VM runs per master during derivation (should be 1 with resumption, E1).
 - [x] Ladder wall time, per test and in full, recorded for every run (user direction 2026-09-29). The canonical

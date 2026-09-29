@@ -118,9 +118,13 @@ export async function allocateCreateBuilderFunders(
     const tcInfos = builder.getTokenContainerInfos();
     timing?.('funder-token-infos');
     // Dynamic trailing outputs are addressed after the compiler's complete fixed block. If that block includes
-    // an inactive returnEvent slot, compacting it shifts every predecessor or runtime event one position left.
+    // inactive returnEvent slots, compacting them shifts predecessor, chunk, or runtime-event inputs left of
+    // their published outputs. Chunk covenants independently require output[inputIndex] to recreate the NFT.
     const trailingGeometryNeedsReturnSlot = insertLoopPredecessors.length > 0
       || sortedLoopCommitments.size > 0
+      || iterationEntryInputs.length > 0
+      || dynamicChunkInputs.length > 0
+      || trailingDisposalInputs.length > 0
       || ((entryAbiFunction as MessageBusRuntimeAbiFunction | undefined)?.runtimeLoopEvents?.length ?? 0) > 0;
     let neededFunders = effectiveBlockLayout.slots.filter(
       (s) => outputOnlyKinds.has(s.kind)

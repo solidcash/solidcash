@@ -1249,7 +1249,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     const indices = callee.records.map((record) => participant(layout, record.id).index);
     // The frame's own call-data band is the pushes of the call that reaches it; a callee a loop reaches has several
     // records, and the first of them carries the same selector and shape as the rest.
-    const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? new Uint8Array(0);
+    const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? [];
     // A callee's own sender is the contract that calls it: the implementation's own address for a first-level
     // callee, and the calling callee's address below that.
     const sender = callee.enteredBy === null

@@ -255,11 +255,7 @@ async function splittableSigner(): Promise<Recovery> {
     const owner = hexToBin(ethers.SigningKey
       .computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true).slice(2));
     const witness = computeEcrecoverWitness(h, v, rLe, sLe);
-    try {
-      probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
-    } catch {
-      continue; // a width-0 signature; draw another
-    }
+    if (!splits(witness)) continue; // a width-0 signature; draw another
     return { h, v, r: rLe, s: sLe, owner, address: hexToBin(wallet.address.slice(2)), witness };
   }
   throw new Error('no signature with a two-covenant split after 200 draws');
@@ -296,9 +292,21 @@ const sideCarSource = (car: SideCar): VmSourceOutput => ({
   lockingBytecode: car.lock, valueSatoshis: 100_000n, token: token(SIDECAR_CAT, 'mutable'),
 }) as VmSourceOutput;
 
+/** Whether a witness's GLV ladder fits the two-covenant split. */
+function splits(witness: EcrecoverWitness): boolean {
+  try {
+    probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Builds the A/B recovery pair for a witness at a fixed split. */
 function recoveryPair(witness: EcrecoverWitness): { readonly a: SideCar; readonly b: SideCar } {
-  const chunkA = probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never);
+  const chunkA = probeEcrecoverSplit(
+    witness, SHARED_LIBRARY_SALT, dummySideCar(false) as never, dummySideCar(true) as never,
+  );
   return pairAt(witness, chunkA);
 }
 
@@ -462,19 +470,26 @@ describe('the EVM invalid-input rule on the per-call path', () => {
     expect(program.length).toBeGreaterThan(0);
   });
 
-  it('answers a non-matching key for an out-of-range s rather than address zero', () => {
+  it('answers a non-matching key for an out-of-range s rather than address zero', async () => {
     // `s` above the curve order is used verbatim, so a key is recovered - just not the signer's. The master's
-    // comparison rejects the spend; nothing answers the zero address.
+    // comparison rejects the spend; nothing answers the zero address. The out-of-range witness decomposes on its
+    // own, so a signer is drawn until its ladder splits too.
     const outOfRange = new Uint8Array(32).fill(0xff);
-    const witness = computeEcrecoverWitness(signer.h, signer.v, signer.r, outOfRange);
+    let drawn = signer;
+    let witness = computeEcrecoverWitness(drawn.h, drawn.v, drawn.r, outOfRange);
+    for (let attempt = 0; !splits(witness); attempt += 1) {
+      if (attempt >= 200) throw new Error('no out-of-range witness with a two-covenant split after 200 draws');
+      drawn = await splittableSigner();
+      witness = computeEcrecoverWitness(drawn.h, drawn.v, drawn.r, outOfRange);
+    }
     const program = compileRecoverySource(
-      { ...signer, s: outOfRange }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey',
+      { ...drawn, s: outOfRange }, `pubkey(0x${binToHex(drawn.owner)})`, 'pubkey',
     );
     const { a, b } = recoveryPair(witness);
     const spend = buildSpend(program, [a, b]);
     expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
       [MASTER_INDEX]: false, [A_INDEX]: true, [B_INDEX]: true,
     });
-    expect(binToHex(witness.compressedQ)).not.toBe(binToHex(signer.witness.compressedQ));
-  });
+    expect(binToHex(witness.compressedQ)).not.toBe(binToHex(drawn.witness.compressedQ));
+  }, 120_000);
 });

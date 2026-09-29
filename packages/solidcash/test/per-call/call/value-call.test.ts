@@ -510,3 +510,81 @@ describe('an entry that sends on a branch', () => {
     expect(containerValue(result, secondCategory)).toBe(8_000n);
   });
 });
+
+const PAID_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Tipped {'
+  + '   int public tips;'
+  + '   event Tip(int amount);'
+  + '   receive() external payable { this.tips = this.tips + msg.value; emit Tip(msg.value); }'
+  + ' }'
+  + ' contract Bank {'
+  + '   mapping(address => uint) balances;'
+  + '   constructor(address owner) { this.balances[owner] = 1; }'
+  + '   receive() external payable { this.balances[msg.sender] = this.balances[msg.sender] + msg.value; }'
+  + ' }'
+  + ' contract Payer {'
+  + '   int public paid;'
+  + '   receive() external payable { require(true); }'
+  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
+  + ' }';
+
+const paidBodies = compileStringMulti(PAID_BODIES_SOURCE, { composition: 'per-call' });
+
+/** Deploys a contract with constructor arguments on a deployment's provider, funded from the same wallet. */
+async function deployBesideWith(
+  deployed: Deployed, artifact: Artifact, args: readonly Uint8Array[], fundingTxid: string,
+): Promise<string> {
+  const signature = new SignatureTemplate(alicePriv);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: deployed.provider });
+  const fundingUtxo = { txid: fundingTxid, vout: 0, satoshis: 500_000n };
+  await deployed.provider.addUtxo(funder.address, fundingUtxo);
+  const deployment = await deployStatefulContract(artifact, [...args], {
+    provider: deployed.provider,
+    fundingUtxo,
+    funder: funder.unlock.spend(alicePub, signature),
+    changeAddress: funder.address,
+  });
+  return deployment.categoryId;
+}
+
+describe('a paid receive() that emits or writes a mapping', () => {
+  it('lists the event the paid body emits, learned from its own program', async () => {
+    const deployed = await deploy(paidBodies.Payer!);
+    const tippedCategory = await deployBeside(deployed, paidBodies.Tipped!, '4e'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(paidBodies.Tipped!, tippedCategory), 6_000n],
+      externals: { Tipped: { artifact: paidBodies.Tipped!, categoryId: tippedCategory } },
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Tipped.__receive()', 'Payer.pay()']);
+    // The event is an immutable NFT of the paid contract's own category.
+    const events = result.broadcast!.outputs.filter((output) => output.token !== undefined
+      && binToHex(output.token.category) === tippedCategory && output.token.nft?.capability === 'none');
+    expect(events).toHaveLength(1);
+    expect(containerValue(result, tippedCategory)).toBe(6_000n);
+  });
+
+  it('writes the paid body\'s mapping entry, created on the first payment and updated on the next', async () => {
+    const deployed = await deploy(paidBodies.Payer!);
+    const bankCategory = await deployBesideWith(deployed, paidBodies.Bank!, [deployed.callerLock], '4f'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const externals = { Bank: { artifact: paidBodies.Bank!, categoryId: bankCategory } };
+    const to = addressOf(paidBodies.Bank!, bankCategory);
+
+    const first = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 7_000n], externals,
+    });
+    expect(first.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(containerValue(first, bankCategory)).toBe(7_000n);
+
+    const second = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
+    });
+    expect(second.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(containerValue(second, bankCategory)).toBe(3_000n);
+  });
+});

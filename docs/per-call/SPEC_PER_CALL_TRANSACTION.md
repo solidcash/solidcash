@@ -514,8 +514,10 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   the recipient runs its `receive()`, else its payable `fallback()`. The sender's own code chooses by the lock's
   length, so no witness chooses it. The call is made after the sender's own code, as its frame's last calls. A
   recipient with neither body, or whose fallback is not payable, cannot run the frame, so the transaction fails, as
-  in the EVM; the SDK reads the recipient's artifact and refuses by name to compose such a send. A composed call
-  cannot fail (T22), so `send` and `call` return `true` whenever the transaction is valid.
+  in the EVM; the SDK reads the recipient's artifact and refuses by name to compose such a send. The SDK plans the
+  recipient body's events and mapping writes as it plans the sender's, learning what the body computed from the
+  recipient's own program; a recipient body that sends or calls is not composed yet. A composed call cannot fail
+  (T22), so `send` and `call` return `true` whenever the transaction is valid.
 - **No gas, so no stipend.** BCH has no counterpart of gas, so `receive()` and `fallback()` are more permissive
   than in the EVM: whichever spelling sent the value, the recipient's body may write state, emit, send and call,
   where the EVM's `transfer` and `send` give it a 2300-gas stipend, enough for little more than an event.

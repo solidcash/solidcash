@@ -31,7 +31,9 @@
  * and dropped when the body shows it was not: a listed send it never pinned, or a value call it never made. A
  * send to a contract is a call into its `receive()` (or its payable `fallback()`), made after the entry's own code:
  * the call resolves the recipient from the send's published recipe, finds it among `externals`, and plans the
- * frame of that body, whose containers take the value; a recipient with neither is refused by name.
+ * frame of that body, whose containers take the value; a recipient with neither is refused by name. The paid body
+ * may emit and write its mapping, both learned from its own program as the entry's are; one that sends or calls is
+ * refused by name.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -81,7 +83,7 @@ import {
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
-import { callEntryRecords } from './entry-records.js';
+import { callEntryRecords, type LaidCallEntryRecords } from './entry-records.js';
 import { entrySideCars } from './side-cars.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
@@ -215,6 +217,16 @@ function receiveMasterId(index: number): string {
 }
 function receiveRecordId(index: number, nftIndex: number): string {
   return `receive-${index}-record-${nftIndex}`;
+}
+/** A mapping node a paid contract's body writes, placed under its own id so two contracts' nodes never share one. */
+function receiveNodeId(index: number, id: string): string {
+  return `receive-${index}-${id}`;
+}
+
+/** What a paid contract's body computes that the plan learns: its events' payloads and its nodes' end views. */
+interface PayeeLearned {
+  readonly events: readonly (Uint8Array | undefined)[];
+  readonly views: readonly (Uint8Array | undefined)[];
 }
 
 /** A call record's eight-byte value, as the site compares the amount the body computed against it. */
@@ -563,12 +575,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       const body = valueEntryOf(external.artifact, `the value entry "${functionName}" sends it`);
       const layout = external.artifact.stateLayout;
       const bodySites = publishedEntryOf(external.artifact, body.name);
-      if (layout === undefined || (body.emits ?? []).length > 0 || (body.transferCount ?? 0) > 0
-        || (bodySites?.calls.length ?? 0) > 0 || (layout.collections ?? []).length > 0) {
+      if (layout === undefined || (body.transferCount ?? 0) > 0 || (bodySites?.calls.length ?? 0) > 0) {
         throw new PerCallCallError(
           `contract "${external.artifact.contractName}"'s ${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}() `
-          + 'is not planned yet: this call plans one that writes only its own data records, with no event, send, '
-          + 'call or mapping',
+          + 'is not planned yet: this call plans one that writes its own records and emits, with no send or call',
         );
       }
       const recipientCategory = hexToBin(external.categoryId);
@@ -594,6 +604,16 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         entryName: body.name,
         onBranch: onBranch[transferPosition]!,
         selector: VALUE_SEND_CALL_DATA,
+        emits: [...(body.emits ?? [])].sort((left, right) => left.emitIndex - right.emitIndex),
+        // Its mapping writes, keyed by the paying contract, which is its `msg.sender`.
+        mapping: callEntryRecords({
+          artifact: external.artifact,
+          functionName: body.name,
+          args: [],
+          callerLockingBytecode: deployed.address,
+          categoryId: external.categoryId,
+          nodesByCollection: set.nodesByCollection,
+        }),
         segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
       };
     })()];
@@ -616,7 +636,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   }, ...payees.map((payee, index) => ({
     contract: payee.artifact.contractName,
     masters: [receiveMasterId(index)],
-    state: payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
+    state: [
+      ...payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
+      ...(payee.mapping?.participantIds ?? []).map((id) => receiveNodeId(index, id)),
+    ],
   }))];
   const layout = layoutTransaction(blocks);
   const masterIndex = participant(layout, MASTER_ID).index;
@@ -651,7 +674,12 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   const sendCount = shape.listedSends ?? recipients.filter(listed).length;
   // The listed sends no branch decides, which every run makes.
   const unconditionalSends = recipients.filter((lock, position) => listed(lock) && !onBranch[position]).length;
-  const markerIndex = layout.participantCount + emits.length;
+  // Every frame's events lead the trailing region, the entry's first and then each paid contract's, so the send run
+  // follows all of them.
+  const payeeEventBases = payees.map((_payee, index) => layout.participantCount + emits.length
+    + payees.slice(0, index).reduce((count, earlier) => count + earlier.emits.length, 0));
+  const markerIndex = layout.participantCount + emits.length
+    + payees.reduce((count, payee) => count + payee.emits.length, 0);
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
     new TextEncoder().encode(`per-call send lock\u0000${artifact.contractName}\u0000${entry.name}\u0000${position}`),
@@ -722,10 +750,31 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     indexOf: indexOfParticipant,
   });
   const learningCandidates = probe?.learningCandidates ?? [];
+  // What each contract it pays computes, learned as the entry's own values are, from its own program's close.
+  const payeeEventSentinels = payees.map((payee) => payee.emits.map((_emit, position) => eventSentinel(
+    payee.category, payee.artifact.contractName, position, maximumCommitmentBytes,
+  )));
+  const payeeIndexOf = (index: number): ((id: string) => number) =>
+    (id: string): number => participant(layout, receiveNodeId(index, id)).index;
+  const layPayee = (
+    index: number, base: number, learnedViews: readonly (Uint8Array | undefined)[],
+  ): LaidCallEntryRecords | undefined =>
+    payees[index]!.mapping?.lay({
+      createdBase: base,
+      masterIndex: participant(layout, receiveMasterId(index)).index,
+      recordAmount: validator.satoshis,
+      learnedViews,
+      indexOf: payeeIndexOf(index),
+    });
+  const payeeProbes = payees.map((_payee, index) => layPayee(index, 0, []));
+  const payeeCandidates = payeeProbes.map((payeeProbe) => payeeProbe?.learningCandidates ?? []);
+  // Created records follow the sends, the entry's first and then each paid contract's.
+  const payeeCreatedBases = payees.map((_payee, index) => createdBase + (probe?.trailingOutputs.length ?? 0)
+    + payeeProbes.slice(0, index).reduce((count, earlier) => count + (earlier?.trailingOutputs.length ?? 0), 0));
   // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
-  // frame's `retval`), plus the attempt that derives against every value learned.
+  // frame's `retval`, and each one a paid contract computes), plus the attempt that derives against every value.
   const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
-    + (returnsValue ? 1 : 0) + 3;
+    + payeeEventSentinels.flat().length + payeeCandidates.flat().length + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
@@ -733,6 +782,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     learnedEvents: readonly (Uint8Array | undefined)[],
     learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[],
     learnedCallAmounts: readonly (bigint | undefined)[],
+    learnedPayees: readonly PayeeLearned[],
   ): CompositionDraftPlan => {
     const paying = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]);
     const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
@@ -760,6 +810,25 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       }),
       ...(laid?.entries ?? []),
     ];
+    // Each contract it pays: its events, listed right after the entry's, and the mapping nodes it creates.
+    const payeeLaid = payees.map((payee, index) => ({
+      events: payee.emits.map((_emit, position) => payeeEventBases[index]! + position),
+      eventOutputs: payee.emits.map((emit, position): DraftSourceOutput => ({
+        lockingBytecode: eventLockingBytecode(
+          payee.category, emit.eventSignature,
+          (payee.artifact.events ?? []).find((event) => event.signature === emit.eventSignature)?.anonymous === true,
+        ),
+        valueSatoshis: EVENT_OUTPUT_SATOSHIS,
+        token: {
+          category: payee.category, amount: 0n,
+          nft: {
+            capability: 'none',
+            commitment: learnedPayees[index]!.events[position] ?? payeeEventSentinels[index]![position]!,
+          },
+        },
+      })),
+      mapping: layPayee(index, payeeCreatedBases[index]!, learnedPayees[index]!.views),
+    }));
     const masterDraft: DraftMaster = {
       master: MASTER_ID,
       contract: artifact.contractName,
@@ -820,12 +889,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       origin: CALLER_ID,
       calls: [],
       retval: new Uint8Array(0),
-      segments: Array.from({ length: payee.segmentCount }, (): DraftRecordEntry[] =>
-        payee.records.map((record, nftIndex) => {
+      segments: Array.from({ length: payee.segmentCount }, (): DraftRecordEntry[] => [
+        ...payee.records.map((record, nftIndex) => {
           const at = recordIndex(receiveRecordId(index, nftIndex));
           return { in: at, out: at, viewIn: record.commitment };
-        })),
-      events: [],
+        }),
+        ...(payeeLaid[index]!.mapping?.entries ?? []),
+      ]),
+      events: payeeLaid[index]!.events,
       sends: [],
       argumentPushes: [payee.selector],
       redeemScript: payee.deployed.script,
@@ -870,6 +941,9 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           unlockingBytecode: stateRecordUnlockingBytecode(payee.categoryId, payeeMasterIndex, 1),
         };
       });
+      for (const [id, input] of Object.entries(payeeLaid[index]!.mapping?.inputs ?? {})) {
+        inputs[receiveNodeId(index, id)] = input;
+      }
     });
     paying.spent.forEach((utxo, position) => {
       inputs[containerInputId(position)] = {
@@ -891,7 +965,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
-        ...eventOutputs(learnedEvents), ...sendOutputs, ...(laid?.trailingOutputs ?? []),
+        ...eventOutputs(learnedEvents), ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
+        ...sendOutputs,
+        ...(laid?.trailingOutputs ?? []),
+        ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.mapping?.trailingOutputs ?? []),
         // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
         ...(sendCount === 0 ? ownContainer : []),
         // Each contract it pays takes the value into a container of its own.
@@ -907,7 +984,19 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           stateInputs: [...recordIds, ...mappingIds],
           ...(laid === undefined || laid.createdOutputs.length === 0
             ? {} : { createdOutputs: laid.createdOutputs }),
-        }],
+        }, ...payees.flatMap((payee, index) => {
+          // A paid contract that writes a mapping settles several records, as the entry's own contract does.
+          const mapping = payeeLaid[index]!.mapping;
+          if (mapping === undefined) return [];
+          return [{
+            category: payee.category,
+            stateInputs: [
+              ...payee.records.map((_record, nftIndex) => receiveRecordId(index, nftIndex)),
+              ...(payee.mapping?.participantIds ?? []).map((id) => receiveNodeId(index, id)),
+            ],
+            ...(mapping.createdOutputs.length === 0 ? {} : { createdOutputs: mapping.createdOutputs }),
+          }];
+        })],
         redeemScript: validatorRedeemScript(category, validatorProgram),
       },
     };
@@ -930,6 +1019,37 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   let learnedEvents: readonly (Uint8Array | undefined)[] = eventSentinels.map(() => undefined);
   let learnedSends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[] = sendIndices.map(() => ({}));
   let learnedCallAmounts: readonly (bigint | undefined)[] = payees.map(() => undefined);
+  let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
+    events: payeeEventSentinels[index]!.map(() => undefined),
+    views: payeeCandidates[index]!.map(() => undefined),
+  }));
+  /**
+   * The first value a paid contract's own failing close hands back, learned into the payees' values, if any.
+   *
+   * A value learned before the amount it was paid is stale once the amount is learned, so a close against a learned
+   * value is learned again, as one against the plan's own candidate is.
+   */
+  const learnFromPayees = (candidate: CompositionDraft): readonly PayeeLearned[] | undefined => {
+    for (let index = 0; index < payees.length; index += 1) {
+      const reading = readComputedDeclaration({
+        vm: machine, program: candidate.programFor(receiveMasterId(index)), maximumCommitmentBytes,
+      });
+      if (!reading.ok) continue;
+      const learnedBefore = learnedPayees[index]!;
+      const declares = (planned: Uint8Array, learned: Uint8Array | undefined): boolean =>
+        bytesEqual(learned ?? planned, reading.declared);
+      const event = payeeEventSentinels[index]!.findIndex((sentinel, position) =>
+        declares(sentinel, learnedBefore.events[position]));
+      const view = payeeCandidates[index]!.findIndex((candidateView, position) =>
+        declares(candidateView, learnedBefore.views[position]));
+      if (event < 0 && view < 0) continue;
+      return learnedPayees.map((learned, at) => (at !== index ? learned : {
+        events: learned.events.map((known, position) => (position === event ? Uint8Array.from(reading.computed) : known)),
+        views: learned.views.map((known, position) => (position === view ? Uint8Array.from(reading.computed) : known)),
+      }));
+    }
+    return undefined;
+  };
   // The frames of the contracts it pays return nothing to it, so each is derived on its own before the root.
   const payeeRequests: FrameRequest[] = payees.map((payee, index) => ({
     contract: payee.artifact.contractName,
@@ -939,7 +1059,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   }));
   let settled = false;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts);
+    const plan = buildPlan(learnedViews, learnedRetval, learnedEvents, learnedSends, learnedCallAmounts, learnedPayees);
     const { host, draft: candidate } = createComposedDerivationHost({
       vm: machine, artifacts: [artifact, ...payees.map((payee) => payee.artifact)], plan,
     });
@@ -1018,9 +1138,15 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           listedSends: sendCount, skippedPayees: new Set([...shape.skippedPayees, payable.indexOf(payees[passed]!)]),
         });
       }
-      // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
-      break;
     }
+    // A contract it pays hands back what its own body computed from its own program's close.
+    const fromPayees = learnFromPayees(candidate);
+    if (fromPayees !== undefined) {
+      learnedPayees = fromPayees;
+      continue;
+    }
+    // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
+    if (reading.ok) break;
     // The run left no declaration close to read. A run that made fewer sends than the plan declares stops at its
     // count, having pinned the sends it made in order: the listed sends past them, and the contracts it paid nothing,
     // are on branches it did not take, and the plan drops them.
@@ -1050,8 +1176,15 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     || (returnsValue && learnedRetval === undefined)
     || learnedEvents.some((view) => view === undefined)
     || learnedSends.some((send) => send.lock === undefined || send.amount === undefined)
-    || learnedCallAmounts.some((amount) => amount === undefined);
+    || learnedCallAmounts.some((amount) => amount === undefined)
+    || learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined));
   if (!settled && owed) {
+    if (learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined))) {
+      throw new PerCallCallError(
+        `a contract entry "${functionName}" pays did not hand back every event payload and node it writes, so its `
+        + 'frame cannot declare them',
+      );
+    }
     if (mappingRecords !== undefined) {
       throw new PerCallCallError(
         `the call's write to mapping "${mappingRecords.collection}" did not hand back every node it rewrites, so the `
@@ -1143,6 +1276,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     ...payees.flatMap((payee, index) => [
       [receiveMasterId(index), payee.master] as const,
       ...payee.records.map((record, nftIndex) => [receiveRecordId(index, nftIndex), record.utxo] as const),
+      ...[...(payee.mapping?.spentUtxos ?? new Map<string, Utxo>())]
+        .map(([id, utxo]) => [receiveNodeId(index, id), utxo] as const),
     ]),
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry

@@ -51,6 +51,29 @@ const CONDITIONAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function pay(int amount) { if (amount > 0) { this.transfer(msg.sender, amount); } require(true); }'
   + ' }';
 
+/** The entry that pays a lock its caller names, so the recipient is whatever the argument carries. */
+const NAMED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Sender { function pay(bytes to, int amount) { this.transfer(to, amount); require(true); } }';
+
+/** A value-carrying low-level call with no payload, its result bound and required, as a refund spells it. */
+const VALUE_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Sender {'
+  + '   function pay(address to, int amount) { (bool success, ) = to.call{value: amount}(""); require(success); }'
+  + ' }';
+
+/** The same call as a statement with a gas option, its result dropped, as an escrow share spells it. */
+const VALUE_CALL_STATEMENT_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Sender {'
+  + '   function pay(address to, int amount) { to.call{value: amount, gas: 5000}(""); require(true); }'
+  + ' }';
+
+/** Two entries behind one dispatching head, only one of which sends. */
+const DISPATCHED_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Sender {'
+  + '   function pay(int amount) { this.transfer(msg.sender, amount); require(true); }'
+  + '   function idle(int amount) { require(amount >= 0); }'
+  + ' }';
+
 /** The stateful entry: the send runs beside a record write the frame settles. */
 const STATEFUL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Sender {'
@@ -225,6 +248,65 @@ describe('an entry that sends to a run-time lock, compiled per-call', () => {
       block: baseBlock({ sends: [1] }),
       outputs: [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))],
     }).accepted).toBe(false);
+  });
+});
+
+describe('an entry that pays a lock its caller names, compiled per-call', () => {
+  const SEND_OUTPUT = 2;
+  const spend = (to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
+    source: NAMED_SOURCE,
+    block: baseBlock({ sends: [SEND_OUTPUT] }),
+    outputs: [FILLER, sendOutput(to, BigInt(AMOUNT))],
+    // The first parameter's push lands last.
+    argumentPushes: encodeArgumentList([encodeIntegerValue(BigInt(AMOUNT)), to]),
+  });
+
+  it('is refused when the lock is a contract\'s, since a value for a contract is a call into its receive()', () => {
+    // W2 lists a send to a P2PKH lock only: a plain output at a contract's lock skips its master (T35).
+    expect(spend(ADDRESS).accepted).toBe(false);
+    // The control: the same entry paying a user's lock is accepted.
+    expect(spend(OTHER_LOCK)).toStrictEqual({ accepted: true });
+  });
+});
+
+describe('an entry that pays through a value-carrying low-level call, compiled per-call', () => {
+  const SEND_OUTPUT = 2;
+  const spend = (source: string, to: Uint8Array): { accepted: boolean; objection?: string } => verdict({
+    source,
+    block: baseBlock({ sends: [SEND_OUTPUT] }),
+    outputs: [FILLER, sendOutput(to, BigInt(AMOUNT))],
+    argumentPushes: encodeArgumentList([encodeIntegerValue(BigInt(AMOUNT)), to]),
+  });
+
+  it('is a listed send: served for a user\'s lock, refused for a contract\'s, in either spelling', () => {
+    for (const source of [VALUE_CALL_SOURCE, VALUE_CALL_STATEMENT_SOURCE]) {
+      expect(compile(source).composition!.refusedEntries ?? []).toStrictEqual([]);
+      expect(spend(source, OTHER_LOCK)).toStrictEqual({ accepted: true });
+      expect(spend(source, ADDRESS).accepted).toBe(false);
+    }
+  });
+});
+
+describe('two dispatched entries of which one sends, compiled per-call', () => {
+  const SEND_OUTPUT = 2;
+  const selectorOf = (entry: string): Uint8Array => Uint8Array.from(Buffer.from(
+    compile(DISPATCHED_SOURCE).abi.find((row) => row.name === entry)!.selector!, 'hex'));
+  const spend = (entry: string, sends: number[], outputs: readonly VmOutput[]): { accepted: boolean } => verdict({
+    source: DISPATCHED_SOURCE,
+    block: baseBlock({ sends }),
+    outputs,
+    argumentPushes: encodeArgumentList([selectorOf(entry), encodeIntegerValue(BigInt(AMOUNT))]),
+  });
+
+  it('reads the sending body\'s own slot of the region the head parks', () => {
+    expect(spend('pay', [SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))])).toStrictEqual({ accepted: true });
+    expect(spend('pay', [SEND_OUTPUT], [FILLER, sendOutput(OTHER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
+  });
+
+  it('requires the region empty behind the body that sends nothing', () => {
+    expect(spend('idle', [], [FILLER])).toStrictEqual({ accepted: true });
+    // A send listed for a body that makes none is an output no code pins, which would count toward a record's floor.
+    expect(spend('idle', [SEND_OUTPUT], [FILLER, sendOutput(USER_LOCK, BigInt(AMOUNT))]).accepted).toBe(false);
   });
 });
 

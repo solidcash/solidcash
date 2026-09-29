@@ -293,7 +293,7 @@ import {
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
 } from '../per-call/master/batch-witness-derivation.js';
-import { countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
+import { assertP2pkhShapeScript, countMastersScript, type MasterCallSite } from '../per-call/master/frame-tail.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -1093,6 +1093,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallReturnsValue = false;
   /** The size of the head's parked event region: the largest event count any body behind the head emits. */
   private perCallMaxEventCount = 0;
+  /** The size of the head's parked send region: the most sends any body behind the head lists. */
+  private perCallSendCount = 0;
   /** Long-value slots the head parks, which a body reads its own witness out of. */
   private perCallValueWitnessCount = 0;
 
@@ -3109,6 +3111,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const returnsValue = served.some((candidate) => candidate.returnTypes.length > 0);
     this.perCallReturnsValue = returnsValue;
     this.perCallMaxEventCount = tail.tail.maxEventCount;
+    this.perCallSendCount = tail.tail.sendCount;
     this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
     this.emit(bytecodeToScript(Uint8Array.from(buildMasterHeadScript({
       blockOnTop,
@@ -3461,6 +3464,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     this.emit(Op.OP_NUMEQUALVERIFY, loc);
     this.popFromStack(2);
+  }
+
+  /**
+   * Requires the no-index sentinel at every send position past the body's own sends.
+   *
+   * The head parks one send region for every body it runs, as wide as the most sends any body lists, and a body's
+   * sends take its first positions. A body that lists fewer never reads the rest, so it requires each to say no send
+   * was made there: a listed output no code pins would otherwise count toward the value a record may give up (V7).
+   */
+  private emitPerCallUnusedSendSlotsCheck(node: FunctionDefinitionNode): void {
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    for (let position = node.transferInfos?.length ?? 0; this.stack.includes(sendOutputSlotName(position));
+      position += 1) {
+      this.requireSendSlotAbsent(position, loc);
+    }
   }
 
   private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
@@ -5873,6 +5891,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Copy necessary context
       subTraversal.perCallReturnsValue = this.perCallReturnsValue;
       subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
+      subTraversal.perCallSendCount = this.perCallSendCount;
       subTraversal.perCallValueWitnessCount = this.perCallValueWitnessCount;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
@@ -5967,6 +5986,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           subTraversal.stack.push(eventOutputSlotName(index));
         }
         if (eventRegion > 0) subTraversal.stack.push(eventCountSlotName());
+        // The send region sits below the event region: one slot per position, first position topmost, then the
+        // declared count. The usage probe falls back to the body's own count, as for events.
+        const sendRegion = Math.max(this.perCallSendCount, func.transferInfos?.length ?? 0);
+        for (let index = 0; index < sendRegion; index += 1) {
+          subTraversal.stack.push(sendOutputSlotName(index));
+        }
+        if (sendRegion > 0) subTraversal.stack.push(sendCountSlotName());
         // The head parks one slot per long value a body reads, below the event region and above the frame values,
         // so a body that reads a mapping value's witness finds it where the head left it. Slot 0 is the topmost of
         // them, the order the head pops them back in.
@@ -7537,6 +7563,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // runtime key is live, rather than in the head.
     if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
     if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
+    if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {
@@ -31659,6 +31686,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(lbIdx)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(value)');
+      // A per-call listed send pays a P2PKH lock (W2): a value for a contract is a `CALL` into its `receive()`, so a
+      // plain output to one is no payment (T35).
+      if (this.perCallMaster) this.emit(bytecodeToScript(assertP2pkhShapeScript()), locationData);
 
       // Compute output index: the witness-listed send slot for a per-call master, the block slot otherwise.
       this.emitTransferOutputIndex(transferIndex, locationData);

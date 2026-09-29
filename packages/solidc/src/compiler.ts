@@ -159,6 +159,7 @@ import InlineExternalCallHelpers from './semantic/InlineExternalCallHelpers.js';
 import InlineStoragePointerCalls from './semantic/InlineStoragePointerCalls.js';
 import LowerSelfLowLevelCalls from './semantic/LowerSelfLowLevelCalls.js';
 import LowerStaticLowLevelCalls from './semantic/LowerStaticLowLevelCalls.js';
+import LowerValueLowLevelCalls from './semantic/LowerValueLowLevelCalls.js';
 import LowerSelfCallMsgData from './semantic/LowerSelfCallMsgData.js';
 import LowerInternalMsgDataContext from './semantic/LowerInternalMsgDataContext.js';
 import LowerInternalMsgSigContext from './semantic/LowerInternalMsgSigContext.js';
@@ -13223,6 +13224,9 @@ function compileResolvedAst(
   // it as the call its spelling denotes. After LowerSelfLowLevelCalls, so a self-call has already been lowered.
   if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
     ast = ast.accept(new LowerStaticLowLevelCalls()) as Ast;
+    // A value-carrying low-level call with no payload (`to.call{value: v}("")`) denotes the send it pays, which the
+    // convention pins at a listed output only a P2PKH lock can hold (W2).
+    ast = ast.accept(new LowerValueLowLevelCalls()) as Ast;
   }
   // A high-level `this.f(args)` also creates fresh calldata. Reconstruct msg.data from f's selector + live
   // parameters so the direct OP_INVOKE lowering does not depend on OP_ACTIVEBYTECODE inside the subroutine.

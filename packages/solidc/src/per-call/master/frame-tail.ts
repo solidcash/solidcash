@@ -137,9 +137,10 @@ export function callSectionWalkScript(): number[] {
  * absent when the records a segment touches are decided by settlement rather than by the entry, and the walk then
  * consumes each segment's declared count. `maxEventCount` is the size of the event region the head parks: the
  * largest number of events any body the master runs emits. The block's own declared count is checked against it
- * and each body pins the count it emits, so bodies may emit different numbers. `sendCount` is the send list an
- * entry fixes: every body the master runs lists that many sends, so the head's count check is what holds each
- * body to it. A master with no call, event or send carries none of them. `valueWitnessCount` is the number of
+ * and each body pins the count it emits, so bodies may emit different numbers. `sendCount` is the size of the send
+ * region the head parks: the most sends any body the master runs lists. A body's sends take its first positions and
+ * it requires the no-index sentinel past them, so bodies may list different numbers. A master with no call, event
+ * or send carries none of them. `valueWitnessCount` is the number of
  * value slots the head parks: the most value-witness slots any body the master runs reads.
  */
 export interface MasterTailShape {

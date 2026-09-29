@@ -1249,14 +1249,9 @@ export function derivePerCallTailShape(
       if (sends !== undefined) return { reason: sends };
     }
   }
-  // Every body's transfers take the region's first positions in their own source order, so two bodies that list
-  // different numbers would leave the extra positions of the shorter body unread and uncheckable.
-  const sendCounts = bodies.map((body) => bodySendSlots(body));
-  const sendCount = sendCounts.length === 0 ? 0 : Math.max(...sendCounts);
-  if (sendCounts.some((count) => count !== sendCount)) {
-    return { reason: 'the master\'s bodies list different numbers of sends, and its head leaves one send region '
-      + 'for every body it runs' };
-  }
+  // Every body's transfers take the region's first positions in their own source order, and a body that lists
+  // fewer requires the no-index sentinel at the positions past its own, so bodies may list different numbers.
+  const sendCount = Math.max(0, ...bodies.map((body) => bodySendSlots(body)));
   const valueWitnessCount = Math.max(0, ...bodies.map((body) => valueWitnessSlotsOf(body)));
   return { tail: { maxEventCount, sendCount, valueWitnessCount } };
 }

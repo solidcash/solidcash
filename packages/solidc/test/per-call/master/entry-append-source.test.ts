@@ -65,6 +65,73 @@ describe('an entry append publishes the element it pushes', () => {
     `)).toStrictEqual({ items: { kind: 'literal', value: '7', type: 'bigint' } });
   });
 
+  it('publishes the element type default a no-argument append appends', () => {
+    // A no-argument `push()` appends the element type's default value, which is a constant the compiler states as
+    // exactly as it states a literal: a scalar element is published as its literal, and a struct element as a
+    // construction over its fields' own defaults. A field of array type defaults to a zero-length array, which the
+    // shipped evaluator's `newArray` node speaks, so an element containing one stays statable rather than absent.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add() { this.items.push(); }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'literal', value: '0', type: 'bigint' },
+        ],
+      },
+    });
+
+    expect(sourcesOf(`
+      contract Impl {
+        struct Entry { address who; uint amount; uint[] extra; }
+        address public implementation;
+        Entry[] public items;
+        function add() { this.items.push(); }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Entry', type: 'Entry',
+        args: [
+          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'literal', value: '0', type: 'bigint' },
+          { kind: 'newArray', type: 'uint256', args: [{ kind: 'literal', value: '0', type: 'bigint' }] },
+        ],
+      },
+    });
+
+    expect(sourcesOf(`
+      contract Impl {
+        address public implementation;
+        int[] public items;
+        function add() { this.items.push(); }
+      }
+    `)).toStrictEqual({ items: { kind: 'literal', value: '0', type: 'bigint' } });
+
+    // The element the default names is the same element whether it is appended implicitly or spelled out.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add() { this.items.push(Detail(address(0), 0)); }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'literal', value: '0', type: 'bigint' },
+        ],
+      },
+    });
+  });
+
   it('publishes an element each arm of one branch agrees on', () => {
     // Exactly one arm runs, so the append grows the run by one element either way and the element is the join.
     const sources = sourcesOf(`
@@ -161,6 +228,15 @@ describe('an entry append publishes the element it pushes', () => {
       }
     `)).toBeUndefined();
 
+    // An indexed write replaces an element rather than appending the one stated element.
+    expect(sourcesOf(`
+      contract Impl {
+        address public implementation;
+        address[] public items;
+        function add(address who) { this.items.push(who); this.items[0] = who; }
+      }
+    `)).toBeUndefined();
+
     // An unrelated construction beside the append does not relax any of the above.
     expect(sourcesOf(`
       contract Impl {
@@ -179,6 +255,16 @@ describe('an entry append publishes the element it pushes', () => {
         mapping(address => Entry) public members;
         address[] public items;
         function add(address who) { this.members[who] = Entry(who, 1); for (int i = 0; i < 3; i = i + 1) { this.items.push(who); } }
+      }
+    `)).toBeUndefined();
+
+    expect(sourcesOf(`
+      contract Impl {
+        struct Entry { address who; uint up; }
+        address public implementation;
+        mapping(address => Entry) public members;
+        address[] public items;
+        function add(address who) { this.items.push(who); this.members[who] = Entry(who, 1); this.items[0] = who; }
       }
     `)).toBeUndefined();
 

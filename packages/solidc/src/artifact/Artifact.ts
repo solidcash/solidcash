@@ -797,6 +797,13 @@ const dynamicWriteSourcesOf = (
         ...(expression.type && { type: expression.type.toString() }),
       };
     }
+    if (appendMode && expression instanceof NewArrayNode) {
+      // An element type's default value can contain an array: a struct field of array type, or an array element
+      // type that is itself an array, both default to a zero-length `new T[](0)`. The shipped evaluator speaks
+      // this node, so an append of such a default stays statable instead of leaving the whole element unnamed.
+      const size = serialize(expression.size, state);
+      return size && { kind: 'newArray', type: expression.elementType.toString(), args: [size] };
+    }
     if (expression instanceof CastNode) {
       const inner = serialize(expression.expression, state);
       return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };

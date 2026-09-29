@@ -51,6 +51,9 @@ describe('authenticated fixed-effect entry recipes', () => {
     });
     expect(route.transferCount).toBe(8);
     expect(await resolveSatoshiContainerRouteAbi({ ...route }, host)).toEqual(route);
+    const alreadyNarrowedRoute = { ...handler, transferCount: 0, messageBusActiveSatoshiContainer: false };
+    bindSatoshiContainerSelection(alreadyNarrowedRoute, selection);
+    expect(await resolveSatoshiContainerRouteAbi(alreadyNarrowedRoute, host)).toBe(alreadyNarrowedRoute);
     const logical = { ...handler, transfers: [{ ...handler.transfers![0], condition: {
       kind: 'fixedEffectRecipe', fixedEffectRecipe: { kind: 'logicalCaller', resultType: 'address' } as const,
     } }] };

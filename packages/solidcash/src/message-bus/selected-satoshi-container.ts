@@ -104,6 +104,12 @@ export async function resolveSatoshiContainerRouteAbi(
   const selection = route && routeSelections.get(route);
   if (!selection) return route;
   const required = await resolveSelectedSatoshiContainerRequired(selection, host);
-  return required === false
-    ? { ...route!, transferCount: 0, messageBusActiveSatoshiContainer: false } as AbiFunction : route;
+  if (required !== false) return route;
+  // The batch planner may have already narrowed this per-call route from the same authenticated row envelope.
+  // Preserve its object identity in that case: other route capabilities (including the journal read carrier)
+  // bind their authority to that exact object, and a redundant spread would silently discard it.
+  if (route!.transferCount === 0
+    && (route as AbiFunction & { messageBusActiveSatoshiContainer?: boolean })
+      .messageBusActiveSatoshiContainer === false) return route;
+  return { ...route!, transferCount: 0, messageBusActiveSatoshiContainer: false } as AbiFunction;
 }

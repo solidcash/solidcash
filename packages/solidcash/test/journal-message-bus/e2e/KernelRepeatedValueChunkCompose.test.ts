@@ -10,7 +10,7 @@ import {
   getEntryNftAddress, getValueChunkAddress, getValueChunkLockingBytecode,
 } from '../../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlot } from '../../../src/stateful/SortedList.js';
-import { setupStatefulUtxos } from '../../test-util.js';
+import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 import { messageBusVmAccepts } from './vm-accepts.js';
 
@@ -75,6 +75,10 @@ describe('kernel repeated chunk-backed mapping values', () => {
       { function: 'append', args: [key, first] },
       { function: 'append', args: [key, second] },
     ]);
+    // The resulting chunk vector is larger than the seeded prior value. Supply independent BCH for the newly
+    // minted chunk outputs; the state/entry NFT inputs must remain value-conserving, not implicitly overfunded.
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    call.addInput(funder.utxo, funder.unlocker);
     const builder = await call.build();
     const expected = encodePushdataValue([
       ...priorRecords, { payload: first }, { payload: second },

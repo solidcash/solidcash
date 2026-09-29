@@ -637,12 +637,14 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     const { keyCount, valueType } = info;
     let dims = 0; let t: Type = valueType;
     while (t instanceof ArrayType) { dims++; t = t.elementType; }
-    const arrIdxCount = node.keys.length - keyCount;
+    // Earlier semantic normalization may already have separated the first array-value index from the mapping
+    // keys. It is still part of this whole-entry read/modify/write, not a second physical mapping key.
+    const arrIdxs = [...node.keys.slice(keyCount), ...(node.arrayIndex ? [node.arrayIndex] : [])];
+    const arrIdxCount = arrIdxs.length;
     if (arrIdxCount < this.mappingArrayValueMinIndices || arrIdxCount > dims) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const mapKeys = node.keys.slice(0, keyCount);
-    const arrIdxs = node.keys.slice(keyCount);
 
     // 1. Materialize the whole array value: `T[] t = m[k0]..[k_{kc-1}]`.
     let read: ExpressionNode = this.ident(node.name, node);

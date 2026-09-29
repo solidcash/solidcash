@@ -14,7 +14,8 @@ export type ComposerRefusalCode =
   | 'PER_CALL_POOL_EXHAUSTED'
   | 'PER_CALL_DERIVATION_STALLED'
   | 'PER_CALL_MAPPING_UNPLANNABLE'
-  | 'PER_CALL_CHUNK_UNPLANNABLE';
+  | 'PER_CALL_CHUNK_UNPLANNABLE'
+  | 'PER_CALL_VIEW_UNLEARNED';
 
 /** A refusal the composer raises before it builds anything. */
 export class PerCallComposerError extends Error {
@@ -48,6 +49,24 @@ export function rootWithoutValidator(contract: string): PerCallComposerError {
   return new PerCallComposerError(
     'PER_CALL_POOL_EXHAUSTED',
     `contract "${contract}" roots this composition but has no validator`,
+  );
+}
+
+/**
+ * A derived composition still declares a view its plan left unstated and no run learned.
+ *
+ * The placeholder the composer declared in its place would reach the record's output, so the transaction would
+ * write a value no code computed. The first few positions are named, as `master` / segment / entry.
+ */
+export function viewUnlearned(
+  views: readonly { readonly master: string; readonly segmentIndex: number; readonly entryIndex: number }[],
+): PerCallComposerError {
+  const named = views.slice(0, 3).map((view) => `"${view.master}" segment ${view.segmentIndex} entry ${view.entryIndex}`);
+  const more = views.length > 3 ? ` and ${views.length - 3} more` : '';
+  return new PerCallComposerError(
+    'PER_CALL_VIEW_UNLEARNED',
+    `no run learned the view the plan left unstated at ${named.join(', ')}${more}, so its placeholder would reach `
+    + 'the transaction',
   );
 }
 

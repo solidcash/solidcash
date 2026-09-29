@@ -52,6 +52,7 @@ import {
   type PlannedValidators,
 } from './assemble.js';
 import type { EntryFacts } from './need-test.js';
+import { viewUnlearned } from './refusals.js';
 import type { FrameRequest } from './derivation.js';
 import type { FrameWitness } from './witness.js';
 import {
@@ -102,7 +103,7 @@ export interface DraftRecordEntry {
 }
 
 /** A segment entry the plan leaves unstated, and the placeholder the composer declared in its place. */
-interface UnstatedView {
+export interface UnstatedView {
   readonly master: string;
   readonly segmentIndex: number;
   readonly entryIndex: number;
@@ -271,6 +272,19 @@ export interface CompositionDraft {
   unlockingBytecodeOf(master: string): Uint8Array;
   /** The VM program that evaluates a master with the draft as it currently stands. */
   programFor(master: string): ShippedVmProgram;
+  /** The declarations a plan left unstated that no run has learned yet, each still holding its placeholder. */
+  unlearnedViews(): readonly UnstatedView[];
+}
+
+/**
+ * Requires every view a plan left unstated to have been learned, before a derived composition is signed.
+ *
+ * A placeholder no run replaced is a declaration no code closed against, and it would reach the record's output as
+ * the value the transaction writes.
+ */
+export function requireLearnedViews(draft: CompositionDraft): void {
+  const unlearned = draft.unlearnedViews();
+  if (unlearned.length > 0) throw viewUnlearned(unlearned);
 }
 
 /** The declared return value of every master the plan runs, keyed by identity. */
@@ -680,6 +694,8 @@ export function composeDraft(
       if (run === undefined) throw new CompositionDraftError(`no master "${master}"`);
       return run.programFor(run.initialBlock());
     },
+    // A learned placeholder leaves its master's map, so what remains is exactly what no run learned.
+    unlearnedViews: () => [...unstatedByMaster.values()].flatMap((byPlaceholder) => [...byPlaceholder.values()]),
   };
 }
 

@@ -22,6 +22,7 @@ import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost,
   deriveComposition,
+  requireLearnedViews,
   type CompositionDraft,
   type CompositionDraftPlan,
   type DraftCall,
@@ -197,6 +198,7 @@ export function composeAndDerive(
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(), artifacts, plan });
   const derived = deriveComposition(roots, host);
+  requireLearnedViews(draft);
   const program = draft.programFor(plan.masters[0]!.master);
   const vm: VirtualMachine = compositionMachine();
   const contractInputs = draft.layout.participants.map((placed) => ({ id: placed.id, index: placed.index }));

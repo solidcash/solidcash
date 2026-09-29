@@ -7,7 +7,7 @@ import {
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant,
+  createComposedDerivationHost, deriveDepthFirst, layoutTransaction, participant, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type DraftMaster, type DraftRecordEntry,
 } from '../../../src/per-call/composer/index.js';
 
@@ -126,6 +126,9 @@ describe('a plan that leaves a record write unstated', () => {
       vm: compositionMachine(), artifacts: [COMPILED.artifacts.Vault!], plan: buildPlan() });
     const declared = draft.blockOf(MASTER_ID).segments[0]![0]!.viewOut;
     expect(bytesToHex(declared)).not.toBe(bytesToHex(commitment(WRITTEN)));
+    // Until a run learns it the draft names the view and cannot be handed on to be signed.
+    expect(draft.unlearnedViews()).toStrictEqual([{ master: MASTER_ID, segmentIndex: 0, entryIndex: 0 }]);
+    expect(() => requireLearnedViews(draft)).toThrowError(/PER_CALL_VIEW_UNLEARNED/);
   });
 
   it('learns the written view the body computed, and settles every participant', () => {
@@ -133,6 +136,8 @@ describe('a plan that leaves a record write unstated', () => {
     const learned = draft.blockOf(MASTER_ID).segments[0]![0]!.viewOut;
     // The learned view is what the shipped encoder materializes for the write, not a value the plan wrote.
     expect(bytesToHex(learned)).toBe(bytesToHex(commitment(WRITTEN)));
+    expect(draft.unlearnedViews()).toStrictEqual([]);
+    requireLearnedViews(draft);
     // The record's output carries the chain end, so the write reaches the transaction.
     const output = draft.programFor(MASTER_ID).transaction!.outputs[participant(draft.layout, RECORD_ID).index]!;
     expect(bytesToHex(output.token!.nft!.commitment)).toBe(bytesToHex(commitment(WRITTEN)));

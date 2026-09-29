@@ -44,7 +44,7 @@ import { headSentinelCommitment } from '../../stateful/SortedList.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
-  createComposedDerivationHost, deriveComposition, layoutTransaction, participant,
+  createComposedDerivationHost, deriveComposition, layoutTransaction, participant, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftInput, type DraftMaster,
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
@@ -644,6 +644,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   }
   const { host, draft } = composed;
   const derived = deriveComposition([options.root], host);
+  requireLearnedViews(draft);
 
   const program = draft.programFor(PROXY_MASTER_ID);
   const verdicts = draft.layout.participants.map((placed): InitializeVerdict => {

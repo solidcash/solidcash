@@ -3514,8 +3514,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const visit = (node: Node, seen = new Set<Node>()): void => {
       if (found || seen.has(node)) return;
       seen.add(node);
-      if (node instanceof StateAccessNode && this.stateVariables.some((sv) =>
-        sv.isDynamic && (sv === node.stateVariable || sv.name === node.name))) {
+      // A dynamic state array's indexed access is lowered to MappingAccessNode before code generation.
+      // It still reads the same chunk-backed state variable and needs the invoking entry's trailing base.
+      if ((node instanceof StateAccessNode || node instanceof MappingAccessNode)
+        && this.stateVariables.some((sv) =>
+          sv.isDynamic && (sv.name === node.name || (node instanceof StateAccessNode && sv === node.stateVariable)))) {
         found = true;
         return;
       }

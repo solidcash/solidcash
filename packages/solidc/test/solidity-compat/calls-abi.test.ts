@@ -1057,6 +1057,14 @@ describe('abi.encodePacked supported source types', () => {
 });
 
 describe('abi.encode compatibility schema boundary', () => {
+  it('encodes generic integer literals as signed 256-bit ABI words', () => {
+    expect(compileString(
+      'contract C { function f() public pure returns (bytes memory) {'
+      + ' return abi.encode(1, -1); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
   it('does not silently compact-encode unsupported user-authored fixed bytes', () => {
     expect(() => compileString(
       'contract C { function f(bytes39 value) public pure returns (bytes memory) {'

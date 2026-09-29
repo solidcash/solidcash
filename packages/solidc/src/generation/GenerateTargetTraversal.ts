@@ -16129,8 +16129,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ENDIF, loc);
       this.emitEvmWordFromUint(loc);
     } else if (type instanceof IntType || type instanceof FixedType
-      || type instanceof EnumType || type === PrimitiveType.BIGINT) {
-      if ((type instanceof IntType || type instanceof FixedType) && type.signed) {
+      || type instanceof EnumType || type === PrimitiveType.BIGINT || type === PrimitiveType.INT) {
+      if (((type instanceof IntType || type instanceof FixedType) && type.signed)
+        || type === PrimitiveType.INT) {
         // add 2^256 if negative -> the 256-bit two's-complement pattern
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(0n), loc);
@@ -17111,13 +17112,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (type instanceof IntType || type instanceof FixedType || type instanceof EnumType
-      || type === PrimitiveType.BIGINT) {
+      || type === PrimitiveType.BIGINT || type === PrimitiveType.INT) {
       // reverse to little-endian, force positive with a 0x00 sign byte, minimise -> unsigned value U
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(new Uint8Array([0]), loc);
       this.emit(Op.OP_CAT, loc);
       this.emit(Op.OP_BIN2NUM, loc);
-      if ((type instanceof IntType || type instanceof FixedType) && type.signed) {
+      if (((type instanceof IntType || type instanceof FixedType) && type.signed)
+        || type === PrimitiveType.INT) {
         // two's-complement: a high-bit-set U is the negative value U - 2^256
         this.emit(Op.OP_DUP, loc);
         this.emit(encodeInt(1n << 255n), loc);

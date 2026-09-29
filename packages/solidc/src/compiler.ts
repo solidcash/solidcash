@@ -5518,7 +5518,11 @@ function synthesizeMessageBusRoute(
       || (node instanceof FunctionCallNode && node.identifier.name.includes('.')
         && !['abi', 'bytes', 'string'].includes(node.identifier.name.split('.')[0]));
     const typedOutgoingCall = (node: Node): boolean =>
-      (node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
+      // A lowered function pointer names a synthesized interface but selects its method at runtime. Its
+      // graph edge is not the statically typed call proven by this signature-flow policy.
+      !((node instanceof MethodCallNode || node instanceof ExternalFunctionCallNode)
+        && node.runtimeSelector !== undefined)
+      && ((node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
         && node.callMode !== ExternalCallMode.DELEGATECALL)
       || contractTypedReceiverCall(node, interfaceReceivers)
       || (node instanceof MethodCallNode
@@ -5526,7 +5530,7 @@ function synthesizeMessageBusRoute(
           && node.object.type.interfaceName !== undefined)
           || (node.object instanceof FunctionCallNode
             && interfaceDefinitionNames.has(node.object.identifier.name)))
-        && !['call', 'staticcall', 'delegatecall'].includes(node.methodName));
+        && !['call', 'staticcall', 'delegatecall'].includes(node.methodName)));
     const signatureFlowBackrefs = new Set([
       'resolvedFunction', 'functionReference', 'definition', 'collection', 'symbolTable', 'stateVariable',
     ]);
@@ -13361,6 +13365,23 @@ function compileResolvedAst(
   // entry-reading inline passes see them. Cheap admission does not emit user/clone bodies or the unrolled
   // route, so journaling them is throwaway work; the binder pass still runs the full journal.
   const cheapAdmissionCodegen = mergedCompilerOptions.__cheapAdmissionCodegen === true;
+  // A public collection getter/update can also be called from another public entry. Inline that call while
+  // the callee still has its source arity; journal lowering below appends private witness parameters to its
+  // dispatched definition, which an ordinary source call cannot supply.
+  if (!mergedCompilerOptions.messageBus && needsCollectionJournal) {
+    const publicNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
+    const callsPublic = ast.contract.functions.some((fn) => {
+      let found = false;
+      walkInvocationAst(fn.body, (candidate) => {
+        if (candidate instanceof FunctionCallNode && !candidate.fromThisCall
+          && publicNames.has(candidate.identifier.name)) found = true;
+      });
+      return found;
+    });
+    if (callsPublic) ast = ast.accept(new InlineReturningStateHelpers(
+      mergedCompilerOptions.solidityImportCompat ?? false,
+    )) as Ast;
+  }
   if (needsDynamicStateJournal && !cheapAdmissionCodegen) {
     ast = ast.accept(new LowerDynamicStateJournalHelpers()) as Ast;
   }
@@ -13376,12 +13397,10 @@ function compileResolvedAst(
   const hasInternalHelpers = ast.freeFunctions.length > 0
     || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
       || fn.modifiers.includes(FunctionModifier.PRIVATE));
-  // Public entry points can also be called internally. A collection-touching public callee owns direct-route
-  // witnesses that do not exist as source-level arguments at its call site; inline that body into the caller's
-  // physical frame before SymbolTableTraversal adds those parameters. Keep the ordinary public definition.
-  const publicEntryNames = needsCollectionJournal
-    ? new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name))
-    : new Set<string>();
+  // Public entry points can also be called internally. A state/collection- or call-touching public callee owns
+  // direct-route witnesses that do not exist as source-level arguments at its call site; inline that body into
+  // the caller's physical frame before SymbolTableTraversal adds those parameters. Keep its dispatched definition.
+  const publicEntryNames = new Set(ast.contract.functions.filter((fn) => fn.isEntryPoint).map((fn) => fn.name));
   let hasInternallyCalledPublicEntry = false;
   if (publicEntryNames.size > 0) {
     for (const fn of ast.contract.functions) {
@@ -13393,7 +13412,7 @@ function compileResolvedAst(
       if (hasInternallyCalledPublicEntry) break;
     }
   }
-  if (hasInternalHelpers) {
+  if (hasInternalHelpers || hasInternallyCalledPublicEntry) {
     ast = ast.accept(new InlineReturningStateHelpers(
       mergedCompilerOptions.solidityImportCompat ?? false,
     )) as Ast;

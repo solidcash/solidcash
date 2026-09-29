@@ -126,10 +126,27 @@ describe('computed whole-value mutation recipes', () => {
     'if (measure) return; records[key] = Record(amount, payload, 0);',
     'records[key] = Record(amount, payload, 0); records[key + 1] = Record(amount, payload, 0);',
     'while (measure) { records[key] = Record(amount, payload, 0); }',
-    'require((amount = amount + 1) > 0); records[key] = Record(amount, payload, 0);',
   ])('refuses an ambiguous or conditional whole-value producer: %s', (body) => {
     const handler = compileWriter(body);
     expect(handler.entryAccesses?.length).toBeGreaterThan(0);
     for (const access of handler.entryAccesses ?? []) expect(access.storedValueSource).toBeUndefined();
+  });
+
+  it('tracks an assignment in an unconditional require before the whole-value write', () => {
+    const handler = compileWriter(
+      'require((amount = amount + 1) > 0); records[key] = Record(amount, payload, 0);',
+    );
+    const access = handler.entryAccesses?.[0];
+    expect(access?.storedValueSource).toMatchObject({
+      version: 1, execution: 'unconditional-once',
+      mutationEffectOrdinal: access?.mutationEffectOrdinals?.[0],
+      expression: { kind: 'call', name: 'Record' },
+    });
+    expect(access?.storedValueSource?.expression.args?.[0]).toMatchObject({
+      kind: 'cast', type: 'uint256', expression: { kind: 'binary', operator: '+',
+        left: { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        right: { kind: 'literal', value: '1' },
+      },
+    });
   });
 });

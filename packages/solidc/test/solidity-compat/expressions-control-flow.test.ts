@@ -100,7 +100,7 @@ describe('direct collection return provenance', () => {
         }
       }
     `, { forceStateful: true, solidityImportCompat: true });
-    expect(artifact.abi.find((candidate) => candidate.name === 'quota')?.returnStateAccess).toEqual({
+    expect(artifact.abi.find((candidate) => candidate.name === 'quota')?.directMappingReturn).toEqual({
       collection: 'credits',
       keyParams: ['holder', 'delegate'],
     });

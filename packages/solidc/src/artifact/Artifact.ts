@@ -16,14 +16,14 @@ import {
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
-  StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
+  StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode, StateArrayPushNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
-  UnaryOpNode, BranchNode, BoolLiteralNode,
+  UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
   EntryAccessInfo,
 } from '../ast/AST.js';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -664,11 +664,20 @@ const expressionSource = (
  * Only a value assigned exactly once on every path is published. An expression which reads state, calls a
  * helper, crosses an unsupported control-flow construct, or otherwise cannot be represented by
  * ExternalCallExpression remains absent. The SDK then uses its authoritative VM-probe fallback.
+ *
+ * A non-constructor entry never assigns a whole dynamic value: its write is an append, and the value it produces
+ * is the live value plus the element. The same map therefore carries, for such an entry, the ELEMENT its single
+ * push appends, under the pushed variable's name. The run's width is the live value's plus that element, so the
+ * element is what a consumer has to state; the same one-write-per-path proof applies. Only the per-call convention
+ * reads this entry shape, so the other conventions' artifacts are unchanged.
  */
 const dynamicWriteSourcesOf = (
   func: FunctionDefinitionNode, contract: ContractNode | undefined,
+  compilerOptions: CompilerOptions = {},
 ): Readonly<Record<string, ExternalCallExpression>> => {
-  if (func.name !== '__construct' || !func.body) return {};
+  const appendMode = func.name !== '__construct';
+  if (!func.body) return {};
+  if (appendMode && compilerOptions.composition !== 'per-call') return {};
   const dynamicNames = new Set(func.dynamicWrites ?? []);
   if (dynamicNames.size === 0) return {};
   // This replay deliberately models only terminating straight-line/if control flow. Treat abrupt completion and
@@ -757,6 +766,37 @@ const dynamicWriteSourcesOf = (
     if (expression.constructor.name === 'HexLiteralNode' && shaped.value instanceof Uint8Array) {
       return { kind: 'literal', value: binToHex(shaped.value), type: shaped.type?.toString() ?? 'bytes' };
     }
+    // Appended-element vocabulary: the nodes a push operand commonly is beyond the constructor's own. A
+    // constructor write keeps the narrower set above, so its published shape is unchanged.
+    if (appendMode && expression instanceof NullaryOpNode
+      && (expression.operator === NullaryOperator.MSG_SENDER
+        || expression.operator === NullaryOperator.TX_ORIGIN)) {
+      return { kind: 'source', source: { kind: 'msgSender' } };
+    }
+    if (appendMode && (expression instanceof InstantiationNode || expression instanceof FunctionCallNode)) {
+      // Only a call spelled exactly as a declared struct constructs one; a function returning a struct has the
+      // struct as its type but a different callee name, so it stays unnamed rather than read as a construction.
+      const struct = expression.type;
+      if (!(struct instanceof StructType) || expression.identifier.name !== struct.name) return undefined;
+      const args = expression.parameters.map((parameter) => serialize(parameter, state));
+      return args.every((argument): argument is ExternalCallExpression => argument !== undefined)
+        ? { kind: 'call', name: struct.name, type: struct.name, args } : undefined;
+    }
+    if (appendMode && expression instanceof FieldAccessNode) {
+      const inner = serialize(expression.expression, state);
+      return inner && {
+        kind: 'field', name: expression.name, expression: inner,
+        ...(expression.type && { type: expression.type.toString() }),
+      };
+    }
+    if (appendMode && expression instanceof ArrayAccessNode) {
+      const left = serialize(expression.array, state);
+      const right = serialize(expression.index, state);
+      return left && right && {
+        kind: 'arrayAccess', left, right,
+        ...(expression.type && { type: expression.type.toString() }),
+      };
+    }
     if (expression instanceof CastNode) {
       const inner = serialize(expression.expression, state);
       return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
@@ -836,7 +876,20 @@ const dynamicWriteSourcesOf = (
         }
         continue;
       }
-      if (statement instanceof StateAssignNode && dynamicNames.has(statement.name)) {
+      // An entry's dynamic write is an append: the pushed element is the value this map publishes. Any other
+      // write to the same variable (a whole-value assignment, a pop, an indexed write) falls through to the
+      // invalidation below, which marks it unbounded and so keeps it absent.
+      if (appendMode && statement instanceof StateArrayPushNode && dynamicNames.has(statement.name)) {
+        // The element itself is not invalidated: a struct construction is a call node, and the very value this
+        // write pushes is the one such a node produces. A call the serializer cannot name makes the value
+        // undefined anyway, so nothing is guessed.
+        const write = state.writes.get(statement.name)!;
+        write.minimum += 1;
+        write.maximum += 1;
+        write.value = serialize(statement.value, state);
+        continue;
+      }
+      if (!appendMode && statement instanceof StateAssignNode && dynamicNames.has(statement.name)) {
         invalidateUnknownMutations(statement.expression, state);
         const write = state.writes.get(statement.name)!;
         write.minimum += 1;
@@ -1463,7 +1516,7 @@ function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
-  const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
+  const dynamicWriteSources = dynamicWriteSourcesOf(func, contract, compilerOptions);
   const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],

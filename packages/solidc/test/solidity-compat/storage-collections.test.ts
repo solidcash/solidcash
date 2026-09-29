@@ -1405,7 +1405,8 @@ describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dy
       + ' for(uint i=0;i<tokens.length;i++){address token=tokens[i];require(totals[token].addElastic(fees[i])>=0);}'
       + ' require(true); } }', { forceStateful: true, solidityImportCompat: true });
     expect(art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0]).toMatchObject({
-      collection: 'totals', varyingArrayParam: 'tokens', op: 'set', valueRuntimeExpression: true,
+      collection: 'totals', varyingArrayParam: 'tokens', op: 'set',
+      valueRuntimeLocal: expect.any(String), oldValuesWitnessParam: expect.any(String),
     });
   });
   it('traces an ABI-decoded key through an inlined external-call helper parameter', () => {

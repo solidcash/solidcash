@@ -42,6 +42,7 @@ interface MapAlias { cond?: ExpressionNode; a: string; b?: string; }
 export default class LowerMappingStorageAlias extends AstTraversal {
   private aliases = new Map<string, MapAlias>();
   private counter = 0;
+  private loweredConditionalAlias = false;
 
   visitSourceFile(node: SourceFileNode): Node {
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
@@ -58,9 +59,16 @@ export default class LowerMappingStorageAlias extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     const saved = this.aliases;
+    const savedConditionalAlias = this.loweredConditionalAlias;
     this.aliases = new Map();
+    this.loweredConditionalAlias = false;
     if (node.body) node.body = this.visit(node.body) as BlockNode;
+    // Source-effect ordinals were assigned before pointer-returning helpers were inlined. A conditional
+    // mapping alias lowers to a real branch/ternary here, so its writes have no total reached order even
+    // though the original call expression looked linear to that earlier pass.
+    if (this.loweredConditionalAlias) node.sourceEffectOrder = 'unsupported-flow';
     this.aliases = saved;
+    this.loweredConditionalAlias = savedConditionalAlias;
     return node;
   }
 
@@ -134,6 +142,7 @@ export default class LowerMappingStorageAlias extends AstTraversal {
     const idx = this.visit(node.index) as ExpressionNode;
     const val = this.visit(node.value) as ExpressionNode;
     if (!alias.cond) return this.stamp(new ArrayAssignNode(alias.a, idx, val), node.location);
+    this.loweredConditionalAlias = true;
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const ifB = this.stamp(new BlockNode([
       this.stamp(new ArrayAssignNode(alias.a, clone(idx), clone(val)), node.location),
@@ -149,6 +158,7 @@ export default class LowerMappingStorageAlias extends AstTraversal {
     const read = (name: string, idx: ExpressionNode): ArrayAccessNode =>
       this.stamp(new ArrayAccessNode(this.stamp(new IdentifierNode(name), loc), idx), loc);
     if (!alias.cond) return read(alias.a, index);
+    this.loweredConditionalAlias = true;
     return this.stamp(new TernaryOpNode(clone(alias.cond), read(alias.a, clone(index)), read(alias.b!, clone(index))), loc);
   }
 

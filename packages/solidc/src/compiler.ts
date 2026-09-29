@@ -66,7 +66,8 @@ import { normalizeKernelAdmissionReason } from './kernel-admission-catalog.js';
 /** Survives binder rebuild: span-based analysis from the admission ladder. */
 let pendingSpanAdmissionAnalysis: AdmissionDecisionSet | undefined;
 import {
-  Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  Ast, AssignNode, AssignmentExpressionNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode,
+  ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode, LiteralNode,
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalCallMode, ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode,
@@ -87,7 +88,7 @@ import {
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
   WhileNode, DoWhileNode, TernaryOpNode, UnaryOpNode, BreakNode, ContinueNode,
   ExternalCallExpression,
-  BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility,
+  BranchNode, UncheckedNode, SwitchNode, StateVariableNode, StateVariableVisibility, StructDefinitionNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { Class, GlobalFunction } from './ast/Globals.js';
@@ -683,6 +684,8 @@ function rootSourceCoversProgram(ast: Ast): boolean {
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
+  const mappingStorageReturn = (type: Type): boolean => type instanceof MappingType
+    || (type instanceof ArrayType && mappingStorageReturn(type.elementType));
   const seenNodes = new Set<Node>();
   const seenTypes = new Set<object>();
   const seenMappingTypes = new Set<object>();
@@ -767,12 +770,26 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     }
     if (node instanceof FunctionDefinitionNode) {
       definedFunctionNames.add(node.name);
+      if (node.returnTypes.some((type, index) =>
+        node.returnModifiers?.[index]?.includes('storage') && mappingStorageReturn(type))) {
+        needsSpecialMethodPruning = true;
+      }
       // This pass also supplies Solidity's fall-through defaults and a safe body for empty void
       // functions. Named returns alone are not a complete admission test for it.
       if (node.returnNames.length > 0 || (node.body && (
         node.returnTypes.length > 0 || (node.body.statements?.length ?? 0) === 0
       ))) needsReturnDesugaring = true;
     }
+    // Declared types live in `type` / `returnTypes`, which the structural walk below deliberately skips.
+    // Survey them explicitly: a pointer used only in a state variable or signature still needs lowering.
+    const declaredType = (node as Node & { type?: Type }).type;
+    if (declaredType && typeContainsFunction(declaredType)) hasFunctionPointers = true;
+    if ((node instanceof FunctionDefinitionNode || node instanceof InterfaceFunctionNode)
+      && node.returnTypes.some(typeContainsFunction)) hasFunctionPointers = true;
+    // Struct fields are plain type records, not AST nodes. A declaration-only foreign function pointer
+    // otherwise escapes the survey and reaches type validation before it can become a blob.
+    if (node instanceof StructDefinitionNode
+      && node.fields.some((field) => typeContainsFunction(field.type))) hasFunctionPointers = true;
     if (node instanceof WhileNode || node instanceof DoWhileNode) needsLoop = true;
     if (node instanceof BreakNode || node instanceof ContinueNode) needsBreakContinue = true;
     if (node instanceof BranchNode || node instanceof UncheckedNode || node instanceof SwitchNode
@@ -794,6 +811,9 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     )) {
       needsPostfixIncDec = true;
     }
+    // The same desugaring pass also lifts assignment expressions out of value positions (or into a
+    // conditional branch for && / ||). They need it even when no increment/decrement occurs.
+    if (node instanceof AssignmentExpressionNode) needsPostfixIncDec = true;
     if (node instanceof FunctionCallNode) calledFunctionNames.add(node.identifier.name);
     if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
       || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode

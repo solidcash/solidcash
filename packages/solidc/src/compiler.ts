@@ -4921,8 +4921,7 @@ function synthesizeMessageBusRoute(
       if (unsupported) break;
       for (const candidate of byName.get(name) ?? []) {
         if (unsupported) break;
-        if (candidate.messageBusUnboundedConstructedArray
-          || candidate.messageBusUnprovenFixedLocalMappingKey) {
+        if (candidate.messageBusUnboundedConstructedArray) {
           unsupported = true;
           break;
         }

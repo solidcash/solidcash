@@ -14209,13 +14209,21 @@ function compileResolvedAst(
     ? Object.fromEntries(traversal.invokeDebugInfo)
     : undefined;
 
+  // A helper body an entry OP_INVOKEs runs in its own instruction space, so its `require` pointers are recorded
+  // under `invokeDebug` and never on the emitted program's own `requires`. A refusal report reads `requires` at
+  // the failing frame's pointer, so republish those pointers beside the program's own, at the same relative
+  // positions, and a failure inside the helper names the helper's message and line.
+  const requires = isPerCallMaster(mergedCompilerOptions as InternalCompilerOptions)
+    ? [...optimisationResult.requires, ...[...traversal.invokeDebugInfo.values()].flatMap((info) => info.requires)]
+    : optimisationResult.requires;
+
   const debug = {
     bytecode: binToHex(scriptToBytecode(optimisationResult.script)),
     // Marks the trace as exactly attributable: the emitted instructions are the generator's own.
     ...(mergedCompilerOptions.optimise === false && { optimise: false }),
     sourceMap: generateSourceMap(optimisationResult.locationData, mergedCompilerOptions.sourceMap !== false),
     logs: optimisationResult.logs,
-    requires: optimisationResult.requires,
+    requires,
     ...(functionDebug && { functionDebug }),
     ...(invokeDebug && { invokeDebug }),
   };

@@ -118,6 +118,15 @@ export interface PerCallDeploymentSet {
    * empty commitment, which is what every composition recreates it with.
    */
   readonly collectionNodes: readonly Utxo[];
+  /**
+   * The collection nodes of each sorted collection the layout publishes, keyed by collection name.
+   *
+   * A contract that keeps several mappings holds every collection's nodes at the same category, and a frame that
+   * writes one collection has to declare exactly that collection's nodes: the nodes of another collection carry
+   * unrelated slots, so telling them apart needs each collection's own entry covenant lock. A node whose lock no
+   * published collection derives appears only in `collectionNodes`.
+   */
+  readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
 }
 
 /** The lock hex of every chunkable variable's chunk covenant, keyed for classifying a deployment's UTXOs. */
@@ -174,8 +183,23 @@ export function classifyPerCallDeployment(
   const validators: Utxo[] = [];
   const chunks: Utxo[] = [];
   const collectionNodes: Utxo[] = [];
+  const nodesByCollection = new Map<string, Utxo[]>();
   const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
   const locksByCategory = new Map<string, ReadonlySet<string>>();
+  const collectionLocksByCategory = new Map<string, ReadonlyMap<string, string>>();
+  /** The collection name each of a category's entry covenant locks derives, keyed by the lock hex. */
+  const collectionLocksFor = (categoryId: string): ReadonlyMap<string, string> => {
+    let found = collectionLocksByCategory.get(categoryId);
+    if (found === undefined) {
+      const locks = new Map<string, string>();
+      for (const collection of layout.collections ?? []) {
+        locks.set(bytesToHex(entryRecordLockingBytecode(categoryId, collection.signature)), collection.name);
+      }
+      found = locks;
+      collectionLocksByCategory.set(categoryId, locks);
+    }
+    return found;
+  };
   for (const utxo of utxos) {
     const nft = utxo.token?.nft;
     if (nft === undefined) continue;
@@ -198,17 +222,29 @@ export function classifyPerCallDeployment(
       const isChunk = locks !== undefined && lockingBytecode !== undefined
         && locks.has(bytesToHex(lockingBytecode));
       if (isChunk) chunks.push(utxo);
-      else collectionNodes.push(utxo);
+      else {
+        // The node's own covenant tells which collection it belongs to; a lock no collection derives is unfiled.
+        const collection = categoryId === undefined || lockingBytecode === undefined
+          ? undefined
+          : collectionLocksFor(categoryId).get(bytesToHex(lockingBytecode));
+        if (collection !== undefined) {
+          nodesByCollection.set(collection, [...(nodesByCollection.get(collection) ?? []), utxo]);
+        }
+        collectionNodes.push(utxo);
+      }
     }
   }
   masters.sort((left, right) => left.vout - right.vout);
   validators.sort((left, right) => left.vout - right.vout);
   chunks.sort((left, right) => left.vout - right.vout);
   collectionNodes.sort((left, right) => left.vout - right.vout);
+  for (const nodes of nodesByCollection.values()) nodes.sort((left, right) => left.vout - right.vout);
   tagged.sort((left, right) => (isMultiDataNftLayout(layout)
     ? left.nftIndex - right.nftIndex
     : left.utxo.vout - right.utxo.vout));
-  return { masters, validators, chunks, records: tagged.map((entry) => entry.utxo), collectionNodes };
+  return {
+    masters, validators, chunks, records: tagged.map((entry) => entry.utxo), collectionNodes, nodesByCollection,
+  };
 }
 
 /**

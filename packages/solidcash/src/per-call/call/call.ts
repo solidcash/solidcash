@@ -10,15 +10,21 @@
  * the composer declares a placeholder and the derivation learns the commitment the body's own close hands back.
  * The record's output follows that learned value, and the machine is asked about every participant.
  *
+ * A contract that keeps a mapping is carried the same way. Its state is a chain of entry NFTs rather than a data
+ * NFT, so the frame declares the node a held key sits at, or the head a new key is spliced beside, and the node the
+ * write creates as a trailing output. The created node's commitment carries the value the body computed, which no
+ * caller can state, so the plan starts it from a structural candidate and the derivation's close hands the value
+ * back.
+ *
  * What is not covered: an entry that calls another contract (the plan names no callee frames) and an entry that
- * returns a value (the root frame's `retval` is empty here). A contract that keeps a mapping is refused by the
- * deployment layer, which does not classify a mapping's entry records yet.
+ * returns a value (the root frame's `retval` is empty here).
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import {
   FrameKind,
   bytesEqual,
+  bytesToHex,
   validatorRedeemScript,
   type Artifact,
   type StructDefinitionInfo,
@@ -32,10 +38,12 @@ import type NetworkProvider from '../../network/NetworkProvider.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
   deployMaster,
+  readComputedDeclaration,
   readPerCallDeployment,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
+import { callEntryRecords } from './entry-records.js';
 import {
   PerCallComposerError,
   createComposedDerivationHost,
@@ -219,12 +227,6 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (stateLayout === undefined) {
     throw new PerCallCallError(`artifact "${artifact.contractName}" is not a stateful contract`);
   }
-  if ((stateLayout.mappings?.length ?? 0) > 0) {
-    throw new PerCallCallError(
-      `contract "${artifact.contractName}" keeps a mapping, whose entry records the deployment layer does not `
-      + 'classify as data-NFT records yet',
-    );
-  }
   if (options.callerLockingBytecode.length !== 25) {
     throw new PerCallCallError(
       `a root frame's caller is a 25-byte P2PKH lock; got ${options.callerLockingBytecode.length} bytes`,
@@ -291,104 +293,195 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   });
   const recordIds = records.map((record) => record.id);
 
+  // The mapping nodes the entry writes, planned against the deployment's own classified inventory: the frame
+  // declares the node a held key sits at, or the head sentinel a new key is spliced beside, exactly as the genesis
+  // and the proxy hop do.
+  const mappingRecords = callEntryRecords({
+    artifact,
+    functionName,
+    args: options.args ?? [],
+    callerLockingBytecode: options.callerLockingBytecode,
+    categoryId,
+    nodesByCollection: deployment.nodesByCollection,
+  });
+  const mappingIds = mappingRecords?.participantIds ?? [];
+
   // One block: the contract's master, its validator, and every record it reads and writes.
   const blocks: ContractBlock[] = [{
     contract: artifact.contractName,
     masters: [MASTER_ID],
     validator: { id: VALIDATOR_ID, settles: [] },
-    state: recordIds,
+    state: [...recordIds, ...mappingIds],
   }];
   const layout = layoutTransaction(blocks);
   const masterIndex = participant(layout, MASTER_ID).index;
+  // Created mapping nodes are the first trailing outputs: the frame emits no events and makes no value sends.
+  const createdBase = layout.participantCount;
 
-  // A call-free entry runs in exactly one segment; every segment declares every record, with the end commitment
-  // left unstated so the derivation learns what the body wrote.
+  // A call-free entry runs in exactly one segment. Every segment declares the frame's state records and the mapping
+  // records the entry writes, with each end commitment the body computes left unstated so the derivation learns it.
   const segmentCount = published?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1;
   const recordIndex = (id: string): number => participant(layout, id).index;
-  const segment = (): DraftRecordEntry[] => records.map((record) => {
-    const index = recordIndex(record.id);
-    return { in: index, out: index, viewIn: record.commitment };
+  // Where each value-dependent node's declaration sits in the frame's segments, and the structural candidate it
+  // starts from, so the value the body's close hands back can be read and written into the next attempt.
+  const indexOfParticipant = (id: string): number => participant(layout, id).index;
+  const probe = mappingRecords?.lay({
+    createdBase,
+    masterIndex,
+    recordAmount: validator.satoshis,
+    learnedViews: [],
+    indexOf: indexOfParticipant,
   });
+  const learningCandidates = probe?.learningCandidates ?? [];
+  // One attempt per value the body computes, plus the attempt that derives against every value learned.
+  const maximumAttempts = learningCandidates.length + 3;
 
-  const masterDraft: DraftMaster = {
-    master: MASTER_ID,
-    contract: artifact.contractName,
-    functionName: `${artifact.contractName}.${entry.name}()`,
-    program: deployed.script,
-    facts: {
+  const buildPlan = (learnedViews: readonly (Uint8Array | undefined)[]): CompositionDraftPlan => {
+    const laid = mappingRecords?.lay({
+      createdBase,
+      masterIndex,
+      recordAmount: validator.satoshis,
+      learnedViews,
+      indexOf: indexOfParticipant,
+    });
+    const segment = (): DraftRecordEntry[] => [
+      ...records.map((record) => {
+        const index = recordIndex(record.id);
+        return { in: index, out: index, viewIn: record.commitment };
+      }),
+      ...(laid?.entries ?? []),
+    ];
+    const masterDraft: DraftMaster = {
+      master: MASTER_ID,
       contract: artifact.contractName,
-      functionName: entry.name,
-      kind: FrameKind.ROOT,
-      callerIsUser: true,
-      originEqualsCaller: true,
-      makesExternalCall: false,
-      mastersOfContract: 1,
-    },
-    frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value: 0n },
-    enteredBy: CALLER_ID,
-    origin: CALLER_ID,
-    calls: [],
-    retval: new Uint8Array(0),
-    segments: Array.from({ length: segmentCount }, segment),
-    events: [],
-    sends: [],
-    argumentPushes: entryArgumentPushes(entry, options.args ?? [], structs, functionName),
-    redeemScript: deployed.script,
-    // A root that carries call data is one a dispatcher selects an entry of.
-    dispatches: true,
-  };
-
-  const inputs: Record<string, DraftInput> = {
-    [MASTER_ID]: { source: masterSource(deployed.lockingBytecode, category, master.satoshis) },
-    [VALIDATOR_ID]: {
-      source: mutableSource(deployed.address, validator.satoshis, category, new Uint8Array(0)),
-    },
-    [CALLER_ID]: {
-      source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerUtxo.satoshis },
-      unlockingBytecode: callerUnlocking(),
-    },
-  };
-  for (const record of records) {
-    // The record's output is not stated: it carries the end of the declaration chain the derivation learns.
-    inputs[record.id] = {
-      source: {
-        lockingBytecode: stateRecordLockingBytecode(categoryId),
-        valueSatoshis: record.utxo.satoshis,
-        token: { category, amount: 0n, nft: { capability: 'mutable', commitment: record.commitment } },
+      functionName: `${artifact.contractName}.${entry.name}()`,
+      program: deployed.script,
+      facts: {
+        contract: artifact.contractName,
+        functionName: entry.name,
+        kind: FrameKind.ROOT,
+        callerIsUser: true,
+        originEqualsCaller: true,
+        makesExternalCall: false,
+        mastersOfContract: 1,
       },
-      // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
-      unlockingBytecode: stateRecordUnlockingBytecode(categoryId, masterIndex, 1),
+      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value: 0n },
+      enteredBy: CALLER_ID,
+      origin: CALLER_ID,
+      calls: [],
+      retval: new Uint8Array(0),
+      segments: Array.from({ length: segmentCount }, segment),
+      events: [],
+      sends: [],
+      argumentPushes: entryArgumentPushes(entry, options.args ?? [], structs, functionName),
+      redeemScript: deployed.script,
+      // A root that carries call data is one a dispatcher selects an entry of.
+      dispatches: true,
     };
-  }
 
-  const plan: CompositionDraftPlan = {
-    blocks,
-    userInputs: [{ id: CALLER_ID, index: layout.participantCount }],
-    masters: [masterDraft],
-    inputs,
-    validator: {
-      id: VALIDATOR_ID,
-      covers: [],
-      settles: [{ category, stateInputs: recordIds }],
-      redeemScript: validatorRedeemScript(category, validatorProgram),
-    },
+    const inputs: Record<string, DraftInput> = {
+      [MASTER_ID]: { source: masterSource(deployed.lockingBytecode, category, master.satoshis) },
+      [VALIDATOR_ID]: {
+        source: mutableSource(deployed.address, validator.satoshis, category, new Uint8Array(0)),
+      },
+      [CALLER_ID]: {
+        source: { lockingBytecode: options.callerLockingBytecode, valueSatoshis: options.callerUtxo.satoshis },
+        unlockingBytecode: callerUnlocking(),
+      },
+    };
+    for (const record of records) {
+      // The record's output is not stated: it carries the end of the declaration chain the derivation learns.
+      inputs[record.id] = {
+        source: {
+          lockingBytecode: stateRecordLockingBytecode(categoryId),
+          valueSatoshis: record.utxo.satoshis,
+          token: { category, amount: 0n, nft: { capability: 'mutable', commitment: record.commitment } },
+        },
+        // A master of the record's own category rewrites it, so the covenant's write path authorizes the spend.
+        unlockingBytecode: stateRecordUnlockingBytecode(categoryId, masterIndex, 1),
+      };
+    }
+    if (laid !== undefined) Object.assign(inputs, laid.inputs);
+
+    return {
+      blocks,
+      userInputs: [{ id: CALLER_ID, index: layout.participantCount }],
+      masters: [masterDraft],
+      inputs,
+      trailingOutputs: laid?.trailingOutputs ?? [],
+      validator: {
+        id: VALIDATOR_ID,
+        covers: [],
+        settles: [{
+          category,
+          stateInputs: [...recordIds, ...mappingIds],
+          ...(laid === undefined || laid.createdOutputs.length === 0
+            ? {} : { createdOutputs: laid.createdOutputs }),
+        }],
+        redeemScript: validatorRedeemScript(category, validatorProgram),
+      },
+    };
   };
 
-  const { host, draft } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
+  // The end commitment of a created mapping node is the value its own body computes, so no plan can state it: the
+  // derivation learns it from the body's close and the plan is rebuilt with it. A node commitment is slot, successor
+  // and value, so it is wider than the derivation's placeholder, which is a single hash; an attempt that never
+  // widens one is a write this call cannot settle.
   const root: FrameRequest = {
     contract: artifact.contractName,
     functionName: `${artifact.contractName}.${entry.name}()`,
     kind: FrameKind.ROOT,
     master: MASTER_ID,
   };
+  let draft: CompositionDraft | undefined;
   let completed: readonly FrameRequest[] = [];
-  try {
-    completed = deriveComposition([root], host).completed;
-  } catch (error) {
-    // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
-    // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the
-    // objection.
-    if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
+  let learnedViews: readonly (Uint8Array | undefined)[] = learningCandidates.map(() => undefined);
+  let settled = false;
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+    const plan = buildPlan(learnedViews);
+    const { host, draft: candidate } = createComposedDerivationHost({ vm: machine, artifacts: [artifact], plan });
+    draft = candidate;
+    let stalled = false;
+    try {
+      completed = deriveComposition([root], host).completed;
+    } catch (error) {
+      // A body that refuses before its segment closes never hands the derivation a record view, so the driver stops.
+      // The machine is asked about the draft as it stands below, and the refusing participant's verdict carries the
+      // objection.
+      if (!(error instanceof PerCallComposerError) || error.code !== 'PER_CALL_DERIVATION_STALLED') throw error;
+      stalled = true;
+    }
+    if (learningCandidates.length === 0) {
+      settled = true;
+      break;
+    }
+    // A node the body computes reads its declaration, decides update from insert on the declared slot, and then
+    // closes against the declared end view. The candidate is that declaration, so the close names it and the value
+    // the body computed sits beside it: learning it and rebuilding is what states the node the body wrote.
+    const reading = readComputedDeclaration({
+      vm: machine,
+      program: candidate.programFor(MASTER_ID),
+      maximumCommitmentBytes: stateLayout.commitmentLimit ?? 128,
+    });
+    const declared = reading.ok ? bytesToHex(reading.declared) : undefined;
+    const position = declared === undefined ? -1
+      : learningCandidates.findIndex((candidateView) => bytesToHex(candidateView) === declared);
+    if (reading.ok && position >= 0) {
+      learnedViews = learnedViews.map((view, index) =>
+        (index === position ? Uint8Array.from(reading.computed) : view));
+      continue;
+    }
+    if (!stalled) settled = true;
+    break;
+  }
+  if (draft === undefined) {
+    throw new PerCallCallError('the composer built no draft for the call frame');
+  }
+  if (!settled) {
+    throw new PerCallCallError(
+      `the call's write to mapping "${mappingRecords!.collection}" did not hand back every node it rewrites, so the `
+      + 'frame cannot declare their commitments',
+    );
   }
 
   const program = draft.programFor(MASTER_ID);
@@ -421,6 +514,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     [MASTER_ID, master],
     [VALIDATOR_ID, validator],
     ...records.map((record, nftIndex) => [record.id, deployment.records[nftIndex]!] as const),
+    ...(mappingRecords?.spentUtxos ?? []),
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry
   // never computed.

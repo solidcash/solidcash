@@ -373,6 +373,7 @@ export default class MockNetworkProvider implements NetworkProvider {
         txid: entry.outpoint.txid,
         vout: entry.outpoint.vout,
         satoshis: entry.satoshis,
+        lockingBytecode: entry.lockingBytecode,
         token: entry.tokenData ? {
           amount: entry.tokenData.amount,
           category: entry.tokenData.category,

@@ -10,6 +10,13 @@ export interface Utxo {
   vout: number;
   satoshis: bigint;
   token?: TokenDetails;
+  /**
+   * The locking bytecode this UTXO sits at, when the provider that listed it reports it.
+   *
+   * A provider that enumerates a category returns UTXOs of several pools at one category, so classifying them — a
+   * record from a validator, one mapping collection's nodes from another's — needs the lock each one sits at.
+   */
+  lockingBytecode?: Uint8Array;
   /** Provider-supplied confirmation height, when available (0 means unconfirmed). */
   blockHeight?: number;
   /** Provider-supplied confirmation count, when available. */

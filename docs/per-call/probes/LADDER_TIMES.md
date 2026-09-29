@@ -767,3 +767,79 @@ spends its attempt budget, which is why a wall can make a run minutes longer wit
 | 64 | 1.56 s | ✓ | admin > non pauser cannot pause |
 | 65 | 1.39 s | ✓ | admin > non owner cannot set version |
 | 66 | 0.10 s | × | job posting > post job from unregistered user |
+
+## m1-run-12.log — 14/66 — 2026-09-29 22:32 — `fab7b4d01 (census 0)`
+
+- 52 failed | 14 passed (66)
+- full run: **3409.73 s** (start to finish, including vitest's own start-up and the reporter)
+- per-title times recorded: 66, sum **3394.8 s**, median **54.34 s**
+- first title (the fixture's deployment): **415.3 s**
+
+| # | Time | Result | Title |
+| --- | --- | --- | --- |
+| 1 | 415.34 s | ✓ | admin > transfer owner |
+| 2 | 83.59 s | × | refuse arbitration > job closed |
+| 3 | 80.68 s | × | dispute > dispute worker |
+| 4 | 80.09 s | × | dispute > dispute creator |
+| 5 | 78.64 s | × | refuse arbitration > job not taken |
+| 6 | 78.27 s | × | dispute > sanity checks closed job |
+| 7 | 73.28 s | × | refund > refund |
+| 8 | 72.54 s | × | arbitrate > sanity checks |
+| 9 | 71.84 s | × | job updates > update job |
+| 10 | 71.75 s | × | arbitrate > arbitrate 100-0 |
+| 11 | 69.35 s | × | arbitrate > arbitrate 0-100 |
+| 12 | 68.49 s | × | close job > close job before timeout |
+| 13 | 68.37 s | × | job updates > update job many times, get history |
+| 14 | 67.74 s | × | arbitrate > arbitrate 80-20 |
+| 15 | 67.55 s | × | dispute > sanity checks with arbitrator |
+| 16 | 65.86 s | × | approve result and review > approve result |
+| 17 | 65.76 s | × | job worker whitelisting > should whitelist worker |
+| 18 | 63.36 s | × | take job > sanity checks |
+| 19 | 61.52 s | × | job updates > update job tags |
+| 20 | 61.25 s | × | take job > take job multiple |
+| 21 | 60.79 s | × | reopen job > reopen job before timeout |
+| 22 | 60.60 s | × | withdraw collateral > withdraw collateral |
+| 23 | 60.45 s | × | refund > sanity checks |
+| 24 | 59.24 s | × | reopen job > reopen job after timeout |
+| 25 | 57.89 s | × | refuse arbitration > job taken |
+| 26 | 57.80 s | × | post thread message > sanity checks |
+| 27 | 57.69 s | × | job updates > update job arbitrator |
+| 28 | 56.34 s | × | pay start job > pay start job |
+| 29 | 56.22 s | × | take job > take job |
+| 30 | 56.15 s | × | close job > close job after timeout |
+| 31 | 56.13 s | × | job updates > update job amounts |
+| 32 | 54.85 s | × | pay start job > sanity checks |
+| 33 | 54.34 s | × | integration test > integration test |
+| 34 | 54.18 s | × | deliver result > sanity checks |
+| 35 | 53.42 s | × | approve result and review > sanity checks |
+| 36 | 51.66 s | × | post thread message > post thread message |
+| 37 | 49.98 s | × | deliver result > deliver result |
+| 38 | 49.88 s | × | job posting > post two jobs |
+| 39 | 47.61 s | ✓ | register user > register user |
+| 40 | 45.21 s | × | job posting > post job with unregistered arbitrator |
+| 41 | 43.87 s | × | register user > update user |
+| 42 | 43.85 s | × | job posting > post job with arbitrator same as creator |
+| 43 | 43.07 s | × | dispute > sanity checks no arbitrator |
+| 44 | 42.92 s | ✓ | admin > pause/unpause |
+| 45 | 41.95 s | × | register arbitrator > register arbitrator |
+| 46 | 35.46 s | × | register arbitrator > update arbitrator |
+| 47 | 31.17 s | ✓ | unicrow params > set unicrow contract addresses |
+| 48 | 25.47 s | ✓ | unicrow params > set unicrow markeplace address |
+| 49 | 22.89 s | × | job posting > post job with whitelist |
+| 50 | 22.14 s | × | job posting > post job 1 |
+| 51 | 21.50 s | × | job posting > post job with invalid token |
+| 52 | 20.48 s | ✓ | admin > non pauser cannot unpause |
+| 53 | 19.91 s | ✓ | admin > set version |
+| 54 | 18.63 s | × | job posting > post job with invalid mece tags |
+| 55 | 18.28 s | × | job posting > post job with invalid amount |
+| 56 | 17.04 s | × | job posting > post job with invalid delivery method |
+| 57 | 15.94 s | × | job posting > post job with invalid title |
+| 58 | 15.80 s | × | job posting > post job with invalid deadline |
+| 59 | 7.86 s | ✓ | admin > can not call initializer |
+| 60 | 7.57 s | ✓ | mece tags > update mece tag |
+| 61 | 4.44 s | ✓ | mece tags > remove mece tag |
+| 62 | 3.11 s | ✓ | mece tags > read mece tag |
+| 63 | 2.16 s | ✓ | admin > non owner cannot transfer owner |
+| 64 | 1.92 s | ✓ | admin > non pauser cannot pause |
+| 65 | 1.50 s | ✓ | admin > non owner cannot set version |
+| 66 | 0.14 s | × | job posting > post job from unregistered user |

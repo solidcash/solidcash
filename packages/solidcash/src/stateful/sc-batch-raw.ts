@@ -122,6 +122,8 @@ export type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveSatoshiContainer?: boolean;
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
   messageBusRowArguments?: readonly RouteExpressionKeyRow[];
+  /** Direct keccak preimages decoded from selected rows of the canonical batch blob; null needs another recipe. */
+  messageBusKeccakPreimages?: readonly (Uint8Array | null)[];
   /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
   messageBusTokenContainerTransferPlan?: readonly {
     args: readonly FunctionArgument[];
@@ -899,6 +901,13 @@ executionContextBinding?: BatchExecutionContextBinding,
   // defer every preimage to the complete authenticated graph trace: even a syntactically simple expression
   // can depend on a nested return which the isolated participant probe only represents with a placeholder.
   const selectedKeccakCalls = reachedHandlers.flatMap((handler) => handler.keccakPreimageParams ?? []);
+  const selectedKeccakPreimages = reachedHandlers.flatMap((handler, rowIndex) =>
+    (handler.keccakPreimageParams ?? []).map((paramName) => {
+      if (paramName === null) return null;
+      const paramIndex = handler.inputs.findIndex((input) => input.name === paramName);
+      const value = paramIndex < 0 ? undefined : reachedArguments[rowIndex]?.[paramIndex];
+      return value instanceof Uint8Array ? value.slice() : null;
+    }));
   const publishedKeccakSlots = capability.route.blockLayout?.slots
     .filter((slot) => slot.kind === 'keccakSideCar').length ?? 0;
   if (Math.ceil(selectedKeccakCalls.length / 3) > publishedKeccakSlots) {
@@ -958,6 +967,7 @@ executionContextBinding?: BatchExecutionContextBinding,
     ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
     ...(selectedKeccakCalls.length > 0 && {
       keccakPreimageParams: selectedKeccakCalls.map(() => null),
+      messageBusKeccakPreimages: selectedKeccakPreimages,
     }),
     ...(hasHandlerRecoveryMetadata && {
       ecrecoverCompute: selectedRecoveryHandlers.length > 0,

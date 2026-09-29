@@ -13631,6 +13631,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
         ecrecoverPreimages: ecrecoverEvmPreimages,
+        plannedPreimages: (keccakAbiFunction as MessageBusRuntimeAbiFunction).messageBusKeccakPreimages,
         ...((delegatedKeccak || graphOwnedKeccak
           || ecrecoverEvmPreimages.some((preimage) => preimage === null)) && {
           deferUnresolved: true,

@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
   FrameKind, SHARED_LIBRARY_SALT, asmToScript, encodeIntegerValue, scriptToBytecode, sha256, validatorAddress,
 } from '@solidcash/utils';
@@ -13,7 +14,8 @@ import {
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
 import {
-  buildRecoverySideCars, composeDraft, recoveryCallsOf, type CompositionDraftPlan, type DraftMaster,
+  buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, recoveryCallsOf,
+  type CompositionDraftPlan, type DraftMaster, type RecoverySideCars,
 } from '../../../src/per-call/composer/index.js';
 import { USER_LOCK, composeAndDerive, rootOf, userInput } from '../shapes/harness.js';
 
@@ -23,9 +25,10 @@ import { USER_LOCK, composeAndDerive, rootOf, userInput } from '../shapes/harnes
  * The entry takes the four scalars as arguments and compares the recovered key against a compile-time owner. The
  * master dispatches over two entries, so a user enters it with the call data `selector || h || v || r || s`; the
  * composer reads the scalars from those argument pushes, builds the recovery side-car pair (and, for the EVM
- * projection, the keccak side-car), and `layoutTransaction` places them immediately after the master's input. The
- * machine's verdict on every contract input - the master and each side-car - is the assertion; no coordinate is
- * supplied by the test.
+ * projection, the keccak side-car), and `layoutTransaction` places them immediately after the master's input. A
+ * digest the body computes is not an argument: the pair is built over placeholder scalars and learned from the
+ * body's bind. The machine's verdict on every contract input - the master and each side-car - is the assertion; no
+ * coordinate is supplied by the test.
  */
 
 const CATEGORY = seededCategory('composer recovery');
@@ -52,13 +55,16 @@ const dummyUtxo = (odd: boolean): never => ({
   token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
 }) as never;
 
-/** Signs one message with a fresh wallet, re-drawing until the shipped split probe accepts the signature. */
-async function splittableSigner(): Promise<Signer> {
+/**
+ * Signs one message with a fresh wallet, re-drawing until the shipped split probe accepts the signature. A given
+ * `hash` (little-endian, as the builtin reads it) is signed instead of a message.
+ */
+async function splittableSigner(hash?: Uint8Array): Promise<Signer> {
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const wallet = ethers.Wallet.createRandom();
     const message = `composer recovery ${attempt}`;
-    const signature = await wallet.signMessage(message);
-    const digest = ethers.hashMessage(message);
+    const digest = hash === undefined ? ethers.hashMessage(message) : `0x${binToHex(hash.slice().reverse())}`;
+    const signature = hash === undefined ? await wallet.signMessage(message) : wallet.signingKey.sign(digest).serialized;
     const { r, s, v } = ethers.Signature.from(signature);
     const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
     const owner = hexToBin(ethers.SigningKey
@@ -117,23 +123,40 @@ interface RecoveryCase {
   readonly ids: readonly string[];
 }
 
-/**
- * Compiles an entry, reads its recovery calls from the argument pushes, builds the side-cars, and lays the plan out.
- * Nothing here states an index: the side-car ids come from the composer, and the layout places them.
- */
-function buildCase(calls: readonly CallSpec[]): RecoveryCase {
-  const artifacts = compileStringMulti(recoverySource(calls), { composition: 'per-call' });
+/** Compiles an `Auth` source, fills its master program's slots, and reads the ABI row of `check`. */
+function compiled(source: string): {
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly program: Uint8Array;
+  readonly abiFunction: ReturnType<typeof compileStringMulti>[string]['abi'][number];
+} {
+  const artifacts = compileStringMulti(source, { composition: 'per-call' });
   const artifact = artifacts.Auth!;
   const program = fillPlaceholders(
     scriptToBytecode(asmToScript(artifact.bytecode)),
     artifact.composition!.placeholders,
     { category: categorySlotValue(CATEGORY), contractAddress: CONTRACT_ADDRESS, templateHash: TEMPLATE_HASH },
   );
-  const abiFunction = artifact.abi.find((row) => row.name === 'check')!;
-  const selector = hexToBin(abiFunction.selector!);
-  const pushes = argumentPushes(selector, calls);
+  return { artifacts, program, abiFunction: artifact.abi.find((row) => row.name === 'check')! };
+}
+
+/** Compiles an entry, reads its recovery calls from the argument pushes, builds the side-cars, and lays the plan out. */
+function buildCase(calls: readonly CallSpec[]): RecoveryCase {
+  const { artifacts, program, abiFunction } = compiled(recoverySource(calls));
+  const pushes = argumentPushes(hexToBin(abiFunction.selector!), calls);
   const decoded = recoveryCallsOf(abiFunction, pushes, 1); // one leading push: the dispatcher selector
-  const sideCars = buildRecoverySideCars(MASTER_ID, decoded);
+  return caseOf(artifacts, program, pushes, buildRecoverySideCars(MASTER_ID, decoded));
+}
+
+/**
+ * The plan for one call of `Auth.check` with `pushes`, co-spending `sideCars`. Nothing here states an index: the
+ * side-car ids come from the composer, and the layout places them.
+ */
+function caseOf(
+  artifacts: ReturnType<typeof compileStringMulti>,
+  program: Uint8Array,
+  pushes: readonly Uint8Array[],
+  sideCars: RecoverySideCars,
+): RecoveryCase {
   const master: DraftMaster = {
     master: MASTER_ID,
     contract: 'Auth',
@@ -169,6 +192,7 @@ function buildCase(calls: readonly CallSpec[]): RecoveryCase {
       ...sideCars.inputs,
       user: userInput(),
     },
+    computedWitnesses: sideCars.computedWitnesses,
   };
   return { plan, artifacts, ids: sideCars.ids };
 }
@@ -236,6 +260,43 @@ describe('a composed per-call recovery', () => {
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
   });
+});
+
+describe('a composed per-call recovery over a digest the body computes', () => {
+  it('stands on placeholder scalars until the body\'s bind hands back its own, then every input accepts', async () => {
+    // The digest is a signed-message digest the body hashes itself, so neither the recovery's hash nor the outer
+    // keccak256 preimage is an argument: both are learned from the body's binds.
+    const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const prefix = utf8('per-call signed digest:');
+    const left = utf8('per-call recovery left');
+    const computed = await splittableSigner(keccak_256(Uint8Array.from([...prefix, ...keccak_256(left)])));
+    const { artifacts, program, abiFunction } = compiled('pragma solidcash ^0.13.0;'
+      + ' contract Auth {'
+      + '   function check(bytes prefix, bytes left, int v, bytes32 r, bytes32 s) {'
+      + '     bytes32 h = keccak256(bytes.concat(prefix, keccak256(left)));'
+      + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(0x${binToHex(computed.owner)}));`
+      + '   }'
+      + '   function idle() { require(true); }'
+      + ' }');
+    const pushes = [
+      hexToBin(abiFunction.selector!), computed.s, computed.r, encodeIntegerValue(BigInt(computed.v)), left, prefix,
+    ];
+    // The keccak side-cars follow the recovery pair, where the body reads them.
+    const recovery = buildRecoverySideCars(MASTER_ID, recoveryCallsOf(abiFunction, pushes, 1));
+    const keccak = buildKeccakSideCars(MASTER_ID, keccakPreimagesOf(abiFunction, pushes, 1));
+    const test = caseOf(artifacts, program, pushes, {
+      ids: [...recovery.ids, ...keccak.ids],
+      inputs: { ...recovery.inputs, ...keccak.inputs },
+      computedWitnesses: [...recovery.computedWitnesses, ...keccak.computedWitnesses],
+    });
+    // Before the derivation the master refuses the placeholders, and every placeholder side-car stands on its own.
+    const before = rawVerdicts(test);
+    expect(before[MASTER_ID]).toBe(false);
+    for (const id of test.ids) expect(before[id], id).toBe(true);
+    const verdicts = verdictsOf(test);
+    expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
+    for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
+  }, 120_000);
 });
 
 describe('the recovery side-cars the composer places', () => {

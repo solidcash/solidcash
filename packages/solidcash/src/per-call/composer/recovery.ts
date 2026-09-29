@@ -10,10 +10,12 @@
  * The witnesses themselves are the shipped recovery engine (`ecrecover/ecrecoverComputeSidecar.ts`); this module
  * only resolves each call's scalars from the master's own argument pushes and shapes the two inputs a draft takes.
  * The salt brands the side-car; the compiled check strips it before hashing the covenant, so any salt the caller
- * states works.
+ * states works. Scalars the body computes are learned from the body's own bind: the pair is built over placeholder
+ * scalars and rebuilt over the ones the body binds.
  */
 
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import {
   PerCallEncodingError,
   SHARED_LIBRARY_SALT,
@@ -43,6 +45,15 @@ export interface RecoveryCall {
   /** True when the call is the EVM projection, which also co-spends a keccak side-car over the recovered key. */
   readonly evm: boolean;
 }
+
+/** A recovery call whose scalars the body computes, so the derivation learns them from the body's bind. */
+export interface ComputedRecoveryCall {
+  readonly computed: true;
+  readonly evm: boolean;
+}
+
+/** The scalars a recovery side-car pair recovers from. */
+type RecoveryScalars = Omit<RecoveryCall, 'evm'>;
 
 /** The side-car inputs one master co-spends, in the order its body reads them. */
 export interface RecoverySideCars {
@@ -108,50 +119,133 @@ function sideCarRecreation(recreate: Output): DraftSourceOutput {
   };
 }
 
+/** The byte length of the blob a recovery binds: `hash(32) || v(1) || r(32) || s(32)`. */
+const RECOVERY_ARGUMENT_BYTES = 97;
+
+/** The most scalar draws a placeholder recovery tries; a random point's ladder nearly always splits. */
+const PLACEHOLDER_RECOVERY_DRAWS = 16;
+
+/** The A/B pair over `scalars`, and when `kId` is set the EVM projection's keccak side-car over the recovered key. */
+function recoverySideCarsOver(
+  scalars: RecoveryScalars,
+  salt: Uint8Array,
+  ids: { readonly a: string; readonly b: string; readonly k: string | undefined },
+): Record<string, DraftSettledInput> {
+  const witness = computeEcrecoverWitness(scalars.hash, scalars.v, scalars.r, scalars.s);
+  const chunkA = probeEcrecoverSplit(witness, salt, sideCarUtxo('A'), sideCarUtxo('B'));
+  const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
+    witness, chunkA, salt, sideCarUtxo('A'), sideCarUtxo('B'),
+  );
+  const settled: Record<string, DraftSettledInput> = {
+    [ids.a]: { unlockingBytecode: unlockingOf(unlockerA), output: sideCarRecreation(recreateA) },
+    [ids.b]: { unlockingBytecode: unlockingOf(unlockerB), output: sideCarRecreation(recreateB) },
+  };
+  if (ids.k !== undefined) {
+    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, sideCarUtxo('K'), false);
+    settled[ids.k] = { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
+  }
+  return settled;
+}
+
+/** The blob a recovery over `scalars` binds. */
+const recoveryArgumentOf = (scalars: RecoveryScalars): Uint8Array =>
+  Uint8Array.from([...scalars.hash, scalars.v, ...scalars.r, ...scalars.s]);
+
+/** The scalars of the blob a body bound, which must be the `hash || v || r || s` a recovery takes. */
+function recoveryScalarsOf(blob: Uint8Array): RecoveryScalars {
+  if (blob.length !== RECOVERY_ARGUMENT_BYTES) {
+    throw new PerCallEncodingError(
+      `the body binds a ${blob.length}-byte recovery argument, not the ${RECOVERY_ARGUMENT_BYTES} of hash || v || r || s`,
+    );
+  }
+  return { hash: blob.slice(0, 32), v: blob[32]!, r: blob.slice(33, 65), s: blob.slice(65) };
+}
+
+/** A 32-byte little-endian word, the form the recovery builtin reads its scalars in. */
+function littleEndianWord(value: bigint): Uint8Array {
+  const word = new Uint8Array(32);
+  for (let index = 0; index < 32; index += 1, value >>= 8n) word[index] = Number(value & 0xffn);
+  return word;
+}
+
+/**
+ * Placeholder scalars for a recovery the body computes, and the pair built over them.
+ *
+ * They are drawn from `tag` and recover a key over a random point, so the pair is a valid pair: one the body never
+ * reads still holds its place. The drawn hash keeps every placeholder distinct. A draw whose ladder does not split
+ * within the side-cars' budget is redrawn.
+ */
+function placeholderRecovery(
+  tag: string,
+  build: (scalars: RecoveryScalars) => Record<string, DraftSettledInput>,
+): { readonly argument: Uint8Array; readonly settled: Record<string, DraftSettledInput> } {
+  const order = secp256k1.CURVE.n;
+  let refusal: unknown;
+  for (let draw = 0; draw < PLACEHOLDER_RECOVERY_DRAWS; draw += 1) {
+    const drawn = (part: string): bigint => BigInt(`0x${binToHex(
+      sha256(new TextEncoder().encode(`per-call computed recovery\u0000${tag}\u0000${draw}\u0000${part}`)),
+    )}`);
+    const point = secp256k1.ProjectivePoint.BASE.multiply(drawn('k') % order || 1n).toAffine();
+    const scalars: RecoveryScalars = {
+      hash: littleEndianWord(drawn('hash')),
+      v: 27 + Number(point.y & 1n),
+      r: littleEndianWord(point.x % order),
+      s: littleEndianWord(drawn('s') % order || 1n),
+    };
+    try {
+      return { argument: recoveryArgumentOf(scalars), settled: build(scalars) };
+    } catch (error) {
+      refusal = error;
+    }
+  }
+  throw new PerCallEncodingError(`no placeholder recovery for "${tag}" splits its ladder: ${String(refusal)}`);
+}
+
 /**
  * Builds the recovery side-cars one master co-spends, in the order its body reads them: the A/B pair of each call,
  * then one keccak side-car per EVM projection. The ids are namespaced by the master, so a composition that names
- * two masters' side-cars keeps them distinct.
+ * two masters' side-cars keeps them distinct. A call whose scalars the body computes is built over placeholder
+ * scalars, and its computed witness rebuilds the pair (and its keccak side-car) over the blob the body binds.
  */
 export function buildRecoverySideCars(
   master: string,
-  calls: readonly RecoveryCall[],
+  calls: readonly (RecoveryCall | ComputedRecoveryCall)[],
   salt: Uint8Array = SHARED_LIBRARY_SALT,
 ): RecoverySideCars {
-  const ids: string[] = [];
+  const pairIds: string[] = [];
+  const keccakIds: string[] = [];
   const inputs: Record<string, DraftInput> = {};
-  const evmPreimages: Uint8Array[] = [];
+  const computedWitnesses: DraftComputedWitness[] = [];
   calls.forEach((call, index) => {
-    const witness = computeEcrecoverWitness(call.hash, call.v, call.r, call.s);
-    const chunkA = probeEcrecoverSplit(witness, salt, sideCarUtxo('A'), sideCarUtxo('B'));
-    const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-      witness, chunkA, salt, sideCarUtxo('A'), sideCarUtxo('B'),
-    );
-    const aId = `${master}/recovery-A${index}`, bId = `${master}/recovery-B${index}`;
-    ids.push(aId, bId);
-    inputs[aId] = {
-      source: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'A')),
-      output: sideCarRecreation(recreateA),
-      unlockingBytecode: unlockingOf(unlockerA),
+    const ids = {
+      a: `${master}/recovery-A${index}`,
+      b: `${master}/recovery-B${index}`,
+      k: call.evm ? `${master}/recovery-K${keccakIds.length}` : undefined,
     };
-    inputs[bId] = {
-      source: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'B')),
-      output: sideCarRecreation(recreateB),
-      unlockingBytecode: unlockingOf(unlockerB),
+    pairIds.push(ids.a, ids.b);
+    const sources: Record<string, DraftSourceOutput> = {
+      [ids.a]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'A')),
+      [ids.b]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'B')),
     };
-    if (call.evm) evmPreimages.push(witness.uncompressedPubkey);
+    if (ids.k !== undefined) {
+      keccakIds.push(ids.k);
+      sources[ids.k] = sideCarSource(keccakComputeLockingBytecode(salt, false));
+    }
+    const over = (scalars: RecoveryScalars): Record<string, DraftSettledInput> =>
+      recoverySideCarsOver(scalars, salt, ids);
+    let settled: Record<string, DraftSettledInput>;
+    if ('computed' in call) {
+      const placeholder = placeholderRecovery(`${master}/recovery-${index}`, over);
+      computedWitnesses.push({
+        master, placeholder: placeholder.argument, settle: (value) => over(recoveryScalarsOf(value)),
+      });
+      settled = placeholder.settled;
+    } else {
+      settled = over(call);
+    }
+    for (const [id, input] of Object.entries(settled)) inputs[id] = { source: sources[id]!, ...input };
   });
-  evmPreimages.forEach((preimage, index) => {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sideCarUtxo('K'), false);
-    const id = `${master}/recovery-K${index}`;
-    ids.push(id);
-    inputs[id] = {
-      source: sideCarSource(keccakComputeLockingBytecode(salt, false)),
-      output: sideCarRecreation(recreate),
-      unlockingBytecode: unlockingOf(unlocker),
-    };
-  });
-  return { ids, inputs, computedWitnesses: [] };
+  return { ids: [...pairIds, ...keccakIds], inputs, computedWitnesses };
 }
 
 /**
@@ -160,15 +254,14 @@ export function buildRecoverySideCars(
  * `argumentPushes` are the pushes the master's unlocking bytecode carries above its witness block, in wire order:
  * `leadingPushes` skips the pushes that are not arguments (one when the call data leads with a dispatcher selector),
  * and the parameters then follow with the FIRST parameter's push LAST, which is where the compiled body reads it. A
- * call whose argument is not a named parameter of the entry - a value the body computes - is refused rather than
- * guessed: the side-car has to recover from the same scalars the body binds, and this layer cannot read a value only
- * the running code holds.
+ * call with any argument that is not a named parameter of the entry - a value the body computes - has no pushes to
+ * read, so it is returned as computed, and `buildRecoverySideCars` leaves its scalars to the derivation.
  */
 export function recoveryCallsOf(
   abiFunction: RecoveryAbiFunction,
   argumentPushes: readonly Uint8Array[],
   leadingPushes = 0,
-): readonly RecoveryCall[] {
+): readonly (RecoveryCall | ComputedRecoveryCall)[] {
   const params = abiFunction.ecrecoverArgParams ?? [];
   const flags = abiFunction.ecrecoverEvmFlags ?? [];
   if (params.length === 0) return [];
@@ -187,11 +280,7 @@ export function recoveryCallsOf(
     return values[parameterCount - 1 - index]!;
   };
   return params.map((names, call) => {
-    if (names.some((name) => name === null)) {
-      throw new PerCallEncodingError(
-        `recovery call ${call} passes a computed argument, which cannot be read from the entry's arguments`,
-      );
-    }
+    if (names.some((name) => name === null)) return { computed: true, evm: flags[call] === true };
     const [hashName, vName, rName, sName] = names as readonly string[];
     return {
       hash: valueOf(hashName!),

@@ -1479,22 +1479,5 @@ describe('the obstacles this flow replica works around', () => {
         + 'stack item length: 2; requested split index: 4.',
     });
   });
-
-  it('pins a recovery whose digest the body computes: the composer cannot read it from the arguments', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Auth {'
-      + '   function check(int v, bytes32 r, bytes32 s) {'
-      + '     bytes32 h = sha256("x");'
-      + '     require(ecrecoverPubKey(h, v, r, s) == pubkey(0x00));'
-      + '   }'
-      + '   function idle() { require(true); }'
-      + ' }';
-    const artifact = compileStringMulti(source, { composition: 'per-call' }).Auth!;
-    const abiFunction = artifact.abi.find((row) => row.name === 'check')!;
-    const selector = hexToBin(abiFunction.selector!);
-    const scalar = new Uint8Array(32);
-    expect(() => recoveryCallsOf(abiFunction, [selector, scalar, scalar, encodeIntegerValue(27n)], 1))
-      .toThrow(/passes a computed argument, which cannot be read from the entry's arguments/);
-  });
 });
 

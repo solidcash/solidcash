@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 169 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 170 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 20 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
@@ -38,7 +38,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 15 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 86 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 112 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 111 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 42 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
 | `packages/solidcash/test/per-call/toys/` | `solidcash` | 80 |
@@ -127,7 +127,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   the index the layout gives it, each read back through the shipped codecs (`decodePushdataValue`,
   `parseChunkCommitment`) and each refused shape named. `keccak-side-car.test.ts` hashes through keccak256 compute
   side-cars: a preimage the entry takes is read from its argument pushes, and one its body computes is learned
-  from the body's own bind, a nested call included.
+  from the body's own bind, a nested call included. `recovery.test.ts` does the same for a recovery pair: a digest
+  the body computes is learned with the keccak256 preimage it hashes, and the placeholder pair stands on its own.
 - **`solidcash/test/per-call/deploy/`** — the deployed side: the master program's filled slots and published
   offsets, the master and validator pools, the genesis state a constructor's own frame computes (including the
   events a constructor emits), the record discovery a deployed contract is read through - the token category is

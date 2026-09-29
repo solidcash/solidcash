@@ -16,25 +16,39 @@
  * and, when the address names none, from the interface the site calls.
  *
  * The occurrence the source publishes decides how many records the site fills: a `conditional` site always fills
- * one, and a `loop` site fills as many as its iteration domain reaches against the caller's own arguments. A
- * contract is placed once: the composition gives each contract one block, so a contract a call reaches twice — or
- * reaches below itself — is refused by name.
+ * one, and a `loop` site fills as many as its iteration domain reaches against the caller's own arguments and
+ * state — or, for a loop the artifact publishes no domain for, as many as the caller's own arrays that the site's
+ * own sources walk. A site the caller's own facts give no visits fills nothing and places no callee. A contract is
+ * placed once: the composition gives each contract one block, so a contract a call reaches twice — or reaches
+ * below itself — is refused by name.
  *
  * What this module derives is what the plan states, never a coordinate: the layout, the caller references and the
  * callee indices stay the composer's. A shape the hop cannot declare — a target no route names, an argument only
  * the running execution holds, a loop width the caller's facts do not fix — is refused by name.
  */
 
-import { binToHex, hexToBin } from '@bitauth/libauth';
+import { binToHex, binToUtf8, hexToBin } from '@bitauth/libauth';
 import {
   bytesEqual,
   bytesToHex,
+  chunkCountForLength,
+  decodePushdataValue,
+  dynamicLenKey,
+  FrameKind,
+  isFixedWidthType,
+  joinChunks,
+  parseArrayTypeString,
+  parseChunkCommitment,
   parsePushdataCommitment,
+  unpackFixedWidthArray,
   validatorAddress,
+  type ArgSource,
   type Artifact,
   type ExternalCallAbi,
   type FrameKindValue,
   type StateLayout,
+  type StateValue,
+  type StateVariableInfo,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
@@ -45,17 +59,33 @@ import {
 import type { DraftCall } from '../composer/draft.js';
 import { readPublishedStopSites } from '../composer/index.js';
 import { deployMaster, type DeployedMaster } from '../deploy/material.js';
-import { readPerCallDeployment, stateRecordLockingBytecode } from '../deploy/records.js';
+import {
+  chunkRecordLockingBytecode, readPerCallDeployment, stateRecordLockingBytecode,
+  type PerCallDeploymentSet,
+} from '../deploy/records.js';
 import {
   entryRowOf, makeCallResolver, resolveCallTarget, resolvePublishedCall,
-  type CallResolver, type HopCallInputs,
+  type AbiEntryRow, type CallResolver, type HopCallInputs, type ResolvedCall,
 } from './call-resolution.js';
 import { PerCallProxyDeployError } from './errors.js';
 
 /** One contract the caller names for a call an implementation entry makes, keyed by the interface it calls. */
 export interface PerCallProxyExternal {
+  /** The artifact whose entries the call names, i.e. the implementation behind the address the call reaches. */
   readonly artifact: Artifact;
+  /** The category whose address the calling entry's own code computes, which is the proxy's when one sits there. */
   readonly categoryId: string;
+  /**
+   * The proxy the callee sits behind, when the address the call reaches names a proxy rather than the artifact.
+   *
+   * A per-call deployment places a proxy whose fallback forwards the call data it received to the address it holds,
+   * and the implementation's entry runs as the delegate frame that follows. A callee reached at a proxy's address
+   * therefore has to be placed as that same chain, which needs the proxy's artifact and its implementation's
+   * category beside the implementation's own artifact.
+   */
+  readonly proxyArtifact?: Artifact;
+  /** The implementation's own category, whose master the delegate frame runs from. */
+  readonly implementationCategoryId?: string;
 }
 
 /** One record a callee frame reads, with the live UTXO it sits on. */
@@ -84,7 +114,16 @@ export interface HopCallee {
   readonly masterSatoshis: bigint;
   /** True when the entry returns a value, so the frame's `retval` is a candidate the derivation learns. */
   readonly returns: boolean;
+  /** The address this frame runs as, i.e. `address(this)`: the delegate frame runs as the proxy's. */
+  readonly selfAddress: Uint8Array;
   readonly records: readonly HopCalleeRecord[];
+  /**
+   * Index in `callees` of the frame whose live records this frame reads and whose block hosts them.
+   *
+   * A proxy's delegate frame reads the records the proxy's fallback frame runs on, so it declares them without
+   * owning their block. Absent means the frame owns the records it lists.
+   */
+  readonly recordOwner?: number;
   /** Every participant of this callee, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
   /** The calls this callee's own entry makes, in execution order, whose callees are other frames of the plan. */
@@ -114,16 +153,15 @@ function routingOf(artifact: Artifact, functionName: string): readonly ExternalC
  * the domain's recurrence is evaluated against the caller's own arguments, so a loop bounded by a forwarded
  * array's length fills that length and a loop bounded by a literal fills that count. A domain whose condition the
  * caller's facts do not fix — one that reads an earlier call's result, for instance — is refused by name, because
- * the plan would not know the run's width.
+ * the plan would not know the run's width. A loop the artifact publishes no domain for is read from the site's own
+ * sources instead, and refused by the same name when nothing there fixes its width.
  */
-function occurrenceCountOf(row: ExternalCallAbi, resolver: CallResolver, where: string): number {
+function occurrenceCountOf(
+  row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
+): number {
   if ((row.occurrence ?? 'once') !== 'loop') return 1;
   const domain = row.iterationDomain;
-  if (domain === undefined) {
-    throw new PerCallProxyDeployError(
-      `${where} runs a loop, and the artifact publishes no iteration domain to read its width from`,
-    );
-  }
+  if (domain === undefined) return derivedOccurrenceCountOf(row, args, where);
   const initial = resolver.evaluate(domain.initialValue, 0);
   const step = resolver.evaluate(domain.stepValue, 0);
   if (typeof initial !== 'bigint' || typeof step !== 'bigint') {
@@ -152,13 +190,133 @@ function occurrenceCountOf(row: ExternalCallAbi, resolver: CallResolver, where: 
   return count;
 }
 
-/** The live state a callee's records hold, keyed by field name, as its own body reads it. */
-function liveStateValues(layout: StateLayout, commitments: readonly Uint8Array[]): Record<string, unknown> {
+/** The most visits a derived loop width may reach before the caller's own facts are taken to leave it open. */
+const MAXIMUM_DERIVED_VISITS = 1 << 16;
+
+/** Every `arrayElement` source a site's argument sources contain, at any nesting depth. */
+function arrayElementSourcesOf(sources: readonly ArgSource[]): readonly ArgSource[] {
+  const found: ArgSource[] = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== 'object') return;
+    if ((value as { readonly kind?: string }).kind === 'arrayElement') found.push(value as ArgSource);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (Array.isArray(child)) child.forEach(visit);
+      else visit(child);
+    }
+  };
+  sources.forEach(visit);
+  return found;
+}
+
+/**
+ * The width of a repeated site the artifact publishes no iteration domain for, read from the site's own sources.
+ *
+ * A repeated site still publishes where each of its arguments comes from, and a loop walks whatever its body
+ * indexes: an `arrayElement` source whose index advances with the visit names the element that visit carries, so
+ * the elements the caller's own array holds are the visits the site fills — the source's own length is the run's
+ * width. More than one such source fixes the narrowest. A site whose sources walk no caller-held array — a
+ * constant, or a value only an earlier call's result fixes — has a width the caller's own facts do not fix, and is
+ * refused by name.
+ */
+function derivedOccurrenceCountOf(
+  row: ExternalCallAbi, args: readonly FunctionArgument[], where: string,
+): number {
+  let width: number | undefined;
+  for (const source of arrayElementSourcesOf(row.argSources ?? [])) {
+    const array = source.paramIndex === undefined ? undefined : args[source.paramIndex];
+    if (!Array.isArray(array)) continue;
+    const start = source.indexValue ?? 0;
+    const step = source.indexStepValue ?? 0;
+    if (step === 0) continue;
+    let visits = 0;
+    while (visits < MAXIMUM_DERIVED_VISITS) {
+      const index = start + step * visits;
+      if (index < 0 || index >= array.length) break;
+      visits += 1;
+    }
+    width = width === undefined ? visits : Math.min(width, visits);
+  }
+  if (width === undefined) {
+    throw new PerCallProxyDeployError(
+      `${where} runs a loop whose bound is not fixed by the caller's own arguments, so the hop cannot state how `
+      + 'many records its visits fill',
+    );
+  }
+  return width;
+}
+
+/** The most chunks one dynamic value may span, so a corrupt length header cannot size a run. */
+const MAXIMUM_DYNAMIC_CHUNKS = 1 << 15;
+
+/**
+ * The live state a deployment's records hold, keyed by field name, as the contract's own body reads it.
+ *
+ * Every data-NFT record parses with the shipped decoder at its own index. A dynamic field's record holds only the
+ * byte length of its value; the value itself lives in the field's own chunk records, one entry NFT per chunk, which
+ * a body joins and decodes before it reads a `.length` or an element. The planner is handed the assembled value for
+ * the same reason a body has it: a site whose argument or bound reads the field cannot be resolved from its byte
+ * length alone. A field whose chunks the record's own length does not account for is left unstated rather than
+ * guessed at, so a site that reads it is refused by name.
+ */
+export function deploymentStateValues(
+  layout: StateLayout, categoryId: string, deployment: PerCallDeploymentSet,
+): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  commitments.forEach((commitment, nftIndex) => {
-    Object.assign(values, parsePushdataCommitment(bytesToHex(commitment), layout, nftIndex));
+  deployment.records.forEach((record, nftIndex) => {
+    const commitment = record.token?.nft?.commitment;
+    if (commitment === undefined) return;
+    Object.assign(values, parsePushdataCommitment(commitment, layout, nftIndex));
   });
+  for (const field of layout.variables ?? []) {
+    if (field.dynamic !== true) continue;
+    const value = dynamicFieldValue(deployment, layout, categoryId, field, values);
+    if (value !== undefined) values[field.name] = value;
+  }
   return values;
+}
+
+/** One dynamic field's value, joined from its chunk records and decoded as the field's own type declares. */
+function dynamicFieldValue(
+  deployment: PerCallDeploymentSet, layout: StateLayout, categoryId: string,
+  field: StateVariableInfo, values: Readonly<Record<string, unknown>>,
+): StateValue | undefined {
+  const header = values[dynamicLenKey(field.name)];
+  const length = typeof header === 'bigint' ? Number(header) : 0;
+  if (!Number.isSafeInteger(length) || length < 0) return undefined;
+  const span = chunkCountForLength(length);
+  if (span > MAXIMUM_DYNAMIC_CHUNKS) return undefined;
+  const lock = bytesToHex(chunkRecordLockingBytecode(categoryId, field.name, field.type));
+  const chunks: Array<Uint8Array | undefined> = [];
+  for (const utxo of deployment.chunks) {
+    const commitment = utxo.token?.nft?.commitment;
+    const lockingBytecode = utxo.lockingBytecode;
+    if (commitment === undefined || lockingBytecode === undefined
+      || bytesToHex(lockingBytecode) !== lock) continue;
+    let chunk: { readonly chunkIndex: number; readonly chunkData: Uint8Array };
+    try {
+      chunk = parseChunkCommitment(commitment);
+    } catch {
+      return undefined;
+    }
+    if (chunk.chunkIndex < 0 || chunk.chunkIndex >= MAXIMUM_DYNAMIC_CHUNKS) return undefined;
+    chunks[chunk.chunkIndex] = new Uint8Array(chunk.chunkData);
+  }
+  const parts = Array.from({ length: span }, (_unused, index) => chunks[index]);
+  if (parts.some((part) => part === undefined)) return undefined;
+  const joined = joinChunks(parts as Uint8Array[], length);
+  const array = parseArrayTypeString(field.type);
+  try {
+    if (array !== undefined) {
+      return (isFixedWidthType(array.elementType)
+        ? unpackFixedWidthArray(joined, array.elementType)
+        : joined.length === 0
+          ? [] : decodePushdataValue(joined, 0, field.type, layout.structs).value) as StateValue;
+    }
+    return field.type === 'string' ? binToUtf8(joined) : joined;
+  } catch {
+    // A value the field's own declared type does not decode is left unstated, like one whose chunks are missing.
+    return undefined;
+  }
 }
 
 /** The live deployment a registered contract names, read from its artifact and category. */
@@ -170,10 +328,18 @@ function externalOfRegistered(registered: {
     readonly inner?: { readonly artifact?: Artifact };
     readonly categoryId?: string;
     readonly proxy?: { readonly categoryId?: string };
+    readonly perCallProxy?: { readonly artifact?: Artifact; readonly implementationCategoryId?: string };
   };
   const artifact = contract.inner?.artifact ?? contract.artifact;
   const categoryId = contract.proxy?.categoryId ?? contract.categoryId;
-  return artifact === undefined || categoryId === undefined ? undefined : { artifact, categoryId };
+  const proxy = contract.perCallProxy;
+  return artifact === undefined || categoryId === undefined ? undefined : {
+    artifact,
+    categoryId,
+    ...(proxy?.artifact === undefined ? {} : { proxyArtifact: proxy.artifact }),
+    ...(proxy?.implementationCategoryId === undefined
+      ? {} : { implementationCategoryId: proxy.implementationCategoryId }),
+  };
 }
 
 /** The deployment one call's target address names, from the provider's registrations. */
@@ -232,9 +398,10 @@ function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Ar
  * facts. `enteredBy` is the index in `ctx.callees` of the master that calls this entry, or null for the
  * implementation's own master; the frames this entry reaches are appended to `ctx.callees`.
  *
- * The whole entry is validated before any live record is read: every call site's target, frame kind, record count
+ * The whole entry is validated before any live record is read: every call site's record count, target, frame kind
  * and argument pushes are resolved first, so a shape the hop cannot declare is refused without depending on a
- * deployment. Only then is each callee's live deployment read, and its own calls planned from it.
+ * deployment. Only then is each callee's live deployment read, and its own calls planned from it. A site the
+ * caller's own facts give no visits fills no record, so it places no callee and the rest of it need not resolve.
  */
 async function planEntryCalls(
   ctx: PlanContext,
@@ -250,7 +417,7 @@ async function planEntryCalls(
 
   // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
   // shape before any live record is read.
-  const sites = published.calls.map((call, index) => {
+  const sites = published.calls.flatMap((call, index) => {
     const row = routing[index];
     if (row === undefined || row.interfaceName !== call.interfaceName
       || row.functionName !== call.functionName) {
@@ -259,28 +426,38 @@ async function planEntryCalls(
         + `"${call.interfaceName}.${call.functionName}", which its ABI routing does not describe`,
       );
     }
+    const where = `the call to "${row.interfaceName}.${row.functionName}"`;
+    const count = occurrenceCountOf(row, caller.args, resolver, where);
+    // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
+    // for it and its target and arguments need not resolve.
+    if (count === 0) return [];
     // The stop site's baked target is the address the compiler pinned into the caller's own code; the ABI routing
     // carries it as `addressLiteral` for a literal and leaves it empty for one the caller computes.
     const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
       ? { ...row, addressLiteral: call.target }
       : row;
-    const where = `the call to "${row.interfaceName}.${row.functionName}"`;
     const target = resolveCallTarget(effective, caller, resolver, 0);
     const external = resolveExternal(ctx, row, target);
     const entry = entryRowOf(external.artifact, row.functionName);
-    const count = occurrenceCountOf(row, resolver, where);
     const resolved = Array.from({ length: count }, (_unused, occurrence) => (
       resolvePublishedCall(effective, external.artifact, caller, resolver, occurrence)
     ));
-    if (ctx.contracts.has(external.artifact.contractName)) {
-      throw new PerCallProxyDeployError(
-        `${where} reaches "${external.artifact.contractName}", which this hop already places; a contract that `
-        + 'reaches itself below itself, or is reached twice, cannot be given the one block a composition holds per '
-        + 'contract',
-      );
+    // A callee behind its own proxy is two contracts, so both of the names the chain places are checked here,
+    // before any live record is read.
+    const placedNames = external.proxyArtifact === undefined
+      ? [external.artifact.contractName]
+      : [external.proxyArtifact.contractName, external.artifact.contractName];
+    for (const name of placedNames) {
+      if (ctx.contracts.has(name)) {
+        throw new PerCallProxyDeployError(
+          `${where} reaches "${name}", which this hop already places; a contract that `
+          + 'reaches itself below itself, or is reached twice, cannot be given the one block a composition holds per '
+          + 'contract',
+        );
+      }
+      ctx.contracts.add(name);
     }
-    ctx.contracts.add(external.artifact.contractName);
-    return { entry, external, resolved };
+    return [{ entry, external, resolved }];
   });
 
   // Pass two: read each callee's live deployment, plan its own calls from the values that deployment holds, and
@@ -288,6 +465,12 @@ async function planEntryCalls(
   const calls: DraftCall[] = [];
   for (const site of sites) {
     const { external, entry, resolved } = site;
+    // A callee whose address names a per-call proxy is placed as the same chain the root hop places for its own
+    // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
+    if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
+      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls);
+      continue;
+    }
     const category = hexToBin(external.categoryId);
     const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
     const deployment = await readPerCallDeployment(ctx.provider, external.categoryId, layout);
@@ -299,24 +482,7 @@ async function planEntryCalls(
     }
     const calleeIndex = ctx.callees.length;
     const master = `callee-master-${calleeIndex + 1}`;
-    const records = Array.from(
-      { length: layout.dataNftCount },
-      (_unused, nftIndex): HopCalleeRecord => {
-        const utxo = deployment.records[nftIndex];
-        const commitment = utxo?.token?.nft?.commitment;
-        if (utxo === undefined || commitment === undefined) {
-          throw new PerCallProxyDeployError(
-            `the callee's category ${external.categoryId} holds no record at data NFT ${nftIndex}`,
-          );
-        }
-        return {
-          id: `${master}-record-${nftIndex}`,
-          commitment: new Uint8Array(hexToBin(commitment)),
-          satoshis: utxo.satoshis,
-          lockingBytecode: stateRecordLockingBytecode(external.categoryId),
-        };
-      },
-    );
+    const records = calleeRecordsOf(master, external.categoryId, layout.dataNftCount, deployment);
     const masterUtxos = new Map<string, Utxo>([[master, masterUtxo]]);
     records.forEach((record, nftIndex) => masterUtxos.set(record.id, deployment.records[nftIndex]!));
     const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
@@ -332,6 +498,7 @@ async function planEntryCalls(
       kind: resolved[0]!.kind,
       masterSatoshis: masterUtxo.satoshis,
       returns: (entry.outputs ?? []).length > 0,
+      selfAddress: deployed.address,
       records,
       utxos: masterUtxos,
       calls: [],
@@ -344,7 +511,7 @@ async function planEntryCalls(
       artifact: external.artifact,
       functionName: entry.name,
       args: resolved[0]!.argumentValues,
-      stateValues: liveStateValues(layout, records.map((record) => record.commitment)),
+      stateValues: deploymentStateValues(layout, external.categoryId, deployment),
       selfAddress: deployed.address,
       ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
     }, calleeIndex);
@@ -359,6 +526,154 @@ async function planEntryCalls(
     }
   }
   return calls;
+}
+
+/** The live records a frame reads, each named for the master that reads it and locked at its category's covenant. */
+function calleeRecordsOf(
+  master: string,
+  categoryId: string,
+  dataNftCount: number,
+  deployment: PerCallDeploymentSet,
+): readonly HopCalleeRecord[] {
+  return Array.from({ length: dataNftCount }, (_unused, nftIndex): HopCalleeRecord => {
+    const utxo = deployment.records[nftIndex];
+    const commitment = utxo?.token?.nft?.commitment;
+    if (utxo === undefined || commitment === undefined) {
+      throw new PerCallProxyDeployError(
+        `the callee's category ${categoryId} holds no record at data NFT ${nftIndex}`,
+      );
+    }
+    return {
+      id: `${master}-record-${nftIndex}`,
+      commitment: new Uint8Array(hexToBin(commitment)),
+      satoshis: utxo.satoshis,
+      lockingBytecode: stateRecordLockingBytecode(categoryId),
+    };
+  });
+}
+
+/**
+ * Places a callee that sits behind its own per-call proxy, as the chain a root hop places.
+ *
+ * The frame the caller reaches is the proxy's fallback, which forwards the call data it received to the address its
+ * record holds; the implementation's entry runs as the delegate frame that follows, on the proxy's own records. The
+ * caller's record names the proxy's master, the proxy's record names the implementation's master, and the
+ * implementation's own calls are planned below it from the proxy's live record values — its `address(this)` and
+ * `msg.sender` are the proxy's.
+ */
+async function placeProxiedCallee(
+  ctx: PlanContext,
+  caller: HopCallInputs,
+  enteredBy: number | null,
+  external: PerCallProxyExternal,
+  entry: AbiEntryRow,
+  resolved: readonly ResolvedCall[],
+  calls: DraftCall[],
+): Promise<void> {
+  const proxyArtifact = external.proxyArtifact!;
+  const implementationCategoryId = external.implementationCategoryId!;
+  const proxyLayout = proxyArtifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+  const implementationLayout =
+    external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+  const proxyDeployment = await readPerCallDeployment(ctx.provider, external.categoryId, proxyLayout);
+  const implementationDeployment =
+    await readPerCallDeployment(ctx.provider, implementationCategoryId, implementationLayout);
+  const proxyMasterUtxo = proxyDeployment.masters[0];
+  if (proxyMasterUtxo === undefined) {
+    throw new PerCallProxyDeployError(
+      `the callee's proxy category ${external.categoryId} holds no master, which its fallback frame runs on`,
+    );
+  }
+  const implementationMasterUtxo = implementationDeployment.masters[0];
+  if (implementationMasterUtxo === undefined) {
+    throw new PerCallProxyDeployError(
+      `the callee's implementation category ${implementationCategoryId} holds no master, which its delegate `
+      + 'frame runs on',
+    );
+  }
+
+  const proxyCategory = hexToBin(external.categoryId);
+  const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, ctx.validatorProgram);
+  const implementationCategory = hexToBin(implementationCategoryId);
+  const implementationDeployed = deployMaster(external.artifact, implementationCategory, ctx.validatorProgram);
+
+  const proxyIndex = ctx.callees.length;
+  const implementationIndex = proxyIndex + 1;
+  const proxyMaster = `callee-master-${proxyIndex + 1}`;
+  const implementationMaster = `callee-impl-master-${implementationIndex + 1}`;
+
+  const records = calleeRecordsOf(proxyMaster, external.categoryId, proxyLayout.dataNftCount, proxyDeployment);
+  const proxyUtxos = new Map<string, Utxo>([[proxyMaster, proxyMasterUtxo]]);
+  records.forEach((record, nftIndex) => proxyUtxos.set(record.id, proxyDeployment.records[nftIndex]!));
+  // The delegate's master sits on the implementation's own category, and the frame reads the proxy's records, so
+  // the participant it owns is its master alone.
+  const implementationUtxos = new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]);
+
+  const proxyBase: HopCallee = {
+    master: proxyMaster,
+    contract: proxyArtifact.contractName,
+    entry: '__fallback',
+    functionName: `${proxyArtifact.contractName}.__fallback()`,
+    artifact: proxyArtifact,
+    category: proxyCategory,
+    categoryId: external.categoryId,
+    deployed: proxyDeployed,
+    kind: resolved[0]!.kind,
+    masterSatoshis: proxyMasterUtxo.satoshis,
+    returns: false,
+    selfAddress: proxyDeployed.address,
+    records,
+    utxos: proxyUtxos,
+    // The fallback forwards the call data the caller recorded to the address its own record holds, which is the
+    // implementation's master at its own category.
+    calls: [{
+      kind: FrameKind.DELEGATE,
+      callee: implementationMaster,
+      target: implementationDeployed.address,
+      value: 0n,
+      argumentPushes: resolved[0]!.argumentPushes,
+    }],
+    enteredBy,
+  };
+  const implementationBase: HopCallee = {
+    master: implementationMaster,
+    contract: external.artifact.contractName,
+    entry: entry.name,
+    functionName: `${external.artifact.contractName}.${entry.name}()`,
+    artifact: external.artifact,
+    category: implementationCategory,
+    categoryId: implementationCategoryId,
+    deployed: implementationDeployed,
+    kind: FrameKind.DELEGATE,
+    masterSatoshis: implementationMasterUtxo.satoshis,
+    returns: (entry.outputs ?? []).length > 0,
+    // A delegate frame runs as its caller's contract, so its `address(this)` is the proxy's.
+    selfAddress: proxyDeployed.address,
+    records: [],
+    recordOwner: proxyIndex,
+    utxos: implementationUtxos,
+    calls: [],
+    enteredBy: proxyIndex,
+  };
+  ctx.callees.push(proxyBase, implementationBase);
+  const nested = await planEntryCalls(ctx, {
+    artifact: external.artifact,
+    functionName: entry.name,
+    args: resolved[0]!.argumentValues,
+    stateValues: deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment),
+    selfAddress: proxyDeployed.address,
+    ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
+  }, implementationIndex);
+  ctx.callees[implementationIndex] = { ...implementationBase, calls: nested };
+  for (const [id, utxo] of proxyUtxos) ctx.utxos.set(id, utxo);
+  for (const [id, utxo] of implementationUtxos) ctx.utxos.set(id, utxo);
+
+  for (const record of resolved) {
+    calls.push({
+      kind: record.kind, callee: proxyMaster, target: record.target, value: 0n,
+      argumentPushes: record.argumentPushes,
+    });
+  }
 }
 
 /** Everything the implementation frame's calls are planned from, and the live deployments they run against. */

@@ -31,8 +31,8 @@
 
 import { binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import {
-  FrameKind, bytesEqual, bytesToHex, parsePushdataCommitment, sha256, validatorRedeemScript,
-  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo, type StateLayout,
+  FrameKind, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
+  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
@@ -41,6 +41,7 @@ import {
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
+import { registerDeployment } from '../../stateful/deployment-registry.js';
 import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
@@ -60,6 +61,7 @@ import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopEntryWrites, mappingHeadCollection, mappingNodeSlot, type HopEntryWrites } from './entry-writes.js';
 import {
+  deploymentStateValues,
   planHopExternalCalls,
   type HopCallee,
   type PerCallProxyExternal,
@@ -245,23 +247,6 @@ function hopRetvalPlaceholder(contract: string, functionName: string): Uint8Arra
 /** The struct definitions a hop decodes an implementation entry's returned values against. */
 function structDefinitionsOf(artifact: Artifact): readonly StructDefinitionInfo[] | undefined {
   return artifact.stateLayout?.structs ?? artifact.structs;
-}
-
-/**
- * The live state a deployment's records hold, keyed by field name, as the entry's own body reads it.
- *
- * A per-call contract's state lives in its data-NFT records, one register per data NFT, each decoded by the same
- * pushdata decoder the direct path uses. An entry whose own code derives a call's target or an argument from state
- * reads these values, so the planner is handed them rather than left to refuse a target only the chain holds.
- */
-function liveStateValues(
-  layout: StateLayout, recordCommitments: readonly Uint8Array[],
-): Record<string, StateValue> {
-  const values: Record<string, StateValue> = {};
-  recordCommitments.forEach((commitment, nftIndex) => {
-    Object.assign(values, parsePushdataCommitment(bytesToHex(commitment), layout, nftIndex));
-  });
-  return values;
 }
 
 /**
@@ -548,7 +533,7 @@ export async function deployPerCallProxy(
   const externalPlan = await planHopExternalCalls({
     provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
     args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
-    stateValues: liveStateValues(proxyArtifact.stateLayout!, recordCommitments),
+    stateValues: deploymentStateValues(proxyArtifact.stateLayout!, proxy.categoryId, deployment),
     selfAddress: proxyMaster.address,
     senderAddress: options.callerLockingBytecode,
   });
@@ -615,6 +600,21 @@ export async function deployPerCallProxy(
     ...(entryWrites === undefined && externalPlan.utxos.size === 0 && facetSpends.size === 0
       ? {}
       : { spentUtxos: new Map([...(entryWrites?.spentUtxos ?? []), ...externalPlan.utxos, ...facetSpends]) }),
+  });
+
+  // The deployment is recorded under the address the proxy presents, so a caller whose own state holds that
+  // address — another contract's entry calling into this one — resolves the live deployment from it. The record
+  // carries the implementation's artifact beside the proxy's category and the implementation's own, so the caller
+  // can place the same fallback-plus-delegate chain this deployment runs.
+  registerDeployment(provider, {
+    contractName: implementationArtifact.contractName,
+    address: binToHex(proxyMaster.address),
+    lockingBytecode: binToHex(proxyMaster.address),
+    contract: {
+      inner: { artifact: implementationArtifact },
+      proxy: { categoryId: proxy.categoryId },
+      perCallProxy: { artifact: proxyArtifact, implementationCategoryId: implementation.categoryId },
+    },
   });
 
   return {
@@ -788,8 +788,12 @@ async function settleCallees(options: {
         continue;
       }
       const refusal = reportCompositionRefusal({ draft: candidate.draft, artifacts: options.artifacts, vm: options.vm });
+      // A delegate frame reads the records of the proxy frame that entered it, so the reading is described against
+      // whichever frame declares the records this one runs on.
+      const settledRecords = callee.recordOwner === undefined
+        ? callee.records : options.callees[callee.recordOwner]?.records ?? [];
       const attributed = refusal.innermost === undefined
-        ? describeReading(reading, callee.records[0]?.commitment ?? new Uint8Array(0))
+        ? describeReading(reading, settledRecords[0]?.commitment ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
       throw new PerCallProxyDeployError(
         `the call's callee "${callee.functionName}" did not settle through the proxy: ${attributed}`,
@@ -1093,6 +1097,33 @@ function hopEventSentinels(
       eventSentinel(category, artifact.contractName, position, maximumCommitmentBytes));
 }
 
+/**
+ * The `msg.sender` a callee frame runs with.
+ *
+ * A call frame's sender is the address of the frame that entered it — the implementation's own proxy for a
+ * first-level callee, a calling callee's own address below that. A delegate frame preserves its caller's sender, so
+ * a proxy's delegate runs with the same sender as the fallback that entered it.
+ */
+function calleeSender(
+  callees: readonly HopCallee[], rootAddress: Uint8Array, callee: HopCallee,
+): Uint8Array {
+  const caller = callee.enteredBy === null ? undefined : callees[callee.enteredBy];
+  if (caller === undefined) return rootAddress;
+  if (callee.kind === FrameKind.DELEGATE) return calleeSender(callees, rootAddress, caller);
+  return caller.selfAddress;
+}
+
+/** The callee indices whose records a delegate frame runs on, each named once and in placement order. */
+function delegateOwnerIndices(callees: readonly HopCallee[]): readonly number[] {
+  const owners: number[] = [];
+  for (const callee of callees) {
+    if (callee.recordOwner !== undefined && !owners.includes(callee.recordOwner)) {
+      owners.push(callee.recordOwner);
+    }
+  }
+  return owners;
+}
+
 /** Lays out the delegate hop from the deployed masters and the proxy's records. */
 function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const { proxyArtifact, implementationArtifact, proxyMaster, implementationMaster } = options;
@@ -1118,7 +1149,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     ...callees.map((callee) => ({
       contract: callee.contract,
       masters: [callee.master],
-      state: callee.records.map((record) => record.id),
+      // A delegate frame reads the records of the proxy that entered it, whose block hosts them, so it declares
+      // them without owning a second block for the same participants.
+      state: callee.recordOwner === undefined ? callee.records.map((record) => record.id) : [],
     })),
   ];
   // The validator runs as a head plus its facet inputs, so the hop's own layout has to place the same facets the
@@ -1246,15 +1279,19 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const callTo = new Map<string, DraftCall>();
   for (const call of everyCall) if (!callTo.has(call.callee)) callTo.set(call.callee, call);
   const calleeMasterDrafts: DraftMaster[] = callees.map((callee) => {
-    const indices = callee.records.map((record) => participant(layout, record.id).index);
+    // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
+    // that entered it, which are the first ones that frame declares.
+    const owned = callee.recordOwner === undefined ? callee.records : callees[callee.recordOwner]!.records;
+    const declared = callee.recordOwner === undefined
+      ? owned.length
+      : callee.artifact.stateLayout?.dataNftCount ?? owned.length;
+    const indices = owned.slice(0, declared).map((record) => participant(layout, record.id).index);
     // The frame's own call-data band is the pushes of the call that reaches it; a callee a loop reaches has several
     // records, and the first of them carries the same selector and shape as the rest.
     const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? [];
-    // A callee's own sender is the contract that calls it: the implementation's own address for a first-level
-    // callee, and the calling callee's address below that.
-    const sender = callee.enteredBy === null
-      ? proxyMaster.address
-      : callees[callee.enteredBy]!.deployed.address;
+    // A callee's own sender is the contract that calls it: the caller's own address for a call, and the caller's
+    // sender for a delegate frame, which preserves it.
+    const sender = calleeSender(callees, proxyMaster.address, callee);
     return {
       master: callee.master,
       contract: callee.contract,
@@ -1265,7 +1302,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         callerIsUser: false, originEqualsCaller: false,
         makesExternalCall: callee.calls.length > 0, mastersOfContract: 1,
       },
-      frame: { kind: callee.kind, sender, self: callee.deployed.address, value: 0n },
+      frame: { kind: callee.kind, sender, self: callee.selfAddress, value: 0n },
       enteredBy: callee.enteredBy === null ? IMPLEMENTATION_MASTER_ID : callees[callee.enteredBy]!.master,
       origin: USER_ID,
       calls: callee.calls,
@@ -1275,7 +1312,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         : new Uint8Array(0),
       // A frame that makes k calls closes k + 1 segments, each declaring its own records kept.
       segments: Array.from({ length: callee.calls.length + 1 }, () =>
-        callee.records.map((record, nftIndex): RecordEntry => ({
+        owned.slice(0, declared).map((record, nftIndex): RecordEntry => ({
           in: indices[nftIndex]!, out: indices[nftIndex]!,
           viewIn: record.commitment, viewOut: record.commitment,
         }))),
@@ -1325,15 +1362,19 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
         unlockingBytecode: callerUnlocking(),
       },
       ...Object.fromEntries(callees.flatMap((callee) => {
-        const masterIndex = participant(layout, callee.master).index;
         const masterEntry = [callee.master, {
           source: masterSource(callee.deployed.lockingBytecode, callee.category, callee.masterSatoshis),
         }] as const;
-        const recordEntries = callee.records.map((record, nftIndex) => [record.id, {
+        // Only the frame that owns a block declares its records; a delegate frame's records are the proxy's, whose
+        // inputs the proxy leg already placed.
+        const owned = callee.recordOwner === undefined ? callee.records : [];
+        const recordEntries = owned.map((record) => [record.id, {
           source: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
           output: mutableSource(record.lockingBytecode, record.satoshis, callee.category, record.commitment),
           // A callee frame is planned as a read of its records, so each is spent on the covenant's read-only path.
-          unlockingBytecode: stateRecordUnlockingBytecode(callee.categoryId, masterIndex, 0),
+          unlockingBytecode: stateRecordUnlockingBytecode(
+            callee.categoryId, participant(layout, callee.master).index, 0,
+          ),
         }] as const);
         return [masterEntry, ...recordEntries];
       })),
@@ -1342,11 +1383,20 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     validator: {
       id: VALIDATOR_ID,
       covers: [implementationArtifact.contractName, ...callees.map((callee) => callee.contract)],
-      settles: [{
-        category: options.proxyCategory,
-        stateInputs: [...recordIds, ...entryWriteIds],
-        ...(laidWrites === undefined ? {} : { createdOutputs: laidWrites.createdOutputs }),
-      }],
+      settles: [
+        {
+          category: options.proxyCategory,
+          stateInputs: [...recordIds, ...entryWriteIds],
+          ...(laidWrites === undefined ? {} : { createdOutputs: laidWrites.createdOutputs }),
+        },
+        // A delegate frame runs on the category its caller's records sit under — the proxy's, when the callee sits
+        // behind one — and the validator requires every category a covered master runs on to be settled, so a
+        // callee's own proxy category is settled by this transcript beside the caller's.
+        ...delegateOwnerIndices(callees).map((owner) => ({
+          category: callees[owner]!.category,
+          stateInputs: callees[owner]!.records.map((record) => record.id),
+        })),
+      ],
       redeemScript: validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram()),
     },
     // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
@@ -1713,7 +1763,7 @@ export async function callPerCallProxyEntry(
   const externalPlan = await planHopExternalCalls({
     provider, artifact: implementationArtifact, functionName: options.functionName,
     args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
-    stateValues: liveStateValues(proxyArtifact.stateLayout!, recordCommitments),
+    stateValues: deploymentStateValues(proxyLayout, options.proxyCategoryId, proxyPools),
     selfAddress: proxyMaster.address,
     senderAddress: options.callerLockingBytecode,
   });

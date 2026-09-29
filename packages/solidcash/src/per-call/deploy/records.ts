@@ -16,7 +16,9 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
+  bytesToHex,
   computeCollectionHash,
+  dynamicChunkSignature,
   isMultiDataNftLayout,
   parsePushdataCommitment,
   scriptToBytecode,
@@ -61,6 +63,20 @@ export function entryRecordLockingBytecode(categoryId: string, collectionSignatu
 }
 
 /**
+ * The lock a dynamic value's chunk sits at: the entry-NFT covenant the value's chunk signature derives.
+ *
+ * A `string`, `bytes` or dynamic array is not held in the data NFT that declares it; the bytes live in a run of
+ * chunks, and each chunk is an entry NFT of the value's own collection. The signature is the compiler's canonical
+ * one for the variable and its type, so the lock is the same one the emitted body rebuilds at run time.
+ */
+export function chunkRecordLockingBytecode(categoryId: string, variable: string, type: string): Uint8Array {
+  const covenant = buildEntryNftCovenantScript(
+    hexToBin(categoryId), computeCollectionHash(dynamicChunkSignature(variable, type)),
+  );
+  return scriptToLockingBytecode(covenant, 'p2sh32');
+}
+
+/**
  * The unlocking a per-call state record carries: the data-NFT covenant's `<masterInputIndex> <flag>` shape.
  *
  * `flag = 1` is the covenant's write path, which authorizes the spend by the minting NFT of `categoryId` at
@@ -87,6 +103,14 @@ export interface PerCallDeploymentSet {
   /** The state records: one per data NFT, in data-NFT order, each carrying a parseable commitment. */
   readonly records: readonly Utxo[];
   /**
+   * The dynamic value chunks: mutable NFTs at a chunkable variable's own collection covenant.
+   *
+   * A `string`, `bytes` or dynamic array is held in a run of chunk UTXOs rather than in its data NFT, and the
+   * constructor's frame mints the chunks its write produced. They are neither records nor validators: a record's
+   * commitment parses at a data-NFT index and a validator carries no commitment at all.
+   */
+  readonly chunks: readonly Utxo[];
+  /**
    * The collection nodes: mutable NFTs carrying a commitment that is not a data-NFT record's.
    *
    * A sorted collection is a chain of node UTXOs — the empty list's head sentinel and, once an entry writes it, the
@@ -94,6 +118,16 @@ export interface PerCallDeploymentSet {
    * empty commitment, which is what every composition recreates it with.
    */
   readonly collectionNodes: readonly Utxo[];
+}
+
+/** The lock hex of every chunkable variable's chunk covenant, keyed for classifying a deployment's UTXOs. */
+function chunkLocks(categoryId: string, layout: StateLayout): ReadonlySet<string> {
+  const locks = new Set<string>();
+  for (const variable of layout.variables) {
+    if (variable.dynamic !== true) continue;
+    locks.add(bytesToHex(chunkRecordLockingBytecode(categoryId, variable.name, variable.type)));
+  }
+  return locks;
 }
 
 /**
@@ -138,8 +172,10 @@ export function classifyPerCallDeployment(
 ): PerCallDeploymentSet {
   const masters: Utxo[] = [];
   const validators: Utxo[] = [];
+  const chunks: Utxo[] = [];
   const collectionNodes: Utxo[] = [];
   const tagged: Array<{ utxo: Utxo; nftIndex: number }> = [];
+  const locksByCategory = new Map<string, ReadonlySet<string>>();
   for (const utxo of utxos) {
     const nft = utxo.token?.nft;
     if (nft === undefined) continue;
@@ -151,15 +187,28 @@ export function classifyPerCallDeployment(
     const index = nftIndexOf(nft.commitment, layout);
     if (index !== undefined) tagged.push({ utxo, nftIndex: index });
     else if (nft.commitment === '') validators.push(utxo);
-    else collectionNodes.push(utxo);
+    else {
+      const categoryId = utxo.token?.category;
+      const lockingBytecode = (utxo as { readonly lockingBytecode?: Uint8Array }).lockingBytecode;
+      let locks = categoryId === undefined ? undefined : locksByCategory.get(categoryId);
+      if (categoryId !== undefined && locks === undefined) {
+        locks = chunkLocks(categoryId, layout);
+        locksByCategory.set(categoryId, locks);
+      }
+      const isChunk = locks !== undefined && lockingBytecode !== undefined
+        && locks.has(bytesToHex(lockingBytecode));
+      if (isChunk) chunks.push(utxo);
+      else collectionNodes.push(utxo);
+    }
   }
   masters.sort((left, right) => left.vout - right.vout);
   validators.sort((left, right) => left.vout - right.vout);
+  chunks.sort((left, right) => left.vout - right.vout);
   collectionNodes.sort((left, right) => left.vout - right.vout);
   tagged.sort((left, right) => (isMultiDataNftLayout(layout)
     ? left.nftIndex - right.nftIndex
     : left.utxo.vout - right.utxo.vout));
-  return { masters, validators, records: tagged.map((entry) => entry.utxo), collectionNodes };
+  return { masters, validators, chunks, records: tagged.map((entry) => entry.utxo), collectionNodes };
 }
 
 /**

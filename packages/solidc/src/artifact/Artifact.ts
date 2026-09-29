@@ -675,9 +675,11 @@ const dynamicWriteSourcesOf = (
   // every other control-flow family as an all-metadata boundary: otherwise `if (stop) return; this.s = value`
   // would look like one write on both paths even though the first path never reaches it. Constructors are finite,
   // but even a statically bounded loop needs a path-sensitive trip-count/write proof which this format lacks.
+  // A `revert` is not a boundary: it aborts the deployment, so no successful genesis exists on the path that
+  // reaches it, and a write the body reaches before one is still assigned on every path that completes.
   const unsupportedControl = new Set([
-    'ReturnNode', 'RevertNode', 'BreakNode', 'ContinueNode', 'TryCatchNode',
-    'WhileNode', 'DoWhileNode', 'CollectionIterationNode', 'SwitchNode',
+    'ReturnNode', 'BreakNode', 'ContinueNode', 'TryCatchNode', 'WhileNode', 'DoWhileNode',
+    'CollectionIterationNode', 'SwitchNode',
   ]);
   let unsupportedControlFlow = false;
   const scanControlFlow = (value: unknown, seen = new Set<object>()): void => {
@@ -787,13 +789,16 @@ const dynamicWriteSourcesOf = (
         if (definition) state.bindings.set(definition, undefined);
         else state.blockedNames.add(value.identifier.name);
       }
-      if (value instanceof FunctionCallNode && value.resolvedFunction instanceof FunctionDefinitionNode) {
-        // A call can mutate state transitively and reference-like locals through aliases. Without inlining its
-        // effect summary, neither the current write count nor any existing local substitution remains sound.
+      if (value instanceof FunctionCallNode) {
+        // A call can mutate reference-like locals through aliases, so no local substitution survives it.
         for (const key of state.bindings.keys()) state.bindings.set(key, undefined);
-        for (const write of state.writes.values()) {
-          write.maximum = Number.POSITIVE_INFINITY;
-          write.value = undefined;
+        if (!(value.resolvedFunction instanceof FunctionDefinitionNode)) {
+          // The callee is not known, so it may write any dynamic value. A resolved callee is visited by this same
+          // walk below, so the writes it really makes are counted from its own body rather than assumed.
+          for (const write of state.writes.values()) {
+            write.maximum = Number.POSITIVE_INFINITY;
+            write.value = undefined;
+          }
         }
       }
       const named = value as unknown as { name?: string };

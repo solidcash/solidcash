@@ -65,7 +65,8 @@ describe('explicit constructor dynamic-write replay metadata', () => {
     expect(repeated?.selected).toBeUndefined();
   });
 
-  it('omits metadata when abrupt control can bypass an otherwise unconditional write', () => {
+  it('omits metadata for a write a return can bypass but not for one only a revert can', () => {
+    // A constructor `return` ends the construction successfully, so the write really is skipped on that path.
     const earlyReturn = constructorSources(`
       contract C() {
         string selected;
@@ -77,6 +78,8 @@ describe('explicit constructor dynamic-write replay metadata', () => {
     `);
     expect(earlyReturn?.selected).toBeUndefined();
 
+    // A `revert` aborts the deployment, so no successful genesis exists on the path that reaches it and the
+    // write is still the single assignment on every path that completes.
     const revertingArm = constructorSources(`
       contract C() {
         string selected;
@@ -86,7 +89,7 @@ describe('explicit constructor dynamic-write replay metadata', () => {
         }
       }
     `);
-    expect(revertingArm?.selected).toBeUndefined();
+    expect(revertingArm?.selected).toMatchObject({ kind: 'source', source: { kind: 'forward', paramIndex: 1 } });
   });
 
   it('omits values that depend on prior state or an unserializable local mutation', () => {

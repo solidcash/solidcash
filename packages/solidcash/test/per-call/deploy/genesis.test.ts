@@ -10,8 +10,10 @@ import { buildValidatorProgram } from '../../../../solidc/src/per-call/validator
 import { COMPOSITION_LIMITS, compositionMachine, compositionProvider } from '../../../../solidc/test/per-call/machine.js';
 import { Contract, SignatureTemplate, StatefulContract } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import { deployMaster, derivePerCallGenesis } from '../../../src/per-call/deploy/index.js';
-import { planMappingWrite } from '../../../src/per-call/composer/index.js';
+import {
+  chunkRecordLockingBytecode, deployMaster, derivePerCallGenesis,
+} from '../../../src/per-call/deploy/index.js';
+import { planChunkRun, planMappingWrite } from '../../../src/per-call/composer/index.js';
 import { headSentinelCommitment } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -582,5 +584,96 @@ describe('a per-call genesis beside a call-making entry the master serves', () =
     expect(accepted(genesis.program)).toBe(true);
     const expected = buildPushdataCommitment(servedCallLayout, { oracle: ORACLE_LOCK }, 0);
     expect(genesis.commitments[0]).toBe(expected);
+  });
+});
+
+/**
+ * A constructor that writes a dynamic value from its own parameter.
+ *
+ * A `string` is not held in the data NFT that declares it: the NFT carries the value's length and the bytes live in
+ * a run of chunk NFTs. The value is one of the constructor's arguments, so the deployment can state the run before
+ * the body runs and declare it; the body's own close still settles the header commitment. The control shows a value
+ * the deployment cannot state being refused by name rather than planned.
+ */
+const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Named {'
+  + '   string public name;'
+  + '   constructor(string n) { this.name = n; }'
+  + '   function peek() external returns (int) { return 0; }'
+  + ' }';
+
+const dynamicArtifact = compileString(DYNAMIC_SOURCE, { composition: 'per-call' });
+const dynamicLayout = dynamicArtifact.stateLayout!;
+
+const dynamicGenesis = (value: string): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
+  artifact: dynamicArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+  provider: compositionProvider(), constructorArgs: [value], senderLockingBytecode: OWNER_LOCK,
+});
+
+const utf8 = (text: string): Uint8Array => new Uint8Array(Buffer.from(text, 'utf8'));
+
+describe('a per-call genesis whose constructor writes a dynamic value', () => {
+  it('accepts the frame and carries the header and chunk the body computed', () => {
+    const genesis = dynamicGenesis('hello');
+    expect(accepted(genesis.program)).toBe(true);
+    // The data NFT carries the value's length, from the shipped pushdata encoder.
+    expect(genesis.commitments[0]).toBe(buildPushdataCommitment(dynamicLayout, { name: 'hello' }, 0));
+    const run = planChunkRun({ layout: dynamicLayout, variable: 'name', spent: new Uint8Array(0), written: utf8('hello') });
+    expect(genesis.chunks.map((chunk) => chunk.commitment)).toStrictEqual(
+      run.written.chunks.map((commitment) => Buffer.from(commitment).toString('hex')),
+    );
+    expect(genesis.chunks.map((chunk) => chunk.index)).toStrictEqual([0]);
+  });
+
+  it('places a run of more than one chunk for a value that crosses a chunk boundary', () => {
+    const value = 'x'.repeat(200);
+    const genesis = dynamicGenesis(value);
+    expect(accepted(genesis.program)).toBe(true);
+    const run = planChunkRun({
+      layout: dynamicLayout, variable: 'name', spent: new Uint8Array(0), written: utf8(value),
+    });
+    expect(run.written.chunks).toHaveLength(2);
+    expect(genesis.chunks.map((chunk) => chunk.commitment)).toStrictEqual(
+      run.written.chunks.map((commitment) => Buffer.from(commitment).toString('hex')),
+    );
+  });
+
+  it('refuses a write whose value the artifact publishes no source for', () => {
+    const runtime = compileString(
+      'pragma solidcash ^0.13.0;'
+      + ' contract Named {'
+      + '   string public name;'
+      + '   constructor(int n) { this.name = string.concat("a", "b"); this.name = "c"; }'
+      + '   function peek() external returns (int) { return 0; }'
+      + ' }',
+      { composition: 'per-call' },
+    );
+    expect(() => derivePerCallGenesis({
+      artifact: runtime, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [1n], senderLockingBytecode: OWNER_LOCK,
+    })).toThrow(/writes dynamic "name", which the artifact publishes no value source for/);
+  });
+
+  it('mints the chunk at the value covenant in the deployment transaction the SDK builds', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: '24'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funding.address, fundingUtxo);
+
+    const { tx } = await StatefulContract.deploy(dynamicArtifact, ['hello'], {
+      provider,
+      fundingUtxo,
+      funder: funding.unlock.spend(alicePub, signature),
+      changeAddress: funding.address,
+    });
+    const outputs = (tx as unknown as DeployedTransaction).outputs;
+    // The deployment mints the category from the funding outpoint, which is the category the chunk covenant uses.
+    const lock = chunkRecordLockingBytecode(fundingUtxo.txid, 'name', 'string');
+    const chunkOutput = outputs.find((output) => bytesEqual(output.lockingBytecode, lock));
+    expect(chunkOutput).toBeDefined();
+    expect(chunkOutput!.token?.nft?.capability).toBe('mutable');
+    const run = planChunkRun({ layout: dynamicLayout, variable: 'name', spent: new Uint8Array(0), written: utf8('hello') });
+    expect(chunkOutput!.token?.nft?.commitment).toStrictEqual(run.written.chunks[0]);
   });
 });

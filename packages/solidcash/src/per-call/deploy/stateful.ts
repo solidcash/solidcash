@@ -150,6 +150,15 @@ export async function deployPerCallStatefulContract<T extends Artifact>(
       token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: entry.commitment } },
     });
   }
+  // The chunk records the constructor's frame wrote, each at the value's own collection covenant carrying the
+  // commitment the shipped chunk encoder produced for the value the constructor stored.
+  for (const chunk of genesis.chunks) {
+    builder.addOutput({
+      to: chunk.lockingBytecode,
+      amount: dataNftAmount,
+      token: { category: categoryId, amount: 0n, nft: { capability: 'mutable', commitment: chunk.commitment } },
+    });
+  }
 
   // Immutable CREATE identity anchors: category-bearing discovery records the factory path expects to find at the
   // deploying account's logical address after the genesis.

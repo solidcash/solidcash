@@ -31,6 +31,11 @@
  * trailing output the segment declares. The node commitments come from the shipped planner (`planMappingWrite`)
  * against the empty list, so the genesis carries exactly what a composed write against the same inventory would.
  *
+ * A dynamic value's write is planned from the source the artifact publishes for it: the constructor's arguments
+ * state the value, the shipped chunk encoder sizes and commits the run, and the block declares the run at the
+ * ordinal the body reads it from. A value the artifact publishes no source for, or one the arguments do not
+ * determine, is refused by name with that fact, because the run's width cannot be known without the value.
+ *
  * A shape the constructor frame or the master head does not serve — a call, a value send, a hidden parameter, an
  * event emitted from a loop, a mapping write the planner cannot state in advance — is refused by name rather than
  * probed, because this module has no plan for its witnesses. Everything else is the shipped deployment: the
@@ -40,12 +45,14 @@
 
 import {
   binToHex, encodeDataPush, encodeLockingBytecodeP2pkh, encodeLockingBytecodeP2sh32, hexToBin, Opcodes,
+  utf8ToBin,
 } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
   buildAnonymousEventNftCovenantScript,
   buildEventNftCovenantScript,
+  blockInputSize,
   buildInitialStateCommitments,
   buildMasterUnlockingBytecode,
   bytesEqual,
@@ -56,6 +63,8 @@ import {
   sha256,
   validatorRedeemScript,
   type Artifact,
+  type ArgSource,
+  type ExternalCallExpression,
   type RecordEntry,
   type StateValue,
   type WitnessBlock,
@@ -63,14 +72,18 @@ import {
 import { encodeFunctionArgument, encodeFunctionArguments, type FunctionArgument } from '../../Argument.js';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
+import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { headSentinelCommitment } from '../../stateful/SortedList.js';
+import {
+  layOutChunkRun, planChunkRun, type ChunkRecordPlacement, type ChunkRunPlan,
+} from '../composer/chunk-plan.js';
 import {
   layOutMappingWrites, planMappingWrite, type MappingNodePlacement, type MappingWritePlan,
 } from '../composer/mapping-plan.js';
 import { readComputedDeclaration, type DeclarationReading } from './declaration.js';
 import { deployMaster, type DeployedMaster } from './material.js';
-import { entryRecordLockingBytecode } from './records.js';
+import { chunkRecordLockingBytecode, entryRecordLockingBytecode } from './records.js';
 
 /** Raised when a per-call genesis cannot be derived from the artifact. */
 export class PerCallGenesisError extends Error {
@@ -140,6 +153,24 @@ export interface PerCallGenesisHeadCollection {
 }
 
 /**
+ * One chunk of a dynamic value a constructor's frame wrote.
+ *
+ * A `string`, `bytes` or dynamic array is not held in the data NFT that declares it: the NFT carries the value's
+ * length and the bytes live in a run of chunk NFTs at the value's own collection covenant. The chunk's commitment
+ * is the value's piece in the shipped encoder's form, and the lock is the covenant the body itself rebuilds.
+ */
+export interface PerCallGenesisChunk {
+  /** The dynamic variable whose run the chunk belongs to. */
+  readonly variable: string;
+  /** The chunk's position in the run. */
+  readonly index: number;
+  /** The commitment the constructor's write computed for the chunk, in hex. */
+  readonly commitment: string;
+  /** The value's collection covenant lock, which the body rebuilds from the category and the variable's signature. */
+  readonly lockingBytecode: Uint8Array;
+}
+
+/**
  * One event output the constructor's body emits: the covenant lock the body rebuilt at run time and the
  * commitment it computed for the payload.
  *
@@ -162,6 +193,8 @@ export interface PerCallGenesis {
   readonly commitments: readonly string[];
   /** The entry-NFT nodes the genesis mints, in write order: the head sentinel and the node the write created. */
   readonly entries: readonly PerCallGenesisEntry[];
+  /** The chunk records the constructor's frame wrote, in variable and chunk order. */
+  readonly chunks: readonly PerCallGenesisChunk[];
   /** The event outputs the constructor's body emits, in emit order. */
   readonly events: readonly PerCallGenesisEvent[];
   /** The derivation transaction the machine accepted. Absent for a contract with no constructor body. */
@@ -231,12 +264,16 @@ export function derivePerCallGenesis(options: PerCallGenesisOptions): PerCallGen
   );
   const constructorAbi = artifact.abi.find((candidate) => candidate.name === '__construct');
   if (constructorAbi === undefined) {
-    return { master, commitments: zeroCommitments, entries: headSentinelEntries(options, undefined), events: [] };
+    return {
+      master, commitments: zeroCommitments, entries: headSentinelEntries(options, undefined),
+      chunks: [], events: [],
+    };
   }
 
   refuseUnservedShape(artifact, constructorAbi);
   const mapping = planConstructorMappingWrite(artifact, constructorAbi, options);
-  return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mapping);
+  const dynamic = planConstructorDynamicWrites(artifact, constructorAbi, options);
+  return deriveConstructorFrame(options, master, zeroCommitments, constructorAbi, mapping, dynamic);
 }
 
 /**
@@ -274,11 +311,6 @@ function refuseUnservedShape(
   if ((constructorAbi.runtimeLoopEvents?.length ?? 0) > 0) {
     throw new PerCallGenesisError(
       `the constructor of "${artifact.contractName}" emits an event from a loop, whose count the block cannot fix`,
-    );
-  }
-  if ((constructorAbi.dynamicWrites?.length ?? 0) > 0) {
-    throw new PerCallGenesisError(
-      `the constructor of "${artifact.contractName}" writes a dynamic value, which this deployment has no plan for`,
     );
   }
   if ((constructorAbi.transferCount ?? 0) > 0) {
@@ -429,8 +461,106 @@ function planConstructorMappingWrite(
   };
 }
 
+/**
+ * One dynamic value a constructor's frame writes, as the run of chunk records its write occupies.
+ *
+ * The genesis starts from the empty value the pre-state carries, so the write only ever creates chunks: the run's
+ * spent side is empty and every written chunk is a record the transaction writes at its own output. The plan states
+ * both sides through the shipped chunk encoder, so the records it declares are exactly what a composed write of the
+ * same value would carry.
+ */
+interface ConstructorDynamicWrite {
+  readonly variable: string;
+  readonly plan: ChunkRunPlan;
+}
+
+/**
+ * The value a published dynamic-write source selects from the constructor's arguments.
+ *
+ * The compiler publishes a closed expression over the constructor's parameters, a contract parameter and literals,
+ * so it evaluates with no state: a `source` node reads the argument it names, and the arithmetic, cast and
+ * conditional nodes are the shipped evaluator's. A source the arguments do not determine evaluates to `undefined`
+ * and the caller refuses by name rather than guessing.
+ */
+function resolveDynamicWriteValue(
+  expression: ExternalCallExpression,
+  args: readonly FunctionArgument[],
+  visible: Artifact['abi'][number]['inputs'],
+  artifact: Artifact,
+): FunctionArgument | undefined {
+  const host = {
+    resolveExternalArgs: (sources: readonly ArgSource[] | undefined): FunctionArgument[] | undefined =>
+      sources?.map((source): FunctionArgument | undefined => {
+        if (source.kind === 'forward') {
+          return source.paramIndex === undefined ? undefined : args[source.paramIndex];
+        }
+        if (source.kind === 'constructorArg') {
+          const index = visible.findIndex((input) => input.name === source.paramName);
+          return index < 0 ? undefined : args[index];
+        }
+        if (source.kind === 'literal') {
+          if (source.type === 'bool') return source.value === 'true';
+          if (source.type === 'string') return source.value;
+          if (source.value !== undefined && source.type !== undefined && /^u?int/.test(source.type)) {
+            return BigInt(source.value);
+          }
+          return source.value === undefined || source.type === undefined ? undefined : hexToBin(source.value);
+        }
+        return undefined;
+      }) as FunctionArgument[] | undefined,
+  };
+  return evaluateExternalExpression(host, expression, [...args], artifact, undefined, visible);
+}
+
+/**
+ * Plans the run of chunk records each dynamic value the constructor writes occupies.
+ *
+ * The value has to be stated before the run can be sized and placed, so a variable the artifact publishes no source
+ * for — or one whose source the constructor's arguments do not determine — is refused by name with that fact. The
+ * records themselves are declared exactly, from the shipped chunk encoder; a write whose run cannot be reconciled
+ * with the record block the body addresses is refused rather than placed at an ordinal the body does not read.
+ */
+function planConstructorDynamicWrites(
+  artifact: Artifact,
+  constructorAbi: Artifact['abi'][number],
+  options: PerCallGenesisOptions,
+): readonly ConstructorDynamicWrite[] {
+  const variables = constructorAbi.dynamicWrites ?? [];
+  if (variables.length === 0) return [];
+  const layout = artifact.stateLayout;
+  const sources = constructorAbi.dynamicWriteSources ?? {};
+  const visible = visibleConstructorInputs(constructorAbi);
+  return variables.map((variable) => {
+    const expression = sources[variable];
+    if (expression === undefined) {
+      throw new PerCallGenesisError(
+        `the constructor of "${artifact.contractName}" writes dynamic "${variable}", which the artifact publishes `
+        + 'no value source for, so this deployment cannot state the run its write creates',
+      );
+    }
+    const resolved = resolveDynamicWriteValue(expression, options.constructorArgs, visible, artifact);
+    const value = resolved instanceof Uint8Array ? resolved
+      : typeof resolved === 'string' ? utf8ToBin(resolved) : undefined;
+    if (value === undefined) {
+      throw new PerCallGenesisError(
+        `the constructor of "${artifact.contractName}" writes dynamic "${variable}" a value this deployment cannot `
+        + `resolve from its arguments (a ${expression.kind} source)`,
+      );
+    }
+    return {
+      variable,
+      plan: planChunkRun({ layout, variable, spent: new Uint8Array(0), written: value }),
+    };
+  });
+}
+
 /** The synthetic transaction's input indices: a caller, the master, one record per data NFT, a validator, a spare. */
-function probeLayout(dataNftCount: number, eventCount: number, hasMapping: boolean): {
+function probeLayout(
+  dataNftCount: number,
+  eventCount: number,
+  hasMapping: boolean,
+  chunkCount: number,
+): {
   readonly caller: number;
   readonly master: number;
   readonly records: readonly number[];
@@ -441,6 +571,10 @@ function probeLayout(dataNftCount: number, eventCount: number, hasMapping: boole
   readonly head: number;
   /** The created mapping node's trailing output index, or `-1` when the constructor writes no mapping. */
   readonly created: number;
+  /** The first chunk output's index, or `-1` when the constructor writes no dynamic value. */
+  readonly chunkBase: number;
+  /** How many chunk outputs the constructor's frames create. */
+  readonly chunkCount: number;
 } {
   const caller = 0;
   const master = 1;
@@ -449,10 +583,13 @@ function probeLayout(dataNftCount: number, eventCount: number, hasMapping: boole
   const spare = 3 + dataNftCount;
   const events = Array.from({ length: eventCount }, (_, index) => 4 + dataNftCount + index);
   const base = 4 + dataNftCount + eventCount;
+  const chunkBase = chunkCount === 0 ? -1 : base + (hasMapping ? 2 : 0);
   return {
     caller, master, records, validator, spare, events,
     head: hasMapping ? base : -1,
     created: hasMapping ? base + 1 : -1,
+    chunkBase,
+    chunkCount,
   };
 }
 
@@ -512,6 +649,57 @@ function masterCannotStandAlone(artifact: Artifact): boolean {
   return entries.some((entry) => (entry.sites?.sites ?? []).some((site) => site.kind === 'call'));
 }
 
+/** The satoshi value each chunk output carries; a kept chunk keeps the input's value in a composition. */
+const CHUNK_OUTPUT_SATOSHIS = 1_000n;
+
+/**
+ * Lays the run of chunk records out for every dynamic value the constructor writes.
+ *
+ * The body addresses the run at one layout width past the record block its own frame declares, so the segment has
+ * to carry exactly that many records before it; a constructor that also writes mapping nodes at a different width
+ * is refused rather than placed at an ordinal the body does not read. The genesis starts from the empty value, so
+ * every record is one the transaction creates at its own output, and the plan places them at the trailing indices
+ * the probe layout gives the run.
+ */
+function layOutConstructorChunks(
+  options: PerCallGenesisOptions,
+  constructorAbi: Artifact['abi'][number],
+  dynamic: readonly ConstructorDynamicWrite[],
+  mapping: ConstructorMappingWrite | undefined,
+  layout: ReturnType<typeof probeLayout>,
+): readonly ChunkRecordPlacement[] {
+  if (dynamic.length === 0) return [];
+  const blockLayout = constructorAbi.blockLayout;
+  if (blockLayout === undefined) {
+    throw new PerCallGenesisError(
+      `the constructor of "${options.artifact.contractName}" writes a dynamic value but publishes no block layout `
+      + 'to address its chunk run from',
+    );
+  }
+  const dataNftCount = options.artifact.stateLayout!.dataNftCount;
+  const leading = dataNftCount + (mapping === undefined ? 0 : mapping.write.written.length);
+  const expected = blockInputSize(blockLayout) - 1;
+  if (leading !== expected) {
+    throw new PerCallGenesisError(
+      `the constructor of "${options.artifact.contractName}" declares ${leading} record(s) before its dynamic run, `
+      + `but the body reads the run at ${expected}`,
+    );
+  }
+  const category = Uint8Array.from(options.category);
+  let offset = 0;
+  return dynamic.flatMap((write) => {
+    const laid = layOutChunkRun({
+      plan: write.plan,
+      category,
+      base: layout.chunkBase + offset,
+      writer: layout.master,
+      valueSatoshis: CHUNK_OUTPUT_SATOSHIS,
+    });
+    offset += write.plan.written.chunks.length;
+    return laid.records;
+  });
+}
+
 /**
  * Runs the constructor frame against the machine and learns the commitments its body computes.
  *
@@ -524,6 +712,7 @@ function deriveConstructorFrame(
   zeroCommitments: readonly string[],
   constructorAbi: Artifact['abi'][number],
   mapping: ConstructorMappingWrite | undefined,
+  dynamic: readonly ConstructorDynamicWrite[],
 ): PerCallGenesis {
   const { artifact } = options;
   const stateLayout = artifact.stateLayout!;
@@ -552,7 +741,9 @@ function deriveConstructorFrame(
       lockingBytecode: eventLockingBytecode(eventCategory, emit.eventSignature, anonymous),
     };
   });
-  const layout = probeLayout(dataNftCount, eventShapes.length, mapping !== undefined);
+  const totalChunks = dynamic.reduce((sum, write) => sum + write.plan.written.chunks.length, 0);
+  const layout = probeLayout(dataNftCount, eventShapes.length, mapping !== undefined, totalChunks);
+  const chunkRecords = layOutConstructorChunks(options, constructorAbi, dynamic, mapping, layout);
 
   const preState = zeroCommitments.map((commitment) => new Uint8Array(hexToBin(commitment)));
   // Every record starts at the pre-state, so a record the constructor never writes passes both the body's
@@ -589,6 +780,7 @@ function deriveConstructorFrame(
       commitment: events[index]!,
     })),
     ...(mapping === undefined ? {} : { mapping }),
+    chunks: chunkRecords,
     layout,
   });
 
@@ -628,6 +820,17 @@ function deriveConstructorFrame(
         ]),
       ...headSentinelEntries(options, mapping?.collection),
     ],
+    // The chunk records the frame wrote, each at the value's own collection covenant carrying the commitment the
+    // shipped chunk encoder produces for the value the constructor stored.
+    chunks: dynamic.flatMap((write) => {
+      const lock = chunkRecordLockingBytecode(binToHex(options.category), write.variable, write.plan.type);
+      return write.plan.written.chunks.map((commitment, index) => ({
+        variable: write.variable,
+        index,
+        commitment: binToHex(commitment),
+        lockingBytecode: lock,
+      }));
+    }),
     // The event payloads are the ones the loop learned from the body's own comparisons, in emit order.
     events: eventShapes.map((shape, index) => ({
       eventName: shape.eventName,
@@ -718,6 +921,8 @@ interface ProbeProgramOptions {
   readonly events: readonly { readonly lockingBytecode: Uint8Array; readonly commitment: Uint8Array }[];
   /** The mapping nodes the constructor writes, or absent when it writes none. */
   readonly mapping?: ConstructorMappingWrite;
+  /** The chunk records the constructor's dynamic writes create, in variable order. */
+  readonly chunks: readonly ChunkRecordPlacement[];
   readonly layout: ReturnType<typeof probeLayout>;
 }
 
@@ -769,6 +974,8 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
         kept(index, options.preState[nftIndex]!, options.viewOuts[nftIndex]!)
       )),
       ...mappingEntries,
+      // The run's records follow the contract's own, which is the ordinal the body reads the run at.
+      ...options.chunks.map((record) => record.entry),
     ]],
     events: [...layout.events],
     sends: [],
@@ -777,7 +984,9 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
   const unlockingBytecode = buildMasterUnlockingBytecode(block, options.argumentPushes, master.script);
   const userLock = options.senderLockingBytecode;
 
-  const slotCount = (layout.created >= 0 ? layout.created : (layout.events.at(-1) ?? layout.spare)) + 1;
+  const slotCount = Math.max(
+    layout.created, layout.events.at(-1) ?? layout.spare, layout.chunkBase + layout.chunkCount - 1,
+  ) + 1;
   const sourceOutputs = new Array<VmOutput>(slotCount);
   const outputs = new Array<VmOutput>(slotCount);
   const inputs = new Array<{
@@ -852,6 +1061,20 @@ function buildProbeProgram(options: ProbeProgramOptions): VirtualMachineProgram 
     inputs[layout.created] = plainInput(layout.created);
     outputs[layout.created] = node(mapping.created);
     sourceOutputs[layout.created] = plain();
+  }
+
+  // The dynamic run's chunks: a created chunk has no input to read, so the transaction's own input at its index is
+  // a plain UTXO and only the output it writes carries the chunk's token at the value's collection covenant.
+  for (const record of options.chunks) {
+    const output = record.output;
+    if (output === undefined) continue;
+    inputs[record.index] = plainInput(record.index);
+    outputs[record.index] = {
+      lockingBytecode: output.lockingBytecode,
+      valueSatoshis: output.valueSatoshis,
+      ...(output.token === undefined ? {} : { token: output.token as VmToken }),
+    };
+    sourceOutputs[record.index] = plain();
   }
 
   // A master that cannot stand alone is covered by a validator: one UTXO at addrV(category) carrying the

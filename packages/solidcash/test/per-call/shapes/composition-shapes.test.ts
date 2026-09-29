@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FrameKind } from '@solidcash/utils';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import {
   composeDraft, layoutTransaction, participant, type CompositionDraftPlan,
 } from '../../../src/per-call/composer/index.js';
@@ -286,16 +285,19 @@ describe('one contract entering another of its own entries', () => {
     expectDerivationConvergedWithAssembly(outcome, ['own-1', 'own-2']);
   });
 
-  it('is refused by the compiler when the self-call target is address(this): the site holds no single value to check', () => {
+  it('is emitted when the self-call target is address(this): the site binds the record to the caller\'s own address', () => {
+    // The self-call target may be spelled as the contract's own address. The caller's own code holds that address
+    // as its frame `self`, so the site binds its record to it as it does a computed target. The run on two masters
+    // is pinned by the identity toy (`toys/identity.test.ts`).
     const source = 'pragma solidcash ^0.13.0;'
       + ' interface IOwn { function inner(); }'
       + ' contract Own {'
       + '   function start() { IOwn(address(this)).inner.call(); require(true); }'
       + '   function inner() { require(true); }'
       + ' }';
-    const refusals = publishedRefusals(compileStringMulti(source, { composition: 'per-call' }) as
-      Record<string, { composition?: unknown }>);
-    expect(refusals.map((refused) => refused.reason).join(' | ')).toMatch(/does not hold as one value/);
+    const artifacts = compileStringMulti(source, { composition: 'per-call' });
+    expect(artifacts.Own?.composition?.convention).toBe('per-call');
+    expect(artifacts.Own?.abi.map((entry) => entry.name).sort()).toEqual(['inner', 'start']);
   });
 });
 

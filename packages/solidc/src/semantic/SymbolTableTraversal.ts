@@ -7638,6 +7638,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       // `IFoo(msg.sender).m()`: the callee is the tx-derived msg.sender input (verified against emitMsgSender).
       const addressIsMsgSender = node.addressExpression instanceof NullaryOpNode
         && node.addressExpression.operator === NullaryOperator.MSG_SENDER;
+      // `IFoo(address(this)).m()` and `IFoo(this).m()`: the callee is a master of the calling contract. The
+      // caller's own code holds its address as the frame's `self`, so a per-call site binds its record to that
+      // value exactly as it does a computed target.
+      const isOwnAddress = (expression: ExpressionNode | undefined): boolean => {
+        if (expression === undefined) return false;
+        if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+          && (this.interfaceMap.has(expression.identifier.name)
+            || this.contractMap.has(expression.identifier.name))) {
+          return isOwnAddress(expression.parameters[0]);
+        }
+        if (expression instanceof CastNode) return isOwnAddress(expression.expression);
+        if (expression instanceof IdentifierNode && expression.name === 'this') return true;
+        return expression instanceof UnaryOpNode
+          && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+          && expression.expression instanceof NullaryOpNode
+          && expression.expression.operator === NullaryOperator.INPUT_INDEX;
+      };
+      const addressIsSelf = isOwnAddress(node.addressExpression);
       // Address-literal target `IFoo(0x..).m()`: the expected address is a code-baked constant the covenant
       // pushes (NOT a caller input). A 20-byte ETH literal is not a 35-byte BCH locking bytecode -> the
       // identity check is un-satisfiable in production (fails closed); a genuine locking-bytecode literal is
@@ -8816,6 +8834,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral !== undefined && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(addressIsSelf && { addressIsSelf: true }),
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawSelector && { rawSelector }),

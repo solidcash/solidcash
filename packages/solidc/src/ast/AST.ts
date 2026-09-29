@@ -2822,6 +2822,9 @@ export interface ExternalCallSlot {
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;
+  // Set when the call target is the caller's own address (`IFoo(address(this)).m()`, or `IFoo(this).m()`): the
+  // callee is a master of the calling contract, and the caller's own code holds the target as its frame `self`.
+  addressIsSelf?: boolean;
   addressSource?: ExternalCallArgSource;
   slotIndex: number;
   /** Function-local program point of this source call before any physical batching. */

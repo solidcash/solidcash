@@ -417,4 +417,108 @@ describe('Escrow.refund reached through Market.refund sees the root user in tx.o
     expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
     expect(refusal.message).toMatch(/master "escrow-1" of Escrow.refund\(\) filled no witness/);
   });
+
+  it('refuses a refund gated on msg.sender == address(this): the caller is another contract, not the callee', () => {
+    // The counterpart of the self-addressed accept: reached from Market, Escrow is entered as the calling
+    // contract (Market), which is not Escrow's own address, so `msg.sender == address(this)` fails and the
+    // callee's frame is refused. The self-addressed call therefore agrees only because the callee is a master of
+    // the caller's own contract.
+    const refusal = refusalOf(() => marketCallsEscrow('require(msg.sender == address(this));'));
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.message).toMatch(/master "escrow-1" of Escrow.refund\(\) filled no witness/);
+  });
+});
+
+/**
+ * The same call reached two ways. `this.g()` runs inline with `msg.sender == address(this)` (pinned above); a call
+ * through an interface at the contract's own address runs on a second master of the contract, and the callee sees
+ * the same `msg.sender`. The controls show the identity is the caller's own address, not a value a caller chooses.
+ */
+describe('a call to the contract\'s own address on a second master runs as the contract too', () => {
+  /** `callG` calls `g` at the contract's own address; `g` asserts it runs for the contract. */
+  const SELF_TARGET_SOURCE = 'pragma solidcash ^0.13.0;'
+    + ' interface ITok { function g(); }'
+    + ' contract Tok {'
+    + '   function g() { require(msg.sender == address(this)); }'
+    + '   function callG() { ITok(address(this)).g.call(); require(true); }'
+    + ' }';
+
+  /** The root user entry `callG`, and a second master of the same contract running `g`, entered by the first. */
+  function selfCallPlan(
+    artifacts: ReturnType<typeof compileAndDeploy>['artifacts'],
+    tok: DeployedContract,
+    target: Uint8Array = tok.address,
+  ): CompositionDraftPlan {
+    const validator = validatorFor(tok.category);
+    const callG = selectorOf(artifacts, 'Tok', 'callG');
+    const g = selectorOf(artifacts, 'Tok', 'g');
+    return {
+      blocks: [{
+        contract: 'Tok', masters: ['tok-1', 'tok-2'], validator: { id: 'validator', settles: [] }, state: [],
+      }],
+      userInputs: [{ id: 'user', index: 3 }],
+      masters: [
+        master({
+          master: 'tok-1', contract: 'Tok', entry: 'callG', program: tok.program,
+          facts: {
+            contract: 'Tok', functionName: 'callG', kind: FrameKind.ROOT,
+            callerIsUser: true, originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: tok.address, value: 0n },
+          enteredBy: 'user', origin: 'user', argumentPushes: [callG], dispatches: true,
+          calls: [{ kind: FrameKind.CALL, callee: 'tok-2', target, value: 0n, argumentPushes: [g] }],
+        }),
+        master({
+          master: 'tok-2', contract: 'Tok', entry: 'g', program: tok.program,
+          facts: {
+            contract: 'Tok', functionName: 'g', kind: FrameKind.CALL,
+            callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 2,
+          },
+          frame: { kind: FrameKind.CALL, sender: tok.address, self: tok.address, value: 0n },
+          enteredBy: 'tok-1', origin: 'user', argumentPushes: [g],
+        }),
+      ],
+      inputs: {
+        'tok-1': { source: masterInput(tok) },
+        'tok-2': { source: masterInput(tok) },
+        validator: {
+          source: {
+            lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(tok.category, 'mutable'),
+          },
+        },
+        user: userInput(),
+      },
+      validator: {
+        id: 'validator', covers: [], settles: [{ category: tok.category, stateInputs: [] }],
+        redeemScript: validator.redeem,
+      },
+    };
+  }
+
+  it('accepts the self-addressed call: the callee\'s msg.sender is the contract, as the inline form has it', () => {
+    // In the EVM a message call to the contract itself sets msg.sender to address(this), exactly as the inlined
+    // `this.g()` does. The callee `g` runs on a second master of Tok and its guard holds, so the callee is
+    // accepted and the caller settles with the callee derived first.
+    const { artifacts, contracts } = compileAndDeploy(SELF_TARGET_SOURCE, { Tok: TOK_LABEL });
+    const tok = contracts.Tok!;
+    const outcome = composeAndDerive(selfCallPlan(artifacts, tok), [artifacts.Tok!],
+      [rootOf('Tok', 'callG', 'tok-1')]);
+    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
+      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+    expect(rejected).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.functionName))
+      .toStrictEqual([entryName('Tok', 'g'), entryName('Tok', 'callG')]);
+  });
+
+  it('refuses the same plan whose recorded target is a different contract', () => {
+    // The record's target is bound to the value the caller's own code produces, its frame `self`: a record that
+    // names another contract is refused at the caller, so the self-addressed accept above is that binding and
+    // not any target the builder might name.
+    const { artifacts, contracts } = compileAndDeploy(SELF_TARGET_SOURCE, { Tok: TOK_LABEL });
+    const tok = contracts.Tok!;
+    const refusal = refusalOf(() => composeAndDerive(selfCallPlan(artifacts, tok, ESCROW_ADDRESS), [artifacts.Tok!],
+      [rootOf('Tok', 'callG', 'tok-1')]));
+    expect(refusal.code).toBe('PER_CALL_DERIVATION_STALLED');
+    expect(refusal.message).toMatch(/master "tok-1" of Tok\.callG\(\) filled no witness/);
+  });
 });

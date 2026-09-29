@@ -1801,6 +1801,11 @@ function siteTarget(
   slot: ExternalCallSlot,
 ): { bytes: Uint8Array; fromStack?: boolean } | { reason: string } {
   if (slot.addressLiteral !== undefined) return { bytes: hexToBin(slot.addressLiteral) };
+  if (slot.addressIsSelf === true) {
+    // The callee is a master of the calling contract, and the caller's own code holds its address as the frame's
+    // `self`, so the site binds its record to that value as it does any computed target.
+    return { bytes: new Uint8Array(0), fromStack: true };
+  }
   if (slot.addressIsMsgSender === true) {
     return { reason: `the call to '${slot.functionName}' targets the transaction's own sender, whose category the `
       + 'site would have to bind to a callee of the same category, which its target check cannot do' };

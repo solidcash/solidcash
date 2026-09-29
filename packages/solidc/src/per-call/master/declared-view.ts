@@ -360,6 +360,34 @@ export function declaredSegmentsSkipScript(count: number): Uint8Array {
   return new Uint8Array(bytes);
 }
 
+/**
+ * Builds the script that steps a run-time number of whole segments off the tail on top.
+ *
+ * Entry `[..., tail, count]`, exit `[...]`. The count names how many segments precede the one a write lands in, and
+ * it is a value the block itself declares — the number of call records the execution made — so a write that no call
+ * follows is reached at the segment that number names. The count is consumed, so the modelled stacks after the walk
+ * are the ones the fixed skip leaves.
+ */
+export function declaredSegmentsSkipRuntimeScript(): Uint8Array {
+  const bytes: number[] = [];
+  const op = (...opcodes: number[]): void => { bytes.push(...opcodes); };
+  const raw = (script: Uint8Array): void => { for (const byte of script) bytes.push(byte); };
+  const num = (value: number): void => { bytes.push(...encodeDataPush(minimalNumber(value))); };
+  // The tail sits above the count; swap so the invariant below keeps the count beneath the remaining segments.
+  op(Opcodes.OP_SWAP); // [count, tail]
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL); // [count, tail, count == 0]
+  op(Opcodes.OP_IF);
+  op(Opcodes.OP_ELSE);
+  op(Opcodes.OP_BEGIN);
+  skipSegment(op, raw, num); // [count, tail']
+  op(Opcodes.OP_SWAP, Opcodes.OP_1SUB, Opcodes.OP_SWAP); // [count - 1, tail']
+  num(1); op(Opcodes.OP_PICK, Opcodes.OP_0, Opcodes.OP_NUMEQUAL);
+  op(Opcodes.OP_UNTIL);
+  op(Opcodes.OP_ENDIF);
+  op(Opcodes.OP_NIP); // the count
+  return new Uint8Array(bytes);
+}
+
 /** Steps one call record off the block on top, by the widths the codec writes it with. */
 function skipCallRecord(bytes: number[]): void {
   const emit = (field: Uint8Array): void => { bytes.push(...field, Opcodes.OP_NIP); };

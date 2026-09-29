@@ -2,14 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * The three shapes the per-call convention still refuses, each at its smallest scale.
+ * The shapes the per-call convention still refuses, each at its smallest scale.
  *
- * Every shipped contract whose cold compile publishes a refusal publishes one of these three, so a source that
- * keeps a refusal here is a shape a whole set of entries stops on. Each case sits beside the boundary the same
- * mechanism serves, so it pins where the refusal begins rather than that some refusal exists.
+ * Every shipped contract whose cold compile publishes a refusal publishes one of these, so a source that keeps a
+ * refusal here is a shape a whole set of entries stops on. Each case sits beside the boundary the same mechanism
+ * serves, so it pins where the refusal begins rather than that some refusal exists.
  *
  * Each source is compiled through the shipped entry point with the per-call convention and the refusal is read
  * back from the artifact's composition metadata; a source the convention serves has none to read.
+ *
+ * The dynamic-array key is a wall rather than a gate: the derivation emits its keys where the body begins, and the
+ * emitter answers an element read of a chunk-backed dynamic array there with a shape that does not leave one key
+ * value (`PER_CALL_CODEGEN_UNAVAILABLE`), even when the body never writes the array. Admitting the read without
+ * moving the derivation only turns the clean refusal into that codegen failure.
  */
 
 /** The reason a derived write key that reads an element of a dynamic state array is refused. */
@@ -61,10 +66,10 @@ describe('a derived write key that reads an element of a dynamic state array', (
   });
 });
 
-describe('a verified-mapping write whose segment a call the source does not fix moves', () => {
-  it('refuses the write a branch of calls precedes', () => {
-    // One arm calls, so the write lands in segment 0 or 1 depending on the arm: the count the derivation reads is
-    // not a value the source fixes.
+describe('a verified-mapping write whose segment a call the source does not fix decides', () => {
+  it('serves the write a branch of calls precedes, reading the segment the declared count names', () => {
+    // One arm calls, so the write lands in segment 0 or 1 depending on the arm. No call follows it, so the write
+    // lands in the last segment the run opens, whose index is the call count the block itself declares.
     const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
@@ -73,16 +78,31 @@ describe('a verified-mapping write whose segment a call the source does not fix 
       + '     balances[to] = amount;'
       + '   }'
       + ' }';
-    expect(refusalMessageOf(source)).toBe(`Ledger.move(): ${WRITE_BEHIND_CALL_REASON}`);
+    expect(refusalMessageOf(source)).toBe('');
   });
 
-  it('refuses the write a loop of calls precedes', () => {
+  it('serves the write a loop of calls precedes, whose segment the declared count also names', () => {
     const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
       + ' contract Ledger {'
       + '   mapping(address => uint) balances;'
       + '   function move(int turns, address to, uint amount) {'
       + `     for (int i = 0; i < turns; i = i + 1) { ${CALL} }`
       + '     balances[to] = amount;'
+      + '   }'
+      + ' }';
+    expect(refusalMessageOf(source)).toBe('');
+  });
+
+  it('refuses the write a call follows, because the declared count no longer names its segment', () => {
+    // The run's declared call count includes the call after the write, so the write lands in an earlier segment than
+    // that count names: the derivation cannot locate it and the entry stays refused.
+    const source = `pragma solidcash ^0.13.0;${CALL_CONTRACT}`
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   function move(bool go, address to, uint amount) {'
+      + `     if (go) { ${CALL} }`
+      + '     balances[to] = amount;'
+      + `     ${CALL}`
       + '   }'
       + ' }';
     expect(refusalMessageOf(source)).toBe(`Ledger.move(): ${WRITE_BEHIND_CALL_REASON}`);

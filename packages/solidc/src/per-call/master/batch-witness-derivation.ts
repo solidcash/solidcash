@@ -27,7 +27,7 @@ import {
   takeLengthPrefixedField32,
 } from './witness-reader.js';
 import { callSectionWalkScript } from './frame-tail.js';
-import { declaredSegmentsSkipScript } from './declared-view.js';
+import { declaredSegmentsSkipRuntimeScript, declaredSegmentsSkipScript } from './declared-view.js';
 
 /**
  * The tracked slot names one derivation supplies per target, in the order the caller registers them, then the
@@ -86,6 +86,14 @@ export interface BatchTargetsDerivationOptions {
    * write lands in rather than the one the body begins in. Absent means the body's first segment.
    */
   readonly segmentIndex?: number;
+  /**
+   * Whether the segment is the one the run's own declared call count names, taken from the block as the walk runs.
+   *
+   * A body whose calls the source does not fix reaches a segment only its execution names, and a write no call
+   * follows lands in the last segment — the one whose index is the number of call records the block declares. The
+   * walk then steps over that many segments instead of a compile-time count. Mutually exclusive with `segmentIndex`.
+   */
+  readonly segmentFromDeclaredCallCount?: boolean;
 }
 
 /**
@@ -187,10 +195,17 @@ class BatchTargetsDerivationBuilder {
     // their successor. The declared count the walk parks on the alt stack is spent here, so the modelled stacks
     // are as the walk found them.
     this.raw(new Uint8Array(callSectionWalkScript()));
-    this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK, Opcodes.OP_DROP]));
-    // The write's records are declared in the segment the write lands in, which a call before it moves past.
-    if ((this.options.segmentIndex ?? 0) > 0) {
-      this.raw(declaredSegmentsSkipScript(this.options.segmentIndex!));
+    // The call-section walk leaves the declared call count parked on the alt stack. The write's records are
+    // declared in the segment the write lands in: a fixed count names it outright, and a write whose segment the
+    // execution decides — one no call follows — is reached at the segment the declared count itself names.
+    this.raw(new Uint8Array([Opcodes.OP_FROMALTSTACK]));
+    if (this.options.segmentFromDeclaredCallCount === true) {
+      this.raw(declaredSegmentsSkipRuntimeScript());
+    } else {
+      this.raw(new Uint8Array([Opcodes.OP_DROP]));
+      if ((this.options.segmentIndex ?? 0) > 0) {
+        this.raw(declaredSegmentsSkipScript(this.options.segmentIndex!));
+      }
     }
     this.takeFixedField(2, 'record_count');
     // The declared count is parked beneath the operands the walk parks, and checked once they are back.

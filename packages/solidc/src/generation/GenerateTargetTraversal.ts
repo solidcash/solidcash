@@ -289,7 +289,8 @@ import {
 } from '../per-call/master/declared-view.js';
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
-  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteSegment,
+  derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteFollowsEveryCall,
+  perCallBatchWriteSegment,
   callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress, isProxyFallbackContract,
 } from '../per-call/master/support.js';
 import {
@@ -1098,6 +1099,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * write's own declaration, so both resolve against this segment rather than the one the frame ends in.
    */
   private perCallBatchWriteSegment = 0;
+  /**
+   * Whether the batch write's segment is the one the run's own declared call count names rather than a fixed index.
+   *
+   * A body whose calls the source does not fix reaches a segment only its execution names, and a write no call
+   * follows lands in the last one, whose index is the block's declared call count. The derivation then steps over
+   * that many segments at run time, and the segment close at the body's end is the write's own segment.
+   */
+  private perCallBatchWriteRuntime = false;
   /**
    * The state fields whose pending stack value belongs to a closed segment, keyed as `pendingStateWrites` is.
    *
@@ -3594,8 +3603,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPerCallBatchWitnessDerivation(node: FunctionDefinitionNode): void {
     const batches = node.sortedBatchInfo ?? [];
     if (batches.length === 0) return;
-    // The write's records are declared in the segment the write lands in; the derivation reads that segment.
-    this.perCallBatchWriteSegment = perCallBatchWriteSegment(node) ?? 0;
+    // The write's records are declared in the segment the write lands in; the derivation reads that segment. A
+    // fixed number of calls before the write names it outright; a body whose calls the source does not fix names it
+    // by the block's declared call count, which locates the write only when no call follows it.
+    const fixedWriteSegment = perCallBatchWriteSegment(node);
+    const runtimeWriteSegment = fixedWriteSegment === undefined && perCallBatchWriteFollowsEveryCall(node);
+    // The admission rule refuses a body whose write's segment the derivation cannot locate. An internal body the
+    // advisory check does not cover would otherwise be compiled with a segment the write does not land in, so fail
+    // closed rather than deriving the operands from another segment.
+    if (fixedWriteSegment === undefined && !runtimeWriteSegment) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        `the per-call master cannot locate the segment the verified-mapping write of '${node.name}' lands in`,
+        { function: node.name },
+      );
+    }
+    this.perCallBatchWriteRuntime = runtimeWriteSegment;
+    this.perCallBatchWriteSegment = fixedWriteSegment ?? 0;
     const constants = new Set(this.constantExpressions.keys());
     // The admission rule admits a contract only when every one of its bodies writes the derivable shape. An
     // internal body the advisory check does not cover would otherwise be compiled with a derivation its record
@@ -3667,7 +3691,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(ownerOrdinal === undefined ? {} : { recordsOwnerOrdinal: ownerOrdinal }),
     };
     const script = buildBatchTargetsDerivationScript({
-      keyDepths, ...derivation, segmentIndex: this.perCallBatchWriteSegment,
+      keyDepths,
+      ...derivation,
+      ...(this.perCallBatchWriteRuntime
+        ? { segmentFromDeclaredCallCount: true }
+        : { segmentIndex: this.perCallBatchWriteSegment }),
     });
     this.emit(bytecodeToScript(script), loc);
     // Deepest first, so the tracked names line up with the values the script left above the frame.
@@ -7032,6 +7060,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallRecordSegment = new Map();
     this.perCallReadSegment = undefined;
     this.perCallBatchWriteSegment = 0;
+    this.perCallBatchWriteRuntime = false;
     this.perCallStaleWrites = new Set();
     this.sortedWrittenCollections = new Set();
     this.pendingDynamicWrites = new Map();
@@ -24966,7 +24995,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     const leadings: number[] = [];
-    if ((node.sortedBatchInfo?.length ?? 0) > 0 && this.perCallSegmentIndex === this.perCallBatchWriteSegment) {
+    // The write's segment is the one whose own records, the groups and value chunks it declares, the batch walk
+    // accounts for. A fixed body reaches it at the position its own calls name; a body whose calls the source does
+    // not fix reaches it at the body's end, because a write no call follows closes the last segment the run opens.
+    const closesTheWriteSegment = (node.sortedBatchInfo?.length ?? 0) > 0
+      && (this.perCallBatchWriteRuntime ? atEnd : this.perCallSegmentIndex === this.perCallBatchWriteSegment);
+    if (closesTheWriteSegment) {
       leadings.push(this.perCallRecordsBeforeGroups());
     }
     if (atEnd && this.perCallWritesDynamicField()) leadings.push(this.perCallDynamicChunkWidth() - 1);

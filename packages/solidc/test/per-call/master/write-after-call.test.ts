@@ -108,6 +108,8 @@ interface Options {
   readonly nodeOutputCommitment?: Uint8Array;
   /** How many external calls the entry makes before its write; the block declares that many plus one segments. */
   readonly calls?: number;
+  /** The value the entry writes; the default amount by default, which the create's commitment follows. */
+  readonly amount?: number;
   /** The compiled unit to take the caller from; the single-call unit by default. */
   readonly callerUnit?: Record<string, Artifact>;
 }
@@ -132,9 +134,18 @@ function build(options: Options = {}): Program {
   const calleeLock = encodeLockingBytecodeP2sh32(hash256(calleeProgram));
 
   const callCount = options.calls ?? 1;
+  // The written value's tail and the create's commitment follow the amount the entry is handed, so a case that
+  // varies it plans the node it actually writes.
+  const valueTail = options.amount === undefined ? VALUE_TAIL : new Uint8Array([options.amount]);
+  const nodeCommitment = options.nodeOutputCommitment
+    ?? (options.amount === undefined ? NODE_COMMITMENT : encodeEntryCommitment(SLOT, ZERO_SLOT, valueTail));
+  const writeSegment = options.writeSegment ?? (options.amount === undefined ? SEGMENT : [
+    { in: PRED_INDEX, out: PRED_INDEX, viewIn: HEAD_BEFORE, viewOut: HEAD_AFTER },
+    { in: 0xffff, out: NODE_INDEX, viewIn: EMPTY, viewOut: nodeCommitment },
+  ]);
   // The call closes the segment the code before it runs in; the write's records are declared in the last one.
   const segments: RecordEntry[][] = Array.from({ length: callCount }, () => []);
-  segments.push(options.writeSegment ?? SEGMENT);
+  segments.push(writeSegment);
   const callerBlock: WitnessBlock = {
     kind: 0,
     callerRef: USER_INDEX,
@@ -182,7 +193,7 @@ function build(options: Options = {}): Program {
     outpointIndex: 0, outpointTransactionHash: new Uint8Array(32).fill(1), sequenceNumber: 0xffffffff,
     unlockingBytecode: new Uint8Array([
       ...encodeDataPush(encodeWitnessBlock(callerBlock)),
-      ...encodeDataPush(VALUE_TAIL),
+      ...encodeDataPush(valueTail),
       ...encodeDataPush(TO),
       ...encodeDataPush(callerProgram),
     ]),
@@ -219,7 +230,7 @@ function build(options: Options = {}): Program {
   outputs[NODE_INDEX] = {
     lockingBytecode: entryLock,
     valueSatoshis: VALUE,
-    token: token(CATEGORY_CALLER, 'mutable', options.nodeOutputCommitment ?? NODE_COMMITMENT),
+    token: token(CATEGORY_CALLER, 'mutable', nodeCommitment),
   };
   outputs[PRED_INDEX] = {
     lockingBytecode: entryLock, valueSatoshis: VALUE, token: token(CATEGORY_CALLER, 'mutable', HEAD_AFTER),
@@ -364,6 +375,47 @@ describe('a per-call master whose write follows a branch whose arms call the sam
     expect(refusalMessageOf(SAME_CALL_BRANCH_SOURCE)).toBe('');
     const outcome = verdict({ calls: 1, callerUnit: sameCallBranchArtifacts });
     expect(outcome.accepted, outcome.objection).toBe(true);
+  });
+});
+
+/**
+ * A branch whose arms make a different number of calls — the write's segment the execution decides.
+ *
+ * `if (amount > 1) ping` then the write: the run makes one call or none, so the write lands in the segment the
+ * block's own declared call count names rather than one a fixed index names. The same compiled program is asked
+ * to settle over a frame that takes the arm (one record, the write in segment 1) and one that skips it (no
+ * record, the write in segment 0), which is what shows the derivation followed the declared count.
+ */
+const VARYING_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' interface ICallee { function ping(); }'
+  + ` contract Callee { function ping() { require(true); } }`
+  + ' contract Caller {'
+  + '   mapping(address => uint) balances;'
+  + '   function set(address to, uint amount) {'
+  + `     if (amount > 1) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
+  + '     balances[to] = amount;'
+  + '   }'
+  + ' }';
+
+const varyingCallArtifacts = compileStringMulti(VARYING_CALL_SOURCE, { composition: 'per-call' });
+
+describe('a per-call master whose write follows a branch whose arms call a different number of times', () => {
+  it('serves the entry and publishes no refusal for the write', () => {
+    expect(refusalMessageOf(VARYING_CALL_SOURCE)).toBe('');
+  });
+
+  it('settles over the arm that made one call, reading the segment that call opened', () => {
+    const outcome = verdict({ calls: 1, amount: 42, callerUnit: varyingCallArtifacts });
+    expect(outcome.accepted, outcome.objection).toBe(true);
+  });
+
+  it('settles over the arm that made no call, reading the frame\'s opening segment', () => {
+    const outcome = verdict({ calls: 0, amount: 1, callerUnit: varyingCallArtifacts });
+    expect(outcome.accepted, outcome.objection).toBe(true);
+  });
+
+  it('refuses a frame that declares the call the skipped arm did not make', () => {
+    expect(verdict({ calls: 1, amount: 1, callerUnit: varyingCallArtifacts }).accepted).toBe(false);
   });
 });
 

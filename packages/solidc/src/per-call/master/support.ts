@@ -464,9 +464,9 @@ function keyOperandUnavailable(
     if (current instanceof StateAccessNode) {
       if (!underField) return `the state value '${current.name}'`;
       // An element of a dynamic (chunk-backed) state array is not a value the body holds at its start: its bytes
-      // live in the frame's chunk run, and a body that caches the array in a `__dlcache_<name>` local holds that
-      // local only once its own code begins. The derivation is emitted before the body's first statement, so a key
-      // reading either the element or the cached copy of it is not one the master can produce there.
+      // live in the frame's chunk run, and the derivation, emitted before the body's first statement, cannot
+      // produce it there — the emitter answers the read with a shape that does not leave one key value. A key
+      // reading the element, the cached copy of it the body writes through, or a field of it stays refused.
       return current.stateVariable?.isDynamic === true && current.stateVariable.type instanceof ArrayType
         ? `an element of the dynamic state array '${current.name}'`
         : undefined;
@@ -738,6 +738,36 @@ export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number 
   };
   walkBlock(entry.body, { least: 0, most: 0 });
   return ambiguous ? undefined : segment;
+}
+
+/**
+ * True when every one of a body's derivable batch writes runs after every call the body reaches.
+ *
+ * A call closes the segment the code before it runs in, so a write no call follows lands in the last segment the
+ * execution opens, whichever arm ran: its index is how many calls the execution made, which the witness block
+ * declares. A call textually after the write is the only way one can execute after it, so every call's place in the
+ * invocation walk lying below every write's is exactly the fact the derivation needs to read that segment at run
+ * time. A write in a loop is refused elsewhere, so the walk order decides this. A body that sends pays a
+ * recipient's `receive()` after its own code, which is a call after every write the source shows, so a sending
+ * body never qualifies.
+ */
+export function perCallBatchWriteFollowsEveryCall(entry: FunctionDefinitionNode): boolean {
+  const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));
+  if (slots.size === 0 || (entry.transferInfos?.length ?? 0) > 0) return false;
+  let order = 0;
+  let lastCall = -1;
+  let firstWrite = Number.POSITIVE_INFINITY;
+  walkInvocationAst(entry.body, (node) => {
+    if (node instanceof ExternalFunctionCallNode
+      || node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode) {
+      lastCall = order;
+    } else if ((node instanceof MappingAssignNode || node instanceof MappingDeleteNode)
+      && slots.has(node.entrySlotIndex)) {
+      firstWrite = Math.min(firstWrite, order);
+    }
+    order += 1;
+  });
+  return lastCall < firstWrite;
 }
 
 /** True for a hidden operand that is neither a frame value nor a sorted-batch operand the master derives. */
@@ -1053,12 +1083,13 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   const servedWithCalls = served.filter((entry) => !refusals.has(entry.name));
   // A derived mapping write is settled in the segment its records are declared in, and a call closes the segment
   // the code before it runs in. The derivation reads the write's own segment, so a write a call precedes is served
-  // like one that precedes every call; only a write beside a call inside a branch, whose segment the source does
-  // not fix, cannot be located and is refused.
+  // like one that precedes every call. A write whose segment a varying call decides is served when every call
+  // precedes it — the segment is then the block's own declared call count — and refused otherwise.
   if (calls.callCount > 0) {
     for (const fn of [...servedWithCalls, ...(contract.constructorDef ? [contract.constructorDef] : [])]) {
       if (derivableBatchWitnessNames(fn, constants) === undefined) continue;
       if (perCallBatchWriteSegment(fn) !== undefined) continue;
+      if (perCallBatchWriteFollowsEveryCall(fn)) continue;
       refuseBody(fn, 'a verified-mapping write is derived from the segment its own code runs in, but the master '
         + 'makes external calls and the write does not precede them, so the segment the write lands in is a fact '
         + 'the derivation does not read');
@@ -1793,11 +1824,13 @@ function deriveEntryCallSites(
       + 'does not carry a forwarded call, so its call records are not a fixed set the head can check' };
   }
   // A verified-mapping write's records are declared in the segment the write lands in, and the derivation locates
-  // that segment by the fixed number of calls before it. The run-time position mode moves the segment with the
-  // calls the execution made, which the derivation cannot follow, so a body that writes such a collection behind a
-  // call the source does not fix stays refused rather than deriving the operands from another segment.
+  // that segment either by the fixed number of calls before it or, when the source does not fix that number, by the
+  // call count the run's own block declares. The latter only names the write's segment when no call follows it, so a
+  // body that writes such a collection behind a call the source does not fix stays refused unless every call
+  // precedes every write rather than deriving the operands from another segment.
   if ((entry.sortedBatchInfo?.length ?? 0) > 0 && varying
-    && perCallBatchWriteSegment(entry) === undefined) {
+    && perCallBatchWriteSegment(entry) === undefined
+    && !perCallBatchWriteFollowsEveryCall(entry)) {
     return { calls: [], reason: 'the body writes a verified mapping behind a call whose occurrence the source '
       + 'does not fix, and the derived operands cannot follow the segment the write lands in' };
   }

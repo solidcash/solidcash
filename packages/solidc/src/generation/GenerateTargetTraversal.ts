@@ -1103,6 +1103,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID = -14n;
   private static readonly KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID = -15n;
   private static readonly KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID = -16n;
+  private static readonly WIDE_PUSHDATA_DECODE_SUBROUTINE_ID = -17n;
   /**
    * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
    * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
@@ -1142,6 +1143,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_ORDINAL_ADVANCE_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_RECORD_SELECT_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.KERNEL_JOURNAL_CARRIER_TARGET_SLOT_SUBROUTINE_ID,
+    GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID,
   ];
 
   private allocateCompactHelperId(): bigint {
@@ -4953,6 +4955,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitIntDecodeSubroutine(node: ContractNode): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
 
+    // The common decoder's skipped IF arms still consume BCH operation density. Outline the rare
+    // PUSHDATA1/2 and OP_1NEGATE forms so ordinary array elements pay only for the short dispatcher.
+    // Input: [remainder, opcode, numeric_opcode]. Output: [raw_bytes, remainder].
+    const wideBody: (Op | Uint8Array)[] = [
+      Op.OP_DUP, encodeInt(0x4cn), Op.OP_NUMEQUAL, Op.OP_IF,
+      Op.OP_2DROP, Op.OP_1, Op.OP_SPLIT, Op.OP_SWAP,
+      new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM, Op.OP_SPLIT,
+      Op.OP_ELSE,
+      Op.OP_DUP, encodeInt(0x4dn), Op.OP_NUMEQUAL, Op.OP_IF,
+      Op.OP_2DROP, Op.OP_2, Op.OP_SPLIT, Op.OP_SWAP,
+      new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM, Op.OP_SPLIT,
+      Op.OP_ELSE,
+      encodeInt(0x4fn), Op.OP_NUMEQUALVERIFY, Op.OP_DROP,
+      new Uint8Array([0x81]), Op.OP_SWAP,
+      Op.OP_ENDIF, Op.OP_ENDIF,
+    ];
+    this.emit(scriptToBytecode(wideBody as Script), loc);
+    this.emit(encodeInt(GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID), loc);
+    this.emit(Op.OP_DEFINE, loc);
+    this.subroutineDefined.set(GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID, true);
+
     const body: (Op | Uint8Array)[] = [];
     const push = (op: Op | Uint8Array): void => { body.push(op); };
 
@@ -4965,79 +4988,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     push(Op.OP_SPLIT);
     push(Op.OP_SWAP);
 
-    // Check for OP_0 (0x00) -> push empty bytes
+    // Classify the leading byte once. Array and tuple decoding repeatedly reaches OP_N and
+    // direct pushes; putting those common forms first avoids five nested equality probes per element.
     push(Op.OP_DUP);
-    push(new Uint8Array([0x00]));
-    push(Op.OP_EQUAL);
-    push(Op.OP_IF);
-    push(Op.OP_DROP);
-    push(Op.OP_0); // empty bytes (BIN2NUM -> 0)
-    push(Op.OP_SWAP);
-    push(Op.OP_ELSE);
+    push(Op.OP_BIN2NUM); // [remainder, opcode, numeric_opcode]
 
-    // Check for OP_1NEGATE (0x4f) -> push 0x81
+    // OP_1-OP_16 (0x51-0x60) -> one-byte raw numeric encoding.
     push(Op.OP_DUP);
-    push(new Uint8Array([0x4f]));
-    push(Op.OP_EQUAL);
-    push(Op.OP_IF);
-    push(Op.OP_DROP);
-    push(new Uint8Array([0x81])); // BIN2NUM -> -1
-    push(Op.OP_SWAP);
-    push(Op.OP_ELSE);
-
-    // Check for OP_1-OP_16 (0x51-0x60) -> push (N-0x50) as 1-byte
-    push(Op.OP_DUP);
-    push(Op.OP_BIN2NUM);
     push(encodeInt(0x51n));
-    push(encodeInt(0x61n)); // OP_WITHIN uses an exclusive upper bound.
+    push(encodeInt(0x61n));
     push(Op.OP_WITHIN);
     push(Op.OP_IF);
-    push(Op.OP_BIN2NUM);
     push(encodeInt(0x50n));
     push(Op.OP_SUB);
     push(Op.OP_1);
-    push(Op.OP_NUM2BIN); // 1-byte raw encoding (BIN2NUM -> 1..16)
+    push(Op.OP_NUM2BIN);
+    push(Op.OP_NIP); // discard opcode
     push(Op.OP_SWAP);
     push(Op.OP_ELSE);
 
-    // Check for OP_PUSHDATA1 (0x4c) -> read 1-byte length, then data
+    // OP_0 and direct pushes (0x01-0x4b) share the same split length.
     push(Op.OP_DUP);
-    push(new Uint8Array([0x4c]));
-    push(Op.OP_EQUAL);
+    push(encodeInt(0x4cn));
+    push(Op.OP_LESSTHAN);
     push(Op.OP_IF);
-    push(Op.OP_DROP);
-    push(Op.OP_1);
-    push(Op.OP_SPLIT);
-    push(Op.OP_SWAP);
-    push(new Uint8Array([0x00]));
-    push(Op.OP_CAT);
-    push(Op.OP_BIN2NUM);
+    push(Op.OP_NIP); // [remainder, direct_length]
     push(Op.OP_SPLIT);
     push(Op.OP_ELSE);
 
-    // Check for OP_PUSHDATA2 (0x4d) -> read 2-byte LE length, then data
-    push(Op.OP_DUP);
-    push(new Uint8Array([0x4d]));
-    push(Op.OP_EQUAL);
-    push(Op.OP_IF);
-    push(Op.OP_DROP);
-    push(Op.OP_2);
-    push(Op.OP_SPLIT);
-    push(Op.OP_SWAP);
-    push(new Uint8Array([0x00]));
-    push(Op.OP_CAT);
-    push(Op.OP_BIN2NUM);
-    push(Op.OP_SPLIT);
-    push(Op.OP_ELSE);
+    push(encodeInt(GenerateTargetTraversalWithLocation.WIDE_PUSHDATA_DECODE_SUBROUTINE_ID));
+    push(Op.OP_INVOKE);
 
-    // Standard pushdata (length byte 1-75) -> read N bytes
-    push(Op.OP_BIN2NUM);
-    push(Op.OP_SPLIT);
-
-    // Close all 5 IFs
-    push(Op.OP_ENDIF);
-    push(Op.OP_ENDIF);
-    push(Op.OP_ENDIF);
+    // Close direct push and OP_N branches.
     push(Op.OP_ENDIF);
     push(Op.OP_ENDIF);
 

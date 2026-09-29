@@ -10443,6 +10443,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private collectLocalKeyDefs(node: Node | undefined): void {
     this.localKeyDefs = new Map();
     const assignmentCounts = new Map<string, number>();
+    const stateWriteCounts = new Map<string, number>();
     const adjacentInitializers = new Map<string, ExpressionNode>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
@@ -10451,6 +10452,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       if (n instanceof AssignNode) {
         assignmentCounts.set(n.identifier.name, (assignmentCounts.get(n.identifier.name) ?? 0) + 1);
+      }
+      const writtenState = n instanceof StateAssignNode ? n.name
+        : n instanceof AssignNode ? n.identifier.name : undefined;
+      if (writtenState && this.stateVariableMap.has(writtenState)) {
+        stateWriteCounts.set(writtenState, (stateWriteCounts.get(writtenState) ?? 0) + 1);
       }
       // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
       // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
@@ -10475,6 +10481,63 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(node);
+    // A local key declared immediately after the function's sole scalar state write reads the NEW value.
+    // Project that adjacent additive write into the SDK-only key recipe; the runtime AST is unchanged. Refuse
+    // shadowed names, multiple writes and non-literal deltas, where a pre-state recipe is not proven equivalent.
+    if (node instanceof BlockNode) {
+      const statements = node.statements ?? [];
+      for (let index = 1; index < statements.length; index += 1) {
+        const writer = statements[index - 1];
+        const declaration = statements[index];
+        if (!(declaration instanceof VariableDefinitionNode) || !declaration.expression) continue;
+        const stateName = writer instanceof StateAssignNode ? writer.name
+          : writer instanceof AssignNode ? writer.identifier.name : undefined;
+        if (!stateName || stateWriteCounts.get(stateName) !== 1
+          || this.localKeyDefs.has(stateName)
+          || statements.slice(0, index).some((statement) => statement instanceof VariableDefinitionNode
+            && statement.name === stateName)
+          || this.localKeyDefs.get(declaration.name) !== declaration.expression
+          || this.currentFunction.parameters.some((parameter) => parameter.name === stateName)) continue;
+        const delta = writer instanceof StateAssignNode || writer instanceof AssignNode
+          ? writer.expression : undefined;
+        if (!(delta instanceof BinaryOpNode)
+          || (delta.operator !== BinaryOperator.PLUS && delta.operator !== BinaryOperator.MINUS)
+          || !(delta.right instanceof IntLiteralNode)
+          || !((delta.left instanceof StateAccessNode && delta.left.name === stateName)
+            || (delta.left instanceof IdentifierNode && delta.left.name === stateName))) continue;
+        let replaced = false;
+        const replaceStateRead = (expression: ExpressionNode): ExpressionNode | undefined => {
+          if ((expression instanceof StateAccessNode || expression instanceof IdentifierNode)
+            && expression.name === stateName) {
+            replaced = true;
+            return cloneNode(delta) as ExpressionNode;
+          }
+          if (expression instanceof BinaryOpNode) {
+            const left = replaceStateRead(expression.left);
+            const right = replaceStateRead(expression.right);
+            if (!left || !right) return undefined;
+            const copy = cloneNode(expression) as BinaryOpNode;
+            copy.left = left;
+            copy.right = right;
+            return copy;
+          }
+          if (expression instanceof CastNode || expression instanceof UnaryOpNode) {
+            const inner = replaceStateRead(expression.expression);
+            if (!inner) return undefined;
+            const copy = cloneNode(expression);
+            copy.expression = inner;
+            return copy;
+          }
+          if (expression instanceof IdentifierNode) {
+            return this.currentFunction.parameters.some((parameter) => parameter.name === expression.name)
+              ? cloneNode(expression) as ExpressionNode : undefined;
+          }
+          return expression instanceof LiteralNode ? cloneNode(expression) as ExpressionNode : undefined;
+        };
+        const projected = replaceStateRead(declaration.expression);
+        if (projected && replaced) this.localKeyDefs.set(declaration.name, projected);
+      }
+    }
     for (const [name, expression] of adjacentInitializers) {
       if (!this.localKeyDefs.has(name) && assignmentCounts.get(name) === 1) {
         this.localKeyDefs.set(name, expression);

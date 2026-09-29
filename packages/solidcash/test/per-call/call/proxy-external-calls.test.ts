@@ -128,15 +128,15 @@ function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Arr
 
 /** Deploys one callee at `categoryId`, so a hop's call has a live deployment to run against. */
 async function deployCallee(
-  network: MockNetworkProvider, artifact: Artifact, categoryId: string,
+  network: MockNetworkProvider, artifact: Artifact, categoryId: string, threadCount = 1,
 ): Promise<void> {
   const signature = new SignatureTemplate(alicePriv);
   const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
   const funder = source.unlock.spend(alicePub, signature);
-  const funding = { txid: categoryId, vout: 0, satoshis: 500_000n };
+  const funding = { txid: categoryId, vout: 0, satoshis: 5_000_000n };
   await network.addUtxo(source.address, funding);
   await deployStatefulContract(artifact, [], {
-    fundingUtxo: funding, funder, changeAddress: source.address, provider: network,
+    fundingUtxo: funding, funder, changeAddress: source.address, provider: network, threadCount,
   });
 }
 
@@ -349,7 +349,9 @@ describe('a proxied entry that calls another deployed contract', () => {
 
   it('states one record per visit of a loop whose width the caller fixes', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    // Three turns reach the callee three times, and each reach carries its own call data, so the callee needs
+    // three masters of its own.
+    await deployCallee(network, oracle, ORACLE_CATEGORY, 3);
     const plan = await planHopExternalCalls({
       provider: network,
       artifact: UNFIXED.Looping!,
@@ -361,6 +363,20 @@ describe('a proxied entry that calls another deployed contract', () => {
     // Three turns of the loop, one record each, all reaching the callee the entry's own code computes.
     expect(plan.calls).toHaveLength(3);
     expect(plan.calls.every((call) => bytesToHex(call.target) === hexOf(ORACLE_ADDRESS))).toBe(true);
+  });
+
+  it("refuses a loop whose turns exceed the callee's own master pool, naming the pool", async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    // The callee holds one master, so the loop's three reaches cannot each be given an input of their own.
+    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    await expect(planHopExternalCalls({
+      provider: network,
+      artifact: UNFIXED.Looping!,
+      functionName: 'spin',
+      args: [3n],
+      externals: externals(),
+      validatorProgram: VALIDATOR_PROGRAM,
+    })).rejects.toThrow(/reaches "Oracle".*holds 1 master\(s\), so it cannot be entered 3 time\(s\)/);
   });
 
   it("refuses a target held in a state field the caller's own state does not carry, naming it", async () => {
@@ -394,7 +410,7 @@ describe('a proxied entry that calls another deployed contract', () => {
 
   it('states a guarded record and one record per loop turn for an entry that mixes both', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    await deployCallee(network, oracle, ORACLE_CATEGORY, 3);
     await deployCallee(network, escrow, ESCROW_CATEGORY);
     const plan = await planHopExternalCalls({
       provider: network,

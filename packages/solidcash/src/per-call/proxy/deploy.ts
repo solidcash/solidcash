@@ -560,6 +560,7 @@ export async function deployPerCallProxy(
       entryWriteViews,
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
+      ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
@@ -1022,6 +1023,8 @@ interface HopPlanOptions {
    * record per call and runs each callee as a frame of its own.
    */
   readonly calls?: readonly DraftCall[];
+  /** For each published call site of the entry, the position of its first call in `calls`, or `-1` for none. */
+  readonly callBases?: readonly number[];
   readonly callees?: readonly HopCallee[];
   /** The bytes each callee frame's `retval` carries: what a returning callee computed, or its candidate. */
   readonly calleeRetvals?: ReadonlyMap<string, Uint8Array>;
@@ -1139,6 +1142,22 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // its own records, exactly as a caller the composer builds for itself lays one out.
   const recordIds = options.recordCommitments.map((_commitment, nftIndex) => proxyRecordParticipantId(nftIndex));
   const entryWriteIds = options.entryWrites?.participantIds ?? [];
+  // A contract owns one block, and every master the hop spends of it sits in that block in placement order; a
+  // contract reached at several sites therefore contributes several masters to its one block, and its records are
+  // placed once however many of its masters read them.
+  const calleeBlocks = new Map<string, { readonly contract: string; masters: string[]; state: string[] }>();
+  for (const callee of callees) {
+    let block = calleeBlocks.get(callee.contract);
+    if (block === undefined) {
+      block = { contract: callee.contract, masters: [], state: [] };
+      calleeBlocks.set(callee.contract, block);
+    }
+    block.masters.push(callee.master);
+    if (callee.recordOwner !== undefined) continue;
+    for (const record of callee.records) {
+      if (!block.state.includes(record.id)) block.state.push(record.id);
+    }
+  }
   const blocks: ContractBlock[] = [
     {
       contract: proxyArtifact.contractName,
@@ -1147,12 +1166,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       state: [...recordIds, ...entryWriteIds],
     },
     { contract: implementationArtifact.contractName, masters: [IMPLEMENTATION_MASTER_ID], state: [] },
-    ...callees.map((callee) => ({
-      contract: callee.contract,
-      masters: [callee.master],
-      // A delegate frame reads the records of the proxy that entered it, whose block hosts them, so it declares
-      // them without owning a second block for the same participants.
-      state: callee.recordOwner === undefined ? callee.records.map((record) => record.id) : [],
+    ...[...calleeBlocks.values()].map((block) => ({
+      contract: block.contract, masters: block.masters, state: block.state,
     })),
   ];
   // The validator runs as a head plus its facet inputs, so the hop's own layout has to place the same facets the
@@ -1261,6 +1276,7 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     // The calls the entry's own body makes, in the order it reaches them: the plan states one record per call,
     // whose result is what the callee frame's own body computed.
     calls,
+    ...(options.callBases === undefined ? {} : { callBaseBySite: options.callBases }),
     // The value the entry returns, which the plan stated and the derivation learned; empty for a void entry, which
     // the body requires the slot to be.
     retval: options.implementationRetval,
@@ -1279,6 +1295,47 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   const everyCall = [...calls, ...callees.flatMap((callee) => callee.calls)];
   const callTo = new Map<string, DraftCall>();
   for (const call of everyCall) if (!callTo.has(call.callee)) callTo.set(call.callee, call);
+  // How many masters of each callee contract the hop spends: a contract reached at several sites contributes one
+  // master per reach to its one block.
+  const mastersPerContract = new Map<string, number>();
+  for (const callee of callees) {
+    mastersPerContract.set(callee.contract, (mastersPerContract.get(callee.contract) ?? 0) + 1);
+  }
+  // A category is settled once, however many reaches produced the masters that read it: the hop's own proxy
+  // category, each category a delegate frame runs on, and each category two or more masters of it are spent under,
+  // which the validator requires settled. A category entered once needs no settlement of its own.
+  const settles: { category: Uint8Array; stateInputs: readonly string[]; createdOutputs?: readonly number[] }[] = [];
+  const settledCategories = new Set<string>();
+  const settle = (category: Uint8Array, stateInputs: readonly string[], createdOutputs?: readonly number[]): void => {
+    const key = bytesToHex(category);
+    if (settledCategories.has(key)) return;
+    settledCategories.add(key);
+    settles.push({ category, stateInputs, ...(createdOutputs === undefined ? {} : { createdOutputs }) });
+  };
+  settle(options.proxyCategory, [...recordIds, ...entryWriteIds], laidWrites?.createdOutputs);
+  for (const owner of delegateOwnerIndices(callees)) {
+    settle(callees[owner]!.category, callees[owner]!.records.map((record) => record.id));
+  }
+  // The records the transaction spends of a category are the ones its record-owning frames place; a category whose
+  // masters all run as delegates on another contract's records spends none of its own.
+  const spentRecordsOf = (categoryKey: string): string[] => {
+    const ids: string[] = [];
+    for (const callee of callees) {
+      if (callee.recordOwner !== undefined || bytesToHex(callee.category) !== categoryKey) continue;
+      for (const record of callee.records) if (!ids.includes(record.id)) ids.push(record.id);
+    }
+    return ids;
+  };
+  const mastersOfCategory = new Map<string, { category: Uint8Array; count: number }>();
+  for (const callee of callees) {
+    const key = bytesToHex(callee.category);
+    const group = mastersOfCategory.get(key) ?? { category: callee.category, count: 0 };
+    group.count += 1;
+    mastersOfCategory.set(key, group);
+  }
+  for (const [key, group] of mastersOfCategory) {
+    if (group.count > 1) settle(group.category, spentRecordsOf(key));
+  }
   const calleeMasterDrafts: DraftMaster[] = callees.map((callee) => {
     // A frame that owns the records it lists places them; a delegate frame reads the records of the proxy frame
     // that entered it, which are the first ones that frame declares.
@@ -1301,12 +1358,14 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       facts: {
         contract: callee.contract, functionName: callee.functionName, kind: callee.kind,
         callerIsUser: false, originEqualsCaller: false,
-        makesExternalCall: callee.calls.length > 0, mastersOfContract: 1,
+        makesExternalCall: callee.calls.length > 0,
+        mastersOfContract: mastersPerContract.get(callee.contract) ?? 1,
       },
       frame: { kind: callee.kind, sender, self: callee.selfAddress, value: 0n },
       enteredBy: callee.enteredBy === null ? IMPLEMENTATION_MASTER_ID : callees[callee.enteredBy]!.master,
       origin: USER_ID,
       calls: callee.calls,
+      ...(callee.callBases.length === 0 ? {} : { callBaseBySite: callee.callBases }),
       retval: callee.returns
         ? options.calleeRetvals?.get(callee.master)
           ?? hopRetvalPlaceholder(callee.contract, callee.entry)
@@ -1383,21 +1442,8 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     },
     validator: {
       id: VALIDATOR_ID,
-      covers: [implementationArtifact.contractName, ...callees.map((callee) => callee.contract)],
-      settles: [
-        {
-          category: options.proxyCategory,
-          stateInputs: [...recordIds, ...entryWriteIds],
-          ...(laidWrites === undefined ? {} : { createdOutputs: laidWrites.createdOutputs }),
-        },
-        // A delegate frame runs on the category its caller's records sit under — the proxy's, when the callee sits
-        // behind one — and the validator requires every category a covered master runs on to be settled, so a
-        // callee's own proxy category is settled by this transcript beside the caller's.
-        ...delegateOwnerIndices(callees).map((owner) => ({
-          category: callees[owner]!.category,
-          stateInputs: callees[owner]!.records.map((record) => record.id),
-        })),
-      ],
+      covers: [...new Set([implementationArtifact.contractName, ...callees.map((callee) => callee.contract)])],
+      settles,
       redeemScript: validatorRedeemScript(options.proxyCategory, perCallValidator.buildValidatorProgram()),
     },
     // The event outputs fill the trailing region in emit order, each an immutable token of the proxy's category at
@@ -1791,6 +1837,7 @@ export async function callPerCallProxyEntry(
       entryWriteViews,
       implementationRetval,
       ...(externalPlan.calls.length === 0 ? {} : { calls: externalPlan.calls }),
+      ...(externalPlan.callBases.length === 0 ? {} : { callBases: externalPlan.callBases }),
       ...(externalPlan.callees.length === 0 ? {} : { callees: externalPlan.callees, calleeRetvals }),
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),

@@ -239,6 +239,14 @@ export interface DraftMaster {
   readonly enteredBy: string;
   readonly origin: string;
   readonly calls: readonly DraftCall[];
+  /**
+   * For each published call site, the position of its first call in `calls`, or `-1` when the plan states none.
+   *
+   * A site the execution does not reach — a guarded call whose condition the caller's own facts fix against it —
+   * leaves no record, so the plan's positions are the execution's own and not the source's ordinals. Absent means
+   * the plan states one call per site in order, which is the site's own published position.
+   */
+  readonly callBaseBySite?: readonly number[];
   readonly retval: Uint8Array;
   readonly segments: readonly (readonly DraftRecordEntry[])[];
   readonly events: readonly number[];
@@ -731,10 +739,16 @@ export function composeDraft(
         learnComputedValues(master.master, current);
         if (site.kind !== 'call') return {};
         const visit = site.repeated === true ? visits.get(site.site) ?? 0 : 0;
+        // A plan that states where each published site's calls begin says which sites the execution reaches: a site
+        // it states no call for is one the execution skips, so the fill binds nothing and the driver steps over it.
+        // A plan that states no mapping uses the site's own published position, which is one call per site.
+        const statedBase = master.callBaseBySite?.[site.site];
+        if (statedBase !== undefined && statedBase < 0) return {};
+        const base = statedBase ?? site.callIndex;
         // A repeated site's own `callIndex` is the position of its call's first record, so its visits fill the
         // records from there on: the n-th visit is the n-th turn of the loop. A body may make fixed calls before
         // the loop, and those occupy the positions below `callIndex`, which the site's own visits must not touch.
-        const callIndex = site.repeated === true ? site.callIndex + visit : site.callIndex;
+        const callIndex = site.repeated === true ? base + visit : base;
         const call = master.calls[callIndex];
         // A repeated site's execution may have moved past every record the plan declares, which is what ends the
         // resumption. Any other site names the record it binds, so a plan without it is a plan the composer refuses.

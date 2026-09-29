@@ -15,12 +15,20 @@
  * address the entry's own code computes — the provider's registered deployments, or the caller's named externals —
  * and, when the address names none, from the interface the site calls.
  *
- * The occurrence the source publishes decides how many records the site fills: a `conditional` site always fills
- * one, and a `loop` site fills as many as its iteration domain reaches against the caller's own arguments and
- * state — or, for a loop the artifact publishes no domain for, as many as the caller's own arrays that the site's
- * own sources walk. A site the caller's own facts give no visits fills nothing and places no callee. A contract is
- * placed once: the composition gives each contract one block, so a contract a call reaches twice — or reaches
- * below itself — is refused by name.
+ * The occurrence the source publishes decides how many records the site fills: a `conditional` site fills one when
+ * its published condition holds against the caller's own facts and none when it does not, and a `loop` site fills
+ * as many as its iteration domain reaches against those facts — or, for a loop the artifact publishes no domain
+ * for, as many as the caller's own arrays that the site's own sources walk. A site the caller's own facts give no
+ * visits fills nothing and places no callee.
+ *
+ * Each record a site fills runs on a master of its own, because a master carries one call data and the argument
+ * pushes a call carries are the callee's call data. A composition gives a contract one block, and that block holds
+ * every master the transaction spends of the contract, so a contract reached at several sites takes a master from
+ * its live pool for each reach and all of them sit in its one block. A callee behind its own proxy is two
+ * contracts, so each reach takes a master of each: the proxy's fallback is what the caller records, and the
+ * implementation's delegate frame is what carries that reach's call data. A reach either pool cannot serve — more
+ * reaches than the deployment holds masters — is refused by name, as is a call that reaches the hop's own
+ * implementation below itself.
  *
  * What this module derives is what the plan states, never a coordinate: the layout, the caller references and the
  * callee indices stay the composer's. A shape the hop cannot declare — a target no route names, an argument only
@@ -128,6 +136,12 @@ export interface HopCallee {
   readonly utxos: ReadonlyMap<string, Utxo>;
   /** The calls this callee's own entry makes, in execution order, whose callees are other frames of the plan. */
   readonly calls: readonly DraftCall[];
+  /**
+   * For each published call site of this callee's entry, the position of its first call in `calls`, or `-1` when
+   * the plan places none. A site the execution does not reach places no call, so the positions the plan states are
+   * not the source's own ordinals.
+   */
+  readonly callBases: readonly number[];
   /** Index in `callees` of the master that calls this callee, or null for the implementation's own master. */
   readonly enteredBy: number | null;
 }
@@ -135,6 +149,8 @@ export interface HopCallee {
 /** What the implementation frame's calls and the callee frames they reach are planned as. */
 export interface HopExternalPlan {
   readonly calls: readonly DraftCall[];
+  /** For each published call site of the implementation's entry, the position of its first call in `calls`. */
+  readonly callBases: readonly number[];
   readonly callees: readonly HopCallee[];
   /** The live UTXO of every callee participant, keyed by the id the plan places it under. */
   readonly utxos: ReadonlyMap<string, Utxo>;
@@ -149,17 +165,25 @@ function routingOf(artifact: Artifact, functionName: string): readonly ExternalC
 /**
  * How many records one published site fills.
  *
- * A `once` or `conditional` site reaches its record exactly once. A `loop` site fills the records its visits do:
- * the domain's recurrence is evaluated against the caller's own arguments, so a loop bounded by a forwarded
- * array's length fills that length and a loop bounded by a literal fills that count. A domain whose condition the
- * caller's facts do not fix — one that reads an earlier call's result, for instance — is refused by name, because
- * the plan would not know the run's width. A loop the artifact publishes no domain for is read from the site's own
- * sources instead, and refused by the same name when nothing there fixes its width.
+ * A `loop` site fills the records its visits do: the domain's recurrence is evaluated against the caller's own
+ * arguments, so a loop bounded by a forwarded array's length fills that length and a loop bounded by a literal
+ * fills that count. A domain whose condition the caller's facts do not fix — one that reads an earlier call's
+ * result, for instance — is refused by name, because the plan would not know the run's width. A loop the artifact
+ * publishes no domain for is read from the site's own sources instead, and refused by the same name when nothing
+ * there fixes its width.
+ *
+ * A `conditional` site fills its record only when the condition the artifact publishes holds against the caller's
+ * own facts: the arm a condition the caller's facts fix does not take reaches no call, so the site places nothing.
+ * A site the artifact publishes no condition for still fills one, and so does one whose condition the caller's own
+ * facts do not fix: the plan states the record and the execution is what skips it.
  */
 function occurrenceCountOf(
   row: ExternalCallAbi, args: readonly FunctionArgument[], resolver: CallResolver, where: string,
 ): number {
-  if ((row.occurrence ?? 'once') !== 'loop') return 1;
+  if ((row.occurrence ?? 'once') !== 'loop') {
+    if (row.condition === undefined || row.condition === null) return 1;
+    return resolver.evaluate(row.condition, 0) === false ? 0 : 1;
+  }
   const domain = row.iterationDomain;
   if (domain === undefined) return derivedOccurrenceCountOf(row, args, where);
   const initial = resolver.evaluate(domain.initialValue, 0);
@@ -365,8 +389,14 @@ interface PlanContext {
   readonly provider: NetworkProvider;
   readonly externals: Readonly<Record<string, PerCallProxyExternal>>;
   readonly validatorProgram: Uint8Array;
-  /** Contract names already placed; a composition gives each contract one block, so a second is refused. */
-  readonly contracts: Set<string>;
+  /** The contracts the hop's own root fixes at one master: its implementation, entered by its proxy. */
+  readonly fixed: Set<string>;
+  /** How many masters of each contract the hop has taken from its live pool. */
+  readonly masterSlots: Map<string, number>;
+  /** The live deployments already read, keyed by category id. */
+  readonly deployments: Map<string, PerCallDeploymentSet>;
+  /** The records of each callee category, shared by every master the hop places for that contract. */
+  readonly records: Map<string, readonly HopCalleeRecord[]>;
   /** Callee frames in placement order; a slot is reserved before the callee's own calls are planned. */
   readonly callees: HopCallee[];
   readonly utxos: Map<string, Utxo>;
@@ -402,22 +432,27 @@ function resolveExternal(ctx: PlanContext, row: ExternalCallAbi, target: Uint8Ar
  * and argument pushes are resolved first, so a shape the hop cannot declare is refused without depending on a
  * deployment. Only then is each callee's live deployment read, and its own calls planned from it. A site the
  * caller's own facts give no visits fills no record, so it places no callee and the rest of it need not resolve.
+ *
+ * Each record a site fills runs on a master of its own, so a site whose arguments differ turn to turn — a loop
+ * over the caller's own array, say — reaches a contract once per master it takes. The positions the plan states
+ * for the calls are the execution's own, which a site the plan places nothing for leaves out: `callBases` maps
+ * each published site to the first call the plan states for it, or `-1` when it states none.
  */
 async function planEntryCalls(
   ctx: PlanContext,
   caller: HopCallInputs,
   enteredBy: number | null,
-): Promise<DraftCall[]> {
+): Promise<{ readonly calls: DraftCall[]; readonly callBases: number[] }> {
   const identity = `${caller.artifact.contractName}.${caller.functionName}()`;
   const published = readPublishedStopSites(caller.artifact).entries
     .find((entry) => entry.functionName === identity);
-  if (published === undefined || published.calls.length === 0) return [];
+  if (published === undefined || published.calls.length === 0) return { calls: [], callBases: [] };
   const routing = routingOf(caller.artifact, caller.functionName);
   const resolver = makeCallResolver(caller);
 
   // Pass one: resolve every site of this entry from the caller's own facts, so the plan is refused for its own
   // shape before any live record is read.
-  const sites = published.calls.flatMap((call, index) => {
+  const sites = published.calls.map((call, index) => {
     const row = routing[index];
     if (row === undefined || row.interfaceName !== call.interfaceName
       || row.functionName !== call.functionName) {
@@ -430,7 +465,7 @@ async function planEntryCalls(
     const count = occurrenceCountOf(row, caller.args, resolver, where);
     // A site the caller's own facts give no visits fills no record: it reaches no callee, so nothing is placed
     // for it and its target and arguments need not resolve.
-    if (count === 0) return [];
+    if (count === 0) return undefined;
     // The stop site's baked target is the address the compiler pinned into the caller's own code; the ABI routing
     // carries it as `addressLiteral` for a literal and leaves it empty for one the caller computes.
     const effective: ExternalCallAbi = row.addressLiteral === undefined && call.target.length > 0
@@ -442,100 +477,71 @@ async function planEntryCalls(
     const resolved = Array.from({ length: count }, (_unused, occurrence) => (
       resolvePublishedCall(effective, external.artifact, caller, resolver, occurrence)
     ));
-    // A callee behind its own proxy is two contracts, so both of the names the chain places are checked here,
-    // before any live record is read.
+    // A callee behind its own proxy is two contracts, and the hop's own implementation is one the composition
+    // fixes; both are checked by name here, before any live record is read.
     const placedNames = external.proxyArtifact === undefined
       ? [external.artifact.contractName]
       : [external.proxyArtifact.contractName, external.artifact.contractName];
     for (const name of placedNames) {
-      if (ctx.contracts.has(name)) {
+      if (ctx.fixed.has(name)) {
         throw new PerCallProxyDeployError(
-          `${where} reaches "${name}", which this hop already places; a contract that `
-          + 'reaches itself below itself, or is reached twice, cannot be given the one block a composition holds per '
-          + 'contract',
+          `${where} reaches "${name}", which this hop already places; a contract that reaches itself below `
+          + 'itself cannot be given a second block in the hop',
         );
       }
-      ctx.contracts.add(name);
     }
-    return [{ entry, external, resolved }];
+    return { entry, external, resolved, where };
   });
 
-  // Pass two: read each callee's live deployment, plan its own calls from the values that deployment holds, and
-  // place its frame.
+  // Pass two: read each callee's live deployment, take a master per reach from its pool, plan the callee's own
+  // calls from the values that deployment holds, and place its frames.
   const calls: DraftCall[] = [];
+  const callBases: number[] = [];
   for (const site of sites) {
-    const { external, entry, resolved } = site;
+    if (site === undefined) {
+      callBases.push(-1);
+      continue;
+    }
+    callBases.push(calls.length);
+    const { external, entry, resolved, where } = site;
     // A callee whose address names a per-call proxy is placed as the same chain the root hop places for its own
     // proxy: the proxy's fallback frame, then the implementation entry it delegates to on the proxy's records.
     if (external.proxyArtifact !== undefined && external.implementationCategoryId !== undefined) {
-      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls);
+      await placeProxiedCallee(ctx, caller, enteredBy, external, entry, resolved, calls, where);
       continue;
     }
-    const category = hexToBin(external.categoryId);
-    const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
-    const deployment = await readPerCallDeployment(ctx.provider, external.categoryId, layout);
-    const masterUtxo = deployment.masters[0];
-    if (masterUtxo === undefined) {
-      throw new PerCallProxyDeployError(
-        `the callee's category ${external.categoryId} holds no master, which the call's frame runs on`,
-      );
-    }
-    const calleeIndex = ctx.callees.length;
-    const master = `callee-master-${calleeIndex + 1}`;
-    const records = calleeRecordsOf(master, external.categoryId, layout.dataNftCount, deployment);
-    const masterUtxos = new Map<string, Utxo>([[master, masterUtxo]]);
-    records.forEach((record, nftIndex) => masterUtxos.set(record.id, deployment.records[nftIndex]!));
-    const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
-    const base: HopCallee = {
-      master,
-      contract: external.artifact.contractName,
-      entry: entry.name,
-      functionName: `${external.artifact.contractName}.${entry.name}()`,
-      artifact: external.artifact,
-      category,
-      categoryId: external.categoryId,
-      deployed,
-      kind: resolved[0]!.kind,
-      masterSatoshis: masterUtxo.satoshis,
-      returns: (entry.outputs ?? []).length > 0,
-      selfAddress: deployed.address,
-      records,
-      utxos: masterUtxos,
-      calls: [],
-      enteredBy,
-    };
-    // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
-    // caller and sits after it.
-    ctx.callees.push(base);
-    const nested = await planEntryCalls(ctx, {
-      artifact: external.artifact,
-      functionName: entry.name,
-      args: resolved[0]!.argumentValues,
-      stateValues: deploymentStateValues(layout, external.categoryId, deployment),
-      selfAddress: deployed.address,
-      ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
-    }, calleeIndex);
-    ctx.callees[calleeIndex] = { ...base, calls: nested };
-    for (const [id, utxo] of masterUtxos) ctx.utxos.set(id, utxo);
-
-    for (const record of resolved) {
-      calls.push({
-        kind: record.kind, callee: master, target: record.target, value: 0n,
-        argumentPushes: record.argumentPushes,
-      });
-    }
+    await placeCalleeMasters(ctx, caller, enteredBy, external, entry, resolved, calls, where);
   }
-  return calls;
+  return { calls, callBases };
 }
 
-/** The live records a frame reads, each named for the master that reads it and locked at its category's covenant. */
-function calleeRecordsOf(
-  master: string,
+/** The live deployment a category names, read once however many sites reach it. */
+async function deploymentOf(
+  ctx: PlanContext, categoryId: string, layout: StateLayout,
+): Promise<PerCallDeploymentSet> {
+  const cached = ctx.deployments.get(categoryId);
+  if (cached !== undefined) return cached;
+  const read = await readPerCallDeployment(ctx.provider, categoryId, layout);
+  ctx.deployments.set(categoryId, read);
+  return read;
+}
+
+/**
+ * The records a callee contract's masters read, one participant per data NFT, named for the contract.
+ *
+ * A contract's records are the deployment's, not a frame's: every master the hop places for the contract reads
+ * the same record inputs, so the ids are the contract's and the block places each record once.
+ */
+function calleeRecordSet(
+  ctx: PlanContext,
+  contract: string,
   categoryId: string,
-  dataNftCount: number,
+  layout: StateLayout,
   deployment: PerCallDeploymentSet,
 ): readonly HopCalleeRecord[] {
-  return Array.from({ length: dataNftCount }, (_unused, nftIndex): HopCalleeRecord => {
+  const cached = ctx.records.get(categoryId);
+  if (cached !== undefined) return cached;
+  const records = Array.from({ length: layout.dataNftCount }, (_unused, nftIndex): HopCalleeRecord => {
     const utxo = deployment.records[nftIndex];
     const commitment = utxo?.token?.nft?.commitment;
     if (utxo === undefined || commitment === undefined) {
@@ -544,22 +550,107 @@ function calleeRecordsOf(
       );
     }
     return {
-      id: `${master}-record-${nftIndex}`,
+      id: `${contract}-record-${nftIndex}`,
       commitment: new Uint8Array(hexToBin(commitment)),
       satoshis: utxo.satoshis,
       lockingBytecode: stateRecordLockingBytecode(categoryId),
     };
   });
+  records.forEach((record, nftIndex) => ctx.utxos.set(record.id, deployment.records[nftIndex]!));
+  ctx.records.set(categoryId, records);
+  return records;
 }
 
 /**
- * Places a callee that sits behind its own per-call proxy, as the chain a root hop places.
+ * Places one master per reach of a direct callee, all of them in the callee contract's one block.
  *
- * The frame the caller reaches is the proxy's fallback, which forwards the call data it received to the address its
- * record holds; the implementation's entry runs as the delegate frame that follows, on the proxy's own records. The
- * caller's record names the proxy's master, the proxy's record names the implementation's master, and the
- * implementation's own calls are planned below it from the proxy's live record values — its `address(this)` and
- * `msg.sender` are the proxy's.
+ * Each reach carries its own call data, so each takes a master of its own from the contract's live pool: the
+ * pool's masters are ordered by outpoint, and the hop's running count of the masters it has taken for the
+ * contract is the slot the next reach takes. A pool that cannot hold every reach is refused by name before any
+ * frame is placed, so a plan is never half-stated for a pool that cannot serve it.
+ */
+async function placeCalleeMasters(
+  ctx: PlanContext,
+  caller: HopCallInputs,
+  enteredBy: number | null,
+  external: PerCallProxyExternal,
+  entry: AbiEntryRow,
+  resolved: readonly ResolvedCall[],
+  calls: DraftCall[],
+  where: string,
+): Promise<void> {
+  const contract = external.artifact.contractName;
+  const categoryId = external.categoryId;
+  const layout = external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
+  const deployment = await deploymentOf(ctx, categoryId, layout);
+  const base = ctx.masterSlots.get(contract) ?? 0;
+  const needed = base + resolved.length;
+  if (deployment.masters.length < needed) {
+    throw new PerCallProxyDeployError(
+      `${where} reaches "${contract}", which this hop already places; its category ${categoryId} holds `
+      + `${deployment.masters.length} master(s), so it cannot be entered ${needed} time(s)`,
+    );
+  }
+  ctx.masterSlots.set(contract, needed);
+  const records = calleeRecordSet(ctx, contract, categoryId, layout, deployment);
+  const stateValues = deploymentStateValues(layout, categoryId, deployment);
+  const category = hexToBin(categoryId);
+  for (const [occurrence, call] of resolved.entries()) {
+    const calleeIndex = ctx.callees.length;
+    const master = `callee-master-${calleeIndex + 1}`;
+    const masterUtxo = deployment.masters[base + occurrence]!;
+    const deployed = deployMaster(external.artifact, category, ctx.validatorProgram);
+    const frame: HopCallee = {
+      master,
+      contract,
+      entry: entry.name,
+      functionName: `${contract}.${entry.name}()`,
+      artifact: external.artifact,
+      category,
+      categoryId,
+      deployed,
+      kind: call.kind,
+      masterSatoshis: masterUtxo.satoshis,
+      returns: (entry.outputs ?? []).length > 0,
+      selfAddress: deployed.address,
+      records,
+      utxos: new Map<string, Utxo>([[master, masterUtxo]]),
+      calls: [],
+      callBases: [],
+      enteredBy,
+    };
+    // Reserve the slot before planning the callee's own calls, so a frame it reaches names this master as its
+    // caller and sits after it.
+    ctx.callees.push(frame);
+    const nested = await planEntryCalls(ctx, {
+      artifact: external.artifact,
+      functionName: entry.name,
+      args: call.argumentValues,
+      stateValues,
+      selfAddress: deployed.address,
+      ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
+    }, calleeIndex);
+    ctx.callees[calleeIndex] = { ...frame, calls: nested.calls, callBases: nested.callBases };
+    ctx.utxos.set(master, masterUtxo);
+    calls.push({
+      kind: call.kind, callee: master, target: call.target, value: 0n,
+      argumentPushes: call.argumentPushes,
+    });
+  }
+}
+
+/**
+ * Places one proxy-fallback plus delegate-frame pair per reach of a proxied callee, in the two blocks the chain
+ * owns.
+ *
+ * A proxied callee is two contracts: the proxy, whose fallback forwards the call data it received to the address
+ * its record holds, and the implementation the delegate frame runs. Each reach carries its own call data, so each
+ * takes a master of its own from both pools: one of the proxy's, which the caller records, and one of the
+ * implementation's, which the proxy's record names and whose input carries that reach's call data. The proxy's
+ * masters all sit in the proxy's one block and read its one set of records; the implementation's masters all sit
+ * in the implementation's one block and run as delegates on the proxy's records. A pool that cannot hold every
+ * reach is refused by name before any frame is placed, so a plan is never half-stated for a pool that cannot serve
+ * it.
  */
 async function placeProxiedCallee(
   ctx: PlanContext,
@@ -569,109 +660,117 @@ async function placeProxiedCallee(
   entry: AbiEntryRow,
   resolved: readonly ResolvedCall[],
   calls: DraftCall[],
+  where: string,
 ): Promise<void> {
   const proxyArtifact = external.proxyArtifact!;
   const implementationCategoryId = external.implementationCategoryId!;
+  const proxyContract = proxyArtifact.contractName;
+  const implementationContract = external.artifact.contractName;
   const proxyLayout = proxyArtifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
   const implementationLayout =
     external.artifact.stateLayout ?? { variables: [], dataNftCount: 0, commitmentLimit: 0 };
-  const proxyDeployment = await readPerCallDeployment(ctx.provider, external.categoryId, proxyLayout);
-  const implementationDeployment =
-    await readPerCallDeployment(ctx.provider, implementationCategoryId, implementationLayout);
-  const proxyMasterUtxo = proxyDeployment.masters[0];
-  if (proxyMasterUtxo === undefined) {
+  const proxyDeployment = await deploymentOf(ctx, external.categoryId, proxyLayout);
+  const implementationDeployment = await deploymentOf(ctx, implementationCategoryId, implementationLayout);
+  const proxyBase = ctx.masterSlots.get(proxyContract) ?? 0;
+  const implementationBase = ctx.masterSlots.get(implementationContract) ?? 0;
+  const needed = resolved.length;
+  if (proxyDeployment.masters.length < proxyBase + needed) {
     throw new PerCallProxyDeployError(
-      `the callee's proxy category ${external.categoryId} holds no master, which its fallback frame runs on`,
+      `${where} reaches "${proxyContract}", which this hop already places; its category ${external.categoryId} `
+      + `holds ${proxyDeployment.masters.length} master(s), so it cannot be entered ${proxyBase + needed} time(s)`,
     );
   }
-  const implementationMasterUtxo = implementationDeployment.masters[0];
-  if (implementationMasterUtxo === undefined) {
+  if (implementationDeployment.masters.length < implementationBase + needed) {
     throw new PerCallProxyDeployError(
-      `the callee's implementation category ${implementationCategoryId} holds no master, which its delegate `
-      + 'frame runs on',
+      `${where} reaches "${implementationContract}", which this hop already places; its category `
+      + `${implementationCategoryId} holds ${implementationDeployment.masters.length} master(s), so it cannot be `
+      + `entered ${implementationBase + needed} time(s)`,
     );
   }
+  ctx.masterSlots.set(proxyContract, proxyBase + needed);
+  ctx.masterSlots.set(implementationContract, implementationBase + needed);
 
   const proxyCategory = hexToBin(external.categoryId);
-  const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, ctx.validatorProgram);
   const implementationCategory = hexToBin(implementationCategoryId);
+  const proxyDeployed = deployMaster(proxyArtifact, proxyCategory, ctx.validatorProgram);
   const implementationDeployed = deployMaster(external.artifact, implementationCategory, ctx.validatorProgram);
-
-  const proxyIndex = ctx.callees.length;
-  const implementationIndex = proxyIndex + 1;
-  const proxyMaster = `callee-master-${proxyIndex + 1}`;
-  const implementationMaster = `callee-impl-master-${implementationIndex + 1}`;
-
-  const records = calleeRecordsOf(proxyMaster, external.categoryId, proxyLayout.dataNftCount, proxyDeployment);
-  const proxyUtxos = new Map<string, Utxo>([[proxyMaster, proxyMasterUtxo]]);
-  records.forEach((record, nftIndex) => proxyUtxos.set(record.id, proxyDeployment.records[nftIndex]!));
-  // The delegate's master sits on the implementation's own category, and the frame reads the proxy's records, so
-  // the participant it owns is its master alone.
-  const implementationUtxos = new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]);
-
-  const proxyBase: HopCallee = {
-    master: proxyMaster,
-    contract: proxyArtifact.contractName,
-    entry: '__fallback',
-    functionName: `${proxyArtifact.contractName}.__fallback()`,
-    artifact: proxyArtifact,
-    category: proxyCategory,
-    categoryId: external.categoryId,
-    deployed: proxyDeployed,
-    kind: resolved[0]!.kind,
-    masterSatoshis: proxyMasterUtxo.satoshis,
-    returns: false,
-    selfAddress: proxyDeployed.address,
-    records,
-    utxos: proxyUtxos,
-    // The fallback forwards the call data the caller recorded to the address its own record holds, which is the
-    // implementation's master at its own category.
-    calls: [{
+  // The proxy's records are the contract's, shared by every master the hop places for it; a delegate frame reads
+  // them without owning them, so none are placed for the implementation's own category.
+  const records = calleeRecordSet(ctx, proxyContract, external.categoryId, proxyLayout, proxyDeployment);
+  const stateValues = deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment);
+  for (const [occurrence, call] of resolved.entries()) {
+    const proxyIndex = ctx.callees.length;
+    const implementationIndex = proxyIndex + 1;
+    const proxyMaster = `callee-master-${proxyIndex + 1}`;
+    const implementationMaster = `callee-impl-master-${implementationIndex + 1}`;
+    const proxyMasterUtxo = proxyDeployment.masters[proxyBase + occurrence]!;
+    const implementationMasterUtxo = implementationDeployment.masters[implementationBase + occurrence]!;
+    const proxyBaseFrame: HopCallee = {
+      master: proxyMaster,
+      contract: proxyContract,
+      entry: '__fallback',
+      functionName: `${proxyContract}.__fallback()`,
+      artifact: proxyArtifact,
+      category: proxyCategory,
+      categoryId: external.categoryId,
+      deployed: proxyDeployed,
+      kind: call.kind,
+      masterSatoshis: proxyMasterUtxo.satoshis,
+      returns: false,
+      selfAddress: proxyDeployed.address,
+      records,
+      utxos: new Map<string, Utxo>([[proxyMaster, proxyMasterUtxo]]),
+      // The fallback forwards the call data the caller recorded to the address its own record holds, which is the
+      // implementation's master at its own category.
+      calls: [{
+        kind: FrameKind.DELEGATE,
+        callee: implementationMaster,
+        target: implementationDeployed.address,
+        value: 0n,
+        argumentPushes: call.argumentPushes,
+      }],
+      callBases: [0],
+      enteredBy,
+    };
+    const implementationBaseFrame: HopCallee = {
+      master: implementationMaster,
+      contract: implementationContract,
+      entry: entry.name,
+      functionName: `${implementationContract}.${entry.name}()`,
+      artifact: external.artifact,
+      category: implementationCategory,
+      categoryId: implementationCategoryId,
+      deployed: implementationDeployed,
       kind: FrameKind.DELEGATE,
-      callee: implementationMaster,
-      target: implementationDeployed.address,
-      value: 0n,
-      argumentPushes: resolved[0]!.argumentPushes,
-    }],
-    enteredBy,
-  };
-  const implementationBase: HopCallee = {
-    master: implementationMaster,
-    contract: external.artifact.contractName,
-    entry: entry.name,
-    functionName: `${external.artifact.contractName}.${entry.name}()`,
-    artifact: external.artifact,
-    category: implementationCategory,
-    categoryId: implementationCategoryId,
-    deployed: implementationDeployed,
-    kind: FrameKind.DELEGATE,
-    masterSatoshis: implementationMasterUtxo.satoshis,
-    returns: (entry.outputs ?? []).length > 0,
-    // A delegate frame runs as its caller's contract, so its `address(this)` is the proxy's.
-    selfAddress: proxyDeployed.address,
-    records: [],
-    recordOwner: proxyIndex,
-    utxos: implementationUtxos,
-    calls: [],
-    enteredBy: proxyIndex,
-  };
-  ctx.callees.push(proxyBase, implementationBase);
-  const nested = await planEntryCalls(ctx, {
-    artifact: external.artifact,
-    functionName: entry.name,
-    args: resolved[0]!.argumentValues,
-    stateValues: deploymentStateValues(proxyLayout, external.categoryId, proxyDeployment),
-    selfAddress: proxyDeployed.address,
-    ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
-  }, implementationIndex);
-  ctx.callees[implementationIndex] = { ...implementationBase, calls: nested };
-  for (const [id, utxo] of proxyUtxos) ctx.utxos.set(id, utxo);
-  for (const [id, utxo] of implementationUtxos) ctx.utxos.set(id, utxo);
-
-  for (const record of resolved) {
+      masterSatoshis: implementationMasterUtxo.satoshis,
+      returns: (entry.outputs ?? []).length > 0,
+      // A delegate frame runs as its caller's contract, so its `address(this)` is the proxy's.
+      selfAddress: proxyDeployed.address,
+      records: [],
+      recordOwner: proxyIndex,
+      utxos: new Map<string, Utxo>([[implementationMaster, implementationMasterUtxo]]),
+      calls: [],
+      callBases: [],
+      enteredBy: proxyIndex,
+    };
+    // Reserve the pair before planning the entry's own calls, so a frame it reaches names its own reach's
+    // implementation master as its caller and sits after it.
+    ctx.callees.push(proxyBaseFrame, implementationBaseFrame);
+    const nested = await planEntryCalls(ctx, {
+      artifact: external.artifact,
+      functionName: entry.name,
+      args: call.argumentValues,
+      stateValues,
+      selfAddress: proxyDeployed.address,
+      ...(caller.selfAddress === undefined ? {} : { senderAddress: caller.selfAddress }),
+    }, implementationIndex);
+    ctx.callees[implementationIndex] =
+      { ...implementationBaseFrame, calls: nested.calls, callBases: nested.callBases };
+    ctx.utxos.set(proxyMaster, proxyMasterUtxo);
+    ctx.utxos.set(implementationMaster, implementationMasterUtxo);
     calls.push({
-      kind: record.kind, callee: proxyMaster, target: record.target, value: 0n,
-      argumentPushes: record.argumentPushes,
+      kind: call.kind, callee: proxyMaster, target: call.target, value: 0n,
+      argumentPushes: call.argumentPushes,
     });
   }
 }
@@ -700,7 +799,8 @@ export interface HopExternalPlanOptions {
  * The published stop sites give the calls in execution order and the ABI routing gives each call its target and
  * argument sources; `externals` names the live deployment each callee runs on, and the provider's registrations are
  * the fallback. Each callee's live records are read so that a callee whose own entry makes calls is planned from
- * its own facts. A shape the hop cannot declare is refused by name, and a contract reached twice is refused.
+ * its own facts. A shape the hop cannot declare is refused by name, and a reach the callee's own master pool cannot
+ * serve is refused by name too.
  */
 export async function planHopExternalCalls(
   options: HopExternalPlanOptions,
@@ -709,11 +809,14 @@ export async function planHopExternalCalls(
     provider: options.provider,
     externals: options.externals,
     validatorProgram: options.validatorProgram,
-    contracts: new Set([options.artifact.contractName]),
+    fixed: new Set([options.artifact.contractName]),
+    masterSlots: new Map(),
+    deployments: new Map(),
+    records: new Map(),
     callees: [],
     utxos: new Map(),
   };
-  const calls = await planEntryCalls(ctx, {
+  const root = await planEntryCalls(ctx, {
     artifact: options.artifact,
     functionName: options.functionName,
     args: options.args,
@@ -722,5 +825,5 @@ export async function planHopExternalCalls(
     ...(options.senderAddress === undefined ? {} : { senderAddress: options.senderAddress }),
     ...(options.constructorArgs === undefined ? {} : { constructorArgs: options.constructorArgs }),
   }, null);
-  return { calls, callees: ctx.callees, utxos: ctx.utxos };
+  return { calls: root.calls, callBases: root.callBases, callees: ctx.callees, utxos: ctx.utxos };
 }

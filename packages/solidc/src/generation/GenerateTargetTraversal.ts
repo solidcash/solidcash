@@ -11407,7 +11407,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A mixed straight-line + dynamic-loop function keeps the legacy one-call trailing window: loop iterations
     // use a separate forward index family discovered at runtime, so combining its syntactic call with a fixed
     // call would claim a batch member that is not in the trailing side-car.
-    const batchable = !fn.keccakInLoop;
+    // A per-call frame co-spends one side-car per call, placed beside its own input, so nothing is batched.
+    const batchable = !fn.keccakInLoop && !this.perCallMaster;
     const batchIndex = batchable ? Math.floor(i / 3) : i;
     const withinBatch = batchable ? i % 3 : 0;
     const layoutBasis = fn.blockLayout ? fn : this.keccakSideCarBasis;
@@ -11429,7 +11430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // a stateful call outside any keccak loop whose side-car slot the block layout never reserved. Checked
     // against the layout rather than against `keccakInLoop` so a slot-count disagreement is named too. A
     // stateless function has no block layout and reads count-relative, so it never reaches this lookup.
-    if (!this.keccakLoopActive && fn.blockLayout
+    if (!this.perCallMaster && !this.keccakLoopActive && fn.blockLayout
       && !fn.blockLayout.slots.some((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === batchIndex)) {
       const reason = fn.keccakInLoop
         ? 'keccak-loop-and-straight-line-mix-not-enabled'
@@ -11453,6 +11454,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const cIdx = this.getStackIndex(this.keccakLoopCounterName);
         this.emit(encodeInt(BigInt(cIdx + 1)), loc); // +1 for the untracked accumulator on top
         this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+        return;
+      }
+      if (this.perCallMaster) {
+        // A per-call frame owns its input: its side-cars follow it, each recovery pair and its EVM keccak side-car
+        // first, then one keccak side-car per call in the order the body makes them. A side-car recreates at its own
+        // index, so the input coordinate also reads the output.
+        this.emitMasterInputIndex(loc);
+        const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + i;
+        this.emit(encodeInt(BigInt(step)), loc);
         this.emit(Op.OP_ADD, loc);
         return;
       }
@@ -11519,7 +11530,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
-    const absoluteForward = fn.blockLayout != null || this.keccakLoopActive || basisSlot !== undefined;
+    const absoluteForward = this.perCallMaster || fn.blockLayout != null || this.keccakLoopActive
+      || basisSlot !== undefined;
     if (this.keccakLoopActive) {
       // Dynamic loop: compare the covenant bytecode DIRECTLY (it is a compile-time constant) instead of hashing it.
       // Re-hashing the ~2.4KB covenant every iteration would blow the per-input hash-density budget (~5 iters); a

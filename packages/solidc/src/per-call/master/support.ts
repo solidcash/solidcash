@@ -922,8 +922,11 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     if (fn.usesBlockhash || contract.usesBlockhash) {
       refuseBody(fn, 'a blockhash read needs a co-spent oracle input the master head does not locate');
     }
-    if (fn.keccakCompute) {
-      refuseBody(fn, 'a keccak compute side-car needs co-spent inputs the master head does not locate');
+    // A straight-line keccak256 call reads its compute side-car at a fixed step past the frame's own input; a call
+    // inside a loop reads as many as the loop turns.
+    if (fn.keccakCompute && fn.keccakInLoop === true) {
+      refuseBody(fn, 'a keccak256 call inside a loop reads one compute side-car per turn, which the master head does '
+        + 'not locate a run-time number of');
     }
     // A recovery loop reads its pair per iteration from a run-time counter, which the head would have to place a
     // variable number of inputs for; the straight-line per-call pair is what the head locates.

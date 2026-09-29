@@ -97,14 +97,25 @@ describe('a recovery precompile', () => {
 });
 
 describe('a keccak compute side-car', () => {
-  it('is refused by name: its co-spent input is not located', () => {
+  // A straight-line call reads the side-car the composer places after the master; `composer/keccak-side-car`
+  // settles it.
+  it('serves a straight-line call', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Hashes {'
       + '   function f(bytes preimage) returns (bytes32) { return keccak256(preimage); }'
       + ' }';
+    expect(refusal(source)).toBe('');
+  });
+
+  it('is refused by name inside a loop: the loop reads a run-time number of side-cars', () => {
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Hashes {'
+      + '   bytes32 h;'
+      + '   function f(bytes a, int n) { for (int i = 0; i < n; i = i + 1) { this.h = keccak256(a); } require(true); }'
+      + ' }';
     const message = refusal(source);
     expect(message).toContain('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(message).toContain('a keccak compute side-car needs co-spent inputs the master head does not locate');
+    expect(message).toContain('a keccak256 call inside a loop reads one compute side-car per turn');
   });
 });
 

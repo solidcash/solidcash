@@ -199,3 +199,70 @@ export function recoveryCallsOf(
     };
   });
 }
+
+/** The ABI row of a function that hashes through keccak256 compute side-cars, as the compiled artifact publishes it. */
+export interface KeccakAbiFunction {
+  readonly inputs: readonly { readonly name: string; readonly type: string }[];
+  /** Per keccak256 call, in the order the body makes them, the parameter its preimage is, or `null` if computed. */
+  readonly keccakPreimageParams?: readonly (string | null)[] | null;
+}
+
+/**
+ * The preimage of each keccak256 call an entry makes, read from the master's own argument pushes.
+ *
+ * The pushes are read as `recoveryCallsOf` reads them. A call whose preimage is not a named parameter of the entry
+ * is refused rather than guessed: the side-car has to hash the bytes the body binds.
+ */
+export function keccakPreimagesOf(
+  abiFunction: KeccakAbiFunction,
+  argumentPushes: readonly Uint8Array[],
+  leadingPushes = 0,
+): readonly Uint8Array[] {
+  const params = abiFunction.keccakPreimageParams ?? [];
+  if (params.length === 0) return [];
+  const values = argumentPushes.slice(leadingPushes);
+  const parameterCount = abiFunction.inputs.length;
+  if (values.length !== parameterCount) {
+    throw new PerCallEncodingError(
+      `the entry takes ${parameterCount} parameter(s) and its unlocking bytecode carries ${values.length} `
+      + 'argument push(es)',
+    );
+  }
+  return params.map((name, call) => {
+    if (name === null) {
+      throw new PerCallEncodingError(
+        `keccak256 call ${call} hashes a computed preimage, which cannot be read from the entry's arguments`,
+      );
+    }
+    const index = abiFunction.inputs.findIndex((input) => input.name === name);
+    if (index < 0) throw new PerCallEncodingError(`the entry has no parameter '${name}'`);
+    return values[parameterCount - 1 - index]!;
+  });
+}
+
+/**
+ * Builds the keccak256 compute side-cars one master co-spends, one per call in the order its body makes them.
+ *
+ * Each follows the master's recovery side-cars in the block's list, so the body reads it at the step its own count
+ * of calls names. The stateful covenant recreates the side-car at its own index, where a per-call body reads the
+ * result; the ids are namespaced by the master.
+ */
+export function buildKeccakSideCars(
+  master: string,
+  preimages: readonly Uint8Array[],
+  salt: Uint8Array = SHARED_LIBRARY_SALT,
+): RecoverySideCars {
+  const ids: string[] = [];
+  const inputs: Record<string, DraftInput> = {};
+  preimages.forEach((preimage, index) => {
+    const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sideCarUtxo('K'), true);
+    const id = `${master}/keccak-${index}`;
+    ids.push(id);
+    inputs[id] = {
+      source: sideCarSource(keccakComputeLockingBytecode(salt, true)),
+      output: sideCarRecreation(recreate),
+      unlockingBytecode: unlockingOf(unlocker),
+    };
+  });
+  return { ids, inputs };
+}

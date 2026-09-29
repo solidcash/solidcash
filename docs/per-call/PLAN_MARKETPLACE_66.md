@@ -1462,6 +1462,25 @@ risk. Take the slices in order, each with its own tests.
   for the project compile.
 - [ ] Chunk outputs per `jobEvents` append, and over 30 updates of one job.
 - [ ] VM runs per master during derivation (should be 1 with resumption, E1).
+- [x] Ladder wall time, per test and in full, recorded for every run (user direction 2026-09-29). The canonical
+  command is `yarn vitest run --config vitest.marketplace.config.ts --no-file-parallelism --reporter=verbose`,
+  whose per-test times the Log rows carry from the run's own log. Measured so far:
+
+  | Run | Titles | Vitest `Duration` | First title (`admin > transfer owner`) | Slowest next | Sum of per-test times | Median per test |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | `m1-run-1.log` (8/66, 06:01) | 66 | 367.6 s | 263.4 s | `pause/unpause` 24.2 s | 354.6 s | 0.11 s |
+  | `m1-run-2.log` (12/66, 07:53) | 66 | 1008.6 s | — (not reached the registration wall) | — | 997.1 s | 0.13 s |
+  | `m1-run-4.log` (12/66, 09:58) | 66 | 467.6 s | 312.4 s | `pause/unpause` 30.8 s | 449.9 s | 0.13 s |
+  | `m1-run-5.log` (12/66, 10:50) | 66 | 485.8 s | 323.6 s | `pause/unpause` 34.1 s | 475.1 s | 0.13 s |
+
+  What the numbers say for future runs: the first title carries the fixture's whole deployment (four contracts at
+  CREATE-predicted addresses plus two three-transaction proxy deployments with their `initialize` hops), so a run's
+  wall time is that deployment plus the titles' own work; the run-2 outlier is the state where the 48 titles each
+  retried a hop that never settled (5 attempts apiece), which is why a wall can cost minutes rather than seconds.
+  Every failed title still costs its own attempt budget, so a ladder run's duration is a rough proxy for how far the
+  fixture gets, not just for the count. The cold project compile that precedes a ladder is 13-30 s warm-cached
+  (`{SCRATCH}/ladder/compile-round*.log`); the focused per-call suites are ~15 s (`solidc`) and ~40-75 s
+  (`solidcash`, whole directory).
 
 ### 4.6 Rules
 
@@ -1483,7 +1502,8 @@ risk. Take the slices in order, each with its own tests.
   - each wall is first reduced to a small neutral test case in the focused suites, and the fix is what the Log row
     cites; today's three defects all came from compiling the real project, which is why the order is taken;
   - the project is compiled and one fixture title run per round, both captured in `{SCRATCH}`, and the Log row
-    carries the rung the fixture reached;
+    carries the rung the fixture reached, with the run's per-test and full-run times recorded in
+    `docs/per-call/probes/LADDER_TIMES.md` and summarised in 4.5 (user direction 2026-09-29);
   - I2 and I2b stay unticked until their own criteria hold (their boxes are the criteria, not the schedule), and
     each round leaves a slot for an open security item - T25, T36 and T16 today - until its test exists.
   - **Parked on 2026-09-28 (user direction: prioritise I2b hard).** The fixture's rung is recorded where it stands -

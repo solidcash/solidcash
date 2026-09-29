@@ -650,6 +650,8 @@ export interface AbiFunction {
    * serializable; absence is unknown and must retain VM-probe fallback behavior.
    */
   dynamicWriteSources?: Readonly<Record<string, ExternalCallExpression>>;
+  /** Pure, single-write handler values replayable from authenticated pre-state and call inputs. */
+  dynamicWriteRecipes?: Readonly<Record<string, ChildDeploymentValueRecipe>>;
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];

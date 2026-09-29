@@ -14,6 +14,7 @@ import {
   childStateLayoutDigest,
   validateChildDeploymentGenesisState,
   getDefaultStateValue,
+  buildChunkCommitment, splitValueIntoChunks,
 } from '@solidcash/utils';
 import type {
   AbiFunction, Artifact, ChildDeploymentValueRecipe, ExternalResultEncoding, FixedBchTransferAbi, StateLayout, StateValue,
@@ -44,6 +45,7 @@ import { canApplyRepairedNftCommitment } from '../stateful/computed-output-repai
 import { tryParseEventCommitment } from '../stateful/StateReader.js';
 import {
   createDestroyDataNftUnlocker, createMessageBusVerifierUnlocker, getDataNftAddress,
+  getDynamicChunkAddress,
   getEntryNftLockingBytecode, getMessageBusVerifierLockingBytecodeForArtifact,
 } from '../stateful/covenant-helpers.js';
 import { encodeAtomicMessageBusCallManifest, encodeAtomicMessageEnvelope } from './atomic.js';
@@ -770,6 +772,44 @@ export async function assembleAtomicComposition(
           + `failed to build its balanced block: ${error instanceof Error ? error.message : String(error)}`,
           { cause: error },
         );
+      }
+      // A straight-line dynamic write may publish an exact typed value recipe. Evaluate it against the
+      // authenticated incoming state and selected call arguments before VM preflight; the VM then validates
+      // the commitment, rather than serving as the source of a repair for a failed frame.
+      if (participant.invocations.length === 1) {
+        const invocationIndex = participant.invocations[0]!;
+        const supplied = descriptors[invocationIndex];
+        const executionArtifact = supplied.executionArtifact ?? participant.artifact;
+        const handler = executionArtifact.abi.find((entry) => entry.name === supplied.functionName);
+        if (handler?.dynamicWriteRecipes) {
+          const incomingState = await stateOf(contract) as Readonly<Record<string, FunctionArgument>>;
+          for (const [name, recipe] of Object.entries(handler.dynamicWriteRecipes)) {
+            const variable = executionArtifact.stateLayout?.variables.find((entry) => entry.name === name);
+            if (!variable?.dynamic) continue;
+            const value = evaluateChildDeploymentRecipe(
+              recipe, supplied.args, handler.inputs.map((input) => input.type),
+              artifactUsesSolidityAbi(executionArtifact), incomingState,
+            );
+            const bytes = value instanceof Uint8Array ? value
+              : typeof value === 'string' ? utf8ToBin(value) : undefined;
+            if (!bytes) continue;
+            const commitments = splitValueIntoChunks(bytes).map((chunk, index) =>
+              buildChunkCommitment(index, chunk, provider.consensusLimits?.maximumNftCommitmentBytes));
+            const chunkLock = addressToLockScript(getDynamicChunkAddress(
+              contract.inner, categories[participant.participant], name, variable.type,
+            ));
+            const slots = local.outputs.flatMap((output, index) => {
+              const lock = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+              return output.token?.category === categories[participant.participant]
+                && output.token.nft?.capability === 'mutable'
+                && binToHex(lock) === binToHex(chunkLock) ? [index] : [];
+            });
+            if (slots.length !== commitments.length) continue;
+            slots.forEach((slot, index) => {
+              local.outputs[slot]!.token!.nft!.commitment = commitments[index]!;
+            });
+          }
+        }
       }
       let transportedChunkIndex = 0;
       materializeTransportedContinuations(local, valueChunkSlots.map((slot) => slot.offset),

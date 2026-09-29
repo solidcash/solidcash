@@ -889,6 +889,33 @@ const dynamicWriteSourcesOf = (
     .map(([name, write]) => [name, write.value!]));
 };
 
+/** Publish only straight-line, single dynamic writes whose value has a fully typed pre-state recipe. */
+const dynamicWriteRecipesOf = (
+  func: FunctionDefinitionNode, contract: ContractNode | undefined,
+): Readonly<Record<string, ChildDeploymentValueRecipe>> => {
+  if (func.name === '__construct' || !func.body || !contract) return {};
+  const statements = func.body.statements ?? [];
+  const writes = statements.filter((statement): statement is StateAssignNode => statement instanceof StateAssignNode);
+  if (writes.length !== 1 || statements.some((statement) =>
+    !(statement instanceof StateAssignNode)
+    && !(statement instanceof RequireNode
+      && statement.expression instanceof BoolLiteralNode && statement.expression.value))) return {};
+  const write = writes[0];
+  const variable = contract.stateVariables.find((candidate) => candidate.name === write.name && candidate.isDynamic);
+  if (!variable || !(write.expression.type?.toString() === variable.type.toString())) return {};
+  const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const inputs = new Map(visible.map((parameter, index) => [parameter.name, index]));
+  const inputTypes = new Map(visible.map((parameter) => [parameter.name, abiTypeString(parameter.type)]));
+  const aliases = new Map<object, ChildDeploymentValueRecipe>([[variable, {
+    kind: 'state', name: variable.name, resultType: abiTypeString(variable.type),
+  }]]);
+  const definitions = new Map<string, object>([[`this.${variable.name}`, variable]]);
+  const recipe = childDeploymentValueRecipe(
+    write.expression, inputs, true, inputTypes, aliases, definitions,
+  );
+  return recipe?.resultType === abiTypeString(variable.type) ? { [variable.name]: recipe } : {};
+};
+
 const transferEffects = (
   fn: FunctionDefinitionNode, contract: ContractNode,
 ): readonly FixedBchTransferAbi[] => {
@@ -1568,6 +1595,7 @@ function buildFunctionAbiMetadata(
   interfaces: readonly InterfaceNode[] = [], compilerOptions: CompilerOptions = {},
 ): Partial<AbiFunction> {
   const dynamicWriteSources = dynamicWriteSourcesOf(func, contract);
+  const dynamicWriteRecipes = dynamicWriteRecipesOf(func, contract);
   const iterationDomains = externalCallIterationDomains(func, compilerOptions);
   const possibleSelectorTargets = (
     interfaceName: string, parameters: readonly ExpressionNode[],
@@ -2677,6 +2705,7 @@ function buildFunctionAbiMetadata(
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
     ...(Object.keys(dynamicWriteSources).length > 0 && { dynamicWriteSources }),
+    ...(Object.keys(dynamicWriteRecipes).length > 0 && { dynamicWriteRecipes }),
     ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {

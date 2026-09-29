@@ -10315,18 +10315,24 @@ function synthesizeMessageBusRoute(
     return footprint.reads.length > 0 || footprint.writes.length > 0;
   }) || valueEffectMode || tokenContainerMode
     || contract.stateVariables.length > 0 || contract.collections.length > 0;
-  const sidecarVerificationMode = graphBlockhashReads.size > 0 || eligible.some((fn) => {
-    let found = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof FunctionCallNode && [
-        GlobalFunction.KECCAK256,
-        GlobalFunction.ECRECOVER_PUBKEY,
-        GlobalFunction.ECRECOVER_P2PKH,
-        GlobalFunction.ECRECOVER_EVM,
-      ].includes(node.identifier.name as GlobalFunction)) found = true;
-    });
-    return found;
-  });
+  // Early route synthesis runs before the later recovery-closure survey sets `ecrecoverCompute`.
+  // Inspect the named closure here too: a recovery/keccak call inside a free or library helper still
+  // produces kind-6 sidecar rows, which the detached verifier must authenticate and exclude from
+  // foreign-token cardinality.
+  const sidecarVerificationMode = graphBlockhashReads.size > 0 || eligible.some((fn) =>
+    [...collectNamedFunctionClosure(fn, signatureClosureByName)].some((name) =>
+      (signatureClosureByName.get(name) ?? []).some((candidate) => {
+        let found = false;
+        walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof FunctionCallNode && [
+            GlobalFunction.KECCAK256,
+            GlobalFunction.ECRECOVER_PUBKEY,
+            GlobalFunction.ECRECOVER_P2PKH,
+            GlobalFunction.ECRECOVER_EVM,
+          ].includes(node.identifier.name as GlobalFunction)) found = true;
+        });
+        return found;
+      })));
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',

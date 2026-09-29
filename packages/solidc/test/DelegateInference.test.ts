@@ -238,11 +238,11 @@ describe('delegate inference', () => {
         return { index, instructions };
       };
 
-      // The route handler copies four declared arguments, then derives the participant owner from the route's
-      // authenticated transaction-layout relation. This checks the call edge as well as the helper body: widening
-      // only the callee frame leaves its parameters shifted even though the helper itself contains no OP_INPUTINDEX.
+      // The route handler copies four declared arguments and forwards two authenticated hidden coordinates.
+      // This checks the call edge as well as the helper body: widening only the callee frame leaves its
+      // parameters shifted even though the helper itself contains no OP_INPUTINDEX.
       const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
-        .find((candidate) => candidate.name === '__message_bus_graph_apply');
+        .find((candidate) => candidate.name === '__message_bus_handler_apply');
       expect(routedHandler).toBeDefined();
       const routedCall = findHelperInvoke(routedHandler!.bytecode);
       let routedCursor = routedCall.index - 2;
@@ -251,22 +251,29 @@ describe('delegate inference', () => {
         expect(readNumber(routedCall.instructions[routedCursor - 1])).toBeDefined();
         routedCursor -= 2;
       }
-      const routeBlockSize = artifact.messageBus!.route!.blockLayout!.blockSize;
-      expect(routedCall.instructions[routedCursor].opcode).toBe(OpcodesBCH.OP_SUB);
-      expect(readNumber(routedCall.instructions[routedCursor - 1])).toBe(BigInt(routeBlockSize));
-      expect(routedCall.instructions[routedCursor - 2].opcode).toBe(OpcodesBCH.OP_INPUTINDEX);
+      // The outlined helper receives both the row-selected recovery A coordinate and the authenticated
+      // compute-block base. Each is copied from the route's hidden frame before the four source arguments.
+      expect(routedCall.instructions[routedCursor].opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(readNumber(routedCall.instructions[routedCursor - 1])).toBeDefined();
+      expect(routedCall.instructions[routedCursor - 2].opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(readNumber(routedCall.instructions[routedCursor - 3])).toBeDefined();
 
-      // The independently compiled ABI entry invokes that same widened helper. Its compute block starts beside
-      // the active delegate executor, so the fifth hidden argument is OP_INPUTINDEX rather than a participant
-      // owner PICK. Entry-point sub-traversals must retain the contract-wide outlined-call ABI to emit it.
+      // The independently compiled ABI entry invokes the same widened helper, but derives recovery A from its
+      // own compute base. Both hidden coordinates must survive the entry-point sub-traversal's outlined-call ABI.
       const applySelector = artifact.abi.find((entry) => entry.name === 'apply')?.selector;
       expect(applySelector).toBeDefined();
       const directCall = findHelperInvoke(artifact.functionBodies?.[applySelector!]!);
-      const precedingInvoke = directCall.instructions
-        .findLastIndex((instruction, i) => i < directCall.index
-          && instruction.opcode === OpcodesBCH.OP_INVOKE);
-      expect(directCall.instructions.slice(precedingInvoke + 1, directCall.index - 1)
-        .some((instruction) => instruction.opcode === OpcodesBCH.OP_INPUTINDEX)).toBe(true);
+      let directCursor = directCall.index - 2;
+      for (let argument = 0; argument < 4; argument += 1) {
+        expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_ROLL);
+        expect(readNumber(directCall.instructions[directCursor - 1])).toBeDefined();
+        directCursor -= 2;
+      }
+      expect(directCall.instructions[directCursor].opcode).toBe(OpcodesBCH.OP_INVOKE);
+      expect(readNumber(directCall.instructions[directCursor - 1])).toBeDefined();
+      expect(directCall.instructions[directCursor - 2].opcode).toBe(OpcodesBCH.OP_ADD);
+      expect(readNumber(directCall.instructions[directCursor - 3])).toBeDefined();
+      expect(directCall.instructions[directCursor - 4].opcode).toBe(OpcodesBCH.OP_INVOKE);
     } finally {
       warn.mockRestore();
       log.mockRestore();
@@ -411,7 +418,7 @@ describe('delegate inference', () => {
         suppressWarnings: true,
       });
       const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
-        .find((candidate) => candidate.name === '__message_bus_graph_apply');
+        .find((candidate) => candidate.name === '__message_bus_entry_apply');
       expect(routedHandler).toBeDefined();
       const instructions = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
       const routeInstructions = decodeAuthenticationInstructions(hexToBin(
@@ -439,19 +446,15 @@ describe('delegate inference', () => {
       ))).toBe(true);
       const routeTrailingBase = artifact.messageBus!.route.blockLayout!.trailingBase;
       expect(routeTrailingBase).toBeDefined();
-      const routeBlockSize = artifact.messageBus!.route.blockLayout!.blockSize;
       const partialThenDynamicRead = instructions.findIndex((instruction, index) => (
-        instruction.opcode === OpcodesBCH.OP_INPUTINDEX
-        && readNumber(instructions[index + 1]) === BigInt(routeBlockSize)
-        && instructions[index + 2]?.opcode === OpcodesBCH.OP_SUB
-        && readNumber(instructions[index + 3]) === BigInt(routeTrailingBase!)
-        && instructions[index + 4]?.opcode === OpcodesBCH.OP_ADD
-        && instructions[index + 5]?.opcode === OpcodesBCH.OP_INPUTINDEX
-        && readNumber(instructions[index + 6]) === BigInt(routeBlockSize)
-        && instructions[index + 7]?.opcode === OpcodesBCH.OP_SUB
-        && instructions[index + 8]?.opcode === OpcodesBCH.OP_1
-        && instructions[index + 9]?.opcode === OpcodesBCH.OP_ADD
-        && instructions[index + 10]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
+        instruction.opcode === OpcodesBCH.OP_PICK
+        && readNumber(instructions[index + 1]) === BigInt(routeTrailingBase!)
+        && instructions[index + 2]?.opcode === OpcodesBCH.OP_ADD
+        && readNumber(instructions[index + 3]) !== undefined
+        && instructions[index + 4]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 5]?.opcode === OpcodesBCH.OP_1
+        && instructions[index + 6]?.opcode === OpcodesBCH.OP_ADD
+        && instructions[index + 7]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
       ));
       expect(partialThenDynamicRead).toBeGreaterThanOrEqual(0);
 
@@ -462,14 +465,13 @@ describe('delegate inference', () => {
         readNumber(instruction) === 32n
         && instructions[index + 1]?.opcode === OpcodesBCH.OP_SPLIT
         && instructions[index + 2]?.opcode === OpcodesBCH.OP_DROP
-        && instructions[index + 3]?.opcode === OpcodesBCH.OP_INPUTINDEX
-        && readNumber(instructions[index + 4]) === BigInt(routeBlockSize)
-        && instructions[index + 5]?.opcode === OpcodesBCH.OP_SUB
-        && instructions[index + 6]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY
-        && readNumber(instructions[index + 7]) === 32n
-        && instructions[index + 8]?.opcode === OpcodesBCH.OP_SPLIT
-        && instructions[index + 9]?.opcode === OpcodesBCH.OP_DROP
-        && instructions[index + 10]?.opcode === OpcodesBCH.OP_EQUALVERIFY
+        && readNumber(instructions[index + 3]) !== undefined
+        && instructions[index + 4]?.opcode === OpcodesBCH.OP_PICK
+        && instructions[index + 5]?.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY
+        && readNumber(instructions[index + 6]) === 32n
+        && instructions[index + 7]?.opcode === OpcodesBCH.OP_SPLIT
+        && instructions[index + 8]?.opcode === OpcodesBCH.OP_DROP
+        && instructions[index + 9]?.opcode === OpcodesBCH.OP_EQUALVERIFY
       ));
       expect(ownerBasedCategoryCheck).toBeGreaterThanOrEqual(0);
 
@@ -522,34 +524,39 @@ describe('delegate inference', () => {
       suppressWarnings: true,
     });
     const routedHandler = Object.values(artifact.debug?.invokeDebug ?? {})
-      .find((candidate) => candidate.name === '__message_bus_graph_publish');
+      .find((candidate) => candidate.name === '__message_bus_entry_publish');
     expect(routedHandler).toBeDefined();
     const instructions = decodeAuthenticationInstructions(hexToBin(routedHandler!.bytecode));
 
-    // Each sorted-write covenant builds `owner + trailingBase + counter`. The counter is handler-local, but the
-    // owner is a physical transaction identity: recover it from active-input introspection, independently of raw
-    // branch operands above the handler frame and caller operands below it.
-    const ownerReads = instructions.flatMap((instruction, index) => {
-      if (instruction.opcode !== OpcodesBCH.OP_OUTPUTBYTECODE
-        || instructions[index - 1]?.opcode !== OpcodesBCH.OP_DUP
-        || instructions[index - 2]?.opcode !== OpcodesBCH.OP_ADD
-        || instructions[index - 3]?.opcode !== OpcodesBCH.OP_PICK
-        || instructions[index - 5]?.opcode !== OpcodesBCH.OP_ADD
-        || instructions[index - 7]?.opcode !== OpcodesBCH.OP_INPUTINDEX) return [];
-      const categoryOwnerIndex = instructions.findIndex((candidate, candidateIndex) => (
-        candidateIndex > index && candidateIndex <= index + 24
-        && candidate.opcode === OpcodesBCH.OP_UTXOTOKENCATEGORY
-        && instructions[candidateIndex - 1]?.opcode === OpcodesBCH.OP_INPUTINDEX
-      ));
-      return categoryOwnerIndex < 0 ? [] : [index];
-    });
-    expect(ownerReads.length).toBeGreaterThanOrEqual(4);
-    // Reject the former `<fixed depth> OP_PICK` owner recovery at each of these write sites. Tracking a few known
-    // temporaries merely shifts the bug to the next generated-handler shape; the owner basis must be stack-free.
-    for (const outputBytecodeIndex of ownerReads) {
-      expect(instructions[outputBytecodeIndex - 7]?.opcode).toBe(OpcodesBCH.OP_INPUTINDEX);
+    // Each sorted-write covenant builds `owner + trailingBase + counter`, with the authenticated owner read
+    // from the outlined entry's hidden frame. Check every emitted output-bytecode site rather than depending on
+    // a fixed number of sites: the optimizer may merge identical transition checks.
+    const readNumber = (instruction: { opcode: number; data?: Uint8Array }): bigint | undefined => {
+      if (instruction.opcode === OpcodesBCH.OP_0) return 0n;
+      if (instruction.opcode >= OpcodesBCH.OP_1 && instruction.opcode <= OpcodesBCH.OP_16) {
+        return BigInt(instruction.opcode - OpcodesBCH.OP_1 + 1);
+      }
+      if (!instruction.data) return undefined;
+      const decoded = vmNumberToBigInt(instruction.data, { requireMinimalEncoding: false });
+      return typeof decoded === 'bigint' ? decoded : undefined;
+    };
+    const routeTrailingBase = artifact.messageBus!.route!.blockLayout!.trailingBase;
+    expect(routeTrailingBase).toBeDefined();
+    const outputBytecodeIndices = instructions.flatMap((instruction, index) =>
+      instruction.opcode === OpcodesBCH.OP_OUTPUTBYTECODE ? [index] : []);
+    expect(outputBytecodeIndices.length).toBeGreaterThanOrEqual(2);
+    for (const index of outputBytecodeIndices) {
+      expect(instructions[index - 10]?.opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(readNumber(instructions[index - 9])).toBe(BigInt(routeTrailingBase!));
+      expect(instructions[index - 8]?.opcode).toBe(OpcodesBCH.OP_ADD);
+      expect(instructions[index - 6]?.opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(instructions[index - 5]?.opcode).toBe(OpcodesBCH.OP_ADD);
+      expect(instructions[index - 3]?.opcode).toBe(OpcodesBCH.OP_PICK);
+      expect(instructions[index - 2]?.opcode).toBe(OpcodesBCH.OP_ADD);
+      expect(instructions[index - 1]?.opcode).toBe(OpcodesBCH.OP_DUP);
+      expect(instructions.slice(index - 10, index).some((part) =>
+        part.opcode === OpcodesBCH.OP_INPUTINDEX)).toBe(false);
     }
-
   });
 
   it('stays lazy when the compile cache clones the artifact', () => {

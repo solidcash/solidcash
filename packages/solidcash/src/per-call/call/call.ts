@@ -27,7 +27,8 @@
  * body; a contract with neither is refused by name. An entry that sends pays from the contract's
  * containers: each send's lock and amount are learned from the body's own pin, the containers cover what the call
  * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
- * the containers cannot cover is refused by name, as the EVM reverts it; a send on a branch is not planned yet. A
+ * the containers cannot cover is refused by name, as the EVM reverts it. A send on a branch is planned as made,
+ * and dropped when the body shows it was not: a listed send it never pinned, or a value call it never made. A
  * send to a contract is a call into its `receive()` (or its payable `fallback()`), made after the entry's own code:
  * the call resolves the recipient from the send's published recipe, finds it among `externals`, and plans the
  * frame of that body, whose containers take the value; a recipient with neither is refused by name.
@@ -291,9 +292,8 @@ interface CallEntry {
   readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
   /** True when the entry is payable, so a call to it may carry value. */
   readonly payable: boolean;
-  /** How many sends the entry makes, and whether any of them runs on a branch. */
+  /** How many sends the entry makes. */
   readonly sends: number;
-  readonly sendsConditionally: boolean;
   /** The entry's sends, in the order its code makes them. */
   readonly transfers: readonly FixedBchTransferAbi[];
 }
@@ -339,7 +339,6 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
     name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
     emits: entry.emits ?? [], payable: (entry.modifiers ?? []).includes('payable'),
     sends: entry.transferCount ?? 0,
-    sendsConditionally: (entry.transfers ?? []).some((transfer) => transfer.condition !== undefined),
     transfers: [...(entry.transfers ?? [])].sort((left, right) => left.transferIndex - right.transferIndex),
   };
 }
@@ -411,6 +410,23 @@ function rawUnlocker(lockingBytecode: Uint8Array, unlockingBytecode: Uint8Array)
 
 /** Calls an entry on a deployed per-call contract, evaluates it, and broadcasts it when every participant agrees. */
 export async function callPerCallEntry(options: PerCallCallOptions): Promise<PerCallCallResult> {
+  return callInShape(options, { listedSends: undefined, skippedPayees: new Set() });
+}
+
+/**
+ * The sends one plan of a call declares: how many listed sends, or every one the entry can make when undefined, and
+ * the contracts it pays whose value calls it leaves out, by their position among them.
+ *
+ * A send on a branch is made or not as the body decides, so the first plan declares every send and each later one
+ * drops what the body showed it did not make. Each drop shrinks the plan, so the replanning ends.
+ */
+interface SendShape {
+  readonly listedSends: number | undefined;
+  readonly skippedPayees: ReadonlySet<number>;
+}
+
+/** A call planned with the sends `shape` declares. */
+async function callInShape(options: PerCallCallOptions, shape: SendShape): Promise<PerCallCallResult> {
   const { provider, artifact, categoryId, functionName } = options;
   const stateLayout = artifact.stateLayout;
   if (stateLayout === undefined) {
@@ -431,11 +447,6 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     throw new PerCallCallError(
       `a call to the fallback() of "${artifact.contractName}" carries a value send's empty call data, so it takes no `
       + 'argument',
-    );
-  }
-  if (entry.sendsConditionally) {
-    throw new PerCallCallError(
-      `entry "${functionName}" sends on a branch its execution decides, which this call path does not plan yet`,
     );
   }
   // An entry that returns a value settles it against the frame's `retval`, exactly as a read does: the plan starts
@@ -535,7 +546,9 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     state: records.map((record, nftIndex) => parsePushdataCommitment(binToHex(record.commitment), stateLayout, nftIndex)),
   };
   const recipients = entry.transfers.map((transfer) => sendRecipient(transfer.recipientRecipe, recipientContext));
-  const payees = await Promise.all(recipients.flatMap((lock) => {
+  const listed = (lock: Uint8Array | undefined): boolean => lock === undefined || lock.length === 25;
+  const onBranch = entry.transfers.map((transfer) => transfer.condition !== undefined);
+  const payable = await Promise.all(recipients.flatMap((lock, transferPosition) => {
     if (lock === undefined || lock.length === 25) return [];
     return [(async () => {
       const found = Object.entries(options.externals ?? {}).find(([, external]) => bytesEqual(
@@ -579,11 +592,13 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           return { utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
         }),
         entryName: body.name,
+        onBranch: onBranch[transferPosition]!,
         selector: VALUE_SEND_CALL_DATA,
         segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
       };
     })()];
   }));
+  const payees = payable.filter((_payee, position) => !shape.skippedPayees.has(position));
   if (new Set(payees.map((payee) => payee.categoryId)).size !== payees.length) {
     throw new PerCallCallError(
       `entry "${functionName}" pays one contract through two calls, which would need two of its masters to take value`,
@@ -633,7 +648,9 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   // starts from a sentinel lock and amount the body's own pin fails against, and the derivation learns what it
   // computed.
   const containerLock = satoshiContainerLockingBytecode(categoryId);
-  const sendCount = recipients.filter((lock) => lock === undefined || lock.length === 25).length;
+  const sendCount = shape.listedSends ?? recipients.filter(listed).length;
+  // The listed sends no branch decides, which every run makes.
+  const unconditionalSends = recipients.filter((lock, position) => listed(lock) && !onBranch[position]).length;
   const markerIndex = layout.participantCount + emits.length;
   const sendIndices = Array.from({ length: sendCount }, (_unused, position) => markerIndex + 1 + position);
   const sendLockSentinels = sendIndices.map((_index, position) => encodeLockingBytecodeP2pkh(sha256(
@@ -993,10 +1010,36 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         learnedSends = learnedSends.map((send, index) => (index === amountPosition ? { ...send, amount } : send));
         continue;
       }
+      // The call to one contract bound where the plan put another's: the other's send is on a branch not taken.
+      // The record's target is below the address the body computed on top.
+      const passed = payees.findIndex((payee) => bytesEqual(payee.lock, reading.computed));
+      if (passed >= 0 && payees[passed]!.onBranch && payees.some((payee) => bytesEqual(payee.lock, reading.declared))) {
+        return callInShape(options, {
+          listedSends: sendCount, skippedPayees: new Set([...shape.skippedPayees, payable.indexOf(payees[passed]!)]),
+        });
+      }
       // A close on a declaration this call does not state hands nothing back: the plan is as far as it can go.
       break;
     }
-    // The run left no declaration close to read: it either converged, or refused before writing anything owed.
+    // The run left no declaration close to read. A run that made fewer sends than the plan declares stops at its
+    // count, having pinned the sends it made in order: the listed sends past them, and the contracts it paid nothing,
+    // are on branches it did not take, and the plan drops them.
+    const made = learnedSends.findIndex((send) => send.lock === undefined || send.amount === undefined);
+    const callAmounts = learnedCallAmounts;
+    const unpaid = payees.filter((_payee, index) => callAmounts[index] === undefined);
+    const listedShort = made >= unconditionalSends
+      && learnedSends.slice(made).every((send) => send.lock === undefined && send.amount === undefined);
+    const payeesShort = unpaid.length > 0 && unpaid.every((payee) => payee.onBranch)
+      && payees.slice(payees.length - unpaid.length).every((payee) => unpaid.includes(payee));
+    if (listedShort || payeesShort) {
+      return callInShape(options, {
+        listedSends: listedShort ? made : sendCount,
+        skippedPayees: new Set([
+          ...shape.skippedPayees, ...(payeesShort ? unpaid.map((payee) => payable.indexOf(payee)) : []),
+        ]),
+      });
+    }
+    // Otherwise it either converged, or refused before writing anything owed.
     settled = true;
     break;
   }

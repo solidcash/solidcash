@@ -550,6 +550,11 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   never overlap, since the output before one run would have to be the other's send or the other's container, and
   two frames of one contract do not settle alone, so they list no send. A covenant outside this convention that
   counts an output by its position alone can still count one of these sends; that attribution is its own.
+- **A send on a branch** is made only when its branch runs; otherwise it lists no output and makes no call. The
+  block lists exactly the sends made, in the order the body made them, and the call records exactly the value calls
+  made. A composer cannot tell ahead of the run which branches run, so the SDK plans every send the entry can make
+  and drops what the body shows it did not make: the listed sends past the ones it pinned, and a value call it made
+  to another contract or not at all.
 - **`address(this).balance`** is X's balance as the EVM's stands at that point of the frame: the value of the
   containers the transaction spends at X's container lock (the context contract's, in a `DELEGATE` frame), with
   the frame's `msg.value` credited and the sends the body has made so far taken out.

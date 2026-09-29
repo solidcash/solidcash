@@ -382,3 +382,131 @@ describe('a value send to a contract whose fallback() takes it', () => {
     expect(containerValue(result, tipCategory)).toBe(7_000n);
   });
 });
+
+const BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Till {'
+  + '   int public calls;'
+  + '   receive() external payable { require(true); }'
+  + '   function payIf(int amount) { this.calls = this.calls + 1; if (amount > 0) { this.transfer(msg.sender, amount); } }'
+  + '   function payCapped(int amount) {'
+  + '     require(amount < 50000);'
+  + '     this.calls = this.calls + 1;'
+  + '     if (amount > 0) { this.transfer(msg.sender, amount); }'
+  + '   }'
+  + '   function split(int first, int second) {'
+  + '     this.calls = this.calls + 1;'
+  + '     if (first > 0) { this.transfer(msg.sender, first); }'
+  + '     this.transfer(msg.sender, second);'
+  + '   }'
+  + '   function payTo(bytes to, int amount) { this.calls = this.calls + 1; if (amount > 0) { this.transfer(to, amount); } }'
+  + '   function payEither(bytes first, bytes second, int amount) {'
+  + '     this.calls = this.calls + 1;'
+  + '     if (amount > 100000) { this.transfer(first, amount); }'
+  + '     this.transfer(second, amount);'
+  + '   }'
+  + ' }'
+  + ' contract Vault {'
+  + '   int public received;'
+  + '   receive() external payable { this.received = this.received + msg.value; }'
+  + ' }'
+  + ' contract Jar {'
+  + '   int public received;'
+  + '   receive() external payable { this.received = this.received + msg.value; }'
+  + ' }';
+
+const branch = compileStringMulti(BRANCH_SOURCE, { composition: 'per-call' });
+
+describe('an entry that sends on a branch', () => {
+  it('makes the send when the branch is taken, and lists nothing when it is not', async () => {
+    const deployed = await deploy(branch.Till!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const taken = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [7_000n] });
+    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(taken, deployed.callerLock)).toBe(7_000n);
+    expect(containerValue(taken, deployed.categoryId)).toBe(13_000n);
+
+    const skipped = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [0n] });
+    expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(skipped, deployed.callerLock)).toBe(0n);
+    // No send, so no container is spent or kept.
+    expect(containerValue(skipped, deployed.categoryId)).toBe(0n);
+  });
+
+  it('reports the body\'s own refusal when it stops before any send', async () => {
+    const deployed = await deploy(branch.Till!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const refused = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'payCapped', args: [60_000n],
+    });
+    expect(refused.accepted).toBe(false);
+    expect(refused.broadcast).toBeUndefined();
+    // The control: an amount the body admits is paid.
+    const paid = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'payCapped', args: [9_000n],
+    });
+    expect(paid.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(paid, deployed.callerLock)).toBe(9_000n);
+  });
+
+  it('lists the sends made in order when an earlier one is on a branch not taken', async () => {
+    const deployed = await deploy(branch.Till!);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const one = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'split', args: [0n, 5_000n],
+    });
+    expect(one.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(one, deployed.callerLock)).toBe(5_000n);
+
+    const both = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'split', args: [3_000n, 4_000n],
+    });
+    expect(both.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidToCaller(both, deployed.callerLock)).toBe(7_000n);
+  });
+
+  it('pays a contract on a branch taken, and runs no frame of it on a branch not taken', async () => {
+    const deployed = await deploy(branch.Till!);
+    const vaultCategory = await deployBeside(deployed, branch.Vault!, '4b'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const externals = { Vault: { artifact: branch.Vault!, categoryId: vaultCategory } };
+    const to = addressOf(branch.Vault!, vaultCategory);
+
+    const taken = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'payTo', args: [to, 6_000n], externals,
+    });
+    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(taken.completed.map((frame) => frame.functionName)).toStrictEqual(['Vault.__receive()', 'Till.payTo()']);
+    expect(containerValue(taken, vaultCategory)).toBe(6_000n);
+
+    const skipped = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'payTo', args: [to, 0n], externals,
+    });
+    expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(skipped.completed.map((frame) => frame.functionName)).toStrictEqual(['Till.payTo()']);
+    expect(containerValue(skipped, vaultCategory)).toBe(0n);
+  });
+
+  it('pays the contract whose call the body made when an earlier contract\'s is on a branch not taken', async () => {
+    const deployed = await deploy(branch.Till!);
+    const firstCategory = await deployBeside(deployed, branch.Vault!, '4c'.repeat(32));
+    const secondCategory = await deployBeside(deployed, branch.Jar!, '4d'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'payEither',
+      args: [addressOf(branch.Vault!, firstCategory), addressOf(branch.Jar!, secondCategory), 8_000n],
+      externals: {
+        Vault: { artifact: branch.Vault!, categoryId: firstCategory },
+        Jar: { artifact: branch.Jar!, categoryId: secondCategory },
+      },
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Jar.__receive()', 'Till.payEither()']);
+    expect(containerValue(result, firstCategory)).toBe(0n);
+    expect(containerValue(result, secondCategory)).toBe(8_000n);
+  });
+});

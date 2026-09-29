@@ -271,9 +271,11 @@ describe('state-backed external-call expected address', () => {
     const fn = artifact.abi.find((candidate) => candidate.name === 'f');
     expect(fn?.externalCalls?.[0]?.addressStateVar).toBe('data');
     expect(fn?.externalCalls?.[0]?.addressParam).toBe('__extaddr_data');
-    // empty/20-byte HASH160 is dropped; DUP copies the locking bytecode already on stack.
-    // 76 = OP_DUP. 78 = OP_OVER would copy the master/anchor index underneath.
-    expect(artifact.bytecode.replace(/\s+/g, '')).toContain('01149c9b63757668');
+    // The 20-byte identity path projects the co-spent master's locking bytecode; the empty legacy sentinel
+    // duplicates that already-authenticated bytecode. Neither path copies an unrelated master/anchor index.
+    const bytecode = artifact.bytecode.replace(/\s+/g, '');
+    expect(bytecode).toContain('01149c637c82008763');
+    expect(bytecode).toContain('77009c63757668');
   });
 });
 
@@ -374,7 +376,7 @@ describe('inactive conditional external-call identity', () => {
     });
   });
 
-  it('does not publish a branch predicate containing an unsupported expression', () => {
+  it('publishes a replayable ABI-decoded branch predicate', () => {
     const artifact = compileString(`${IFACE}
       contract C(IERC20 token) {
         function f(address to, sig s, pubkey pk) {
@@ -385,7 +387,11 @@ describe('inactive conditional external-call identity', () => {
       }`, { messageBus: true });
     const calls = artifact.abi.find((candidate) => candidate.name === 'f')?.externalCalls ?? [];
     expect(calls).toHaveLength(1);
-    expect(calls[0].condition).toBeUndefined();
+    expect(calls[0].condition).toEqual({
+      kind: 'abiDecode',
+      expression: { kind: 'literal', type: 'bytes1', value: '01' },
+      fields: ['bool'],
+    });
   });
 });
 

@@ -22,8 +22,9 @@
  * result.
  *
  * What is not covered: an entry that calls another contract (the plan names no callee frames), and a returning
- * entry reached through a proxy hop, whose frame records no `retval` for the implementation frame it delegates
- * into (that hop is `callPerCallProxyEntry`, which the handle routes to).
+ * entry reached through a proxy hop whose forwarded call records no result — the generated closure shape forwards
+ * with a bare `delegatecall(input)` and drops the result, so the hop cannot express the value in that call record
+ * (a proxy whose fallback carries the delegated result does carry it; that hop is `callPerCallProxyEntry`).
  */
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';

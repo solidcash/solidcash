@@ -31,7 +31,8 @@
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import {
-  FrameKind, bytesEqual, bytesToHex, validatorRedeemScript, type Artifact, type RecordEntry, type StateValue,
+  FrameKind, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
+  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
@@ -44,8 +45,8 @@ import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/So
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
-  createComposedDerivationHost, deriveComposition, describeInnermost, layoutTransaction, participant,
-  reportCompositionRefusal, requireLearnedViews,
+  PerCallComposerError, createComposedDerivationHost, deriveComposition, describeInnermost, layoutTransaction,
+  participant, reportCompositionRefusal, requireLearnedViews,
   type CompositionDraft, type CompositionDraftPlan, type ContractBlock, type DraftInput, type DraftMaster,
   type DraftSourceOutput, type FrameRequest, type ShippedVmProgram,
 } from '../composer/index.js';
@@ -55,6 +56,7 @@ import { deployMaster, type DeployedMaster } from '../deploy/material.js';
 import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
+import { decodeReturnValues } from '../read/index.js';
 import { PerCallProxyDeployError } from './errors.js';
 import { hopEntryWrites, mappingHeadCollection, mappingNodeSlot, type HopEntryWrites } from './entry-writes.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
@@ -145,6 +147,12 @@ export interface PerCallProxyDeployment {
     readonly writtenRecordCommitment: Uint8Array;
     /** The payload of each event the entry emitted, in emit order: what the entry's own body computed. */
     readonly writtenEventCommitments: readonly Uint8Array[];
+    /** The bytes the implementation frame recorded in its `retval`: what a returning entry's own body computed. */
+    readonly retval: Uint8Array;
+    /** The entry's returned values, decoded with the shipped decoder, in declaration order. */
+    readonly values: readonly StateValue[];
+    /** The first returned value, for the common single-value `initialize`. */
+    readonly value: StateValue;
     /**
      * The provider's receipt for the hop, present only when the caller supplied `callerFunding`.
      *
@@ -199,6 +207,23 @@ function selectorOf(artifact: Artifact, functionName: string): Uint8Array {
 /** The identity the compiler's stop-site table keys an entry on. */
 function entryName(artifact: Artifact, functionName: string): string {
   return `${artifact.contractName}.${functionName}()`;
+}
+
+/**
+ * The candidate a hop's implementation frame carries for its `retval` before the entry's own return is known.
+ *
+ * An entry that returns a value compares the blob its own `return` built against the frame's `retval` slot, so the
+ * slot has to hold something for the run to reach that comparison. Domain-separating it by the implementation and
+ * the entry keeps it a value the body never produces and distinct from every record and event candidate the same
+ * plan carries, which is what lets the failing close name the answer.
+ */
+function hopRetvalPlaceholder(contract: string, functionName: string): Uint8Array {
+  return sha256(new TextEncoder().encode(`per-call hop retval\u0000${contract}\u0000${functionName}`));
+}
+
+/** The struct definitions a hop decodes an implementation entry's returned values against. */
+function structDefinitionsOf(artifact: Artifact): readonly StructDefinitionInfo[] | undefined {
+  return artifact.stateLayout?.structs ?? artifact.structs;
 }
 
 /**
@@ -451,6 +476,14 @@ export async function deployPerCallProxy(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordLockingBytecode = stateRecordLockingBytecode(options.proxyDeploy.fundingUtxo.txid);
   const recordAmount = options.proxyDeploy.dataNftAmount ?? 1200n;
+  // The `initialize` entry's own answer, when it returns one: the plan states the candidate its return comparison
+  // fails against and the derivation learns the bytes its body computed, exactly as a later call does.
+  const initializeEntry = implementationArtifact.abi.find(
+    (candidate) => candidate.name === options.initialize.functionName,
+  );
+  const retvalPlaceholder = (initializeEntry?.outputs ?? []).length > 0
+    ? hopRetvalPlaceholder(implementationArtifact.contractName, options.initialize.functionName)
+    : undefined;
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -462,12 +495,14 @@ export async function deployPerCallProxy(
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
+    ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
-    planFor: (writtenCommitments, entryWriteViews, eventCommitments) => buildHopPlan({
+    planFor: (writtenCommitments, entryWriteViews, eventCommitments, implementationRetval) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
       ...(entryWrites === undefined ? {} : { entryWrites }),
       entryWriteViews,
+      implementationRetval,
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
       ),
@@ -482,8 +517,15 @@ export async function deployPerCallProxy(
     }),
   });
   const {
-    draft, program, verdicts, accepted, writtenCommitments, writtenEventCommitments, completed: completedFrames,
+    draft, program, verdicts, accepted, writtenCommitments, writtenEventCommitments, retval,
+    completed: completedFrames,
   } = settled;
+  const values = retvalPlaceholder === undefined
+    ? []
+    : decodeReturnValues(
+      retval, initializeEntry!.outputs ?? [], structDefinitionsOf(implementationArtifact),
+      initializeEntry!.resultEncoding, implementationArtifact.enums,
+    );
 
   // The hop is the derived transaction until the caller offers its own coin; then it is rebuilt on the geneses'
   // outpoints, signed and broadcast.
@@ -516,6 +558,8 @@ export async function deployPerCallProxy(
       writtenRecordCommitment: writtenCommitments[0]!,
       // The payload of every event the entry emitted, in emit order, which the entry's own body computed.
       writtenEventCommitments,
+      // The value the entry returned, which its own body computed, decoded the way a direct call decodes one.
+      retval, values, value: values[0] ?? 0n,
       ...(broadcast === undefined ? {} : { broadcast }),
     },
   };
@@ -543,6 +587,8 @@ interface SettledHop {
   readonly writtenCommitments: readonly Uint8Array[];
   /** The payload of every event the entry emits, in emit order, which the entry's own body computed. */
   readonly writtenEventCommitments: readonly Uint8Array[];
+  /** The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed. */
+  readonly retval: Uint8Array;
 }
 
 /** Everything one attempt at a hop reads, and how to rebuild the plan once a record's computed value is learned. */
@@ -560,13 +606,22 @@ interface SettleHopOptions {
   readonly extraWrites: readonly Uint8Array[];
   /** One placeholder per event the entry emits, in emit order, which the derivation replaces as it learns. */
   readonly eventCommitments: readonly Uint8Array[];
+  /**
+   * The candidate the implementation frame's `retval` starts from, or absent when the entry returns nothing.
+   *
+   * A returning entry compares the blob its own `return` built against this slot, so the failing close leaves the
+   * slot beside that blob and the derivation learns the value the entry computed, exactly as the direct call path
+   * does. A void entry requires the slot empty, which is what `absent` leaves it.
+   */
+  readonly retvalPlaceholder?: Uint8Array;
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
-  /** The plan for a given set of per-record, per-entry-write and per-event candidate end values. */
+  /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
   readonly planFor: (
     writtenCommitments: readonly Uint8Array[],
     entryWriteViews: readonly Uint8Array[],
     eventCommitments: readonly Uint8Array[],
+    implementationRetval: Uint8Array,
   ) => CompositionDraftPlan;
 }
 
@@ -574,24 +629,29 @@ interface SettleHopOptions {
  * Derives a delegate hop and learns what its entry computed.
  *
  * The state the entry leaves is not something the caller can state in advance — the entry computes it — so the plan
- * carries a candidate per record and per event and the machine is asked whether the entry's own frame accepted it:
- * the entry closes its record against the declaration the plan wrote and compares each event payload against its
- * output's commitment, so a failed comparison leaves both the declaration and the computed value on the stack. Each
- * attempt rebuilds the plan with the value that was read, so a writing or emitting entry converges in one step per
- * value it computes and a read-only entry is accepted on the first attempt.
+ * carries a candidate per record, per event and for the implementation frame's `retval`, and the machine is asked
+ * whether the entry's own frame accepted it: the entry closes its record against the declaration the plan wrote,
+ * compares each event payload against its output's commitment and compares what its own `return` built against the
+ * `retval` slot, so a failed comparison leaves both the declaration and the computed value on the stack. Each
+ * attempt rebuilds the plan with the value that was read, so a writing, emitting or returning entry converges in one
+ * step per value it computes and a read-only entry is accepted on the first attempt.
  */
 async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   const { vm, proxyArtifact, implementationArtifact } = options;
   let writtenCommitments = [...options.recordCommitments];
   let writtenExtras = [...options.extraWrites];
   let writtenEvents = [...options.eventCommitments];
+  let learnedRetval = options.retvalPlaceholder;
   // One step per value the entry computes, plus the attempt that is accepted once every value is stated.
   const maximumAttempts = Math.max(
-    MAXIMUM_HOP_ATTEMPTS, writtenCommitments.length + writtenExtras.length + writtenEvents.length + 1,
+    MAXIMUM_HOP_ATTEMPTS,
+    writtenCommitments.length + writtenExtras.length + writtenEvents.length
+      + (options.retvalPlaceholder === undefined ? 0 : 1) + 1,
   );
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = options.planFor(writtenCommitments, writtenExtras, writtenEvents);
+    const plan = options.planFor(
+      writtenCommitments, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0));
     const candidate = createComposedDerivationHost({
       vm, artifacts: [proxyArtifact, implementationArtifact], plan,
     });
@@ -608,6 +668,20 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     const reading = readComputedDeclaration({
       vm, program: implementationProgram, maximumCommitmentBytes: options.maximumCommitmentBytes,
     });
+    // A returning entry compares what its own `return` built against the frame's `retval` slot, which leaves the
+    // slot as the operand below that blob: the plan's candidate sits where the close's `computed` operand is, and
+    // the blob the body computed is the `declared` one. A record or event close leaves them the other way round, so
+    // the `retval` is read here before the candidates below are matched.
+    if (reading.ok && options.retvalPlaceholder !== undefined
+      && bytesEqual(reading.computed, options.retvalPlaceholder)) {
+      learnedRetval = Uint8Array.from(reading.declared);
+      continue;
+    }
+    if (reading.ok && options.retvalPlaceholder !== undefined
+      && bytesEqual(reading.declared, options.retvalPlaceholder)) {
+      learnedRetval = Uint8Array.from(reading.computed);
+      continue;
+    }
     // The declaration the failing comparison closed against is the candidate one of the records, of the entry's
     // own computed writes, or of the events carries, and that is what names the value the entry computed: the plan
     // states a candidate for every one of them and the body compares them in the order the frame declares them, so
@@ -654,7 +728,25 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     );
   }
   const { host, draft } = composed;
-  const derived = deriveComposition([options.root], host);
+  // The entry's frame accepted against every value the plan learned, so a stall here is the hop's own shape: the
+  // proxy's forwarded call records no result of its own, so it binds the call record's result to empty while the
+  // implementation frame's `retval` is the value its body computed, and the two cannot both hold. That shape cannot
+  // carry a returning entry, and it is named as such rather than reported as an anonymous stalled derivation.
+  let derived: ReturnType<typeof deriveComposition>;
+  try {
+    derived = deriveComposition([options.root], host);
+  } catch (error) {
+    if (options.retvalPlaceholder !== undefined && error instanceof PerCallComposerError
+      && error.code === 'PER_CALL_DERIVATION_STALLED') {
+      throw new PerCallProxyDeployError(
+        `the implementation's ${options.entryLabel} returns a value, which a call through this proxy hop does not `
+        + 'carry: the proxy\'s fallback records the delegated call without a result, so the hop binds that record\'s '
+        + 'result to empty while the implementation frame records the value it computed. A proxy whose fallback '
+        + `carries the delegated call's result does carry it. (${error.message})`,
+      );
+    }
+    throw error;
+  }
   requireLearnedViews(draft);
 
   const program = draft.programFor(PROXY_MASTER_ID);
@@ -672,6 +764,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     draft, program, completed: derived.completed,
     verdicts, accepted: verdicts.every((verdict) => verdict.accepted),
     writtenCommitments, writtenEventCommitments: writtenEvents,
+    retval: learnedRetval ?? new Uint8Array(0),
   };
 }
 
@@ -693,6 +786,8 @@ interface HopPlanOptions {
   readonly writtenCommitments: readonly Uint8Array[];
   /** The end commitment learned for each value-dependent mapping node, in the entry's learning order. */
   readonly entryWriteViews: readonly Uint8Array[];
+  /** The bytes the implementation frame's `retval` carries: what a returning entry computed, or its placeholder. */
+  readonly implementationRetval: Uint8Array;
   /** The lock the records sit at: the data-NFT covenant the proxy's category derives. */
   readonly recordLockingBytecode: Uint8Array;
   /** The proxy's category as hex, which the records' write path names the authorizing master by. */
@@ -865,7 +960,9 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     enteredBy: PROXY_MASTER_ID,
     origin: USER_ID,
     calls: [],
-    retval: new Uint8Array(0),
+    // The value the entry returns, which the plan stated and the derivation learned; empty for a void entry, which
+    // the body requires the slot to be.
+    retval: options.implementationRetval,
     // A delegate frame runs on the caller's records, so the records it reads and writes are the caller's, which
     // the segment declares: the entry's write is the view the proxy's later segment continues from.
     segments: implementationSegments,
@@ -1142,11 +1239,15 @@ export interface PerCallProxyCallResult {
   readonly writtenCommitments: readonly Uint8Array[];
   /** The payload of each event the entry emitted, in emit order. */
   readonly writtenEventCommitments: readonly Uint8Array[];
-  /** Empty: the hop records no `retval` for the implementation frame it delegates into, so it carries no return. */
+  /**
+   * The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed.
+   *
+   * Empty for an entry that returns nothing: its body requires the frame to have recorded nothing.
+   */
   readonly retval: Uint8Array;
-  /** Empty: no value an implementation entry returns is handed back through the hop. */
+  /** The entry's returned values, decoded with the shipped decoder, in declaration order. Empty for a void entry. */
   readonly values: readonly StateValue[];
-  /** Zero: no value an implementation entry returns is handed back through the hop. */
+  /** The first returned value, for the common single-value call; zero when the entry returns nothing. */
   readonly value: StateValue;
   readonly broadcast?: TransactionDetails;
 }
@@ -1159,6 +1260,12 @@ export interface PerCallProxyCallResult {
  * way a deployment's first call is - the same masters, the same records, the same delegate edge - so nothing here
  * assumes an entry the deployment wrote: the plan leaves every record's end commitment unstated, the derivation
  * learns what the entry's own body computed, and the machine is asked about every participant.
+ *
+ * An entry that returns a value is carried the way a direct call carries one: the plan starts the implementation
+ * frame's `retval` from a placeholder its own `return` comparison fails against, the derivation reads the blob the
+ * body computed back out of that close, and the call result reports it decoded through the shipped decoder. The
+ * value travels in the caller's call record, so the proxy's fallback has to carry the delegated call's result; a
+ * proxy whose fallback drops it (the generated closure shape) is refused by name rather than losing the value.
  */
 export async function callPerCallProxyEntry(
   options: PerCallProxyCallOptions,
@@ -1172,16 +1279,13 @@ export async function callPerCallProxyEntry(
       `implementation "${implementationArtifact.contractName}" publishes no entry "${options.functionName}"`,
     );
   }
-  // The hop delegates into the implementation frame, whose `retval` no stage records: the proxy's own frame settles
-  // the records the entry wrote, never the value it returned, so a returning entry cannot be handed back here.
-  const returned = implementationArtifact.abi
-    .find((entry) => entry.name === options.functionName)?.outputs ?? [];
-  if (returned.length > 0) {
-    throw new PerCallProxyDeployError(
-      `entry "${options.functionName}" returns ${returned.length} value(s), which a call through the proxy hop does `
-      + 'not carry: the hop records no `retval` for the implementation frame it delegates into',
-    );
-  }
+  // A returning entry's own `return` compares the blob it built against the implementation frame's `retval`, so the
+  // plan states a candidate there and the derivation learns the value the entry computed; a void entry requires the
+  // slot empty, which the shared hop states by leaving the placeholder out.
+  const entryRow = implementationArtifact.abi.find((entry) => entry.name === options.functionName)!;
+  const retvalPlaceholder = (entryRow.outputs ?? []).length > 0
+    ? hopRetvalPlaceholder(implementationArtifact.contractName, options.functionName)
+    : undefined;
   requireServedEntry(implementationArtifact, options.functionName,
     `the implementation's ${entryLabelFor(options.functionName)}`);
   requireServedEntry(proxyArtifact, '__fallback', "the proxy's fallback");
@@ -1258,12 +1362,14 @@ export async function callPerCallProxyEntry(
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
+    ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
-    planFor: (writtenCommitments, entryWriteViews, eventCommitments) => buildHopPlan({
+    planFor: (writtenCommitments, entryWriteViews, eventCommitments, implementationRetval) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(entryWrites === undefined ? {} : { entryWrites }),
       entryWriteViews,
+      implementationRetval,
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,
@@ -1293,11 +1399,19 @@ export async function callPerCallProxyEntry(
     draft: settled.draft,
   });
 
+  const retval = settled.retval;
+  const values = retvalPlaceholder === undefined
+    ? []
+    : decodeReturnValues(
+      retval, entryRow.outputs ?? [], structDefinitionsOf(implementationArtifact),
+      entryRow.resultEncoding, implementationArtifact.enums,
+    );
+
   return {
     transaction: settled.program.transaction, sourceOutputs: settled.program.sourceOutputs,
     draft: settled.draft, completed: settled.completed, verdicts: settled.verdicts,
     accepted: settled.accepted, writtenCommitments: settled.writtenCommitments,
     writtenEventCommitments: settled.writtenEventCommitments,
-    retval: new Uint8Array(0), values: [], value: 0n, broadcast,
+    retval, values, value: values[0] ?? 0n, broadcast,
   };
 }

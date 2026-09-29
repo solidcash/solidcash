@@ -38,11 +38,33 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '     this.total = 5;'
   + '   }'
   + '   function add(int by) { this.total = this.total + by; require(this.total >= 0); }'
-  + '   function peek() view returns (int) { return this.total; }'
+  + '   function bump(int by) returns (int) {'
+  + '     this.total = this.total + by;'
+  + '     require(this.total >= 0);'
+  + '     return by * 3;'
+  + '   }'
   + ' }';
 
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
+
+// A proxy whose fallback *carries* the delegated call's result. The forwarded call's result is what the
+// implementation's entry computed, so a fallback that binds it lets the hop record a returning entry's value in the
+// call record. The generated closure shape — a bare `this.implementation.delegatecall(input)` that drops the
+// result — records no result, and the hop has no way to express the value through that record.
+const PROPAGATING_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract PropagatingProxy {'
+  + '   address public implementation;'
+  + '   uint public initialized;'
+  + '   int public total;'
+  + '   fallback(bytes input) external {'
+  + '     (bool ok, bytes returned) = this.implementation.delegatecall(input);'
+  + '     require(ok);'
+  + '     require(returned.length >= 0);'
+  + '   }'
+  + ' }';
+const propagatingProxy = compileStringMulti(
+  PROPAGATING_PROXY_SOURCE, { composition: 'per-call' }).PropagatingProxy!;
 
 /** The commitment the shipped encoder materializes from one state of a layout. */
 function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
@@ -61,7 +83,11 @@ function implementationAddress(): Uint8Array {
 }
 
 /** A deployment funded from the deployer's own P2PKH lock, plus two coins a caller can enter a hop with. */
-async function deployedWithCallerCoins(network: MockNetworkProvider): Promise<{
+async function deployedWithCallerCoins(
+  network: MockNetworkProvider,
+  proxyArtifact: typeof impl = buildProxyArtifact(impl),
+): Promise<{
+  readonly proxyArtifact: typeof impl;
   readonly proxyCategoryId: string;
   readonly implementationCategoryId: string;
   readonly deployerLock: Uint8Array;
@@ -88,6 +114,7 @@ async function deployedWithCallerCoins(network: MockNetworkProvider): Promise<{
   const deployment = await deployPerCallProxy({
     provider: network,
     implementationArtifact: impl,
+    proxyArtifact,
     implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress: source.address },
     proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress: source.address },
     initialize: { functionName: 'initialize', args: [deployerLock] },
@@ -97,6 +124,7 @@ async function deployedWithCallerCoins(network: MockNetworkProvider): Promise<{
   });
   expect(deployment.initialize.broadcast).toBeDefined();
   return {
+    proxyArtifact,
     proxyCategoryId: deployment.proxy.categoryId,
     implementationCategoryId: deployment.implementation.categoryId,
     deployerLock, changeAddress: source.address, hopCoin, callCoin, funder: callerFunder,
@@ -171,25 +199,92 @@ describe('a call into a per-call implementation through its proxy', () => {
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
   });
 
-  it('refuses a returning entry, naming the fact the hop lacks: it records no implementation `retval`', async () => {
-    // The hop delegates into the implementation frame, whose `retval` no stage records, so a value an entry returns
-    // cannot be handed back through this call; the refusal names that rather than losing the value silently.
+  it('carries the value the implementation entry returned, decoded the way a direct call decodes one', async () => {
+    // The hop delegates into the implementation frame, so the value a returning entry computes is the frame's own
+    // `retval`, carried in the witness of the implementation input. `bump` returns `by * 3`, which is not a field of
+    // any record, so only the entry's own answer explains the value the call reports.
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network);
+    const funded = await deployedWithCallerCoins(network, propagatingProxy);
 
-    await expect(callPerCallProxyEntry({
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: impl,
-      proxyArtifact: buildProxyArtifact(impl),
+      proxyArtifact: funded.proxyArtifact,
       proxyCategoryId: funded.proxyCategoryId,
       implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'peek',
-      args: [],
+      functionName: 'bump',
+      args: [4n],
       callerUtxo: funded.callCoin,
       callerLockingBytecode: funded.deployerLock,
       funder: funded.funder,
       changeAddress: funded.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(/records no `retval` for the implementation frame/);
+    });
+
+    expect(result.completed.map((frame) => frame.functionName))
+      .toStrictEqual([`${impl.contractName}.bump()`, `${propagatingProxy.contractName}.__fallback()`]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.values).toStrictEqual([12n]);
+    expect(result.value).toBe(12n);
+    expect(result.retval.length).toBeGreaterThan(0);
+    // The record still carries the write the entry computed, which is not the value it returned.
+    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
+      implementation: implementationAddress(), initialized: 1n, total: 9n,
+    })));
+  });
+
+  it('refuses a returning entry through a proxy whose fallback records no result, naming that shape', async () => {
+    // The generated closure shape forwards with a bare `delegatecall(input)`, so the caller's own program binds the
+    // call record's result to empty while the implementation frame records the value it computed; the two cannot
+    // both hold. The refusal names the proxy shape rather than the value being lost silently.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoins(network);
+    const before = await recordState(network, funded.proxyCategoryId);
+
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: funded.proxyArtifact,
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'bump',
+      args: [4n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(/returns a value, which a call through this proxy hop does not carry/);
+
+    expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
+  });
+
+  it('reports no value for a non-returning entry, and still writes what the entry computed', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoins(network);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: buildProxyArtifact(impl),
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'add',
+      args: [4n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.values).toStrictEqual([]);
+    expect(result.retval).toStrictEqual(new Uint8Array(0));
+    expect(result.value).toBe(0n);
+    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
+      implementation: implementationAddress(), initialized: 1n, total: 9n,
+    })));
   });
 });

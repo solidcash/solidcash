@@ -9,10 +9,11 @@
  *
  * What this surface covers today: a single contract's entry, entered by a signer, with no external calls. A writing
  * entry that returns a value is carried, and the decoded value is on the call result (`PerCallCallResult.values`); an
- * entry reached through the proxy hop that returns a value is refused, because no stage records the implementation
- * frame's `retval`. A read-only entry reached through the proxy hop is read at the proxy's category, where the
- * implementation's delegate frame finds the records it runs on. A call's fluent modifiers (a time lock, an age
- * lock, an extra output) have no per-call equivalent here yet and are not aliased; the entry's own arguments are
+ * entry reached through the proxy hop is carried the same way when the proxy's forwarded call records a result (a
+ * fallback that consumes the delegated result), and refused by name for the generated closure shape, whose bare
+ * `delegatecall(input)` drops it. A read-only entry reached through the proxy hop is read at the proxy's category,
+ * where the implementation's delegate frame finds the records it runs on. A call's fluent modifiers (a time lock, an
+ * age lock, an extra output) have no per-call equivalent here yet and are not aliased; the entry's own arguments are
  * the whole of what it takes.
  */
 
@@ -85,8 +86,9 @@ export class PerCallFunctionCall {
     }
     const callerUtxo = await callerCoin(provider, signer);
     if (proxyImplementationCategoryId !== undefined) {
-      // The hop delegates into the implementation frame, whose `retval` no stage records, so a returning entry is
-      // refused by `callPerCallProxyEntry` rather than silently losing the value it computed.
+      // The hop delegates into the implementation frame: a returning entry's value is recorded in that frame's
+      // `retval` and reported back through the proxy hop, or refused by name when the proxy's forwarded call
+      // records no result for it to travel in.
       return callPerCallProxyEntry({
         provider,
         implementationArtifact: artifact,

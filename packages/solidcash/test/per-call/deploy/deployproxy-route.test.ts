@@ -4,7 +4,7 @@ import { COMPOSITION_LIMITS } from '../../../../solidc/test/per-call/machine.js'
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
   MockNetworkProvider, Signer, getContractFactory, deployProxy, ProxyContract,
-  type PerCallArtifact, type PerCallProxyDeployment,
+  type PerCallArtifact, type PerCallProxyHandle,
 } from '../../../src/index.js';
 import { deployMaster } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact } from '../../../src/per-call/proxy/index.js';
@@ -16,9 +16,10 @@ import { VALIDATOR_PROGRAM } from '../shapes/harness.js';
  * A per-call artifact is a master program, not a direct-convention contract: its entries read their frame from a
  * witness block, and it runs behind the fallback-only proxy the convention compiles. The direct builder therefore
  * has nothing to spend, and `deployProxy` routes the whole deployment - both geneses and the `initialize` hop -
- * through the per-call path, generating the proxy from the implementation's own declaration. What it returns
- * describes that shape: the proxy's category and address, the implementation it forwards to, the derived hop and
- * the machine's verdict on every participant.
+ * through the per-call path, generating the proxy from the implementation's own declaration. What it returns is
+ * the contract handle, whose bare names are the implementation's entries, with the deployment's own record nested
+ * under it: the proxy's category and address, the implementation it forwards to, the derived hop and the machine's
+ * verdict on every participant.
  *
  * The direct control below pins that a direct-convention artifact is unaffected and still returns a `ProxyContract`.
  */
@@ -64,23 +65,44 @@ describe('deployProxy with a per-call implementation', () => {
     const signer = await fundedSigner(network, 0x51);
     const deployerLock = signer.getLockingBytecode();
 
-    const routed: PerCallProxyDeployment = await deployProxy(
+    const routed: PerCallProxyHandle = await deployProxy(
+      getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [deployerLock],
+    );
+    const deployment = routed.proxyDeployment;
+
+    // The handle names the deployed proxy: its category and the address its masters and records sit under.
+    expect(deployment.proxy.categoryId).toMatch(/^[0-9a-f]{64}$/);
+    const proxyArtifact = buildProxyArtifact(artifacts.Impl!);
+    const proxyMaster = deployMaster(proxyArtifact, hexToBin(deployment.proxy.categoryId), VALIDATOR_PROGRAM);
+    expect([...deployment.proxy.address]).toStrictEqual([...proxyMaster.address]);
+    expect(deployment.implementation.categoryId).toMatch(/^[0-9a-f]{64}$/);
+
+    // The initialize hop ran through the proxy: the implementation frame first, then the proxy that forwarded.
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', `${proxyArtifact.contractName}.__fallback()`]);
+    // Every convention participant - both masters, the validator and the proxy's record - was accepted.
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+  });
+
+  it('keeps the implementation entry callable beside the deployment record', async () => {
+    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
+    const network = provider();
+    const signer = await fundedSigner(network, 0x55);
+    const deployerLock = signer.getLockingBytecode();
+
+    const routed: PerCallProxyHandle = await deployProxy(
       getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [deployerLock],
     );
 
-    // The handle names the deployed proxy: its category and the address its masters and records sit under.
-    expect(routed.proxy.categoryId).toMatch(/^[0-9a-f]{64}$/);
-    const proxyArtifact = buildProxyArtifact(artifacts.Impl!);
-    const proxyMaster = deployMaster(proxyArtifact, hexToBin(routed.proxy.categoryId), VALIDATOR_PROGRAM);
-    expect([...routed.proxy.address]).toStrictEqual([...proxyMaster.address]);
-    expect(routed.implementation.categoryId).toMatch(/^[0-9a-f]{64}$/);
+    // `initialize` names the implementation's entry, as it does for a direct-convention deploy; the deployment's
+    // own record of the hop sits beside the handle rather than over that name.
+    const handle = routed as unknown as { initialize: (arg: Uint8Array) => Promise<unknown> };
+    expect(typeof handle.initialize).toBe('function');
+    expect(routed.proxyDeployment.initialize.accepted).toBe(true);
 
-    // The initialize hop ran through the proxy: the implementation frame first, then the proxy that forwarded.
-    expect(routed.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', `${proxyArtifact.contractName}.__fallback()`]);
-    // Every convention participant - both masters, the validator and the proxy's record - was accepted.
-    expect(routed.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(routed.initialize.accepted).toBe(true);
+    // Re-entering the initializer is the entry's own guard refusing, so nothing is broadcast.
+    await expect(handle.initialize(deployerLock)).rejects.toThrow(/initialize/);
   });
 
   // The written record keeping the implementation's address is the deployment's own property, asserted in

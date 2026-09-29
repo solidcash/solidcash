@@ -668,6 +668,19 @@ export type PerCallArtifact = Artifact & { composition: { convention: 'per-call'
 /** The per-call deployment `deployProxy` returns for a per-call implementation. */
 export type { PerCallProxyDeployment };
 
+/**
+ * The handle a `deployProxy` of a per-call implementation returns: the implementation's entries addressed and held
+ * by the deployed proxy, with the deployment's own record nested as `proxyDeployment`.
+ *
+ * A bare name resolves to the implementation's entry of that name, as it does for a direct-convention deploy, so
+ * the record is not spread over the handle: an implementation that declares `initialize` keeps that name callable.
+ */
+export type PerCallProxyHandle = ConnectedStatefulContract<Artifact> & {
+  readonly proxyDeployment: PerCallProxyDeployment;
+  deploymentTransaction(): ReturnType<DeployedContract['deploymentTransaction']>;
+  waitForDeployment(): Promise<unknown>;
+};
+
 /** One genesis's funding: the caller's override, or a fresh vout-0 coin the Signer fans out and pays. */
 async function perCallGenesisHalf(
   overrides: DeployContractOptions | undefined,
@@ -697,7 +710,7 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
   factory: ContractFactory<TImpl>,
   initialState: ProxyInitialState | undefined,
   options: DeployProxyOptions,
-): Promise<PerCallProxyDeployment & ConnectedStatefulContract<Artifact>> {
+): Promise<PerCallProxyHandle> {
   const implementationArtifact = factory.artifact;
   const runner = options.runner ?? factory.runner;
   const signer = runner instanceof Signer ? runner : undefined;
@@ -756,18 +769,18 @@ async function deployPerCallProxyThroughFactory<TImpl extends Artifact>(
     implementationArtifact, signer, deployment.proxy.categoryId, deployment.implementation.categoryId,
     deployment.proxy.address,
   );
-  // The deployment is the handle a suite calls through, with the deployment's own record attached: the proxy and
-  // the implementation it forwards to, the derived hop, and the ethers-style accessors a deploy hands back.
+  // The handle is the deployed contract a suite calls through, and the deployment's own record sits beside it as
+  // `proxyDeployment`: a bare name on the handle belongs to the implementation's entries, so the record is nested
+  // rather than spread over names an entry can also claim (an implementation with its own `initialize` keeps the
+  // callable one).
   return Object.assign(handle as unknown as Record<string, unknown>, {
-    implementation: deployment.implementation,
-    proxy: deployment.proxy,
-    initialize: deployment.initialize,
+    proxyDeployment: deployment,
     deploymentTransaction: () => deployment.proxy.tx,
     waitForDeployment: async (): Promise<unknown> => {
       await deployment.initialize.broadcast?.wait?.();
       return handle;
     },
-  }) as unknown as PerCallProxyDeployment & ConnectedStatefulContract<Artifact>;
+  }) as unknown as PerCallProxyHandle;
 }
 
 /**
@@ -827,14 +840,15 @@ async function perCallProxyHandle(
  * because the direct builder below - implementation beside a proxy whose data NFTs sit at a category-derived
  * address, one `initialize` forwarded through the pinned delegatecall - has nothing to spend for a master program.
  * That route is a different three-transaction shape (both geneses and an `initialize` hop) and its result is a
- * `PerCallProxyDeployment`, not a `ProxyContract`: it reports the proxy's category and address, the implementation
- * it forwards to, the derived hop and the machine's verdict on every participant. It needs a Signer runner to name
- * the hop's caller and to fund the geneses, and it always runs the hop, so `initializer: false` is refused.
+ * `PerCallProxyHandle`: the contract's entries addressed and held by the proxy, with the `PerCallProxyDeployment`
+ * nested under it - the proxy's category and address, the implementation it forwards to, the derived hop and the
+ * machine's verdict on every participant. It needs a Signer runner to name the hop's caller and to fund the
+ * geneses, and it always runs the hop, so `initializer: false` is refused.
  */
 export function deployProxy(
   implementationFactory: ContractFactory<PerCallArtifact>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
-): Promise<PerCallProxyDeployment & ConnectedStatefulContract<Artifact>>;
+): Promise<PerCallProxyHandle>;
 export function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl>, initialState?: ProxyInitialState,
   options?: DeployProxyOptions,
@@ -847,7 +861,7 @@ export async function deployProxy<TImpl extends Artifact>(
   implementationFactory: ContractFactory<TImpl> | SplitContractBundle,
   initialState?: ProxyInitialState,
   options: DeployProxyOptions = {},
-): Promise<ProxyContract<TImpl> | SplitContract | PerCallProxyDeployment> {
+): Promise<ProxyContract<TImpl> | SplitContract | PerCallProxyHandle> {
   // Hardhat-compatible factories wrap SplitContractBundle to provide positional `.deploy(...)`. Accept that
   // transparent facade here too, otherwise it falls through the ordinary implementation+proxy path, reserves a
   // nonce, and then attempts a nested split deployment which reserves the same nonce again.

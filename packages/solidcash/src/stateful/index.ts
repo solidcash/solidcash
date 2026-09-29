@@ -139,7 +139,7 @@ export {
 export {
   upgrades, deployProxy, upgradeProxy, ProxyContract, mockProxyDensityReserveBytes,
   type DeployProxyOptions, type UpgradeProxyOptions, type ProxyInitialState,
-  type PerCallArtifact, type PerCallProxyDeployment,
+  type PerCallArtifact, type PerCallProxyDeployment, type PerCallProxyHandle,
 } from './upgrades.js';
 export {
   StatefulFunctionCall,

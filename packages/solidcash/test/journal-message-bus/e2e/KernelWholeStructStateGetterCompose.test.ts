@@ -4,8 +4,9 @@ import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
+import { getDynamicChunkAddress } from '../../../src/stateful/covenant-helpers.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
-import { generateLibauthSourceOutputs } from '../../../src/utils.js';
+import { addressToLockScript, generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
@@ -266,23 +267,59 @@ describe('kernel whole-struct state getter composition', () => {
     expect(vm.stateSuccess(vm.evaluate({ inputIndex: sourceRouteInput, sourceOutputs, transaction })))
       .not.toBe(true);
 
-    const singleTransaction = single.buildLibauthTransaction();
-    const singleSources = generateLibauthSourceOutputs(single.inputs);
-    const singleRouteInput = single.inputs.findIndex((input) => 'contract' in input.unlocker
+    // A standalone batch has no return-event output and therefore no exact value to pin against a changed
+    // pre-state chunk. Compose a consumer to bind the complete single-row result before adversarial checks.
+    const consumerArtifact = compileString(`pragma solidity ^0.8.0;
+      struct Record { string note; uint256[] marks; }
+      interface Reader { function read() external returns (Record memory); }
+      contract Consumer(address sourceAddress) {
+        function verify() public {
+          Record memory value = Reader(sourceAddress).read();
+          require(value.note.length == 4920 && value.marks.length == 0);
+        }
+      }`, OPTIONS);
+    const consumerBase = new Contract(consumerArtifact, [source.inner.lockingBytecode], { provider });
+    const consumerSetup = await setupStatefulUtxos(
+      provider, consumerBase, consumerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const consumer = StatefulContract.withCategory(
+      consumerBase.withCategory(hexToBin(consumerSetup.categoryId)), consumerSetup.categoryId,
+    );
+    const expected = hexToBin(ethers.AbiCoder.defaultAbiCoder().encode(
+      ['tuple(string,uint256[])'], [['a'.repeat(4920), []]],
+    ).slice(2));
+    const funder = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const bound = await messageBus.compose({
+      preparedCalls: [
+        { contract: consumer, functionName: 'verify', args: [] },
+        { contract: source, functionName: 'read', args: [], provisionalResultCommitment: expected },
+      ],
+      funder,
+      changeAddress: funder.unlocker.generateLockingBytecode(),
+    }).build();
+    expect(vmAccepts(bound)).toBe(true);
+    const boundTransaction = bound.buildLibauthTransaction();
+    const boundSources = generateLibauthSourceOutputs(bound.inputs);
+    const boundRouteInput = bound.inputs.findIndex((input) => 'contract' in input.unlocker
       && input.unlocker.contract.artifact.contractName === 'Source'
       && input.unlocker.abiFunction.name === artifact.messageBus!.route.name);
-    const firstChunk = singleRouteInput + artifact.messageBus!.route.blockLayout!.trailingBase!;
-    expect(singleRouteInput).toBeGreaterThanOrEqual(0);
-    expect(singleTransaction.inputs.length).toBeGreaterThan(firstChunk + 1);
+    const chunkLock = binToHex(addressToLockScript(getDynamicChunkAddress(
+      source.inner, setup.categoryId, 'record__note', 'string',
+    )));
+    const chunkInputs = boundSources.flatMap((output, index) =>
+      binToHex(output.lockingBytecode) === chunkLock ? [index] : []);
+    expect(boundRouteInput).toBeGreaterThanOrEqual(0);
+    expect(chunkInputs.length).toBeGreaterThan(1);
+    const [firstChunk, secondChunk] = chunkInputs;
     const rejected = (
-      candidateTransaction: typeof singleTransaction, candidateSources: typeof singleSources,
+      candidateTransaction: typeof boundTransaction, candidateSources: typeof boundSources,
     ): boolean => vm.stateSuccess(vm.evaluate({
-      inputIndex: singleRouteInput,
+      inputIndex: boundRouteInput,
       sourceOutputs: candidateSources,
       transaction: candidateTransaction,
     })) !== true;
 
-    const forgedSources = singleSources.map((output) => ({
+    const forgedSources = boundSources.map((output) => ({
       ...output,
       lockingBytecode: output.lockingBytecode.slice(),
       token: output.token === undefined ? undefined : {
@@ -295,18 +332,18 @@ describe('kernel whole-struct state getter composition', () => {
     }));
     const forgedCommitment = forgedSources[firstChunk].token!.nft!.commitment;
     forgedCommitment[forgedCommitment.length - 1] ^= 1;
-    expect(rejected(singleTransaction, forgedSources)).toBe(true);
+    expect(rejected(boundTransaction, forgedSources)).toBe(true);
 
-    const reorderedSources = singleSources.slice();
-    [reorderedSources[firstChunk], reorderedSources[firstChunk + 1]] =
-      [reorderedSources[firstChunk + 1], reorderedSources[firstChunk]];
-    expect(rejected(singleTransaction, reorderedSources)).toBe(true);
+    const reorderedSources = boundSources.slice();
+    [reorderedSources[firstChunk], reorderedSources[secondChunk]] =
+      [reorderedSources[secondChunk], reorderedSources[firstChunk]];
+    expect(rejected(boundTransaction, reorderedSources)).toBe(true);
 
     const missingTransaction = {
-      ...singleTransaction,
-      inputs: singleTransaction.inputs.filter((_input, index) => index !== firstChunk),
+      ...boundTransaction,
+      inputs: boundTransaction.inputs.filter((_input, index) => index !== firstChunk),
     };
-    const missingSources = singleSources.filter((_output, index) => index !== firstChunk);
+    const missingSources = boundSources.filter((_output, index) => index !== firstChunk);
     expect(rejected(missingTransaction, missingSources)).toBe(true);
   }, 120_000);
 });

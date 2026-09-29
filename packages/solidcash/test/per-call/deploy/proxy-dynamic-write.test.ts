@@ -14,7 +14,7 @@ import {
 import { mappingValueChunkLock } from '../../../src/per-call/composer/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
 import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
-import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
@@ -32,7 +32,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * A sorted mapping's write is declared beside the run. A target the live list holds is spliced through a node the
  * deployment already carries, so the hop spends and recreates that predecessor; a collection the deployment holds
  * no node of has no head sentinel to splice through, so the hop mints the empty head in its own transaction — the
- * shipped encoder's commitment, at the collection's own entry covenant — and declares it without an input.
+ * shipped encoder's commitment, at the collection's own entry covenant — and declares it with no input, but with
+ * the sentinel as its input view, which is the pre-state a read of the absent key proves its bracket against.
  *
  * The expected commitments here come from the shipped encoders (`encodePushdataValue` for the value,
  * `buildChunkCommitment` for a chunk, `chunkRecordLockingBytecode` for the value's collection covenant), and the
@@ -547,41 +548,90 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('plans a first insert against a head the hop creates, which the composed frame still refuses', async () => {
+  it('settles a first insert beside the append, the hop minting the head it splices through', async () => {
     // A call into a collection the deployment holds no node of plans its first write against the empty list's head
     // sentinel, which no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's
     // commitment for the empty list, at the collection's own entry covenant, spending nothing for it — and declares
     // the group's first record as the created head relinked to the new slot. The plan carries the head as
-    // `{in: 0xffff, out: <trailing>, viewIn: empty, viewOut: <zero slot || target slot || zero value>}`, measured,
-    // beside the created node.
+    // `{in: 0xffff, out: <trailing>, viewIn: <sentinel>, viewOut: <zero slot || target slot || zero value>}`, beside
+    // the created node. The input side names no coordinate, but the declared view is the empty list's head: a body
+    // that reads the absent key resolves its predecessor through that declaration, and the empty head is the
+    // pre-state its non-membership bracket is proven against.
     //
-    // The compiler now serves that predecessor for a per-call master: the single-target insert arm reads the create
+    // The compiler serves that predecessor for a per-call master: the single-target insert arm reads the create
     // sentinel in the record's `in` field as a coordinate below every input, proves the recreated head's output is
     // the collection's zero slot relinked to the target, and drops the proof-input bytecode comparison that has no
     // input to compare with. The isolated shape and its wrong-relink control settle
-    // (`solidc test/per-call/master/insert-beside-append.test.ts`), and the shipped composer's own declaration is
-    // the one those records carry (empty input view, sentinel-relinked output view).
-    //
-    // The composed hop still refuses, and no longer at the proof input: the composed implementation-master's program
-    // fails an OP_VERIFY before the body's insert runs. The refusal below is what it reports.
+    // (`solidc test/per-call/master/insert-beside-append.test.ts`); the control beside this case is the live-head
+    // insert above, which splices through a node the deployment already holds.
     const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
-    await expect(callPerCallProxyEntry({
+    const name = 'n'.repeat(80);
+    const bio = 'b'.repeat(80);
+    const result = await callPerCallProxyEntry({
       provider: network,
       implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'register',
-      args: [FRESH_LOCK, { who: FRESH_LOCK, name: 'n'.repeat(80), bio: 'b'.repeat(80), up: 1n }],
+      args: [FRESH_LOCK, { who: FRESH_LOCK, name, bio, up: 1n }],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      /the implementation's "register" entry did not settle through the proxy: frame "implementation-master"/,
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The value the entry's own body computed, and the run its created node takes.
+    const value = encodePushdataValue(
+      { who: FRESH_LOCK, name, bio, up: 1n }, 'Member', artifacts.Impl!.structs,
     );
+    expect(value.length).toBeGreaterThan(60);
+    const slot = keyToSlotMulti([FRESH_LOCK]);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+
+    // The created head leads the trailing region, then the created node, then the value's chunks.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(2 + valueChunks.length);
+    const head = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(head.slot)).toBe(bytesToHex(new Uint8Array(32)));
+    expect(bytesToHex(head.nextKey)).toBe(bytesToHex(slot));
+    const created = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    trailing.slice(2).forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+
+    // The head's record declares the empty list's sentinel as its input view, and the relinked head as its output.
+    const block = result.draft.blockOf('implementation-master');
+    const headRecord = block.segments[0]!.find((entry) => entry.out === trailing[0]!.index)!;
+    expect(headRecord.in).toBe(0xffff);
+    expect(bytesToHex(headRecord.viewIn)).toBe(bytesToHex(headSentinelCommitment()));
+    expect(bytesToHex(headRecord.viewOut)).toBe(bytesToHex(
+      result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+
+    // The dynamic run is the live chunk recreated in place, carrying the array the append grew.
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const chunkIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('dynamic-chunk-'));
+    expect(chunkIds).toHaveLength(1);
+    expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
   it('settles an insert whose value the body builds, the append sizing the run from its own push', async () => {

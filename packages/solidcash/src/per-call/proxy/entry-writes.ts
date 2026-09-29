@@ -741,6 +741,10 @@ function chunkKey(slot: Uint8Array, index: number): string {
  * for the empty list, at the collection's own entry covenant, which is what the genesis mints and what the body's
  * group walk reads — so the predecessor record declares no input and the hop lays it out at a trailing output. The
  * relink the planner computed is unchanged; only where the head comes from is.
+ *
+ * The record keeps the sentinel as its `viewIn`: its input side names no coordinate, but a body that reads the
+ * predecessor through its segment declaration returns that view, and the empty list's head is the pre-state a
+ * read of an absent key proves its bracket against. Emptying it would make that read resolve to nothing.
  */
 function withCreatedHead(plan: MappingBatchPlan): MappingBatchPlan {
   const sentinel = headSentinelCommitment();
@@ -751,7 +755,7 @@ function withCreatedHead(plan: MappingBatchPlan): MappingBatchPlan {
       ...group,
       records: group.records.map((record): MappingBatchRecord => (
         record.existed && isHead(record.viewIn)
-          ? { ...record, existed: false, viewIn: new Uint8Array(0) }
+          ? { ...record, existed: false }
           : record
       )),
     })),

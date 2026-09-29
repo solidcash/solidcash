@@ -322,3 +322,79 @@ that records the run, so a future round can tell a slow wall from a slow deploym
 | 64 | 0.11 s | × | job posting > post job with invalid delivery method |
 | 65 | 0.11 s | × | job updates > update job amounts |
 | 66 | 0.11 s | × | job updates > update job tags |
+
+## m1-run-6.log — 13/66 — 2026-09-29 12:10 — `00153b042`
+
+- 53 failed | 13 passed (66)
+- full run: **602.77 s** (start to finish, including vitest's own start-up and the reporter)
+- per-title times recorded: 66, sum **590.8 s**, median **0.18 s**
+- first title (the fixture's deployment): **371.8 s**
+
+| # | Time | Result | Title |
+| --- | --- | --- | --- |
+| 1 | 371.77 s | ✓ | admin > transfer owner |
+| 2 | 54.51 s | ✓ | admin > pause/unpause |
+| 3 | 36.80 s | ✓ | unicrow params > set unicrow contract addresses |
+| 4 | 28.87 s | ✓ | unicrow params > set unicrow markeplace address |
+| 5 | 24.59 s | ✓ | admin > non pauser cannot unpause |
+| 6 | 22.55 s | ✓ | admin > set version |
+| 7 | 11.21 s | ✓ | admin > can not call initializer |
+| 8 | 9.20 s | ✓ | mece tags > update mece tag |
+| 9 | 5.33 s | ✓ | mece tags > remove mece tag |
+| 10 | 3.96 s | ✓ | mece tags > read mece tag |
+| 11 | 3.02 s | ✓ | admin > non pauser cannot pause |
+| 12 | 2.54 s | ✓ | admin > non owner cannot transfer owner |
+| 13 | 2.38 s | × | register arbitrator > update arbitrator |
+| 14 | 2.15 s | × | register user > update user |
+| 15 | 1.97 s | ✓ | admin > non owner cannot set version |
+| 16 | 1.06 s | × | register user > register user |
+| 17 | 0.41 s | × | take job > take job multiple |
+| 18 | 0.27 s | × | reopen job > reopen job after timeout |
+| 19 | 0.27 s | × | reopen job > reopen job before timeout |
+| 20 | 0.25 s | × | job updates > update job many times, get history |
+| 21 | 0.24 s | × | close job > close job after timeout |
+| 22 | 0.23 s | × | take job > sanity checks |
+| 23 | 0.23 s | × | withdraw collateral > withdraw collateral |
+| 24 | 0.22 s | × | job updates > update job amounts |
+| 25 | 0.21 s | × | job posting > post job 1 |
+| 26 | 0.20 s | × | job updates > update job tags |
+| 27 | 0.20 s | × | dispute > dispute worker |
+| 28 | 0.20 s | × | refuse arbitration > job closed |
+| 29 | 0.19 s | × | dispute > sanity checks with arbitrator |
+| 30 | 0.19 s | × | integration test > integration test |
+| 31 | 0.19 s | × | dispute > sanity checks closed job |
+| 32 | 0.19 s | × | close job > close job before timeout |
+| 33 | 0.18 s | × | register arbitrator > register arbitrator |
+| 34 | 0.17 s | × | job posting > post job with invalid mece tags |
+| 35 | 0.17 s | × | refund > sanity checks |
+| 36 | 0.17 s | × | take job > take job |
+| 37 | 0.17 s | × | post thread message > sanity checks |
+| 38 | 0.17 s | × | arbitrate > arbitrate 100-0 |
+| 39 | 0.17 s | × | dispute > sanity checks no arbitrator |
+| 40 | 0.17 s | × | job posting > post job with invalid deadline |
+| 41 | 0.17 s | × | job posting > post job with invalid token |
+| 42 | 0.16 s | × | pay start job > sanity checks |
+| 43 | 0.16 s | × | dispute > dispute creator |
+| 44 | 0.16 s | × | refuse arbitration > job not taken |
+| 45 | 0.16 s | × | refuse arbitration > job taken |
+| 46 | 0.16 s | × | arbitrate > sanity checks |
+| 47 | 0.16 s | × | job posting > post job with arbitrator same as creator |
+| 48 | 0.16 s | × | job posting > post job with unregistered arbitrator |
+| 49 | 0.16 s | × | pay start job > pay start job |
+| 50 | 0.16 s | × | arbitrate > arbitrate 80-20 |
+| 51 | 0.15 s | × | job posting > post job with whitelist |
+| 52 | 0.15 s | × | approve result and review > approve result |
+| 53 | 0.15 s | × | deliver result > sanity checks |
+| 54 | 0.15 s | × | job posting > post job with invalid title |
+| 55 | 0.14 s | × | job posting > post job with invalid amount |
+| 56 | 0.14 s | × | post thread message > post thread message |
+| 57 | 0.14 s | × | arbitrate > arbitrate 0-100 |
+| 58 | 0.14 s | × | approve result and review > sanity checks |
+| 59 | 0.14 s | × | job worker whitelisting > should whitelist worker |
+| 60 | 0.14 s | × | job posting > post two jobs |
+| 61 | 0.14 s | × | refund > refund |
+| 62 | 0.14 s | × | job posting > post job from unregistered user |
+| 63 | 0.14 s | × | job updates > update job arbitrator |
+| 64 | 0.14 s | × | deliver result > deliver result |
+| 65 | 0.13 s | × | job updates > update job |
+| 66 | 0.13 s | × | job posting > post job with invalid delivery method |

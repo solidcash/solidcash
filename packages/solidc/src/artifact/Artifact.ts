@@ -668,8 +668,12 @@ const expressionSource = (
  *
  * A non-constructor entry never assigns a whole dynamic value: its write is an append, and the value it produces
  * is the live value plus the element. The same map therefore carries, for such an entry, the ELEMENT its single
- * push appends, under the pushed variable's name. The run's width is the live value's plus that element, so the
- * element is what a consumer has to state; the same one-write-per-path proof applies. Only the per-call convention
+ * push appends, under the pushed variable's name. A body that pushes the element type's default and then fills
+ * its fields in place rebuilds that element once per field write; the fields are folded into the stated element,
+ * so what is published is the element the body writes rather than the default the push appended. A field value
+ * the vocabulary cannot state leaves the element unstated, as any other unrepresentable value does. The run's
+ * width is the live value's plus that element, so the element is what a consumer has to state; the same
+ * one-write-per-path proof applies. Only the per-call convention
  * reads this entry shape, so the other conventions' artifacts are unchanged.
  */
 const dynamicWriteSourcesOf = (
@@ -720,7 +724,7 @@ const dynamicWriteSourcesOf = (
   if (firstAbrupt < lastDynamicWrite) return {};
   const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   type Binding = ExternalCallExpression | undefined;
-  type Write = { minimum: number; maximum: number; value?: ExternalCallExpression };
+  type Write = { minimum: number; maximum: number; value?: ExternalCallExpression; indexKey?: string };
   type ReplayState = {
     bindings: Map<object, Binding>;
     blockedNames: Set<string>;
@@ -857,6 +861,107 @@ const dynamicWriteSourcesOf = (
     return visit(expression);
   };
 
+  const definitionIds = new Map<object, number>();
+  // A structural key for an element index. Two rebuilds that name the same index fold into one stated element;
+  // any index form this replay cannot pin leaves the key undefined, and a rebuild with an unpinned index is
+  // left unstated rather than folded into an element it might not name.
+  const indexKey = (expression: ExpressionNode): string | undefined => {
+    if (expression instanceof IdentifierNode) {
+      const definition = expression.definition?.definition;
+      if (definition && typeof definition === 'object') {
+        const known = definitionIds.get(definition);
+        if (known !== undefined) return `definition:${known}`;
+        definitionIds.set(definition, definitionIds.size);
+        return `definition:${definitionIds.size - 1}`;
+      }
+      return `name:${expression.name}`;
+    }
+    return expression instanceof IntLiteralNode ? `literal:${expression.value}` : undefined;
+  };
+
+  const sameIndexExpression = (left: ExpressionNode, right: ExpressionNode): boolean => {
+    if (left === right) return true;
+    const leftKey = indexKey(left);
+    const rightKey = indexKey(right);
+    return leftKey !== undefined && rightKey !== undefined && leftKey === rightKey;
+  };
+
+  // The field path a construction argument reads off the appended element, or undefined when the argument is not
+  // such a read. The read must be rooted at the pushed variable indexed by the same expression the rebuild writes,
+  // so a rebuild that reads a different element than it writes is not folded into the stated one.
+  const elementReadPath = (
+    expression: ExpressionNode, name: string, index: ExpressionNode,
+  ): readonly string[] | undefined => {
+    const path: string[] = [];
+    let current: ExpressionNode = expression;
+    while (current instanceof FieldAccessNode) {
+      path.unshift(current.name);
+      current = current.expression;
+    }
+    const key = current instanceof MappingAccessNode && current.name === name && current.keys?.length === 1
+      ? current.keys[0]
+      : current instanceof ArrayAccessNode
+        && ((current.array instanceof IdentifierNode && current.array.name === name)
+          || (current.array instanceof StateAccessNode && current.array.name === name))
+        ? current.index
+        : undefined;
+    return key !== undefined && sameIndexExpression(key, index) ? path : undefined;
+  };
+
+  // Resolve a field path of the stated element, descending through nested constructions.
+  const elementField = (
+    element: ExternalCallExpression, struct: StructType, path: readonly string[],
+  ): ExternalCallExpression | undefined => {
+    let member: ExternalCallExpression | undefined = element;
+    let type: Type = struct;
+    for (const fieldName of path) {
+      if (member?.kind !== 'call' || !(type instanceof StructType)) return undefined;
+      const fieldIndex: number = type.fields.findIndex((field) => field.name === fieldName);
+      if (fieldIndex < 0) return undefined;
+      member = member.args?.[fieldIndex];
+      type = type.fields[fieldIndex].type;
+    }
+    return member;
+  };
+
+  // Fold one in-place rebuild of the appended element into the element already stated. The rebuild constructs the
+  // element's own type; each argument either reads a field of that element (kept from the stated element) or
+  // states the field's new value. A construction this replay cannot follow, a field value it cannot state, and a
+  // rebuild that names an element other than the one already stated all leave the variable unstated.
+  const foldElementRebuild = (
+    write: Write, statement: StateArrayAssignNode, state: ReplayState,
+  ): ExternalCallExpression | undefined => {
+    const element = write.value;
+    const construction = statement.value;
+    if (!element || element.kind !== 'call' || !element.name
+      || !(construction instanceof FunctionCallNode) || !(construction.type instanceof StructType)) {
+      return undefined;
+    }
+    const struct = construction.type;
+    const pinned = indexKey(statement.index);
+    if (pinned === undefined || construction.identifier.name !== struct.name
+      || struct.name !== element.name || construction.parameters.length !== struct.fields.length) {
+      return undefined;
+    }
+    if (write.indexKey !== undefined && write.indexKey !== pinned) return undefined;
+    write.indexKey = pinned;
+    const folded = (expression: ExpressionNode): ExternalCallExpression | undefined => {
+      const path = elementReadPath(expression, statement.name, statement.index);
+      if (path !== undefined) return elementField(element, struct, path);
+      if (expression instanceof FunctionCallNode && expression.type instanceof StructType
+        && expression.identifier.name === expression.type.name) {
+        const args = expression.parameters.map((parameter) => folded(parameter));
+        return args.every((argument): argument is ExternalCallExpression => argument !== undefined)
+          ? { kind: 'call', name: expression.type.name, args, type: expression.type.name } : undefined;
+      }
+      return serialize(expression, state);
+    };
+    const args = construction.parameters.map((parameter) => folded(parameter));
+    return args.every((argument): argument is ExternalCallExpression => argument !== undefined)
+      ? { kind: 'call', name: element.name, args, ...(element.type !== undefined && { type: element.type }) }
+      : undefined;
+  };
+
   const invalidateUnknownMutations = (node: Node, state: ReplayState): void => {
     const seen = new Set<object>();
     const visit = (value: unknown): void => {
@@ -957,12 +1062,22 @@ const dynamicWriteSourcesOf = (
         continue;
       }
       // A write that rebuilds an element of the pushed variable in place does not add an element: the run still
-      // grows by the one element the push appended, and the element rebuilt is that one. The push's element is
-      // therefore still what this map states, so the write neither disqualifies the append nor supplies a value of
-      // its own. A write whose value does not read the variable replaces it (or an element) with an independent
-      // value, which this replay does not model, so it falls through to the invalidation and keeps the entry absent.
+      // grows by the one element the push appended, and the element rebuilt is that one. The fields it writes are
+      // folded into the stated element, so what this map publishes is the element the body writes rather than the
+      // default the push appended before the rebuild replaced its fields. A rebuild this replay cannot follow
+      // leaves the variable unstated rather than defaulted. A write whose value does not read the variable replaces
+      // it (or an element) with an independent value, which this replay does not model, so it falls through to the
+      // invalidation and keeps the entry absent.
       if (appendMode && statement instanceof StateArrayAssignNode && dynamicNames.has(statement.name)
         && readsVariable(statement.value, statement.name)) {
+        const write = state.writes.get(statement.name)!;
+        const folded = foldElementRebuild(write, statement, state);
+        if (folded !== undefined) {
+          write.value = folded;
+          continue;
+        }
+        write.maximum = Number.POSITIVE_INFINITY;
+        write.value = undefined;
         continue;
       }
       if (!appendMode && statement instanceof StateAssignNode && dynamicNames.has(statement.name)) {

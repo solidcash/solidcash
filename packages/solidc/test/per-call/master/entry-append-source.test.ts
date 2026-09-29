@@ -218,11 +218,12 @@ describe('an entry append publishes the element it pushes', () => {
     `)).toStrictEqual({ items: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } });
   });
 
-  it('publishes the default a no-argument append writes past an element the body rebuilds in place', () => {
-    // `push()` appends the element type's default. A following indexed write whose own value reads the array
-    // rebuilds an element rather than appending one, so the run still grows by the one default element the push
-    // wrote; the body's own close pins the commitment it computed afterwards. This is the shape a body that pushes
-    // an element and then fills its fields through a storage pointer has.
+  it('folds the fields a rebuild writes into the element the append states', () => {
+    // `push()` appends the element type's default, and each following indexed write whose own value reads the array
+    // rebuilds that element in place: the run still grows by the one element the push appended, and the fields the
+    // rebuilds write are folded into it, so what is published is the element the body writes rather than the
+    // default the push appended. This is the shape a body that pushes an element and then fills its fields through
+    // a storage pointer has.
     expect(sourcesOf(`
       contract Impl {
         struct Detail { address who; uint amount; }
@@ -234,13 +235,33 @@ describe('an entry append publishes the element it pushes', () => {
       items: {
         kind: 'call', name: 'Detail', type: 'Detail',
         args: [
-          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
           { kind: 'literal', value: '0', type: 'bigint' },
         ],
       },
     });
 
-    // The same rebuild past a forwarded element keeps the pushed element: the rebuild adds no element.
+    // Two rebuilds compose in source order: each reads the element the previous one left, so the published element
+    // carries both fields the body wrote.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who, uint amt) { this.items.push(); this.items[0].who = who; this.items[0].amount = amt; }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+        ],
+      },
+    });
+
+    // The same rebuild past a forwarded element: the rebuild adds no element, and the field it writes replaces the
+    // one that element already carried.
     expect(sourcesOf(`
       contract Impl {
         struct Detail { address who; uint amount; }
@@ -253,10 +274,89 @@ describe('an entry append publishes the element it pushes', () => {
         kind: 'call', name: 'Detail', type: 'Detail',
         args: [
           { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
-          { kind: 'literal', value: '1', type: 'bigint' },
+          { kind: 'literal', value: '2', type: 'bigint' },
         ],
       },
     });
+
+    // A nested field write folds through the construction that carries it: the path a rebuild reads is resolved
+    // against the stated element's own field.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Roles { address creator; address worker; }
+        struct Detail { Roles roles; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who) { this.items.push(); this.items[0].roles.creator = who; }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          {
+            kind: 'call', name: 'Roles', type: 'Roles',
+            args: [
+              { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+              { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+            ],
+          },
+          { kind: 'literal', value: '0', type: 'bigint' },
+        ],
+      },
+    });
+
+    // A field of dynamic type is folded like any other; the default it replaced was a zero-length array.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; string title; uint[] tags; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who, string title_) { this.items.push(); this.items[0].title = title_; }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'source', source: { kind: 'forward', paramIndex: 1 } },
+          { kind: 'newArray', type: 'uint256', args: [{ kind: 'literal', value: '0', type: 'bigint' }] },
+        ],
+      },
+    });
+  });
+
+  it('stays absent when a rebuild writes a field the replay cannot state', () => {
+    // A field value that reads state is not an expression the element vocabulary speaks, so the element the body
+    // writes is left unstated rather than published as the default the push appended.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        address public owner;
+        Detail[] public items;
+        function add() { this.items.push(); this.items[0].who = this.owner; }
+      }
+    `)).toBeUndefined();
+
+    // A rebuild that reads an element other than the one it writes is not a rebuild of the appended element.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who) { this.items.push(); this.items[0].who = this.items[1].who; }
+      }
+    `)).toBeUndefined();
+
+    // Two rebuilds that name different elements are not one stated element.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who, address other) { this.items.push(); this.items[0].who = who; this.items[1].who = other; }
+      }
+    `)).toBeUndefined();
   });
 
   it('stays absent for a shape the run cannot be sized from', () => {

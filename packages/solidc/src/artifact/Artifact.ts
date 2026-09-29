@@ -832,9 +832,14 @@ const dynamicWriteSourcesOf = (
       if (value instanceof FunctionCallNode) {
         // A call can mutate reference-like locals through aliases, so no local substitution survives it.
         for (const key of state.bindings.keys()) state.bindings.set(key, undefined);
-        if (!(value.resolvedFunction instanceof FunctionDefinitionNode)) {
+        if (!(value.resolvedFunction instanceof FunctionDefinitionNode) && !appendMode) {
           // The callee is not known, so it may write any dynamic value. A resolved callee is visited by this same
           // walk below, so the writes it really makes are counted from its own body rather than assumed.
+          //
+          // For an entry's append the blanket charge is dropped: an unresolved callee there is a value producer - a
+          // construction or a builtin - which cannot write a dynamic value, and any write node its own operands
+          // carry is still charged by the walk below. The constructor replay keeps the blanket charge, because it
+          // has a VM-probe fallback and never sees this shape.
           for (const write of state.writes.values()) {
             write.maximum = Number.POSITIVE_INFINITY;
             write.value = undefined;

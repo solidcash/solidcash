@@ -86,7 +86,48 @@ describe('an entry append publishes the element it pushes', () => {
     });
   });
 
-  it('stays absent for a shape the run cannot be sized from', () => {    // A conditional append grows the run by zero or one, a repeated append by two, a loop by its trip count, and
+  it('publishes the append beside an unrelated struct write to a mapping', () => {
+    // A struct construction is a lowered call, but it produces a value rather than writing a dynamic variable, so
+    // it does not displace the append's one-write proof. This is the shape a registration body has.
+    const sources = sourcesOf(`
+      contract Impl {
+        struct Entry { address who; string name; string bio; uint up; }
+        address public implementation;
+        mapping(address => Entry) public members;
+        address[] public items;
+        function add(address who, string name_, string bio_) {
+          require(this.members[who].up == 0);
+          this.members[who] = Entry(who, name_, bio_, 1);
+          this.items.push(msg.sender);
+        }
+      }
+    `);
+    expect(sources).toStrictEqual({ items: { kind: 'source', source: { kind: 'msgSender' } } });
+  });
+
+  it('publishes an append whose operand is a construction beside an unrelated call', () => {
+    const sources = sourcesOf(`
+      contract Impl {
+        struct Entry { address who; uint up; }
+        address public implementation;
+        mapping(address => uint) public counts;
+        Entry[] public items;
+        function add(address who) { this.counts[who] = this.counts[who] + 1; this.items.push(Entry(who, 1)); }
+      }
+    `);
+    expect(sources).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Entry', type: 'Entry',
+        args: [
+          { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          { kind: 'literal', value: '1', type: 'bigint' },
+        ],
+      },
+    });
+  });
+
+  it('stays absent for a shape the run cannot be sized from', () => {
+    // A conditional append grows the run by zero or one, a repeated append by two, a loop by its trip count, and
     // an assignment replaces the value outright — none is the single stated element the consumer needs.
     expect(sourcesOf(`
       contract Impl {
@@ -120,6 +161,27 @@ describe('an entry append publishes the element it pushes', () => {
       }
     `)).toBeUndefined();
 
+    // An unrelated construction beside the append does not relax any of the above.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Entry { address who; uint up; }
+        address public implementation;
+        mapping(address => Entry) public members;
+        address[] public items;
+        function add(address who) { this.items.push(who); this.items.push(who); this.members[who] = Entry(who, 1); }
+      }
+    `)).toBeUndefined();
+
+    expect(sourcesOf(`
+      contract Impl {
+        struct Entry { address who; uint up; }
+        address public implementation;
+        mapping(address => Entry) public members;
+        address[] public items;
+        function add(address who) { this.members[who] = Entry(who, 1); for (int i = 0; i < 3; i = i + 1) { this.items.push(who); } }
+      }
+    `)).toBeUndefined();
+
     // An element the compiler cannot name (a helper call) is left absent rather than guessed.
     expect(sourcesOf(`
       contract Impl {
@@ -129,6 +191,18 @@ describe('an entry append publishes the element it pushes', () => {
         function make(address who) internal pure returns (address) { return who; }
       }
     `)).toBeUndefined();
+  });
+
+  it('publishes the append beside a helper that writes elsewhere', () => {
+    expect(sourcesOf(`
+      contract Impl {
+        address public implementation;
+        address[] public items;
+        mapping(address => uint) public counts;
+        function add(address who) { this.items.push(who); this.mark(who); }
+        function mark(address who) private { this.counts[who] = 1; }
+      }
+    `)).toStrictEqual({ items: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } });
   });
 
   it('stays absent under a convention that does not consume the entry shape', () => {

@@ -269,10 +269,8 @@ describe('the delegate shapes a per-call master admits', () => {
     expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
   });
 
-  it('refuses a receive, by name', () => {
-    const refusal = refusalOf(RECEIVE_SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('receive makes the contract dispatch by stack depth');
+  it('serves a receive, dispatched by its selector like any entry', () => {
+    expect(isServed(RECEIVE_SOURCE)).toBe(true);
   });
 
   it('refuses a non-delegate low-level call, by name', () => {

@@ -16,6 +16,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
+  buildSatoshiContainerCovenantScript,
   bytesToHex,
   computeCollectionHash,
   dynamicChunkSignature,
@@ -49,6 +50,14 @@ export class PerCallRecordError extends Error {
  */
 export function stateRecordLockingBytecode(categoryId: string): Uint8Array {
   return getDataNftLockingBytecode(categoryId);
+}
+
+/**
+ * The lock a per-call contract's satoshi containers sit at: the direct convention's container covenant for the
+ * contract's category. Their value is the contract's balance (spec 4b).
+ */
+export function satoshiContainerLockingBytecode(categoryId: string): Uint8Array {
+  return scriptToLockingBytecode(buildSatoshiContainerCovenantScript(hexToBin(categoryId)), 'p2sh32');
 }
 
 /**

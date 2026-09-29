@@ -113,6 +113,8 @@ interface CompositionOptions {
   readonly validatorProgram?: Uint8Array;
   /** Change the category the validator UTXO carries, leaving its pin alone. */
   readonly validatorCategory?: Uint8Array;
+  /** The value the caller's record and the callee's frame both carry. */
+  readonly recordValue?: bigint;
 }
 
 const token = (
@@ -161,7 +163,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     calls: [{
       kind: 1,
       target: options.target ?? ADDRESS_B,
-      value: 0n,
+      value: options.recordValue ?? 0n,
       calleeRef: options.calleeRef ?? B_INDEX,
       argsHash: options.argsHash ?? sha256(CALLEE_SELECTOR),
       result: new Uint8Array(0),
@@ -177,7 +179,7 @@ function buildComposition(options: CompositionOptions = {}): Composition {
     validatorRef: VALIDATOR_INDEX,
     sender: ADDRESS_A,
     self: ADDRESS_B,
-    value: 0n,
+    value: options.recordValue ?? 0n,
     retval: new Uint8Array(0),
     calls: [],
     segments: [[]],
@@ -395,6 +397,13 @@ describe('a master that calls another master, covered by one validator', () => {
     // call data refuses it.
     const results = verdicts({ argsHash: sha256(OTHER_SELECTOR) });
     expect(results[A_INDEX].accepted).toBe(false);
+  });
+
+  it('has a caller that fails when its record passes value its source does not', () => {
+    const results = verdicts({ recordValue: 1n });
+    expect(results[A_INDEX].accepted).toBe(false);
+    // The record and the callee's frame agree, so the validator's binding holds: the refusal is the site's.
+    expect(results[VALIDATOR_INDEX]).toStrictEqual({ accepted: true });
   });
 
   it('has a caller that fails when the callee reference is the caller itself', () => {

@@ -838,10 +838,12 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     const refusal = unsupportedConstructorShape(contract.constructorDef, constants);
     if (refusal !== undefined) return refuse(refusal);
   }
-  if (contract.receiveDef) {
-    return refuse('receive makes the contract dispatch by stack depth, which the master head cannot precede');
-  }
-  const entryFunctions = contract.functions.filter((fn) => fn.isEntryPoint);
+  // receive() is an entry like any other: a per-call frame always carries call data, and a value send's carries the
+  // selector of receive().
+  const entryFunctions = [
+    ...contract.functions.filter((fn) => fn.isEntryPoint),
+    ...(contract.receiveDef ? [contract.receiveDef] : []),
+  ];
   const stateVariableNames = new Set(contract.stateVariables.map((state) => state.name));
   // A fallback is the master's entry only when the contract is the whole proxy shape: the fallback is the sole body
   // a user's call can reach and it forwards its own received call data to an address the contract holds. A fallback
@@ -858,9 +860,10 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (entryPoints.length === 0) {
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
-  // The bodies the master runs: the contract's functions, with the fallback beside them when it is the entry.
+  // The bodies the master runs: the contract's functions and receive(), with the fallback when it is the entry.
   const entryBodies: readonly FunctionDefinitionNode[] = fallbackAsEntry
-    ? [...contract.functions, contract.fallbackDef!] : contract.functions;
+    ? [...contract.functions, contract.fallbackDef!]
+    : [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : [])];
   if (input.hasContractInstantiation) {
     return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }

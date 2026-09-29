@@ -370,11 +370,10 @@ describe('a witness block relabelled after the user signed', () => {
     expect(decisionOf(fixture, relabelled).accepted).toBe(false);
   });
 
-  it('accepts a relabelled call value no check constrains, and keeps the outputs byte-identical', () => {
-    // The call record's value is bound by the validator to the callee's own value claim, and neither the caller's
-    // site check nor the callee's body reads it, so two blocks that agree on another value pass every check. Pins
-    // the half where a relabelling is admitted: the transaction's outputs are the ones the user signed, because
-    // nothing a witness block carries reaches them.
+  it('refuses a relabelled call value at the caller\'s site and at the callee\'s head', () => {
+    // The validator binds the call record's value to the callee's own value claim, so two blocks that agree on
+    // another value pass it. The caller's site passes no value, so its record must carry none, and the callee has no
+    // payable body, so its frame takes none. Pins the half where the relabelling fails a check.
     const fixture = setup();
     const root = blockOf(fixture, ROOT_MASTER);
     root.calls[0]!.value = 1_000n;
@@ -382,7 +381,7 @@ describe('a witness block relabelled after the user signed', () => {
     callee.value = 1_000n;
     const relabelled = relabel(fixture, { [ROOT_MASTER]: root, [CALLED_MASTER]: callee });
 
-    expect(contractVerdicts(fixture, relabelled).map((row) => row.accepted)).toStrictEqual([true, true, true]);
+    expect(contractVerdicts(fixture, relabelled).map((row) => row.accepted)).toStrictEqual([false, false, true]);
     expect(decisionOf(fixture, relabelled).accepted).toBe(true);
     expect(outputsFingerprint(relabelled.outputs)).toBe(outputsFingerprint(fixture.signed.transaction.outputs));
   });

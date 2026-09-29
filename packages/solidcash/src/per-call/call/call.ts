@@ -21,6 +21,10 @@
  * the plan is rebuilt with it. The bytes are the entry's own answer, decoded with the shipped decoder into the call
  * result.
  *
+ * A call to a payable entry may carry value: the frame's `msg.value`, paid by the caller into a satoshi container
+ * of the contract, whose growth the master requires to cover it (spec 4b). A value send is a call to `receive()`
+ * (`sendPerCallValue`), refused by name for a contract without one.
+ *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
  * from the body's own bind.
@@ -54,6 +58,7 @@ import {
   eventSentinel,
   readComputedDeclaration,
   readPerCallDeployment,
+  satoshiContainerLockingBytecode,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
@@ -113,6 +118,8 @@ export interface PerCallCallOptions {
   readonly fee?: bigint;
   readonly vm?: CallMachine;
   readonly validatorProgram?: Uint8Array;
+  /** The value the call carries, in satoshis: the frame's `msg.value`. Only a payable entry takes one. */
+  readonly value?: bigint;
 }
 
 /** One participant's verdict, as the machine returned it. */
@@ -186,7 +193,12 @@ interface CallEntry {
   readonly outputs: readonly { readonly type: string }[];
   /** The events the entry emits, which its frame declares one output per, in emit order. */
   readonly emits: readonly { readonly eventSignature: string; readonly emitIndex: number }[];
+  /** True when the entry is payable, so a call to it may carry value. */
+  readonly payable: boolean;
 }
+
+/** The ABI name of `receive()`, the entry a value send runs. */
+export const RECEIVE_ENTRY = '__receive';
 
 /** The ABI row a call names, refusing an entry the artifact does not publish. */
 function requireEntry(artifact: Artifact, functionName: string): CallEntry {
@@ -201,7 +213,7 @@ function requireEntry(artifact: Artifact, functionName: string): CallEntry {
   }
   return {
     name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
-    emits: entry.emits ?? [],
+    emits: entry.emits ?? [], payable: (entry.modifiers ?? []).includes('payable'),
   };
 }
 
@@ -283,6 +295,11 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     );
   }
   const entry = requireEntry(artifact, functionName);
+  const value = options.value ?? 0n;
+  if (value < 0n) throw new PerCallCallError(`a call carries no negative value; got ${value}`);
+  if (value > 0n && !entry.payable) {
+    throw new PerCallCallError(`entry "${functionName}" is not payable, so a call to it carries no value`);
+  }
   // An entry that returns a value settles it against the frame's `retval`, exactly as a read does: the plan starts
   // the slot from a candidate the body's own return comparison fails against, and the derivation reads back the
   // blob the body computed. A void entry requires the slot empty, so nothing is learned for it.
@@ -293,7 +310,8 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   // the sole body is a forwarding fallback, whose parameter is the band itself. A master with one body is entered
   // without a selector, which a user's frame cannot carry here yet: the composer refuses a user-entered frame that
   // carries call data unless the program dispatches.
-  const dispatchedBodies = artifact.abi.filter((candidate) => !candidate.name.startsWith('__')).length
+  const dispatchedBodies = artifact.abi
+    .filter((candidate) => !candidate.name.startsWith('__') || candidate.name === RECEIVE_ENTRY).length
     + (artifact.abi.some((candidate) => candidate.name === '__construct') ? 1 : 0);
   const forwardsItsInput = artifact.abi.some((candidate) => candidate.name === '__fallback');
   if (dispatchedBodies <= 1 && !forwardsItsInput) {
@@ -402,6 +420,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     }));
   // Created mapping nodes are the trailing outputs past the events: the frame makes no value sends.
   const createdBase = layout.participantCount + emits.length;
+  // The value the call carries is paid into a container of the contract, after the created nodes.
+  const containerOutputs: DraftSourceOutput[] = value > 0n
+    ? [{ lockingBytecode: satoshiContainerLockingBytecode(categoryId), valueSatoshis: value }]
+    : [];
 
   // A call-free entry runs in exactly one segment. Every segment declares the frame's state records and the mapping
   // records the entry writes, with each end commitment the body computes left unstated so the derivation learns it.
@@ -455,7 +477,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         makesExternalCall: false,
         mastersOfContract: 1,
       },
-      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value: 0n },
+      frame: { kind: FrameKind.ROOT, sender: options.callerLockingBytecode, self: deployed.address, value },
       enteredBy: CALLER_ID,
       origin: CALLER_ID,
       calls: [],
@@ -501,7 +523,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       masters: [masterDraft],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
-      trailingOutputs: [...eventOutputs(learnedEvents), ...(laid?.trailingOutputs ?? [])],
+      trailingOutputs: [...eventOutputs(learnedEvents), ...(laid?.trailingOutputs ?? []), ...containerOutputs],
       validator: {
         id: VALIDATOR_ID,
         covers: [],
@@ -695,6 +717,24 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     ...(refusal === undefined ? {} : { refusal }),
     ...(broadcast === undefined ? {} : { broadcast }),
   };
+}
+
+/** What a value send takes: a call's options without an entry or arguments, and the value it sends. */
+export type PerCallValueSendOptions = Omit<PerCallCallOptions, 'functionName' | 'args' | 'value'> & {
+  readonly value: bigint;
+};
+
+/**
+ * Sends value to a deployed per-call contract, as a plain EVM transfer does: the contract's `receive()` runs with
+ * the value as `msg.value`. A contract without one has no body to run, so the send is refused by name.
+ */
+export async function sendPerCallValue(options: PerCallValueSendOptions): Promise<PerCallCallResult> {
+  if (!options.artifact.abi.some((candidate) => candidate.name === RECEIVE_ENTRY)) {
+    throw new PerCallCallError(
+      `contract "${options.artifact.contractName}" has no receive(), so a value sent to it has no body to run`,
+    );
+  }
+  return callPerCallEntry({ ...options, functionName: RECEIVE_ENTRY, args: [] });
 }
 
 /** Everything the call's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */

@@ -1095,6 +1095,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallMaxEventCount = 0;
   /** The size of the head's parked send region: the most sends any body behind the head lists. */
   private perCallSendCount = 0;
+  /** Set when some body behind the head is payable, so a frame may carry value and a non-payable body refuses it. */
+  private perCallAcceptsValue = false;
   /** Long-value slots the head parks, which a body reads its own witness out of. */
   private perCallValueWitnessCount = 0;
 
@@ -3047,10 +3049,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A fallback is a body behind the same head when it is the contract's only entry: it is what a user's call
     // reaches, and it takes the call data the user supplied. It counts as an entry here so the head fixes the
     // tail, the return shape and the call-data convention for the body that actually runs.
-    const fallbackAsEntry = node.fallbackDef !== undefined
+    const fallbackAsEntry = node.fallbackDef !== undefined && node.receiveDef === undefined
       && !node.functions.some((fn) => fn.isEntryPoint) && node.constructorDef === undefined;
     const entries = [
       ...node.functions.filter((fn) => fn.isEntryPoint),
+      ...(node.receiveDef ? [node.receiveDef] : []),
       ...(fallbackAsEntry ? [node.fallbackDef!] : []),
     ];
     // The head's own numbers are the ones the bodies it serves fix: a body it refuses is a stub that makes no
@@ -3113,6 +3116,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.perCallMaxEventCount = tail.tail.maxEventCount;
     this.perCallSendCount = tail.tail.sendCount;
     this.perCallValueWitnessCount = tail.tail.valueWitnessCount ?? 0;
+    // A payable body lets a frame carry value, which the head then requires the master's containers to receive.
+    const acceptsValue = [...served, ...(node.constructorDef ? [node.constructorDef] : [])]
+      .some((body) => body.modifiers.includes(FunctionModifier.PAYABLE));
+    this.perCallAcceptsValue = acceptsValue;
     this.emit(bytecodeToScript(Uint8Array.from(buildMasterHeadScript({
       blockOnTop,
       frameKinds,
@@ -3123,6 +3130,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       callCount,
       ...(keepsRecordIndices ? { keepsRecordIndices: true } : {}),
       ...(returnsValue ? { returnsValue: true } : {}),
+      ...(acceptsValue ? { acceptsValue: true } : {}),
       ...(calls.length > 0 ? { calls } : {}),
       ...(reservesValidatorHashSlot ? { reservesValidatorHashSlot: true } : {}),
       ...(callDataSelectorUnconsumed ? { callDataSelectorUnconsumed: true } : {}),
@@ -3479,6 +3487,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       position += 1) {
       this.requireSendSlotAbsent(position, loc);
     }
+  }
+
+  /**
+   * The EVM's call-value check: a body that is not payable requires the frame's value to be zero.
+   *
+   * Only a master with a payable body needs it per body; otherwise the head requires every frame's value to be zero.
+   */
+  private emitPerCallCallValueCheck(node: FunctionDefinitionNode): void {
+    const slot = '__internal__frameValue';
+    if (!this.perCallAcceptsValue || node.modifiers.includes(FunctionModifier.PAYABLE)) return;
+    if (!this.stack.includes(slot)) return;
+    const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    this.emit(encodeInt(BigInt(this.getStackIndex(slot))), loc);
+    this.emit(Op.OP_PICK, loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_0, loc);
+    this.pushToStack('(value)');
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    this.popFromStack(2);
   }
 
   private emitPerCallEventCountCheck(node: FunctionDefinitionNode): void {
@@ -4973,13 +5000,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Build dispatcher: only include entry-point functions (external/public) + constructor
-    const entryFunctions = node.functions.filter((f) => f.isEntryPoint);
+    // A per-call frame always carries call data, so receive() is reached through its selector like any entry.
+    const perCallReceive = this.perCallMaster && node.receiveDef !== undefined;
+    const entryFunctions = [
+      ...node.functions.filter((f) => f.isEntryPoint),
+      ...(perCallReceive ? [node.receiveDef!] : []),
+    ];
     const allFunctions = node.constructorDef
       ? [...entryFunctions, node.constructorDef]
       : entryFunctions;
 
     const hasFallback = !!node.fallbackDef;
-    const hasReceive = !!node.receiveDef;
+    const hasReceive = !!node.receiveDef && !perCallReceive;
 
     const dispatchFunctions = [...allFunctions];
     if (hasFallback) dispatchFunctions.push(node.fallbackDef!);
@@ -5892,6 +5924,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       subTraversal.perCallReturnsValue = this.perCallReturnsValue;
       subTraversal.perCallMaxEventCount = this.perCallMaxEventCount;
       subTraversal.perCallSendCount = this.perCallSendCount;
+      subTraversal.perCallAcceptsValue = this.perCallAcceptsValue;
       subTraversal.perCallValueWitnessCount = this.perCallValueWitnessCount;
       subTraversal.stateVariables = this.stateVariables;
       subTraversal.collectionCount = this.collectionCount;
@@ -7564,6 +7597,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.perCallMaster) this.emitPerCallCallCountCheck(node);
     if (this.perCallMaster) this.emitPerCallEventCountCheck(node);
     if (this.perCallMaster) this.emitPerCallUnusedSendSlotsCheck(node);
+    if (this.perCallMaster) this.emitPerCallCallValueCheck(node);
     if (this.perCallMaster) this.emitPerCallBatchWitnessDerivation(node);
     this.emitRuntimeAliasWitnessPreflight(node);
     if (!this.isDefineSubTraversal) {

@@ -146,8 +146,8 @@ function bindCallRecord(
   if (targetFromStack) emit(Opcodes.OP_FROMALTSTACK);
   else emit(...encodeDataPush(site.target));
   emit(Opcodes.OP_EQUALVERIFY);
-  // value: the validator binds the callee's value to this one; the caller does not check it here.
-  emit(...takeFixedWidthField(8), Opcodes.OP_NIP);
+  // value: no site passes value, so the record carries none; the validator binds the callee's value to it.
+  emit(...takeFixedWidthField(8), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_0, Opcodes.OP_NUMEQUALVERIFY);
   // calleeRef: a master never calls itself. Parked while the arguments hash is read, so it is on hand for the
   // callee's own bytes.
   emit(...takeFixedWidthField(2), Opcodes.OP_SWAP, Opcodes.OP_BIN2NUM, Opcodes.OP_DUP,

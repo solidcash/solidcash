@@ -1,0 +1,79 @@
+/**
+ * A contract's balance in script: the value of its satoshi containers (spec section 4b).
+ *
+ * A container is a tokenless UTXO at the container covenant's P2SH32 lock for the contract's category, the one the
+ * direct convention uses (`buildSatoshiContainerCovenantScript`). Its master path opens whenever a master of the
+ * category is spent beside it, so a master that accepts value has to account for its containers itself: growth
+ * over the transaction, outputs at the lock less inputs at it, must cover the value its frame receives.
+ */
+
+import { encodeDataPush, hexToBin, Opcodes } from '@bitauth/libauth';
+
+/** The covenant bytes before the first category push. */
+const COVENANT_PREFIX = hexToBin('63ce01207f5288');
+/** The covenant bytes between the two category pushes. */
+const COVENANT_MIDDLE = hexToBin(
+  '8867767676cdc0c788ccc0c6a269d1c0ce88d3c0d0a269c0c7c38c6576c09c6476c75279879169688c76009f66757568',
+);
+/** The covenant bytes after the second category push. */
+const COVENANT_SUFFIX = hexToBin('7551');
+/** `OP_HASH256 OP_PUSHBYTES_32`, the front of a P2SH32 lock. */
+const P2SH32_FRONT = hexToBin('aa20');
+/** `OP_EQUAL`, the end of a P2SH32 lock. */
+const P2SH32_END = hexToBin('87');
+
+/**
+ * Leaves the container lock of the category on top.
+ *
+ * Entry `[..., category]`, exit `[..., lock]`. The category is the 32 bytes `OP_UTXOTOKENCATEGORY` answers with,
+ * pushed twice into the covenant, which is then hashed into its P2SH32 lock.
+ */
+export function containerLockScript(): number[] {
+  return [
+    ...encodeDataPush(new Uint8Array([0x20])), Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    Opcodes.OP_DUP,
+    ...encodeDataPush(COVENANT_PREFIX), Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    ...encodeDataPush(COVENANT_MIDDLE), Opcodes.OP_CAT,
+    Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    ...encodeDataPush(COVENANT_SUFFIX), Opcodes.OP_CAT,
+    Opcodes.OP_HASH256,
+    ...encodeDataPush(P2SH32_FRONT), Opcodes.OP_SWAP, Opcodes.OP_CAT,
+    ...encodeDataPush(P2SH32_END), Opcodes.OP_CAT,
+  ];
+}
+
+/**
+ * Leaves the growth of the running master's containers over the transaction.
+ *
+ * Entry `[...]`, exit `[..., growth]`: the value of the outputs at the container lock less the value of the inputs
+ * at it. The category is the running input's own, which the prologue pinned, so a master accounts for the
+ * containers its own presence opens.
+ */
+export function containerGrowthScript(): number[] {
+  return [
+    Opcodes.OP_INPUTINDEX, Opcodes.OP_UTXOTOKENCATEGORY,
+    ...encodeDataPush(new Uint8Array([32])), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+    ...containerLockScript(),
+    // [lock, growth, index]
+    Opcodes.OP_0, Opcodes.OP_0,
+    Opcodes.OP_BEGIN,
+    Opcodes.OP_DUP, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_LESSTHAN,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTBYTECODE, Opcodes.OP_3, Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, Opcodes.OP_OUTPUTVALUE, Opcodes.OP_ROT, Opcodes.OP_ADD, Opcodes.OP_SWAP,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_LESSTHAN,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, Opcodes.OP_UTXOBYTECODE, Opcodes.OP_3, Opcodes.OP_PICK, Opcodes.OP_EQUAL,
+    Opcodes.OP_IF,
+    Opcodes.OP_DUP, Opcodes.OP_UTXOVALUE, Opcodes.OP_ROT, Opcodes.OP_SWAP, Opcodes.OP_SUB, Opcodes.OP_SWAP,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_ENDIF,
+    Opcodes.OP_1ADD,
+    Opcodes.OP_DUP, Opcodes.OP_TXINPUTCOUNT, Opcodes.OP_TXOUTPUTCOUNT, Opcodes.OP_MAX, Opcodes.OP_GREATERTHANOREQUAL,
+    Opcodes.OP_UNTIL,
+    Opcodes.OP_DROP, Opcodes.OP_NIP,
+  ];
+}

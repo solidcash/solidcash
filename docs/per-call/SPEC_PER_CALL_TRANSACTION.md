@@ -504,15 +504,27 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   as in the EVM; the SDK finds the recipient's `receive()` in its artifact and refuses by name to compose a send
   to a contract without one. A composed call cannot fail (T22), so `send` and `call` return `true` whenever the
   transaction is valid.
-- **Conservation, per contract X.** `growth(X) == in(X) - out(X)`, where
+- **Conservation, per contract X.** `growth(X) >= in(X) - out(X)`, where
   - `growth(X)` is the value of X's container outputs less the value of the containers X spends;
   - `in(X)` is the `value` of the frames entered into X from outside its context (`ROOT`, `CALL`, `CREATE`);
   - `out(X)` is what X pays: its listed sends and the `value` of its `CALL` and `CREATE` records.
   - X's master checks it when it settles X alone; the validator checks it otherwise (V7). Records keep exactly
-    their value, so a contract pays only from its containers: a send its balance cannot cover fails, as in the
-    EVM, and nobody else, the funder included, can move its balance.
+    their value, so a contract's balance moves only as its own code pays: nobody else, the funder included, can
+    take it.
+  - The rule is an inequality. A contract never credits value it did not receive and never pays out more than
+    its code sends, while value from outside it, a funder paying one of its sends or value placed in a container
+    directly, is a gift, as a balance forced on a contract is in the EVM. The SDK composes the equality: it pays a
+    contract's sends from its containers and refuses one its balance cannot cover, as the EVM reverts it.
   - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
     contract may pay out value it receives later in the same transaction. This is the one departure.
+- **What the master checks today.** A master with a payable body requires its containers' growth to cover its
+  frame's value when it settles alone, and a frame whose master does not settle alone, or a `STATIC` or
+  `DELEGATE` frame, carries no value until V7 accounts for containers. A master with no payable body requires every
+  frame's value to be zero. A call site passes no value yet, so it requires its record's `value` to be zero.
+- **A send's payer (open).** A listed send is an output index, and nothing ties it to the frame that pays it, so
+  two frames can list one output and both count it: two purchases from one seller pay the seller once. Before the
+  containers pay a send, each frame's sends have to be its own. The proposed rule puts a frame's sends right after
+  one of its own container outputs, in a run, which makes the sends of two contracts disjoint.
 - **`address(this).balance`** is X's balance as the EVM defines it inside the frame: the value of the
   containers X spends, with this frame's `msg.value` already credited.
 

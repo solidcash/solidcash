@@ -30,8 +30,11 @@ import { PerCallCompositionRefusedError, type CompositionRefusal } from '../comp
 /** The handle a call is made through: the deployed artifact, its category, its provider and its signer. */
 export interface PerCallHandleContract {
   readonly artifact: Artifact;
-  /** The ABI row the call names, whose `writesState` decides whether the call is a transaction or a read. */
-  readonly abiEntry: { readonly writesState?: boolean };
+  /**
+   * The ABI row the call names, whose `writesState` decides whether the call is a transaction or a read, and whose
+   * `payable` modifier decides whether it may carry value.
+   */
+  readonly abiEntry: { readonly writesState?: boolean; readonly modifiers?: readonly string[] };
   readonly categoryId: string;
   readonly provider: NetworkProvider;
   readonly signer?: Signer;
@@ -48,11 +51,24 @@ export interface PerCallHandleContract {
 
 /** One entry of one deployed per-call contract, as a call the handle's namespace hands back. */
 export class PerCallFunctionCall {
+  /** The value the call carries: the frame's `msg.value`. */
+  private value = 0n;
+
   public constructor(
     private readonly contract: PerCallHandleContract,
     private readonly functionName: string,
     private readonly args: readonly FunctionArgument[],
   ) {}
+
+  /** Attaches value to a call to a payable entry, paid by the signer into the contract's containers. */
+  public withValue(amount: bigint): this {
+    if (amount < 0n) throw new PerCallCallError('a call carries no negative value');
+    if (amount > 0n && !(this.contract.abiEntry.modifiers ?? []).includes('payable')) {
+      throw new PerCallCallError(`entry "${this.functionName}" is not payable, so a call to it carries no value`);
+    }
+    this.value = amount;
+    return this;
+  }
 
   /** True when the ABI publishes the entry as one that changes nothing, so it is read rather than sent. */
   private isRead(): boolean {
@@ -86,6 +102,11 @@ export class PerCallFunctionCall {
     }
     const callerUtxo = await callerCoin(provider, signer);
     if (proxyImplementationCategoryId !== undefined) {
+      if (this.value > 0n) {
+        throw new PerCallCallError(
+          `a call to "${this.functionName}" through a proxy carries no value: a delegate frame takes none yet`,
+        );
+      }
       // The hop delegates into the implementation frame: a returning entry's value is recorded in that frame's
       // `retval` and reported back through the proxy hop, or refused by name when the proxy's forwarded call
       // records no result for it to travel in.
@@ -112,6 +133,7 @@ export class PerCallFunctionCall {
       callerLockingBytecode: signer.getLockingBytecode(),
       funder: signer.unlockP2PKH(),
       changeAddress: signer.getAddress(),
+      ...(this.value > 0n ? { value: this.value } : {}),
     });
   }
 

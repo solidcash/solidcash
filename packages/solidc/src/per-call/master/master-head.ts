@@ -52,6 +52,7 @@ import {
   type MasterCallSite,
   type MasterTailShape,
 } from './frame-tail.js';
+import { containerGrowthScript } from './value.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -253,6 +254,11 @@ export interface MasterHeadOptions {
    * a void body requires it empty.
    */
   readonly returnsValue?: boolean;
+  /**
+   * True when some body the master serves is payable. A frame may then carry value, which the growth of the
+   * master's containers must cover (spec 4b); otherwise every frame carries none.
+   */
+  readonly acceptsValue?: boolean;
 }
 
 /** The frame kind of a user's call. */
@@ -313,6 +319,7 @@ class HeadEmitter {
   private readonly settlesOwnRecords: boolean;
   private readonly keepsRecordIndices: boolean;
   private readonly returnsValue: boolean;
+  private readonly acceptsValue: boolean;
 
   constructor(options: MasterHeadOptions) {
     this.callSites = options.calls ?? [];
@@ -324,6 +331,7 @@ class HeadEmitter {
     this.settlesOwnRecords = options.settlesOwnRecords === true;
     this.keepsRecordIndices = options.keepsRecordIndices === true;
     this.returnsValue = options.returnsValue === true;
+    this.acceptsValue = options.acceptsValue === true;
     // A master admits the standalone shape unless it is asked to do more: composed frames, a call, or a
     // validator to recognise.
     this.composed = this.reservesValidatorHashSlot
@@ -583,7 +591,8 @@ class HeadEmitter {
     this.assertSenderIsTheCallersLock();
     this.assertOriginIsTheCallersLock();
     this.assertSelfEqualsReservedAddress();
-    this.assertZeroValue();
+    if (this.acceptsValue) this.assertValueCovered();
+    else this.assertZeroValue();
     this.emitSingleMasterCheck();
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
@@ -609,7 +618,9 @@ class HeadEmitter {
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
+    if (!this.acceptsValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
+    if (this.acceptsValue) this.assertValueCovered();
     this.dropName('kind');
     this.dropName('callerRef');
     this.dropName('originRef');
@@ -688,8 +699,8 @@ class HeadEmitter {
   }
 
   /**
-   * A root frame: the caller reference is a P2PKH lock that is both the witness `sender` and the origin, the
-   * frame carries no value, and the caller's signature commits to this transaction's calls.
+   * A root frame: the caller reference is a P2PKH lock that is both the witness `sender` and the origin, and the
+   * caller's signature commits to this transaction's calls.
    */
   private assertRootFrame(): void {
     this.assertOriginIsCaller();
@@ -705,7 +716,6 @@ class HeadEmitter {
     this.equalVerify();
     this.assertCallerSignatureHashType();
     this.dropName('callerLock');
-    this.assertZeroValue();
   }
 
   /** A message call: the master's self constant is checked above, and the validator binds sender, value, origin. */
@@ -723,6 +733,7 @@ class HeadEmitter {
    */
   private assertStaticFrame(): void {
     this.assertFrameKindValue(FRAME_KIND_STATIC);
+    if (this.acceptsValue) this.assertZeroValue();
     if (this.callDataSelectorUnconsumed) this.dropBottom();
   }
 
@@ -811,10 +822,16 @@ class HeadEmitter {
    * A `DELEGATE` or `INTERNAL` call runs on the records of the caller's context contract, which is another
    * contract's settlement, so a master that made one never settles its own. A message or read-only call runs on
    * the callee's own records, which its own master or validator settles, so such a caller still settles its own.
+   *
+   * A frame whose master does not settle alone carries no value: the validator does not account for containers.
    */
   private assertSelfSettlementWhenAlone(): void {
-    if (!this.settlesOwnRecords) return;
-    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC)) return;
+    const notAlone = (): void => { if (this.acceptsValue) this.assertZeroValue(); };
+    if (this.callSites.some((site) => site.kind !== FRAME_KIND_CALL && site.kind !== FRAME_KIND_STATIC)) {
+      notAlone();
+      return;
+    }
+    if (!this.settlesOwnRecords && !this.acceptsValue) return;
     this.emitBranch(
       () => {
         this.emitInputIndex();
@@ -835,7 +852,7 @@ class HeadEmitter {
         this.push('bool');
       },
       () => this.assertSelfSettlement(),
-      () => {},
+      notAlone,
     );
   }
 
@@ -960,6 +977,16 @@ class HeadEmitter {
     this.pick('value');
     this.emit0();
     this.numequalVerify();
+  }
+
+  /** Requires the frame's value to be non-negative and covered by the growth of the master's containers (4b). */
+  private assertValueCovered(): void {
+    this.pick('value');
+    this.emitOp(Opcodes.OP_DUP, Opcodes.OP_0, Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+    this.emitBytes(new Uint8Array(containerGrowthScript()));
+    this.push('growth');
+    this.emitOp(Opcodes.OP_LESSTHANOREQUAL, Opcodes.OP_VERIFY);
+    this.pop(2);
   }
 
   private pushCategorySlot(): void {

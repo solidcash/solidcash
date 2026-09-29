@@ -4,6 +4,8 @@ import {
 } from '../../src/message-bus/compose-semantic-claim-loop.js';
 import { createConstraintFixpointSession } from '../../src/message-bus/constraint-fixpoint-session.js';
 
+// test:unit uses --no-isolate; ensure this file's graph mock is applied to a fresh module instance.
+vi.hoisted(() => { vi.resetModules(); });
 vi.mock('../../src/message-bus/graph.js', async (original) => ({
   ...await original<typeof import('../../src/message-bus/graph.js')>(),
   finalizeAtomicInvocationGraph: vi.fn(() => ({ layout: { participantInputs: [] } })),

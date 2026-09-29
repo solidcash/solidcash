@@ -8,6 +8,8 @@ import {
 } from '../../src/message-bus/compose-semantic-claim-loop.js';
 import { settlement } from '../../src/stateful/value-chunk-persist.js';
 
+// test:unit uses --no-isolate; another file may have loaded the real graph module in this worker first.
+vi.hoisted(() => { vi.resetModules(); });
 vi.mock('../../src/message-bus/graph.js', async (original) => ({
   ...await original<typeof import('../../src/message-bus/graph.js')>(),
   finalizeAtomicInvocationGraph: vi.fn(() => ({ layout: { participantInputs: [] } })),

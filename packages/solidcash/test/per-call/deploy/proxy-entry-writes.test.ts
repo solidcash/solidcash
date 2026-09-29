@@ -3,11 +3,13 @@ import { binToHex, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { bytesToHex, encodeChunkableValueTail } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { encodeFunctionArgument } from '../../../src/Argument.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import { participant, planMappingBatch, planMappingWrite } from '../../../src/per-call/composer/index.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { buildProxyArtifact, deployPerCallProxy } from '../../../src/per-call/proxy/index.js';
+import { callPerCallProxyEntry } from '../../../src/per-call/proxy/deploy.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -55,7 +57,18 @@ const EIGHT_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
+/**
+ * The read-modify-write shape: the entry reads the key it writes, so the read is what decides whether the write
+ * splices a new node in or rewrites the one the key already names.
+ */
+const COUNTER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   mapping(address => uint) balances;'
+  + '   function initialize(address who) { this.balances[who] = this.balances[who] + 1; }'
+  + ' }';
+
 const CALLER_TXID = '33'.repeat(32);
+const SECOND_CALLER_TXID = '44'.repeat(32);
 
 interface Funding {
   readonly network: MockNetworkProvider;
@@ -64,11 +77,13 @@ interface Funding {
   readonly implFunding: { txid: string; vout: number; satoshis: bigint };
   readonly proxyFunding: { txid: string; vout: number; satoshis: bigint };
   readonly callerUtxo: { txid: string; vout: number; satoshis: bigint };
+  /** A second coin at the deployer's lock, for a call the deployment's own hop did not already spend. */
+  readonly callUtxo: { txid: string; vout: number; satoshis: bigint };
   readonly deployerLock: Uint8Array;
   readonly changeAddress: string;
 }
 
-/** Funds the two genesis UTXOs and, when the hop is broadcast, the deployer's own coin. */
+/** Funds the two genesis UTXOs and, when the hop is broadcast, the deployer's own coins. */
 async function funded(network: MockNetworkProvider, withCaller = false): Promise<Funding> {
   const signature = new SignatureTemplate(alicePriv);
   const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
@@ -78,13 +93,17 @@ async function funded(network: MockNetworkProvider, withCaller = false): Promise
   // A root frame binds `msg.sender` to the lock of the input its caller reference names, so the caller's own coin
   // has to sit at exactly the deployer lock the witness sender is bound to.
   const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 100_000n };
+  const callUtxo = { txid: SECOND_CALLER_TXID, vout: 0, satoshis: 100_000n };
   await network.addUtxo(funder.address, implFunding);
   await network.addUtxo(funder.address, proxyFunding);
-  if (withCaller) await network.addUtxo(binToHex(deployerLock), callerUtxo);
+  if (withCaller) {
+    await network.addUtxo(binToHex(deployerLock), callerUtxo);
+    await network.addUtxo(binToHex(deployerLock), callUtxo);
+  }
   return {
     network, signature,
     funder: funder.unlock.spend(alicePub, signature),
-    implFunding, proxyFunding, callerUtxo, deployerLock,
+    implFunding, proxyFunding, callerUtxo, callUtxo, deployerLock,
     changeAddress: funder.address,
   };
 }
@@ -98,6 +117,7 @@ async function deploy(
   readonly deployment: Awaited<ReturnType<typeof deployPerCallProxy>>;
   readonly network: MockNetworkProvider;
   readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly funding: Funding;
 }> {
   const artifacts = compileStringMulti(source, { composition: 'per-call' });
   const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
@@ -114,7 +134,7 @@ async function deploy(
       : {}),
     vm: compositionMachine(),
   });
-  return { deployment, network, artifacts };
+  return { deployment, network, artifacts, funding };
 }
 
 describe('a proxied initialize that writes a sorted mapping', () => {
@@ -262,5 +282,73 @@ describe('a proxied initialize that writes a sorted mapping', () => {
       expect(bytesToHex(hop!.outputs[output.index]!.token!.nft!.commitment)).toBe(bytesToHex(node.after));
     });
     expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('settles a read-modify-write initializer, creating the node at the value its own read produced', async () => {
+    const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const { deployment, network } = await deploy(COUNTER_SOURCE, [deployerLock], true);
+
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // `balances[who]` reads as zero in the empty list, so the entry's own body computes one for the node it creates.
+    const who = encodeFunctionArgument(deployerLock, 'address') as Uint8Array;
+    const value = encodeFunctionArgument(1n, 'uint256') as Uint8Array;
+    const plan = planMappingBatch({
+      writes: [{ keys: [who], value }],
+      inventory: [headSentinelCommitment()],
+      encodeValue: (tail: Uint8Array) => tail,
+    });
+    const created = plan.written.find((node) => !node.existed)!;
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1);
+    expect(bytesToHex(trailing[0]!.output.token!.nft!.commitment)).toBe(bytesToHex(created.after));
+    // The node's slot is the key's, so the created node is the entry's own write.
+    expect(bytesToHex(decodeEntryCommitment(created.after).slot)).toBe(bytesToHex(keyToSlotMulti([who])));
+
+    // The empty head is spent and recreated relinked to the created node's slot, and the hop is broadcast.
+    const headIndex = deployment.initialize.draft.layout.participants
+      .find((placed) => placed.id.startsWith('mapping-head-'))!.index;
+    expect(bytesToHex(deployment.initialize.transaction.outputs[headIndex]!.token!.nft!.commitment))
+      .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
+    const hop = deployment.initialize.broadcast;
+    expect(hop).toBeDefined();
+    expect(binToHex(hop!.inputs[headIndex]!.outpointTransactionHash)).toBe(deployment.proxy.tx.txid);
+    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('rewrites the key the collection already holds in place, through the hop a later call takes', async () => {
+    const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const { deployment, network, artifacts, funding } = await deploy(COUNTER_SOURCE, [deployerLock], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The call reads the node the deployment's hop created and writes the value it computed back: an update, with
+    // nothing created, so the spent node is the one the key names and it is recreated where it stands.
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'initialize',
+      args: [deployerLock],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    expect(result.draft.trailingOutputs).toHaveLength(0);
+
+    const who = encodeFunctionArgument(deployerLock, 'address') as Uint8Array;
+    const written = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(written.slot)).toBe(bytesToHex(keyToSlotMulti([who])));
+    expect(bytesToHex(written.value)).toBe(bytesToHex(encodeFunctionArgument(2n, 'uint256') as Uint8Array));
+    expect(result.broadcast).toBeDefined();
   });
 });

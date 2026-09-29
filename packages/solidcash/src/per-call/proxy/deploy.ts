@@ -31,7 +31,7 @@
 
 import { createVirtualMachineBch2026, encodeDataPush, hexToBin } from '@bitauth/libauth';
 import {
-  FrameKind, bytesEqual, validatorRedeemScript, type Artifact, type RecordEntry, type StateValue,
+  FrameKind, bytesEqual, bytesToHex, validatorRedeemScript, type Artifact, type RecordEntry, type StateValue,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
@@ -40,7 +40,7 @@ import {
 import type { TransactionDetails, Unlocker, Utxo } from '../../interfaces.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import { deployStatefulContract } from '../../stateful/sc-deploy.js';
-import { headSentinelCommitment } from '../../stateful/SortedList.js';
+import { decodeEntryCommitment, headSentinelCommitment } from '../../stateful/SortedList.js';
 import type { DeployOptions, DeployResult } from '../../stateful/stateful-lifecycle-types.js';
 import { libauthOutputToSolidCashOutput, libauthTokenDetailsToSolidCashTokenDetails } from '../../utils.js';
 import {
@@ -55,7 +55,7 @@ import {
   readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
 } from '../deploy/records.js';
 import { PerCallProxyDeployError } from './errors.js';
-import { hopEntryWrites, mappingHeadCollection, type HopEntryWrites } from './entry-writes.js';
+import { hopEntryWrites, mappingHeadCollection, mappingNodeSlot, type HopEntryWrites } from './entry-writes.js';
 import { buildProxyArtifact, readLayoutAgreement, type LayoutAgreement } from './generate.js';
 
 /** One contract's deploy inputs, minus what this module derives: the provider and the proxy's record seed. */
@@ -457,15 +457,16 @@ export async function deployPerCallProxy(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: [],
+    extraWrites: entryWrites?.learningCandidates ?? [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     entryLabel: entryLabelFor(options.initialize.functionName),
-    planFor: (writtenCommitments, eventCommitments) => buildHopPlan({
+    planFor: (writtenCommitments, entryWriteViews, eventCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
       ...(entryWrites === undefined ? {} : { entryWrites }),
+      entryWriteViews,
       eventOutputs: hopEventOutputs(
         implementationArtifact, options.initialize.functionName, proxyCategory, eventCommitments,
       ),
@@ -560,9 +561,10 @@ interface SettleHopOptions {
   readonly eventCommitments: readonly Uint8Array[];
   /** The entry, for the refusal's own words, e.g. `"initialize" entry`. */
   readonly entryLabel: string;
-  /** The plan for a given set of per-record and per-event candidate end values. */
+  /** The plan for a given set of per-record, per-entry-write and per-event candidate end values. */
   readonly planFor: (
     writtenCommitments: readonly Uint8Array[],
+    entryWriteViews: readonly Uint8Array[],
     eventCommitments: readonly Uint8Array[],
   ) => CompositionDraftPlan;
 }
@@ -588,7 +590,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   );
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
   for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
-    const plan = options.planFor([...writtenCommitments, ...writtenExtras], writtenEvents);
+    const plan = options.planFor(writtenCommitments, writtenExtras, writtenEvents);
     const candidate = createComposedDerivationHost({
       vm, artifacts: [proxyArtifact, implementationArtifact], plan,
     });
@@ -680,6 +682,8 @@ interface HopPlanOptions {
   readonly recordCommitments: readonly Uint8Array[];
   /** The commitment each record is being asked to end at, which a writing entry's own computation replaces. */
   readonly writtenCommitments: readonly Uint8Array[];
+  /** The end commitment learned for each value-dependent mapping node, in the entry's learning order. */
+  readonly entryWriteViews: readonly Uint8Array[];
   /** The lock the records sit at: the data-NFT covenant the proxy's category derives. */
   readonly recordLockingBytecode: Uint8Array;
   /** The proxy's category as hex, which the records' write path names the authorizing master by. */
@@ -806,11 +810,12 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
   // The records the entry's own body writes follow the state records its frame declares, which is the ordinal the
   // body's group walk reads them at. A created node is a trailing output past the events.
   const laidWrites = options.entryWrites?.lay({
-    layout,
+    indexOf: (id) => participant(layout, id).index,
     proxyMasterIndex,
     createdBase: layout.participantCount + options.eventOutputs.length,
     recordAmount: options.validatorAmount,
     category: options.proxyCategory,
+    learnedViews: options.entryWriteViews,
   });
   if (laidWrites !== undefined) implementationSegments[0] = [...implementationSegments[0]!, ...laidWrites.entries];
 
@@ -974,6 +979,16 @@ function participantUtxo(
     // empty list's own commitment is the one the hop spends.
     const head = bytesToHexText(headSentinelCommitment());
     return pools.collectionNodes.find((node) => node.token?.nft?.commitment === head);
+  }
+  const nodeSlot = mappingNodeSlot(id);
+  if (nodeSlot !== undefined) {
+    // A node the entry spends that is not the empty head: its id names the slot, which its commitment carries.
+    const slot = bytesToHex(nodeSlot);
+    return pools.collectionNodes.find((node) => {
+      const commitment = node.token?.nft?.commitment;
+      return commitment !== undefined
+        && bytesToHex(decodeEntryCommitment(new Uint8Array(hexToBin(commitment))).slot) === slot;
+    });
   }
   const pool = id === PROXY_MASTER_ID || id === IMPLEMENTATION_MASTER_ID ? pools.masters
     : id === VALIDATOR_ID ? pools.validators
@@ -1167,8 +1182,13 @@ export async function callPerCallProxyEntry(
     );
   }
 
+  // A generated proxy declares only the implementation's fields, not its mappings, so the classification layout
+  // carries the implementation's collections: they name the entry covenants a live mapping node sits at, which is
+  // what tells one collection's nodes from another's.
   const proxyLayout = proxyArtifact.stateLayout!;
-  const proxyPools = await readPerCallDeployment(provider, options.proxyCategoryId, proxyLayout);
+  const classificationLayout = implementationArtifact.stateLayout?.collections === undefined ? proxyLayout
+    : { ...proxyLayout, collections: implementationArtifact.stateLayout.collections };
+  const proxyPools = await readPerCallDeployment(provider, options.proxyCategoryId, classificationLayout);
   if (proxyPools.records.length !== proxyLayout.dataNftCount) {
     throw new PerCallProxyDeployError(
       `category ${options.proxyCategoryId} holds ${proxyPools.records.length} record(s) for a proxy whose layout `
@@ -1216,6 +1236,7 @@ export async function callPerCallProxyEntry(
     functionName: options.functionName,
     ...(options.args === undefined ? {} : { args: options.args }),
     callerLockingBytecode: options.callerLockingBytecode,
+    nodesByCollection: proxyPools.nodesByCollection,
   });
   const settled = await settleHop({
     vm,
@@ -1224,15 +1245,16 @@ export async function callPerCallProxyEntry(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: [],
+    extraWrites: entryWrites?.learningCandidates ?? [],
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     entryLabel: entryLabelFor(options.functionName),
-    planFor: (writtenCommitments, eventCommitments) => buildHopPlan({
+    planFor: (writtenCommitments, entryWriteViews, eventCommitments) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
       ...(entryWrites === undefined ? {} : { entryWrites }),
+      entryWriteViews,
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
       recordLockingBytecode: stateRecordLockingBytecode(options.proxyCategoryId),
       recordCategoryHex: options.proxyCategoryId,

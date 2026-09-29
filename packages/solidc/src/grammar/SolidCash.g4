@@ -116,7 +116,8 @@ hasFunctionCallAhead(): boolean {
     return input.LA(3) === dot && input.LA(5) === rparen && input.LA(6) === lparen;
   }
   return second === lparen || second === lbrace
-    || (second === dot && input.LA(4) === lparen);
+    || (second === dot && input.LA(3) === SolidCashParser.Identifier
+      && input.LA(4) === lparen && input.LA(5) !== lbrace);
 }
 }
 

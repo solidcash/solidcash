@@ -17474,14 +17474,25 @@ function predictExpressionPrefix(
   const first = input.LA(1);
   const lparen = SolidCashParser.T__56;
   const lbrack = SolidCashParser.T__81;
-  if (first === lparen) return EXPRESSION_ALT_GROUPED;
+  if (first === lparen) {
+    const rparen = SolidCashParser.T__57;
+    const dot = SolidCashParser.T__6;
+    if ((input.LA(2) === SolidCashParser.Identifier && input.LA(3) === rparen && input.LA(4) === lparen)
+      || (input.LA(2) === SolidCashParser.Identifier && input.LA(3) === dot
+        && input.LA(4) === SolidCashParser.Identifier && input.LA(5) === rparen && input.LA(6) === lparen)) {
+      return EXPRESSION_ALT_CALL;
+    }
+    return EXPRESSION_ALT_GROUPED;
+  }
   if (first === SolidCashParser.Identifier) {
     // `uint(x)` is a typeCast alternative, not a call; let ATN keep that split.
     if (input.LT(1).text === 'uint') return undefined;
     const lbrace = SolidCashParser.T__3;
     const dot = SolidCashParser.T__6;
     const second = input.LA(2);
-    if (second === lparen || second === lbrace || (second === dot && input.LA(4) === lparen)) {
+    if (second === lparen || second === lbrace
+      || (second === dot && input.LA(3) === SolidCashParser.Identifier
+        && input.LA(4) === lparen && input.LA(5) !== lbrace)) {
       return EXPRESSION_ALT_CALL;
     }
     return EXPRESSION_ALT_IDENTIFIER;

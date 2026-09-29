@@ -32175,6 +32175,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.body.location, positionHint: PositionHint.END };
     const width = frame.deployWidth!;
     const base = this.getBlockSlotOffset('deploy', frame.deployBase ?? 0);
+    if (frame.sites > 8) {
+      // Kernel routes can reserve one deploy window for every possible row. An unrolled check embeds the same
+      // output proof hundreds of times (and a growing 1<<site literal at every site). Walk the bitmap and
+      // reserved windows together instead. The two temporaries are untracked and both are dropped on exit.
+      this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData); // [mask]
+      this.emit(Op.OP_0, locationData); // [mask, site]
+      this.emit(Op.OP_BEGIN, locationData);
+      this.emit(Op.OP_OVER, locationData); // [mask, site, mask]
+      this.emit(Op.OP_2, locationData);
+      this.emit(Op.OP_MOD, locationData);
+      this.emit(Op.OP_NOT, locationData);
+      this.emit(Op.OP_IF, locationData); // [mask, site]
+      for (let member = 0; member < width; member += 1) {
+        this.emitMasterInputIndex(locationData, 2); // [mask, site, owner]
+        this.emit(Op.OP_OVER, locationData); // [mask, site, owner, site]
+        if (width > 1) {
+          this.emit(encodeInt(BigInt(width)), locationData);
+          this.emit(Op.OP_MUL, locationData);
+        }
+        const offset = base + member;
+        if (offset > 0) {
+          this.emit(encodeInt(BigInt(offset)), locationData);
+          this.emit(Op.OP_ADD, locationData);
+        }
+        this.emit(Op.OP_ADD, locationData); // [mask, site, output index]
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+        this.emit(new Uint8Array([Op.OP_1]), locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.emit(Op.OP_DUP, locationData);
+        this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+        this.emit(Op.OP_SIZE, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(Op.OP_0, locationData);
+        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+        this.emit(Op.OP_OUTPUTVALUE, locationData);
+        this.emit(encodeInt(1000n), locationData);
+        this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+      }
+      this.emit(Op.OP_ENDIF, locationData);
+      this.emit(Op.OP_1ADD, locationData); // [mask, next site]
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_2, locationData);
+      this.emit(Op.OP_DIV, locationData);
+      this.emit(Op.OP_SWAP, locationData); // [remaining mask, next site]
+      this.emit(Op.OP_DUP, locationData);
+      this.emit(encodeInt(BigInt(frame.sites)), locationData);
+      this.emit(Op.OP_NUMEQUAL, locationData);
+      this.emit(Op.OP_UNTIL, locationData);
+      this.emit(Op.OP_2DROP, locationData);
+      return;
+    }
     for (let site = 0; site < frame.sites; site += 1) {
       this.emitPickCompilerRouteFrameValue(GRAPH_DEPLOY_SITE, locationData);
       this.emit(encodeInt(1n << BigInt(site)), locationData);

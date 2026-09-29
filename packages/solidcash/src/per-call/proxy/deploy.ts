@@ -31,8 +31,8 @@
 
 import { binToHex, createVirtualMachineBch2026, encodeDataPush, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import {
-  FrameKind, bytesEqual, bytesToHex, sha256, validatorRedeemScript,
-  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo,
+  FrameKind, bytesEqual, bytesToHex, parsePushdataCommitment, sha256, validatorRedeemScript,
+  type Artifact, type RecordEntry, type StateValue, type StructDefinitionInfo, type StateLayout,
 } from '@solidcash/utils';
 import { perCallValidator } from 'solidc';
 import {
@@ -245,6 +245,23 @@ function hopRetvalPlaceholder(contract: string, functionName: string): Uint8Arra
 /** The struct definitions a hop decodes an implementation entry's returned values against. */
 function structDefinitionsOf(artifact: Artifact): readonly StructDefinitionInfo[] | undefined {
   return artifact.stateLayout?.structs ?? artifact.structs;
+}
+
+/**
+ * The live state a deployment's records hold, keyed by field name, as the entry's own body reads it.
+ *
+ * A per-call contract's state lives in its data-NFT records, one register per data NFT, each decoded by the same
+ * pushdata decoder the direct path uses. An entry whose own code derives a call's target or an argument from state
+ * reads these values, so the planner is handed them rather than left to refuse a target only the chain holds.
+ */
+function liveStateValues(
+  layout: StateLayout, recordCommitments: readonly Uint8Array[],
+): Record<string, StateValue> {
+  const values: Record<string, StateValue> = {};
+  recordCommitments.forEach((commitment, nftIndex) => {
+    Object.assign(values, parsePushdataCommitment(bytesToHex(commitment), layout, nftIndex));
+  });
+  return values;
 }
 
 /**
@@ -526,10 +543,14 @@ export async function deployPerCallProxy(
     ? hopRetvalPlaceholder(implementationArtifact.contractName, options.initialize.functionName)
     : undefined;
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
-  // frame runs from the live deployment the caller named for it.
+  // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
+  // values, the proxy's own address for `address(this)`, and the deployer's lock for `msg.sender`.
   const externalPlan = await planHopExternalCalls({
     provider, artifact: implementationArtifact, functionName: options.initialize.functionName,
     args: options.initialize.args ?? [], externals: options.externals ?? {}, validatorProgram,
+    stateValues: liveStateValues(proxyArtifact.stateLayout!, recordCommitments),
+    selfAddress: proxyMaster.address,
+    senderAddress: options.callerLockingBytecode,
   });
   const settled = await settleHop({
     vm,
@@ -699,6 +720,10 @@ interface SettleHopOptions {
  * close the entry's own `return` comparison leaves behind names the bytes it built. A void callee has nothing to
  * learn, but its frame is still run so a callee that refuses — or one that turns out to rewrite the record the
  * plan declared kept — is named here rather than reported as the caller's failure.
+ *
+ * A callee whose own entry makes calls reaches a frame below it, so the callees are settled deepest first: the
+ * frame a callee reaches is derived (and its own answer learned) before the callee that reaches it, and a callee
+ * that makes calls is settled by deriving its subtree rather than by asking its program outright.
  */
 async function settleCallees(options: {
   readonly vm: Machine;
@@ -708,12 +733,39 @@ async function settleCallees(options: {
   readonly maximumCommitmentBytes: number;
 }): Promise<Map<string, Uint8Array>> {
   const learned = new Map<string, Uint8Array>();
-  for (const callee of options.callees) {
+  const depthOf = (index: number): number => {
+    let depth = 1;
+    let current = options.callees[index]!.enteredBy;
+    while (current !== null) {
+      depth += 1;
+      current = options.callees[current]!.enteredBy;
+    }
+    return depth;
+  };
+  const deepestFirst = options.callees
+    .map((_callee, index) => index)
+    .sort((left, right) => depthOf(right) - depthOf(left));
+  for (const calleeIndex of deepestFirst) {
+    const callee = options.callees[calleeIndex]!;
     const placeholder = hopRetvalPlaceholder(callee.contract, callee.entry);
     for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPTS; attempt += 1) {
       const candidate = createComposedDerivationHost({
         vm: options.vm, artifacts: options.artifacts, plan: options.planFor(learned),
       });
+      // A callee that makes calls cannot accept before its own calls are derived, so its subtree is derived first;
+      // a stall there is the callee's own return comparison, which is read below like any other.
+      if (callee.calls.length > 0) {
+        const frame: FrameRequest = {
+          contract: callee.contract, functionName: callee.functionName, kind: callee.kind, master: callee.master,
+        };
+        try {
+          deriveComposition([frame], candidate.host);
+          break;
+        } catch (error) {
+          // A void callee that makes calls has no return to learn, so a stall in its subtree is its own refusal.
+          if (!callee.returns) throw error;
+        }
+      }
       const program = candidate.draft.programFor(callee.master);
       const state = options.vm.evaluate({
         inputIndex: participant(candidate.draft.layout, callee.master).index,
@@ -1187,11 +1239,22 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
     argumentPushes: pushes,
     redeemScript: implementationMaster.script,
   };
-  // One frame per callee, entered by the implementation master: its own master, its own live records declared
-  // kept, and the return value the caller's record carries. A callee whose own body rewrites its record is refused
-  // by the callee's own frame below rather than declared here.
-  const calleeMasterDrafts: DraftMaster[] = callees.map((callee, index) => {
+  // One frame per callee, entered by the master that calls it: its own master, its own live records declared kept,
+  // its own calls and the frames those reach, and the return value the caller's record carries. A callee whose own
+  // body rewrites its record is refused by the callee's own frame below rather than declared here.
+  const everyCall = [...calls, ...callees.flatMap((callee) => callee.calls)];
+  const callTo = new Map<string, DraftCall>();
+  for (const call of everyCall) if (!callTo.has(call.callee)) callTo.set(call.callee, call);
+  const calleeMasterDrafts: DraftMaster[] = callees.map((callee) => {
     const indices = callee.records.map((record) => participant(layout, record.id).index);
+    // The frame's own call-data band is the pushes of the call that reaches it; a callee a loop reaches has several
+    // records, and the first of them carries the same selector and shape as the rest.
+    const argumentPushes = callTo.get(callee.master)?.argumentPushes ?? new Uint8Array(0);
+    // A callee's own sender is the contract that calls it: the implementation's own address for a first-level
+    // callee, and the calling callee's address below that.
+    const sender = callee.enteredBy === null
+      ? proxyMaster.address
+      : callees[callee.enteredBy]!.deployed.address;
     return {
       master: callee.master,
       contract: callee.contract,
@@ -1199,23 +1262,26 @@ function buildHopPlan(options: HopPlanOptions): CompositionDraftPlan {
       program: callee.deployed.script,
       facts: {
         contract: callee.contract, functionName: callee.functionName, kind: callee.kind,
-        callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
+        callerIsUser: false, originEqualsCaller: false,
+        makesExternalCall: callee.calls.length > 0, mastersOfContract: 1,
       },
-      frame: { kind: callee.kind, sender: proxyMaster.address, self: callee.deployed.address, value: 0n },
-      enteredBy: IMPLEMENTATION_MASTER_ID,
+      frame: { kind: callee.kind, sender, self: callee.deployed.address, value: 0n },
+      enteredBy: callee.enteredBy === null ? IMPLEMENTATION_MASTER_ID : callees[callee.enteredBy]!.master,
       origin: USER_ID,
-      calls: [],
+      calls: callee.calls,
       retval: callee.returns
         ? options.calleeRetvals?.get(callee.master)
           ?? hopRetvalPlaceholder(callee.contract, callee.entry)
         : new Uint8Array(0),
-      segments: [callee.records.map((record, nftIndex): RecordEntry => ({
-        in: indices[nftIndex]!, out: indices[nftIndex]!,
-        viewIn: record.commitment, viewOut: record.commitment,
-      }))],
+      // A frame that makes k calls closes k + 1 segments, each declaring its own records kept.
+      segments: Array.from({ length: callee.calls.length + 1 }, () =>
+        callee.records.map((record, nftIndex): RecordEntry => ({
+          in: indices[nftIndex]!, out: indices[nftIndex]!,
+          viewIn: record.commitment, viewOut: record.commitment,
+        }))),
       events: [],
       sends: [],
-      argumentPushes: calls[index]!.argumentPushes,
+      argumentPushes,
       redeemScript: callee.deployed.script,
     };
   });
@@ -1642,10 +1708,14 @@ export async function callPerCallProxyEntry(
   const entryWritesFor = (commitments: readonly Uint8Array[]): HopEntryWrites | undefined =>
     hopEntryWrites({ ...writesRequest, writtenCommitments: commitments });
   // The calls the entry's own body makes through the proxy hop: the plan states their records, and each callee's
-  // frame runs from the live deployment the caller named for it.
+  // frame runs from the live deployment the caller named for it. The entry's own facts are the proxy's record
+  // values, the proxy's own address for `address(this)`, and the caller's lock for `msg.sender`.
   const externalPlan = await planHopExternalCalls({
     provider, artifact: implementationArtifact, functionName: options.functionName,
     args: options.args ?? [], externals: options.externals ?? {}, validatorProgram,
+    stateValues: liveStateValues(proxyArtifact.stateLayout!, recordCommitments),
+    selfAddress: proxyMaster.address,
+    senderAddress: options.callerLockingBytecode,
   });
   const settled = await settleHop({
     vm,

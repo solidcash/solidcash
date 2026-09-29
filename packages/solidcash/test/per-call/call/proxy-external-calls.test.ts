@@ -75,10 +75,11 @@ const oracle = artifacts.Oracle!;
 const escrow = artifacts.Escrow!;
 const writer = artifacts.Writer!;
 
-// Two shapes the artifact compiles but does not fix: an occurrence the source leaves open, and a target the
-// caller's own code computes. Both are refused by name rather than guessed at.
+// Shapes the artifact compiles but the planner used to refuse by name: an occurrence the source leaves open, a
+// target the entry's own code computes, and an entry that mixes a guarded call with a loop.
 const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
   + ' interface IOracle { function amountOf() view returns (int); }'
+  + ' interface IEscrow { function settle(); }'
   + ' contract Oracle { int public answer; function amountOf() view returns (int) { return this.answer; } }'
   + ' contract Looping {'
   + `   function spin(int n) { for (int i = 0; i < n; i = i + 1) { require(IOracle(0x${hexOf(ORACLE_ADDRESS)}).amountOf() > 0); } require(true); }`
@@ -86,12 +87,33 @@ const UNFIXED = compileStringMulti('pragma solidcash ^0.13.0;'
   + ' contract Target {'
   + '   address public foo;'
   + '   function go() { require(IOracle(this.foo).amountOf() > 0); require(true); }'
+  + ' }'
+  + ' contract Mixed {'
+  + '   address public sink;'
+  + '   function run(bool go, int n) {'
+  + `     if (go) { IEscrow(0x${hexOf(ESCROW_ADDRESS)}).settle(); }`
+  + `     for (int i = 0; i < n; i = i + 1) { require(IOracle(this.sink).amountOf() > 0); }`
+  + '     require(true);'
+  + '   }'
   + ' }', { composition: 'per-call' });
 
 /** The implementation's address at its seeded category, `addrV(category)`. */
 function implementationAddress(): Uint8Array {
   return deployMaster(impl, new Uint8Array(hexToBin(IMPL_CATEGORY)), VALIDATOR_PROGRAM).address;
 }
+
+// Two entries that call each other, each at an address baked into the other's code, so the planner is asked to
+// place a contract it already placed when it recurses.
+const CYCLE_A_CATEGORY = 'aa'.repeat(32);
+const CYCLE_B_CATEGORY = 'bb'.repeat(32);
+const CYCLE_A_ADDRESS = validatorAddress(hexToBin(CYCLE_A_CATEGORY), VALIDATOR_PROGRAM);
+const CYCLE_B_ADDRESS = validatorAddress(hexToBin(CYCLE_B_CATEGORY), VALIDATOR_PROGRAM);
+const CYCLE = compileStringMulti('pragma solidcash ^0.13.0;'
+  + ' interface ICycleB { function y(); }'
+  + ' interface ICycleA { function x(); }'
+  + ` contract CycleA { int public seen; function x() { ICycleB(0x${hexOf(CYCLE_B_ADDRESS)}).y(); require(true); } }`
+  + ` contract CycleB { int public seen; function y() { ICycleA(0x${hexOf(CYCLE_A_ADDRESS)}).x(); require(true); } }`,
+  { composition: 'per-call' });
 
 /** The record's own state, read back through the shipped deployment reader and decoded as a field map. */
 async function recordState(network: MockNetworkProvider, categoryId: string): Promise<string> {
@@ -102,6 +124,20 @@ async function recordState(network: MockNetworkProvider, categoryId: string): Pr
 /** The commitment the shipped encoder materializes from one state of a layout. */
 function commitment(layout: StateLayout, state: Record<string, bigint | Uint8Array>): Uint8Array {
   return new Uint8Array(Buffer.from(buildPushdataCommitment(layout, state, 0), 'hex'));
+}
+
+/** Deploys one callee at `categoryId`, so a hop's call has a live deployment to run against. */
+async function deployCallee(
+  network: MockNetworkProvider, artifact: Artifact, categoryId: string,
+): Promise<void> {
+  const signature = new SignatureTemplate(alicePriv);
+  const source = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  const funder = source.unlock.spend(alicePub, signature);
+  const funding = { txid: categoryId, vout: 0, satoshis: 500_000n };
+  await network.addUtxo(source.address, funding);
+  await deployStatefulContract(artifact, [], {
+    fundingUtxo: funding, funder, changeAddress: source.address, provider: network,
+  });
 }
 
 /** The contracts the entries call, keyed by the interface each call goes through. */
@@ -311,20 +347,25 @@ describe('a proxied entry that calls another deployed contract', () => {
     })).rejects.toThrow(/the call's callee "Writer\.bump\(\)" did not settle through the proxy/);
   });
 
-  it('refuses an occurrence the source does not fix, naming it', async () => {
+  it('states one record per visit of a loop whose width the caller fixes', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    await expect(planHopExternalCalls({
+    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    const plan = await planHopExternalCalls({
       provider: network,
       artifact: UNFIXED.Looping!,
       functionName: 'spin',
       args: [3n],
       externals: externals(),
       validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/runs loop, and the hop declares one record per call the source fixes/);
+    });
+    // Three turns of the loop, one record each, all reaching the callee the entry's own code computes.
+    expect(plan.calls).toHaveLength(3);
+    expect(plan.calls.every((call) => bytesToHex(call.target) === hexOf(ORACLE_ADDRESS))).toBe(true);
   });
 
-  it("refuses a target the caller's own code computes, naming it", async () => {
+  it("refuses a target held in a state field the caller's own state does not carry, naming it", async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    await deployCallee(network, oracle, ORACLE_CATEGORY);
     await expect(planHopExternalCalls({
       provider: network,
       artifact: UNFIXED.Target!,
@@ -332,6 +373,61 @@ describe('a proxied entry that calls another deployed contract', () => {
       args: [],
       externals: externals(),
       validatorProgram: VALIDATOR_PROGRAM,
-    })).rejects.toThrow(/targets an address the caller's own code computes/);
+    })).rejects.toThrow(/targets the state field "foo", which the caller's own state does not hold as an address/);
+  });
+
+  it("resolves a target the caller's own code computes from its state, naming the address", async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    const plan = await planHopExternalCalls({
+      provider: network,
+      artifact: UNFIXED.Target!,
+      functionName: 'go',
+      args: [],
+      externals: externals(),
+      stateValues: { foo: ORACLE_ADDRESS },
+      validatorProgram: VALIDATOR_PROGRAM,
+    });
+    expect(plan.calls).toHaveLength(1);
+    expect(bytesToHex(plan.calls[0]!.target)).toBe(hexOf(ORACLE_ADDRESS));
+  });
+
+  it('states a guarded record and one record per loop turn for an entry that mixes both', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    await deployCallee(network, oracle, ORACLE_CATEGORY);
+    await deployCallee(network, escrow, ESCROW_CATEGORY);
+    const plan = await planHopExternalCalls({
+      provider: network,
+      artifact: UNFIXED.Mixed!,
+      functionName: 'run',
+      args: [true, 3n],
+      externals: externals(),
+      stateValues: { sink: ORACLE_ADDRESS },
+      validatorProgram: VALIDATOR_PROGRAM,
+    });
+    // One record for the guarded call, then one per turn of the loop, whose target the entry's own state holds.
+    expect(plan.calls).toHaveLength(4);
+    expect(bytesToHex(plan.calls[0]!.target)).toBe(hexOf(ESCROW_ADDRESS));
+    expect(plan.calls.slice(1).every((call) => bytesToHex(call.target) === hexOf(ORACLE_ADDRESS))).toBe(true);
+  });
+
+  it('refuses a contract a call reaches below itself, naming the cycle', async () => {
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const cycleA = CYCLE.CycleA!;
+    const cycleB = CYCLE.CycleB!;
+    await deployCallee(network, cycleB, CYCLE_B_CATEGORY);
+    // The implementation's own entry reaches a callee, whose entry reaches the implementation again: a composition
+    // gives each contract one block, so the second placement is refused.
+    await expect(planHopExternalCalls({
+      provider: network,
+      artifact: cycleA,
+      functionName: 'x',
+      args: [],
+      externals: {
+        ICycleB: { artifact: cycleB, categoryId: CYCLE_B_CATEGORY },
+        ICycleA: { artifact: cycleA, categoryId: CYCLE_A_CATEGORY },
+      },
+      validatorProgram: VALIDATOR_PROGRAM,
+    })).rejects.toThrow(/reaches "CycleA", which this hop already places/);
   });
 });

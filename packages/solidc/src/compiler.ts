@@ -6,7 +6,7 @@ import {
   BailErrorStrategy, CharStream, CommonTokenStream, DefaultErrorStrategy, LexerATNSimulator,
   ParserATNSimulator, PredictionContextCache, PredictionMode,
 } from 'antlr4';
-import { binToHex } from '@bitauth/libauth';
+import { binToHex, decodeAuthenticationInstructions, hexToBin } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   AbiFunctionReference, Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
@@ -327,15 +327,24 @@ function assertPublishedVerifierBinding(artifact: Artifact, maximumInputBytes?: 
     ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
     ...Object.values(artifact.functionBodies ?? {}),
   ]);
-  const expectedPush = `23${expectedLock}`;
-  const occurrences = [...executableBytecodes]
-    .reduce((count, bytecode) => count + bytecode.split(expectedPush).length - 1, 0);
-  const embeddedLocks = [...executableBytecodes]
-    .flatMap((bytecode) => bytecode.match(/aa20[0-9a-f]{64}87/g) ?? []);
+  // A raw substring can straddle unrelated opcodes or live inside a different pushed program. Inspect
+  // complete P2SH32 pushes, excluding the compiler's fixed dummy-funder lock: that lock is used to validate
+  // balanced slots and has no relation to the detached verifier program.
+  const embeddedLocks = [...executableBytecodes].flatMap((bytecode) => (
+    decodeAuthenticationInstructions(hexToBin(bytecode))
+      .flatMap((instruction) => {
+        if (!('data' in instruction)) return [];
+        const lock = instruction.data;
+        const lockHex = binToHex(lock);
+        return lock.length === 35 && lock[0] === 0xaa && lock[1] === 0x20 && lock[34] === 0x87
+          && lockHex !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+          ? [lockHex] : [];
+      })
+  ));
   // Some leaf routes authenticate verifier membership without a literal P2SH32 comparison. The program-
   // provenance invariant above covers those. If codegen does emit a verifier lock, however, it must be this
   // exact published program rather than a preliminary specialization.
-  if (embeddedLocks.length > 0 && occurrences < 1) {
+  if (embeddedLocks.length > 0 && !embeddedLocks.includes(expectedLock)) {
     throw new Error(
       `message-bus route verifier lock does not match the published verifier program `
       + `(expected ${expectedLock}, found ${embeddedLocks.join(', ') || 'none'})`,

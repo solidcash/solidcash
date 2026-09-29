@@ -51,7 +51,9 @@ describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], 
       forceStateful: true,
       messageBus: true,
     });
-    expect(artCallerExplicitBus.debug?.bytecode).toBe(artCaller.debug?.bytecode);
+    expect(artCaller.messageBus).toBeUndefined();
+    expect(artCallerExplicitBus.messageBus).toBeDefined();
+    expect(artCallerExplicitBus.debug?.bytecode).not.toBe(artCaller.debug?.bytecode);
     expect(artCallerExplicitBus.abi[0].externalCalls?.[0].batchInvocations)
       .toBeUndefined();
 

@@ -7,9 +7,9 @@ import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry
  *
  * The design binds a proxied call to the proxy's own settled implementation: the proxy's master reads the
  * implementation from its state and names it as the delegate target, forwarding the call data it received. A
- * contract whose *only* body is such a fallback now compiles, and the toy drives the compiled shape; a fallback
- * beside ordinary entries is still refused, because the head cannot precede a selector-dispatched fallback. A
- * delegatecall whose call data is not the entry's own is refused too, since the witness call record it would need
+ * contract whose *only* body is such a fallback now compiles, and the toy drives the compiled shape; any other
+ * fallback is dispatched to for a selector no entry has, as the EVM's is. A delegatecall whose call data is not the
+ * entry's own, or whose target the contract does not hold, is refused, since the witness call record it would need
  * is not emitted. Wherever a shape is refused there is no spend to mutate, so the refusal is pinned by name.
  */
 
@@ -24,15 +24,16 @@ function thrownOf(source: string, options: Record<string, unknown> = {}): { code
 }
 
 describe('a proxy does not compile for per-call composition', () => {
-  it('refuses a fallback that dispatches, by name', () => {
+  it('refuses a fallback that delegates to itself, by name', () => {
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Proxy {'
       + '   address implementation;'
       + '   fallback(bytes input) external { address(this).delegatecall(input); require(true); }'
       + ' }';
-    const refusal = thrownOf(source);
+    const refusal = refusalOf(source);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+    expect(refusal.message).toBe('Proxy.__fallback(): a low-level call needs the witness `calls[]` checks, which '
+      + 'are not emitted yet');
   });
 
   it('serves the fallback that forwards its own call data, which is the proxy the toy drives', () => {

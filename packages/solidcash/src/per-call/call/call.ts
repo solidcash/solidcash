@@ -23,13 +23,14 @@
  *
  * A call to a payable entry may carry value: the frame's `msg.value`, paid by the caller into a satoshi container
  * of the contract, whose growth the master requires to cover it (spec 4b). A value send is a call to `receive()`
- * (`sendPerCallValue`), refused by name for a contract without one. An entry that sends pays from the contract's
+ * (`sendPerCallValue`), or to a payable `fallback()` when the contract has no `receive()`, as the EVM picks the
+ * body; a contract with neither is refused by name. An entry that sends pays from the contract's
  * containers: each send's lock and amount are learned from the body's own pin, the containers cover what the call
  * does not bring, and one of them, keeping the change, precedes the sends, which binds them to the frame. A send
  * the containers cannot cover is refused by name, as the EVM reverts it; a send on a branch is not planned yet. A
- * send to a contract is a call into its `receive()`, made after the entry's own code: the call resolves the
- * recipient from the send's published recipe, finds it among `externals`, and plans its `receive()` frame, whose
- * containers take the value; a recipient with no `receive()` is refused by name.
+ * send to a contract is a call into its `receive()` (or its payable `fallback()`), made after the entry's own code:
+ * the call resolves the recipient from the send's published recipe, finds it among `externals`, and plans the
+ * frame of that body, whose containers take the value; a recipient with neither is refused by name.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -48,6 +49,8 @@ import {
 import {
   FrameKind,
   bytesEqual,
+  computeFunctionSelector,
+  computeFunctionSignature,
   parsePushdataCommitment,
   sha256,
   validatorAddress,
@@ -297,6 +300,29 @@ interface CallEntry {
 
 /** The ABI name of `receive()`, the entry a value send runs. */
 export const RECEIVE_ENTRY = '__receive';
+/** The ABI name of `fallback()`, which a value send runs when the contract has no `receive()`. */
+export const FALLBACK_ENTRY = '__fallback';
+/** A value send's call data: the selector of `receive()` alone, the EVM's empty call data. */
+const VALUE_SEND_CALL_DATA = computeFunctionSelector(computeFunctionSignature(RECEIVE_ENTRY, []));
+
+/**
+ * The body a value send runs, as the EVM picks it: `receive()`, else a payable `fallback()`. `what` names the value
+ * in the refusal of a contract with neither.
+ */
+function valueEntryOf(artifact: Artifact, what: string): Artifact['abi'][number] {
+  const receive = artifact.abi.find((candidate) => candidate.name === RECEIVE_ENTRY);
+  if (receive !== undefined) return receive;
+  const fallback = artifact.abi.find((candidate) => candidate.name === FALLBACK_ENTRY);
+  if (fallback === undefined) {
+    throw new PerCallCallError(`contract "${artifact.contractName}" has no receive(), so ${what} has no body to run`);
+  }
+  if (!(fallback.modifiers ?? []).includes('payable')) {
+    throw new PerCallCallError(
+      `contract "${artifact.contractName}" has no receive() and its fallback() is not payable, so it refuses ${what}`,
+    );
+  }
+  return fallback;
+}
 
 /** The ABI row a call names, refusing an entry the artifact does not publish. */
 function requireEntry(artifact: Artifact, functionName: string): CallEntry {
@@ -401,6 +427,12 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   if (value > 0n && !entry.payable) {
     throw new PerCallCallError(`entry "${functionName}" is not payable, so a call to it carries no value`);
   }
+  if (entry.name === FALLBACK_ENTRY && (options.args ?? []).length > 0) {
+    throw new PerCallCallError(
+      `a call to the fallback() of "${artifact.contractName}" carries a value send's empty call data, so it takes no `
+      + 'argument',
+    );
+  }
   if (entry.sendsConditionally) {
     throw new PerCallCallError(
       `entry "${functionName}" sends on a branch its execution decides, which this call path does not plan yet`,
@@ -413,14 +445,14 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   const retvalPlaceholderBytes = returnsValue ? retvalPlaceholder(artifact.contractName, entry.name) : undefined;
   // A master dispatches over its bodies; a user's frame leads its call data with the selector only when there is
   // more than one body to choose between (a single body plus, when the contract has one, its constructor), or when
-  // the sole body is a forwarding fallback, whose parameter is the band itself. A master with one body is entered
-  // without a selector, which a user's frame cannot carry here yet: the composer refuses a user-entered frame that
-  // carries call data unless the program dispatches.
+  // the contract has a fallback: a forwarding fallback's parameter is the band itself, and any other is reached
+  // through the dispatcher. A master with one body is entered without a selector, which a user's frame cannot carry
+  // here yet: the composer refuses a user-entered frame that carries call data unless the program dispatches.
   const dispatchedBodies = artifact.abi
     .filter((candidate) => !candidate.name.startsWith('__') || candidate.name === RECEIVE_ENTRY).length
     + (artifact.abi.some((candidate) => candidate.name === '__construct') ? 1 : 0);
-  const forwardsItsInput = artifact.abi.some((candidate) => candidate.name === '__fallback');
-  if (dispatchedBodies <= 1 && !forwardsItsInput) {
+  const hasFallback = artifact.abi.some((candidate) => candidate.name === FALLBACK_ENTRY);
+  if (dispatchedBodies <= 1 && !hasFallback) {
     throw new PerCallCallError(
       `contract "${artifact.contractName}" has ${dispatchedBodies} dispatched body(ies), so a user's frame to it `
       + 'carries no selector, which this call path does not plan yet',
@@ -480,7 +512,10 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
-  const argumentPushes = entryArgumentPushes(entry, options.args ?? [], structs, functionName);
+  // The fallback is reached by the call data of a value send, which no entry's selector names.
+  const argumentPushes = entry.name === FALLBACK_ENTRY
+    ? [VALUE_SEND_CALL_DATA]
+    : entryArgumentPushes(entry, options.args ?? [], structs, functionName);
   // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
   const sideCars = await entrySideCars({
     provider,
@@ -512,20 +547,15 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
         );
       }
       const [, external] = found;
-      const receive = external.artifact.abi.find((candidate) => candidate.name === RECEIVE_ENTRY);
-      if (receive === undefined) {
-        throw new PerCallCallError(
-          `contract "${external.artifact.contractName}" has no receive(), so the value entry "${functionName}" `
-          + 'sends it has no body to run',
-        );
-      }
+      const body = valueEntryOf(external.artifact, `the value entry "${functionName}" sends it`);
       const layout = external.artifact.stateLayout;
-      const receiveSites = publishedEntryOf(external.artifact, RECEIVE_ENTRY);
-      if (layout === undefined || (receive.emits ?? []).length > 0 || (receive.transferCount ?? 0) > 0
-        || (receiveSites?.calls.length ?? 0) > 0 || (layout.collections ?? []).length > 0) {
+      const bodySites = publishedEntryOf(external.artifact, body.name);
+      if (layout === undefined || (body.emits ?? []).length > 0 || (body.transferCount ?? 0) > 0
+        || (bodySites?.calls.length ?? 0) > 0 || (layout.collections ?? []).length > 0) {
         throw new PerCallCallError(
-          `contract "${external.artifact.contractName}"'s receive() is not planned yet: this call plans one that `
-          + 'writes only its own data records, with no event, send, call or mapping',
+          `contract "${external.artifact.contractName}"'s ${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}() `
+          + 'is not planned yet: this call plans one that writes only its own data records, with no event, send, '
+          + 'call or mapping',
         );
       }
       const recipientCategory = hexToBin(external.categoryId);
@@ -548,8 +578,9 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
           const utxo = set.records[nftIndex]!;
           return { utxo, commitment: new Uint8Array(hexToBin(utxo.token?.nft?.commitment ?? '')) };
         }),
-        selector: new Uint8Array(hexToBin(receive.selector!)),
-        segmentCount: receiveSites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
+        entryName: body.name,
+        selector: VALUE_SEND_CALL_DATA,
+        segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
       };
     })()];
   }));
@@ -751,15 +782,16 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       // A root that carries call data is one a dispatcher selects an entry of.
       dispatches: true,
     };
-    // Each contract it pays runs its `receive()` in a message-call frame carrying the value, on its own records.
+    // Each contract it pays runs its `receive()` or its fallback in a message-call frame carrying the value, on its
+    // own records.
     const payeeDrafts: DraftMaster[] = payees.map((payee, index) => ({
       master: receiveMasterId(index),
       contract: payee.artifact.contractName,
-      functionName: `${payee.artifact.contractName}.${RECEIVE_ENTRY}()`,
+      functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
       program: payee.deployed.script,
       facts: {
         contract: payee.artifact.contractName,
-        functionName: RECEIVE_ENTRY,
+        functionName: payee.entryName,
         kind: FrameKind.CALL,
         callerIsUser: false,
         originEqualsCaller: false,
@@ -884,7 +916,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   // The frames of the contracts it pays return nothing to it, so each is derived on its own before the root.
   const payeeRequests: FrameRequest[] = payees.map((payee, index) => ({
     contract: payee.artifact.contractName,
-    functionName: `${payee.artifact.contractName}.${RECEIVE_ENTRY}()`,
+    functionName: `${payee.artifact.contractName}.${payee.entryName}()`,
     kind: FrameKind.CALL,
     master: receiveMasterId(index),
   }));
@@ -1107,15 +1139,12 @@ export type PerCallValueSendOptions = Omit<PerCallCallOptions, 'functionName' | 
 
 /**
  * Sends value to a deployed per-call contract, as a plain EVM transfer does: the contract's `receive()` runs with
- * the value as `msg.value`. A contract without one has no body to run, so the send is refused by name.
+ * the value as `msg.value`, or its payable `fallback()` when it has none. A contract with neither has no body to
+ * run, and a fallback that is not payable refuses the value, so both are refused by name.
  */
 export async function sendPerCallValue(options: PerCallValueSendOptions): Promise<PerCallCallResult> {
-  if (!options.artifact.abi.some((candidate) => candidate.name === RECEIVE_ENTRY)) {
-    throw new PerCallCallError(
-      `contract "${options.artifact.contractName}" has no receive(), so a value sent to it has no body to run`,
-    );
-  }
-  return callPerCallEntry({ ...options, functionName: RECEIVE_ENTRY, args: [] });
+  const body = valueEntryOf(options.artifact, 'a value sent to it');
+  return callPerCallEntry({ ...options, functionName: body.name, args: [] });
 }
 
 /** Everything the call's rebuild reads: the derived specification, the deployment's pools and the caller's coin. */

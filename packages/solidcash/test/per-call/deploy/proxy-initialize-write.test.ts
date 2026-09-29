@@ -3,6 +3,7 @@ import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
+import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
 import {
@@ -282,8 +283,8 @@ describe('a proxied initialize that writes state', () => {
       + ' contract Proxy {'
       + `   fallback(bytes input) external { address(0x${'ab'.repeat(35)}).delegatecall(input); require(true); }`
       + ' }';
-    expect(() => compileStringMulti(literal, { composition: 'per-call' })).toThrowError(
-      /fallback and receive make the contract dispatch by selector/,
-    );
+    // No address the contract holds, so the fallback is no proxy: it is dispatched to, and its call is refused.
+    expect(refusalOf(literal).message).toBe('Proxy.__fallback(): a low-level call needs the witness `calls[]` '
+      + 'checks, which are not emitted yet');
   });
 });

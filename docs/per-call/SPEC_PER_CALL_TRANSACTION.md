@@ -496,16 +496,23 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   master of X, so every change to X's balance runs X's code.
 - **Receiving.** A frame that carries value is a message call into a payable body: `receive()`, a `payable`
   function, or a payable `fallback()`. A body that is not payable requires `value == 0`, the EVM's call-value
-  check. `receive()` is reached through the selector of `receive()`, which a value send's call data carries where
-  the EVM's is empty, so a master dispatches it like any other body.
+  check.
+- **Dispatch.** A master dispatches as the EVM does: a selector a body has runs that body, and any other runs the
+  fallback, or fails when the contract has none.
+  - A value send's call data carries the selector of `receive()` alone where the EVM's is empty, so it runs
+    `receive()`, else the fallback, which is handed empty call data as its input.
+  - Any other fallback's input is the frame's call-data band: the selector's push and the argument pushes, as the
+    unlocking bytecode carries them. The fallback's own ABI selector is not one a call names, so a frame carrying it
+    reaches the fallback as call data like any other.
+  - A contract whose only body is a fallback forwarding its call data to an address it holds is the proxy
+    (section 11): its head leaves the band as the fallback's parameter and dispatches nothing.
 - **Sending.** `transfer(v)`, `send(v)` and `call{value: v}("")` to a P2PKH lock are a listed send (4a). To any
-  other lock they are a `CALL` into the recipient's `receive()`, whose call record carries `value = v`. The
-  sender's own code chooses by the lock's length, so no witness chooses it. The call is made after the sender's own
-  code, as its frame's last calls. A recipient with no `receive()` cannot run the frame: a master with one entry requires the call's selector to be that entry's own, and a dispatcher has
-  no entry for it, so the transaction fails, as in the EVM; the SDK finds the recipient's `receive()` in its
-  artifact and refuses by name to compose a send to a contract without one. A payable `fallback()` does not take
-  value yet. A composed call cannot fail (T22), so `send` and `call` return `true` whenever the transaction is
-  valid.
+  other lock they are a `CALL` carrying the selector of `receive()` alone, whose call record carries `value = v`:
+  the recipient runs its `receive()`, else its payable `fallback()`. The sender's own code chooses by the lock's
+  length, so no witness chooses it. The call is made after the sender's own code, as its frame's last calls. A
+  recipient with neither body, or whose fallback is not payable, cannot run the frame, so the transaction fails, as
+  in the EVM; the SDK reads the recipient's artifact and refuses by name to compose such a send. A composed call
+  cannot fail (T22), so `send` and `call` return `true` whenever the transaction is valid.
 - **No gas, so no stipend.** BCH has no counterpart of gas, so `receive()` and `fallback()` are more permissive
   than in the EVM: whichever spelling sent the value, the recipient's body may write state, emit, send and call,
   where the EVM's `transfer` and `send` give it a 2300-gas stipend, enough for little more than an event.
@@ -534,8 +541,8 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   its own containers: their growth plus what the frame's listed sends and the records of its calls pay covers the
   value the frame receives, so the contract pays its sends and its value calls from them. A frame whose master
   does not settle alone, or a `STATIC` or `DELEGATE` frame, takes no value and lists no send until V7 accounts for
-  containers. A master with no payable body requires every frame's value to be zero. A value send's call into
-  `receive()` binds its record's `value` to the amount; any other call site requires it to be zero.
+  containers. A master with no payable body requires every frame's value to be zero. A value send's call binds its
+  record's `value` to the amount; any other call site requires it to be zero.
 - **A send's payer.** A listed send is an output index, so on its own nothing ties it to the frame that pays it:
   two frames could list one output and both count it, and two purchases from one seller would pay the seller once.
   A frame's sends therefore follow one of its own contract's containers, in a run: the output before the first send

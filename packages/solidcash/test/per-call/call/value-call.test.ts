@@ -22,8 +22,8 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  *
  * A value send runs the contract's `receive()`, and a call to a payable entry carries value the same way: the caller
  * pays it into a satoshi container of the contract, and the entry reads it as `msg.value`. The SDK refuses by name
- * what the EVM would revert: value for an entry that is not payable, and a value send to a contract with no
- * `receive()`.
+ * what the EVM would revert: value for an entry that is not payable, and a value send to a contract with neither a
+ * `receive()` nor a payable `fallback()`.
  */
 
 const CATEGORY_HEX = '35'.repeat(32);
@@ -320,5 +320,65 @@ describe('an entry that reads its own balance', () => {
     expect(paidToCaller(emptied, deployed.callerLock)).toBe(25_000n);
     // Both containers are spent; the one the send follows keeps only what the caller put in to stand it up.
     expect(containerValue(emptied, deployed.categoryId)).toBe(1_000n);
+  });
+});
+
+const FALLBACK_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Tip {'
+  + '   int public tipped;'
+  + '   function reset() { this.tipped = 0; }'
+  + '   fallback() external payable { this.tipped = this.tipped + msg.value; }'
+  + ' }'
+  + ' contract Shut {'
+  + '   int public count;'
+  + '   function touch(int by) { this.count = this.count + by; }'
+  + '   fallback() external { this.count = this.count + 1; }'
+  + ' }'
+  + ' contract Payer {'
+  + '   int public paid;'
+  + '   receive() external payable { require(true); }'
+  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
+  + ' }';
+
+const fallbacks = compileStringMulti(FALLBACK_SOURCE, { composition: 'per-call' });
+
+describe('a value send to a contract whose fallback() takes it', () => {
+  it('runs a payable fallback() when the contract has no receive(), as the EVM picks the body', async () => {
+    const deployed = await deploy(fallbacks.Tip!);
+    const result = await sendPerCallValue({ ...callerOf(deployed), value: AMOUNT });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Tip.__fallback()']);
+    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(
+      buildPushdataCommitment(fallbacks.Tip!.stateLayout!, { tipped: AMOUNT }, 0),
+    );
+    expect(containerValue(result, deployed.categoryId)).toBe(AMOUNT);
+  });
+
+  it('is refused by name when the fallback() is not payable', async () => {
+    const deployed = await deploy(fallbacks.Shut!);
+    const refusal = 'contract "Shut" has no receive() and its fallback() is not payable, so it refuses a value sent to it';
+    await expect(sendPerCallValue({ ...callerOf(deployed), value: AMOUNT })).rejects.toThrow(refusal);
+  });
+
+  it('runs the recipient\'s payable fallback() for an entry that pays it', async () => {
+    const deployed = await deploy(fallbacks.Payer!);
+    const tipCategory = await deployBeside(deployed, fallbacks.Tip!, '4a'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(fallbacks.Tip!, tipCategory), 7_000n],
+      externals: { Tip: { artifact: fallbacks.Tip!, categoryId: tipCategory } },
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.completed.map((frame) => frame.functionName)).toStrictEqual(['Tip.__fallback()', 'Payer.pay()']);
+    const tipRecord = binToHex(stateRecordLockingBytecode(tipCategory));
+    const booked = result.broadcast!.outputs.find((output) => binToHex(output.lockingBytecode) === tipRecord);
+    expect(binToHex(booked!.token!.nft!.commitment!)).toBe(
+      buildPushdataCommitment(fallbacks.Tip!.stateLayout!, { tipped: 7_000n }, 0),
+    );
+    expect(containerValue(result, tipCategory)).toBe(7_000n);
   });
 });

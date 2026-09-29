@@ -874,25 +874,17 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     ...(contract.receiveDef ? [contract.receiveDef] : []),
   ];
   const stateVariableNames = new Set(contract.stateVariables.map((state) => state.name));
-  // A fallback is the master's entry only when the contract is the whole proxy shape: the fallback is the sole body
-  // a user's call can reach and it forwards its own received call data to an address the contract holds. A fallback
-  // beside ordinary entries is reached only when no selector matches, which the head's dispatcher cannot express, a
-  // constructor would give it a sibling body to dispatch against, and any other fallback body neither forwards the
-  // call data it received nor names an address the contract holds.
-  const fallbackAsEntry = contract.fallbackDef !== undefined
-    && entryFunctions.length === 0 && contract.constructorDef === undefined
-    && isForwardingFallback(contract.fallbackDef, stateVariableNames);
-  if (contract.fallbackDef !== undefined && !fallbackAsEntry) {
-    return refuse('fallback and receive make the contract dispatch by selector, which the master head cannot precede');
-  }
-  const entryPoints = fallbackAsEntry ? [contract.fallbackDef!] : entryFunctions;
+  // A fallback is an entry too: the proxy's takes the frame's whole call data as its parameter, and any other is
+  // run, as the EVM runs it, for a selector no body has.
+  const fallback = contract.fallbackDef ? [contract.fallbackDef] : [];
+  const entryPoints = [...entryFunctions, ...fallback];
   if (entryPoints.length === 0) {
     return refuse('a master is reached by dispatching a selector, so a contract with no entry point is not supported');
   }
-  // The bodies the master runs: the contract's functions and receive(), with the fallback when it is the entry.
-  const entryBodies: readonly FunctionDefinitionNode[] = fallbackAsEntry
-    ? [...contract.functions, contract.fallbackDef!]
-    : [...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : [])];
+  // The bodies the master runs: the contract's functions, receive() and the fallback.
+  const entryBodies: readonly FunctionDefinitionNode[] = [
+    ...contract.functions, ...(contract.receiveDef ? [contract.receiveDef] : []), ...fallback,
+  ];
   if (input.hasContractInstantiation) {
     return refuse('contract creation needs the witness `CREATE` checks, which are not emitted yet');
   }
@@ -1672,6 +1664,19 @@ function forwardDelegateCalls(
     forwards.push({ callIndex: index });
   }
   return forwards;
+}
+
+/**
+ * True when the contract is the proxy shape: its fallback is the only body a call can reach, and it forwards its own
+ * received call data to an address the contract holds. The head then leaves the call data as the fallback's one
+ * parameter instead of dispatching.
+ */
+export function isProxyFallbackContract(contract: ContractNode): boolean {
+  if (contract.fallbackDef === undefined || contract.receiveDef !== undefined
+    || contract.constructorDef !== undefined || contract.functions.some((fn) => fn.isEntryPoint)) {
+    return false;
+  }
+  return isForwardingFallback(contract.fallbackDef, new Set(contract.stateVariables.map((state) => state.name)));
 }
 
 /** True when a fallback is exactly the proxy shape the convention serves: one forwarded delegatecall to state. */

@@ -282,7 +282,7 @@ import {
   valueWitnessSlotName,
 } from '../per-call/master/master-head.js';
 import { callSiteCheckScript } from '../per-call/master/call-site.js';
-import { dropPrefix } from '../per-call/master/witness-reader.js';
+import { dropFirstPushScript, dropLastPushScript, dropPrefix } from '../per-call/master/witness-reader.js';
 import {
   declaredRecordOrdinalIndexScript, declaredRecordOrdinalViewScript, declaredRecordViewScript, declaredRecordsKeptScript,
   type DeclaredViewCounts, type RecordSide,
@@ -290,7 +290,7 @@ import {
 import { canonicalPushScript } from '../per-call/master/argument-push.js';
 import {
   derivePerCallTailShape, derivableBatchWitnessNames, perCallBatchKeys, perCallBatchWriteSegment,
-  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress,
+  callsOnEveryPath, callsVaryOnPaths, DYNAMIC_CHUNK_BASE_PARAMETER, isOwnAddress, isProxyFallbackContract,
 } from '../per-call/master/support.js';
 import {
   BATCH_DERIVATION_SLOT_ORDER, BATCH_EXTRA_RECORDS_SLOT, batchDerivationSlotName, buildBatchTargetsDerivationScript,
@@ -1116,6 +1116,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private perCallSendCount = 0;
   /** Set when some body behind the head is payable, so a frame may carry value and a non-payable body refuses it. */
   private perCallAcceptsValue = false;
+  /** True when the master is the proxy shape, whose head leaves the call data as its fallback's parameter. */
+  private perCallProxyFallback = false;
+  /** True when this traversal compiles a dispatched per-call fallback, which the dispatcher hands its input on top. */
+  private perCallFallbackInputOnTop = false;
   /** Long-value slots the head parks, which a body reads its own witness out of. */
   private perCallValueWitnessCount = 0;
 
@@ -3065,15 +3069,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       );
     }
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    // A fallback is a body behind the same head when it is the contract's only entry: it is what a user's call
-    // reaches, and it takes the call data the user supplied. It counts as an entry here so the head fixes the
-    // tail, the return shape and the call-data convention for the body that actually runs.
-    const fallbackAsEntry = node.fallbackDef !== undefined && node.receiveDef === undefined
-      && !node.functions.some((fn) => fn.isEntryPoint) && node.constructorDef === undefined;
+    // A fallback is a body behind the same head: the proxy's takes the call data the user supplied as its parameter,
+    // and any other is dispatched to for a selector no body has. It counts as an entry here so the head fixes the
+    // tail, the return shape and the value checks for the body that actually runs.
+    const fallbackAsEntry = isProxyFallbackContract(node);
+    this.perCallProxyFallback = fallbackAsEntry;
     const entries = [
       ...node.functions.filter((fn) => fn.isEntryPoint),
       ...(node.receiveDef ? [node.receiveDef] : []),
-      ...(fallbackAsEntry ? [node.fallbackDef!] : []),
+      ...(node.fallbackDef ? [node.fallbackDef] : []),
     ];
     // The head's own numbers are the ones the bodies it serves fix: a body it refuses is a stub that makes no
     // call, emits nothing and returns nothing, so it must not size the tail the head walks.
@@ -3102,8 +3106,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const frameKinds = [FrameKind.ROOT, FrameKind.CALL, FrameKind.STATIC, FrameKind.DELEGATE];
     const dispatchBodyCount = entries.length + (node.constructorDef ? 1 : 0);
     // A forwarding fallback's one parameter is the frame's whole call-data band, which the head leaves as one
-    // item, so the call arm has no selector left to drop.
-    const callDataSelectorUnconsumed = dispatchBodyCount === 1 && !fallbackAsEntry;
+    // item, and any other fallback is reached through the dispatcher, so neither leaves a selector to drop.
+    const callDataSelectorUnconsumed = dispatchBodyCount === 1 && node.fallbackDef === undefined;
     const soleEntrySelector = callDataSelectorUnconsumed
       ? (entries[0] ?? node.constructorDef)?.functionSelector
       : undefined;
@@ -3870,8 +3874,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.contractUsesMsgValue = msgValueCollector.found;
 
-    // Also set contractUsesMsgData if fallback has a bytes parameter
-    if (node.fallbackDef && node.fallbackDef.parameters.length > 0) {
+    // Also set contractUsesMsgData if fallback has a bytes parameter; a dispatched per-call fallback is handed the
+    // frame's call data by the dispatcher instead.
+    if (node.fallbackDef && node.fallbackDef.parameters.length > 0
+      && (!this.perCallMaster || this.perCallProxyFallback)) {
       this.contractUsesMsgData = true;
     }
 
@@ -5060,8 +5066,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     // A contract whose only entry body is its fallback has nothing to dispatch: the fallback is inlined, and the
     // call data it takes is the user's, which the master's frame supplies to the body directly.
+    // A per-call fallback other than the proxy's is dispatched to, as the EVM's is.
     const fallbackIsSoleEntry = dispatchFunctions.length === 1 && dispatchFunctions[0] === node.fallbackDef
-      && allFunctions.length === 0;
+      && allFunctions.length === 0 && (!this.perCallMaster || this.perCallProxyFallback);
     if (fallbackIsSoleEntry
       || (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch)) {
       this.outlineSharedFunctionBodies(outlineLoc);
@@ -5361,6 +5368,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // The usage probe compiles the same OP_DEFINE call ABI as the shipping pass. Preserve the recovery-context
       // widening or it can count a body with the old arity and silently select a different extraction plan.
       probe.outlinedRecoveryInputFunctionIds = this.outlinedRecoveryInputFunctionIds;
+      probe.perCallProxyFallback = this.perCallProxyFallback;
       probe.emitFunctionDefinesAndDispatch(node);
       this.structSkipIds = new Map(probe.structSkipIds);
       this.structSkipTypes = new Map(probe.structSkipTypes);
@@ -5418,6 +5426,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     hasReceive: boolean,
   ): void {
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    if (this.perCallMaster && hasFallback) {
+      this.emitPerCallFallbackDispatch(node, knownFunctions, loc);
+      return;
+    }
 
     if (!hasFallback && !hasReceive) {
       // Simple dispatch (current behavior)
@@ -5484,6 +5496,68 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasReceive) {
       this.emit(Op.OP_ENDIF, loc);
     }
+  }
+
+  /**
+   * A per-call master's dispatcher beside a fallback, as the EVM dispatches: a selector a body has runs that body,
+   * and any other runs the fallback, whose own selector is not one a call names.
+   *
+   * The call's argument pushes lie below everything the program pushed, so the fallback arm removes them until the
+   * stack is the program's own. A fallback that takes its call data is handed the frame's band on top; the band of
+   * a value send, the selector of `receive()` alone, is the EVM's empty call data.
+   */
+  private emitPerCallFallbackDispatch(
+    node: ContractNode,
+    knownFunctions: FunctionDefinitionNode[],
+    loc: SingleLocationData,
+  ): void {
+    const fallback = node.fallbackDef!;
+    const programDepth = BigInt(this.stack.length);
+    this.emit(Op.OP_DEPTH, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_ROLL, loc);
+    knownFunctions.forEach((fn, index) => {
+      this.emit(index === 0 ? Op.OP_DUP : Op.OP_OVER, loc);
+      this.emit(fn.functionSelector!, loc);
+      this.emit(Op.OP_EQUAL, loc);
+      if (index > 0) this.emit(Op.OP_BOOLOR, loc);
+    });
+    if (knownFunctions.length > 0) {
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_INVOKE, loc);
+      this.emit(Op.OP_ELSE, loc);
+    }
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DEPTH, loc);
+    this.emit(encodeInt(programDepth), loc);
+    this.emit(Op.OP_GREATERTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DEPTH, loc);
+    this.emit(Op.OP_1SUB, loc);
+    this.emit(Op.OP_ROLL, loc);
+    this.emit(Op.OP_DROP, loc);
+    this.emit(Op.OP_DEPTH, loc);
+    this.emit(encodeInt(programDepth), loc);
+    this.emit(Op.OP_LESSTHANOREQUAL, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    if (fallback.parameters.length > 0) {
+      this.emit(Op.OP_INPUTINDEX, loc);
+      this.emit(Op.OP_INPUTBYTECODE, loc);
+      this.emit(bytecodeToScript(dropLastPushScript()), loc);
+      this.emit(bytecodeToScript(dropFirstPushScript()), loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeDataPush(PER_CALL_RECEIVE_SITE.selector), loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_0, loc);
+      this.emit(Op.OP_ENDIF, loc);
+    }
+    this.emit(fallback.functionSelector!, loc);
+    this.emit(Op.OP_INVOKE, loc);
+    if (knownFunctions.length > 0) this.emit(Op.OP_ENDIF, loc);
   }
 
   /**
@@ -6058,6 +6132,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           subTraversal.stack.push(valueWitnessSlotName(slot));
         }
         subTraversal.stack.push(...PER_CALL_FRAME_SLOT_NAMES);
+        subTraversal.perCallFallbackInputOnTop = func.isFallback && func.parameters.length > 0;
       }
       // Pre-populate tracked stack with _redeemPushSize (if needed) and constructor param names.
       // _redeemPushSize sits on top of ctor params on the real stack (computed after ctor arg pushes).
@@ -7192,6 +7267,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const syntheticParams = node.parameters.slice(1);
       const visited = this.visitList(syntheticParams) as ParameterNode[];
       node.parameters = [node.parameters[0], ...visited];
+    } else if (this.perCallFallbackInputOnTop && node.isFallback) {
+      // The dispatcher hands a per-call fallback the call data it takes on top of the frame.
+      this.pushToStack(node.parameters[0].name);
     } else if (this.isDefineSubTraversal) {
       // Internal subroutine (invoked by functionId via OP_INVOKE): the caller pushes only the DECLARED args,
       // so skip the synthetic entry-point-only `__internal__returnOutputIdx` param - it is unused here (raw

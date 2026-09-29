@@ -180,7 +180,7 @@ const LOCAL_SLICE_SOURCE = PROLOGUE
 const PARAMETER_DATA_SOURCE = PROLOGUE
   + ' contract Proxy { function set(address target, bytes data) { target.delegatecall(data); require(true); } }';
 
-/** A fallback beside ordinary entries: the contract would dispatch by selector, which the head cannot precede. */
+/** A fallback beside ordinary entries, run for a selector no entry has, as the EVM runs it. */
 const FALLBACK_BESIDE_ENTRY_SOURCE = PROLOGUE
   + ' contract Proxy {'
   + '   address implementation;'
@@ -258,15 +258,15 @@ describe('the delegate shapes a per-call master admits', () => {
   });
 
   it('refuses a target the contract does not hold, by name', () => {
+    // A fallback that forwards to no address the contract holds is no proxy: it is dispatched to, and its call is
+    // the one refused.
     const refusal = refusalOf(UNHELD_TARGET_SOURCE);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+    expect(refusal.message).toBe(`Proxy.__fallback(): ${LOW_LEVEL_REFUSAL}`);
   });
 
-  it('refuses a fallback beside an ordinary entry, by name', () => {
-    const refusal = refusalOf(FALLBACK_BESIDE_ENTRY_SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('fallback and receive make the contract dispatch by selector');
+  it('serves a fallback beside an ordinary entry, dispatched to for a selector no entry has', () => {
+    expect(isServed(FALLBACK_BESIDE_ENTRY_SOURCE)).toBe(true);
   });
 
   it('serves a receive, dispatched by its selector like any entry', () => {

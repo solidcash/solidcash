@@ -1,4 +1,3 @@
-import { binToHex } from '@bitauth/libauth';
 import type { KernelJournalDispositionsAbi } from './artifact.js';
 import {
   domainSeparatedFingerprint,

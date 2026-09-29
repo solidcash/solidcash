@@ -1459,11 +1459,11 @@ export function outlineSharedSpans(
   const rounds = maximumRounds < 1 ? 1 : maximumRounds;
   const debugRounds = (globalThis as { process?: { env?: Record<string, string> } }).process
     ?.env?.SOLIDC_DEBUG_OUTLINE_TIMING === '1';
-  let __tFind = 0, __tApply = 0, __tRewrite = 0;
-  let __lastBuildMs = 0, __lastApplyMs = 0, __lastAnchorMs = 0;
+  let timeFindMs = 0, timeApplyMs = 0, timeRewriteMs = 0;
+  let lastBuildMs = 0, lastApplyMs = 0, lastAnchorMs = 0;
   for (let round = 0; round < rounds; round += 1) {
     const roundStarted = debugRounds ? Date.now() : 0;
-    const __f0 = Date.now();
+    const findStartedAt = Date.now();
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
     const corpus = [
       ...working,
@@ -1509,8 +1509,8 @@ export function outlineSharedSpans(
         candidates.map((candidate) => ({ ...candidate, span: [...candidate.span] })),
       );
     }
-    __tFind += Date.now() - __f0;
-    const __a0 = Date.now();
+    timeFindMs += Date.now() - findStartedAt;
+    const applyStartedAt = Date.now();
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
@@ -1570,15 +1570,15 @@ export function outlineSharedSpans(
     }
     if (roundSaved <= 0) break;
 
-    __tApply += Date.now() - __a0;
-    const __r0 = Date.now();
+    timeApplyMs += Date.now() - applyStartedAt;
+    const rewriteStartedAt = Date.now();
     // Most strategy probes discover nothing worth applying. Allocate origin maps only once a rewrite will
     // actually need them; a no-op result can return the identity map directly below.
     for (const body of working) {
       body.origins ??= body.script.map((_element, index) => index);
     }
 
-    const __e0 = Date.now();
+    const editsStartedAt = Date.now();
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits: { body: number; start: number; entry: typeof applied[number] }[] = [];
     for (const entry of applied) {
@@ -1592,8 +1592,8 @@ export function outlineSharedSpans(
     }
     edits.sort((left, right) =>
       right.body - left.body || right.start - left.start);
-    const __e1 = Date.now();
-    let __anchorMs = 0;
+    const editsBuiltAt = Date.now();
+    let anchorProcessingMs = 0;
     // One rebuild per body. Edits are sorted by body then descending start and never overlap within a round, so
     // a body's edits can be assembled in one pass instead of one `splice` per occurrence. `splice` memmoves the
     // tail every time, which made the rewrite quadratic in body length: a heavy leftover applies tens of
@@ -1689,24 +1689,24 @@ export function outlineSharedSpans(
           // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
           // Every site after this one shifts by the same amount, and sites before it are untouched, so a single
           // suffix scan updates the array in place.
-          const __an0 = Date.now();
+          const anchorStartedAt = Date.now();
           const anchors = target.anchors;
           const threshold = start + spanLength;
           const shrink = spanLength - 2;
           for (let anchorIndex = 0; anchorIndex < anchors.length; anchorIndex += 1) {
             if (anchors[anchorIndex] >= threshold) anchors[anchorIndex] -= shrink;
           }
-          __anchorMs += Date.now() - __an0;
+          anchorProcessingMs += Date.now() - anchorStartedAt;
         }
       }
     }
 
-    __lastBuildMs = __e1 - __e0;
-    __lastApplyMs = Date.now() - __e1;
-    __lastAnchorMs = __anchorMs;
+    lastBuildMs = editsBuiltAt - editsStartedAt;
+    lastApplyMs = Date.now() - editsBuiltAt;
+    lastAnchorMs = anchorProcessingMs;
     for (const entry of applied) functions.push(entry.definition);
     savedBytes += roundSaved;
-    __tRewrite += Date.now() - __r0;
+    timeRewriteMs += Date.now() - rewriteStartedAt;
     if (debugRounds) {
       console.error('[outline-round]', JSON.stringify({
         round,
@@ -1722,9 +1722,9 @@ export function outlineSharedSpans(
   }
   if ((globalThis as any).process?.env?.SOLIDC_DEBUG_OUTLINE_SPLIT === '1') {
     console.error('[outline-split]', JSON.stringify({
-      findMs: __tFind, applyClaimMs: __tApply, rewriteMs: __tRewrite,
+      findMs: timeFindMs, applyClaimMs: timeApplyMs, rewriteMs: timeRewriteMs,
       bodies: bodies.length, functions: functions.length, savedBytes,
-      editsBuildMs: __lastBuildMs, editsApplyMs: __lastApplyMs, anchorMs: __lastAnchorMs,
+      editsBuildMs: lastBuildMs, editsApplyMs: lastApplyMs, anchorMs: lastAnchorMs,
     }));
   }
 

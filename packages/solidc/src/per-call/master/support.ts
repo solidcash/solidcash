@@ -651,9 +651,27 @@ function unsupportedBatchWriteShape(
 /** A closed interval of the calls some path makes, or undefined when the source leaves the count open. */
 type CallRange = { readonly least: number; readonly most: number } | undefined;
 
-/** Advances a call range past a value that makes its own calls on every path, or undefined when one is open. */
+/** True when a value reaches any call the execution records, whatever node the walk finds it on. */
+function reachesAnyCall(value: unknown): boolean {
+  let reaches = false;
+  walkInvocationAst(value, (node) => {
+    if (node instanceof ExternalFunctionCallNode
+      || node instanceof LowLevelCallStatementNode || node instanceof LowLevelCallNode) reaches = true;
+  });
+  return reaches;
+}
+
+/**
+ * Advances a call range past a value, or undefined when the value makes an open number of calls.
+ *
+ * A value that reaches no call contributes none on any path, even when the count walk cannot descend through it:
+ * the walk answers a statement carrying a nested branch as open, and lowering leaves such branches inside
+ * expressions (an unchecked arithmetic block keeps a disabled overflow check as `if (false) revert`). That branch
+ * decides values rather than calls, so the segment the code after it runs in is the one the code before it reached.
+ */
 function advanceCallRange(range: CallRange, value: unknown): CallRange {
   if (range === undefined) return undefined;
+  if (!reachesAnyCall(value)) return range;
   const calls = callsInExpression(value);
   return calls === undefined ? undefined : { least: range.least + calls, most: range.most + calls };
 }
@@ -672,7 +690,9 @@ function joinCallRanges(left: CallRange, right: CallRange): CallRange {
  * before it runs in, so a write that precedes every call lands in the segment the derivation reads while one that
  * follows a call lands in a later one. The count is walked path by path: a branch's arms are joined and a
  * call-bearing loop or switch leaves it open, so a write behind a call the source does not fix — or in a body
- * whose arms make different numbers of calls — is left to the caller to refuse.
+ * whose arms make different numbers of calls — is left to the caller to refuse. A statement that reaches no call
+ * contributes none, so a body whose only branches reach no call keeps the fixed segment its (absent) calls name
+ * rather than being left open by a branch the count walk cannot descend through.
  */
 export function perCallBatchWriteSegment(entry: FunctionDefinitionNode): number | undefined {
   const slots = new Set((entry.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices));

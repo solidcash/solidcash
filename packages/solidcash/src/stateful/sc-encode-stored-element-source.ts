@@ -91,11 +91,26 @@ function encodeStoredSource(
   const numericType = (type: string | undefined): boolean => (
     type === 'bigint' || /^(?:u?int(?:\d+)?|u?fixed(?:\d+x\d+)?)$/u.test(type ?? '')
   );
+  const integerLiteralFits = (value: unknown, type: string | undefined): boolean => {
+    if (typeof value !== 'string' || !/^-?\d+$/u.test(value)) return false;
+    const match = type?.match(/^(u?)int(\d+)?$/u);
+    if (!match) return false;
+    const bits = match[2] === undefined ? 256 : Number(match[2]);
+    if (!Number.isSafeInteger(bits) || bits < 8 || bits > 256 || bits % 8 !== 0) return false;
+    const literal = BigInt(value);
+    const magnitude = 1n << BigInt(match[1] === 'u' ? bits : bits - 1);
+    return match[1] === 'u'
+      ? literal >= 0n && literal < magnitude
+      : literal >= -magnitude && literal < magnitude;
+  };
   const validate = (expression: ExternalCallExpression, expectedType?: string): boolean => {
     const comparison = ['==', '!=', '<', '<=', '>', '>=', '&&', '||'].includes(expression.operator ?? '');
     const inferredExpressionType = expression.type ?? (expression.kind === 'binary'
       ? comparison ? 'bool' : expression.left?.type : undefined);
-    if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)) return false;
+    if (expression.kind !== 'field' && !typeMatches(inferredExpressionType, expectedType)
+      && !(expression.kind === 'literal'
+        && /^(?:u?int(?:\d+)?)$/u.test(expression.type ?? '')
+        && integerLiteralFits(expression.value, expectedType))) return false;
     if (expression.kind === 'source') {
       const index = expression.source?.paramIndex;
       return expression.source?.kind === 'forward' && Number.isSafeInteger(index)
@@ -104,6 +119,9 @@ function encodeStoredSource(
         && typeMatches(expression.type, visibleInputs[index!].type);
     }
     if (expression.kind === 'literal') {
+      if (/^(?:u?int(?:\d+)?)$/u.test(expression.type ?? '')) {
+        return integerLiteralFits(expression.value, expectedType ?? expression.type);
+      }
       if (numericType(expression.type)) {
         return typeof expression.value === 'string' && /^-?\d+$/u.test(expression.value);
       }

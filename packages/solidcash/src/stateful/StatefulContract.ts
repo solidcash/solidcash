@@ -740,6 +740,7 @@ import {
 } from './sc-resolve-stateful-keccak-loop.js';
 import {
   resolveKeccakComputeCoSpends as resolveKeccakComputeCoSpendsImpl,
+  type ResolveKeccakProbeCtx,
 } from './sc-resolve-keccak-compute-co-spends.js';
 import {
   paramBlockhashN as paramBlockhashNImpl,
@@ -1438,6 +1439,8 @@ type MessageBusRuntimeAbiFunction = AbiFunction & {
   messageBusActiveWriteCollections?: readonly string[];
   /** Typed rows selected in this concrete envelope. Runtime-only; used for exact computed-value planning. */
   messageBusRowArguments?: readonly RouteExpressionKeyRow[];
+  /** Direct preimages selected from authenticated message-bus rows. */
+  messageBusKeccakPreimages?: readonly (Uint8Array | null)[];
   /** Fixed token effects selected by a concrete envelope, retaining sparse graph-frame coordinates. */
   messageBusTokenContainerTransferPlan?: readonly {
     args: readonly FunctionArgument[];
@@ -6835,13 +6838,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // (the stateless VM-probe path does not port to the derivation build) and throw. Ordered by call.
   private async _resolveKeccakComputeCoSpends(
     abiFunction: AbiFunction, args: any[],
-    probeCtx?: {
-      masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
-      frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
-      deferUnresolved?: boolean;
-      artifactBytecode?: string;
-      ecrecoverPreimages?: Array<Uint8Array | null>;
-    },
+    probeCtx?: ResolveKeccakProbeCtx,
   ): Promise<{
       coSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>;
       preimages: Array<Uint8Array | null>;

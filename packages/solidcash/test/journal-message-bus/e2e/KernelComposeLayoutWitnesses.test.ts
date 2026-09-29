@@ -5,6 +5,7 @@ import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
 import { resolveParticipantAbsoluteWitnesses } from '../../../src/message-bus/layout-resolver.js';
+import { SCRIPT_INACTIVE } from '../../../src/message-bus/layout-sentinels.js';
 import {
   bytesToSlotValue, decodeEntryCommitment, keyToSlot,
 } from '../../../src/stateful/SortedList.js';
@@ -150,7 +151,7 @@ describe('kernel compose layout witnesses', () => {
     const predOutIndex = unlocker.abiFunction.inputs.findIndex((input: { name: string }) =>
       /^__internal__vmapBatchPredOut_\d+$/.test(input.name));
     if (predOutIndex >= 0) {
-      expect(Number(unlocker.params[predOutIndex] as bigint)).toBe(-1);
+      expect(Number(unlocker.params[predOutIndex] as bigint)).toBe(SCRIPT_INACTIVE);
     }
 
     await expect(composition.send()).resolves.toMatchObject({

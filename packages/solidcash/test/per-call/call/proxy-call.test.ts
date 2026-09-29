@@ -176,6 +176,36 @@ describe('a call into a per-call implementation through its proxy', () => {
         })));
     });
 
+  it('lays out the hop with no OP_RETURN and no bare OP_1 output', async () => {
+    // A hop is a whole transaction the composer lays out, so its outputs are where the path's no-placeholder rule
+    // shows: every output carries a positive value and a lock that is not anyone-can-spend, and none carries data.
+    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const funded = await deployedWithCallerCoins(network);
+
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: impl,
+      proxyArtifact: funded.proxyArtifact,
+      proxyCategoryId: funded.proxyCategoryId,
+      implementationCategoryId: funded.implementationCategoryId,
+      functionName: 'add',
+      args: [4n],
+      callerUtxo: funded.callCoin,
+      callerLockingBytecode: funded.deployerLock,
+      funder: funded.funder,
+      changeAddress: funded.changeAddress,
+      vm: compositionMachine(),
+    });
+
+    expect(result.accepted).toBe(true);
+    expect(result.transaction.outputs.length).toBeGreaterThan(0);
+    const locks = result.transaction.outputs.map((output) => binToHex(output.lockingBytecode));
+    expect(locks.filter((lock) => lock.startsWith('6a'))).toStrictEqual([]);
+    expect(locks.filter((lock) => lock === '51')).toStrictEqual([]);
+    expect(locks.filter((lock) => lock.length === 0)).toStrictEqual([]);
+    expect(result.transaction.outputs.filter((output) => output.valueSatoshis <= 0n)).toStrictEqual([]);
+  });
+
   it('refuses an entry the implementation does not publish, and broadcasts nothing', async () => {
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployedWithCallerCoins(network);

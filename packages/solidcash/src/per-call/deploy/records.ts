@@ -63,6 +63,24 @@ export function entryRecordLockingBytecode(categoryId: string, collectionSignatu
 }
 
 /**
+ * The lock and read-only unlocking of a mapping node a read only reads.
+ *
+ * The entry covenant's read-only path (`flag = 0`) needs no master and preserves the node's bytecode, category,
+ * commitment, FT amount and satoshis, so a read spends the node and recreates it unchanged.
+ */
+export function entryRecordReadUnlock(categoryId: string, collectionSignature: string): {
+  readonly lockingBytecode: Uint8Array;
+  readonly unlockingBytecode: Uint8Array;
+} {
+  const covenant = buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSignature));
+  const flag = encodeFunctionArgument(0n, 'bigint') as Uint8Array;
+  return {
+    lockingBytecode: scriptToLockingBytecode(covenant, 'p2sh32'),
+    unlockingBytecode: createUnlockingBytecode('p2sh32', scriptToBytecode(covenant), [flag, flag]),
+  };
+}
+
+/**
  * The lock a dynamic value's chunk sits at: the entry-NFT covenant the value's chunk signature derives.
  *
  * A `string`, `bytes` or dynamic array is not held in the data NFT that declares it; the bytes live in a run of

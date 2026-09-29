@@ -25,6 +25,7 @@ import { hexToBin } from '@bitauth/libauth';
 import {
   INDEX_NONE,
   buildEntryNftCovenantScript,
+  bytesEqual,
   bytesToHex,
   computeCollectionHash,
   scriptToBytecode,
@@ -33,7 +34,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
 import type { Utxo } from '../../interfaces.js';
-import { decodeEntryCommitment } from '../../stateful/SortedList.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import { createUnlockingBytecode } from '../../utils.js';
 import type { DraftInput, DraftRecordEntry, DraftSourceOutput, DraftToken } from '../composer/draft.js';
@@ -143,9 +144,16 @@ interface CallMappingBatch {
 /** The expression labels an artifact publishes for the frame's own caller. */
 const CALLER_KEY_LABELS = new Set(['nullop:msg.sender', 'sender:msg.sender', 'call:_msgSender()', 'nullop:tx.origin']);
 
-/** Resolves one access's key(s) from the call's own arguments, its sender, or a compile-time expression. */
+/** The frame's own facts a mapping access's key(s) are resolved from. */
+interface KeyResolutionContext {
+  readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
+  readonly callerLockingBytecode: Uint8Array;
+}
+
+/** Resolves one access's key(s) from the frame's own arguments, its sender, or a compile-time expression. */
 function resolveKeys(
-  request: CallEntryRecordsRequest,
+  request: KeyResolutionContext,
   fn: AbiFunction,
   access: NonNullable<AbiFunction['entryAccesses']>[number],
   structs: Artifact['structs'],
@@ -164,10 +172,90 @@ function resolveKeys(
     const byName = encodedArgument(fn, args, label ?? '', structs);
     if (byName !== undefined) return byName;
     throw new PerCallCallRecordError(
-      `entry "${request.functionName}" writes mapping "${access.collection}" at a key the call's arguments do `
+      `entry "${request.functionName}" touches mapping "${access.collection}" at a key the frame's arguments do `
       + `not determine (${label ?? '<unnamed>'})`,
     );
   });
+}
+
+/** The live mapping node one access names: the collection it belongs to and the UTXO carrying it. */
+export interface ReadEntryNode {
+  readonly collection: string;
+  readonly signature: string;
+  readonly slot: Uint8Array;
+  /** True when the node's slot is the key's, so the body reads its value; false for a bracketing predecessor. */
+  readonly present: boolean;
+  readonly commitment: Uint8Array;
+  readonly utxo: Utxo;
+}
+
+/**
+ * The live node the entry's mapping access at `slotIndex` reads.
+ *
+ * The node the key names is the one whose slot equals the key's hash; a key no node holds is read against the node
+ * the key would be spliced beside, the greatest slot below the key's, whose successor brackets it. The nodes come
+ * from the deployment's own classification (`nodesByCollection`), so no second classifier is built here, and a key
+ * neither present nor bracketed is refused by name.
+ */
+export function readEntryNode(request: KeyResolutionContext & {
+  readonly artifact: Artifact;
+  readonly categoryId: string;
+  readonly nodesByCollection: ReadonlyMap<string, readonly Utxo[]>;
+  readonly slotIndex: number;
+}): ReadEntryNode {
+  const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
+  if (fn === undefined) {
+    throw new PerCallCallRecordError(
+      `artifact "${request.artifact.contractName}" publishes no entry "${request.functionName}"`,
+    );
+  }
+  const access = fn.entryAccesses?.find((candidate) => candidate.slotIndex === request.slotIndex);
+  if (access === undefined) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" publishes no mapping access at entry slot ${request.slotIndex}`,
+    );
+  }
+  const collection = request.artifact.stateLayout?.collections
+    ?.find((candidate) => candidate.name === access.collection);
+  if (collection === undefined) {
+    throw new PerCallCallRecordError(
+      `entry "${request.functionName}" reads mapping "${access.collection}", which the artifact does not publish `
+      + 'as a collection',
+    );
+  }
+  const structs = request.artifact.structs ?? request.artifact.stateLayout?.structs;
+  const slot = keyToSlotMulti([...resolveKeys(request, fn, access, structs)]);
+  const nodes = (request.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
+    const commitment = utxo.token?.nft?.commitment;
+    if (commitment === undefined) {
+      throw new PerCallCallRecordError(
+        `category ${request.categoryId} holds a node of collection "${collection.name}" with no commitment`,
+      );
+    }
+    return { utxo, commitment: new Uint8Array(hexToBin(commitment)) };
+  });
+  const found = nodes.find((node) => bytesEqual(decodeEntryCommitment(node.commitment).slot, slot));
+  // A key no node holds is read against its bracketing predecessor, so the body can prove the key absent.
+  const node = found ?? nodes.reduce<typeof nodes[number] | undefined>((best, candidate) => {
+    if (bytesToSlotValue(decodeEntryCommitment(candidate.commitment).slot) >= bytesToSlotValue(slot)) return best;
+    if (best === undefined) return candidate;
+    return bytesToSlotValue(decodeEntryCommitment(candidate.commitment).slot)
+      > bytesToSlotValue(decodeEntryCommitment(best.commitment).slot) ? candidate : best;
+  }, undefined);
+  if (node === undefined) {
+    throw new PerCallCallRecordError(
+      `category ${request.categoryId} holds no node of collection "${collection.name}" whose slot is the key's `
+      + 'or the key\'s bracketing predecessor, so the read cannot locate what it reads',
+    );
+  }
+  return {
+    collection: collection.name,
+    signature: collection.signature,
+    slot,
+    present: found !== undefined,
+    commitment: node.commitment,
+    utxo: node.utxo,
+  };
 }
 
 /** The writes one entry performs to its one sorted collection, in the batch's target order. */

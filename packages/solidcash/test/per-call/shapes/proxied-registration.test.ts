@@ -630,13 +630,14 @@ describe('the registration mapping write on the same proxy hop', () => {
 });
 
 describe('the off-chain read path on the proxied contract', () => {
-  it('cannot be pointed at it: the deployment layer classifies no mapping records', async () => {
-    // The implementation publishes a view entry, but the contract keeps a registration mapping, and the read path
-    // reads only a contract's data-NFT records. Pointing it at the deployed proxy category is refused at planning.
+  it('is no longer refused by the mapping the contract keeps: it stops on the empty deployment instead', async () => {
+    // The implementation keeps a `registrations` mapping. The read path classifies a mapping's nodes like any other
+    // record, so the plan is built and the read is refused on the empty deployment's missing master, not on the
+    // mapping the contract keeps.
     const provider = new MockNetworkProvider();
     await expect(readPerCallEntry({
       provider, artifact: implementationArtifact, categoryId: PROXY_CATEGORY_HEX, functionName: 'currentCount',
       vm: compositionMachine(),
-    })).rejects.toThrow(/keeps a mapping, whose entry records the deployment layer does not classify/);
+    })).rejects.toThrow(/holds 0 master\(s\), and the read runs 1 frame\(s\) over it/);
   });
 });

@@ -17,34 +17,43 @@
  * contract reads that contract's own live records the same way: the caller names the other contracts in
  * `externals`, each callee becomes its own `STATIC` frame over its own master and records, and one validator — the
  * root's — covers every frame of the read. A callee is learned before its caller, because the caller's call record
- * carries the callee's returned bytes. A mapping-backed record is not read yet, because the deployment layer's
- * classification is built for data-NFT records.
+ * carries the callee's returned bytes. A mapping-backed record is read the same way: the entry's own block slots
+ * name the live nodes it reads, and the deployment layer's classification locates them.
  */
 
 import { hexToBin } from '@bitauth/libauth';
 import { createVirtualMachineBch2026ForProvider } from '../../network/createVirtualMachine.js';
 import type NetworkProvider from '../../network/NetworkProvider.js';
 import {
+  VALUE_INLINE_LIMIT,
   FrameKind,
   bytesEqual,
+  bytesToHex,
   decodePushdataValue,
   sha256,
   validatorAddress,
   validatorRedeemScript,
   type Artifact,
+  type BlockLayoutSlot,
+  type EntryAccessAbi,
+  type ExternalResultEncoding,
   type StateLayout,
   type StateValue,
   type StructDefinitionInfo,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../../Argument.js';
 import { encodeFunctionArgument } from '../../Argument.js';
+import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
+import { PerCallCallRecordError, readEntryNode } from '../call/entry-records.js';
 import {
   deployMaster,
+  entryRecordReadUnlock,
   readComputedDeclaration,
   readPerCallDeployment,
   stateRecordLockingBytecode,
   stateRecordUnlockingBytecode,
   type DeployedMaster,
+  type PerCallDeploymentSet,
 } from '../deploy/index.js';
 import {
   UNFILLED_CALLEE_REF,
@@ -125,13 +134,27 @@ interface ReadEntry {
   readonly selector: string;
   readonly inputs: readonly { readonly name: string; readonly type: string }[];
   readonly outputs: readonly { readonly type: string }[];
+  /** The published tuple wire representation of the entry's returned values. */
+  readonly resultEncoding?: ExternalResultEncoding;
+  /** The entry's block slots, which name the records its body reads and in which order. */
+  readonly slots?: readonly BlockLayoutSlot[];
+  /** The mapping accesses the entry performs, which the entry slots index. */
+  readonly accesses: readonly EntryAccessAbi[];
 }
 
-/** One record a frame reads: its identity, the commitment it holds, and the satoshis it carries. */
+/**
+ * One record a frame reads: its identity, the commitment it holds, the satoshis it carries and how it is spent.
+ *
+ * A data-NFT record and a mapping node differ only in the covenant they sit at and how that covenant is unlocked, so
+ * each carries the lock it sits at and, when the read-only path needs no master, the unlocking bytecode to spend it.
+ */
 interface ReadRecord {
   readonly id: string;
   readonly commitment: Uint8Array;
   readonly satoshis: bigint;
+  readonly lockingBytecode: Uint8Array;
+  /** The unlocking bytecode the read spends it with, when it does not depend on the frame's master index. */
+  readonly unlockingBytecode?: Uint8Array;
 }
 
 /** One call a frame makes, resolved to the master of the callee frame. */
@@ -158,6 +181,8 @@ interface ReadFrame {
   readonly deployed: DeployedMaster;
   readonly parent: string | undefined;
   readonly sender: Uint8Array;
+  /** The entry's arguments, which a mapping access's key(s) are resolved from. */
+  readonly args: readonly FunctionArgument[];
   argumentPushes: readonly Uint8Array[];
   readonly segmentCount: number;
   readonly calls: ReadCall[];
@@ -220,7 +245,12 @@ function requireEntry(artifact: Artifact, functionName: string): ReadEntry {
   if ((entry.outputs ?? []).length === 0) {
     throw new PerCallReadError(`entry "${functionName}" returns nothing, so it is not a read`);
   }
-  return { name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [] };
+  return {
+    name: entry.name, selector: entry.selector, inputs: entry.inputs, outputs: entry.outputs ?? [],
+    ...(entry.resultEncoding === undefined ? {} : { resultEncoding: entry.resultEncoding }),
+    ...(entry.blockLayout === undefined ? {} : { slots: entry.blockLayout.slots }),
+    accesses: entry.entryAccesses ?? [],
+  };
 }
 
 /** The stop-site entry one identity publishes, or `undefined` when the artifact publishes none for it. */
@@ -257,6 +287,7 @@ function planReadFrames(options: {
   readonly artifact: Artifact;
   readonly categoryId: string;
   readonly functionName: string;
+  readonly args: readonly FunctionArgument[];
   readonly externals: PerCallReadOptions['externals'];
   readonly validatorProgram: Uint8Array;
 }): { readonly frames: readonly ReadFrame[]; readonly root: ReadFrame } {
@@ -272,6 +303,7 @@ function planReadFrames(options: {
     deployed: rootDeployed,
     parent: undefined,
     sender: rootDeployed.address,
+    args: options.args ?? [],
     argumentPushes: [],
     segmentCount: publishedEntryOf(options.artifact, options.functionName)?.sites.sites
       .filter((site) => site.kind === 'segmentClose').length ?? 1,
@@ -334,6 +366,8 @@ function planReadFrames(options: {
         deployed: deployMaster(external.artifact, calleeCategory, options.validatorProgram),
         parent: frame.master,
         sender: frame.deployed.address,
+        // A callee entry takes no parameter, which the caller above enforces, so its mapping keys are literals.
+        args: [],
         argumentPushes: [new Uint8Array(hexToBin(call.selector))],
         segmentCount: publishedEntryOf(external.artifact, calleeEntry.name)?.sites.sites
           .filter((site) => site.kind === 'segmentClose').length ?? 1,
@@ -358,8 +392,12 @@ function planReadFrames(options: {
 
 /**
  * Reads each frame's live deployment: its master pool, its records, and — for the root — the validator the whole
- * read runs under. A mapping-backed contract is refused here, because the deployment layer does not classify a
- * mapping's entry records as data-NFT records.
+ * read runs under.
+ *
+ * The records a frame declares are the ones its entry's own block slots name, in slot order: the data-NFT records it
+ * reads, and the live mapping nodes its entry accesses name — the node a key names, or the node the key would be
+ * spliced beside. Both come from the deployment layer's own classification, so a mapping-backed contract reads like
+ * a data-NFT one.
  */
 async function readFrameDeployments(
   provider: NetworkProvider,
@@ -371,12 +409,6 @@ async function readFrameDeployments(
     // A contract that keeps no state variable publishes no layout and mints no record; it is classified against an
     // empty one, so its category still yields the master the frame runs on.
     const stateLayout = frame.artifact.stateLayout ?? NO_STATE_LAYOUT;
-    if ((frame.artifact.stateLayout?.mappings?.length ?? 0) > 0) {
-      throw new PerCallReadError(
-        `contract "${frame.contract}" keeps a mapping, whose entry records the deployment layer does not classify `
-        + 'as data-NFT records yet',
-      );
-    }
     let deployment = deployments.get(frame.categoryId);
     if (deployment === undefined) {
       deployment = await readPerCallDeployment(provider, frame.categoryId, stateLayout);
@@ -403,28 +435,95 @@ async function readFrameDeployments(
       }
       frame.validatorSatoshis = validator.satoshis;
     }
-    if (deployment.records.length < stateLayout.dataNftCount) {
-      throw new PerCallReadError(
-        `category ${frame.categoryId} holds ${deployment.records.length} data-NFT record(s), and the layout names `
-        + `${stateLayout.dataNftCount}`,
-      );
-    }
-    frame.records = Array.from({ length: stateLayout.dataNftCount }, (_unused, nftIndex) => {
-      const utxo = deployment.records[nftIndex]!;
-      const commitment = utxo.token?.nft?.commitment;
-      if (commitment === undefined) {
-        throw new PerCallReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
-      }
-      return {
-        id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(frame.contract, nftIndex),
-        commitment: new Uint8Array(hexToBin(commitment)),
-        satoshis: utxo.satoshis,
-      };
-    });
+    frame.records = frameReadRecords(frame, deployment, stateLayout);
   }
 }
 
-/** The entries one frame declares: one kept record entry per data-NFT record it reads. */
+/** One data-NFT record a frame reads, as the deployment's classified records name it. */
+function dataNftReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, nftIndex: number): ReadRecord {
+  const utxo = deployment.records[nftIndex];
+  if (utxo === undefined) {
+    throw new PerCallReadError(
+      `category ${frame.categoryId} holds no data-NFT record at index ${nftIndex}, which the entry reads`,
+    );
+  }
+  const commitment = utxo.token?.nft?.commitment;
+  if (commitment === undefined) {
+    throw new PerCallReadError(`the record at data-NFT index ${nftIndex} carries no commitment`);
+  }
+  return {
+    id: frame.master === READ_MASTER ? recordId(nftIndex) : calleeRecordId(frame.contract, nftIndex),
+    commitment: new Uint8Array(hexToBin(commitment)),
+    satoshis: utxo.satoshis,
+    lockingBytecode: stateRecordLockingBytecode(frame.categoryId),
+  };
+}
+
+/** The live mapping node one entry slot reads, as the deployment layer's own classification locates it. */
+function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slotIndex: number): ReadRecord {
+  let node: ReturnType<typeof readEntryNode>;
+  try {
+    node = readEntryNode({
+      artifact: frame.artifact,
+      functionName: frame.entry.name,
+      args: frame.args,
+      callerLockingBytecode: frame.sender,
+      categoryId: frame.categoryId,
+      nodesByCollection: deployment.nodesByCollection,
+      slotIndex,
+    });
+  } catch (error) {
+    if (error instanceof PerCallCallRecordError) throw new PerCallReadError(error.message);
+    throw error;
+  }
+  // A node the key names holds the value inline or, past 60 bytes, only its hash with the bytes in chunk records,
+  // which a read does not fetch. A node the key is read beside is never read for its value, so its width is free.
+  const tail = node.commitment.slice(64);
+  const length = tail.length < 4 ? 0 : new DataView(tail.buffer, tail.byteOffset, 4).getUint32(0, true);
+  if (node.present && length > VALUE_INLINE_LIMIT) {
+    throw new PerCallReadError(
+      `the node of collection "${node.collection}" the entry reads holds a ${length}-byte value whose bytes sit `
+      + 'in chunk records, which a read does not fetch',
+    );
+  }
+  const { lockingBytecode, unlockingBytecode } = entryRecordReadUnlock(frame.categoryId, node.signature);
+  return {
+    id: `${frame.master}-entry-${bytesToHex(node.slot)}`,
+    commitment: node.commitment,
+    satoshis: node.utxo.satoshis,
+    lockingBytecode,
+    unlockingBytecode,
+  };
+}
+
+/**
+ * The records one frame declares, in the order its entry's block slots read them.
+ *
+ * An entry that publishes no block layout is one this path cannot order, so it falls back to the data-NFT records of
+ * the layout; an entry that does is read slot by slot, the data-NFT slots and the mapping entry slots alike.
+ */
+function frameReadRecords(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  stateLayout: StateLayout,
+): readonly ReadRecord[] {
+  const slots = frame.entry.slots;
+  if (slots === undefined) {
+    return Array.from({ length: stateLayout.dataNftCount }, (_unused, nftIndex) =>
+      dataNftReadRecord(frame, deployment, nftIndex));
+  }
+  return [...slots].sort((left, right) => left.offset - right.offset).flatMap((slot): ReadRecord[] => {
+    if (slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft') {
+      return slot.nftIndex === undefined ? [] : [dataNftReadRecord(frame, deployment, slot.nftIndex)];
+    }
+    if (slot.kind === 'entry') {
+      return slot.slotIndex === undefined ? [] : [entryReadRecord(frame, deployment, slot.slotIndex)];
+    }
+    return [];
+  });
+}
+
+/** The entries one frame declares: one kept record entry per record it reads, data NFT or mapping node alike. */
 function readSegments(
   layout: ReturnType<typeof layoutTransaction>,
   records: readonly ReadRecord[],
@@ -436,17 +535,29 @@ function readSegments(
 }
 
 /**
- * Decodes the bytes a frame recorded, through the shipped pushdata decoder.
+ * Decodes the bytes a frame recorded.
  *
- * The entry's `return` leaves each value's canonical push concatenated in declaration order, which is the same
- * field encoding a state commitment carries, so the recorded bytes decode with `decodePushdataValue` at each
- * declared type. A call path that records the same blob in a root frame's `retval` decodes it here too.
+ * A Solidity-imported entry publishes `evm-abi-v1` and its `return` leaves the ABI-encoded tuple, which decodes with
+ * the shipped ABI decoder; every other entry leaves each value's canonical push concatenated in declaration order,
+ * the same field encoding a state commitment carries, which decodes with `decodePushdataValue` at each declared type.
+ * A call path that records the same blob in a root frame's `retval` decodes it here too.
  */
 export function decodeReturnValues(
   retval: Uint8Array,
   outputs: readonly { readonly type: string }[],
   structs: readonly StructDefinitionInfo[] | undefined,
+  resultEncoding?: ExternalResultEncoding,
+  enums?: Artifact['enums'],
 ): readonly StateValue[] {
+  if (resultEncoding === 'evm-abi-v1') {
+    const decoded = decodeAuthenticatedProducerResultVector(
+      retval, outputs.map((output) => output.type), structs, true, enums,
+    );
+    if (decoded === undefined) {
+      throw new PerCallReadError('the frame recorded bytes that are not the entry\'s declared Solidity ABI returns');
+    }
+    return decoded as readonly StateValue[];
+  }
   const values: StateValue[] = [];
   let offset = 0;
   for (const output of outputs) {
@@ -503,6 +614,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
     artifact: options.artifact,
     categoryId,
     functionName,
+    args: options.args ?? [],
     externals: options.externals,
     validatorProgram,
   });
@@ -621,12 +733,14 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
       if (inputs[record.id] !== undefined) continue;
       inputs[record.id] = {
         source: {
-          lockingBytecode: stateRecordLockingBytecode(frame.categoryId),
+          lockingBytecode: record.lockingBytecode,
           valueSatoshis: record.satoshis,
           token: mutable(frame.category, record.commitment),
         },
-        // A read leaves the record where it is, so it takes the covenant's read-only path.
-        unlockingBytecode: stateRecordUnlockingBytecode(frame.categoryId, masterIndex, 0),
+        // A read leaves the record where it is, so it takes the covenant's read-only path: a data-NFT record's
+        // read-only path still names the master index, a mapping node's needs no master at all.
+        unlockingBytecode: record.unlockingBytecode
+          ?? stateRecordUnlockingBytecode(frame.categoryId, masterIndex, 0),
       };
     }
   }
@@ -707,7 +821,9 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   });
   const accepted = machine.stateSuccess(state) === true;
   const retval = learned.get(READ_MASTER)!;
-  const values = decodeReturnValues(retval, root.entry.outputs, structDefinitionsOf(root.artifact));
+  const values = decodeReturnValues(
+    retval, root.entry.outputs, structDefinitionsOf(root.artifact), root.entry.resultEncoding, root.artifact.enums,
+  );
   return {
     values,
     value: values[0] ?? 0n,

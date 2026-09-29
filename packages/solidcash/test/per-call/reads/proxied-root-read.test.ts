@@ -115,9 +115,11 @@ describe('a read-only call through a proxy handle', () => {
     // state the proxy's record holds.
     expect(result.accepted).toBe(true);
     expect(result.value).toBe(5n);
-    // The read plans the implementation's records under the proxy's category, one frame for each.
+    // The read plans the implementation's record that `peek` reads under the proxy's category: `total` sits in the
+    // first data NFT, and the second — the isolated `separate` field — is not read and so not declared.
     expect(result.draft.layout.participants.map((placed) => placed.id))
-      .toStrictEqual(expect.arrayContaining(['record-0', 'record-1']));
+      .toStrictEqual(expect.arrayContaining(['record-0']));
+    expect(result.draft.layout.participants.map((placed) => placed.id)).not.toContain('record-1');
     // The frame runs as the proxy: `self` is the address fronting the implementation's code at the proxy's category.
     expect(bytesEqual(result.draft.blockOf('read').self, funded.proxyAddress)).toBe(true);
   });

@@ -60,11 +60,12 @@ import {
  * allowance down, the payer's balance down, the payee's up), and returns an id the root stores after the call.
  * The escrow and the root each emit.
  *
- * The escrow keeps each token write to one key. Three shapes the replica's earlier revisions treated as walls now
+ * The escrow keeps each token write to one key. Four shapes the replica's earlier revisions treated as walls now
  * settle in the cases below: a callee frame that writes two ledger nodes of one collection (its segment declares
  * one group per target, and the two nodes must form a single sorted list), a call that mixes a compile-time
- * argument with a run-time one, and a read-only frame that reads a node another frame wrote in the same
- * transaction (it closes the node against the view its own segment declares).
+ * argument with a run-time one, a read-only frame that reads a node another frame wrote in the same
+ * transaction (it closes the node against the view its own segment declares), and the flow's natural one-call
+ * pull, whose groups follow the order the compiler publishes the batch's targets in.
  *
  * Nothing here supplies an index: the layout places every participant, the token's ledger nodes come from the
  * shipped planner (`planMappingWrite`/`layOutMappingWrites`) at the collection's entry covenant, and the struct
@@ -945,7 +946,11 @@ function buildReadAfterWritePlan(): { readonly plan: CompositionDraftPlan; reado
  * the higher slot as its successor and the higher node the zero sentinel, and each write is an update against the
  * whole two-node inventory. Neither node carries `next == 0`.
  */
-function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly artifacts: readonly Artifact[] } {
+function buildOnePullPlan(order: 'published' | 'written' = 'published'): {
+  readonly plan: CompositionDraftPlan;
+  readonly artifacts: readonly Artifact[];
+  readonly nodes: { readonly rootNode: Uint8Array; readonly escrowNode: Uint8Array };
+} {
   const rootLabel = 'fan in with result one pull root';
   const storeLabel = 'fan in with result one pull store';
   const escrowLabel = 'fan in with result one pull escrow';
@@ -1034,9 +1039,16 @@ function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly art
     [bytesToHex(rootSlot), { in: indexOf('rootNode'), out: indexOf('rootNode') }],
     [bytesToHex(escrowSlot), { in: indexOf('escrowNode'), out: indexOf('escrowNode') }],
   ]);
-  // The segment declares the batch's targets in the body's write order: `holder` then `recipient`, so the root's
-  // node leads the escrow's. The compiler publishes the reverse order (`[recipient, holder]`) for this signature.
-  const pullEntries = layOutMappingWrites([[pullRoot, pullEscrow]], {
+  // The derivation walks a batch's groups in the order the compiler publishes its targets (`recipient` before
+  // `holder` for this signature); `written` declares them in the body's write order instead.
+  const pull = raw.artifacts.Token!.abi.find((entry) => entry.name === 'transferFrom')!;
+  const keyOf = (slotIndex: number): string =>
+    pull.entryAccesses!.find((access) => access.slotIndex === slotIndex)!.keyParams[0]!;
+  const writeOf: Record<string, ReturnType<typeof planMappingWrite>> = { holder: pullRoot, recipient: pullEscrow };
+  const targets = order === 'published'
+    ? pull.sortedBatchInfo![0]!.slotIndices.map((slotIndex) => writeOf[keyOf(slotIndex)]!)
+    : [pullRoot, pullEscrow];
+  const pullEntries = layOutMappingWrites([targets], {
     placementOf: (slot) => placements.get(bytesToHex(slot)),
   })[0]!;
   const storeRecord = new Uint8Array(Buffer.from(
@@ -1176,7 +1188,11 @@ function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly art
       redeemScript: validatorFor(root.category).redeem,
     },
   };
-  return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Escrow!, raw.artifacts.Token!] };
+  return {
+    plan,
+    artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Escrow!, raw.artifacts.Token!],
+    nodes: { rootNode: pullRoot.written[0]!.after, escrowNode: escrowAfterValue },
+  };
 }
 
 interface TwoKeyRun {
@@ -1302,22 +1318,29 @@ describe('the obstacles this flow replica works around', () => {
     expect(outcome.draft.blockOf('read-1').retval).toStrictEqual(encodeResultList([encodeIntegerValue(FEE)]));
   });
 
-  it('pins the one-call pull: the frame that writes its record and both balance nodes stalls', () => {
-    // The flow's token keeps each write to one key, so an entry that writes the allowance record and both
-    // balance nodes in one execution is not driven there. This plan drives it, and the frame stalls at its first
-    // segment close.
-    //
-    // The ledger is not the fault. Decoding this frame's witness block with the shipped codecs shows both written
-    // nodes form one real sorted list: the lower slot's node carries the higher slot as its successor and the
-    // higher node carries the zero sentinel, and neither carries `next == 0`. Each write is an update against the
-    // whole two-node inventory. A smaller flow of the same shape settles (the two-mapping-nodes case above), and
-    // this plan stalls in both node orders, so the stall is an interaction rather than the ledger, the depth or
-    // the entry count. The order only picks the machine's objection: the body's write order fails early with the
-    // `OP_SPLIT` below, while the compiler's published order fails at the batch topology check with
-    // `Program failed an OP_VERIFY operation.` The failing split reads past the block's send list: the two bytes it
-    // finds there are the block's empty value list.
+  it('settles the one-call pull: one frame writes its record and both balance nodes', () => {
+    // The flow's natural `transferFrom` in one execution: the allowance record down, the holder's balance down and
+    // the recipient's up, with the two nodes one sorted list and each write an update against it.
     const one = buildOnePullPlan();
-    expect(derivationRefusal(one.plan, one.artifacts, 'pull-1')).toStrictEqual({
+    const outcome = composeAndDerive(one.plan, one.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    expect(refused(outcome)).toStrictEqual([]);
+    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
+      entryName('Store', 'getFee'), entryName('Token', 'approve'), entryName('Token', 'balanceOf'),
+      entryName('Token', 'transferFrom'), entryName('Token', 'balanceOf'), entryName('Escrow', 'run'),
+      entryName('Root', 'run'),
+    ]);
+    // Each node carries the balance the execution computed, in the shipped planner's commitment.
+    const nodeOutput = (id: string): string => bytesToHex(new Uint8Array(
+      outcome.transaction.outputs[participant(outcome.draft.layout, id).index]!.token!.nft!.commitment));
+    expect(nodeOutput('rootNode')).toBe(bytesToHex(one.nodes.rootNode));
+    expect(nodeOutput('escrowNode')).toBe(bytesToHex(one.nodes.escrowNode));
+  });
+
+  it('refuses the same pull when its groups are declared in the body\'s write order', () => {
+    // The derivation walks the groups in the published target order, so the recipient's walk reads the holder's
+    // node, takes it for an insert's predecessor, and the holder's walk then reads past the segment.
+    const written = buildOnePullPlan('written');
+    expect(derivationRefusal(written.plan, written.artifacts, 'pull-1')).toStrictEqual({
       message: 'PER_CALL_DERIVATION_STALLED: master "pull-1" of Token.transferFrom() filled no witness at site 0 '
         + '(close of segment 0)',
       objection: 'Program called an OP_SPLIT operation with an invalid index. '

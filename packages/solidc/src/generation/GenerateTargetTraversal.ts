@@ -29903,6 +29903,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_ADD, loc);
     } else {
       this.emitTrailingBlockBase(blockSize, loc, basisFunction.blockLayout?.trailingBase);
+      // A plain direct return does not materialize its output-only returnEvent slot, and the SDK places the
+      // first chunk immediately after the occupied fixed inputs. Balanced routes publish an explicit trailing
+      // base and retain that slot, so only the compact direct frame may move the read coordinate back by one.
+      if (!this.isDefineSubTraversal && basisFunction.blockLayout?.trailingBase === undefined
+        && basisFunction.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')
+        && this.getStackIndex('__internal__returnOutputIdx', true) >= 0) {
+        this.emitPickCompilerRouteFrameValue('__internal__returnOutputIdx', loc, 1);
+        this.emit(encodeInt(0n), loc);
+        this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_SUB, loc);
+      }
       this.emitAddCollectionIterCounts(loc); // collection-iter entries precede read chunks (W4)
     }
     for (const pt of priorTempNames) {

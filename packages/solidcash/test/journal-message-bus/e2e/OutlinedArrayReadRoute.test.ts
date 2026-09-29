@@ -32,10 +32,18 @@ describe('outlined dynamic-array reader in an atomic route', () => {
     await contract.call.seed().send();
     expect(artifact.abi.find((entry) => entry.name === 'read')?.dynamicReads).toEqual(['values']);
     expect((await contract.getState()).values).toHaveLength(1);
+    const vm = createVirtualMachineBch2026ForProvider(provider);
+    const direct = await contract.call.read(0n).build();
+    const directTransaction = direct.buildLibauthTransaction();
+    const directSources = generateLibauthSourceOutputs(direct.inputs);
+    for (let inputIndex = 0; inputIndex < directTransaction.inputs.length; inputIndex += 1) {
+      expect(vm.stateSuccess(vm.evaluate({
+        inputIndex, sourceOutputs: directSources, transaction: directTransaction,
+      })), `direct input ${inputIndex}`).toBe(true);
+    }
     const built = await contract.batch([{ function: 'read', args: [0n] }]).build();
     const transaction = built.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(built.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(provider);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
       expect(vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction })), `input ${inputIndex}`)
         .toBe(true);

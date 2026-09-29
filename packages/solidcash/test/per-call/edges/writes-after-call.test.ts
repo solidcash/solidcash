@@ -167,7 +167,6 @@ describe('an assertion that fails after a state-changing call', () => {
     // The record is written before the call, then the body reverts, so the close of its second segment is not a
     // state the machine accepts and the derivation reports the stalled step by name.
     expect(() => derive(REVERTING)).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    // The faithful body settles, so the refusal is the failed assertion and not the composition.
-    expect(masterVerdict(derive(FAITHFUL).draft)).toStrictEqual({ accepted: true });
+    // The faithful body settles above, so the refusal is the failed assertion and not the composition.
   });
 });

@@ -105,7 +105,6 @@ const vaultState = (shareCount: bigint, settled: bigint, claimed: bigint): Recor
   ({ shares: shareCount, settled, claimed });
 
 /** One payment per share, so the vault's payout entry takes no run-time value to forward. */
-const DEFAULT_SHARES: readonly bigint[] = [1n, 1n];
 const FULL_SHARES: readonly bigint[] = [1n, 1n, 1n, 1n, 1n];
 
 const shareMaster = (index: number): string => `sendShare-${index + 1}`;
@@ -638,7 +637,7 @@ function derived(shares: readonly bigint[]): { readonly run: Run; readonly outco
 
 describe('a root, a rater, a vault and a claimer composed through the shipped path', () => {
   it('compiles all six contracts and serves every entry', () => {
-    const run = build(DEFAULT_SHARES);
+    const run = build(FULL_SHARES);
     for (const name of ['Root', 'Store', 'Rater', 'Vault', 'Claimer', 'Token']) {
       expect(run.artifacts[name]?.composition?.convention).toBe('per-call');
     }
@@ -714,6 +713,11 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
     expect(depthOf(draft, run.shareMasters[0]!)).toBe(3);
     expect(depthOf(draft, run.transferMasters[0]!)).toBe(4);
     expect(Math.max(...run.plan.masters.map((master) => depthOf(draft, master.master)))).toBe(4);
+    // The claimer re-enters the rater for the flag and the calculation, one level below itself.
+    expect(depthOf(draft, FLAG_MASTER)).toBe(3);
+    expect(depthOf(draft, CALC_MASTER)).toBe(3);
+    expect(draft.blockOf(FLAG_MASTER).callerRef).toBe(run.indexOf(CLAIM_MASTER));
+    expect(draft.blockOf(CALC_MASTER).callerRef).toBe(run.indexOf(CLAIM_MASTER));
 
     // The frames the transaction carries: one master per entered entry, read from the layout rather than stated.
     const frames = draft.layout.participants.filter((placed) => placed.kind === 'master');
@@ -722,35 +726,8 @@ describe('a root, a rater, a vault and a claimer composed through the shipped pa
     expect(outcome.transaction.inputs.length).toBeGreaterThanOrEqual(frames.length);
   });
 
-  it('settles the rater that holds the flag and the pure calculation and is re-entered by the claimer', () => {
-    const { run, outcome } = derived(DEFAULT_SHARES);
-    const draft = outcome.draft;
-
-    // The rater's entry reads, settles and calls the claimer, and the claimer comes back for the flag and the
-    // calculation: both are rater frames entered by the claimer, one level below it.
-    const completed = outcome.completed.map((frame) => frame.master);
-    expect(completed).toContain(ENTER_MASTER);
-    expect(completed).toContain(FLAG_MASTER);
-    expect(completed).toContain(CALC_MASTER);
-    // The claimer's two rater reads complete before the claimer does.
-    expect(completed.indexOf(FLAG_MASTER)).toBeLessThan(completed.indexOf(CLAIM_MASTER));
-    expect(completed.indexOf(CALC_MASTER)).toBeLessThan(completed.indexOf(CLAIM_MASTER));
-    expect(depthOf(draft, FLAG_MASTER)).toBe(3);
-    expect(depthOf(draft, CALC_MASTER)).toBe(3);
-    expect(draft.blockOf(FLAG_MASTER).callerRef).toBe(run.indexOf(CLAIM_MASTER));
-    expect(draft.blockOf(CALC_MASTER).callerRef).toBe(run.indexOf(CLAIM_MASTER));
-
-    // The flag the claimer read is the one the rater's own entry wrote, read back through the shipped encoder.
-    expect(outcome.transaction.outputs[run.indices.RATER_RECORD]!.token?.nft?.commitment)
-      .toStrictEqual(run.commitments.raterAfter);
-    expect(run.commitments.raterAfter).toStrictEqual(
-      new Uint8Array(Buffer.from(buildPushdataCommitment(
-        run.artifacts.Rater!.stateLayout!, { settled: RATER_AFTER.settled }, 0), 'hex')));
-    expect(refused(outcome)).toStrictEqual([]);
-  });
-
   it('refuses a record output no frame computed', () => {
-    const { run, outcome: { draft } } = derived(DEFAULT_SHARES);
+    const { run, outcome: { draft } } = derived(FULL_SHARES);
     const program = draft.programFor(ROOT_MASTER);
     const wrong = commitmentOf(run.artifacts.Token!.stateLayout!, { paid: 999n });
     const outputs = program.transaction.outputs.map((output, index) => (index === run.indices.TOKEN_RECORD

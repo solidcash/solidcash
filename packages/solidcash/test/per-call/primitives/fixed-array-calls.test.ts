@@ -17,8 +17,7 @@ import { layoutTransaction, type CompositionDraftPlan, type DraftMaster } from '
  * elements it read; the derivation completing is the machine accepting that read. The caller's call record is
  * decoded back with the same shipped decoder, so the stored value is asserted rather than assumed.
  *
- * A fixed-size array argument the caller builds at run time is driven too: the site's digest is over the wire's
- * push of the caller's own value, so the callee reading the elements it was sent is what shows the two agree.
+ * uint16[2] and an array the caller builds at run time are `pure-static-frame.test.ts`'s.
  */
 
 const USER = 'user';
@@ -122,16 +121,6 @@ const identitySource = (type: string, requirements: readonly string[]): ArrayCas
     + `${requirements.map((check) => `   require(${check.replace(/xs/g, 'r')});`).join('')} require(true); } }`;
 
 describe('fixed-size array arguments and results across a read-only call', () => {
-  it('drives uint16[2] in and out: the callee read the elements the caller passed', () => {
-    const spec: ArrayCase = {
-      label: 'uint16[2]', type: 'uint16[2]', argument: encodePushdataValue([1n, 2n], 'uint16[2]'),
-      result: [1n, 2n],
-      source: identitySource('uint16[2]', ['xs[0] == 1', 'xs[1] == 2']),
-    };
-    // The caller stored the value it read out of the call record.
-    expect(drive(spec)).toStrictEqual([1n, 2n]);
-  });
-
   it('drives uint16[4] in and out', () => {
     const spec: ArrayCase = {
       label: 'uint16[4]', type: 'uint16[4]', argument: encodePushdataValue([1n, 2n, 3n, 4n], 'uint16[4]'),
@@ -164,24 +153,5 @@ describe('fixed-size array arguments and results across a read-only call', () =>
         + '   require(r[0] == 1); require(r[4] == 5); require(true); } }',
     };
     expect(drive(spec)).toStrictEqual([1n, 2n, 3n, 4n, 5n]);
-  });
-
-  it('drives a fixed-size array argument the caller builds at run time', () => {
-    // The caller fills its own array element by element, and the site's digest has to be the wire's push of that
-    // value, so the callee reading the elements it was sent is what proves the two agree.
-    const spec: ArrayCase = {
-      label: 'uint16[4] run-time', type: 'uint16[4]',
-      argument: encodePushdataValue([1n, 2n, 3n, 4n], 'uint16[4]'), argumentExpression: 'xs',
-      result: [1n, 2n, 3n, 4n],
-      source: (address: string, argument: string): string => 'pragma solidcash ^0.13.0;'
-        + ' interface ICal { function f(uint16[4] xs) pure returns (uint16[4]); }'
-        + ' contract Cal { function f(uint16[4] xs) pure returns (uint16[4]) {'
-        + '   require(xs[0] == 1); require(xs[3] == 4); return xs; } }'
-        + ' contract Caller { function start() {'
-        + '   uint16[4] xs; xs[0] = 1; xs[1] = 2; xs[2] = 3; xs[3] = 4;'
-        + `   uint16[4] r = ICal(0x${address}).f(${argument});`
-        + '   require(r[0] == 1); require(r[3] == 4); require(true); } }',
-    };
-    expect(drive(spec)).toStrictEqual([1n, 2n, 3n, 4n]);
   });
 });

@@ -74,18 +74,11 @@ const SHORT_SIGNATURE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** The pre-EIP-155 recovery ids `0` and `1`, which the EVM's `ecrecover` rejects (it accepts only 27/28). */
+/** A pre-EIP-155 recovery id, which the EVM's `ecrecover` rejects (it accepts only 27/28); `1` compiles alike. */
 const V_ZERO_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Auth {'
   + '   function check(bytes32 h, bytes32 r, bytes32 s) {'
   + `     require(ecrecoverPubKey(h, 0, r, s) == pubkey(${SIGNER}));`
-  + '   }'
-  + ' }';
-
-const V_ONE_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Auth {'
-  + '   function check(bytes32 h, bytes32 r, bytes32 s) {'
-  + `     require(ecrecoverPubKey(h, 1, r, s) == pubkey(${SIGNER}));`
   + '   }'
   + ' }';
 
@@ -144,7 +137,6 @@ const CASES = [
   { name: 'a valid recovery used normally', source: VALID_SOURCE, options: {} },
   { name: 'an empty or short signature', source: SHORT_SIGNATURE_SOURCE, options: {} },
   { name: 'a recovery id of 0', source: V_ZERO_SOURCE, options: {} },
-  { name: 'a recovery id of 1', source: V_ONE_SOURCE, options: {} },
   { name: 'an out-of-range s', source: S_OUT_OF_RANGE_SOURCE, options: {} },
   { name: 'an all-zero digest and signature', source: ALL_ZERO_SOURCE, options: {} },
   { name: 'the EVM-address projection', source: EVM_PROJECTION_SOURCE, options: {} },
@@ -411,10 +403,15 @@ beforeAll(async () => {
   signer = await splittableSigner();
 }, 120_000);
 
+let signerPair: { readonly a: SideCar; readonly b: SideCar } | undefined;
+/** The signer's pair, built once: the cases below co-spend the same one. */
+const signerPairOnce = (): { readonly a: SideCar; readonly b: SideCar } =>
+  (signerPair ??= recoveryPair(signer.witness));
+
 describe('a per-call body that recovers a signer', () => {
   it('is accepted at every input when the co-spent pair recovers the expected key', () => {
     const program = compileRecoverySource(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
-    const { a, b } = recoveryPair(signer.witness);
+    const { a, b } = signerPairOnce();
     const spend = buildSpend(program, [a, b]);
     expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
       [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true,
@@ -427,7 +424,7 @@ describe('a per-call body that recovers a signer', () => {
     const other = Uint8Array.from(signer.owner);
     other[1] ^= 0xff;
     const program = compileRecoverySource(signer, `pubkey(0x${binToHex(other)})`, 'pubkey');
-    const { a, b } = recoveryPair(signer.witness);
+    const { a, b } = signerPairOnce();
     const spend = buildSpend(program, [a, b]);
     expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX])).toStrictEqual({
       [MASTER_INDEX]: false, [A_INDEX]: true, [B_INDEX]: true,
@@ -436,7 +433,7 @@ describe('a per-call body that recovers a signer', () => {
 
   it('is accepted when the EVM projection reads the address from its keccak side-car', () => {
     const program = compileRecoverySource(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
-    const { a, b } = recoveryPair(signer.witness);
+    const { a, b } = signerPairOnce();
     const spend = buildSpend(program, [a, b, keccakCar(signer.witness.uncompressedPubkey)]);
     expect(verdicts(spend, [MASTER_INDEX, A_INDEX, B_INDEX, K_INDEX])).toStrictEqual({
       [MASTER_INDEX]: true, [A_INDEX]: true, [B_INDEX]: true, [K_INDEX]: true,

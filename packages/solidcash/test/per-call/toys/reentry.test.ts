@@ -13,7 +13,6 @@ import {
   splitFirstPush,
 } from '@solidcash/utils';
 import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import { createUnlockingBytecode, scriptToLockingBytecode } from '../../../src/utils.js';
 import { encodeFunctionArgument } from '../../../src/Argument.js';
@@ -23,7 +22,7 @@ import {
   userInput, validatorFor,
 } from '../shapes/harness.js';
 import {
-  createComposedDerivationHost, createShippedDerivationHost, deriveDepthFirst, layOutMappingWrites,
+  createComposedDerivationHost, deriveDepthFirst, layOutMappingWrites,
   layoutTransaction, participant, planMappingWrite, type CompositionDraft, type CompositionDraftPlan,
   type DraftMaster, type MappingNodePlacement,
 } from '../../../src/per-call/composer/index.js';
@@ -62,73 +61,7 @@ const LABELS = { Token: TOKEN_LABEL, Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL 
 const ID = 1n;
 const ZERO_SLOT = new Uint8Array(32);
 
-/** The shape's source. `claim` returns one amount, or the pair `release` reads back and emits. */
-function source(returns: 'amount' | 'amounts'): string {
-  const two = returns === 'amounts';
-  const signature = two ? '(int, int)' : '(int)';
-  const unpack = two ? '(int first, int second)' : 'int first';
-  const event = two ? 'Released(int first, int second)' : 'Released(int first)';
-  const emitted = two ? 'Released(first, second)' : 'Released(first)';
-  const returned = two ? '(1, 2)' : '1';
-  return 'pragma solidcash ^0.13.0;'
-    + ' interface IToken { function transfer(address to, int amount); }'
-    + ' interface IVault {'
-    + '   function get(int id) view returns (int);'
-    + '   function markClaimed(int id);'
-    + '   function pay(address to, int amount);'
-    + ' }'
-    + ` interface IClaimer { function claim(int id) returns ${signature}; }`
-    + ' contract Token {'
-    + '   mapping(address => int) public balances;'
-    + '   function transfer(address to, int amount) {'
-    + '     this.balances[to] = this.balances[to] + amount;'
-    + '     require(this.balances[to] >= amount);'
-    + '   }'
-    + ' }'
-    + ' contract Vault {'
-    + '   struct Rec { int state; bool claimed; }'
-    + '   mapping(int => Rec) public recs;'
-    + `   event ${event};`
-    + '   function release(int id) {'
-    + '     this.recs[id].state = 1;'
-    + `     ${unpack} = IClaimer(0x${CLAIMER}).claim(id);`
-    + `     emit ${emitted};`
-    + '     require(true);'
-    + '   }'
-    + '   function markClaimed(int id) { this.recs[id].claimed = true; require(true); }'
-    + `   function pay(address to, int amount) { IToken(0x${TOKEN}).transfer(to, amount); require(true); }`
-    + '   function get(int id) view returns (int) { return this.recs[id].state; }'
-    + ' }'
-    + ' contract Claimer {'
-    + `   function claim(int id) returns ${signature} {`
-    + `     int s = IVault(0x${VAULT}).get(id);`
-    + '     require(s == 1);'
-    + `     IVault(0x${VAULT}).markClaimed(id);`
-    + `     IVault(0x${VAULT}).pay(0x${USER}, 1);`
-    + `     IVault(0x${VAULT}).pay(0x${USER}, 2);`
-    + `     return ${returned};`
-    + '   }'
-    + ' }';
-}
-
-/** The write-then-call half of the shape, without the payments and the read-back. */
-const SETTLED_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface IClaimer { function claim(int id); }'
-  + ' interface IVault { function markClaimed(int id); }'
-  + ' contract Claimer {'
-  + `   function claim(int id) { IVault(0x${VAULT}).markClaimed(id); require(true); }`
-  + ' }'
-  + ' contract Vault {'
-  + '   mapping(int => int) recs;'
-  + '   function release(int id) {'
-  + '     this.recs[id] = 1;'
-  + `     IClaimer(0x${CLAIMER}).claim(id);`
-  + '     require(true);'
-  + '   }'
-  + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
-  + ' }';
-
-/** The same shape with `claim` returning a pair and `release` reading it back. */
+/** The write-then-call half of the shape: `claim` re-enters `markClaimed` and returns a pair `release` reads back. */
 const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' interface IClaimer { function claim(int id) returns (int, int); }'
   + ' interface IVault { function markClaimed(int id); }'
@@ -144,8 +77,6 @@ const PAIRED_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + '   function markClaimed(int id) { this.recs[id] = 2; require(true); }'
   + ' }';
-
-const amounts = compileAndDeploy(source('amounts'), LABELS);
 
 /** One entry as the artifact publishes it: its stop sites, and the calls its own code makes. */
 interface PublishedEntry {
@@ -189,14 +120,13 @@ function verdictAtIndex(draft: ReturnType<typeof createComposedDerivationHost>['
  * the index right after the validator and both writes update it in place. With `control` the created node's output
  * is left at the value the creating frame wrote, which is not the commitment the last declaration ends at.
  *
- * With `paired` the same plan drives the shape whose `claim` returns a pair: the master's frame records
- * `recordedPair` in its `retval`, which the honest run takes from the shipped result encoding and the control
- * changes, so `release` reads the record's `result` back and requires each value.
+ * `claim` returns a pair: its frame records `recordedPair` in its `retval`, which the honest run takes from the
+ * shipped result encoding and the control changes, so `release` reads the record's `result` back and requires each
+ * value.
  */
 function driveSettled(
   insert = false,
   control = false,
-  paired = false,
   recordedPair: readonly [bigint, bigint] = [1n, 2n],
 ): {
   readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
@@ -208,8 +138,7 @@ function driveSettled(
   readonly createdIndex: number;
   readonly headIndex: number;
 } {
-  const { artifacts, contracts } = compileAndDeploy(paired ? PAIRED_SOURCE : SETTLED_SOURCE,
-    { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
+  const { artifacts, contracts } = compileAndDeploy(PAIRED_SOURCE, { Vault: VAULT_LABEL, Claimer: CLAIMER_LABEL });
   const vault = contracts.Vault!;
   const claimer = contracts.Claimer!;
   const validator = validatorFor(vault.category);
@@ -290,9 +219,9 @@ function driveSettled(
   });
   // The value the claimer's frame records: its own `return (1, 2)` leaves exactly the bytes the shipped result
   // encoding produces, and the control records another pair.
-  const claimMaster: DraftMaster = paired
-    ? { ...claimBase, retval: encodeResultList(recordedPair.map((value) => encodeIntegerValue(value))) }
-    : claimBase;
+  const claimMaster: DraftMaster = {
+    ...claimBase, retval: encodeResultList(recordedPair.map((value) => encodeIntegerValue(value))),
+  };
 
   const vaultInput = (commitment: Uint8Array, output: Uint8Array): CompositionDraftPlan['inputs'][string] => ({
     source: { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', commitment) },
@@ -364,16 +293,6 @@ function driveSettled(
 // The update case of the write-then-call shape settles inside the vault graph below, whose descriptor test and
 // settlement also stand for the served-entry checks this describe used to repeat.
 describe('a vault whose release writes its record and calls a claimer that reads it back', () => {
-  const { artifacts } = amounts;
-
-  it('compiles the claimer\'s graph: the read-back, the re-entered claim and the two pays', () => {
-    // `claim` reads the vault, requires the record, re-enters the vault and pays twice; the read-only read and the
-    // two calls to the same entry are each published as their own site.
-    const claim = entriesOf(artifacts, 'Claimer').find((entry) => entry.functionName === entryName('Claimer', 'claim'))!;
-    expect(claim.calls.map((call) => call.functionName)).toStrictEqual(['get', 'markClaimed', 'pay', 'pay']);
-    expect(claim.calls[2]!.selector).toBe(claim.calls[3]!.selector);
-  });
-
   it('settles the write that creates the record: its relinked head, the created node and the call', () => {
     // A write that creates the record has no input to read it at, so the segment declares the list's head sentinel
     // rewritten in place and the created node as a trailing output. The creating frame names the created node by
@@ -427,19 +346,9 @@ function relinkedHead(): Uint8Array {
 
 describe('the pair a claim returns beside the record write', () => {
   it('is served by the compiler and settles when the caller reads both values back', () => {
-    // The entry is served: the compiler publishes no refusal for it and the host answers with its stop sites.
-    const refused = publishedRefusals(amounts.artifacts as Record<string, { composition?: unknown }>)
-      .map((refusal) => refusal.functionName);
-    expect(refused).not.toContain(entryName('Claimer', 'claim'));
-    const sites = createShippedDerivationHost({
-      artifacts: [amounts.artifacts.Vault!, amounts.artifacts.Claimer!, amounts.artifacts.Token!], runs: [],
-    }).sitesFor(entryName('Claimer', 'claim'));
-    expect(sites.functionName).toBe(entryName('Claimer', 'claim'));
-    expect(sites.sites.length).toBeGreaterThan(0);
-
     // The pair the callee's own `return (1, 2)` computes, in the shipped result encoding.
     const pair = encodeResultList([encodeIntegerValue(1n), encodeIntegerValue(2n)]);
-    const { draft, completed, error } = driveSettled(false, false, true);
+    const { draft, completed, error } = driveSettled();
 
     // The callee is derived before its caller, and the vault entry the call re-enters between them.
     expect(error).toBeUndefined();
@@ -466,7 +375,7 @@ describe('the pair a claim returns beside the record write', () => {
     // The control records the same two values in the other order. The callee's own comparison refuses the frame
     // that recorded what its code did not compute, and the caller reads the swapped values back and fails its own
     // requires.
-    const swapped = driveSettled(false, false, true, [2n, 1n]);
+    const swapped = driveSettled(false, false, [2n, 1n]);
     expect(verdictAt(swapped.draft, 'claim-1')).toBe('refused: Program failed an OP_VERIFY operation.');
     expect(verdictAt(swapped.draft, 'release-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
@@ -579,11 +488,9 @@ interface GraphOutcome {
  * settles both records.
  *
  * The claimer's read-back of the vault's record is the piece of the graph that does not reach this path; it is
- * pinned by the composition below. `vaultRecordWritten` overrides the commitment the transaction writes for the
- * vault record, which is this composition's refused control: the frames keep their own declarations, so only the
- * settlement can refuse it.
+ * pinned by the composition below.
  */
-function driveGraph(options: { readonly vaultRecordWritten?: Uint8Array } = {}): GraphOutcome {
+function driveGraph(): GraphOutcome {
   const { artifacts, contracts } = graph;
   const vault = contracts.Vault!;
   const claimer = contracts.Claimer!;
@@ -752,8 +659,7 @@ function driveGraph(options: { readonly vaultRecordWritten?: Uint8Array } = {}):
       vaultNode: {
         source: { lockingBytecode: vaultLock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', recordSpent) },
         output: {
-          lockingBytecode: vaultLock, valueSatoshis: 20_000n,
-          token: token(vault.category, 'mutable', options.vaultRecordWritten ?? vaultWritten),
+          lockingBytecode: vaultLock, valueSatoshis: 20_000n, token: token(vault.category, 'mutable', vaultWritten),
         },
         unlockingBytecode: entryNodeUnlocking(vaultEntryScript, releaseIndex),
       },
@@ -898,19 +804,31 @@ describe('the vault graph: release, two payments through the token and the emit'
   it('refuses a transaction whose vault record output is not what the last declaration ends at', () => {
     // The control on the same composition: every frame keeps its own declaration and the body computes what it
     // closes against, so the masters are self-consistent; the settlement is what holds the chain's last
-    // declaration to the commitment the transaction writes, and it refuses.
+    // declaration to the commitment the transaction writes, and it refuses. Only the vault record's output changes.
     const honest = sharedGraph();
     const written = encodeEntryCommitment(
       keyToSlotMulti([encodeIntegerValue(ID)]), ZERO_SLOT, encodeIntegerValue(9n),
     );
-    const broken = driveGraph({ vaultRecordWritten: written });
+    const program = honest.draft.programFor('release-1');
+    const transaction = {
+      ...program.transaction,
+      outputs: program.transaction.outputs.map((output, index) => (index === honest.vaultNodeIndex
+        ? { ...output, token: { ...output.token!, nft: { ...output.token!.nft!, commitment: written } } }
+        : output)),
+    };
+    const accepts = (id: string): boolean => {
+      const vm = compositionMachine();
+      return vm.stateSuccess(vm.evaluate({
+        inputIndex: participant(honest.draft.layout, id).index, sourceOutputs: program.sourceOutputs, transaction,
+      })) === true;
+    };
 
     expect(verdictOf(honest, 'validator').accepted).toBe(true);
     // `release` and `markClaimed` still accept: each reads its own declaration, and the transaction's output is not
     // what either of them closes against.
-    expect(verdictOf(broken, 'release-1').accepted).toBe(true);
-    expect(verdictOf(broken, 'markClaimed-1').accepted).toBe(true);
-    expect(verdictOf(broken, 'validator').accepted).toBe(false);
+    expect(accepts('release-1')).toBe(true);
+    expect(accepts('markClaimed-1')).toBe(true);
+    expect(accepts('validator')).toBe(false);
   });
 });
 

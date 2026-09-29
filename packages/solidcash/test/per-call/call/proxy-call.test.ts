@@ -48,24 +48,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
 const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
 const impl = artifacts.Impl!;
 
-// A proxy whose fallback *carries* the delegated call's result, declared explicitly so a hop can also be driven
-// through a hand-written proxy. The forwarded call's result is what the implementation's entry computed, and
-// binding it lets the hop record a returning entry's value in the call record; a fallback that drops the result
-// with a bare `delegatecall(input)` statement is refused by name.
-const PROPAGATING_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract PropagatingProxy {'
-  + '   address public implementation;'
-  + '   uint public initialized;'
-  + '   int public total;'
-  + '   fallback(bytes input) external {'
-  + '     (bool ok, bytes returned) = this.implementation.delegatecall(input);'
-  + '     require(ok);'
-  + '     require(returned.length >= 0);'
-  + '   }'
-  + ' }';
-const propagatingProxy = compileStringMulti(
-  PROPAGATING_PROXY_SOURCE, { composition: 'per-call' }).PropagatingProxy!;
-
 // The shape whose fallback drops the delegated result, which a caller can still write by hand. Kept as a compiled
 // artifact rather than the generated source so the refusal it trips stays pinned while the generated shape moves.
 const BARE_PROXY_SOURCE = 'pragma solidcash ^0.13.0;'
@@ -179,6 +161,10 @@ describe('a call into a per-call implementation through its proxy', () => {
       expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
         implementation: implementationAddress(), initialized: 1n, total: 9n,
       })));
+      // A non-returning entry reports no value.
+      expect(result.values).toStrictEqual([]);
+      expect(result.retval).toStrictEqual(new Uint8Array(0));
+      expect(result.value).toBe(0n);
 
       // The state the broadcast left behind, read back through the shipped reader rather than recomputed here.
       expect(await recordState(network, funded.proxyCategoryId))
@@ -210,44 +196,10 @@ describe('a call into a per-call implementation through its proxy', () => {
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
   });
 
-  it('carries the value the implementation entry returned, decoded the way a direct call decodes one', async () => {
-    // The hop delegates into the implementation frame, so the value a returning entry computes is the frame's own
-    // `retval`, carried in the witness of the implementation input. `bump` returns `by * 3`, which is not a field of
-    // any record, so only the entry's own answer explains the value the call reports.
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network, propagatingProxy);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: impl,
-      proxyArtifact: funded.proxyArtifact,
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'bump',
-      args: [4n],
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
-
-    expect(result.completed.map((frame) => frame.functionName))
-      .toStrictEqual([`${impl.contractName}.bump()`, `${propagatingProxy.contractName}.__fallback()`]);
-    expect(result.accepted).toBe(true);
-    expect(result.broadcast?.txid).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.values).toStrictEqual([12n]);
-    expect(result.value).toBe(12n);
-    expect(result.retval.length).toBeGreaterThan(0);
-    // The record still carries the write the entry computed, which is not the value it returned.
-    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
-      implementation: implementationAddress(), initialized: 1n, total: 9n,
-    })));
-  });
-
   it('carries the value a returning entry computed through the generated closure shape', async () => {
     // The generated proxy's fallback consumes the delegated result, so the forwarded call records what the
-    // implementation entry computed and the hop carries it exactly as the hand-written shape does.
+    // implementation entry computed. The value is the implementation frame's own `retval`: `bump` returns `by * 3`,
+    // which is not a field of any record, so only the entry's own answer explains the value the call reports.
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funded = await deployedWithCallerCoins(network);
 
@@ -303,33 +255,5 @@ describe('a call into a per-call implementation through its proxy', () => {
     })).rejects.toThrow(/returns a value, which a call through this proxy hop does not carry/);
 
     expect(await recordState(network, funded.proxyCategoryId)).toBe(before);
-  });
-
-  it('reports no value for a non-returning entry, and still writes what the entry computed', async () => {
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funded = await deployedWithCallerCoins(network);
-
-    const result = await callPerCallProxyEntry({
-      provider: network,
-      implementationArtifact: impl,
-      proxyArtifact: buildProxyArtifact(impl),
-      proxyCategoryId: funded.proxyCategoryId,
-      implementationCategoryId: funded.implementationCategoryId,
-      functionName: 'add',
-      args: [4n],
-      callerUtxo: funded.callCoin,
-      callerLockingBytecode: funded.deployerLock,
-      funder: funded.funder,
-      changeAddress: funded.changeAddress,
-      vm: compositionMachine(),
-    });
-
-    expect(result.accepted).toBe(true);
-    expect(result.values).toStrictEqual([]);
-    expect(result.retval).toStrictEqual(new Uint8Array(0));
-    expect(result.value).toBe(0n);
-    expect(bytesToHex(result.writtenCommitments[0]!)).toBe(bytesToHex(commitment(impl.stateLayout!, {
-      implementation: implementationAddress(), initialized: 1n, total: 9n,
-    })));
   });
 });

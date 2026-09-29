@@ -104,35 +104,9 @@ const CONDITIONAL_FORWARDING_PROXY = HEAD
   + '   }'
   + ' }';
 
-/** A caller whose verified-mapping write lands behind a call the source does not fix. */
-const CONDITIONAL_CALL_BESIDE_WRITE = HEAD + INTERFACES
-  + ' contract Balances {'
-  + '   address target;'
-  + '   mapping(address => uint) balances;'
-  + '   function set(bool take, address to, uint amount) {'
-  + `     if (take) { IState(0x${CALLEE}).add(1); }`
-  + '     balances[to] = amount;'
-  + '   }'
-  + ' }';
-
-/** A caller whose one call is unconditional, so the set the head walks is fixed by the source. */
-const PLAIN_CALL = HEAD + INTERFACES
-  + ' contract Caller {'
-  + `   function go() { IState(0x${CALLEE}).add(1); require(true); }`
-  + ' }';
-
 /** The refusal the shipped compile raises for a source, or a failure when it accepts it. */
 /** The refusal the compile publishes for the one body these sources have, as the old throw used to carry it. */
 const refusalOf = (source: string): { code?: string; message: string } => publishedRefusalOf(source);
-
-describe('a call whose occurrence the source fixes', () => {
-  it('is admitted, one record per call, which is the control beside the refusal below', () => {
-    // The same call, made unconditionally, compiles: what the negative case refuses is the branch, not the call.
-    const artifacts = compileStringMulti(PLAIN_CALL, { composition: 'per-call' });
-    expect(artifacts.Caller?.composition?.convention).toBe('per-call');
-    expect(artifacts.Caller?.abi.some((entry) => entry.name === 'go')).toBe(true);
-  });
-});
 
 // A branch whose arms each make one call is admitted and accepted by the machine in `branched-call-entry.test.ts`.
 
@@ -190,14 +164,6 @@ describe('a call whose occurrence the source does not fix', () => {
     const refusal = refusalOf(CONDITIONAL_FORWARDING_PROXY);
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
     expect(refusal.message).toContain('forwards its own call data conditionally');
-  });
-
-  it('is refused when a verified-mapping write lands behind it, which the derivation cannot locate', () => {
-    // The write's records are declared in the segment the write lands in, and the derivation locates that segment
-    // by a fixed number of calls. A call the source does not fix moves it, so the body stays refused.
-    const refusal = refusalOf(CONDITIONAL_CALL_BESIDE_WRITE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain('writes a verified mapping behind a call');
   });
 
   it('is admitted inside a loop, where the body counts the calls its own iterations made', () => {

@@ -122,23 +122,12 @@ describe('a keccak compute side-car', () => {
 describe('a string-keyed string mapping', () => {
   it('serves its set: the head supplies the value witness from the frame\'s block', () => {
     // The body reads a long value through a value-witness operand, which the frame's block lists; a short value is
-    // inline in the node, so the operand is unread. The frames it settles are cases in `shapes/mapping-values`.
+    // inline in the node, so the operand is unread. The frames it settles are cases in `shapes/mapping-values`; the
+    // delete is served and settled in `shapes/string-mapping-delete`.
     const source = 'pragma solidcash ^0.13.0;'
       + ' contract Tags {'
       + '   mapping(string => string) public tags;'
       + '   function put(string k, string v) { this.tags[k] = v; require(true); }'
-      + ' }';
-    expect(refusal(source)).toBe('');
-  });
-
-  // The delete is served: a sorted delete lowers to an upsert of the value type's default, so the frame writes the
-  // node's value tail back to the empty string and takes no value witness. The accept and the frame it settles are
-  // cases in `shapes/string-mapping-delete.test.ts`.
-  it('serves its delete: the entry writes the value type default and takes only its key', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Tags {'
-      + '   mapping(string => string) tags;'
-      + '   function remove(string k) { delete this.tags[k]; require(true); }'
       + ' }';
     expect(refusal(source)).toBe('');
   });

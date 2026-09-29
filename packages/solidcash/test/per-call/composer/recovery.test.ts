@@ -209,6 +209,16 @@ const recoveryCase = (
   projection: 'pubkey' | 'evm',
 ): RecoveryCase => buildCase([{ scalars, comparison, evm: projection === 'evm' }]);
 
+const oneCall: Partial<Record<'pubkey' | 'evm', RecoveryCase>> = {};
+
+/** The signer's one-call case per projection, built once: the cases that read it change nothing in it. */
+function signerCase(projection: 'pubkey' | 'evm'): RecoveryCase {
+  const built = oneCall[projection] ?? recoveryCase(signer, projection === 'evm'
+    ? `bytes20(0x${binToHex(signer.address)})` : `pubkey(0x${binToHex(signer.owner)})`, projection);
+  oneCall[projection] = built;
+  return built;
+}
+
 /** Composes, derives and evaluates a case; returns each participant's machine verdict by identity. */
 function verdictsOf(test: RecoveryCase): Record<string, { accepted: boolean; objection?: string }> {
   const outcome = composeAndDerive(test.plan, [test.artifacts.Auth!], [rootOf('Auth', 'check', MASTER_ID)]);
@@ -231,7 +241,7 @@ function rawVerdicts(test: RecoveryCase): Record<string, boolean> {
 
 describe('a composed per-call recovery', () => {
   it('is accepted at the master input and every recovery side-car input', () => {
-    const test = recoveryCase(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
+    const test = signerCase('pubkey');
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
@@ -241,7 +251,7 @@ describe('a composed per-call recovery', () => {
   it('is accepted when the EVM projection reads its address from a keccak side-car', () => {
     // A trailing output, as an event or a send adds: the side-car must recreate at its own index, not at an offset
     // from the end of the outputs.
-    const evm = recoveryCase(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+    const evm = signerCase('evm');
     const test = { ...evm, plan: { ...evm.plan, trailingOutputs: [{ lockingBytecode: USER_LOCK, valueSatoshis: 1_000n }] } };
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
@@ -259,7 +269,7 @@ describe('a composed per-call recovery', () => {
       `${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`,
       `${MASTER_ID}/recovery-A1`, `${MASTER_ID}/recovery-B1`,
     ]);
-    const layout = composeAndDerive(test.plan, [test.artifacts.Auth!], []).draft.layout;
+    const { layout } = composeDraft(test.plan);
     expect(layout.participants.map((placed) => [placed.id, placed.index])).toStrictEqual([
       [MASTER_ID, 0], [`${MASTER_ID}/recovery-A0`, 1], [`${MASTER_ID}/recovery-B0`, 2],
       [`${MASTER_ID}/recovery-A1`, 3], [`${MASTER_ID}/recovery-B1`, 4],
@@ -409,8 +419,8 @@ describe('a composed per-call recovery in a frame that runs on its caller\'s rec
 
 describe('the recovery side-cars the composer places', () => {
   it('are one A/B pair per call, immediately after the master input', () => {
-    const test = recoveryCase(signer, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
-    const layout = composeAndDerive(test.plan, [test.artifacts.Auth!], []).draft.layout;
+    const test = signerCase('pubkey');
+    const { layout } = composeDraft(test.plan);
     expect(test.ids).toStrictEqual([`${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`]);
     expect(layout.participants.map((placed) => [placed.id, placed.index, placed.kind])).toStrictEqual([
       [MASTER_ID, 0, 'master'],
@@ -421,38 +431,21 @@ describe('the recovery side-cars the composer places', () => {
   });
 
   it('are a pair plus a keccak side-car for the EVM projection', () => {
-    const test = recoveryCase(signer, `bytes20(0x${binToHex(signer.address)})`, 'evm');
+    const test = signerCase('evm');
     expect(test.ids).toStrictEqual([
       `${MASTER_ID}/recovery-A0`, `${MASTER_ID}/recovery-B0`, `${MASTER_ID}/recovery-K0`,
     ]);
-    const layout = composeAndDerive(test.plan, [test.artifacts.Auth!], []).draft.layout;
+    const { layout } = composeDraft(test.plan);
     expect(layout.participants.map((placed) => placed.index)).toStrictEqual([0, 1, 2, 3]);
   });
 });
 
 describe('the EVM invalid-input rule through the composer', () => {
-  it('refuses to build a pair for a recovery id outside 27/28', () => {
-    // Side-car A verifies `Ry mod 2 == v - 27`, so no split fits; the composer cannot co-spend the pair and says so.
-    // Every id outside 27/28 fails the same way, and the search tries every split, so one id stands for them.
-    expect(() => recoveryCase({ ...signer, v: 0 }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'))
-      .toThrow(/no ladder split fits/);
-  });
-
+  // A recovery id outside 27/28 and an out-of-range `s` reach the same split probe and pair builders the compiler
+  // suite drives directly (`master/ecrecover-invalid-input.test.ts`), which pins both.
   it('refuses to build a pair for the all-zero digest and words', () => {
     const zero = new Uint8Array(32);
     expect(() => recoveryCase({ h: zero, v: 0, r: zero, s: zero }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey'))
       .toThrow(/Cannot find square root/);
-  });
-
-  it('recovers a non-matching key for an out-of-range s, so the master rejects', () => {
-    // `s` above the curve order is used verbatim: the pair is built and the composer places it, but the key it
-    // commits is not the expected signer. The machine refuses the master input and accepts the side-cars, and the
-    // derivation reports the body it cannot settle rather than a spend.
-    const outOfRange = new Uint8Array(32).fill(0xff);
-    const test = recoveryCase({ ...signer, s: outOfRange }, `pubkey(0x${binToHex(signer.owner)})`, 'pubkey');
-    const verdicts = rawVerdicts(test);
-    expect(verdicts[MASTER_ID]).toBe(false);
-    for (const id of test.ids) expect(verdicts[id], id).toBe(true);
-    expect(() => verdictsOf(test)).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });

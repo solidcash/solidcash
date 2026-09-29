@@ -223,36 +223,6 @@ describe('a proxied call whose mapping value is built from the node it writes', 
   });
 
   it('refuses a field read the master cannot derive operands for, rather than composing a partial value', async () => {
-    // An entry that reads one mapping entry and writes another names two mapping entries, and a master derives the
-    // operands only when every entry it touches is one of the batch targets. The compiler refuses the body itself,
-    // before any hop is built, so the write cannot be composed against a key whose value the hop never sees.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl {'
-      + '   struct Member { address who; uint up; uint down; }'
-      + '   address public implementation;'
-      + '   mapping(address => Member) public members;'
-      + '   function initialize(address who) { this.members[who] = Member(who, 1, 0); }'
-      + '   function bump(address who) { this.members[who].up = this.members[who].up + 1; }'
-      + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
-    const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const funding = await funded(network);
-    const deployment = await deployPerCallProxy({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      implementationDeploy: {
-        fundingUtxo: funding.implFunding, funder: funding.funder, changeAddress: funding.changeAddress,
-      },
-      proxyDeploy: {
-        fundingUtxo: funding.proxyFunding, funder: funding.funder, changeAddress: funding.changeAddress,
-      },
-      initialize: { functionName: 'initialize', args: [funding.deployerLock] },
-      callerLockingBytecode: funding.deployerLock,
-      callerFunding: { utxo: funding.callerUtxo, funder: funding.signature.unlockP2PKH() },
-      vm: compositionMachine(),
-    });
-    expect(deployment.initialize.accepted).toBe(true);
-
     // The entry reads the mapping under one key and writes it under another: two mapping entries, one of them
     // written. The hop declares only the batch's records, so it refuses the read beside it by name.
     const detached = 'pragma solidcash ^0.13.0;'

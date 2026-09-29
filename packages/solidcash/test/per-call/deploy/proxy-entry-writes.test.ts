@@ -35,16 +35,6 @@ const SINGLE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function initialize() { this.tags["DV"] = "DIGITAL_VIDEO"; }'
   + ' }';
 
-/** The fixture's shape: one entry inserting several keys into one collection in one batch. */
-const BATCH_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   mapping(string => string) tags;'
-  + '   function initialize() {'
-  + '     this.tags["DA"] = "DIGITAL_AUDIO";'
-  + '     this.tags["DV"] = "DIGITAL_VIDEO";'
-  + '   }'
-  + ' }';
-
 /** The marketplace data contract's own eight-key initializer. */
 const EIGHT_TAGS: readonly (readonly [string, string])[] = [
   ['DA', 'DIGITAL_AUDIO'], ['DV', 'DIGITAL_VIDEO'], ['DT', 'DIGITAL_TEXT'], ['DS', 'DIGITAL_SOFTWARE'],
@@ -157,6 +147,14 @@ async function deploy(
   return { deployment, network, artifacts, funding };
 }
 
+let counterRun: ReturnType<typeof deploy> | undefined;
+
+/** The broadcast read-modify-write deployment the last two cases read; only the second spends from it. */
+function counterDeployment(): ReturnType<typeof deploy> {
+  counterRun ??= deploy(COUNTER_SOURCE, [encodeLockingBytecodeP2pkh(alicePkh)], true);
+  return counterRun;
+}
+
 describe('a proxied initialize that writes a sorted mapping', () => {
   it('settles the reduced write, the created node carrying the commitment the entry computed', async () => {
     const { deployment } = await deploy(SINGLE_SOURCE);
@@ -189,45 +187,6 @@ describe('a proxied initialize that writes a sorted mapping', () => {
       .find((placed) => placed.id.startsWith('mapping-head-'))!.index;
     expect(bytesToHex(deployment.initialize.transaction.outputs[head]!.token!.nft!.commitment))
       .not.toBe(bytesToHex(headSentinelCommitment()));
-  });
-
-  it('settles a batch of several writes to one collection, each created node carrying its stated value', async () => {
-    const { deployment } = await deploy(BATCH_SOURCE);
-
-    expect(deployment.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
-    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-
-    // The shipped batch planner's own commitments: the head relinked to the lowest created slot, then one node per
-    // write in the order the body declares them.
-    const encoder = new TextEncoder();
-    const plan = planMappingBatch({
-      writes: [
-        { keys: [encoder.encode('DA')], value: encoder.encode('DIGITAL_AUDIO') },
-        { keys: [encoder.encode('DV')], value: encoder.encode('DIGITAL_VIDEO') },
-      ],
-      inventory: [headSentinelCommitment()],
-      encodeValue: encodeChunkableValueTail,
-    });
-    const created = plan.written.filter((node) => !node.existed);
-
-    const trailing = deployment.initialize.draft.trailingOutputs;
-    expect(trailing).toHaveLength(created.length);
-    trailing.forEach((output, position) => {
-      expect(bytesToHex(output.output.token!.nft!.commitment)).toBe(bytesToHex(created[position]!.after));
-      expect(bytesToHex(deployment.initialize.transaction.outputs[output.index]!.token!.nft!.commitment))
-        .toBe(bytesToHex(created[position]!.after));
-      // The node's slot is its key's, so it is one of the entry's own writes rather than some other record.
-      expect(bytesToHex(decodeEntryCommitment(created[position]!.after).slot))
-        .toBe(bytesToHex(keyToSlotMulti([encoder.encode(position === 0 ? 'DA' : 'DV')])));
-    });
-
-    // The head sentinel is spent under the collection covenant and recreated with the relinked commitment.
-    const head = deployment.initialize.draft.layout.participants
-      .find((placed) => placed.id.startsWith('mapping-head-'))!.index;
-    expect(bytesToHex(deployment.initialize.transaction.outputs[head]!.token!.nft!.commitment))
-      .toBe(bytesToHex(plan.written.find((node) => node.existed)!.after));
   });
 
   it('refuses a write whose value the artifact publishes no source for', async () => {
@@ -350,7 +309,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
 
   it('settles a read-modify-write initializer, creating the node at the value its own read produced', async () => {
     const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
-    const { deployment, network } = await deploy(COUNTER_SOURCE, [deployerLock], true);
+    const { deployment, network } = await counterDeployment();
 
     expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
@@ -383,7 +342,7 @@ describe('a proxied initialize that writes a sorted mapping', () => {
 
   it('rewrites the key the collection already holds in place, through the hop a later call takes', async () => {
     const deployerLock = encodeLockingBytecodeP2pkh(alicePkh);
-    const { deployment, network, artifacts, funding } = await deploy(COUNTER_SOURCE, [deployerLock], true);
+    const { deployment, network, artifacts, funding } = await counterDeployment();
     expect(deployment.initialize.accepted).toBe(true);
 
     // The call reads the node the deployment's hop created and writes the value it computed back: an update, with

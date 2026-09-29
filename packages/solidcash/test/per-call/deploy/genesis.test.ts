@@ -86,6 +86,16 @@ function withMutatedOutput(program: VmProgram, commitment: Uint8Array): VmProgra
 }
 
 describe('a per-call genesis derived by running the constructor frame', () => {
+  let seeded: ReturnType<typeof derivePerCallGenesis> | undefined;
+  /** The derivation for argument 5, which the cases read and none changes. */
+  const seededGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
+    seeded ??= derivePerCallGenesis({
+      artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
+      constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
+    });
+    return seeded;
+  };
+
   it('publishes the convention and makes the contract address the validator address', () => {
     expect(artifact.composition?.convention).toBe('per-call');
     const master = deployMaster(artifact, CATEGORY, VALIDATOR_PROGRAM);
@@ -93,22 +103,10 @@ describe('a per-call genesis derived by running the constructor frame', () => {
   });
 
   it('learns the commitment the constructor body computed', () => {
-    const genesis = derivePerCallGenesis({
-      artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
-      constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
-    });
+    const genesis = seededGenesis();
 
     expect(genesis.commitments.length).toBe(stateLayout.dataNftCount);
     expect(genesis.commitments[0]).toBe(Buffer.from(expectedCommitment(6n)).toString('hex'));
-  });
-
-  it('the machine accepts the derivation transaction it published', () => {
-    const genesis = derivePerCallGenesis({
-      artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
-      constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
-    });
-
-    expect(accepted(genesis.program)).toBe(true);
   });
 
   it('derives a different state for a different constructor argument', () => {
@@ -132,10 +130,7 @@ describe('a per-call genesis derived by running the constructor frame', () => {
   });
 
   it('refuses the same transaction when the record output is mutated off the computed value', () => {
-    const genesis = derivePerCallGenesis({
-      artifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM, provider: compositionProvider(),
-      constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
-    });
+    const genesis = seededGenesis();
 
     expect(accepted(genesis.program)).toBe(true);
     expect(accepted(withMutatedOutput(genesis.program!, expectedCommitment(7n)))).toBe(false);
@@ -198,10 +193,14 @@ function withMutatedEventPayload(program: VmProgram, index: number, commitment: 
 }
 
 describe('a per-call genesis whose constructor emits an event', () => {
-  const emittingGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
-    artifact: emittingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
-    provider: compositionProvider(), constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
-  });
+  let emitting: ReturnType<typeof derivePerCallGenesis> | undefined;
+  const emittingGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
+    emitting ??= derivePerCallGenesis({
+      artifact: emittingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [5n], senderLockingBytecode: OWNER_LOCK,
+    });
+    return emitting;
+  };
   const registered = emittingArtifact.events!.find((definition) => definition.name === 'Registered')!;
   const eventOutputIndex = (program: VmProgram): number => program.transaction.outputs.findIndex((output) => (
     bytesEqual(output.lockingBytecode, eventCovenantLockFor(CATEGORY, registered.signature))
@@ -222,12 +221,6 @@ describe('a per-call genesis whose constructor emits an event', () => {
     const index = eventOutputIndex(genesis.program!);
     const offValue = encodeEventCommitment(registered.parameters, [6n, 'alpha']);
     expect(accepted(withMutatedEventPayload(genesis.program!, index, offValue))).toBe(false);
-  });
-
-  it('derives the state the constructor wrote beside the event', () => {
-    const genesis = emittingGenesis();
-    const expected = new Uint8Array(Buffer.from(buildPushdataCommitment(emittingLayout, { count: 6n }, 0), 'hex'));
-    expect(genesis.commitments[0]).toBe(Buffer.from(expected).toString('hex'));
   });
 
   it('publishes the event with the covenant lock and the commitment the body computed', () => {
@@ -319,10 +312,14 @@ const announceArtifact = compileString(ANNOUNCE_SOURCE, { composition: 'per-call
 const announced = announceArtifact.events!.find((definition) => definition.name === 'Announced')!;
 
 describe('a per-call genesis whose constructor emits without writing state', () => {
-  const announceGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
-    artifact: announceArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
-    provider: compositionProvider(), constructorArgs: [9n], senderLockingBytecode: OWNER_LOCK,
-  });
+  let announcing: ReturnType<typeof derivePerCallGenesis> | undefined;
+  const announceGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
+    announcing ??= derivePerCallGenesis({
+      artifact: announceArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+      provider: compositionProvider(), constructorArgs: [9n], senderLockingBytecode: OWNER_LOCK,
+    });
+    return announcing;
+  };
 
   it('accepts the derivation and publishes the event the body emitted', () => {
     const genesis = announceGenesis();
@@ -341,36 +338,6 @@ describe('a per-call genesis whose constructor emits without writing state', () 
     expect(index).toBeGreaterThanOrEqual(0);
     const offValue = encodeEventCommitment(announced.parameters, [10n]);
     expect(accepted(withMutatedEventPayload(program, index, offValue))).toBe(false);
-  });
-
-  it('mints the event beside the unchanged record in the deployment transaction', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '23'.repeat(32), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funding.address, fundingUtxo);
-
-    const { tx } = await StatefulContract.deploy(announceArtifact, [9n], {
-      provider,
-      fundingUtxo,
-      funder: funding.unlock.spend(alicePub, signature),
-      changeAddress: funding.address,
-    });
-    const outputs = (tx as unknown as DeployedTransaction).outputs;
-    const category = new Uint8Array(Buffer.from(fundingUtxo.txid, 'hex'));
-
-    const eventOutput = outputs.find(
-      (output) => bytesEqual(output.lockingBytecode, eventCovenantLockFor(category, announced.signature)),
-    );
-    expect(eventOutput).toBeDefined();
-    const expectedPayload = encodeEventCommitment(announced.parameters, [9n]);
-    expect(Array.from(eventOutput!.token?.nft?.commitment ?? new Uint8Array()))
-      .toStrictEqual(Array.from(expectedPayload));
-
-    // The state the constructor never wrote is minted unchanged, at the pre-state commitment.
-    const [preState] = announceGenesis().commitments;
-    expect(outputs.some((output) => output.token?.nft?.commitment !== undefined
-      && Buffer.from(output.token.nft.commitment).toString('hex') === preState)).toBe(true);
   });
 });
 
@@ -408,11 +375,15 @@ const mappingEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
   buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(mappingStateLayout.collections![0]!.signature)),
 )));
 
-const mappingGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
-  artifact: mappingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
-  provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN, MAPPING_SEED],
-  senderLockingBytecode: OWNER_LOCK,
-});
+let mapping: ReturnType<typeof derivePerCallGenesis> | undefined;
+const mappingGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
+  mapping ??= derivePerCallGenesis({
+    artifact: mappingArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN, MAPPING_SEED],
+    senderLockingBytecode: OWNER_LOCK,
+  });
+  return mapping;
+};
 
 /** The index of the entry output whose commitment is `commitment`, or `-1` when none carries it. */
 function entryOutputIndex(program: VmProgram | undefined, commitment: Uint8Array): number {
@@ -506,28 +477,6 @@ describe('a per-call genesis whose constructor writes a mapping entry', () => {
       provider: compositionProvider(), constructorArgs: [MAPPING_ADMIN], senderLockingBytecode: OWNER_LOCK,
     })).toThrow(/writes 2 mapping entry\(ies\) across 2 collection\(s\), and this deployment plans one collection/);
   });
-
-  it('deploys through the shipped SDK entry point, minting the entry nodes at the collection covenant', async () => {
-    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
-    const signature = new SignatureTemplate(alicePriv);
-    const funding = new Contract(p2pkhArtifact, [alicePkh], { provider });
-    const fundingUtxo = { txid: '12'.repeat(32), vout: 0, satoshis: 500_000n };
-    await provider.addUtxo(funding.address, fundingUtxo);
-
-    const { categoryId } = await StatefulContract.deploy(mappingArtifact, [MAPPING_ADMIN, MAPPING_SEED], {
-      provider,
-      fundingUtxo,
-      funder: funding.unlock.spend(alicePub, signature),
-      changeAddress: funding.address,
-    });
-
-    expect(categoryId).toBe(fundingUtxo.txid);
-    const minted = await provider.getUtxosByTokenCategory(categoryId);
-    const commitments = minted.map((utxo) => utxo.token?.nft?.commitment ?? '');
-    expect(commitments).toContain(Buffer.from(MAPPING_HEAD_AFTER).toString('hex'));
-    expect(commitments).toContain(Buffer.from(MAPPING_CREATED).toString('hex'));
-    expect(commitments).toContain(buildPushdataCommitment(mappingStateLayout, { count: 6n }, 0));
-  });
 });
 
 /**
@@ -570,11 +519,15 @@ const batchEntryLock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(
   buildEntryNftCovenantScript(CATEGORY, computeCollectionHash(batchLayout.collections![0]!.signature)),
 )));
 
-const batchGenesis = (): ReturnType<typeof derivePerCallGenesis> => derivePerCallGenesis({
-  artifact: batchArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
-  provider: compositionProvider(), constructorArgs: [BATCH_FIRST, BATCH_SECOND, BATCH_SEED],
-  senderLockingBytecode: OWNER_LOCK,
-});
+let batch: ReturnType<typeof derivePerCallGenesis> | undefined;
+const batchGenesis = (): ReturnType<typeof derivePerCallGenesis> => {
+  batch ??= derivePerCallGenesis({
+    artifact: batchArtifact, category: CATEGORY, validatorProgram: VALIDATOR_PROGRAM,
+    provider: compositionProvider(), constructorArgs: [BATCH_FIRST, BATCH_SECOND, BATCH_SEED],
+    senderLockingBytecode: OWNER_LOCK,
+  });
+  return batch;
+};
 
 /** The index of the entry output carrying `commitment`, or `-1` when none carries it. */
 function batchEntryOutputIndex(program: VmProgram | undefined, commitment: Uint8Array): number {

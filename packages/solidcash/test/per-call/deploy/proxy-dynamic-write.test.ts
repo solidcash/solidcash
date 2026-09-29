@@ -45,15 +45,7 @@ const PROXY_CATEGORY = '22'.repeat(32);
 const CALLER_TXID = '33'.repeat(32);
 const SECOND_CALLER_TXID = '44'.repeat(32);
 
-/** The append the deployment's initialize makes: one element, the frame's own sender. */
-const DYNAMIC_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   address public implementation;'
-  + '   address[] public items;'
-  + '   function initialize() { this.items.push(msg.sender); }'
-  + ' }';
-
-/** The same append, made again by a later call against the live array the deployment holds. */
+/** The append the deployment's initialize makes (one element, the frame's own sender), made again by a later call. */
 const APPEND_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   address public implementation;'
@@ -139,18 +131,6 @@ const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   address[] public items;'
   + '   function initialize(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
   + '   function rename(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
-  + ' }';
-
-/** The same append beside a sorted-mapping write, which the hop plans as a batch. */
-const MAPPING_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' contract Impl {'
-  + '   address public implementation;'
-  + '   address[] public items;'
-  + '   mapping(address => uint) public balances;'
-  + '   function initialize(address who) {'
-  + '     this.balances[who] = this.balances[who] + 1;'
-  + '     this.items.push(msg.sender);'
-  + '   }'
   + ' }';
 
 /** An element type the artifact states only as a literal, which the hop sizes through the shipped encoder. */
@@ -245,62 +225,6 @@ async function deploy(
 }
 
 describe('a proxied initialize that appends to a dynamic state array', () => {
-  it('settles the run and broadcasts it, the created chunk carrying the value the entry computed', async () => {
-    const { deployment, network, artifacts, layout, funding } = await deploy(DYNAMIC_SOURCE, [], true);
-
-    expect(deployment.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
-    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-
-    // The value the entry's own body computed from its frame: the empty array it started from with the frame
-    // sender appended, in the shipped pushdata encoding.
-    const value = encodePushdataValue(
-      [funding.deployerLock], 'address[]', artifacts.Impl!.structs,
-    );
-    expect(value.length).toBeLessThanOrEqual(120);
-
-    // The created chunk is a trailing output, declared by the frame and written at the index it names.
-    const trailing = deployment.initialize.draft.trailingOutputs;
-    expect(trailing).toHaveLength(1);
-    expect(deployment.initialize.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment)
-      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
-    // The chunk sits at the value's own collection covenant, which the body rebuilds from the frame's category.
-    const chunkLock = chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', 'address[]');
-    expect(trailing[0]!.output.lockingBytecode).toStrictEqual(chunkLock);
-    expect(deployment.initialize.transaction.outputs[trailing[0]!.index]!.lockingBytecode)
-      .toStrictEqual(chunkLock);
-
-    // The record the hop writes carries the value's byte length, from the shipped header encoder.
-    const hop = deployment.initialize.broadcast;
-    expect(hop).toBeDefined();
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
-    expect([...state.byNft[0]!.implementation as Uint8Array])
-      .toStrictEqual([...deployment.implementation.address]);
-    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
-  });
-
-  it('settles the append beside a sorted-mapping write, the node and the chunk both created', async () => {
-    const who = encodeLockingBytecodeP2pkh(alicePkh);
-    const { deployment, network, artifacts, layout, funding }
-      = await deploy(MAPPING_BESIDE_SOURCE, [who], true);
-
-    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-
-    // The hop declares one created mapping node and one created chunk: two trailing outputs, in that order.
-    const trailing = deployment.initialize.draft.trailingOutputs;
-    expect(trailing).toHaveLength(2);
-    const value = encodePushdataValue([funding.deployerLock], 'address[]', artifacts.Impl!.structs);
-    expect(deployment.initialize.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment)
-      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
-
-    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
-    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
-    expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
-  });
-
   it('settles a literal element, sizing the run from the element the artifact publishes', async () => {
     // The artifact states the pushed element as a literal, so the hop sizes the run through the shipped encoder
     // rather than refusing an element type it cannot name.
@@ -339,8 +263,37 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
   it('keeps the chunk the deployment holds and writes the grown value through a later call', async () => {
     const { deployment, network, artifacts, layout, funding }
       = await deploy(APPEND_CALL_SOURCE, [], true);
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'ImplProxy.__fallback()']);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
+
+    // The value the entry's own body computed from its frame: the empty array it started from with the frame
+    // sender appended, in the shipped pushdata encoding.
+    const value = encodePushdataValue(
+      [funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    expect(value.length).toBeLessThanOrEqual(120);
+
+    // The created chunk is a trailing output, declared by the frame and written at the index it names.
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1);
+    expect(deployment.initialize.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
+    // The chunk sits at the value's own collection covenant, which the body rebuilds from the frame's category.
     const lock = chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', 'address[]');
+    expect(trailing[0]!.output.lockingBytecode).toStrictEqual(lock);
+    expect(deployment.initialize.transaction.outputs[trailing[0]!.index]!.lockingBytecode)
+      .toStrictEqual(lock);
+
+    // The record the hop writes carries the value's byte length, from the shipped header encoder.
+    const hop = deployment.initialize.broadcast;
+    expect(hop).toBeDefined();
+    const held = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(held.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect([...held.byNft[0]!.implementation as Uint8Array])
+      .toStrictEqual([...deployment.implementation.address]);
+    expect(await network.getRawTransaction(hop!.txid)).toMatch(/^[0-9a-f]+$/);
     expect(await liveChunks(network, deployment.proxy.categoryId, layout, lock)).toHaveLength(1);
 
     // The deployment's hop created the run's only chunk; the call spends that live chunk and recreates it with the
@@ -383,7 +336,20 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     // dynamic value together: the value needs no run of its own, and the two families do not contend for a band.
     const { deployment, network, artifacts, layout, funding }
       = await deploy(COUNTER_BESIDE_SOURCE, [encodeLockingBytecodeP2pkh(alicePkh)], true);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(deployment.initialize.accepted).toBe(true);
+
+    // The deployment's hop declares one created mapping node and one created chunk: two trailing outputs, in that
+    // order.
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(2);
+    const value = encodePushdataValue([funding.deployerLock], 'address[]', artifacts.Impl!.structs);
+    expect(deployment.initialize.transaction.outputs[trailing[1]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, value))));
+
+    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!['items$len']).toBe(BigInt(value.length));
+    expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
 
     const result = await callPerCallProxyEntry({
       provider: network,

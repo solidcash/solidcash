@@ -22,32 +22,32 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | Directory | Package | Tests |
 | --- | --- | --- |
 | `packages/utils/test/per-call/` | `@solidcash/utils` | 115 |
-| `packages/solidc/test/per-call/master/` | `solidc` | 570 |
+| `packages/solidc/test/per-call/master/` | `solidc` | 556 |
 | `packages/solidc/test/per-call/records/` | `solidc` | 29 |
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 172 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 170 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 26 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/records/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 158 |
-| `packages/solidcash/test/per-call/call/` | `solidcash` | 66 |
+| `packages/solidcash/test/per-call/deploy/` | `solidcash` | 146 |
+| `packages/solidcash/test/per-call/call/` | `solidcash` | 58 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
 | `packages/solidcash/test/per-call/hostile/` | `solidcash` | 86 |
-| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 111 |
-| `packages/solidcash/test/per-call/edges/` | `solidcash` | 42 |
-| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
-| `packages/solidcash/test/per-call/toys/` | `solidcash` | 83 |
+| `packages/solidcash/test/per-call/shapes/` | `solidcash` | 107 |
+| `packages/solidcash/test/per-call/edges/` | `solidcash` | 39 |
+| `packages/solidcash/test/per-call/primitives/` | `solidcash` | 10 |
+| `packages/solidcash/test/per-call/toys/` | `solidcash` | 76 |
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1677 checks (115 + 611 + 949 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1625 checks (115 + 597 + 911 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 611 is the four rows above it, `solidcash` 949 (948 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 597 is the four rows above it, `solidcash` 911 (910 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -75,7 +75,7 @@ says what is missing.
 | a static read that re-enters a contract whose write is still running | `STATIC` | `toys/reentry.test.ts` reads the record its caller just wrote; the stale-read direction is refused in `hostile/stale-view.test.ts`, and the struct-with-a-`string` return has no replica |
 | a re-entering call that passes because a guard field is still set | `CALL` | `edges/reentrant-guard.test.ts` |
 | a re-entering call in a loop, one per computed share | `CALL` | `edges/repeated-callee.test.ts`: two turns settle and the callee's record chains across them, while a plan declaring fewer call records than the turns stalls by name. A run-time-trip-count loop with a per-turn value argument is refused by name |
-| a call gated on `tx.origin` rather than `msg.sender` | `CALL` | `edges/nested-authority.test.ts`; the forged `originRef` directions are refused in `hostile/origin-reference.test.ts` |
+| a call gated on `tx.origin` rather than `msg.sender` | `CALL` | `toys/identity.test.ts` (a refund gated on `tx.origin`, reached through an intermediate contract); the forged `originRef` directions are refused in `hostile/origin-reference.test.ts` |
 | a static read of a flag the same transaction just wrote | `STATIC` | `frames/round-trip-stateful.test.ts` and `edges/deep-chain.test.ts` chain a record's writes across frames; the read of a flag written by a deeper frame has no replica |
 | a call that needs a later block than its payment | `CALL` | `time/time-gated.test.ts` |
 | a deep call chain whose result returns up several frames | `CALL` | `edges/deep-chain.test.ts` for the chain, `toys/reentry.test.ts` for a value read back up two frames. The `uint256[5]` return has no replica (a tuple return is carried by the re-entry toy) |
@@ -135,11 +135,11 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   events a constructor emits), the record discovery a deployed contract is read through - the token category is
   enumerated and each UTXO's capability and commitment classify it as a master, a validator or a record at its
   state index - and a proxy deployment in three transactions, whose third is an `initialize` delegate hop the
-  composer plans and the shipped derivation fills. `proxy-initialize-write.test.ts` drives that hop when the entry
-  *writes*: the state it leaves is read back out of the machine rather than stated in advance, the record keeps the
-  implementation's address, a second call offered the record the first one left is refused beside a control that the
-  same plan offered the state the entry expects is accepted, and a proxy whose record does not declare the
-  implementation's fields is refused by name.
+  composer plans and the shipped derivation fills. `proxy-initialize-broadcast.test.ts` drives that hop when the
+  entry *writes*: the state it leaves is read back out of the broadcast outputs rather than stated in advance, and
+  the record keeps the implementation's address. `proxy-initialize-write.test.ts` refuses a second call offered the
+  record the first one left, beside a control that the same plan offered the state the entry expects is accepted,
+  and a proxy whose record does not declare the implementation's fields, by name.
 - **`solidcash/test/per-call/frames/`** — the master prologue and the witness-block reader, evaluated in the BCH-2026
   virtual machine against real transactions, and, in `composition-spend.test.ts`, one composed transaction driven
   from source to verdict: shipped compile, shipped deployment, composer layout and assembly, derivation, and the
@@ -230,22 +230,22 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   attack to the file that refuses it.
 - **`solidcash/test/per-call/primitives/`** — one case per primitive a flow shape is made of, driven on the shipped
   path: a `pure` callee reached as a `STATIC` frame that takes a fixed-size array argument and returns one (the
-  caller's call record carries the result and it decodes back through the shipped decoder, while a fixed-size array
-  argument built at run time is refused by name), `uint16[2]` / `uint16[4]` / `int16[2]` arguments and a computed
+  caller's call record carries the result and it decodes back through the shipped decoder, a fixed-size array
+  argument built at run time included), `uint16[2]` / `uint16[4]` / `int16[2]` arguments and a computed
   `uint16[5]` return in and out, and one contract's two entries each emitting an event in one transaction, both read
   back through the shipped receipt.
 - **`solidcash/test/per-call/edges/`** — one dedicated test per row of the spec's edge-case table (section 23) that
   the shipped language subset can express: a record written on both sides of a call, a reentrancy guard crossed by
-  re-entry, `tx.origin` and `msg.sender` authority on a callee, events above the commitment size emitted by a
+  re-entry, `msg.sender` authority on a callee, events above the commitment size emitted by a
   nested frame, two events at distinct outputs, a static read of state another frame just wrote, a data-dependent
   call count, a record growing within one transaction, a four-deep call chain, and a named refusal for every row
-  the compiler or the composer still refuses (inline assembly, low-level calls, value sends, function-pointer
-  returns, `ecrecover`, dynamic mapping values).
+  the compiler still refuses (inline assembly, a low-level call, a function-pointer return, a keccak side-car in a
+  loop) beside the shapes now served (a value send, `ecrecover`, a string-keyed string mapping).
 - **`solidcash/test/per-call/toys/`** — the small compositions the design lists. Each is driven to the machine
   where the shipped path supports it and otherwise refused by name: a repeated call to one target, the sorted-entry
   insert/update/delete lifecycle, a read's result fed into a later call (settled when the value is one the running
-  code holds; a root that takes its own argument and a later call mixing a compile-time argument are refused with
-  the rule named), a fan-in through an allowance, settled (one node read and rewritten across two frames of one
+  code holds, a later call that also passes a compile-time argument included; a root that takes its own argument is
+  refused by the composer's call-data rule, in `composer/assemble.test.ts`), a fan-in through an allowance, settled (one node read and rewritten across two frames of one
   contract, each frame closing against the value its own declaration carries), the identity expectations the EVM
   sets for a self call, and the re-entry shape, pinned on the wall it names (a master that calls cannot carry a
   verified-mapping write, so the vault's writing entries are refused before any run is built), a proxy whose

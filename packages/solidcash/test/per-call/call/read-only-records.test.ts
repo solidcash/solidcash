@@ -9,7 +9,7 @@ import { deployStatefulContract } from '../../../src/stateful/sc-deploy.js';
 import { readPerCallDeployment } from '../../../src/per-call/deploy/index.js';
 import { callPerCallEntry, type PerCallCallResult } from '../../../src/per-call/call/index.js';
 import { readPerCallEntry } from '../../../src/per-call/read/index.js';
-import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
+import { decodeEntryCommitment, keyToSlotMulti } from '../../../src/stateful/SortedList.js';
 import { encodeFunctionArgument, type FunctionArgument } from '../../../src/Argument.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
@@ -158,14 +158,6 @@ describe('an entry that reads a mapping key it does not write', () => {
     expect(await allowanceNodes(deployed)).toStrictEqual(granted);
   });
 
-  it('is refused when the key it reads grants less', async () => {
-    const deployed = await deploy(gate);
-    await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
-    const refused = await call(deployed, 'pass', [HOLDER_LOCK, 501n]);
-    expect(refused.accepted).toBe(false);
-    expect(refused.broadcast).toBeUndefined();
-  });
-
   it('reads a key the list does not hold beside its predecessor, as the default', async () => {
     const deployed = await deploy(gate);
     await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
@@ -179,12 +171,14 @@ describe('an entry that reads a mapping key it does not write', () => {
     expect(one.accepted).toBe(false);
   });
 
-  it('reads the key in an entry that writes nothing', async () => {
+  it('reads the key in an entry that writes nothing, and is refused when it grants less', async () => {
     const deployed = await deploy(gate);
     await call(deployed, 'grant', [HOLDER_LOCK, 500n]);
     const checked = await call(deployed, 'check', [HOLDER_LOCK, 500n]);
     expect(checked.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect((await call(deployed, 'check', [HOLDER_LOCK, 501n])).accepted).toBe(false);
+    const refused = await call(deployed, 'check', [HOLDER_LOCK, 501n]);
+    expect(refused.accepted).toBe(false);
+    expect(refused.broadcast).toBeUndefined();
   });
 });
 
@@ -255,11 +249,6 @@ async function nodesOf(deployed: Deployed, collection: string): Promise<readonly
   return (deployment.nodesByCollection.get(collection) ?? []).map((utxo) => utxo.token!.nft!.commitment);
 }
 
-/** The slot value a lock's key hashes to. */
-function slotValueOf(lock: Uint8Array): bigint {
-  return bytesToSlotValue(keyToSlotMulti([encodeFunctionArgument(lock, 'address') as Uint8Array]));
-}
-
 describe('an entry that reads a key of one mapping beside a write of another', () => {
   it('credits a member the allow-list admits, keeping the list\'s node ahead of the balance\'s group', async () => {
     const deployed = await deploy(club);
@@ -270,11 +259,7 @@ describe('an entry that reads a key of one mapping beside a write of another', (
     expect(credited.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(await balanceOf(deployed, HOLDER_LOCK)).toBe(500n);
     expect(await nodesOf(deployed, 'allowed')).toStrictEqual(allowed);
-  });
-
-  it('is refused for a key the allow-list does not hold', async () => {
-    const deployed = await deploy(club);
-    await call(deployed, 'allow', [HOLDER_LOCK]);
+    // A key the list does not hold is read beside its predecessor as the default, which the body refuses.
     const refused = await call(deployed, 'credit', [STRANGER_LOCK, 500n]);
     expect(refused.accepted).toBe(false);
     expect(refused.broadcast).toBeUndefined();
@@ -293,16 +278,5 @@ describe('an entry that reads one key of a mapping beside a write of another key
     // The body reads the sender's balance and does not debit it.
     expect(await balanceOf(deployed, deployed.callerLock)).toBe(100n);
     expect((await call(deployed, 'move', [HOLDER_LOCK, 101n])).accepted).toBe(false);
-  });
-
-  it('is refused by name when the key it writes is spliced in beside the node it reads', async () => {
-    const deployed = await deploy(pool);
-    await call(deployed, 'seed', [deployed.callerLock, 100n]);
-    // A key the list does not hold whose slot sorts above the sender's: its insert relinks the sender's node, which the
-    // read already spends.
-    const sender = slotValueOf(deployed.callerLock);
-    const above = Array.from({ length: 64 }, (_unused, index) => encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(index)))
-      .find((lock) => slotValueOf(lock) > sender)!;
-    await expect(call(deployed, 'move', [above, 1n])).rejects.toThrow(/reads a key at a mapping node it also spends/);
   });
 });

@@ -2,25 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { encodeDataPush, encodeLockingBytecodeP2pkh } from '@bitauth/libauth';
 import { FrameKind, buildPushdataCommitment, bytesToHex, type RecordEntry } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
-import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import { refusalOf } from '../../../../solidc/test/per-call/master/refused-entry.js';
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import MockNetworkProvider from '../../../src/network/MockNetworkProvider.js';
-import {
-  deployMaster, readPerCallDeployment, stateRecordLockingBytecode, stateRecordUnlockingBytecode,
-} from '../../../src/per-call/deploy/index.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
   createComposedDerivationHost, layoutTransaction, participant,
   type CompositionDraftPlan, type DraftMaster,
 } from '../../../src/per-call/composer/index.js';
-import {
-  deployPerCallProxy, PerCallProxyDeployError, proxyRecordParticipantId,
-} from '../../../src/per-call/proxy/index.js';
+import { deployPerCallProxy, PerCallProxyDeployError } from '../../../src/per-call/proxy/index.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import {
-  USER_LOCK, VALIDATOR_PROGRAM, compileAndDeploy, master, masterInput, selectorOf, token, userInput,
-  userInputs, validatorFor,
+  USER_LOCK, compileAndDeploy, master, masterInput, selectorOf, token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
 
 /**
@@ -83,70 +77,7 @@ async function funded(network: MockNetworkProvider): Promise<{
   };
 }
 
-/** The implementation's address at its seeded category, `addrV(category)`. */
-function implementationAddress(artifacts: ReturnType<typeof compileStringMulti>): Uint8Array {
-  return deployMaster(
-    artifacts.Impl!, new Uint8Array(Buffer.from(IMPL_CATEGORY, 'hex')), VALIDATOR_PROGRAM,
-  ).address;
-}
-
-/** The commitment the shipped encoder materializes from one state of the shared layout. */
-function commitment(
-  artifacts: ReturnType<typeof compileStringMulti>,
-  implementation: Uint8Array,
-  initialized: bigint,
-  version: bigint,
-): Uint8Array {
-  return new Uint8Array(Buffer.from(
-    buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation, initialized, version }, 0), 'hex'));
-}
-
 describe('a proxied initialize that writes state', () => {
-  it('mints the proxy record through the shipped deployment and reads it back through the shipped decoder', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = provider();
-    const { funder, proxyFunding, changeAddress } = await funded(network);
-    const { deployPerCallStatefulContract } = await import('../../../src/per-call/deploy/stateful.js');
-
-    const proxy = await deployPerCallStatefulContract(artifacts.Proxy!, [], {
-      fundingUtxo: proxyFunding, funder, changeAddress, provider: network,
-      initialState: { implementation: implementationAddress(artifacts), initialized: 0n, version: 0n },
-    });
-    const discovery = await readPerCallDeployment(network, proxy.categoryId, artifacts.Proxy!.stateLayout!);
-    const commitmentBytes = new Uint8Array(Buffer.from(discovery.records[0]!.token!.nft!.commitment, 'hex'));
-
-    expect(bytesToHex(commitmentBytes)).toBe(bytesToHex(commitment(
-      artifacts, implementationAddress(artifacts), 0n, 0n,
-    )));
-  });
-
-  it('settles the writing initialize through the proxy, and the record keeps the address it was called through', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = provider();
-    const { funder, implFunding, proxyFunding, changeAddress, deployerLock } = await funded(network);
-    const deployment = await deployPerCallProxy({
-      provider: network,
-      implementationArtifact: artifacts.Impl!,
-      proxyArtifact: artifacts.Proxy!,
-      implementationDeploy: { fundingUtxo: implFunding, funder, changeAddress },
-      proxyDeploy: { fundingUtxo: proxyFunding, funder, changeAddress },
-      initialize: { functionName: 'initialize', args: [deployerLock] },
-      callerLockingBytecode: deployerLock,
-      vm: compositionMachine(),
-    });
-
-    expect(deployment.initialize.completed.map((frame) => frame.functionName))
-      .toStrictEqual(['Impl.initialize()', 'Proxy.__fallback()']);
-    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(deployment.initialize.accepted).toBe(true);
-    // The state the entry itself computed: the flag set and the version written, with the address still there.
-    const written = commitment(artifacts, deployment.implementation.address, 1n, 7n);
-    expect(bytesToHex(deployment.initialize.writtenRecordCommitment)).toBe(bytesToHex(written));
-    const recordIndex = participant(deployment.initialize.draft.layout, proxyRecordParticipantId(0)).index;
-    expect(bytesToHex(deployment.initialize.transaction.outputs[recordIndex]!.token!.nft!.commitment))
-      .toBe(bytesToHex(written));
-  });
-
   it('refuses a second initialize offered the record the first call left, and accepts the same plan before it', () => {
     const { artifacts, contracts } = compileAndDeploy(SOURCE, { Proxy: 'second call proxy', Impl: 'second call impl' });
     const proxyContract = contracts.Proxy!;

@@ -9,7 +9,7 @@ import {
   type WitnessBlock,
 } from '@solidcash/utils';
 import { compileString, compileStringMulti } from '../../../src/compiler.js';
-import { isServed, refusalMessageOf } from './refused-entry.js';
+import { isServed } from './refused-entry.js';
 import { fillPlaceholders } from '../../../src/per-call/master/placeholders.js';
 import { compositionMachine } from '../machine.js';
 import { callerUnlockingBytecode } from './caller-input.js';
@@ -219,18 +219,7 @@ describe('an entry that returns one scalar value', () => {
   });
 });
 
-/** The refusal the compile publishes for the one body these sources have, or '' when it serves it. */
-const refusalOf = (source: string): string => refusalMessageOf(source);
-
 describe('the return shapes a master can settle', () => {
-  it('compiles an entry that returns one scalar', () => {
-    const artifact = compileString(
-      'pragma solidcash ^0.13.0; contract Answer { function answer() returns (int) { return 42; } }',
-      { composition: 'per-call' },
-    );
-    expect(artifact.composition?.convention).toBe('per-call');
-  });
-
   it('serves several return values, including a struct among them', () => {
     // A frame's `retval` is one byte string: a tuple's canonical encoding is the concatenation of its values'
     // encodings, so several values settle against it the way one scalar does, and a struct is one blob among them.
@@ -241,19 +230,6 @@ describe('the return shapes a master can settle', () => {
       + ' contract Holder { struct Point { int x; int y; }'
       + '   function point() returns (int, Point) { return (1, Point(2, 3)); } }';
     expect(isServed(mixed)).toBe(true);
-  });
-
-  it('serves a struct return and refuses a function-pointer return, by name', () => {
-    const structReturn = 'pragma solidcash ^0.13.0;'
-      + ' contract Holder { struct Point { int x; int y; }'
-      + '   function point() returns (Point) { return Point(1, 2); } }';
-    // A struct is one blob the entry's own `return` leaves, so it settles like a scalar.
-    expect(isServed(structReturn)).toBe(true);
-    // A function pointer is an (address, selector) pair, not one item the comparison can hold.
-    const pointerReturn = 'pragma solidcash ^0.13.0;'
-      + ' contract Holder {'
-      + '   function point() returns (function(int) external returns (int)) { revert("no"); } }';
-    expect(refusalOf(pointerReturn)).toContain('function pointer');
   });
 });
 

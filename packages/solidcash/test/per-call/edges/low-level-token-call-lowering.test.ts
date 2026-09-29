@@ -271,9 +271,16 @@ function callRecord(source: string): { readonly record: CallRecord; readonly exp
   return { record: block.calls[0]!, expected };
 }
 
+let typedRecord: ReturnType<typeof callRecord> | undefined;
+/** The typed call's record, derived once: every spelling below is compared against it. */
+function typedCall(): ReturnType<typeof callRecord> {
+  typedRecord ??= callRecord(TYPED);
+  return typedRecord;
+}
+
 describe('a low-level token call whose callee and method are statically known', () => {
   it('lowers to the typed call: the bound and selector spellings settle as the typed call does', () => {
-    const typed = callRecord(TYPED);
+    const typed = typedCall();
     expect(typed.record.argsHash).toStrictEqual(typed.expected);
     expect(typed.record.target).toStrictEqual(TOKEN_ADDRESS);
     for (const source of [BOUND, SELECTOR]) {
@@ -283,11 +290,11 @@ describe('a low-level token call whose callee and method are statically known', 
   });
 
   it('lowers the bare statement whose result is ignored to the same typed call', () => {
-    expect(callRecord(BARE).record).toStrictEqual(callRecord(TYPED).record);
+    expect(callRecord(BARE).record).toStrictEqual(typedCall().record);
   });
 
   it('lowers a payload held in a local to the typed call, in the binding and discarded positions', () => {
-    const typed = callRecord(TYPED).record;
+    const typed = typedCall().record;
     // The tuple-assignment spelling reads the local the block bound to an `abi.encodeCall` payload.
     expect(callRecord(LOCAL_BOUND).record).toStrictEqual(typed);
     // The discarded-result spelling reads the local bound to an `abi.encodeWithSelector` payload.
@@ -297,7 +304,7 @@ describe('a low-level token call whose callee and method are statically known', 
   it('lowers a payload passed to a helper whose own body calls, to the typed call', () => {
     // The helper's parameter is the caller's local and the caller's local is bound to the payload, so the chain is
     // followed name by name across the inlined boundary and the call compiles as the typed call it denotes.
-    expect(callRecord(HELPER_FORWARD).record).toStrictEqual(callRecord(TYPED).record);
+    expect(callRecord(HELPER_FORWARD).record).toStrictEqual(typedCall().record);
   });
 
   it('leaves the same helper refused when the payload it is handed names no method', () => {
@@ -309,7 +316,7 @@ describe('a low-level token call whose callee and method are statically known', 
 
   it('lowers a payload local declared in a nested block to the typed call', () => {
     // The binding is scoped to the block that declared it, but is still in source order before the call.
-    expect(callRecord(NESTED_BOUND).record).toStrictEqual(callRecord(TYPED).record);
+    expect(callRecord(NESTED_BOUND).record).toStrictEqual(typedCall().record);
   });
 
   it('leaves a payload local it cannot name refused by name', () => {

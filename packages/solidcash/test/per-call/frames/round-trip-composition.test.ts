@@ -263,6 +263,22 @@ function withSecondBlock(
   return buildMasterUnlockingBytecode(block, master.argumentPushes, master.redeemScript);
 }
 
+let derivedRoundTrip: {
+  readonly draft: ReturnType<typeof createComposedDerivationHost>['draft'];
+  readonly result: ReturnType<typeof deriveDepthFirst>;
+} | undefined;
+
+/** The whole round trip, derived once: the cases that read it change nothing in it. */
+function roundTrip(): NonNullable<typeof derivedRoundTrip> {
+  if (derivedRoundTrip === undefined) {
+    const { plan, artifacts } = buildComposition();
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
+    derivedRoundTrip = { draft, result: deriveDepthFirst(ROOT, host) };
+  }
+  return derivedRoundTrip;
+}
+
 describe('a contract entered twice, composed on the machine', () => {
   it('places the two A masters, the validator and B in the order the layout derives', () => {
     const { plan, artifacts } = buildComposition();
@@ -298,11 +314,7 @@ describe('a contract entered twice, composed on the machine', () => {
   });
 
   it('derives the whole round trip depth first, callee before caller', () => {
-    const { plan, artifacts } = buildComposition();
-    const { host } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
-
-    const result = deriveDepthFirst(ROOT, host);
+    const { result } = roundTrip();
 
     // `A.f` calls `B.g`, which calls `A.k`, so the innermost execution finishes first and the entry the user
     // reached finishes last.
@@ -317,10 +329,7 @@ describe('a contract entered twice, composed on the machine', () => {
   });
 
   it('is accepted at every contract input once the derivation has filled every witness', () => {
-    const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
-    deriveDepthFirst(ROOT, host);
+    const { draft } = roundTrip();
 
     // One program carries the whole transaction, so the same view decides every input.
     const program = draft.programFor(A_FIRST);
@@ -385,10 +394,7 @@ function fillRootCall(): {
 
 describe('the validator decides the derived round trip', () => {
   it('walks every check and derives the order the spec states for this shape', () => {
-    const { plan, artifacts } = buildComposition();
-    const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.A!, artifacts.B!], plan });
-    deriveDepthFirst(ROOT, host);
+    const { draft } = roundTrip();
 
     const decision = decideValidator(toModel(draft.programFor(A_FIRST)), {
       validatorTemplate: VALIDATOR_PROGRAM,

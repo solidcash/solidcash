@@ -58,16 +58,32 @@ async function fundedSigner(network: MockNetworkProvider, fill: number): Promise
   return signer;
 }
 
-describe('deployProxy with a per-call implementation', () => {
-  it('routes to the per-call deployment and settles the initialize hop', async () => {
+interface Routed {
+  readonly artifacts: ReturnType<typeof compileStringMulti>;
+  readonly deployerLock: Uint8Array;
+  readonly routed: PerCallProxyHandle;
+}
+
+let routedRun: Promise<Routed> | undefined;
+
+/** The routed deployment the first two cases read; the second's re-entered initialize broadcasts nothing. */
+function routedDeployment(): Promise<Routed> {
+  routedRun ??= (async (): Promise<Routed> => {
     const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
     const network = provider();
     const signer = await fundedSigner(network, 0x51);
     const deployerLock = signer.getLockingBytecode();
-
     const routed: PerCallProxyHandle = await deployProxy(
       getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [deployerLock],
     );
+    return { artifacts, deployerLock, routed };
+  })();
+  return routedRun;
+}
+
+describe('deployProxy with a per-call implementation', () => {
+  it('routes to the per-call deployment and settles the initialize hop', async () => {
+    const { artifacts, routed } = await routedDeployment();
     const deployment = routed.proxyDeployment;
 
     // The handle names the deployed proxy: its category and the address its masters and records sit under.
@@ -86,14 +102,7 @@ describe('deployProxy with a per-call implementation', () => {
   });
 
   it('keeps the implementation entry callable beside the deployment record', async () => {
-    const artifacts = compileStringMulti(SOURCE, { composition: 'per-call' });
-    const network = provider();
-    const signer = await fundedSigner(network, 0x55);
-    const deployerLock = signer.getLockingBytecode();
-
-    const routed: PerCallProxyHandle = await deployProxy(
-      getContractFactory(artifacts.Impl! as PerCallArtifact, signer), [deployerLock],
-    );
+    const { deployerLock, routed } = await routedDeployment();
 
     // `initialize` names the implementation's entry, as it does for a direct-convention deploy; the deployment's
     // own record of the hop sits beside the handle rather than over that name.
@@ -106,7 +115,7 @@ describe('deployProxy with a per-call implementation', () => {
   });
 
   // The written record keeping the implementation's address is the deployment's own property, asserted in
-  // `proxy-deployment`, `proxy-initialize-write`, `generated-proxy` and `proxy-initialize-broadcast`.
+  // `proxy-deployment`, `generated-proxy` and `proxy-initialize-broadcast`.
   it('leaves a direct-convention artifact on the direct path', async () => {
     const artifacts = compileStringMulti(DIRECT_SOURCE);
     const network = provider();

@@ -14,7 +14,7 @@ import {
   decideValidator, type PerCallTransaction, type TokenShape,
 } from '../../../../solidc/src/per-call/validator/index.js';
 import {
-  EMPTY, compileAndDeploy, composeAndDerive, hexOf, master, masterInput, rootOf,
+  EMPTY, compileAndDeploy, hexOf, master, masterInput, rootOf,
   seededAddress, selectorOf, token, userInput, validatorFor, USER_LOCK,
 } from '../shapes/harness.js';
 import { PER_CALL_MASTER_PADDING_BYTES } from '../../../../solidc/src/per-call/master/master-program.js';
@@ -200,7 +200,12 @@ interface Stop {
 }
 
 /** The derivation of one run, with every real run's verdict kept. */
-function derive(run: Run): { readonly draft: CompositionDraft; readonly completed: readonly string[]; readonly stops: readonly Stop[] } {
+function derive(run: Run): {
+  readonly draft: CompositionDraft;
+  readonly completed: readonly string[];
+  readonly stops: readonly Stop[];
+  readonly runs: ReturnType<typeof deriveDepthFirst>['runs'];
+} {
   const stops: Stop[] = [];
   const { host, draft } = createComposedDerivationHost({
     vm: compositionMachine(),
@@ -211,7 +216,17 @@ function derive(run: Run): { readonly draft: CompositionDraft; readonly complete
     },
   });
   const result = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-  return { draft, completed: result.completed.map((frame) => frame.master), stops };
+  return { draft, completed: result.completed.map((frame) => frame.master), stops, runs: result.runs };
+}
+
+let twoTurns: { readonly run: Run; readonly derived: ReturnType<typeof derive> } | undefined;
+/** The two-turn shape, derived once: the cases that share it only read it. */
+function derivedTwoTurns(): NonNullable<typeof twoTurns> {
+  if (twoTurns === undefined) {
+    const run = build(2);
+    twoTurns = { run, derived: derive(run) };
+  }
+  return twoTurns;
 }
 
 const vm = compositionMachine();
@@ -269,8 +284,7 @@ function decide(draft: CompositionDraft): ReturnType<typeof decideValidator> {
 
 describe('one entry that calls one callee from a loop', () => {
   it('settles two turns: each turn runs on its own master, accepted by the machine', () => {
-    const run = build(2);
-    const { draft, completed } = derive(run);
+    const { draft, completed } = derivedTwoTurns().derived;
 
     // The callee completes before its caller, one frame per turn in the order the loop made them.
     expect(completed).toStrictEqual(['log-1', 'log-2', 'hub-1']);
@@ -288,28 +302,8 @@ describe('one entry that calls one callee from a loop', () => {
       ]);
   });
 
-  it('composes and derives the whole shape through the shipped composer', () => {
-    const run = build(2);
-    const outcome = composeAndDerive(run.plan, [run.artifacts.Hub!, run.artifacts.Log!], [rootOf('Hub', 'go', 'hub-1')]);
-    // The user input is a signed P2PKH whose filler signature the machine does not read, so its verdict is not
-    // this shape's; the record's is, because its spend runs the data-NFT covenant's script.
-    const rejected = outcome.verdicts
-      .filter((verdict) => verdict.participant !== USER_ID)
-      .filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
-    expect(rejected).toStrictEqual([]);
-    expect(outcome.completed.map((frame) => frame.master)).toStrictEqual(['log-1', 'log-2', 'hub-1']);
-  });
-
   it('resumes the one published call site once per turn rather than once in total', () => {
-    const run = build(2);
-    const { host } = createComposedDerivationHost({
-    vm: compositionMachine(),
-      artifacts: [run.artifacts.Hub!, run.artifacts.Log!],
-      plan: run.plan,
-    });
-    const result = deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
-    const callerRuns = result.runs.filter((entry) => entry.frame.master === 'hub-1');
+    const callerRuns = derivedTwoTurns().derived.runs.filter((entry) => entry.frame.master === 'hub-1');
     // The table names one call site; the execution reaches it once per turn, and the visit after the last turn
     // fills nothing, which is what tells the driver the execution is past the site.
     expect(callerRuns.filter((entry) => entry.site.kind === 'call').map((entry) => entry.site.site))
@@ -400,8 +394,7 @@ describe('the tables and the layout the shape publishes', () => {
   });
 
   it('places one master per turn between the caller and its record, and chains that record', () => {
-    const run = build(2);
-    const { draft } = derive(run);
+    const { run, derived: { draft } } = derivedTwoTurns();
     expect(draft.layout.participants.map((placed) => `${placed.id}@${placed.index}`))
       .toStrictEqual(['hub-1@0', 'validator@1', 'log-1@2', 'log-2@3', 'record-log@4']);
     expect(draft.blockOf('log-1').segments.map((segment) => segment.map((entry) => [entry.in, entry.out])))

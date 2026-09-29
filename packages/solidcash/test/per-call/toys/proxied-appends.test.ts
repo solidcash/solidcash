@@ -44,9 +44,9 @@ import {
  * category. The writer's own body touches the dynamic value and makes no call — the hop is the proxy's body — so the
  * shape the compiler refuses by name is not the one under test.
  *
- * Both hops settle end to end. The dynamic one is the interesting shape: the implementation's segment declares the
- * run its own `append` writes — the chunk it keeps and the one it creates beside the event — and the machine
- * accepts every contract input of the settled transaction.
+ * The hop settles end to end: the implementation's segment declares the run its own `append` writes (the chunk it
+ * keeps and the one it creates beside the event), and the machine accepts every contract input of the settled
+ * transaction. A static entry through a generated proxy is `shapes/proxied-registration.test.ts`'s.
  *
  * Coordinates come from `layoutTransaction`/`participant`, frame references from `entryName`, and every commitment
  * from the shipped encoders; no coordinate in the plan is a literal.
@@ -354,113 +354,6 @@ describe('an append-shape entry entered through a proxy\'s fallback', () => {
     expect(proxy.composition?.convention).toBe('per-call');
     expect(proxy.composition?.refusedEntries).toBeUndefined();
     expect(artifacts.Impl!.composition?.refusedEntries).toBeUndefined();
-  });
-
-  it('settles a static entry through the same generated proxy: the hop itself is sound', () => {
-    // The positive control. The only change from the append shape is what the implementation's entry writes: a
-    // static field instead of the dynamic array. Everything else — the generated proxy, the delegate edge, the
-    // record rebuild — is the same, and the composition settles at every contract input.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl {'
-      + '   address public implementation;'
-      + '   int public counter;'
-      + '   function bump() { this.counter = this.counter + 1; require(true); }'
-      + ' }';
-    const artifacts = compileStringMulti(source, { composition: 'per-call' });
-    const implementationArtifact = artifacts.Impl!;
-    const proxyArtifact = buildProxyArtifact(implementationArtifact);
-    const layout = proxyArtifact.stateLayout!;
-    const impl = deployed(implementationArtifact.contractName, IMPL_CATEGORY,
-      deployMaster(implementationArtifact, IMPL_CATEGORY, VALIDATOR_PROGRAM));
-    const proxy = deployed(proxyArtifact.contractName, PROXY_CATEGORY,
-      deployMaster(proxyArtifact, PROXY_CATEGORY, VALIDATOR_PROGRAM));
-    const before = new Uint8Array(Buffer.from(
-      buildPushdataCommitment(layout, { implementation: impl.address, counter: 5n }, 0), 'hex'));
-    const after = new Uint8Array(Buffer.from(
-      buildPushdataCommitment(layout, { implementation: impl.address, counter: 6n }, 0), 'hex'));
-    const selector = selectorOf(artifacts, 'Impl', 'bump');
-
-    const blocks = [
-      {
-        contract: proxyArtifact.contractName, masters: [PROXY_MASTER],
-        validator: { id: VALIDATOR_ID, settles: [] as readonly string[] }, state: [RECORD_ID],
-      },
-      { contract: implementationArtifact.contractName, masters: [IMPL_MASTER], state: [] as readonly string[] },
-    ];
-    const layoutTx = layoutTransaction(blocks);
-    const recordIndex = participant(layoutTx, RECORD_ID).index;
-    const proxyIndex = participant(layoutTx, PROXY_MASTER).index;
-    const proxyMaster = master({
-      master: PROXY_MASTER, contract: proxyArtifact.contractName, entry: '__fallback', program: proxy.program,
-      facts: {
-        contract: proxyArtifact.contractName, functionName: '__fallback', kind: FrameKind.ROOT, callerIsUser: true,
-        originEqualsCaller: true, makesExternalCall: true, mastersOfContract: 1,
-      },
-      frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxy.address, value: 0n },
-      enteredBy: USER_ID, origin: USER_ID,
-      calls: [{
-        kind: FrameKind.DELEGATE, callee: IMPL_MASTER, target: impl.address, value: 0n, argumentPushes: [selector],
-      }],
-      segments: [
-        [{ in: recordIndex, out: recordIndex, viewIn: before, viewOut: before }],
-        [{ in: recordIndex, out: recordIndex, viewIn: after, viewOut: after }],
-      ],
-      argumentPushes: [selector], dispatches: true,
-    });
-    const implMaster = master({
-      master: IMPL_MASTER, contract: implementationArtifact.contractName, entry: 'bump', program: impl.program,
-      facts: {
-        contract: implementationArtifact.contractName, functionName: 'bump', kind: FrameKind.DELEGATE,
-        callerIsUser: false, originEqualsCaller: false, makesExternalCall: false, mastersOfContract: 1,
-      },
-      frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxy.address, value: 0n },
-      enteredBy: PROXY_MASTER, origin: USER_ID,
-      segments: [[{ in: recordIndex, out: recordIndex, viewIn: before, viewOut: after }]],
-      argumentPushes: [selector],
-    });
-
-    const categoryHex = bytesToHex(PROXY_CATEGORY);
-    const recordSource = {
-      lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
-      token: token(PROXY_CATEGORY, 'mutable', before),
-    };
-    const plan: CompositionDraftPlan = {
-      blocks,
-      userInputs: userInputs([USER_ID], layoutTx.participantCount),
-      masters: [proxyMaster, implMaster],
-      inputs: {
-        [PROXY_MASTER]: { source: masterInput(proxy) },
-        [IMPL_MASTER]: { source: masterInput(impl) },
-        [VALIDATOR_ID]: {
-          source: {
-            lockingBytecode: validatorFor(PROXY_CATEGORY).lock, valueSatoshis: 20_000n,
-            token: token(PROXY_CATEGORY, 'mutable'),
-          },
-        },
-        [RECORD_ID]: {
-          source: recordSource,
-          output: { ...recordSource, token: token(PROXY_CATEGORY, 'mutable', after) },
-          unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, proxyIndex, 1),
-        },
-        [USER_ID]: userInput(),
-      },
-      validator: {
-        id: VALIDATOR_ID, covers: [implementationArtifact.contractName],
-        settles: [{ category: PROXY_CATEGORY, stateInputs: [RECORD_ID] }],
-        redeemScript: validatorFor(PROXY_CATEGORY).redeem,
-      },
-    };
-    const outcome = composeAndDerive(
-      plan, [proxyArtifact, implementationArtifact],
-      [rootOf(proxyArtifact.contractName, '__fallback', PROXY_MASTER)],
-    );
-    expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
-      entryName(implementationArtifact.contractName, 'bump'),
-      entryName(proxyArtifact.contractName, '__fallback'),
-    ]);
-    const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
-      .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
-    expect(rejected).toStrictEqual([]);
   });
 
   it('serves an implementation whose entry both writes the dynamic value and calls', () => {

@@ -195,7 +195,7 @@ function verdict(
 }
 
 /** Compiles, deploys, plans, assembles and derives the composition; returns the assembled transaction. */
-function deriveComposition(): {
+function deriveFresh(): {
   vm: ReturnType<typeof createVirtualMachineBch2026>;
   transaction: VmTransaction;
   sourceOutputs: VmSourceOutputs;
@@ -211,6 +211,14 @@ function deriveComposition(): {
   const program = draft.programFor(CALLER_MASTER);
   const vm = compositionMachine();
   return { vm, transaction: program.transaction, sourceOutputs: program.sourceOutputs, draft };
+}
+
+let sharedRun: ReturnType<typeof deriveFresh> | undefined;
+
+/** The composition, derived once: the cases read it and each control mutates a clone. */
+function deriveComposition(): ReturnType<typeof deriveFresh> {
+  sharedRun ??= deriveFresh();
+  return sharedRun;
 }
 
 /**
@@ -231,7 +239,7 @@ function withCallerBlock(
 
 describe('a composed transaction through the shipped compile, deployment and composer', () => {
   it('the composer places the caller, its callee and the validator at the indices it derived', () => {
-    const { plan, artifacts } = buildComposition();
+    const { artifacts } = buildComposition();
     // The compiled path is what this test drives: the artifacts carry the per-call descriptors the deployment
     // fills and the stop-site tables the derivation resumes at, not a convention the test supplies.
     expect(artifacts.Caller!.composition?.convention).toBe('per-call');
@@ -239,10 +247,7 @@ describe('a composed transaction through the shipped compile, deployment and com
     expect(artifacts.Caller!.composition!.stopSites).toBeTruthy();
     expect(artifacts.Callee!.composition!.stopSites).toBeTruthy();
 
-    const { draft, host } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [artifacts.Caller!, artifacts.Callee!], plan });
-    deriveDepthFirst(ROOT, host);
-
+    const { draft } = deriveComposition();
     expect(participant(draft.layout, CALLER_MASTER).index).toBe(0);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(1);
     expect(participant(draft.layout, CALLEE_MASTER).index).toBe(2);

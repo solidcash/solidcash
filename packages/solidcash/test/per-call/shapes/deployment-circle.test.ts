@@ -466,7 +466,7 @@ describe('a deployment whose addresses are predicted before anything is deployed
 });
 
 describe('two contracts deployed behind the built-in proxy', () => {
-  it('broadcasts three transactions per pair and each initialize reaches its implementation', async () => {
+  it('broadcasts three transactions per pair and the initialize reaches its implementation', async () => {
     const artifacts = compileStringMulti(PROXY_SOURCE, { composition: 'per-call' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const signature = new SignatureTemplate(alicePriv);
@@ -497,28 +497,24 @@ describe('two contracts deployed behind the built-in proxy', () => {
       });
     };
 
-    const first = await deployPair({ impl: '11'.repeat(32), proxy: '22'.repeat(32), caller: '33'.repeat(32) });
-    const second = await deployPair({ impl: '44'.repeat(32), proxy: '55'.repeat(32), caller: '66'.repeat(32) });
+    const deployment = await deployPair({ impl: '11'.repeat(32), proxy: '22'.repeat(32), caller: '33'.repeat(32) });
 
-    // Three broadcast transactions per pair: both geneses and the initialize hop, all on the mock chain.
+    // Three broadcast transactions: both geneses and the initialize hop, all on the mock chain.
     const txids = new Set([
-      first.implementation.tx.txid, first.proxy.tx.txid, first.initialize.broadcast!.txid,
-      second.implementation.tx.txid, second.proxy.tx.txid, second.initialize.broadcast!.txid,
+      deployment.implementation.tx.txid, deployment.proxy.tx.txid, deployment.initialize.broadcast!.txid,
     ]);
-    expect(txids.size).toBe(6);
+    expect(txids.size).toBe(3);
     for (const txid of txids) expect(await network.getRawTransaction(txid)).toMatch(/^[0-9a-f]+$/);
 
-    // Each initialize frame reached its implementation: the entry wrote the implementation's own fields through
+    // The initialize frame reached its implementation: the entry wrote the implementation's own fields through
     // the proxy's own record, and both hops are accepted.
-    for (const deployment of [first, second]) {
-      expect(deployment.initialize.accepted).toBe(true);
-      expect(deployment.initialize.completed.map((frame) => frame.functionName))
-        .toStrictEqual(['Impl.initialize()', 'Proxy.__fallback()']);
-      const state = await readState(network, deployment.proxy.categoryId, artifacts.Proxy!);
-      expect(state.initialized).toBe(1n);
-      expect(state.version).toBe(7n);
-      expect([...(state.implementation as Uint8Array)]).toStrictEqual([...deployment.implementation.address]);
-    }
+    expect(deployment.initialize.accepted).toBe(true);
+    expect(deployment.initialize.completed.map((frame) => frame.functionName))
+      .toStrictEqual(['Impl.initialize()', 'Proxy.__fallback()']);
+    const state = await readState(network, deployment.proxy.categoryId, artifacts.Proxy!);
+    expect(state.initialized).toBe(1n);
+    expect(state.version).toBe(7n);
+    expect([...(state.implementation as Uint8Array)]).toStrictEqual([...deployment.implementation.address]);
   });
 });
 

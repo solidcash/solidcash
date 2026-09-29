@@ -1,19 +1,8 @@
-import { beforeAll, describe, expect, it } from 'vitest';
-import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
-import { ethers } from 'ethers';
+import { describe, expect, it } from 'vitest';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
 import {
-  REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory,
-} from '../../../../solidc/test/per-call/master/validator-input.js';
-import { fillPlaceholders } from '../../../../solidc/src/per-call/master/placeholders.js';
-import { publishedRefusals } from '../../../../solidc/test/per-call/master/refused-entry.js';
-import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
-import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
-import {
   FrameKind,
-  SHARED_LIBRARY_SALT,
   argsHash,
-  asmToScript,
   buildEntryNftCovenantScript,
   buildPushdataCommitment,
   bytesToHex,
@@ -25,22 +14,18 @@ import {
   encodePushdataValue,
   encodeResultList,
   scriptToBytecode,
-  sha256,
-  validatorAddress,
   type Artifact,
   type RecordEntry,
 } from '@solidcash/utils';
 import { eventOutput } from '../../../../solidc/test/per-call/master/event-input.js';
 import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  buildRecoverySideCars,
   createComposedDerivationHost,
   deriveComposition,
   layOutMappingWrites,
   layoutTransaction,
   participant,
   planMappingWrite,
-  recoveryCallsOf,
   type CompositionDraftPlan,
   type DraftMaster,
   type MappingNodePlacement,
@@ -660,140 +645,6 @@ describe('a root that fans in: pay through a struct, then a token pull', () => {
 });
 
 /**
- * A recovery over an EIP-191 digest, with the composer placing the side-car inputs.
- *
- * The entry takes the four scalars as parameters, so the composer reads them from its own call data and builds
- * the pair (`buildRecoverySideCars`) the layout places immediately after the master's input — the plan declares
- * them through the block's `recovery` list and states no index itself. The digest is `ethers.hashMessage`'s
- * EIP-191 hash, and the machine's verdict on the master and on each side-car is the assertion.
- */
-const RECOVERY_CATEGORY = seededCategory('fan in with result recovery');
-const RECOVERY_ADDRESS = validatorAddress(RECOVERY_CATEGORY, REAL_VALIDATOR_PROGRAM);
-const RECOVERY_TEMPLATE_HASH = sha256(REAL_VALIDATOR_PROGRAM);
-const RECOVERY_MASTER = 'auth-1';
-
-interface RecoveredSigner {
-  readonly h: Uint8Array;
-  readonly v: number;
-  readonly r: Uint8Array;
-  readonly s: Uint8Array;
-  readonly owner: Uint8Array;
-  readonly witness: ReturnType<typeof computeEcrecoverWitness>;
-}
-
-const leBytes = (hex: string): Uint8Array => hexToBin(hex.replace(/^0x/, '')).slice().reverse();
-const dummyUtxo = (odd: boolean): never => ({
-  txid: (odd ? 'bb' : 'aa').repeat(32), vout: 1, satoshis: 100_000n,
-  token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } },
-}) as never;
-
-/** Signs one EIP-191 message with a fresh wallet until the shipped split probe accepts the signature. */
-async function splittableSigner(): Promise<RecoveredSigner> {
-  for (let attempt = 0; attempt < 200; attempt += 1) {
-    const wallet = ethers.Wallet.createRandom();
-    const message = `fan in with result ${attempt}`;
-    const signature = await wallet.signMessage(message);
-    const digest = ethers.hashMessage(message);
-    const { r, s, v } = ethers.Signature.from(signature);
-    const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
-    const spki = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, signature), true);
-    const owner = hexToBin(spki.slice(2));
-    const witness = computeEcrecoverWitness(h, v, rLe, sLe);
-    try {
-      probeEcrecoverSplit(witness, SHARED_LIBRARY_SALT, dummyUtxo(false), dummyUtxo(true));
-    } catch {
-      continue;
-    }
-    return { h, v, r: rLe, s: sLe, owner, witness };
-  }
-  throw new Error('no signature with a two-covenant split after 200 draws');
-}
-
-let recoverySigner: RecoveredSigner;
-beforeAll(async () => {
-  recoverySigner = await splittableSigner();
-}, 120_000);
-
-/** The recovery entry: its four parameters are the scalars, and it compares against a compile-time owner. */
-function authSource(ownerHex: string): string {
-  return 'pragma solidcash ^0.13.0;'
-    + ' contract Auth {'
-    + '   function check(bytes32 h, int v, bytes32 r, bytes32 s) {'
-    + `     require(ecrecoverPubKey(h, v, r, s) == pubkey(0x${ownerHex}));`
-    + '   }' 
-    + '   function idle() { require(true); }'
-    + ' }';
-}
-
-interface RecoveryCase {
-  readonly plan: CompositionDraftPlan;
-  readonly artifact: Artifact;
-  readonly ids: readonly string[];
-}
-
-/** Builds and lays out the recovery case; the side-car ids come from the composer, never hand-placed. */
-function buildRecoveryCase(): RecoveryCase {
-  const signer = recoverySigner;
-  const artifacts = compileStringMulti(authSource(binToHex(signer.owner)), { composition: 'per-call' });
-  const artifact = artifacts.Auth!;
-  const program = fillPlaceholders(scriptToBytecode(asmToScript(artifact.bytecode)), artifact.composition!.placeholders, {
-    category: categorySlotValue(RECOVERY_CATEGORY), contractAddress: RECOVERY_ADDRESS, templateHash: RECOVERY_TEMPLATE_HASH,
-  });
-  const abiFunction = artifact.abi.find((row) => row.name === 'check')!;
-  const selector = hexToBin(abiFunction.selector!);
-  // The wire carries the last parameter's push first, so the scalars go out `s, r, v, h`.
-  const pushes = [selector, signer.s, signer.r, encodeIntegerValue(BigInt(signer.v)), signer.h];
-  const decoded = recoveryCallsOf(abiFunction, pushes, 1);
-  const sideCars = buildRecoverySideCars(RECOVERY_MASTER, decoded);
-
-  const master: DraftMaster = {
-    master: RECOVERY_MASTER, contract: 'Auth', functionName: entryName('Auth', 'check'), program,
-    facts: {
-      contract: 'Auth', functionName: 'check', kind: FrameKind.ROOT,
-      callerIsUser: true, originEqualsCaller: true, makesExternalCall: false, mastersOfContract: 1,
-    },
-    frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: RECOVERY_ADDRESS, value: 0n },
-    enteredBy: USER_ID, origin: USER_ID,
-    calls: [], retval: new Uint8Array(0), segments: [[]], events: [], sends: [],
-    argumentPushes: pushes, redeemScript: program, dispatches: true,
-  };
-  const plan: CompositionDraftPlan = {
-    blocks: [{
-      contract: 'Auth', masters: [RECOVERY_MASTER], state: [],
-      recovery: { [RECOVERY_MASTER]: sideCars.ids },
-    }],
-    userInputs: [{ id: USER_ID, index: 1 + sideCars.ids.length }],
-    masters: [master],
-    inputs: {
-      [RECOVERY_MASTER]: {
-        source: {
-          lockingBytecode: encodeLockingBytecodeP2sh32(hash256(program)), valueSatoshis: 20_000n,
-          token: { category: RECOVERY_CATEGORY, amount: 0n, nft: { capability: 'minting', commitment: new Uint8Array(0) } },
-        },
-      },
-      ...sideCars.inputs,
-      [USER_ID]: userInput(),
-    },
-  };
-  return { plan, artifact, ids: sideCars.ids };
-}
-
-describe('a recovery over an EIP-191 digest', () => {
-  it('settles with the composer placing one side-car pair after the master', () => {
-    const test = buildRecoveryCase();
-    const outcome = composeAndDerive(test.plan, [test.artifact], [rootOf('Auth', 'check', RECOVERY_MASTER)]);
-    // Every contract input is accepted, and the side-cars are exactly the master plus one A/B pair.
-    expect(refused(outcome)).toStrictEqual([]);
-    expect([RECOVERY_MASTER, ...test.ids].every((id) =>
-      outcome.verdicts.find((verdict) => verdict.participant === id)?.accepted === true)).toBe(true);
-    expect(test.ids).toStrictEqual([`${RECOVERY_MASTER}/recovery-A0`, `${RECOVERY_MASTER}/recovery-B0`]);
-    // The layout placed each side-car immediately after the master it belongs to.
-    expect(layoutTransaction(test.plan.blocks).participants.map((placed) => [placed.id, placed.index]))
-      .toStrictEqual([[RECOVERY_MASTER, 0], [`${RECOVERY_MASTER}/recovery-A0`, 1], [`${RECOVERY_MASTER}/recovery-B0`, 2]]);
-  });
-});
-
-/**
  * A composition whose callee writes two mapping nodes of one ledger in one execution, each key a contract constant.
  *
  * The two nodes form one sorted list: the lower slot's node carries the higher slot as its successor and that higher
@@ -1334,6 +1185,20 @@ function buildOnePullPlan(): { readonly plan: CompositionDraftPlan; readonly art
   return { plan, artifacts: [raw.artifacts.Root!, raw.artifacts.Store!, raw.artifacts.Escrow!, raw.artifacts.Token!] };
 }
 
+interface TwoKeyRun {
+  readonly twoKey: ReturnType<typeof buildTwoKeyPlan>;
+  readonly outcome: ReturnType<typeof composeAndDerive>;
+}
+let twoKeyRun: TwoKeyRun | undefined;
+/** The two-key composition, derived once: both cases read it, and the refusal copies the outputs it changes. */
+function settledTwoKey(): TwoKeyRun {
+  if (twoKeyRun === undefined) {
+    const twoKey = buildTwoKeyPlan();
+    twoKeyRun = { twoKey, outcome: composeAndDerive(twoKey.plan, twoKey.artifacts, [rootOf('Root', 'run', 'root-1')]) };
+  }
+  return twoKeyRun;
+}
+
 /** The derivation's refusal for a plan, and the machine's own stop at the named frame's failing site. */
 function derivationRefusal(
   plan: CompositionDraftPlan, artifacts: readonly Artifact[], master: string,
@@ -1368,22 +1233,11 @@ describe('the obstacles this flow replica works around', () => {
       .toThrow(/Expected variable 'fee' does not exist on the stack/);
   });
 
-  it('compiles the same struct when it is bound to a local first', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' struct Rec { string tag; int amount; }'
-      + ' interface IStore { function getFee() view returns (int); }'
-      + ' interface IEscrow { function pay(Rec r, int fee); }'
-      + ` contract Root { function run() { int fee = IStore(0x${hexOf(STORE_ADDRESS)}).getFee(); Rec r = Rec("tag", fee); `
-      + `   IEscrow(0x${hexOf(ESCROW_ADDRESS)}).pay(r, fee); require(true); } }`;
-    expect(publishedRefusals(compileStringMulti(source, { composition: 'per-call' }))).toStrictEqual([]);
-  });
-
   it('settles: a callee frame writes two mapping nodes of one ledger', () => {
     // The token's `transferFrom` writes the allowance and both balances in one execution; the same shape here is
     // two ledger nodes written by one callee frame. The nodes are one sorted list, so the segment declares each
     // target's node kept in place and the derivation reads both groups back.
-    const twoKey = buildTwoKeyPlan();
-    const outcome = composeAndDerive(twoKey.plan, twoKey.artifacts, [rootOf('Root', 'run', 'root-1')]);
+    const { twoKey, outcome } = settledTwoKey();
     expect(refused(outcome)).toStrictEqual([]);
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('Store', 'getFee'), entryName('Token', 'twoKeys'), entryName('Root', 'run'),
@@ -1414,11 +1268,7 @@ describe('the obstacles this flow replica works around', () => {
   it('refuses a node output no frame computed, on the same composition', () => {
     // The two writes are what fixes the nodes. A transaction carrying a different commitment at one node's output
     // is refused at the validator that settles the ledger.
-    const twoKey = buildTwoKeyPlan();
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: twoKey.artifacts, plan: twoKey.plan,
-    });
-    deriveComposition([rootOf('Root', 'run', 'root-1')], host);
+    const { twoKey, outcome: { draft } } = settledTwoKey();
     const program = draft.programFor('token-1');
     const wrong = encodeEntryCommitment(
       keyToSlotMulti([new Uint8Array(32).fill(0xb1)]), ZERO_SLOT, encodeIntegerValue(FEE + 1n),

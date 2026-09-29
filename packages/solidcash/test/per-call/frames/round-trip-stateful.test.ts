@@ -362,7 +362,7 @@ function compose(options: Parameters<typeof buildComposition>[0] = {}): {
 /**
  * Drives the whole shipped path to completion and returns the finished draft and the derivation's result.
  */
-function deriveRoundTrip(options: Parameters<typeof buildComposition>[0] = {}): {
+function deriveFresh(options: Parameters<typeof buildComposition>[0] = {}): {
   draft: CompositionDraft;
   plan: CompositionDraftPlan;
   result: ReturnType<typeof deriveDepthFirst>;
@@ -372,6 +372,14 @@ function deriveRoundTrip(options: Parameters<typeof buildComposition>[0] = {}): 
     vm: compositionMachine(), artifacts: [compiled.A!, compiled.B!], plan });
   const result = deriveDepthFirst(ROOT, host);
   return { draft, plan, result };
+}
+
+let derived: ReturnType<typeof deriveFresh> | undefined;
+
+/** The default round trip, derived once: the cases that read it change nothing in it. */
+function deriveRoundTrip(): ReturnType<typeof deriveFresh> {
+  derived ??= deriveFresh();
+  return derived;
 }
 
 /**

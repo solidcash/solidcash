@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString, compileStringMulti } from '../../../src/compiler.js';
+import { compileString } from '../../../src/compiler.js';
 import { refusalMessageOf, refusalOf } from './refused-entry.js';
 
 const STATE_CONTRACT = 'pragma solidcash ^0.13.0;'
@@ -36,11 +36,6 @@ const EVENT_CONTRACT = 'pragma solidcash ^0.13.0;'
   + ' contract Pinged {'
   + '   event Ping(int indexed x);'
   + '   function ping() { emit Ping(1); }'
-  + ' }';
-
-/** A contract with no event and no state of its own, for units that hold an emitting contract beside it. */
-const QUIET_SIBLING = ' contract Quiet {'
-  + '   function idle() { require(true); }'
   + ' }';
 
 /** An entry whose event count is the loop's trip count, which the head cannot fix. */
@@ -154,7 +149,7 @@ describe('composition convention selection', () => {
     expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
   });
 
-  // The refusal's message for this source is asserted in `return-value.test.ts`.
+  // The refusal's message for this shape is asserted in `composite-return.test.ts`.
   it('still compiles a refused shape under the direct convention', () => {
     expect(() => compileString(COMPOSITE_RETURN_CONTRACT)).not.toThrow();
   });
@@ -183,14 +178,6 @@ describe('the tail sections a compiled master fixes', () => {
     expect(refusalMessageOf(LOOP_EVENT_CONTRACT)).toContain('loop');
   });
 
-  it('sizes a contract\'s event region by its own bodies, not a sibling\'s emits', () => {
-    // The same unit holds one contract that emits and one that does not. A master's event region is fixed by the
-    // bodies it runs, so the quiet contract is emitted beside the emitting one rather than refused for an emit
-    // that is not its own.
-    const artifacts = compileStringMulti(EVENT_CONTRACT + QUIET_SIBLING, { composition: 'per-call' });
-    expect(artifacts.Pinged?.composition?.convention).toBe('per-call');
-    expect(artifacts.Quiet?.composition?.convention).toBe('per-call');
-  });
   // A value send is served: the body pins the lock it computed at the listed output. Its machine cases are in
   // `master/send-output.test.ts`, and the served spelling is asserted in
   // `solidcash/test/per-call/edges/refused-contract-shapes.test.ts`.

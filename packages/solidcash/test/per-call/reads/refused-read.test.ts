@@ -44,7 +44,7 @@ interface LedgerCalls {
 }
 
 /** Deploys the contract through the shipped deployment, seeding one mapping key, and connects a signer. */
-async function deploy(): Promise<LedgerCalls> {
+async function deployFresh(): Promise<LedgerCalls> {
   const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
   const signer = HDSigner.fromPhrase(PHRASE, provider);
   const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
@@ -54,6 +54,14 @@ async function deploy(): Promise<LedgerCalls> {
   });
   const handle = (deployment.contract as StatefulContract).connect(signer);
   return handle.call as unknown as LedgerCalls;
+}
+
+let deployed: Promise<LedgerCalls> | undefined;
+
+/** One deployment serves every case: a read is local and changes nothing. */
+function deploy(): Promise<LedgerCalls> {
+  deployed ??= deployFresh();
+  return deployed;
 }
 
 describe('a read whose entry refuses', () => {

@@ -14,9 +14,9 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 /**
  * A writing entry whose own body refuses.
  *
- * The contract keeps one record and its writing entries guard it. One guard publishes a message, the other is a
- * bare `require`; a write that trips either reports what the artifact publishes for the entry's own selector
- * rather than the opcode the machine stopped on, and a bare guard still names the entry and the failing line.
+ * The contract keeps one record and its writing entry guards it with a message; a write that trips the guard reports
+ * what the artifact publishes for the entry's own selector rather than the opcode the machine stopped on, through
+ * the call path and through the handle. A bare `require` naming the entry and the failing line is `call.test.ts`'s.
  */
 
 const CATEGORY_HEX = '77'.repeat(32);
@@ -29,10 +29,6 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function add(int by) {'
   + '     this.counter = this.counter + by;'
   + '     require(this.counter <= 10, "counter overflow");'
-  + '   }'
-  + '   function guarded(int by) {'
-  + '     this.counter = this.counter + by;'
-  + '     require(this.counter <= 10);'
   + '   }'
   + '   function current() view returns (int) { return this.counter; }'
   + ' }';
@@ -111,17 +107,6 @@ describe('a write whose entry refuses', () => {
     const master = result.verdicts.find((verdict) => verdict.id === 'master');
     expect(master?.accepted).toBe(false);
     expect(master?.objection).toContain('counter overflow');
-  });
-
-  it('names the entry and the failing line for a bare guard', async () => {
-    const deployed = await deploy();
-    const result = await call(deployed, 'guarded', 20n);
-
-    expect(result.accepted).toBe(false);
-    const master = result.verdicts.find((verdict) => verdict.id === 'master');
-    // No message is published for a bare `require`, so the refusal is generic but still locates the entry.
-    expect(master?.objection).toContain('Counter.guarded()');
-    expect(master?.objection).toMatch(/at line \d+/);
   });
 
   it('rejects the handle send with the entry\'s declared message', async () => {

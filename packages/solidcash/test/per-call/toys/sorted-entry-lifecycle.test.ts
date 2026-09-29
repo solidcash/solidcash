@@ -227,6 +227,14 @@ function verdictAt(draft: ReturnType<typeof createComposedDerivationHost>['draft
   return vm.stateSuccess(state) === true ? 'accepted' : `refused: ${String(state.error)}`;
 }
 
+let driven: ReturnType<typeof drive> | undefined;
+
+/** The composition, derived once: the cases that read it change nothing in it. */
+function sharedDrive(): ReturnType<typeof drive> {
+  driven ??= drive();
+  return driven;
+}
+
 describe('one entry inserting, updating and deleting one key in one transaction', () => {
   it('publishes one call site per call, each naming its own method', () => {
     const { artifacts } = compileAndDeploy(SOURCE, { Hub: HUB_LABEL, Ledger: LEDGER_LABEL });
@@ -249,7 +257,7 @@ describe('one entry inserting, updating and deleting one key in one transaction'
   });
 
   it('lays the created node out: each later frame carries on from the view the one before it left', () => {
-    const { segments, nodeAfter } = drive();
+    const { segments, nodeAfter } = sharedDrive();
     const slot = keyToSlotMulti([KEY_PUSH]);
 
     // The insert relinks the head in place and creates the node at the adjacent output; the update and the delete
@@ -275,13 +283,14 @@ describe('one entry inserting, updating and deleting one key in one transaction'
   it('refuses a frame whose declared close is not the one its body computed', () => {
     // The control for the accepts below: each frame closes against the view its own segment declares, so a
     // declaration rewritten to a value no frame wrote is refused rather than resolved.
-    const creating = drive().draft;
-    creating.blockOf('insert-1').segments[0]![1]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
-    expect(verdictAt(creating, 'insert-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    const { draft } = drive();
+    draft.blockOf('insert-1').segments[0]![1]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
+    expect(verdictAt(draft, 'insert-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    // Each frame closes against its own declaration, so update-1 accepts until its own one changes.
+    expect(verdictAt(draft, 'update-1')).toBe('accepted');
 
-    const rewriting = drive().draft;
-    rewriting.blockOf('update-1').segments[0]![0]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
-    expect(verdictAt(rewriting, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
+    draft.blockOf('update-1').segments[0]![0]!.viewOut = node(keyToSlotMulti([KEY_PUSH]), 99n);
+    expect(verdictAt(draft, 'update-1')).toBe('refused: Program failed an OP_VERIFY operation.');
   });
 
   it('settles the whole insert, update and delete lifecycle, every input accepting', () => {
@@ -289,7 +298,7 @@ describe('one entry inserting, updating and deleting one key in one transaction'
     // two records: the head the insert relinks, and the node the insert creates and both later frames rewrite.
     // Each commitment is read back through the shipped sorted-list encoder, and each frame's own segment declares
     // the view it reads and the view it writes.
-    const { draft, derived, nodeAfter, headAfter } = drive();
+    const { draft, derived, nodeAfter, headAfter } = sharedDrive();
     const slot = keyToSlotMulti([KEY_PUSH]);
     const program = draft.programFor('hub-1');
     expect(derived.completed.map((frame) => frame.master))

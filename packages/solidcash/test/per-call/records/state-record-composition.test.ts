@@ -264,15 +264,23 @@ interface RunVerdict extends InputVerdict {
   readonly recordIndex: number;
 }
 
-/** Runs the whole shipped path and asks the machine for a verdict on the ledger master's and the record's inputs. */
-function verdict(options: {
-  readonly segments?: readonly (readonly RecordEntry[])[];
-} = {}): RunVerdict {
-  const { plan, artifacts: compiled } = buildComposition(options);
-  const { host, draft } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
-  deriveDepthFirst(ROOT, host);
+let defaultDraft: ReturnType<typeof createComposedDerivationHost>['draft'] | undefined;
 
+/** The default composition through the whole shipped path, derived once: the cases that read it change nothing. */
+function derivedDefault(): ReturnType<typeof createComposedDerivationHost>['draft'] {
+  if (defaultDraft === undefined) {
+    const { plan, artifacts: compiled } = buildComposition();
+    const { host, draft } = createComposedDerivationHost({
+      vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
+    deriveDepthFirst(ROOT, host);
+    defaultDraft = draft;
+  }
+  return defaultDraft;
+}
+
+/** The machine's verdict on the ledger master's and the record's inputs of the default composition. */
+function verdict(): RunVerdict {
+  const draft = derivedDefault();
   const recordIndex = participant(draft.layout, RECORD_ID).index;
   return { ...masterVerdict(draft), record: recordVerdict(draft), recordIndex };
 }
@@ -285,11 +293,7 @@ describe('a stateful composition whose record sits away from its master', () => 
   });
 
   it('the composer places the record after the validator, not next to the master that reads it', () => {
-    const { plan, artifacts: compiled } = buildComposition();
-    const { draft, host } = createComposedDerivationHost({
-    vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
-    deriveDepthFirst(ROOT, host);
-
+    const draft = derivedDefault();
     expect(participant(draft.layout, LEDGER_MASTER).index).toBe(0);
     expect(participant(draft.layout, VALIDATOR_ID).index).toBe(1);
     expect(participant(draft.layout, RECORD_ID).index).toBe(RECORD_INDEX);
@@ -326,7 +330,5 @@ describe('a stateful composition whose record sits away from its master', () => 
     vm: compositionMachine(), artifacts: [compiled.Ledger!, compiled.Callee!], plan });
     expect(masterVerdict(composed.draft).accepted).toBe(false);
     expect(() => deriveDepthFirst(ROOT, composed.host)).toThrow(/PER_CALL_DERIVATION_STALLED/);
-    // The same composition with the declarations settles, so the refusal is the declarations' and nothing else.
-    expect(verdict().accepted).toBe(true);
   });
 });

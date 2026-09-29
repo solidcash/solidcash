@@ -342,25 +342,20 @@ describe('an entry that pays a contract through its receive()', () => {
     expect(containerValue(result, deployed.categoryId)).toBe(13_000n);
   });
 
-  it('is refused by name when the recipient has no receive()', async () => {
+  it('is refused by name when the recipient has no receive(), or is not among the externals', async () => {
     const deployed = await deploy(payments.Payer!);
-    const closedCategory = await deployBeside(deployed, payments.Closed!, '48'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    // Both are refused from the artifacts and the call's externals, before any recipient deployment is read.
+    const closedCategory = '48'.repeat(32);
     await expect(callPerCallEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
       args: [addressOf(payments.Closed!, closedCategory), 7_000n],
       externals: { Closed: { artifact: payments.Closed!, categoryId: closedCategory } },
     })).rejects.toThrow(/contract "Closed" has no receive\(\), so the value entry "pay" sends it has no body to run/);
-  });
-
-  it('is refused by name when the recipient is not among the externals', async () => {
-    const deployed = await deploy(payments.Payer!);
-    const vaultCategory = await deployBeside(deployed, payments.Vault!, '49'.repeat(32));
     await expect(callPerCallEntry({
       ...(await currentCaller(deployed)),
       functionName: 'pay',
-      args: [addressOf(payments.Vault!, vaultCategory), 7_000n],
+      args: [addressOf(payments.Vault!, '49'.repeat(32)), 7_000n],
     })).rejects.toThrow(/entry "pay" sends to the contract at [0-9a-f]+, which the call's externals do not name/);
   });
 });
@@ -490,15 +485,11 @@ const BRANCH_SOURCE = 'pragma solidcash ^0.13.0;'
 const branch = compileStringMulti(BRANCH_SOURCE, { composition: 'per-call' });
 
 describe('an entry that sends on a branch', () => {
-  it('makes the send when the branch is taken, and lists nothing when it is not', async () => {
+  it('lists nothing when the branch with its only send is not taken', async () => {
     const deployed = await deploy(branch.Till!);
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
-    const taken = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [7_000n] });
-    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(paidToCaller(taken, deployed.callerLock)).toBe(7_000n);
-    expect(containerValue(taken, deployed.categoryId)).toBe(13_000n);
-
+    // A send on a branch taken is the control of the refusal case below.
     const skipped = await callPerCallEntry({ ...(await currentCaller(deployed)), functionName: 'payIf', args: [0n] });
     expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidToCaller(skipped, deployed.callerLock)).toBe(0n);
@@ -540,20 +531,14 @@ describe('an entry that sends on a branch', () => {
     expect(paidToCaller(both, deployed.callerLock)).toBe(7_000n);
   });
 
-  it('pays a contract on a branch taken, and runs no frame of it on a branch not taken', async () => {
+  it('runs no frame of a contract it pays on a branch not taken', async () => {
     const deployed = await deploy(branch.Till!);
     const vaultCategory = await deployBeside(deployed, branch.Vault!, '4b'.repeat(32));
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
     const externals = { Vault: { artifact: branch.Vault!, categoryId: vaultCategory } };
     const to = addressOf(branch.Vault!, vaultCategory);
 
-    const taken = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'payTo', args: [to, 6_000n], externals,
-    });
-    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(taken.completed.map((frame) => frame.functionName)).toStrictEqual(['Vault.__receive()', 'Till.payTo()']);
-    expect(containerValue(taken, vaultCategory)).toBe(6_000n);
-
+    // A contract paid on a branch taken is paid as the unconditional case pays one.
     const skipped = await callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'payTo', args: [to, 0n], externals,
     });
@@ -724,20 +709,23 @@ describe('a paid receive() that sends', () => {
     expect(paidTo(result, SECOND_LOCK)).toBe(4_501n);
   });
 
-  it('pays out more than it receives from its own containers, as the EVM does from its balance', async () => {
+  it('pays out more than it receives from its own containers, and is refused by name when they cannot', async () => {
     const deployed = await deploy(sendingBodies.Payer!);
     const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(32));
     const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
+    const to = addressOf(sendingBodies.Doubler!, doublerCategory);
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    // Before its deposit it holds nothing, so what it sends beyond what it receives has no container to come from.
+    await expect(callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
+    })).rejects.toThrow(/contract "Doubler" holds 0 satoshis in its containers/);
     const doubler = { ...deployed, artifact: sendingBodies.Doubler!, categoryId: doublerCategory };
     const deposit = await callPerCallEntry({ ...(await currentCaller(doubler)), functionName: 'deposit', value: 8_000n });
     expect(deposit.accepted).toBe(true);
 
+    // As the EVM pays from its balance.
     const result = await callPerCallEntry({
-      ...(await currentCaller(deployed)),
-      functionName: 'pay',
-      args: [addressOf(sendingBodies.Doubler!, doublerCategory), 3_000n],
-      externals,
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     });
     expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
     expect(paidTo(result, FIRST_LOCK)).toBe(6_000n);
@@ -745,7 +733,7 @@ describe('a paid receive() that sends', () => {
     expect(containerValue(result, doublerCategory)).toBe(5_000n);
   });
 
-  it('makes a send on a branch it takes, and lists only the send it makes when it does not', async () => {
+  it('lists only the send it makes when one of its sends is on a branch not taken', async () => {
     const deployed = await deploy(sendingBodies.Payer!);
     const tipperCategory = await deployBesideWith(
       deployed, sendingBodies.Tipper!, [FIRST_LOCK, SECOND_LOCK], '53'.repeat(32),
@@ -754,14 +742,7 @@ describe('a paid receive() that sends', () => {
     const to = addressOf(sendingBodies.Tipper!, tipperCategory);
     await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
 
-    const taken = await callPerCallEntry({
-      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 9_000n], externals,
-    });
-    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
-    expect(paidTo(taken, FIRST_LOCK)).toBe(1_000n);
-    expect(paidTo(taken, SECOND_LOCK)).toBe(500n);
-    expect(containerValue(taken, tipperCategory)).toBe(7_500n);
-
+    // A branch taken makes every send, as the splitter's do.
     const skipped = await callPerCallEntry({
       ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
     });
@@ -769,18 +750,6 @@ describe('a paid receive() that sends', () => {
     expect(paidTo(skipped, FIRST_LOCK)).toBe(0n);
     expect(paidTo(skipped, SECOND_LOCK)).toBe(500n);
     expect(containerValue(skipped, tipperCategory)).toBe(2_500n);
-  });
-
-  it('is refused by name when its containers cannot cover what it sends beyond what it receives', async () => {
-    const deployed = await deploy(sendingBodies.Payer!);
-    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '52'.repeat(32));
-    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
-    await expect(callPerCallEntry({
-      ...(await currentCaller(deployed)),
-      functionName: 'pay',
-      args: [addressOf(sendingBodies.Doubler!, doublerCategory), 3_000n],
-      externals: { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } },
-    })).rejects.toThrow(/contract "Doubler" holds 0 satoshis in its containers/);
   });
 });
 

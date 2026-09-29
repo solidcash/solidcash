@@ -50,7 +50,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + `   function start() { emit Ping(1); IEmitter(0x${hexOf(emitterAddress)}).fire.call(); require(true); } }`;
 
 /** Compiles, deploys and plans the nested composition, then derives and evaluates it. */
-function composed(): {
+function composeFresh(): {
   readonly draft: ReturnType<typeof composeAndDerive>['draft'];
   readonly artifacts: ReturnType<typeof compileAndDeploy>['artifacts'];
   readonly contracts: ReturnType<typeof compileAndDeploy>['contracts'];
@@ -128,6 +128,14 @@ function composed(): {
   ]);
   expect(outcome.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
   return { draft: outcome.draft, artifacts, contracts };
+}
+
+let shared: ReturnType<typeof composeFresh> | undefined;
+
+/** The nested composition, derived once: each case registers its own handlers and only reads it. */
+function composed(): ReturnType<typeof composeFresh> {
+  shared ??= composeFresh();
+  return shared;
 }
 
 describe('a composition\'s logs delivered to registered handlers', () => {

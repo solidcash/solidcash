@@ -3,15 +3,11 @@ import {
   FrameKind, argsHash, decodeWitnessBlock, encodeArgumentList, encodeIntegerValue, encodeResultList,
   splitFirstPush,
 } from '@solidcash/utils';
-import { compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import {
   USER_LOCK, compileAndDeploy, composeAndDerive, hexOf, masterInput, rootOf, seededAddress, selectorOf,
   token, userInput, userInputs, validatorFor,
 } from '../shapes/harness.js';
-import {
-  createComposedDerivationHost, type CompositionDraft, type CompositionDraftPlan,
-  type DraftMaster,
-} from '../../../src/per-call/composer/index.js';
+import { type CompositionDraftPlan, type DraftMaster } from '../../../src/per-call/composer/index.js';
 
 /**
  * A read's result feeding a later call: `Claimer.f` reads a fee from `Fee.fee` and passes it to `Pay.pay`.
@@ -20,10 +16,9 @@ import {
  * out of the first record and recomputes the second call's digest from it. The plan's own `Y3` shape — `A.f(id)`
  * computes `fee = B.fee(id)` then calls `C.pay(id, fee)` — settles when `id` is a value the running code holds,
  * which is `tx.inputs.length` below (a user-entered root carries no call data, so it cannot take the parameter the
- * plan writes). One wall remains and is pinned by name: a root entry that takes its own argument is refused by the
- * composer (a user-entered master carries no call data), so `id` cannot arrive as a parameter. A later call that
- * also passes a compile-time argument settles: the caller's run-time digest folds in the constant's wire push with
- * its framing byte intact, so the callee's call data hashes to the record the caller checks.
+ * plan writes; `composer/assemble.test.ts` pins that refusal). A later call that also passes a compile-time argument
+ * settles: the caller's run-time digest folds in the constant's wire push with its framing byte intact, so the
+ * callee's call data hashes to the record the caller checks.
  */
 
 const CLAIMER_LABEL = 'later call claimer';
@@ -33,14 +28,13 @@ const FEE = hexOf(seededAddress(FEE_LABEL));
 const PAY = hexOf(seededAddress(PAY_LABEL));
 
 /** Where the later call's second argument comes from. */
-type IdMode = 'parameter' | 'literal' | 'runtime';
+type IdMode = 'literal' | 'runtime';
 const LITERAL_ID = 7n;
 /** The composed transaction's input count: the three masters, the validator and the user. */
 const RUNTIME_ID = 5n;
 
-/** The source, with `id` taken from the root's parameter, a literal, or the running transaction's input count. */
+/** The source, with `id` taken from a literal or the running transaction's input count. */
 function source(mode: IdMode): string {
-  const parameter = mode === 'parameter' ? 'int id' : '';
   const id = mode === 'literal' ? LITERAL_ID.toString() : 'id';
   const declare = mode === 'runtime' ? '     int id = tx.inputs.length;\n' : '';
   return 'pragma solidcash ^0.13.0;'
@@ -49,7 +43,7 @@ function source(mode: IdMode): string {
     + ` contract Fee { function fee(int id) view returns (int) { return id * 2; } }`
     + ' contract Pay { function pay(int id, int amount) { require(amount > 0); } }'
     + ' contract Claimer {'
-    + `   function f(${parameter}) {`
+    + '   function f() {'
     + declare
     + `     int fee = IFee(0x${FEE}).fee(${id});`
     + `     IPay(0x${PAY}).pay(${id}, fee);`
@@ -86,8 +80,6 @@ function build(mode: IdMode): Built {
   });
   const claimer = contracts.Claimer!;
   const validator = validatorFor(claimer.category);
-  // A user-entered root carries no call data, so the parameter case states a push only to make the refusal about
-  // the root's entry rather than about a missing argument.
   const id = mode === 'literal' ? LITERAL_ID : RUNTIME_ID;
   const idPush = encodeIntegerValue(id);
   const feePush = encodeIntegerValue(id * 2n);
@@ -109,7 +101,6 @@ function build(mode: IdMode): Built {
         },
         frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: claimer.address, value: 0n },
         enteredBy: 'user', origin: 'user', segments: [[], [], []],
-        argumentPushes: mode === 'parameter' ? [idPush] : [],
         calls: [
           {
             kind: FrameKind.STATIC, callee: 'fee-1', target: seededAddress(FEE_LABEL), value: 0n,
@@ -165,26 +156,7 @@ function build(mode: IdMode): Built {
   };
 }
 
-/** The composed host for one case: the draft the composer built, before the derivation runs. */
-function hostFor(built: Built): {
-  readonly host: ReturnType<typeof createComposedDerivationHost>['host'];
-  readonly draft: CompositionDraft;
-} {
-  return createComposedDerivationHost({ vm: compositionMachine(), artifacts: built.artifacts, plan: built.plan });
-}
-
 const ROOT = rootOf('Claimer', 'f', 'claimer-1');
-
-/** The error a shipped call raised, or a failure when it returned normally. */
-function refusalOf(run: () => unknown): { readonly name?: string; readonly code?: string; readonly message: string } {
-  try {
-    run();
-  } catch (error) {
-    const refusal = error as { name?: string; code?: string; message: string };
-    return { name: refusal.name, code: refusal.code, message: refusal.message };
-  }
-  throw new Error('the shipped per-call composer accepted the composition, so there is no refusal to record');
-}
 
 /** One master's witness block, read back from the unlocking bytecode the composer built, through the shipped codec. */
 function blockOf(unlocking: Uint8Array): ReturnType<typeof decodeWitnessBlock> {
@@ -192,12 +164,6 @@ function blockOf(unlocking: Uint8Array): ReturnType<typeof decodeWitnessBlock> {
 }
 
 describe('a read whose result a later call consumes', () => {
-  it('refuses a root entry that takes its own argument: a user-entered master carries no call data', () => {
-    const refusal = refusalOf(() => hostFor(build('parameter')));
-    expect(refusal.name).toBe('PerCallEncodingError');
-    expect(refusal.message).toMatch(/is entered by a user, so it carries no call data/);
-  });
-
   it('settles when the later call also passes a compile-time argument', () => {
     // The composer fills the read's record with the callee's `retval`, and the later call mixes that run-time fee
     // with the compile-time `id`. The constant argument's push keeps its framing byte in the caller's digest (the

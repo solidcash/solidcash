@@ -23,8 +23,8 @@ import { REAL_VALIDATOR_PROGRAM, categorySlotValue, seededCategory, validatorSpe
  * operands the write's verification consumes have to be derived from the write's own segment's declaration rather
  * than the body's first. The whole shipped path runs: the sources through `compileStringMulti` with the per-call
  * convention, the reserved slots filled the way a deployment fills them, and the machine's verdict on the caller's
- * own input is the assertion. A write beside a call inside a branch is a segment the source does not fix, so that
- * shape keeps its refusal.
+ * own input is the assertion. A write behind a call whose occurrence the source does not fix keeps its refusal
+ * (`refused-entry-shapes.test.ts`).
  */
 
 const CATEGORY_CALLER = seededCategory('write after call caller');
@@ -285,54 +285,6 @@ describe('a per-call master whose entry writes a verified mapping after an exter
   });
 });
 
-describe('a per-call master whose write sits beside a call inside a branch', () => {
-  it('serves a branch whose arms make the same number of calls', () => {
-    // Both arms make one call, so every path makes the same number before the write: the write's segment is the
-    // count the paths agree on, and the master reads it.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface ICallee { function ping(); function pong(); }'
-      + ` contract Callee { function ping() { require(true); } function pong() { require(true); } }`
-      + ' contract Caller {'
-      + '   mapping(address => uint) balances;'
-      + '   function set(bool go, address to, uint amount) {'
-      + `     if (go) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
-      + `     else { ICallee(0x${toHex(ADDRESS_CALLEE)}).pong.call(); }`
-      + '     balances[to] = amount;'
-      + '   }'
-      + ' }';
-    expect(refusalMessageOf(source)).toBe('');
-  });
-
-  it('keeps refusing the entry whose write a call the source does not fix precedes', () => {
-    // Only one arm calls, so the write's segment is 0 or 1 depending on which arm ran.
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface ICallee { function ping(); }'
-      + ` contract Callee { function ping() { require(true); } }`
-      + ' contract Caller {'
-      + '   mapping(address => uint) balances;'
-      + '   function set(bool go, address to, uint amount) {'
-      + `     if (go) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
-      + '     balances[to] = amount;'
-      + '   }'
-      + ' }';
-    expect(refusalMessageOf(source)).toContain('behind a call whose occurrence the source does not fix');
-  });
-
-  it('keeps refusing the entry whose write a loop of calls precedes', () => {
-    const source = 'pragma solidcash ^0.13.0;'
-      + ' interface ICallee { function ping(); }'
-      + ` contract Callee { function ping() { require(true); } }`
-      + ' contract Caller {'
-      + '   mapping(address => uint) balances;'
-      + '   function set(int n, address to, uint amount) {'
-      + `     for (int i = 0; i < n; i = i + 1) { ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call(); }`
-      + '     balances[to] = amount;'
-      + '   }'
-      + ' }';
-    expect(refusalMessageOf(source)).toContain('behind a call whose occurrence the source does not fix');
-  });
-});
-
 describe('a per-call master whose entry deletes a mapping entry beside a call elsewhere', () => {
   const DELETE_SOURCE = 'pragma solidcash ^0.13.0;'
     + ' interface ICallee { function ping(); }'
@@ -462,30 +414,5 @@ describe('a per-call master whose entry removes a mapping entry', () => {
 
   it('serves a removal that precedes every call the master makes', () => {
     expect(refusalMessageOf(REMOVE_ONLY_SOURCE)).toBe('');
-  });
-});
-
-/**
- * A derived write whose key is an element of a dynamic state array, in a body that writes that array inside a loop,
- * so the compiler caches the array in a `__dlcache_<name>` local. The key reads that local, which the body defines
- * in its own prologue; the derivation is emitted before the prologue, so it cannot address the element.
- */
-const DYNAMIC_ARRAY_KEY_SOURCE = 'pragma solidcash ^0.13.0;'
-  + ' interface ICallee { function ping(); }'
-  + ` contract Callee { function ping() { require(true); } }`
-  + ' contract Caller {'
-  + '   struct Job { uint amount; }'
-  + '   Job[] jobs;'
-  + '   mapping(uint => mapping(uint => bool)) flags;'
-  + '   function go(uint id) {'
-  + `     ICallee(0x${toHex(ADDRESS_CALLEE)}).ping.call();`
-  + '     for (int i = 0; i < 2; i = i + 1) { jobs.push(); }'
-  + '     flags[id][jobs[id].amount] = true;'
-  + '   }'
-  + ' }';
-
-describe('a per-call master whose derived write key reads a dynamic state array element', () => {
-  it('refuses the body that reads it through the array cache local', () => {
-    expect(refusalMessageOf(DYNAMIC_ARRAY_KEY_SOURCE)).toContain("reads an element of the dynamic state array 'jobs'");
   });
 });

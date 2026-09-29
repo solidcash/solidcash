@@ -26,7 +26,7 @@ import {
   type FrameRequest,
 } from '../../../src/per-call/composer/index.js';
 import {
-  USER_LOCK, compileAndDeploy, composeAndDerive, entryName, master, masterInput, rootOf, seededAddress,
+  USER_LOCK, compileAndDeploy, entryName, master, masterInput, rootOf, seededAddress,
   selectorOf, token, userInput, userInputs, validatorFor,
   type ArtifactMap,
 } from './harness.js';
@@ -350,10 +350,16 @@ function buildChain(deepBody: string): ChainRun {
   };
 }
 
-/** Every contract input of a composition, each asked of the real machine, as the harness reports them. */
-function rejectedInputs(outcome: ReturnType<typeof composeAndDerive>): readonly string[] {
-  return outcome.verdicts.filter((verdict) => !verdict.accepted)
-    .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
+/** Every contract input of a derived draft the real machine refuses, as the harness reports them. */
+function rejectedInputs(draft: CompositionDraft, rootMaster: string): readonly string[] {
+  const program = draft.programFor(rootMaster);
+  const vm = compositionMachine();
+  return draft.layout.participants.flatMap((placed) => {
+    const state = vm.evaluate({
+      inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction: program.transaction,
+    });
+    return vm.stateSuccess(state) === true ? [] : [`${placed.id}: ${String(state.error)}`];
+  });
 }
 
 describe('a root whose own check fails after an earlier call succeeded', () => {
@@ -380,9 +386,6 @@ describe('a root whose own check fails after an earlier call succeeded', () => {
     expect(report.innermost!.reason.message).toBe('root check failed');
     expect(report.innermost!.reason.line).toBe(lineOf(run.text, 'require(got == 2, "root check failed")'));
     expect(report.refusals.map((refusal) => refusal.master)).not.toContain(PAIR_STORE);
-    // Nothing was built: the same driver throws when asked for the whole composition.
-    expect(() => composeAndDerive(run.plan, [run.artifacts.Root!, run.artifacts.Store!], [rootOf('Root', 'run', PAIR_ROOT)]))
-      .toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });
 
@@ -473,12 +476,9 @@ describe('the same compositions with their checks passing', () => {
     expect(run.derivationError).toBeUndefined();
     expect(run.completed.map((frame) => frame.master)).toStrictEqual([PAIR_STORE, PAIR_ROOT]);
 
-    const outcome = composeAndDerive(
-      run.plan, [run.artifacts.Root!, run.artifacts.Store!], [rootOf('Root', 'run', PAIR_ROOT)],
-    );
-    expect(rejectedInputs(outcome)).toStrictEqual([]);
+    expect(rejectedInputs(run.draft, PAIR_ROOT)).toStrictEqual([]);
     // The write stands: the record output is the commitment the frame computed.
-    const record = outcome.transaction.outputs[run.recordIndex]!.token!.nft!.commitment;
+    const record = run.draft.programFor(PAIR_ROOT).transaction.outputs[run.recordIndex]!.token!.nft!.commitment;
     expect(bytesToHex(record)).toBe(bytesToHex(run.after));
   });
 
@@ -488,13 +488,8 @@ describe('the same compositions with their checks passing', () => {
     expect(run.completed.map((frame) => frame.master))
       .toStrictEqual([CHAIN_STORE, CHAIN_DEEP, CHAIN_MID, CHAIN_ROOT]);
 
-    const outcome = composeAndDerive(
-      run.plan,
-      [run.artifacts.Root!, run.artifacts.Store!, run.artifacts.Mid!, run.artifacts.Deep!],
-      [rootOf('Root', 'run', CHAIN_ROOT)],
-    );
-    expect(rejectedInputs(outcome)).toStrictEqual([]);
-    const record = outcome.transaction.outputs[run.recordIndex]!.token!.nft!.commitment;
+    expect(rejectedInputs(run.draft, CHAIN_ROOT)).toStrictEqual([]);
+    const record = run.draft.programFor(CHAIN_ROOT).transaction.outputs[run.recordIndex]!.token!.nft!.commitment;
     expect(bytesToHex(record)).toBe(bytesToHex(run.after));
   });
 });

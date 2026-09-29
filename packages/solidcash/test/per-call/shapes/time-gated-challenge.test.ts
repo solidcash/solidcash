@@ -309,6 +309,20 @@ function buildPlan(locktime: number): {
 const ARTIFACTS = [built.artifacts.Root!, built.artifacts.Judge!, built.artifacts.Escrow!];
 const ROOT = rootOf('Root', 'enter', ROOT_MASTER);
 
+interface AfterPayment {
+  readonly builtPlan: ReturnType<typeof buildPlan>;
+  readonly outcome: ReturnType<typeof composeAndDerive>;
+}
+let afterPayment: AfterPayment | undefined;
+/** The composition at a locktime after the payment, derived once: the settle reads it and the refusal clones it. */
+function derivedAfterPayment(): AfterPayment {
+  if (afterPayment === undefined) {
+    const builtPlan = buildPlan(LOCKTIME_AFTER_PAYMENT);
+    afterPayment = { builtPlan, outcome: composeAndDerive(builtPlan.plan, ARTIFACTS, [ROOT]) };
+  }
+  return afterPayment;
+}
+
 describe('a user-entered root that reaches an escrow through a judge gated on the escrow\'s payment block', () => {
   it('compiles all three contracts and serves the escrow\'s read and write entries', () => {
     for (const name of ['Root', 'Judge', 'Escrow']) {
@@ -318,8 +332,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
   });
 
   it('settles: every contract input is accepted and the escrow\'s record carries what `challenge` computed', () => {
-    const builtPlan = buildPlan(LOCKTIME_AFTER_PAYMENT);
-    const outcome = composeAndDerive(builtPlan.plan, ARTIFACTS, [ROOT]);
+    const { builtPlan, outcome } = derivedAfterPayment();
 
     // The judge's read frame runs first, then the escrow entry it calls, then the judge and the root.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
@@ -351,8 +364,7 @@ describe('a user-entered root that reaches an escrow through a judge gated on th
     // The derived bytes are settled; only the transaction's one clock moves, back to the payment's own block, so
     // the judge's gate is not yet true. The program refuses at `OP_CHECKLOCKTIMEVERIFY`, and the machine reports
     // both times: this is the machine's refusal, not the driver's.
-    const builtPlan = buildPlan(LOCKTIME_AFTER_PAYMENT);
-    const outcome = composeAndDerive(builtPlan.plan, ARTIFACTS, [ROOT]);
+    const { builtPlan, outcome } = derivedAfterPayment();
     const program = outcome.draft.programFor(JUDGE_MASTER);
     const early = structuredClone(outcome.transaction) as typeof outcome.transaction;
     early.locktime = Number(PAYMENT_BLOCK);

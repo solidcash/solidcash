@@ -159,17 +159,6 @@ const FORWARDED_SOURCE = PROLOGUE
   + '   fallback(bytes input) external { implementation.delegatecall(input); require(true); }'
   + ' }';
 
-/** A target the contract does not hold: the record's target could not be bound to the code that runs. */
-const UNHELD_TARGET_SOURCE = PROLOGUE
-  + ' contract Proxy {'
-  + '   address implementation;'
-  + '   fallback(bytes input) external { address(this).delegatecall(input); require(true); }'
-  + ' }';
-
-/** A body whose call data is a constant rather than the bytes the entry received. */
-const CONSTANT_DATA_SOURCE = PROLOGUE
-  + ' contract Proxy { function set(address target) { target.delegatecall(hex"aabbccdd"); require(true); } }';
-
 /** A body whose call data is a local computed from a parameter, not the bytes the entry received. */
 const LOCAL_SLICE_SOURCE = PROLOGUE
   + ' contract Proxy {'
@@ -191,10 +180,6 @@ const FALLBACK_BESIDE_ENTRY_SOURCE = PROLOGUE
 /** A receive: the contract would dispatch by stack depth, which the head cannot precede. */
 const RECEIVE_SOURCE = PROLOGUE
   + ' contract Proxy { address implementation; receive() external payable { require(true); } }';
-
-/** A non-delegate low-level call: a call kind the master's own record binding does not describe. */
-const NON_DELEGATE_CALL_SOURCE = PROLOGUE
-  + ' contract Proxy { function set(address target) { target.call(hex"aabbccdd"); require(true); } }';
 
 /** One entry the compiler refused, as the artifact publishes it. */
 interface PublishedRefusal {
@@ -234,15 +219,11 @@ function isServed(source: string): boolean {
 
 const LOW_LEVEL_REFUSAL = 'a low-level call needs the witness `calls[]` checks, which are not emitted yet';
 
+// Constant call data and a target the contract does not hold are refused in `hostile/proxy-binding.test.ts`, and a
+// non-delegate low-level call in `edges/refused-contract-shapes.test.ts`.
 describe('the delegate shapes a per-call master admits', () => {
   it('serves the fallback that forwards its own received call data to an address it holds', () => {
     expect(isServed(FORWARDED_SOURCE)).toBe(true);
-  });
-
-  it('refuses a delegatecall of constant call data, by name', () => {
-    const refusal = refusalOf(CONSTANT_DATA_SOURCE, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
   });
 
   it('refuses a delegatecall of a local computed from a parameter, by name', () => {
@@ -257,14 +238,6 @@ describe('the delegate shapes a per-call master admits', () => {
     expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
   });
 
-  it('refuses a target the contract does not hold, by name', () => {
-    // A fallback that forwards to no address the contract holds is no proxy: it is dispatched to, and its call is
-    // the one refused.
-    const refusal = refusalOf(UNHELD_TARGET_SOURCE);
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toBe(`Proxy.__fallback(): ${LOW_LEVEL_REFUSAL}`);
-  });
-
   it('serves a fallback beside an ordinary entry, dispatched to for a selector no entry has', () => {
     expect(isServed(FALLBACK_BESIDE_ENTRY_SOURCE)).toBe(true);
   });
@@ -272,23 +245,22 @@ describe('the delegate shapes a per-call master admits', () => {
   it('serves a receive, dispatched by its selector like any entry', () => {
     expect(isServed(RECEIVE_SOURCE)).toBe(true);
   });
-
-  it('refuses a non-delegate low-level call, by name', () => {
-    const refusal = refusalOf(NON_DELEGATE_CALL_SOURCE, { allowUnsafeOperations: true });
-    expect(refusal.code).toBe('PER_CALL_CODEGEN_UNAVAILABLE');
-    expect(refusal.message).toContain(LOW_LEVEL_REFUSAL);
-  });
 });
 
 describe('the proxied hop settles end to end', () => {
-  /** Derives the hop from the shipped plan: both frames run, and the machine is asked about every contract input. */
+  let settled: { outcome: ReturnType<typeof composeAndDerive>; composition: Composition } | undefined;
+
+  /** Derives the hop once from the shipped plan: both frames run, and the machine is asked about every contract input. */
   function settle(): { outcome: ReturnType<typeof composeAndDerive>; composition: Composition } {
-    const composition = compose();
-    const outcome = composeAndDerive(
-      composition.plan, [composition.artifacts.Proxy!, composition.artifacts.Impl!],
-      [rootOf('Proxy', '__fallback', 'proxy-1')],
-    );
-    return { outcome, composition };
+    if (settled === undefined) {
+      const composition = compose();
+      const outcome = composeAndDerive(
+        composition.plan, [composition.artifacts.Proxy!, composition.artifacts.Impl!],
+        [rootOf('Proxy', '__fallback', 'proxy-1')],
+      );
+      settled = { outcome, composition };
+    }
+    return settled;
   }
 
   it('completes the implementation frame and then the proxy frame that forwarded to it', () => {

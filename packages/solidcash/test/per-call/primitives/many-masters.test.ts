@@ -12,8 +12,6 @@ import {
 } from '../../../src/per-call/deploy/index.js';
 import {
   CompositionPools,
-  createComposedDerivationHost,
-  deriveComposition,
   layoutTransaction,
   participant,
   type CompositionDraftPlan,
@@ -218,13 +216,27 @@ function rejectedOf(outcome: ReturnType<typeof composeAndDerive>): readonly stri
 
 describe('one contract entered nine times in one transaction', () => {
   const specs: readonly LedgerSpec[] = [{ contract: 'Ledger', label: 'many masters ledger', entries: 9 }];
+  let nine: {
+    readonly ledgers: readonly Ledger[];
+    readonly recordIndex: (recordId: string) => number;
+    readonly outcome: ReturnType<typeof composeAndDerive>;
+  } | undefined;
+
+  /** The nine-entry composition, derived once: the cases that read it change nothing in it. */
+  function derived(): NonNullable<typeof nine> {
+    if (nine === undefined) {
+      const { artifacts, contracts, ledgers } = compose(specs);
+      const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);
+      const outcome = composeAndDerive(plan, [artifacts.Hub!, artifacts.Ledger!], [
+        rootOf('Hub', 'run', HUB_MASTER),
+      ]);
+      nine = { ledgers, recordIndex, outcome };
+    }
+    return nine;
+  }
 
   it('declares the record once per frame and is accepted at every contract input', () => {
-    const { artifacts, contracts, ledgers } = compose(specs);
-    const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);
-    const outcome = composeAndDerive(plan, [artifacts.Hub!, artifacts.Ledger!], [
-      rootOf('Hub', 'run', HUB_MASTER),
-    ]);
+    const { ledgers, recordIndex, outcome } = derived();
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       ...Array.from({ length: 9 }, () => entryName('Ledger', 'step')),
       entryName('Hub', 'run'),
@@ -237,12 +249,7 @@ describe('one contract entered nine times in one transaction', () => {
   });
 
   it('refuses a record output the last declaration did not end at', () => {
-    const { artifacts, contracts, ledgers } = compose(specs);
-    const { plan, recordIndex } = buildPlan(artifacts, contracts, ledgers);
-    const { host, draft } = createComposedDerivationHost({
-      vm: compositionMachine(), artifacts: [artifacts.Hub!, artifacts.Ledger!], plan,
-    });
-    deriveComposition([rootOf('Hub', 'run', HUB_MASTER)], host);
+    const { ledgers, recordIndex, outcome: { draft } } = derived();
     const program = draft.programFor(ledgerMaster(specs[0]!, 8));
     const wrong = ledgers[0]!.recordOf(10n);
     const transaction = {

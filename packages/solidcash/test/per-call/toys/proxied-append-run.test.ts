@@ -614,41 +614,35 @@ function settleOutcome(built: Built): ReturnType<typeof composeAndDerive> {
   return composeAndDerive(built.plan, built.artifacts, built.roots);
 }
 
+/** A built shape and its settled outcome. */
+interface Settled {
+  readonly built: Built;
+  readonly outcome: ReturnType<typeof composeAndDerive>;
+}
+
+function settledOf(built: Built): Settled {
+  return { built, outcome: settleOutcome(built) };
+}
+
+let userEntered: Settled | undefined;
+let hubEntered: Settled | undefined;
+
+/** The user-entered appends, settled once: the cases that read them change nothing in them. */
+function settledUserEntered(): Settled {
+  userEntered ??= settledOf(build());
+  return userEntered;
+}
+
+/** The hub-entered appends, settled once: the cases that read them change nothing in them. */
+function settledHubEntered(): Settled {
+  hubEntered ??= settledOf(buildHubCall());
+  return hubEntered;
+}
+
+// The generated proxy's layout mirror is pinned in `proxied-appends.test.ts`.
 describe('an appender entered through a proxy\'s fallback more than once', () => {
-  it('generates the proxy from the implementation\'s own layout, and every contract is served', () => {
-    const implementationArtifact = compileStringMulti(IMPL_SOURCE, { composition: 'per-call' }).Impl!;
-    const proxyArtifact = buildProxyArtifact(implementationArtifact);
-    const proxy = deployed(proxyArtifact.contractName, PROXY_CATEGORY,
-      deployMaster(proxyArtifact, PROXY_CATEGORY, VALIDATOR_PROGRAM));
-    const hubArtifact = compileStringMulti(
-      hubSource(proxy.address, APPEND_COUNT), { composition: 'per-call' },
-    ).Hub!;
-
-    // The write rebuilds the record from the writer's declaration, so the two layouts must be the same geometry.
-    const implementationLayout = implementationArtifact.stateLayout!;
-    expect(proxyArtifact.stateLayout!.dataNftCount).toBe(implementationLayout.dataNftCount);
-    expect(proxyArtifact.stateLayout!.variables
-      .map((variable) => `${variable.name}:${variable.nftIndex}.${variable.fieldIndex}`))
-      .toStrictEqual(implementationLayout.variables
-        .map((variable) => `${variable.name}:${variable.nftIndex}.${variable.fieldIndex}`));
-
-    // The proxy is the forwarder shape, and the implementation's entry touches a dynamic value without making a
-    // call of its own: the delegate hop is the proxy's body, so it is not the call the compiler refuses by name.
-    expect(proxyArtifact.composition?.convention).toBe('per-call');
-    expect(proxyArtifact.composition?.refusedEntries).toBeUndefined();
-    expect(implementationArtifact.composition?.refusedEntries).toBeUndefined();
-    expect(hubArtifact.composition?.refusedEntries).toBeUndefined();
-
-    // The hub publishes one call site per append, so the proxy and the implementation each run one master per call.
-    const hub = (hubArtifact.composition as {
-      stopSites: { entries: { functionName: string; sites: { kind: string }[] }[] };
-    }).stopSites.entries.find((entry) => entry.functionName === entryName(hubArtifact.contractName, 'go'))!;
-    expect(hub.sites.sites.filter((site) => site.kind === 'call')).toHaveLength(APPEND_COUNT);
-  });
-
   it('settles the repeated append: a delegate frame per entry, accepted at every contract input', () => {
-    const built = build();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledUserEntered();
     // Each root's delegate callee completes before the root that forwarded to it, once per entry, in root order.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       ...Array.from({ length: APPEND_COUNT }, (_unused, turn) => [
@@ -670,8 +664,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('carries the run across frames: each delegate frame reads what the frame before it wrote', () => {
-    const built = build();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledUserEntered();
     for (let turn = 1; turn <= APPEND_COUNT; turn += 1) {
       const impl = outcome.draft.blockOf(implMasterId(turn));
       expect(bytesToHex(impl.segments[0]![0]!.viewIn)).toBe(bytesToHex(built.headers[turn - 1]!));
@@ -693,8 +686,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('writes the run the appends computed: the header, every chunk and every event read back', () => {
-    const built = build();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledUserEntered();
     const transaction = outcome.transaction;
     const final = built.stages[APPEND_COUNT]!;
 
@@ -753,8 +745,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('settles the hub-entered appends: the fallback receives the forwarded call data, then delegates', () => {
-    const built = buildHubCall();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledHubEntered();
     // Each append's delegate frame completes before the proxy fallback that forwarded to it, in call order, and
     // the hub that drove them all completes last.
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
@@ -785,8 +776,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('binds the hub\'s call: the proxy frame runs on the call data the hub handed it', () => {
-    const built = buildHubCall();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledHubEntered();
     const layout = outcome.draft.layout;
     const hub = outcome.draft.blockOf(HUB_MASTER);
     // One typed call per append, each reaching the proxy input at its own place in the layout, and each record
@@ -816,8 +806,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('carries the run across frames: each delegate frame reads what the frame before it wrote', () => {
-    const built = buildHubCall();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledHubEntered();
     for (let turn = 1; turn <= APPEND_COUNT; turn += 1) {
       const impl = outcome.draft.blockOf(implMasterId(turn));
       expect(bytesToHex(impl.segments[0]![0]!.viewIn)).toBe(bytesToHex(built.headers[turn - 1]!));
@@ -837,8 +826,7 @@ describe('an appender entered through a proxy\'s fallback more than once', () =>
   });
 
   it('writes the run the hub-called appends computed: the header, every chunk and every event read back', () => {
-    const built = buildHubCall();
-    const outcome = settleOutcome(built);
+    const { built, outcome } = settledHubEntered();
     const transaction = outcome.transaction;
     const final = built.stages[APPEND_COUNT]!;
 

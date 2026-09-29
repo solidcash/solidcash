@@ -211,6 +211,17 @@ function settle(built: Built): ReturnType<typeof composeAndDerive> {
   return composeAndDerive(built.plan, [built.artifacts.Proxy!, built.artifacts.Impl!, built.artifacts.Ping!], [ROOT]);
 }
 
+let honest: { readonly built: Built; readonly outcome: ReturnType<typeof composeAndDerive> } | undefined;
+
+/** The honest shape, built and settled once: the cases that read it change nothing in it. */
+function settledHonest(): { readonly built: Built; readonly outcome: ReturnType<typeof composeAndDerive> } {
+  if (honest === undefined) {
+    const built = build();
+    honest = { built, outcome: settle(built) };
+  }
+  return honest;
+}
+
 /**
  * The machine's verdict on one participant of a settled composition, with the record's output commitment replaced.
  *
@@ -252,21 +263,21 @@ function verdictOf(
 
 describe('a proxied entry that writes state and calls another contract', () => {
   it('settles end to end, accepted at every contract input', () => {
-    const outcome = settle(build());
+    const { outcome } = settledHonest();
     const rejected = outcome.verdicts.filter((verdict) => !verdict.accepted)
       .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
     expect(rejected).toStrictEqual([]);
   });
 
   it('derives the callee before the implementation and the implementation before the proxy', () => {
-    const outcome = settle(build());
+    const { outcome } = settledHonest();
     expect(outcome.completed.map((frame) => frame.functionName)).toStrictEqual([
       entryName('Ping', 'ping'), entryName('Impl', 'bump'), entryName('Proxy', '__fallback'),
     ]);
   });
 
   it('carries the proxy master, the implementation master, the ping master, the validator and the record', () => {
-    const outcome = settle(build());
+    const { outcome } = settledHonest();
     const verdicts = new Map(outcome.verdicts.map((verdict) => [verdict.participant, verdict]));
     const accepted = [...verdicts.entries()]
       .filter(([, verdict]) => verdict.accepted)
@@ -278,8 +289,7 @@ describe('a proxied entry that writes state and calls another contract', () => {
   });
 
   it('records the write: every frame\'s declared view equals what the transaction carries', () => {
-    const built = build();
-    const outcome = settle(built);
+    const { built, outcome } = settledHonest();
     const recordIndex = participant(outcome.draft.layout, RECORD_ID).index;
     const spent = new Uint8Array(outcome.draft.programFor(PROXY_MASTER).sourceOutputs[recordIndex]!.token!.nft!.commitment);
     const written = new Uint8Array(outcome.transaction.outputs[recordIndex]!.token!.nft!.commitment);
@@ -301,7 +311,7 @@ describe('a proxied entry that writes state and calls another contract', () => {
   });
 
   it('binds the implementation\'s call: the ping master runs the selector the implementation forwarded', () => {
-    const outcome = settle(build());
+    const { outcome } = settledHonest();
     const implCall = outcome.draft.blockOf(IMPL_MASTER).calls[0]!;
     expect(implCall.kind).toBe(FrameKind.CALL);
     expect(implCall.target).toStrictEqual(seededAddress(PING_LABEL));
@@ -314,8 +324,7 @@ describe('a proxied entry that writes state and calls another contract', () => {
 
 describe('the proxied entry\'s refusals', () => {
   it('refuses a record output that dropped the field the write did not compute', () => {
-    const built = build();
-    const outcome = settle(built);
+    const { built, outcome } = settledHonest();
     // The commitment a write that rebuilt from the implementation's own written field alone would leave, without
     // the proxy's `implementation` field: the same programs and witnesses, with only the record's output changed.
     const withoutImplementation = new Uint8Array(Buffer.from(
@@ -329,13 +338,13 @@ describe('the proxied entry\'s refusals', () => {
   });
 
   it('refuses a frame whose declaration does not chain from the frame before it', () => {
-    const chained = build();
+    const chained = settledHonest();
     // The proxy's post-call segment keeps the read view rather than the implementation's write, and the output
     // carries it, so every frame's own declarations hold and only the chain between them breaks. The same composition
     // with the written view chains, so the refusal is the one declaration changed.
-    const broken = build({ proxyAfter: chained.before });
-    expect(bytesToHex(broken.before)).toBe(bytesToHex(chained.before));
-    expect(settle(chained).verdicts.find((verdict) => verdict.participant === VALIDATOR_ID)!.accepted).toBe(true);
+    const broken = build({ proxyAfter: chained.built.before });
+    expect(bytesToHex(broken.before)).toBe(bytesToHex(chained.built.before));
+    expect(chained.outcome.verdicts.find((verdict) => verdict.participant === VALIDATOR_ID)!.accepted).toBe(true);
     expect(VALIDATOR_PROGRAM_REASONS).toContain('V7_CHAIN_BROKEN');
     const outcome = settle(broken);
     const validatorVerdict = outcome.verdicts.find((verdict) => verdict.participant === VALIDATOR_ID)!;

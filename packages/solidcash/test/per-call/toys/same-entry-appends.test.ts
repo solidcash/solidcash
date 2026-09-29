@@ -483,11 +483,11 @@ describe('one entry appending to one log three times', () => {
   it('refuses a run whose declared close is not the one the frame computed', () => {
     // The control for the accept above: the body computes the run its append writes and closes the segment
     // against the view the segment declares, so a declaration rewritten to a value no frame computed is refused.
-    const single = build([7n], [10n]);
+    const three = build([7n], APPENDS.map((append) => append.item));
     const { host, draft } = createComposedDerivationHost({
       vm: compositionMachine(),
-      artifacts: [single.artifacts.Hub!, single.artifacts.Log!],
-      plan: single.plan,
+      artifacts: [three.artifacts.Hub!, three.artifacts.Log!],
+      plan: three.plan,
     });
     deriveDepthFirst(rootOf('Hub', 'go', 'hub-1'), host);
 

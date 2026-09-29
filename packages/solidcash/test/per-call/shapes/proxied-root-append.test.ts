@@ -494,10 +494,23 @@ function refused(outcome: ReturnType<typeof composeAndDerive>): string[] {
     .map((verdict) => `${verdict.participant}: ${verdict.objection ?? 'accepted'}`);
 }
 
+interface SettledAppend {
+  readonly built: AppendBuild;
+  readonly outcome: ReturnType<typeof composeAndDerive>;
+}
+let appended: SettledAppend | undefined;
+/** The default append composition, derived once: the cases below only read it. */
+function settledAppend(): SettledAppend {
+  if (appended === undefined) {
+    const built = buildAppend();
+    appended = { built, outcome: composeAndDerive(built.plan, built.artifacts, [built.root]) };
+  }
+  return appended;
+}
+
 describe('a proxied root appending through one store behind its proxy', () => {
   it('settles the record write and both appends: every contract input is accepted', () => {
-    const built = buildAppend();
-    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    const { built, outcome } = settledAppend();
 
     expect(refused(outcome)).toStrictEqual([]);
     // Each store entry completes before the store proxy fallback that delegated to it, in call order; the root
@@ -515,8 +528,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
   });
 
   it('reaches the store as a delegate frame on the store proxy\'s record, entered by a call frame', () => {
-    const built = buildAppend();
-    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    const { outcome } = settledAppend();
     const layout = outcome.draft.layout;
 
     // The store proxy's fallback runs a call frame entered by the root implementation's own frame, so its sender is
@@ -539,8 +551,7 @@ describe('a proxied root appending through one store behind its proxy', () => {
   });
 
   it('writes the root record, the store header, the chunk and both events through the shipped encoders', () => {
-    const built = buildAppend();
-    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
+    const { built, outcome } = settledAppend();
     const outputs = outcome.transaction.outputs;
 
     // The root proxy's record commitment is what the shipped encoder materializes for the value the entry computed.
@@ -590,17 +601,8 @@ describe('a proxied root appending through one store behind its proxy', () => {
 });
 
 describe('the store\'s caller check through its proxy', () => {
-  it('settles when the store\'s delegate frame carries the root proxy\'s address as its sender', () => {
-    // The check is the store program's own `require(msg.sender == ...)`, and the store reads it from the delegate
-    // frame's sender. The accepted composition is the evidence that frame carries the root proxy's address.
-    const built = buildAppend();
-    const outcome = composeAndDerive(built.plan, built.artifacts, [built.root]);
-    expect(refused(outcome)).toStrictEqual([]);
-    expect(outcome.verdicts.filter((verdict) => verdict.participant === STORE_IMPL_MASTERS[0]!)[0]?.accepted)
-      .toBe(true);
-  });
-
   it('refuses a control whose store frames are told a different sender, and the machine objects', () => {
+    // The accepted run is the settle above, whose store frames carry the root proxy's address.
     // The store's sender is the frame the delegate runs with, so a plan that writes another address into that
     // frame makes the body's own check fail. The machine's objection on the store's input is asserted beside the
     // derivation stalling there.

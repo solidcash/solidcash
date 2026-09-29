@@ -9,9 +9,9 @@ import type { CompositionDraftPlan, DraftMaster } from '../../../src/per-call/co
 /**
  * A callee that authorizes its caller from the frame it was reached in.
  *
- * `msg.sender` is the caller master's address and `tx.origin` is the root user's lock, both carried in the callee's
- * witness block rather than read from the transaction's own inputs. Each guard is asserted on its own, so an
- * accepted spend is the composer's frame reaching that callee check.
+ * `msg.sender` is the caller master's address, carried in the callee's witness block rather than read from the
+ * transaction's own inputs, so an accepted spend is the composer's frame reaching that callee check. The `tx.origin`
+ * guard across the same hop is `toys/identity.test.ts`'s.
  */
 
 const CALLER_ADDRESS = seededAddress('nested authority caller');
@@ -79,11 +79,6 @@ function objections(outcome: ReturnType<typeof composeAndDerive>): string[] {
 }
 
 describe('authorization read from the frame a call produced', () => {
-  it('settles a callee whose entry guards on tx.origin against the root user', () => {
-    const outcome = settleGuard(`require(tx.origin == 0x${hexOf(USER_LOCK)});`);
-    expect(objections(outcome)).toStrictEqual([]);
-  });
-
   it('settles a callee whose entry guards on msg.sender against its caller', () => {
     const outcome = settleGuard(`require(msg.sender == 0x${hexOf(CALLER_ADDRESS)});`);
     expect(objections(outcome)).toStrictEqual([]);

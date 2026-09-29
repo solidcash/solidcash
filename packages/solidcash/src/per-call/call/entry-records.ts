@@ -140,6 +140,9 @@ interface CallMappingBatch {
   readonly utxoBySlot: ReadonlyMap<string, Utxo>;
 }
 
+/** The expression labels an artifact publishes for the frame's own caller. */
+const CALLER_KEY_LABELS = new Set(['nullop:msg.sender', 'sender:msg.sender', 'call:_msgSender()', 'nullop:tx.origin']);
+
 /** Resolves one access's key(s) from the call's own arguments, its sender, or a compile-time expression. */
 function resolveKeys(
   request: CallEntryRecordsRequest,
@@ -153,6 +156,9 @@ function resolveKeys(
     const source = access.keySources?.[index];
     if (source?.kind === 'msgSender') return request.callerLockingBytecode;
     const label = source?.expressionLabel ?? source?.paramName ?? access.keyParams[index];
+    // An artifact may publish the caller as an expression label rather than as a source kind. A root frame's
+    // sender and its transaction origin are the same user, which is the coin the call spends.
+    if (label !== undefined && CALLER_KEY_LABELS.has(label)) return request.callerLockingBytecode;
     const evaluated = evalComputedKey(label, args, visible, undefined, undefined);
     if (evaluated !== undefined) return evaluated;
     const byName = encodedArgument(fn, args, label ?? '', structs);

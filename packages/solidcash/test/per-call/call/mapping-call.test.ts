@@ -206,4 +206,51 @@ describe('calling an entry that writes a mapping on a deployed per-call contract
       funder: signature.unlockP2PKH(), vm: compositionMachine(),
     })).rejects.toThrow(/reads a mapping key outside the write batch/);
   });
+
+  it('resolves a caller-keyed write the artifact publishes as an expression label', async () => {
+    // The Solidity front end publishes a caller's own key as an expression label for some shapes — an
+    // internal-call chain that substitutes the caller for a parameter, which the token contract in the harness
+    // does. The front end that produces the form is not reproducible from a short source here, so the case takes
+    // the published form itself: the same compiled artifact, with the key source rewritten to the label the
+    // harness artifact carries, driven through the whole shipped call path.
+    const source = 'pragma solidcash ^0.13.0;'
+      + ' contract Ledger {'
+      + '   mapping(address => uint) balances;'
+      + '   constructor(address owner) { this.balances[owner] = 1; }'
+      + '   function deposit(uint amount) returns (uint) {'
+      + '     this.balances[msg.sender] = this.balances[msg.sender] + amount;'
+      + '     return this.balances[msg.sender];'
+      + '   }'
+      + ' }';
+    const artifact = compileStringMulti(source, { composition: 'per-call' }).Ledger!;
+    const depositAbi = artifact.abi.find((candidate) => candidate.name === 'deposit')!;
+    expect(depositAbi.entryAccesses?.[0]?.keySources?.[0]).toStrictEqual({ kind: 'msgSender', senderOp: 'msg.sender' });
+    depositAbi.entryAccesses![0]!.keySources = [{ kind: 'expression', expressionLabel: 'nullop:msg.sender' }];
+
+    const provider = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
+    const signature = new SignatureTemplate(alicePriv);
+    const funder = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const fundingUtxo = { txid: CATEGORY_HEX, vout: 0, satoshis: 500_000n };
+    await provider.addUtxo(funder.address, fundingUtxo);
+    const deployment = await deployStatefulContract(artifact, [SEED_LOCK], {
+      provider, fundingUtxo, funder: funder.unlock.spend(alicePub, signature), changeAddress: funder.address,
+    });
+    const callerLock = encodeLockingBytecodeP2pkh(alicePkh);
+    const callerUtxo = { txid: CALLER_TXID, vout: 0, satoshis: 200_000n };
+    await provider.addUtxo(binToHex(callerLock), callerUtxo);
+
+    const result = await callPerCallEntry({
+      provider, artifact, categoryId: deployment.categoryId, functionName: 'deposit',
+      args: [5n], callerUtxo, callerLockingBytecode: callerLock,
+      funder: signature.unlockP2PKH(), vm: compositionMachine(),
+    });
+
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    // The node the write creates carries the caller's own key, which is the label the resolver had to read.
+    const created = nodeOutput(result, result.draft.trailingOutputs[0]!.index);
+    expect(bytesToHex(decodeEntryCommitment(created).slot)).toBe(bytesToHex(keyToSlotMulti([keyOf(callerLock)])));
+    // The caller held nothing, so the entry's own body computed the amount it deposited.
+    expect(result.values).toStrictEqual([5n]);
+  });
 });

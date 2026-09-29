@@ -229,12 +229,14 @@ describe('receive(), compiled per-call', () => {
     })).toStrictEqual({ accepted: true });
   });
 
-  it('takes no value when another master of its contract shares the transaction', () => {
+  it('leaves the value to the validator when another master of its contract shares the transaction', () => {
     const alone = { source: RECEIVE_SOURCE, containersOut: [AMOUNT], validator: { secondMaster: false } };
     expect(verdict({ ...alone, value: AMOUNT })).toStrictEqual({ accepted: true });
+    expect(verdict({ ...alone, value: AMOUNT, containersOut: [] }).accepted).toBe(false);
+    // Shared, the frame is weighed with every other frame of its contract by the validator (V7), not by itself.
     const shared = { ...alone, validator: { secondMaster: true } };
-    expect(verdict({ ...shared, value: AMOUNT }).accepted).toBe(false);
-    expect(verdict({ ...shared, value: 0n })).toStrictEqual({ accepted: true });
+    expect(verdict({ ...shared, value: AMOUNT })).toStrictEqual({ accepted: true });
+    expect(verdict({ ...shared, value: AMOUNT, containersOut: [] })).toStrictEqual({ accepted: true });
   });
 });
 

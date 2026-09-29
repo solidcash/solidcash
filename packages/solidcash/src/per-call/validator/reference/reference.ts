@@ -12,9 +12,11 @@
  *     hash, not the placement);
  *   - a record touched before it exists carries `in = 0xFFFF` in every frame, so the settlement input set is exactly
  *     the pre-existing state UTXOs the frames' views name (sections 16 and 20);
- *   - a container output (a payment into a contract) is outside the transaction shape here, so the census allows
- *     mutable NFTs only at view-listed records and at validator recreations.
+ *   - a container is a tokenless output at a contract's container lock, so the census allows mutable NFTs only at
+ *     view-listed records and at validator recreations, and the value rule weighs containers by their lock.
  */
+
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 
 import {
   ARGS_HASH_LENGTH,
@@ -28,9 +30,11 @@ import {
   argsHash,
   assertFrameKind,
   assertRecordEntry,
+  buildSatoshiContainerCovenantScript,
   bytesEqual,
   decodeTranscript,
   entryLeavesCommitmentUnchanged,
+  scriptToBytecode,
   selfIsCodeConstant,
   splitFirstPush,
   validatorAddress,
@@ -390,6 +394,30 @@ class ReferenceRun {
     this.checkCensus(category, chains);
     this.checkChains(category, chains);
     this.checkValues(category, chains);
+    this.checkContractValue(category);
+  }
+
+  /**
+   * Spec 4b's conservation, per contract: its containers grow by at least what its frames bring in from outside its
+   * context less what they pay, and no output is one two of its frames both send to.
+   */
+  private checkContractValue(category: Uint8Array): void {
+    const lock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(category))));
+    let net = 0n;
+    for (const output of this.transaction.outputs) if (eq(output.lockingBytecode, lock)) net += output.value;
+    for (const input of this.transaction.inputs) if (eq(input.lockingBytecode, lock)) net -= input.value;
+    const sends = new Set<number>();
+    for (const master of this.framesFor(category)) {
+      const block = this.master(master);
+      if (block.kind !== FrameKind.DELEGATE && block.kind !== FrameKind.INTERNAL) net -= block.value;
+      for (const call of block.calls) net += call.value;
+      for (const send of block.sends) {
+        if (sends.has(send)) this.reject('V7', 'TWO_SENDS_SHARE_AN_OUTPUT', send);
+        sends.add(send);
+        net += outputByIndex(this.transaction, send)!.value;
+      }
+    }
+    if (net < 0n) this.reject('V7', 'A_CONTRACT_LOSES_VALUE_ITS_FRAMES_DO_NOT_PAY', this.context.validatorInputIndex);
   }
 
   private framesFor(category: Uint8Array): number[] {
@@ -515,13 +543,19 @@ class ReferenceRun {
   }
 
   checkV8(): void {
+    // A contract's masters are counted over the whole transaction: one that is not its category's only master leaves
+    // its records to a validator, whichever validator covers the others.
     const counts = new Map<string, number>();
-    for (const master of this.masters) {
-      const key = keyOf(this.ownCategory(master));
+    for (const input of this.transaction.inputs) {
+      if (!masterToken(input.token)) continue;
+      const key = keyOf(input.token.category);
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     const needed = new Set<string>();
-    for (const [key, count] of counts) if (count >= 2) needed.add(key);
+    for (const master of this.masters) {
+      const key = keyOf(this.ownCategory(master));
+      if ((counts.get(key) ?? 0) >= 2) needed.add(key);
+    }
     for (const master of this.masters) {
       const kind = this.master(master).kind;
       if (kind === FrameKind.DELEGATE || kind === FrameKind.INTERNAL) needed.add(keyOf(this.contextOf(master)));

@@ -52,7 +52,7 @@ import {
   type MasterCallSite,
   type MasterTailShape,
 } from './frame-tail.js';
-import { callValuesScript, containerGrowthScript, selfContainerLockScript } from './value.js';
+import { callValuesScript, containerGrowthScript, containerLockScript } from './value.js';
 
 const INDEX_NONE_BYTES = new Uint8Array([0xff, 0xff]); // u16 sentinel used by the frozen witness-block codec
 
@@ -607,8 +607,12 @@ class HeadEmitter {
     this.emitSingleMasterCheck();
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
-    // A standalone frame is its contract's only master, so it settles its value alone.
-    if (this.handlesValue) this.pushAlone(true);
+    // A standalone frame is its contract's only master, so it settles its value alone, from its own containers.
+    if (this.handlesValue) {
+      this.pushAlone(true);
+      this.emitInputIndex();
+      this.replaceTop('contextOwner');
+    }
   }
 
   /**
@@ -626,17 +630,22 @@ class HeadEmitter {
       eventOwnerBelowTail: true,
     }));
     this.forget('rest');
-    this.dropTailCategoryOwner();
+    // A frame that handles value keeps whose containers it pays from: the owner of the records it runs on.
+    if (this.handlesValue) this.replaceTop('contextOwner');
+    else this.dropTailCategoryOwner();
     this.assertCallerIsNotSelf();
     this.computeOrigin();
     this.assertSelfAddressForCodeConstantKinds();
     this.branchOnFrameKind();
     if (!this.handlesValue) this.assertZeroValue();
     this.branchOnValidatorNeed();
-    // Whether the frame settles alone is parked while the frame values are reordered, then left above them.
+    // Whether the frame settles alone, and whose containers it pays from, are parked while the frame values are
+    // reordered, then left above them.
     if (this.handlesValue) {
-      this.emitOp(Opcodes.OP_TOALTSTACK);
-      this.pop(1);
+      this.pick('contextOwner');
+      this.dropName('contextOwner');
+      this.emitOp(Opcodes.OP_TOALTSTACK, Opcodes.OP_TOALTSTACK);
+      this.pop(2);
     }
     this.dropName('kind');
     this.dropName('callerRef');
@@ -647,8 +656,8 @@ class HeadEmitter {
     this.stack.length = 0;
     this.stack.push('origin', 'sender', 'value', 'self');
     if (this.handlesValue) {
-      this.emitOp(Opcodes.OP_FROMALTSTACK);
-      this.push('alone');
+      this.emitOp(Opcodes.OP_FROMALTSTACK, Opcodes.OP_FROMALTSTACK);
+      this.push('alone', 'contextOwner');
     }
   }
 
@@ -901,12 +910,13 @@ class HeadEmitter {
   /**
    * The frame's value against the master's own containers (spec 4b), with the send region on the stack.
    *
-   * The value is non-negative, and zero unless some body is payable. A frame that settles alone may receive value
-   * and pay from the containers: their growth plus what its sends and its calls pay covers the value. A frame that
-   * does not takes no value and lists no send, since the validator does not account for containers yet. The output
-   * before the first send is one of the master's containers and the sends follow it in a run, so the sends of two
-   * contracts' frames never overlap and no output is counted twice. A master that sends may pay a contract through a
-   * call into its `receive()`, whose record carries the value. Consumes the settle-alone flag.
+   * The value is non-negative, and zero unless some body is payable. A frame that settles alone receives value and
+   * pays from its contract's containers: their growth plus what its sends and its calls pay covers the value. A frame
+   * that does not is weighed by the validator with every other frame of its context (V7). Either way the output
+   * before the first send is a container of the contract whose records the frame runs on, the caller's for a
+   * delegate frame, and the sends follow it in a run, so two contracts' sends never overlap. A master that sends may
+   * pay a contract through a call into its `receive()`, whose record carries the value. Consumes the settle-alone
+   * flag and the records' owner.
    */
   private valueChecks(): void {
     const sends = this.tailShape.sendCount;
@@ -918,23 +928,12 @@ class HeadEmitter {
       this.emit0();
       this.numequalVerify();
     }
-    this.emitBranch(
-      () => {
-        this.pick('alone');
-        this.emitOp(Opcodes.OP_NOT);
-      },
-      () => {
-        if (this.acceptsValue) this.assertZeroValue();
-        if (sends > 0) {
-          this.pick(sendCountSlotName());
-          this.emit0();
-          this.numequalVerify();
-        }
-      },
-      () => {},
-    );
-    this.emitBytes(new Uint8Array(selfContainerLockScript()));
-    this.push('lock');
+    this.pick('contextOwner');
+    this.emitBytes(new Uint8Array([
+      Opcodes.OP_UTXOTOKENCATEGORY, ...encodeDataPush(new Uint8Array([32])), Opcodes.OP_SPLIT, Opcodes.OP_DROP,
+      ...containerLockScript(),
+    ]));
+    this.replaceTop('lock');
     if (sends > 0) {
       this.emitBranch(
         () => this.sendListedAt(0),
@@ -959,27 +958,37 @@ class HeadEmitter {
         );
       }
     }
-    this.emitBytes(new Uint8Array(containerGrowthScript()));
-    this.replaceTop('net');
-    if (sends > 0) {
-      this.emitBytes(new Uint8Array(callValuesScript()));
-      this.emitOp(Opcodes.OP_ADD);
-    }
-    for (let position = 0; position < sends; position += 1) {
-      this.emitBranch(
-        () => this.sendListedAt(position),
-        () => {
-          this.pick(sendOutputSlotName(position));
-          this.emitOp(Opcodes.OP_OUTPUTVALUE, Opcodes.OP_ADD);
-          this.pop(1);
-        },
-        () => {},
-      );
-    }
-    this.pick('value');
-    this.emitOp(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
-    this.pop(2);
+    this.emitBranch(
+      () => this.pick('alone'),
+      () => {
+        this.emitBytes(new Uint8Array(containerGrowthScript()));
+        this.replaceTop('net');
+        if (sends > 0) {
+          this.emitBytes(new Uint8Array(callValuesScript()));
+          this.emitOp(Opcodes.OP_ADD);
+        }
+        for (let position = 0; position < sends; position += 1) {
+          this.emitBranch(
+            () => this.sendListedAt(position),
+            () => {
+              this.pick(sendOutputSlotName(position));
+              this.emitOp(Opcodes.OP_OUTPUTVALUE, Opcodes.OP_ADD);
+              this.pop(1);
+            },
+            () => {},
+          );
+        }
+        this.pick('value');
+        this.emitOp(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_VERIFY);
+        this.pop(2);
+      },
+      () => {
+        this.emitOp(Opcodes.OP_DROP);
+        this.pop(1);
+      },
+    );
     this.dropName('alone');
+    this.dropName('contextOwner');
   }
 
   /** Pushes whether the block lists a send at `position`. */

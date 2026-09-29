@@ -6,14 +6,17 @@
  * re-validating them.
  */
 
+import { encodeLockingBytecodeP2sh32, hash256 } from '@bitauth/libauth';
 import {
   FrameKind,
   INDEX_NONE,
   TokenCapability,
   argsHash,
+  buildSatoshiContainerCovenantScript,
   bytesEqual,
   entryLeavesCommitmentUnchanged,
   frameKindName,
+  scriptToBytecode,
   selfIsCodeConstant,
   validatorAddress,
   type RecordEntry,
@@ -482,6 +485,40 @@ function checkSettlement(state: DerivationState, settled: SettledContract): void
 
   checkCensus(state, category, eventOutputs);
   checkRecordValues(state, category, groups);
+  checkContractValue(state, category);
+}
+
+/**
+ * V7's value rule (spec 4b): the contract's containers grow by at least what its frames receive from outside its
+ * context less what they pay, and no two of its frames list the same send.
+ *
+ * A frame that borrows its caller's records passes its caller's value through, so only the others bring value in;
+ * what a frame pays is the value of its call records and of its listed sends.
+ */
+function checkContractValue(state: DerivationState, category: Uint8Array): void {
+  const lock = encodeLockingBytecodeP2sh32(hash256(scriptToBytecode(buildSatoshiContainerCovenantScript(category))));
+  let net = 0n;
+  for (const output of state.transaction.outputs) {
+    if (bytesEqual(output.lockingBytecode, lock)) net += output.value;
+  }
+  for (const input of state.transaction.inputs) {
+    if (bytesEqual(input.lockingBytecode, lock)) net -= input.value;
+  }
+  const sends = new Set<number>();
+  for (const master of state.masterSet) {
+    if (!sameCategory(contextCategory(state, master), category)) continue;
+    const block = blockOf(state, master);
+    if (block.kind !== FrameKind.DELEGATE && block.kind !== FrameKind.INTERNAL) net -= block.value;
+    for (const call of block.calls) net += call.value;
+    for (const send of block.sends) {
+      if (sends.has(send)) check('V7', 'V7_SEND_OUTPUT_SHARED', send);
+      sends.add(send);
+      const output = outputAt(state.transaction, send);
+      if (output === undefined) check('V7', 'V7_SEND_OUTPUT_OUT_OF_RANGE', send);
+      net += output!.value;
+    }
+  }
+  if (net < 0n) check('V7', 'V7_VALUE_NOT_CONSERVED', state.validatorIndex);
 }
 
 /** The census: where each category's minting, mutable and immutable NFTs may appear. */

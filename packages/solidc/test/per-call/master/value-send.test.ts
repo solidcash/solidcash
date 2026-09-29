@@ -191,12 +191,15 @@ describe('a send paid from the contract\'s containers, compiled per-call', () =>
     expect(pay({ trailing: [payment(40_000n), payment(AMOUNT)] }).accepted).toBe(false);
   });
 
-  it('lists no send when another master of the contract shares the transaction', () => {
+  it('leaves the value to the validator when another master of the contract shares the transaction', () => {
     const covered = (secondMaster: boolean): Partial<Spend> => ({
       validator: { secondMaster }, sends: [secondMaster ? 5 : 4],
     });
     expect(pay(covered(false))).toStrictEqual({ accepted: true });
-    expect(pay(covered(true)).accepted).toBe(false);
+    expect(pay(covered(true))).toStrictEqual({ accepted: true });
+    // Shared, the containers are weighed by the validator (V7), but the send still follows one of them.
+    expect(pay({ ...covered(true), trailing: [container(30_000n), payment(AMOUNT)] })).toStrictEqual({ accepted: true });
+    expect(pay({ ...covered(true), trailing: [payment(40_000n), payment(AMOUNT)] }).accepted).toBe(false);
   });
 });
 

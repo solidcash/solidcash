@@ -537,19 +537,22 @@ A contract's BCH follows the EVM's account model: a contract has a balance, valu
   - The rule is checked per transaction, where the EVM checks each send against the balance at that moment: a
     contract may pay out value it receives later in the same transaction. This is one departure; the order of a
     value call (Sending) is the other.
-- **What the master checks today.** A master that receives or pays value holds a frame that settles alone against
-  its own containers: their growth plus what the frame's listed sends and the records of its calls pay covers the
-  value the frame receives, so the contract pays its sends and its value calls from them. A frame whose master
-  does not settle alone, or a `STATIC` or `DELEGATE` frame, takes no value and lists no send until V7 accounts for
-  containers. A master with no payable body requires every frame's value to be zero. A value send's call binds its
-  record's `value` to the amount; any other call site requires it to be zero.
+- **What the master checks today.** A frame that settles alone is weighed by its own master: the growth of its
+  contract's containers plus what the frame's listed sends and the records of its calls pay covers the value the
+  frame receives, so the contract pays its sends and its value calls from them. A frame that does not settle alone
+  is weighed with every other frame of its context by the validator that settles the contract (V7); its master
+  checks only that its sends follow a container of that contract, the caller's for a `DELEGATE` frame, which passes
+  its caller's value through and pays from the caller's containers. A `STATIC` frame takes no value and sends
+  nothing (V10). A master with no payable body requires every frame's value to be zero. A value send's call binds
+  its record's `value` to the amount; any other call site requires it to be zero.
 - **A send's payer.** A listed send is an output index, so on its own nothing ties it to the frame that pays it:
   two frames could list one output and both count it, and two purchases from one seller would pay the seller once.
   A frame's sends therefore follow one of its own contract's containers, in a run: the output before the first send
-  is at the container lock of the master's category, and each later send is the next output. Two contracts' runs
-  never overlap, since the output before one run would have to be the other's send or the other's container, and
-  two frames of one contract do not settle alone, so they list no send. A covenant outside this convention that
-  counts an output by its position alone can still count one of these sends; that attribution is its own.
+  is at the container lock of the contract whose records the frame runs on, and each later send is the next
+  output. Two contracts' runs never overlap, since the output before one run would have to be the other's send or
+  the other's container, and the validator requires the sends of one contract's frames to be distinct outputs (V7).
+  A covenant outside this convention that counts an output by its position alone can still count one of these
+  sends; that attribution is its own.
 - **A send on a branch** is made only when its branch runs; otherwise it lists no output and makes no call. The
   block lists exactly the sends made, in the order the body made them, and the call records exactly the value calls
   made. A composer cannot tell ahead of the run which branches run, so the SDK plans every send the entry can make
@@ -837,7 +840,10 @@ Conversely, every covered master that is not a root appears in exactly one calle
   the index must be one a segment's declaration writes (or a recreated `catX` validator's), a capability byte of
   minting means recreated in place, and a bare 32-byte value is an immutable NFT under S2's exclusion of fungible
   amounts, so its index must be one a frame in X's context lists as an event;
-- **values** as in S4.
+- **values** as in S4: every record keeps its value less the sends of the frame that writes it, no two frames in
+  X's context list the same send, and `growth(X) >= in(X) - out(X)` (4b), where `in(X)` is the value of the frames
+  in X's context that are not `DELEGATE` or `INTERNAL`, and `out(X)` is the value of their call records and their
+  listed sends.
 
 **V8.** A contract is in `M.settles` if one of its masters is covered and it has another master anywhere in the
 transaction, or if a covered `DELEGATE` or `INTERNAL` frame runs on its records. Otherwise it is not, and its single

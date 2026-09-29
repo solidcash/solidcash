@@ -29,6 +29,7 @@ import {
   unsignedLength,
 } from '../master/witness-reader.js';
 import { countMastersScript } from '../master/frame-tail.js';
+import { containerGrowthScript, containerLockScript } from '../master/value.js';
 import { addressCheckScript, addressFromPinScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
@@ -155,6 +156,8 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_CHAIN_BROKEN',
   'V7_CHAIN_MIDDLE_DELETE',
   'V7_RECORD_VALUE_DECREASED',
+  'V7_SEND_OUTPUT_SHARED',
+  'V7_VALUE_NOT_CONSERVED',
   'V8_SETTLE_REQUIRED_MISSING',
   'V11_SELF_NOT_CONTRACT_ADDRESS',
 ];
@@ -198,8 +201,9 @@ const ORDERED_VISIT_ID = 1;
  *     own-category output is an event a frame on that contract lists, every listed event names an output of the
  *     transaction, no two frames list the same one, every master of the contract is recreated by a master output at
  *     its own index, the record indices the frames read are exactly the state UTXOs the contract spends, every
- *     record's declarations chain in the depth-first order the call tree gives, and every record a frame writes
- *     keeps at least the value it came with, the frame's own sends included.
+ *     record's declarations chain in the depth-first order the call tree gives, every record a frame writes
+ *     keeps at least the value it came with, the frame's own sends included, no two frames list the same send, and
+ *     the contract's containers grow by at least what its frames receive less what they pay.
  */
 export function buildValidatorProgram(): Uint8Array {
   const e = new Emitter();
@@ -1397,14 +1401,145 @@ function emitOneSettleCensus(e: Emitter): void {
   emitCollectOwnRecordOutputs(e);
   emitRequireMutableOutputsListed(e);
   e.op(O.OP_FROMALTSTACK);
-  emitRequireEventsDistinct(e);
+  emitRequireIndicesDistinct(e);
   emitRequireOwnOutputsListed(e);
   e.op(O.OP_DROP);
   emitRequireMastersRecreated(e);
   emitRequireTouchedRecords(e);
   emitRequireRecordChains(e);
   emitRequireRecordValues(e);
+  emitCollectOwnSends(e);
+  emitRequireIndicesDistinct(e);
+  e.op(O.OP_DROP);
+  emitRequireContractValue(e);
   e.op(O.OP_DROP, O.OP_DROP);
+}
+
+/**
+ * Every send a frame on the contract under inspection lists, as raw two-byte indices.
+ *
+ * Entry `[M, settleCount, after, created, X]`, exit `[.., X, sends]`. Gathered as the events are, so the same
+ * distinctness rule weighs them: an output two frames both list would be paid for once and counted twice.
+ */
+function emitCollectOwnSends(e: Emitter): void {
+  const O = Opcodes;
+  e.count(4).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_0, O.OP_TOALTSTACK);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(3).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitAppendMasterSends(e);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/** The sends of the master under inspection, appended to the accumulator. Entry `[.., rest, index]`, exit `[.., rest]`. */
+function emitAppendMasterSends(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 10);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  dropFront(e, 8);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropCall);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropSegment);
+  dropIndexList(e);
+  takeUnsignedCount(e, 2);
+  e.op(O.OP_OVER, O.OP_DUP, O.OP_ADD, O.OP_SPLIT, O.OP_DROP, O.OP_NIP);
+  e.op(O.OP_FROMALTSTACK, O.OP_SWAP, O.OP_CAT, O.OP_TOALTSTACK);
+}
+
+/**
+ * V7's value rule (spec 4b): the contract's containers grow by at least what its frames receive less what they pay.
+ *
+ * Entry `[M, settleCount, after, created, X]`, exit the same. The growth is the value of the outputs at the
+ * contract's container lock less the inputs at it; every frame that runs in the contract's context then adds what
+ * it pays and takes away what it brings in, and the total must not be negative.
+ */
+function emitRequireContractValue(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP);
+  e.script(Uint8Array.from(containerLockScript()));
+  e.script(Uint8Array.from(containerGrowthScript()));
+  // `[.., X, total, masters]`.
+  e.count(5).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_BEGIN);
+  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP);
+  emitContextCategory(e);
+  e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
+  emitFrameNet(e);
+  e.op(O.OP_ROT, O.OP_ADD, O.OP_SWAP);
+  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
+  e.op(O.OP_ENDIF);
+  e.op(O.OP_SIZE);
+  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
+  e.op(O.OP_DROP);
+  e.count(0).op(O.OP_GREATERTHANOREQUAL, O.OP_VERIFY);
+}
+
+/**
+ * What one frame pays less what it brings in.
+ *
+ * Entry `[.., index]`, exit `[.., net]`. A frame that borrows its caller's records passes its caller's value
+ * through, so it brings nothing in; what a frame pays is the value of its call records and of its listed sends. The
+ * running total lives on the alternate stack while the block is walked.
+ */
+function emitFrameNet(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_INPUTBYTECODE);
+  emitSoftFirstPayload(e);
+  e.op(O.OP_VERIFY);
+  dropFront(e, 3);
+  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
+  e.unsignedByteOnTop();
+  e.op(O.OP_DUP).count(FrameKind.DELEGATE).op(O.OP_NUMEQUAL);
+  e.op(O.OP_SWAP).count(FrameKind.INTERNAL).op(O.OP_NUMEQUAL, O.OP_BOOLOR, O.OP_SWAP);
+  // `[.., borrowed, rest]`.
+  dropFront(e, 6);
+  dropLengthPrefixed(e, 2);
+  dropLengthPrefixed(e, 2);
+  e.count(8).op(O.OP_SPLIT, O.OP_SWAP, O.OP_BIN2NUM, O.OP_ROT);
+  e.op(O.OP_IF, O.OP_DROP, O.OP_0, O.OP_ENDIF);
+  e.op(O.OP_NEGATE, O.OP_TOALTSTACK);
+  dropLengthPrefixed(e, 4);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitAddCallValue);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, dropSegment);
+  dropIndexList(e);
+  takeUnsignedCount(e, 2);
+  loopCounted(e, emitSumSendValue);
+  e.op(O.OP_DROP, O.OP_FROMALTSTACK);
+}
+
+/** One call record: its value added to the frame's running total, which lives on the alternate stack. */
+function emitAddCallValue(e: Emitter): void {
+  const O = Opcodes;
+  dropFront(e, 1);
+  dropLengthPrefixed(e, 2);
+  e.count(8).op(O.OP_SPLIT, O.OP_SWAP, O.OP_BIN2NUM);
+  e.op(O.OP_FROMALTSTACK, O.OP_ADD, O.OP_TOALTSTACK);
+  dropFront(e, 34);
+  dropLengthPrefixed(e, 4);
 }
 
 /**
@@ -2261,12 +2396,12 @@ function emitRequireMasterRecreated(e: Emitter): void {
 }
 
 /**
- * No two frames on the contract list the same event output.
+ * No two frames on the contract list the same output, as an event or as a send.
  *
- * Entry `[.., events]`, exit the same. The listed indices are the raw two-byte fields a witness block writes; every
- * one of them has to appear exactly once in the gathered list, which is what a shared event output would break.
+ * Entry `[.., indices]`, exit the same. The listed indices are the raw two-byte fields a witness block writes; every
+ * one of them has to appear exactly once in the gathered list, which is what a shared output would break.
  */
-function emitRequireEventsDistinct(e: Emitter): void {
+function emitRequireIndicesDistinct(e: Emitter): void {
   const O = Opcodes;
   e.op(O.OP_DUP);
   e.op(O.OP_BEGIN);

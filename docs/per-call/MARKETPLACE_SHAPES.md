@@ -88,6 +88,18 @@ every contract input, with the machine's `OP_CHECKLOCKTIMEVERIFY` refusal at the
 the innermost frame, and a revert with a declared error carrying arguments, with the compiler's own warning that the
 arguments are not evaluated pinned beside it).
 
+Movement after the fixture's first rung (12/66), per the plan's Log: the hop's write planning now covers the shapes
+MS1-MS7 need from it — a struct value resolved from the entry's own arguments with its chunk run, a value built from
+fields of the entry's live node, one mapping entry deleted, and one element appended to a dynamic array (the
+deployment half; the call path still needs the live chunks handed to the hop). A returning entry through a hop whose
+forwarded call records the delegated result reports its value; the generated closure shape drops that result, so its
+returning entries stay refused by name — P22's long-write clauses and P19's chunk half move on the hop side. A hop now
+reports a refused write's own source reason, as a refused read already did (P27's surface, one layer up), and the
+fixture's initializer title is green on it. On the compiler side the two `__raw__` spellings and the verified-mapping
+write behind a call the source does not fix are pinned with the boundary beside them (P17), and the measurement that
+blocks them is recorded: the contract-wide inline-assembly admission rule refuses a whole contract whose assembly only
+one already-refused body reaches, so it is with the per-body rule rather than with the lowering.
+
 ## 3. Test mechanics the titles also need (not shapes)
 
 Strictly later block times and day jumps (E7), snapshots and reloads (E9), reverts from unfunded senders (E8),

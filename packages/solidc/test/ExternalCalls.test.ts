@@ -687,7 +687,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
       + ' (bool ok, bytes memory result) = target.call(payload); require(ok); return result; } }'
       + ' contract C { uint256 marker; function run(address target, uint256 value) public {'
       + ' Raw.call(target, abi.encodeCall(ITarget.approve, (address(this), value)));'
-      + ' this.marker = value; require(true); } }';
+      + ' this.marker = 1; require(true); } }';
     const artifact = compileString(src, {
       solidityImportCompat: true,
       messageBus: true,

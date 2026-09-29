@@ -1638,6 +1638,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private ecrecoverLoopActive: boolean = false;     // a dynamic ecrecover loop counter is live on the stack
   private functionMultiSiteDeploy: boolean = false; // 2+ sites w/ a conditional: function counters
   private graphConditionalDeployReachActive: boolean = false;
+  private graphRawPayloadEncodeDepth = 0;
 
   private functionDeploySites: Array<{
     node: InstantiationNode; conditional: boolean; spanOffset: number; spanWidth: number;
@@ -14877,7 +14878,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   isOpRoll(node: IdentifierNode): boolean {
-    return this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
+    return this.graphRawPayloadEncodeDepth === 0
+      && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 
   visitBoolLiteral(node: BoolLiteralNode): Node {
@@ -17365,18 +17367,35 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
+  private preserveCanonicalRawPayloadArguments(encode: () => void): void {
+    // A decoded raw graph edge authenticates these arguments AGAIN against the participant row. The source
+    // payload still has to be constructed, but its last-use marks predate graph verification: consuming an
+    // inlined argument here leaves that verifier with a dangling local. Keep the values until the row check.
+    const graphRawPayload = this.currentFunction.graphEmissionHandler
+      && this.externalCallSlots.some((slot) => slot.interfaceName === '__raw__'
+        && slot.rawSelector && slot.rawParameters !== undefined);
+    if (graphRawPayload) this.graphRawPayloadEncodeDepth += 1;
+    try {
+      encode();
+    } finally {
+      if (graphRawPayload) this.graphRawPayloadEncodeDepth -= 1;
+    }
+  }
+
   visitAbiEncodeWithSelector(node: AbiEncodeWithSelectorNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
     this.visit(node.selector);
-    if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
-      // EVM: the raw 4-byte selector followed by the standard encoding of the args.
-      this.emitEvmAbiEncode(node.parameters, locationData);
-      this.emit(Op.OP_CAT, locationData);
-      this.popFromStack(2);
-      this.pushToStack('(value)');
-    } else {
-      this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
-    }
+    this.preserveCanonicalRawPayloadArguments(() => {
+      if (this.compilerOptions.evmCompat || this.compilerOptions.solidityImportCompat) {
+        // EVM: the raw 4-byte selector followed by the standard encoding of the args.
+        this.emitEvmAbiEncode(node.parameters, locationData);
+        this.emit(Op.OP_CAT, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+      } else {
+        this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
+      }
+    });
     return node;
   }
 
@@ -17389,7 +17408,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       this.emit(node.computedSelector, locationData);
       this.pushToStack('(value)');
-      this.emitEvmAbiEncode(node.parameters, locationData);
+      this.preserveCanonicalRawPayloadArguments(() => this.emitEvmAbiEncode(node.parameters, locationData));
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
@@ -17413,7 +17432,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.popFromStack(2);
       this.pushToStack('(value)');
     }
-    this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
+    this.preserveCanonicalRawPayloadArguments(() => this.emitEncodeArgsAndCatSelector(node.parameters, locationData));
     return node;
   }
 
@@ -17423,13 +17442,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(value)');
     if (this.compilerOptions.evmCompat) {
       // EVM: keccak256(sig)[:4] selector ++ the standard head/tail arg encoding.
-      this.emitEvmAbiEncode(node.parameters, locationData);
+      this.preserveCanonicalRawPayloadArguments(() => this.emitEvmAbiEncode(node.parameters, locationData));
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(value)');
       return node;
     }
-    this.emitEncodeArgsAndCatSelector(node.parameters, locationData);
+    this.preserveCanonicalRawPayloadArguments(() => this.emitEncodeArgsAndCatSelector(node.parameters, locationData));
     return node;
   }
 

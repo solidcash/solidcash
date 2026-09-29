@@ -232,12 +232,12 @@ describe('msg.sender and tx.origin', () => {
       expect(categoryInput!.type).toBe('bytes32');
     });
 
-    it('matches an identity-anchor commitment by its SCID magic prefix', () => {
-      const artifact = compileString(SENDER_CHECKER);
-      expect(artifact.bytecode).toContain(
-        'OP_UTXOTOKENCOMMITMENT OP_4 OP_SPLIT OP_DROP 53434944 OP_EQUAL',
-      );
-      expect(artifact.bytecode).not.toContain('00000000 OP_CAT OP_4 OP_SPLIT OP_DROP 53434944');
+    it('validates the SCID v1 identity-anchor length and prefix in Solidity mode', () => {
+      const artifact = compileString(SENDER_CHECKER, { solidityImportCompat: true });
+      expect(artifact.abi.find((fn) => fn.name === 'checkSender')?.inputs.map((input) => input.name))
+        .toContain('__internal__msgSenderAnchorIdx');
+      // The function body is packed into an OP_DEFINE hex segment; inspect the exact opcode sequence there.
+      expect(artifact.bytecode.toLowerCase()).toContain('cf7682770128a26976557f7505534349440188');
     });
 
     it('should NOT include usesMsgSender for functions using only tx.origin', () => {
@@ -458,17 +458,11 @@ describe('msg.sender and tx.origin', () => {
     });
 
     it('should build a StatefulTransactionBuilder with A calling B', () => {
-      // _externalReturnOutputIdx: output index where B's return event NFT goes
-      // A master + A data + B master + B data = outputs 0-3, return event at 4
-      const returnOutputIdx = 4n;
-
-      // A.callB params: (val, _externalCallInputBase, _externalReturnOutputIdx)
-      // No _externalCallSelector: IB has only 1 callable function (doWork)
-      const unlockA = contractA.unlock.callB(5n, 2n, returnOutputIdx);
+      // SDK unlockers accept public arguments; internal co-spend witnesses are compiler-managed.
+      const unlockA = contractA.unlock.callB(5n);
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 
-      // B.doWork params: (val, _returnOutputIdx)
-      const unlockB = contractB.unlock.doWork(5n, returnOutputIdx);
+      const unlockB = contractB.unlock.doWork(5n);
       const dataNftUnlockB = createDataNftUnlocker(contractB, 2, catB);
 
       const callGroup: ExternalCallUtxoGroup = {
@@ -478,7 +472,7 @@ describe('msg.sender and tx.origin', () => {
         dataNftUtxos: [{ ...dataNftB, unlocker: dataNftUnlockB }],
         requiredDataNftIndices: [0],
         functionName: 'doWork',
-        functionArgs: [5n, returnOutputIdx],
+        functionArgs: [5n],
         externalContract: null,
       };
 
@@ -576,21 +570,13 @@ describe('msg.sender and tx.origin', () => {
     });
 
     it('should build A->B->C chain with STB', () => {
-      // Return event output indices (after all contract outputs)
-      const returnOutputIdx = 6n;
-
-      // A.startChain params: (val, _externalCallInputBase, _externalReturnOutputIdx)
-      // No selector: IB_Chain has only 1 callable function (chainToC)
-      const unlockA = contractA.unlock.startChain(5n, 2n, returnOutputIdx);
+      const unlockA = contractA.unlock.startChain(5n);
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 
-      // B.chainToC params: (val, _externalCallInputBase, _returnOutputIdx, _externalReturnOutputIdx)
-      // No selector: IC_Sender has only 1 callable function (compute)
-      const unlockB = contractB.unlock.chainToC(5n, 4n, returnOutputIdx, 7n);
+      const unlockB = contractB.unlock.chainToC(5n);
       const dataNftUnlockB = createDataNftUnlocker(contractB, 2, catB);
 
-      // C.compute params: (val, _msgSenderCategory, _returnOutputIdx)
-      const unlockC = contractC.unlock.compute(5n, hexToBin(catB), 8n);
+      const unlockC = contractC.unlock.compute(5n);
       const dataNftUnlockC = createDataNftUnlocker(contractC, 4, catC);
 
       // B's external call group
@@ -601,7 +587,7 @@ describe('msg.sender and tx.origin', () => {
         dataNftUtxos: [{ ...dataNftB, unlocker: dataNftUnlockB }],
         requiredDataNftIndices: [0],
         functionName: 'chainToC',
-        functionArgs: [5n, 4n, returnOutputIdx, 7n],
+        functionArgs: [5n],
         externalContract: null,
       };
 
@@ -613,7 +599,7 @@ describe('msg.sender and tx.origin', () => {
         dataNftUtxos: [{ ...dataNftC, unlocker: dataNftUnlockC }],
         requiredDataNftIndices: [0],
         functionName: 'compute',
-        functionArgs: [5n, hexToBin(catB), 8n],
+        functionArgs: [5n],
         externalContract: null,
       };
 
@@ -732,24 +718,13 @@ describe('msg.sender and tx.origin', () => {
     });
 
     it('should build A->{B,C} fan-out with STB', () => {
-      // Return event output indices (after all contract outputs: A=2, B=2, C=2 -> base=6)
-      const returnOutputIdxB = 6n;
-      const returnOutputIdxC = 7n;
-
-      // A.callBothBC params: (valB, valC, _externalCallInputBase, _extcallMasterIdx0, _extcallMasterIdx1,
-      // _externalReturnOutputIdx0, _externalReturnOutputIdx1). Multi-call functions carry a per-slot runtime
-      // master index (B at input 2, C at input 4); no selectors (IB_Sender/IC_Sender each have 1 fn).
-      const unlockA = contractA.unlock.callBothBC(
-        3n, 7n, 2n, 2n, 4n, returnOutputIdxB, returnOutputIdxC,
-      );
+      const unlockA = contractA.unlock.callBothBC(3n, 7n);
       const dataNftUnlockA = createDataNftUnlocker(contractA, 0, catA);
 
-      // B.doWorkFromSender params: (val, _msgSenderCategory, _returnOutputIdx)
-      const unlockB = contractB.unlock.doWorkFromSender(3n, hexToBin(catA), returnOutputIdxB);
+      const unlockB = contractB.unlock.doWorkFromSender(3n);
       const dataNftUnlockB = createDataNftUnlocker(contractB, 2, catB);
 
-      // C.compute params: (val, _msgSenderCategory, _returnOutputIdx)
-      const unlockC = contractC.unlock.compute(7n, hexToBin(catA), returnOutputIdxC);
+      const unlockC = contractC.unlock.compute(7n);
       const dataNftUnlockC = createDataNftUnlocker(contractC, 4, catC);
 
       const callGroupB: ExternalCallUtxoGroup = {
@@ -759,7 +734,7 @@ describe('msg.sender and tx.origin', () => {
         dataNftUtxos: [{ ...dataNftB, unlocker: dataNftUnlockB }],
         requiredDataNftIndices: [0],
         functionName: 'doWorkFromSender',
-        functionArgs: [3n, hexToBin(catA), returnOutputIdxB],
+        functionArgs: [3n],
         externalContract: null,
       };
 
@@ -770,7 +745,7 @@ describe('msg.sender and tx.origin', () => {
         dataNftUtxos: [{ ...dataNftC, unlocker: dataNftUnlockC }],
         requiredDataNftIndices: [0],
         functionName: 'compute',
-        functionArgs: [7n, hexToBin(catA), returnOutputIdxC],
+        functionArgs: [7n],
         externalContract: null,
       };
 

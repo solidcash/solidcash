@@ -315,34 +315,16 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
       // Input[4]: A thread 1 master (catA) <- B verifies A thread 1 here
       // Input[5]: A thread 1 data NFT (y=20)
 
-      // 4-byte selector for B->A callback verification (IThreadedA has 2 functions)
-      // No selector needed for A->B call: IB has only 1 callable function (processAndCallback)
-      const aHandleCallbackSelector = hexToBin(artA.abi.find((f) => f.name === 'handleCallback')!.selector!);
-
       // A thread 0: callB(val=5)
-      // No _externalCallSelector: IB has only 1 callable function (processAndCallback)
-      const unlockAThread0 = contractA.unlock.callB(
-        5n,     // val
-        2n,     // _externalCallInputBase (B starts at input[2])
-        6n,     // _externalReturnOutputIdx (B's return event output)
-      );
+      const unlockAThread0 = contractA.unlock.callB(5n);
       const dataNftUnlockAThread0 = createDataNftUnlocker(contractA, 0, catA);
 
-      // B: processAndCallback(val=5), selector=A's handleCallback
-      const unlockB = contractB.unlock.processAndCallback(
-        5n,     // val
-        4n,     // _externalCallInputBase (A thread 1 starts at input[4])
-        aHandleCallbackSelector, // _externalCallSelector -> A's handleCallback (bytes4)
-        6n,     // _returnOutputIdx (B's return event)
-        7n,     // _externalReturnOutputIdx (A thread 1's return event)
-      );
+      // B: processAndCallback(val=5); the callback selector is compiler-managed.
+      const unlockB = contractB.unlock.processAndCallback(5n);
       const dataNftUnlockB = createDataNftUnlocker(contractB, 2, catB);
 
       // A thread 1: handleCallback(val=5), returns val
-      const unlockAThread1 = contractA.unlock.handleCallback(
-        5n,     // val
-        7n,     // _returnOutputIdx (A thread 1's return event)
-      );
+      const unlockAThread1 = contractA.unlock.handleCallback(5n);
       const dataNftUnlockAThread1 = createDataNftUnlocker(contractA, 4, catA);
 
       // --- Build the transaction ---
@@ -355,7 +337,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
         dataNftUtxos: [{ ...bDataNft, unlocker: dataNftUnlockB }],
         requiredDataNftIndices: [0],
         functionName: 'processAndCallback',
-        functionArgs: [5n, 4n, aHandleCallbackSelector, 6n, 7n],
+        functionArgs: [5n],
         externalContract: null,
       };
 
@@ -367,7 +349,7 @@ describe('Threaded Circular Calls (A->B->A via Threading)', () => {
         dataNftUtxos: [{ ...aThread1DataNft, unlocker: dataNftUnlockAThread1 }],
         requiredDataNftIndices: [1], // thread 1 owns data NFT 1 (y)
         functionName: 'handleCallback',
-        functionArgs: [5n, 7n],
+        functionArgs: [5n],
         externalContract: null,
       };
 

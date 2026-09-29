@@ -1554,9 +1554,11 @@ risk. Take the slices in order, each with its own tests.
       paid body sends"), and a sending body that reads a record it does not write, or a mapping entry, **landed**
       (log row "a sending body reads what it does not write"), and an entry that reads a mapping key it does not
       write **landed** (log row "a frame declares the records its entry names"). Held next, in this order (user
-      direction 2026-09-29, "advance with open items"): the SDK composing value into a contract entered twice or
+      direction 2026-09-29, "advance with open items"): an entry that reads a mapping key beside a batch that writes
+      another (an allow-list or role check beside a balance write; the compiler's batch counts and the call path),
+      a paid body that sends on a branch (`call.ts`), the SDK composing value into a contract entered twice or
       through a proxy (the proxy hop is the implementer's working tree now), and a recipient body that calls or
-      sends to a contract. To be
+      sends to a contract, which waits on the callee frames the implementer is building for the hop. To be
       revisited, not held: the inequality `growth(X) >= in(X) - out(X)` (spec 4b), kept for now. Served before
       this: a send to a user's lock (`4b68d71dc`). Files: the per-call head and bodies (`support.ts`,
       `frame-tail.ts`, the generation pass), the validator's V7, and the composer; merged onto the implementer's

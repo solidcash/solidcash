@@ -15,6 +15,8 @@ export {
   provisionalInvocationResult,
   evmInvocationResultLength,
   minimumActualSizeForComputedValueChunkClaims,
+  mergeComputedValueChunkSpanClaims,
+  physicalVmapBatchTrailingCount,
 } from './compose-recipes.js';
 export type { ComputedValueChunkSpanClaim } from './compose-recipes.js';
 

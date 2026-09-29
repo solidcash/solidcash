@@ -1,7 +1,8 @@
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin, sha256 } from '@bitauth/libauth';
+import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import {
   ArrayType, addressToGraphEmissionBytes, decodePushdataValue, encodePushdataValue,
-  parseArrayTypeString, parseType,
+  MAX_MESSAGE_BUS_BLOB_BYTES, parseArrayTypeString, parseType,
   type Artifact, type StateValue, scriptToBytecode,
   type StructDefinitionInfo, type ExternalCallExpression, type ExternalResultEncoding,
 } from '@solidcash/utils';
@@ -733,15 +734,26 @@ export function encodeMessageBatch(
     );
   }
   if (capability.version !== 1) {
+    if (capability.selector === '53434231') {
+      throw new MessageBusDiagnosticError(
+        'L3_PROTOCOL_METADATA_MALFORMED',
+        `artifact '${artifact.contractName}' pairs the version-1 message-bus selector with version ${String(capability.version)}`,
+        { metadataField: 'messageBus', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
+      );
+    }
     throw new MessageBusDiagnosticError(
       'L3_PROTOCOL_VERSION_UNSUPPORTED',
       `artifact '${artifact.contractName}' advertises unsupported message bus version ${String(capability.version)}`,
       { metadataField: 'messageBus.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
     );
   }
+  const expectedBlobBytes = capability.convention === 'kernel-row-loop'
+    ? ConsensusBch2026.maximumStackItemLength : MAX_MESSAGE_BUS_BLOB_BYTES;
   if (capability.selector !== '53434231'
     || !Number.isInteger(capability.maximumRows) || capability.maximumRows < 1
-    || !Number.isInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1) {
+    || capability.maximumBlobBytes !== expectedBlobBytes
+    || (capability.minimumRows !== undefined && (!Number.isSafeInteger(capability.minimumRows)
+      || capability.minimumRows < 1 || capability.minimumRows > capability.maximumRows))) {
     throw new MessageBusDiagnosticError(
       'L3_PROTOCOL_METADATA_MALFORMED',
       `artifact '${artifact.contractName}' publishes malformed message-bus batch capability metadata`,
@@ -751,8 +763,9 @@ export function encodeMessageBatch(
           selector: capability.selector,
           maximumRows: capability.maximumRows,
           maximumBlobBytes: capability.maximumBlobBytes,
+          minimumRows: capability.minimumRows,
         },
-        expected: { selector: '53434231', positiveIntegerBounds: true },
+        expected: { selector: '53434231', maximumBlobBytes: expectedBlobBytes, positiveIntegerBounds: true },
         ownerIdentity: artifact.contractName,
       },
     );
@@ -951,7 +964,22 @@ export function encodeMessageBatch(
   }[] = [];
   const rows = invocations.map((invocation, rowIndex) => {
     const handler = resolveMessageBusHandler(artifact, invocation.function, invocation.selector);
-    if (!handler) throw new Error(`Unknown message-bus batch handler '${invocation.function}'`);
+    if (!handler) {
+      if (invocation.selector !== undefined) {
+        try {
+          resolveMessageBusAbiFunction(artifact, invocation.function, invocation.selector);
+        } catch (error) {
+          if (error instanceof Error && /does not identify an ABI function/.test(error.message)) {
+            throw new Error(
+              `messageBus: selector ${invocation.selector} does not identify ABI function `
+              + `'${invocation.function}' in '${artifact.contractName}'`,
+            );
+          }
+          throw error;
+        }
+      }
+      throw new Error(`Unknown message-bus batch handler '${invocation.function}'`);
+    }
     if (!handler.eligible) {
       throw new Error(`Handler '${invocation.function}' is not batch eligible: ${handler.rejectionReason}`);
     }

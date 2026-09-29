@@ -64,9 +64,7 @@ import {
   convergeMessageBusComputedResourceOutputs, finalizedByteGateOptionsForProvider, preflightMessageBusTransaction,
 } from './preflight.js';
 import { convergeMessageBusComputedValueChunkOutputs } from './computed-value-chunks.js';
-import {
-  materializeTransportedContinuations, transportedContinuationSpanClaims,
-} from './materialize-transported-continuations.js';
+import { materializeTransportedContinuations } from './materialize-transported-continuations.js';
 import {
   convergeMessageBusComputedDynamicChunkOutputs,
   dynamicChunkPlaceholdersRemain,
@@ -115,6 +113,7 @@ import {
   materializeChildDeploymentEntryValue,
   provisionalInvocationResult,
   minimumActualSizeForComputedValueChunkClaims,
+  mergeComputedValueChunkSpanClaims,
   evmInvocationResultLength,
   // Internal helpers still used by AtomicMessageBusComposition orchestration:
   fixedVmNumber,
@@ -1186,7 +1185,7 @@ export async function assembleAtomicComposition(
         __messageBusComputedValueChunkSpanClaims?: readonly ComputedValueChunkSpanClaim[];
         __messageBusComputedValueChunks?: readonly ComputedValueChunkSpanClaim[];
       };
-    const computedValueChunkClaims = transportedContinuationSpanClaims([
+    const computedValueChunkClaims = mergeComputedValueChunkSpanClaims([
       ...(computedValueChunkMetadata.__messageBusComputedValueChunkSpanClaims ?? []),
       ...(computedValueChunkMetadata.__messageBusComputedValueChunks ?? []),
     ], (orderedContinuationClaims ?? []).flatMap((claim) => Array.from(

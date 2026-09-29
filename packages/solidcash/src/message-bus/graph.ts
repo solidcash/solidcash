@@ -1725,7 +1725,18 @@ function assertNoStaleEmissionCloneReads(
 export function resolveGraphAbiFunction(
   artifact: Artifact, name: string, selector?: string,
 ): AbiFunction | undefined {
-  return resolveMessageBusAbiFunction(artifact, name, selector);
+  try {
+    return resolveMessageBusAbiFunction(artifact, name, selector);
+  } catch (error) {
+    // The selector remains authoritative for kernel dispatch; retain the source row name in graph diagnostics.
+    if (selector !== undefined && error instanceof Error
+      && /does not identify an ABI function/.test(error.message)) {
+      throw new Error(
+        `messageBus: selector ${selector} does not identify ABI function '${name}' in '${artifact.contractName}'`,
+      );
+    }
+    throw error;
+  }
 }
 
 type GraphCallerParticipant = {

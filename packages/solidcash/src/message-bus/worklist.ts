@@ -388,7 +388,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     ]
       .filter((candidate): candidate is string => candidate !== undefined)
       .map((candidate) => candidate.toLowerCase());
-    const sourceUsesSolidityAddresses = source.artifact.compiler.options?.solidityImportCompat === true;
+    const sourceUsesSolidityAddresses = source.artifact.compiler?.options?.solidityImportCompat === true;
     const suppliedIdentity = sourceUsesSolidityAddresses && encoded instanceof Uint8Array
       && (encoded.length === 20 || encoded.length === 32)
       ? solidityAddressArgumentIdentity(encoded) : undefined;
@@ -584,8 +584,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               participant, args, { ...call, argSources: call.rawArgSources }, functionName, fn.selector,
               invocation, reached, options.expressionArgument,
             );
-            const sourceUsesSolidityAddresses = participant.artifact.compiler.options?.solidityImportCompat === true
-              || participant.artifact.compiler.options?.evmCompat === true;
+            const sourceUsesSolidityAddresses = participant.artifact.compiler?.options?.solidityImportCompat === true
+              || participant.artifact.compiler?.options?.evmCompat === true;
             const expectedEncoded = expectedArgs.map((argument, index) =>
               encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
             if (expectedEncoded.length !== encoded.length

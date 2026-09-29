@@ -827,6 +827,55 @@ export interface ComputedValueChunkSpanClaim {
   resourcePart?: string;
 }
 
+/** Keep a local compiler claim unless the observation itself gives conflicting geometry. */
+export function mergeComputedValueChunkSpanClaims(
+  local: readonly ComputedValueChunkSpanClaim[],
+  observed: readonly ComputedValueChunkSpanClaim[],
+): ComputedValueChunkSpanClaim[] {
+  const keyOf = (claim: ComputedValueChunkSpanClaim): string | undefined => (
+    claim.resourceIdentity === undefined || claim.resourcePart === undefined
+      ? undefined : `${claim.resourceIdentity}\u0000${claim.resourcePart}`
+  );
+  const localKeys = new Set(local.map(keyOf).filter((key): key is string => key !== undefined));
+  const observations = new Map<string, ComputedValueChunkSpanClaim[]>();
+  const merged = [...local];
+  for (const claim of observed) {
+    const key = keyOf(claim);
+    if (key === undefined) {
+      merged.push(claim);
+      continue;
+    }
+    const claims = observations.get(key) ?? [];
+    claims.push(claim);
+    observations.set(key, claims);
+  }
+  for (const [key, claims] of observations) {
+    const distinctOffsets = new Set(claims.map((claim) => claim.offset));
+    if (distinctOffsets.size > 1) {
+      // Retain contradictory observations so the geometry validator rejects the move.
+      merged.push(...claims);
+    } else if (!localKeys.has(key)) {
+      merged.push(claims[0]);
+    }
+  }
+  return merged;
+}
+
+/** Count distinct physical predecessor outputs; sentinels and aliased lanes own none. */
+export function physicalVmapBatchTrailingCount(
+  inputs: readonly { name: string }[],
+  args: readonly unknown[],
+): bigint | undefined {
+  if (!inputs.some((input) => input.name === '__internal__vmapBatchTrailingCount')) return undefined;
+  const outputs = new Set<bigint>();
+  for (const [index, input] of inputs.entries()) {
+    if (!/^__internal__vmapBatchPredOut_\d+$/.test(input.name)) continue;
+    const value = args[index];
+    if (typeof value === 'bigint' && value >= 0n) outputs.add(value);
+  }
+  return BigInt(outputs.size);
+}
+
 /**
  * Keep compiler-authenticated continuation slots inside their participant while compacting a published block.
  * Claim offsets are absolute transaction coordinates; the returned size is participant-relative and never

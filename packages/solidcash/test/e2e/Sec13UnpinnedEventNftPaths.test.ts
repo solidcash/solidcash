@@ -357,8 +357,8 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
 
   it('refuses an appended own-category event NFT beside a non-emitting delegate', async () => {
     const row = await runDelegatecall(DELEGATE_IMPL, 'own');
-    // Input index 2 is the implementation: its delegate covenant carries the pin, not the proxy's.
-    expectRejectedAt(row.outcome, 2);
+    // This proxy now pins its own event family before the implementation input is evaluated.
+    expectRejectedAt(row.outcome, 0);
     expect(row.events).toEqual([]);
   }, 300_000);
 
@@ -386,23 +386,17 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
   }, 300_000);
 
   /**
-   * OPEN RESIDUAL, measured not reasoned. A `delegatecall` proxy is not pinned: its honest own-category
-   * immutable outputs are the co-spent implementation's event NFTs, at an offset only that implementation's
-   * layout names (measured above: output 4 = implInput 2 + implEventOffset 2, while the proxy block is [0,1]).
-   * The implementation's own pin covers them - so the residual is exactly a proxy that does not force the
-   * implementation co-spend. This proxy hardcodes a NON-covenant p2pkh implementation address, so nothing runs.
-   *
-   * That is already SECURITY-AUDIT C1, not a new class: the same shape rewrites the proxy's ENTIRE state with
-   * no implementation at all, which the row below asserts. A forged log adds nothing to a proxy that has
-   * already ceded its state.
+   * The proxy still does not force its non-covenant implementation co-spend, so C1 permits arbitrary state
+   * rewrites. Its own immutable-event pin now rejects forged logs independently of that residual. Keep both
+   * controls: a green state rewrite does not imply that an addressable event forgery is still admitted.
    */
-  it('leaves a proxy that does not force its implementation co-spend open (C1, not a new class)', async () => {
+  it('leaves the C1 state rewrite open but rejects a forged event without an implementation co-spend', async () => {
     const control = await runDelegatecall(DELEGATE_IMPL, undefined, true, 987654321n);
     expect(control.outcome).toBe('ACCEPTED');
     expect(control.state).toBe(987654321n); // arbitrary state written with NO implementation co-spent
     const forged = await runDelegatecall(DELEGATE_IMPL, 'own', true);
-    expect(forged.outcome).toBe('ACCEPTED');
-    expect(forged.events).toEqual([999999n]);
+    expectRejectedAt(forged.outcome, 0);
+    expect(forged.events).toEqual([]);
   }, 300_000);
 
   /**

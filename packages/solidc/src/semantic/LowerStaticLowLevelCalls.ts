@@ -5,6 +5,7 @@ import {
   AssignNode,
   BlockNode,
   BoolLiteralNode,
+  CallOptions,
   ContractNode,
   ExpressionNode,
   FieldAccessNode,
@@ -28,6 +29,7 @@ import {
 import { AddressType, BytesType, type Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { isStaticallyZeroCallValue } from './branchOps.js';
 
 /** Temporary holding a typed call's return values while the low-level `(success, returndata)` pair is rebuilt. */
 const PREFIX = '__staticcall_ret_';
@@ -74,6 +76,9 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   // One map per lexical block, innermost last. A name present here shadows any outer binding; a value that is not
   // an abi-encode node marks a local that was bound to something else (or reassigned), so the lookup stops there.
   private payloadScopes: Map<string, ExpressionNode | undefined>[] = [];
+  // The initializer each local is bound to, in the same lexical-block order, so a call option whose value is one
+  // of those locals (`{value: v}` after an inliner bound `v` to `0`) resolves without the symbol pass.
+  private valueScopes: Map<string, ExpressionNode | undefined>[] = [];
   // The declared type of each in-scope name, in the same lexical-block order as `payloadScopes`. A payload's
   // receiver may be an interface-typed variable (`abi.encodeCall(token.transfer, ..)`, as OZ SafeERC20 spells it)
   // rather than the interface name itself, so the callee's interface is read from the variable's declaration.
@@ -109,6 +114,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
     this.payloadScopes.push(new Map());
+    this.valueScopes.push(new Map());
     this.declaredTypes.push(new Map(this.incomingParameterTypes ?? []));
     this.incomingParameterTypes = undefined;
     for (const statement of node.statements ?? []) {
@@ -118,8 +124,10 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       out.push(...emitted);
       for (const item of emitted) this.recordDeclaredType(item);
       this.recordPayloadBinding(visited);
+      this.recordValueBinding(visited);
     }
     this.payloadScopes.pop();
+    this.valueScopes.pop();
     this.declaredTypes.pop();
     node.statements = out;
     return node;
@@ -157,6 +165,65 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
         if (element.name) this.forgetPayloadBinding(element.name);
       }
     }
+  }
+
+  /** Track the initializer a local is bound to, so a call option naming it resolves while the pass is running. */
+  private recordValueBinding(statement: StatementNode): void {
+    const scope = this.valueScopes[this.valueScopes.length - 1];
+    if (!scope) return;
+    if (statement instanceof VariableDefinitionNode) {
+      scope.set(statement.name, statement.expression);
+      return;
+    }
+    if (statement instanceof AssignNode) {
+      this.setValueBinding(statement.identifier.name, statement.expression);
+      return;
+    }
+    if (statement instanceof TupleAssignmentNode) {
+      for (const element of statement.elements) {
+        if (element.name) this.setValueBinding(element.name, undefined);
+      }
+    }
+  }
+
+  /** Sets the initializer a name is bound to, in the innermost scope that holds the name. */
+  private setValueBinding(name: string, value: ExpressionNode | undefined): void {
+    for (let index = this.valueScopes.length - 1; index >= 0; index -= 1) {
+      const scope = this.valueScopes[index]!;
+      if (scope.has(name)) {
+        scope.set(name, value);
+        return;
+      }
+    }
+  }
+
+  /**
+   * True when a value is statically zero, reading a local through the binding this pass has tracked.
+   *
+   * `isStaticallyZeroCallValue` resolves a local through its symbol-table definition, which does not exist while
+   * the preprocessing passes run, so a name is instead followed through the initializers the current block bound.
+   */
+  private isStaticallyZero(expression: ExpressionNode | undefined, seen = new Set<string>()): boolean {
+    if (isStaticallyZeroCallValue(expression)) return true;
+    if (!(expression instanceof IdentifierNode) || seen.has(expression.name)) return false;
+    seen.add(expression.name);
+    for (let index = this.valueScopes.length - 1; index >= 0; index -= 1) {
+      const scope = this.valueScopes[index]!;
+      if (scope.has(expression.name)) return this.isStaticallyZero(scope.get(expression.name), seen);
+    }
+    return false;
+  }
+
+  /**
+   * Whether a call's options leave it transactionally the call alone.
+   *
+   * `{value: 0}` pays nothing, so the call denotes the same typed call as the spelling without the option; `gas`
+   * is inert on BCH and a `salt` names a deployment. Any other value is one the running code computes and carries
+   * a payment the typed call would not, so that spelling keeps its own lowering.
+   */
+  private callCarriesNoValue(options: CallOptions | undefined): boolean {
+    if (options === undefined) return true;
+    return this.isStaticallyZero(options.value) && options.gas === undefined && options.salt === undefined;
   }
 
   /**
@@ -232,7 +299,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
     // `target.call(payload);`
     if (statement instanceof LowLevelCallStatementNode) {
       if (statement.callMode !== 'call' && statement.callMode !== 'staticcall') return undefined;
-      if (statement.callOptions) return undefined;
+      if (!this.callCarriesNoValue(statement.callOptions)) return undefined;
       const lowered = this.lower({ target: statement.targetExpression, payload: statement.data }, true);
       return lowered?.stmts;
     }
@@ -242,7 +309,7 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
   private matchLowLevelCall(expression: ExpressionNode | undefined): LowLevelSite | undefined {
     if (expression instanceof MethodCallNode
       && (expression.methodName === 'call' || expression.methodName === 'staticcall')
-      && expression.parameters.length === 1 && !expression.callOptions) {
+      && expression.parameters.length === 1 && this.callCarriesNoValue(expression.callOptions)) {
       // An interface handle as the receiver already names the callee, so the payload's interface is not the method
       // the spelling denotes; leave that form to its own lowering.
       if (expression.object instanceof FunctionCallNode && this.interfaces.has(expression.object.identifier.name)) {
@@ -251,11 +318,12 @@ export default class LowerStaticLowLevelCalls extends AstTraversal {
       return { target: expression.object, payload: expression.parameters[0]! };
     }
     if (expression instanceof LowLevelCallNode
-      && (expression.callMode === 'call' || expression.callMode === 'staticcall') && !expression.callOptions) {
+      && (expression.callMode === 'call' || expression.callMode === 'staticcall')
+      && this.callCarriesNoValue(expression.callOptions)) {
       return { target: expression.targetExpression, payload: expression.data };
     }
     // A simple identifier receiver parses as a namespaced call (`target.call(payload)`), not a MethodCall.
-    if (expression instanceof FunctionCallNode && !expression.callOptions
+    if (expression instanceof FunctionCallNode && this.callCarriesNoValue(expression.callOptions)
       && expression.parameters.length === 1) {
       const name = expression.identifier.name;
       const dot = name.lastIndexOf('.');

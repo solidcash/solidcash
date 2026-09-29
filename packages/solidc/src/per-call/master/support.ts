@@ -745,7 +745,13 @@ export interface PerCallMasterShapeInput {
   readonly interfaces: readonly InterfaceNode[];
   readonly hasContractInstantiation: boolean;
   readonly hasFunctionPointers: boolean;
-  readonly needsInlineAssembly: boolean;
+  /**
+   * The bodies that reach an inline-assembly block the lowering left in place, by name.
+   *
+   * The reachability is measured against the program the master is built from, so a body whose assembly the
+   * lowering rewrote is served and only a body that still reaches an unsupported block is refused.
+   */
+  readonly assemblyBodies: ReadonlySet<string>;
   readonly emitsEvent: boolean;
 }
 
@@ -861,9 +867,6 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
   if (input.hasFunctionPointers) {
     return refuse('a function pointer needs a call kind the frame does not carry yet');
   }
-  if (input.needsInlineAssembly) {
-    return refuse('inline assembly is not composed per-call');
-  }
   // A body the master cannot serve is refused on its own, so the functions it can serve keep compiling: the
   // reasons are collected per function here and published beside the artifact, and each refused entry is emitted
   // as a body that fails whenever it is reached.
@@ -885,6 +888,9 @@ export function assessPerCallMasterShape(input: PerCallMasterShapeInput): PerCal
     // read from the wrong stack position.
     // The reasons are asked in the order the whole-contract refusal used to ask them, so the one a reader sees
     // names the shape that decides the body rather than an operand that shape injects.
+    if (input.assemblyBodies.has(fn.name)) {
+      refuseBody(fn, 'inline assembly is not composed per-call');
+    }
     const forward = forwardDelegateCalls(fn, stateVariableNames);
     if ('reason' in forward) refuseBody(fn, forward.reason);
     const batchShape = unsupportedBatchWriteShape(fn, constants);

@@ -12383,7 +12383,14 @@ function compileResolvedAst(
   const resolvedStarted = Date.now();
   let phaseStarted = resolvedStarted;
   let currentPhase = 'start';
-  const contractName = ast.contract?.name;  const mark = (phase: string): void => {
+  const contractName = ast.contract?.name;
+  // The inline-assembly blocks each body reaches are read from the program as it arrived. A later pass rewrites
+  // the blocks the lowering supports, and the admission rungs prune entry bodies, so the reachability a per-call
+  // body is refused by is taken here and matched against what the lowering left in place further down.
+  const perCallBodyAssembly = mergedCompilerOptions.composition === 'per-call'
+    ? captureBodyAssemblyBlocks(ast.contract, ast.freeFunctions)
+    : undefined;
+  const mark = (phase: string): void => {
     profileLog(`resolved:${phase}`, phaseStarted, { contract: contractName });
     currentPhase = phase;
     phaseStarted = Date.now();
@@ -13057,15 +13064,6 @@ function compileResolvedAst(
   const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
     ? statefulnessHintSource
     : undefined;
-  // Inline assembly is likewise a question about the code a master carries rather than about the unit it is
-  // compiled in: a sibling contract's assembly refuses a contract that holds none, and the lowering that answers
-  // the unit-wide flag is about to rewrite every assembly block, so the answer is taken here, before it runs. The
-  // unit's file-level functions count with the contract's own bodies because a body that reaches one is compiled
-  // with it — inlined into the body, or defined ahead of the head.
-  const ownInlineAssembly = !needsInlineAssembly ? false
-    : surveyOptionalLowerings(ast.contract).needsInlineAssembly
-      || reachedFileFunctions(ast.contract, ast.freeFunctions)
-        .some((fn) => surveyOptionalLowerings(fn).needsInlineAssembly);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
@@ -13218,6 +13216,25 @@ function compileResolvedAst(
   // `address(this).call(payload)` -> a plain internal call (+ constant true success). Before the inline
   // passes so a state-touching callee (incl. the fallback) is inlined into the entry point like any other.
   if (needsExternalCallLowering) ast = ast.accept(new LowerSelfLowLevelCalls()) as Ast;
+  // A payload handed to a helper whose own body makes the low-level call (`Address.functionCall`, and the
+  // `SafeERC20` chain behind it) names a method only once that helper is inlined into its caller: the payload
+  // local the lowering follows is the helper's parameter, which becomes a caller local when the body is spliced
+  // in. The helper inliners run later in the ordinary pipeline, so under the per-call convention they run once
+  // here, before the lowering, and a namable payload across such a helper is served as its typed call.
+  if (mergedCompilerOptions.composition === 'per-call' && needsExternalCallLowering) {
+    const perCallHasHelpers = ast.freeFunctions.length > 0
+      || ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.INTERNAL)
+        || fn.modifiers.includes(FunctionModifier.PRIVATE));
+    if (perCallHasHelpers) {
+      ast = ast.accept(new InlineStoragePointerCalls(
+        mergedCompilerOptions.solidityImportCompat ?? false,
+        inlineDelegateStateHelpers,
+      )) as Ast;
+      ast = ast.accept(new InlineReturningStateHelpers(
+        mergedCompilerOptions.solidityImportCompat ?? false,
+      )) as Ast;
+    }
+  }
   // A low-level call whose payload names an interface method (`addr.call(abi.encodeCall(I.f, (args)))` or the
   // selector spelling) denotes the typed call `I(addr).f(args)`. It is rewritten to that call before semantic
   // analysis, so the per-call convention - which compiles typed calls but refuses the raw calldata form - serves
@@ -14067,12 +14084,34 @@ function compileResolvedAst(
     // whose own bodies emit nothing: a master's event region is sized by the bodies it runs, so the question is
     // asked of this contract alone.
     const contractEmitsEvent = surveyOptionalLowerings(ast.contract).emitsEvent;
+    // A body that reaches inline assembly the lowering rewrote is served. A body that still reaches a block the
+    // lowering left in its OWN body is refused per body, so the contract's other bodies keep compiling. A block
+    // left in a definition the body reaches refuses the contract: the definition is emitted behind no stub, so the
+    // assembly would reach every master of the contract. The reachability is matched by block identity against the
+    // captured program, so a body only counts a block it really reaches.
+    const survivingAssembly = survivingAssemblyBlocks(ast);
+    const assemblyBodies = new Set<string>();
+    let assemblyInReachedDefinition = false;
+    for (const [name, blocks] of perCallBodyAssembly ?? []) {
+      for (const block of blocks) {
+        if (survivingAssembly.inBodies.has(block)) assemblyBodies.add(name);
+        else if (survivingAssembly.inFreeFunctions.has(block)) assemblyInReachedDefinition = true;
+      }
+    }
+    if (assemblyInReachedDefinition) {
+      throw new SolidcDiagnosticError(
+        'PER_CALL_CODEGEN_UNAVAILABLE',
+        'the per-call composition convention does not support this contract: inline assembly is not composed '
+        + 'per-call',
+        { requested: 'per-call', reason: 'inline assembly is not composed per-call', contract: ast.contract.name },
+      );
+    }
     const assessment = assessPerCallMasterShape({
       contract: ast.contract,
       interfaces: ast.interfaceDefinitions,
       hasContractInstantiation,
       hasFunctionPointers,
-      needsInlineAssembly: ownInlineAssembly,
+      assemblyBodies,
       emitsEvent: contractEmitsEvent,
     });
     if (!assessment.supported) {
@@ -17008,6 +17047,75 @@ function reachedFileFunctions(
     }
   }
   return freeFunctions.filter((fn) => reached.has(fn));
+}
+
+/** The bodies a per-call master can run, in declaration order: the constructor, fallback, receive and entries. */
+function contractBodyFunctions(contract: ContractNode): FunctionDefinitionNode[] {
+  return [contract.constructorDef, contract.fallbackDef, contract.receiveDef, ...contract.functions]
+    .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+}
+
+/**
+ * The inline-assembly blocks each contract body reaches, captured before any lowering rewrites them.
+ *
+ * A block the assembly lowering supports is replaced by the statements it lowers to, so the captured node leaves
+ * the program; a block it does not support - native `assembly { OP_* }` has no Yul tree - survives as the same
+ * node. A body is therefore refused per-call only when a block it was captured reaching is still in the program
+ * the master is built from, which serves a body whose assembly the convention can lower and refuses one whose
+ * assembly it cannot.
+ */
+function captureBodyAssemblyBlocks(
+  contract: ContractNode,
+  freeFunctions: readonly FunctionDefinitionNode[],
+): Map<string, Set<AssemblyStatementNode>> {
+  const byName = new Map<string, FunctionDefinitionNode[]>();
+  const register = (fn: FunctionDefinitionNode): void => {
+    for (const key of [fn.name, fn.name.slice(fn.name.lastIndexOf('.') + 1)]) {
+      const list = byName.get(key);
+      if (list) list.push(fn);
+      else byName.set(key, [fn]);
+    }
+  };
+  for (const fn of freeFunctions) register(fn);
+  const bodies = contractBodyFunctions(contract);
+  for (const fn of bodies) register(fn);
+  const captured = new Map<string, Set<AssemblyStatementNode>>();
+  for (const fn of bodies) {
+    const blocks = new Set<AssemblyStatementNode>();
+    for (const name of collectNamedFunctionClosure(fn, byName)) {
+      for (const candidate of byName.get(name) ?? []) {
+        if (!candidate.body) continue;
+        walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof AssemblyStatementNode) blocks.add(node);
+        });
+      }
+    }
+    if (blocks.size > 0) captured.set(fn.name, blocks);
+  }
+  return captured;
+}
+
+/**
+ * The inline-assembly blocks still in the program, split by where the lowering left them.
+ *
+ * A block left in a contract body refuses only that body, which the master emits as a stub. A block left in a
+ * file-level definition is emitted with the definition itself, behind no stub, so it refuses the contract.
+ */
+function survivingAssemblyBlocks(ast: Ast): {
+  readonly inBodies: Set<AssemblyStatementNode>;
+  readonly inFreeFunctions: Set<AssemblyStatementNode>;
+} {
+  const inBodies = new Set<AssemblyStatementNode>();
+  const inFreeFunctions = new Set<AssemblyStatementNode>();
+  const collect = (fn: FunctionDefinitionNode | undefined, sink: Set<AssemblyStatementNode>): void => {
+    if (fn?.body === undefined) return;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof AssemblyStatementNode) sink.add(node);
+    });
+  };
+  for (const fn of contractBodyFunctions(ast.contract)) collect(fn, inBodies);
+  for (const fn of ast.freeFunctions) collect(fn, inFreeFunctions);
+  return { inBodies, inFreeFunctions };
 }
 
 /**

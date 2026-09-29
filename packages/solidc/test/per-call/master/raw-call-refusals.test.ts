@@ -2,22 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { refusalMessageOf } from './refused-entry.js';
 
 /**
- * The two call shapes the per-call convention still refuses beside a call it serves.
+ * The call shapes the per-call convention serves, and the two it still refuses beside them.
  *
- * A low-level call the compiler cannot name as the typed call it denotes keeps the direct path's return-event
- * machinery, which a per-call body does not emit. Two spellings stay on that machinery after the lowering that
- * rewrites a namable payload to its typed call: a payload that names a method but reaches the call across a helper
- * that RETURNS (so the payload local the lowering follows does not exist yet where it runs), and a payload that
- * names no method at all (a raw selector the compiler cannot resolve to an interface).
+ * A low-level call whose payload names an interface method is lowered to the typed call it denotes. The lowering
+ * follows the payload as a local, so a payload handed to a helper whose own body makes the call is served once the
+ * helper is inlined into the entry before the lowering runs - a helper that RETURNS included, which the inliners do
+ * under the per-call convention exactly so the payload is one the lowering can follow.
  *
- * The second shape is a verified-mapping write beside a call whose occurrence the source does not fix. A verified
- * mapping's write declares its records in the segment the write lands in, and the derivation locates that segment
- * by the fixed number of calls that precede it; a call that only some paths make moves that segment, which the run
- * time position mode cannot follow.
+ * What stays refused: a payload that names no method (a selector literal no held interface declares), and a
+ * verified-mapping write beside a call whose occurrence the source does not fix (the write declares its records in
+ * the segment it lands in, and the derivation locates that segment by the fixed number of calls before it).
  *
- * Beside them sits the gate a body that reaches inline assembly trips. It refuses by reachability rather than per
- * body, so the cases fix both ends: an unreached assembly helper is served, and a body that reaches one fails the
- * contract.
+ * Beside them sit the inline-assembly cases. A body that reaches an assembly block the lowering rewrote is served;
+ * a body that still reaches a block the lowering left in place - native `assembly { OP_* }` has no Yul tree - is
+ * refused by name while the contract's other bodies compile.
  *
  * Each case drives a real source through the shipped compile entry point and reads the refusal the compile
  * publishes beside the artifact; the served bodies beside them fix where each refusal begins.
@@ -27,6 +25,9 @@ import { refusalMessageOf } from './refused-entry.js';
 const RAW_REFUSAL = "the call to '__raw__' takes the direct path's return-event or value-transfer machinery, "
   + 'which a per-call body does not emit';
 
+/** The reason a body that reaches an assembly block the lowering left in place is refused. */
+const INLINE_ASSEMBLY_REASON = 'inline assembly is not composed per-call';
+
 /** The reason a verified-mapping write behind a call the source does not fix is refused. */
 const WRITE_BEHIND_CALL_REFUSAL = 'the body writes a verified mapping behind a call whose occurrence the source '
   + 'does not fix, and the derived operands cannot follow the segment the write lands in';
@@ -34,7 +35,7 @@ const WRITE_BEHIND_CALL_REFUSAL = 'the body writes a verified mapping behind a c
 const HEAD = 'pragma solidcash ^0.13.0;'
   + ' interface IToken { function transfer(address to, int amount) returns (bool); }';
 
-/** The payload names the method, but the call sits in a helper that RETURNS, so the lowering cannot reach it. */
+/** The payload is a local, handed to a helper that makes the call and RETURNS what it produced. */
 const PAYLOAD_ACROSS_RETURNING_HELPER = `${HEAD}`
   + ' library Addr {'
   + '   function forward(address target, bytes data) internal returns (bytes) {'
@@ -49,7 +50,7 @@ const PAYLOAD_ACROSS_RETURNING_HELPER = `${HEAD}`
   + '   require(true);'
   + ' } }';
 
-/** The same payload handed to a VOID helper, which the lowering inlines into the caller and then resolves. */
+/** The same payload handed to a VOID helper. */
 const PAYLOAD_ACROSS_VOID_HELPER = `${HEAD}`
   + ' library Addr {'
   + '   function forward(address target, bytes data) internal {'
@@ -109,16 +110,31 @@ const WRITE_ALONE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** The per-call convention composes no inline assembly, so a body that reaches any is refused contract-wide. */
-const INLINE_ASSEMBLY_REFUSAL = 'the per-call composition convention does not support this contract: '
-  + 'inline assembly is not composed per-call';
+/**
+ * A body that holds native assembly beside one that does not.
+ *
+ * Native opcodes have no Yul tree, so the lowering leaves the block in place and only the body that reaches it is
+ * refused; the other entry keeps its program.
+ */
+const ASSEMBLY_BESIDE_A_COMPILING_BODY = 'pragma solidcash ^0.13.0;'
+  + ' contract Mixed {'
+  + '   function withAsm() { assembly { OP_DUP OP_ADD 0x01 } require(true); }'
+  + '   function plain() { require(true); }'
+  + ' }';
 
-/** A body that calls a helper whose own body holds inline assembly. */
-const ASSEMBLY_IN_REACHED_HELPER = 'pragma solidcash ^0.13.0;'
-  + ' library Lifted { function lift() internal { assembly { OP_DUP OP_ADD 0x01 } } }'
-  + ' contract Caller { function callIt() { Lifted.lift(); require(true); } }';
+/** An entry body whose assembly is memory loads, which the lowering rewrites into ordinary statements. */
+const LOWERABLE_ASSEMBLY = 'pragma solidcash ^0.13.0;'
+  + ' contract Reads {'
+  + '   function pick(bytes blob) internal returns (int) {'
+  + '     int head;'
+  + '     assembly { head := mload(add(blob, 0x20)) }'
+  + '     require(true);'
+  + '     return head;'
+  + '   }'
+  + '   function read(bytes blob) { require(pick(blob) != 0); }'
+  + ' }';
 
-/** The same helper, which no body calls: the reachability the gate reads is what refuses, not the helper alone. */
+/** A helper's native assembly no body calls. */
 const ASSEMBLY_IN_UNREACHED_HELPER = 'pragma solidcash ^0.13.0;'
   + ' library Lifted { function lift() internal { assembly { OP_DUP OP_ADD 0x01 } } }'
   + ' contract Caller { function callIt() { require(true); } }';
@@ -128,10 +144,10 @@ describe('a low-level call whose payload names a method the compiler can hold', 
     expect(refusalMessageOf(PAYLOAD_ACROSS_VOID_HELPER)).toBe('');
   });
 
-  it('refuses the payload when the helper returns, naming the machinery the body lacks', () => {
-    // The payload local the lowering follows is created only when the returning helper is inlined, which happens
-    // after the lowering runs, so the call stays on the direct path's opaque-return machinery.
-    expect(refusalMessageOf(PAYLOAD_ACROSS_RETURNING_HELPER)).toBe(`Caller.callIt(): ${RAW_REFUSAL}`);
+  it('serves the payload when the helper returns, since the inliner runs before the lowering', () => {
+    // The helper's body is spliced into the entry before the lowering, so the payload is a local the lowering
+    // follows and the call compiles as the typed call it denotes rather than staying on the raw-return machinery.
+    expect(refusalMessageOf(PAYLOAD_ACROSS_RETURNING_HELPER)).toBe('');
   });
 });
 
@@ -142,14 +158,19 @@ describe('a low-level call whose payload names no method', () => {
 });
 
 describe('a body that reaches inline assembly', () => {
-  it('serves the contract when no body reaches the assembly helper', () => {
-    expect(refusalMessageOf(ASSEMBLY_IN_UNREACHED_HELPER)).toBe('');
+  it('serves a body whose assembly the lowering rewrites', () => {
+    expect(refusalMessageOf(LOWERABLE_ASSEMBLY)).toBe('');
   });
 
-  it('refuses the whole contract when a body reaches it', () => {
-    // The gate refuses by reachability, before any per-body refusal: a body that reaches inline assembly fails
-    // the contract rather than only itself.
-    expect(() => refusalMessageOf(ASSEMBLY_IN_REACHED_HELPER)).toThrow(INLINE_ASSEMBLY_REFUSAL);
+  it('refuses only the body whose own assembly the lowering leaves, and compiles the other entry', () => {
+    // The refusal is a fact about the body that reaches the block, published beside the artifact, not a refusal of
+    // the contract: the sibling entry carries no assembly and keeps its program.
+    expect(refusalMessageOf(ASSEMBLY_BESIDE_A_COMPILING_BODY))
+      .toBe(`Mixed.withAsm(): ${INLINE_ASSEMBLY_REASON}`);
+  });
+
+  it('serves the contract when no body reaches the assembly helper', () => {
+    expect(refusalMessageOf(ASSEMBLY_IN_UNREACHED_HELPER)).toBe('');
   });
 });
 

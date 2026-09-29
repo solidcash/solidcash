@@ -16669,7 +16669,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const authenticatedSlot = (addressParam === undefined
         ? undefined : this.externalCallSlots.find((slot) => slot.addressParam === addressParam))
         ?? this.externalCallSlots.find((slot) => slot.interfaceName === '__raw__');
-      if (authenticatedSlot) {
+      // A per-call body has no co-spent input the target's code could be read from, so it answers `.code` from
+      // the target's own locking bytecode through the P2SH extractor rather than the fixed slot's master index.
+      if (authenticatedSlot && !this.perCallMaster) {
         // A factory deployment can expose a stable logical address whose locking bytecode differs from the
         // physical state covenant co-spent for this call. The external-call identity proof already binds that
         // logical address to the slot master. Use its non-empty locking bytecode as the authenticated code marker:

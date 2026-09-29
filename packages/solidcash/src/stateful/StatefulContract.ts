@@ -9722,7 +9722,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const legacyTimestamp = legacyCompatibility
                   && typeof onChainState.state.__block_timestamp === 'bigint'
                   ? onChainState.state.__block_timestamp : undefined;
-                const foldedPushes = foldLeadingRouteArrayPushes({
+                const foldParams: Parameters<typeof foldLeadingRouteArrayPushes>[0] = {
                   rowArguments: selectedRows,
                   collection: access.collection,
                   valueType: collection.valueType,
@@ -9735,9 +9735,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   ),
                   // path-effect activation/settle-time ExecutionContext: per-row activations; prefer settle-time ExecutionContext when registered.
                   resolveRowActivationEnv: createFoldRowActivationEnvResolver(),
-                });
+                };
+                const foldedPushes = foldLeadingRouteArrayPushes(foldParams);
                 const leadingValue = foldedPushes?.leading;
-                const completeValue = foldedPushes?.complete;
+                const completeValue = foldedPushes?.complete
+                  ?? foldCompleteRouteArrayPushes(foldParams)?.complete;
                 const leadingIndex = entryAbiFunction!.inputs.findIndex((input) =>
                   input.name === `__internal__leadingPushValue_${slotIndex}`);
                 const completeIndex = entryAbiFunction!.inputs.findIndex((input) =>
@@ -9794,6 +9796,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 // chunk scan walks matching outputs by chunk ordinal, so the duplicate run makes it read past the
                 // end of the value (`OP_SPLIT` beyond the buffer).
                 addComputedValueChunkRun(access.collection, slot);
+              }
+              if (kernelEncodedValue && !list.has(slot)) {
+                const plannedInsert = sortedInserts.find((insert) => insert.slotIndex === slotIndex
+                  && insert.collection === access.collection);
+                if (plannedInsert) {
+                  plannedInsert.newNode = encodeEntryCommitment(
+                    slot, list.predecessorOf(slot).nextKey, encodeChunkableValueTail(kernelEncodedValue),
+                  );
+                }
               }
               // A computed UPDATE (present key) mints no NEW node; pin its loop entry EMPTY so the loop-entry
               // derivation does not misread the value-chunk pin's OP_OUTPUTTOKENCOMMITMENT calls as a phantom NEW.

@@ -193,6 +193,72 @@ describe('an entry append publishes the element it pushes', () => {
     });
   });
 
+  it('publishes the append only the arm that completes carries', () => {
+    // A guard that lowers to `if (guard) { revert } else { body }` puts the body in the only arm that completes.
+    // The reverting arm completes no path at all, so it is not a second path with no write: the append is still the
+    // one write on every path that completes, exactly as a `revert` before the write already is.
+    expect(sourcesOf(`
+      contract Impl {
+        address public implementation;
+        address[] public items;
+        bool public paused;
+        modifier notPaused() { require(!this.paused); _; }
+        function add(address who) notPaused { this.items.push(who); }
+      }
+    `)).toStrictEqual({ items: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } });
+
+    expect(sourcesOf(`
+      contract Impl {
+        address public implementation;
+        address[] public items;
+        function add(address who, bool stop) {
+          if (stop) { revert("stopped"); } else { this.items.push(who); }
+        }
+      }
+    `)).toStrictEqual({ items: { kind: 'source', source: { kind: 'forward', paramIndex: 0 } } });
+  });
+
+  it('publishes the default a no-argument append writes past an element the body rebuilds in place', () => {
+    // `push()` appends the element type's default. A following indexed write whose own value reads the array
+    // rebuilds an element rather than appending one, so the run still grows by the one default element the push
+    // wrote; the body's own close pins the commitment it computed afterwards. This is the shape a body that pushes
+    // an element and then fills its fields through a storage pointer has.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who) { this.items.push(); this.items[0].who = who; }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'cast', type: 'address', expression: { kind: 'literal', value: '0', type: 'bigint' } },
+          { kind: 'literal', value: '0', type: 'bigint' },
+        ],
+      },
+    });
+
+    // The same rebuild past a forwarded element keeps the pushed element: the rebuild adds no element.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who) { this.items.push(Detail(who, 1)); this.items[0].amount = 2; }
+      }
+    `)).toStrictEqual({
+      items: {
+        kind: 'call', name: 'Detail', type: 'Detail',
+        args: [
+          { kind: 'source', source: { kind: 'forward', paramIndex: 0 } },
+          { kind: 'literal', value: '1', type: 'bigint' },
+        ],
+      },
+    });
+  });
+
   it('stays absent for a shape the run cannot be sized from', () => {
     // A conditional append grows the run by zero or one, a repeated append by two, a loop by its trip count, and
     // an assignment replaces the value outright — none is the single stated element the consumer needs.
@@ -234,6 +300,17 @@ describe('an entry append publishes the element it pushes', () => {
         address public implementation;
         address[] public items;
         function add(address who) { this.items.push(who); this.items[0] = who; }
+      }
+    `)).toBeUndefined();
+
+    // An indexed write whose own value does not read the array replaces an element with an independent value; the
+    // replay does not model that, so the append stays absent even though one element was pushed.
+    expect(sourcesOf(`
+      contract Impl {
+        struct Detail { address who; uint amount; }
+        address public implementation;
+        Detail[] public items;
+        function add(address who) { this.items.push(); this.items[0] = Detail(who, 1); }
       }
     `)).toBeUndefined();
 

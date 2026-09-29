@@ -14,6 +14,7 @@ import {
   ExpressionNode, TransferStatementNode, AddressTransferStatementNode, AddressSendExpressionNode,
   BlockNode, WhileNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode, ArrayAssignNode, ReturnNode, IntLiteralNode,
+  RevertNode,
   ArrayNode, NewArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode, StateArrayPushNode,
@@ -680,23 +681,33 @@ const dynamicWriteSourcesOf = (
   if (appendMode && compilerOptions.composition !== 'per-call') return {};
   const dynamicNames = new Set(func.dynamicWrites ?? []);
   if (dynamicNames.size === 0) return {};
-  // This replay deliberately models only terminating straight-line/if control flow. Treat abrupt completion and
-  // every other control-flow family as an all-metadata boundary: otherwise `if (stop) return; this.s = value`
-  // would look like one write on both paths even though the first path never reaches it. Constructors are finite,
-  // but even a statically bounded loop needs a path-sensitive trip-count/write proof which this format lacks.
+  // This replay deliberately models only terminating straight-line/if control flow. An abrupt completion that can
+  // precede a dynamic write is an all-metadata boundary: otherwise `if (stop) return; this.s = value` would look
+  // like one write on both paths even though the first path completes without it. A completion the body reaches
+  // only after every dynamic write (the `return jobId` that closes a value-returning entry) skips nothing and is
+  // not a boundary.
+  //
+  // A loop, a traversal or a switch is NOT a boundary by itself. The replay never walks into one, so a dynamic
+  // write it holds is left to the invalidation below, which charges the variable and keeps it absent - the same
+  // answer the boundary gave, but for the write rather than for the whole body. A body whose loop writes nothing
+  // dynamic (a tag scan, an unthreaded guard) therefore keeps a dynamic write it makes elsewhere.
   // A `revert` is not a boundary: it aborts the deployment, so no successful genesis exists on the path that
   // reaches it, and a write the body reaches before one is still assigned on every path that completes.
-  const unsupportedControl = new Set([
-    'ReturnNode', 'BreakNode', 'ContinueNode', 'TryCatchNode', 'WhileNode', 'DoWhileNode',
-    'CollectionIterationNode', 'SwitchNode',
-  ]);
-  let unsupportedControlFlow = false;
+  const abruptControl = new Set(['ReturnNode', 'BreakNode', 'ContinueNode', 'TryCatchNode']);
+  // Source-order positions: an abrupt completion bounds the replay only when it sits before a dynamic write, so
+  // every dynamic write a completing path could skip has a higher position than the completion that skips it.
+  let firstAbrupt = Number.POSITIVE_INFINITY;
+  let lastDynamicWrite = -1;
+  let scanPosition = 0;
   const scanControlFlow = (value: unknown, seen = new Set<object>()): void => {
-    if (unsupportedControlFlow || !(value instanceof Node) || seen.has(value)) return;
+    if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
-    if (unsupportedControl.has(value.constructor.name)) {
-      unsupportedControlFlow = true;
-      return;
+    const position = scanPosition++;
+    if (abruptControl.has(value.constructor.name)) firstAbrupt = Math.min(firstAbrupt, position);
+    const scanned = value as unknown as { name?: string };
+    if (scanned.name && dynamicNames.has(scanned.name)
+      && /(?:Assign|Push|Pop|Delete)Node$/.test(value.constructor.name)) {
+      lastDynamicWrite = Math.max(lastDynamicWrite, position);
     }
     for (const [key, child] of Object.entries(value)) {
       if (['location', 'definition', 'resolvedFunction', 'functionReference', 'symbolTable',
@@ -706,7 +717,7 @@ const dynamicWriteSourcesOf = (
     }
   };
   scanControlFlow(func.body);
-  if (unsupportedControlFlow) return {};
+  if (firstAbrupt < lastDynamicWrite) return {};
   const visible = func.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
   type Binding = ExternalCallExpression | undefined;
   type Write = { minimum: number; maximum: number; value?: ExternalCallExpression };
@@ -826,6 +837,26 @@ const dynamicWriteSourcesOf = (
     return undefined;
   };
 
+  // True when an expression reads the named dynamic variable itself. A write whose value does so rebuilds an
+  // element of that value in place (the read-modify-write a struct field fill through a storage pointer lowers
+  // to) rather than replacing the value or an element with an independent one.
+  const readsVariable = (expression: ExpressionNode, name: string): boolean => {
+    const seen = new Set<object>();
+    const visit = (value: unknown): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if ((value instanceof MappingAccessNode || value instanceof StateAccessNode
+        || value instanceof IdentifierNode) && value.name === name) return true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'symbolTable', 'stateVariable', 'collection'].includes(key)) continue;
+        if (child instanceof Node && visit(child)) return true;
+        if (Array.isArray(child) && child.some((item) => visit(item))) return true;
+      }
+      return false;
+    };
+    return visit(expression);
+  };
+
   const invalidateUnknownMutations = (node: Node, state: ReplayState): void => {
     const seen = new Set<object>();
     const visit = (value: unknown): void => {
@@ -869,6 +900,30 @@ const dynamicWriteSourcesOf = (
     visit(node);
   };
 
+  // True when a subtree carries a completion the replay honours: a return, break or continue ends the arm, and a
+  // caught failure of a `try` ends it too, so an arm holding one does not always run to its final statement.
+  const hasHonouredCompletion = (node: Node): boolean => {
+    const seen = new Set<object>();
+    const visit = (value: unknown): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (abruptControl.has(value.constructor.name)) return true;
+      for (const [key, child] of Object.entries(value)) {
+        if (['location', 'definition', 'symbolTable'].includes(key)) continue;
+        if (child instanceof Node && visit(child)) return true;
+        if (Array.isArray(child) && child.some((item) => visit(item))) return true;
+      }
+      return false;
+    };
+    return visit(node);
+  };
+
+  // True when every path that reaches the end of an arm aborts it: its last statement is a `revert` and it holds no
+  // completion that would end it earlier. Such an arm contributes no completing path, so it neither halves the write
+  // count nor blanks the value; the other arm alone is what every completing path took.
+  const armAlwaysReverts = (block: BlockNode): boolean =>
+    block.statements?.at(-1) instanceof RevertNode && !hasHonouredCompletion(block);
+
   const processBlock = (block: BlockNode, state: ReplayState): ReplayState => {
     for (const statement of block.statements ?? []) {
       if (statement instanceof VariableDefinitionNode) {
@@ -901,6 +956,15 @@ const dynamicWriteSourcesOf = (
         write.value = serialize(statement.value, state);
         continue;
       }
+      // A write that rebuilds an element of the pushed variable in place does not add an element: the run still
+      // grows by the one element the push appended, and the element rebuilt is that one. The push's element is
+      // therefore still what this map states, so the write neither disqualifies the append nor supplies a value of
+      // its own. A write whose value does not read the variable replaces it (or an element) with an independent
+      // value, which this replay does not model, so it falls through to the invalidation and keeps the entry absent.
+      if (appendMode && statement instanceof StateArrayAssignNode && dynamicNames.has(statement.name)
+        && readsVariable(statement.value, statement.name)) {
+        continue;
+      }
       if (!appendMode && statement instanceof StateAssignNode && dynamicNames.has(statement.name)) {
         invalidateUnknownMutations(statement.expression, state);
         const write = state.writes.get(statement.name)!;
@@ -916,7 +980,28 @@ const dynamicWriteSourcesOf = (
         const ifState = processBlock(statement.ifBlock, cloneState(state));
         const elseState = statement.elseBlock
           ? processBlock(statement.elseBlock, cloneState(state)) : cloneState(state);
-
+        // An arm whose last statement is a `revert` never completes: a revert aborts, and no abrupt completion the
+        // replay would honour (a return, break or continue) survives the scan above. Such an arm contributes no
+        // completing path, so it neither halves the write count nor blanks the value; the other arm alone is what
+        // every completing path took. This is the `if (guard) { revert } else { body }` shape a modifier guard
+        // lowers to, and the same fact the constructor replay already applies to a write after such a branch.
+        const ifAborts = armAlwaysReverts(statement.ifBlock);
+        const elseAborts = statement.elseBlock !== undefined && armAlwaysReverts(statement.elseBlock);
+        if (ifAborts !== elseAborts) {
+          const surviving = ifAborts ? elseState : ifState;
+          for (const [key, value] of surviving.bindings) state.bindings.set(key, value);
+          state.blockedNames = surviving.blockedNames;
+          state.writes = surviving.writes;
+          continue;
+        }
+        // Both arms revert, so the branch itself never completes and nothing past it is reached on a completing
+        // path; no dynamic value can be published from it.
+        if (ifAborts && elseAborts) {
+          for (const name of dynamicNames) {
+            state.writes.set(name, { minimum: 0, maximum: Number.POSITIVE_INFINITY, value: undefined });
+          }
+          continue;
+        }
         for (const key of incomingBindingKeys) {
           state.bindings.set(key, joinExpression(
             condition, ifState.bindings.get(key), elseState.bindings.get(key),

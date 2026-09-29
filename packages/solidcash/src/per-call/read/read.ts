@@ -18,7 +18,9 @@
  * `externals`, each callee becomes its own `STATIC` frame over its own master and records, and one validator — the
  * root's — covers every frame of the read. A callee is learned before its caller, because the caller's call record
  * carries the callee's returned bytes. A mapping-backed record is read the same way: the entry's own block slots
- * name the live nodes it reads, and the deployment layer's classification locates them.
+ * name the live nodes it reads, and the deployment layer's classification locates them. A key its own arguments and
+ * a loop counter name — `cells[id + i]` — is one no single resolution can evaluate, so the read enumerates the
+ * turns the arguments fix and locates each turn's node.
  */
 
 import { hexToBin } from '@bitauth/libauth';
@@ -28,6 +30,7 @@ import {
   VALUE_HEAD_SIZE,
   VALUE_INLINE_LIMIT,
   FrameKind,
+  attachDecodedAccessors,
   bytesEqual,
   bytesToHex,
   decodePushdataValue,
@@ -47,7 +50,8 @@ import {
 import type { FunctionArgument } from '../../Argument.js';
 import { encodeFunctionArgument } from '../../Argument.js';
 import { decodeAuthenticatedProducerResultVector } from '../../stateful/external-return-encoding.js';
-import { decodeEntryCommitment } from '../../stateful/SortedList.js';
+import { evalComputedKey } from '../../stateful/route-expression-key.js';
+import { bytesToSlotValue, decodeEntryCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
 import { PerCallCallRecordError, readEntryNode } from '../call/entry-records.js';
 import {
   deployMaster,
@@ -538,6 +542,15 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
     if (error instanceof PerCallCallRecordError) throw new PerCallReadError(error.message);
     throw error;
   }
+  return readRecordOf(frame, deployment, node);
+}
+
+/** The record one located node contributes to a frame, with the long value its body reads by witness. */
+function readRecordOf(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  node: ReturnType<typeof readEntryNode>,
+): EntryRead {
   // A node the key names holds its value inline, or past the inline limit as a digest whose bytes sit in chunk
   // records the deployment holds. A node the key is read beside is never read for its value, so its width is free.
   const tail = node.commitment.slice(64);
@@ -565,6 +578,179 @@ function entryReadRecord(frame: ReadFrame, deployment: PerCallDeploymentSet, slo
   };
 }
 
+/** The expression label one entry slot's key is published as, when the artifact publishes one. */
+function entryKeyLabel(frame: ReadFrame, slotIndex: number): string | undefined {
+  const fn = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
+  const access = fn?.entryAccesses?.find((candidate) => candidate.slotIndex === slotIndex);
+  if (access === undefined || access.keyParams.length !== 1) return undefined;
+  return access.keySources?.[0]?.expressionLabel ?? access.keyParams[0];
+}
+
+/**
+ * A sum of two bare operands, which is how a paged key is published.
+ *
+ * A getter that walks a mapping by its own arguments and a loop counter reads `cells[id + i]`, which the artifact
+ * publishes as `binop:+(id:id,id:i)`. A key that is anything else — an operand that is not a bare name, or one
+ * whose names the arguments do not carry — is left to the shipped resolver, which refuses what it cannot evaluate.
+ */
+const PAGED_KEY_SUM = /^binop:\+\(id:([A-Za-z_$][\w$]*),id:([A-Za-z_$][\w$]*)\)$/;
+
+/** The two halves of a paged key: the argument the key's own sum reads, and the loop's counter. */
+interface PagedKey {
+  /** The entry argument the sum reads, which the frame's own args carry by that name. */
+  readonly named: string;
+  /** The loop's own counter, which no parameter binds. */
+  readonly counter: string;
+}
+
+/**
+ * The counter a paged key names, or `undefined` when the key is not one.
+ *
+ * The sum's two operands are the entry's own arguments and the loop's counter, so one side has to be a value the
+ * caller supplied and the other a name no parameter can bind. A key both of whose sides an argument names needs no
+ * counter, and one neither side names is not a key the arguments determine at all.
+ */
+function pagedKey(label: string, inputs: readonly { readonly name: string }[]): PagedKey | undefined {
+  const sum = PAGED_KEY_SUM.exec(label);
+  if (sum === null) return undefined;
+  const [left, right] = [sum[1]!, sum[2]!];
+  const named = [left, right].filter((name) => inputs.some((input) => input.name === name));
+  const counters = [left, right].filter((name) => !inputs.some((input) => input.name === name));
+  return named.length === 1 && counters.length === 1
+    ? { named: named[0]!, counter: counters[0]! }
+    : undefined;
+}
+
+/**
+ * The key a paged access names at one turn of the entry's counter loop.
+ *
+ * The loop's counter opens at zero and advances by one, so a turn's value is the turn's own index; substituting it
+ * for the counter operand is what makes the sum evaluable against the frame's arguments, which is the same
+ * whole-operand substitution the route-key resolver makes for a counter-loop row.
+ */
+function pagedKeyAt(
+  label: string,
+  counter: string,
+  args: readonly FunctionArgument[],
+  inputs: readonly { readonly name: string; readonly type: string }[],
+  turn: number,
+): Uint8Array | undefined {
+  const escaped = counter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rewritten = label.replace(new RegExp(`id:${escaped}(?![\\w$])`, 'g'), `lit:${turn}`);
+  return evalComputedKey(rewritten, [...args], inputs, undefined, undefined);
+}
+
+/**
+ * How many turns of the entry's counter loop a frame declares a record for.
+ *
+ * The key's own sum already reads one of the entry's arguments, and the loop's bound is another, so no turn can run
+ * past the largest integer argument the key does not read. A page whose bound argument is zero therefore names no
+ * turn at all and declares no record, which is what an empty page reads as. A key that consumed every argument
+ * leaves no bound to read, and the block's own record is the first turn's, so that page declares the one turn.
+ */
+function loopTurns(
+  args: readonly FunctionArgument[],
+  inputs: readonly { readonly name: string }[],
+  bound: string,
+): number {
+  let turns = 0n;
+  let bounded = false;
+  for (const [index, value] of args.entries()) {
+    const count = typeof value === 'bigint' ? value : typeof value === 'number' ? BigInt(value) : undefined;
+    if (count === undefined || inputs[index]?.name === bound) continue;
+    bounded = true;
+    if (count > turns) turns = count;
+  }
+  return Number(bounded ? turns : 1n);
+}
+
+/** The live node one key names, or the node the key would be spliced beside. */
+function locatedNode(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  collection: { readonly name: string; readonly signature: string },
+  key: Uint8Array,
+): ReturnType<typeof readEntryNode> {
+  const slot = keyToSlotMulti([key]);
+  const nodes = (deployment.nodesByCollection.get(collection.name) ?? []).map((utxo) => {
+    const commitment = utxo.token?.nft?.commitment;
+    if (commitment === undefined) {
+      throw new PerCallReadError(
+        `category ${frame.categoryId} holds a node of collection "${collection.name}" with no commitment`,
+      );
+    }
+    return { utxo, commitment: new Uint8Array(hexToBin(commitment)) };
+  });
+  const found = nodes.find((node) => bytesEqual(decodeEntryCommitment(node.commitment).slot, slot));
+  // A key no node holds is read against its bracketing predecessor, so the body can prove the key absent.
+  const node = found ?? nodes.reduce<typeof nodes[number] | undefined>((best, candidate) => {
+    if (bytesToSlotValue(decodeEntryCommitment(candidate.commitment).slot) >= bytesToSlotValue(slot)) return best;
+    if (best === undefined) return candidate;
+    return bytesToSlotValue(decodeEntryCommitment(candidate.commitment).slot)
+      > bytesToSlotValue(decodeEntryCommitment(best.commitment).slot) ? candidate : best;
+  }, undefined);
+  if (node === undefined) {
+    throw new PerCallReadError(
+      `category ${frame.categoryId} holds no node of collection "${collection.name}" whose slot is the key's or `
+      + 'the key\'s bracketing predecessor, so the read cannot locate what it reads',
+    );
+  }
+  return {
+    collection: collection.name,
+    signature: collection.signature,
+    slot,
+    present: found !== undefined,
+    commitment: node.commitment,
+    utxo: node.utxo,
+  };
+}
+
+/**
+ * The live mapping nodes one entry slot reads, in the order its own turns run.
+ *
+ * An entry slot whose key the frame's own arguments determine names one node, which the shipped resolver locates. A
+ * key that is a sum over an argument and the loop's own counter is one no single key resolution can evaluate, so
+ * the turns the frame's own arguments fix are enumerated instead and each turn resolves its own key. A node two
+ * turns share — a bracketing predecessor — is one input and is declared once.
+ */
+function entryReadRecords(
+  frame: ReadFrame,
+  deployment: PerCallDeploymentSet,
+  slotIndex: number,
+): readonly EntryRead[] {
+  const label = entryKeyLabel(frame, slotIndex);
+  const paged = label === undefined ? undefined : pagedKey(label, frame.entry.inputs);
+  if (label === undefined || paged === undefined) {
+    return [entryReadRecord(frame, deployment, slotIndex)];
+  }
+  const fn = frame.artifact.abi.find((candidate) => candidate.name === frame.entry.name);
+  const access = fn?.entryAccesses?.find((candidate) => candidate.slotIndex === slotIndex);
+  const collection = frame.artifact.stateLayout?.collections
+    ?.find((candidate) => candidate.name === access?.collection);
+  if (collection === undefined) {
+    throw new PerCallReadError(
+      `entry "${frame.entry.name}" reads mapping "${access?.collection ?? '<unnamed>'}", which the artifact does `
+      + 'not publish as a collection',
+    );
+  }
+  const reads: EntryRead[] = [];
+  const declared = new Set<string>();
+  for (let turn = 0; turn < loopTurns(frame.args, frame.entry.inputs, paged.named); turn += 1) {
+    const key = pagedKeyAt(label, paged.counter, frame.args, frame.entry.inputs, turn);
+    if (key === undefined) {
+      throw new PerCallReadError(
+        `entry "${frame.entry.name}" names mapping "${access?.collection ?? '<unnamed>'}" at a key no run of its `
+        + 'own arguments determines',
+      );
+    }
+    const read = readRecordOf(frame, deployment, locatedNode(frame, deployment, collection, key));
+    if (declared.has(read.record.id)) continue;
+    declared.add(read.record.id);
+    reads.push(read);
+  }
+  return reads;
+}
+
 /**
  * The records one frame declares, in the order its entry's block slots read them.
  *
@@ -587,9 +773,14 @@ function frameReadRecords(
     if ((slot.kind === 'dataNft' || slot.kind === 'readOnlyDataNft') && slot.nftIndex !== undefined) {
       records.push(dataNftReadRecord(frame, deployment, slot.nftIndex));
     } else if (slot.kind === 'entry' && slot.slotIndex !== undefined) {
-      const read = entryReadRecord(frame, deployment, slot.slotIndex);
-      records.push(read.record);
-      if (read.value !== undefined) frame.valueWitnesses.set(slot.slotIndex, read.value);
+      for (const read of entryReadRecords(frame, deployment, slot.slotIndex)) {
+        records.push(read.record);
+        // A paged slot declares several turns' nodes; the body reads the block's own record, which the first turn
+        // names, so the witness is that node's value.
+        if (read.value !== undefined && !frame.valueWitnesses.has(slot.slotIndex)) {
+          frame.valueWitnesses.set(slot.slotIndex, read.value);
+        }
+      }
     }
   }
   return records;
@@ -646,6 +837,50 @@ export function decodeReturnValues(
     offset += bytesConsumed;
   }
   return values;
+}
+
+/**
+ * The struct a mapping getter's named record is assembled from, when the read's entry is one.
+ *
+ * An auto-generated getter for a struct-valued mapping publishes the struct's fields as separate outputs, because
+ * that is how the entry's own body returns them: it returns each field, never the struct. The named record the
+ * caller asked for is therefore assembled from the artifact's own layout: the entry's single read access names the
+ * collection, and the collection's value type names the struct. The declared output types must be exactly the
+ * struct's field types in order, which is what makes this the getter's own flattened record rather than an entry
+ * that happens to read the collection and declare the same arity.
+ */
+function mappingValueStruct(entry: ReadEntry, artifact: Artifact): StructDefinitionInfo | undefined {
+  if (entry.accesses.length !== 1) return undefined;
+  const access = entry.accesses[0]!;
+  if (access.collection !== entry.name || access.operations.some((operation) => operation !== 'read')) {
+    return undefined;
+  }
+  const collection = (artifact.stateLayout?.collections ?? [])
+    .find((candidate) => candidate.name === access.collection);
+  const struct = structDefinitionsOf(artifact)?.find((candidate) => candidate.name === collection?.valueType);
+  if (struct === undefined) return undefined;
+  const declared = entry.outputs.map((output) => output.type);
+  const fields = struct.fields.map((field) => field.type);
+  return declared.length === fields.length && declared.every((type, index) => type === fields[index])
+    ? struct
+    : undefined;
+}
+
+/**
+ * The values a read's entry returned.
+ *
+ * A struct-valued mapping getter records its fields as separate outputs; the read reassembles the named record from
+ * them, so the value the caller asked for is the struct the getter names rather than its first field.
+ */
+function decodeEntryValues(entry: ReadEntry, artifact: Artifact, retval: Uint8Array): readonly StateValue[] {
+  const decoded = decodeReturnValues(
+    retval, entry.outputs, structDefinitionsOf(artifact), entry.resultEncoding, artifact.enums,
+  );
+  const struct = mappingValueStruct(entry, artifact);
+  if (struct === undefined || decoded.length !== struct.fields.length) return decoded;
+  const record: Record<string, StateValue> = {};
+  struct.fields.forEach((field, index) => { record[field.name] = decoded[index]!; });
+  return [attachDecodedAccessors(record)];
 }
 
 /** The argument pushes a frame's unlocking bytecode carries, in the order a callee's body reads them. */
@@ -935,9 +1170,7 @@ export async function readPerCallEntry(options: PerCallReadOptions): Promise<Per
   });
   const accepted = machine.stateSuccess(state) === true;
   const retval = learned.get(READ_MASTER)!;
-  const values = decodeReturnValues(
-    retval, root.entry.outputs, structDefinitionsOf(root.artifact), root.entry.resultEncoding, root.artifact.enums,
-  );
+  const values = decodeEntryValues(root.entry, root.artifact, retval);
   return {
     values,
     value: values[0] ?? 0n,

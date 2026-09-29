@@ -440,7 +440,7 @@ function invalidateSignerUtxos(signer: Signer): void {
 }
 import {
   findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
-  registeredExecutionLockingBytecode,
+  registeredExecutionLockingBytecode, registeredValueAddressLockingBytecode,
 } from './deployment-registry.js';
 import {
   loadCreateBuilderOnChainState as loadCreateBuilderOnChainStateImpl,
@@ -8202,19 +8202,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const normalized = args.map((arg, index) => {
       if (frameInputs[index]?.type !== 'address' || typeof arg !== 'string'
         || externalTargetNames.has(frameInputs[index].name)) return arg;
-      const deployment = findDeploymentByAddress(this.inner.provider, arg);
-      if (deployment?.lockingBytecode) {
-        // Preserve a caller-supplied CREATE identity. Rewriting it to the current execution/state-owner lock makes
-        // values such as ERC20 allowance spenders disagree with the compiler's authenticated msg.sender, which is
-        // reconstructed from the immutable SCID anchor. Ordinary deployment addresses already encode the physical
-        // lock and remain byte-for-byte equivalent after normalization.
-        try {
-          if (binToHex(addressToLockScript(arg)).toLowerCase() !== deployment.lockingBytecode.toLowerCase()) {
-            return arg;
-          }
-        } catch { /* retain the legacy validation error below */ }
-      }
-      return deployment?.lockingBytecode ? hexToBin(deployment.lockingBytecode) : arg;
+      // The registry distinguishes a plain contract's execution lock from a kernel participant's authenticated
+      // public CREATE identity. Use that same value for ABI arguments and genesis state, so both paths agree.
+      return registeredValueAddressLockingBytecode(this.inner.provider, arg) ?? arg;
     });
     const structs = this.inner.artifact.structs ?? this.inner.artifact.stateLayout?.structs;
     frameInputs.forEach((input, index) => {

@@ -107,6 +107,21 @@ function toInitialState(initialState: ProxyInitialState | undefined, impl: Artif
   return out;
 }
 
+/** Resolve registered contract references in typed proxy state before encoding the genesis commitment. */
+function normalizeInitialStateAddresses(
+  initialState: Record<string, unknown> | undefined, impl: Artifact, provider: NetworkProvider,
+): Record<string, unknown> | undefined {
+  if (!initialState) return undefined;
+  const normalized = { ...initialState };
+  for (const variable of impl.stateLayout?.variables ?? []) {
+    const value = normalized[variable.name];
+    if ((variable.type === 'address' || variable.type === 'address payable') && typeof value === 'string') {
+      normalized[variable.name] = registeredValueAddressLockingBytecode(provider, value) ?? value;
+    }
+  }
+  return normalized;
+}
+
 // Executing an entire very-large delegate artifact merely to apply a conventional OZ initializer can overwhelm
 // a JavaScript VM even when a private mock network intentionally relaxes BCH's script limits. For that test-only
 // case, derive the initializer's direct assignments from its ABI names and seed well-known OZ bookkeeping slots.
@@ -332,10 +347,9 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
-    // Solidity-facing proxy handles expose their stable CREATE-style logical address. Preserve that value in the
-    // implementation ABI frame: state writes and comparisons must observe exactly the address supplied by the
-    // caller. Compiler-marked external-call targets additionally register their concrete participant here; the
-    // call planner authenticates the physical state holder through its SCID rather than rewriting the ABI value.
+    // Compiler-marked external-call targets register their concrete participant and preserve a CREATE identity
+    // when its SCID is authenticated by the call planner. Ordinary address values use the registry's published
+    // value identity, matching genesis seeding and direct calls.
     const visibleInputs = abiFn.inputs.filter((input) => !input.name.startsWith('__internal__'));
     const physicalTargetParams = new Set((abiFn.externalCalls ?? []).flatMap((call) => {
       if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
@@ -363,11 +377,11 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
           }
         }
         // An external call to a CREATE-style deployment authenticates its immutable logical-identity anchor.
-        // Preserve that address only for the compiler-marked target parameter; ordinary address values use the
-        // physical locking bytecode, matching address(this), msg.sender, and on-chain address comparisons.
+        // Preserve that address for the compiler-marked target parameter. Ordinary values follow the registry's
+        // physical-or-authenticated-logical address policy below.
         if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
       }
-      return arg;
+      return registeredValueAddressLockingBytecode(this.proxy.inner.provider, arg) ?? arg;
     });
     if (debugForward) console.error('proxy-forward-args', { implFunction });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
@@ -756,9 +770,10 @@ export async function deployProxy<TImpl extends Artifact>(
     // A mapping-writing initializer must execute against its genuine zero pre-state (not an already-initialized
     // scalar seed). Its known scalar post-state is applied to the call builder below while the initializer itself
     // atomically materializes the entry-NFT transition.
-    const seededState = initializer
+    const seededState = normalizeInitialStateAddresses(initializer
       ? (mockInitializerHasEntries ? undefined : mockInitializerState)
-      : toInitialState(initialState, implArtifact);
+      : toInitialState(initialState, implArtifact), implArtifact,
+    runner instanceof Signer ? runner.provider : runner);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_PROXY_STATE === '1') {
       console.error('proxy-seeded-state', {

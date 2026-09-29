@@ -1660,7 +1660,8 @@ describe('messageBus.compose atomic transaction', () => {
     );
     if (verifierIndex < 0) throw new Error('test could not locate a deployed message bus verifier input');
     const recurrentVerifierCommitment = hexToBin(canonical.outputs[verifierIndex].token!.nft!.commitment);
-    expect(recurrentVerifierCommitment).toHaveLength(70);
+    // The recurrent verifier binds the manifest with a 32-byte digest after its six-byte domain/owner prefix.
+    expect(recurrentVerifierCommitment).toHaveLength(38);
     expect(binToHex(recurrentVerifierCommitment.slice(0, 4))).toBe('4c335631');
     const messageEnvelopePush = decodeAuthenticationInstructions(
       canonical.inputs[verifierIndex].unlocker!.generateUnlockingBytecode({

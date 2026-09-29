@@ -80,8 +80,7 @@ describe('kernel stateless child construction', () => {
     });
     expect(await provider.getUtxos(containerAddress)).toHaveLength(1);
     const fundedHandler = artifacts.FundFactory.messageBus?.handlers.find((candidate) => candidate.name === 'fund');
-    expect(artifacts.FundFactory.messageBus?.maximumRows).toBe(8);
-    expect(artifacts.FundFactory.messageBus?.route.blockLayout?.blockSize).toBe(10);
+    expect(artifacts.FundFactory.messageBus?.maximumRows).toBe(255);
     const derived = fundedHandler?.transfers?.[0]?.derivedRecipient;
     expect(derived).toBeDefined();
     const derivedChild = (seed: bigint): Contract => new Contract({

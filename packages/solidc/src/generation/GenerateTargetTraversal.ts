@@ -34804,23 +34804,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Part A - Input loop: count minting NFTs of this category
     // Stack: [..., this_cat_cap, mint_balance]
     this.emit(Op.OP_TXINPUTCOUNT, locationData);
-    this.emit(Op.OP_1SUB, locationData);
     this.pushToStack('(loop_i)');
-
-    // Stack: [..., this_cat_cap, mint_balance, i]
+    // A valid spending transaction has at least this input. Counting down from the length
+    // visits every index exactly once without a per-iteration negative-index exit arm.
     this.emit(Op.OP_BEGIN, locationData);
-
-    // If i < 0, exit loop
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
-    this.emit(Op.OP_IF, locationData);
-
-    // Exit: drop i, push true
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeBool(true), locationData);
-
-    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_1SUB, locationData); // count -> current index
 
     // Check input[i]'s category+capability against self
     this.emit(Op.OP_DUP, locationData);                // copy i
@@ -34829,77 +34817,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(3n), locationData);
     this.emit(Op.OP_PICK, locationData);                // copy this_cat_cap
     this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
+    // Add the 0/1 equality result directly; no conditional branch is needed.
+    this.emit(Op.OP_ROT, locationData);     // [..., cat, i, match, bal]
+    this.emit(Op.OP_ADD, locationData);     // [..., cat, i, bal+match]
+    this.emit(Op.OP_SWAP, locationData);    // [..., cat, bal+match, i]
 
-    // Match: increment counter (mint_balance++)
-    this.emit(Op.OP_SWAP, locationData);    // [..., cat, i, bal]
-    this.emit(Op.OP_1ADD, locationData);    // [..., cat, i, bal+1]
-    this.emit(Op.OP_SWAP, locationData);    // [..., cat, bal+1, i]
-
-    this.emit(Op.OP_ENDIF, locationData);
-
-    this.emit(Op.OP_1SUB, locationData);                // i--
-    this.emit(encodeBool(false), locationData);          // continue loop
-
-    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData); // stop after index zero
     this.emit(Op.OP_UNTIL, locationData);
-
-    // After input loop: stack is [..., this_cat_cap, mint_balance]
+    this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (loop_i)
 
     // Part B - Output loop: decrement counter for each matching output
     // Stack: [..., this_cat_cap, mint_balance]
     this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
-    this.emit(Op.OP_1SUB, locationData);
     this.pushToStack('(loop_j)');
-
-    // Stack: [..., this_cat_cap, mint_balance, j]
-    this.emit(Op.OP_BEGIN, locationData);
-
-    // If j < 0, exit loop
+    // A zero-output transaction cannot be selected at an output index; leave its balance
+    // unchanged and let the surrounding covenant/consensus checks reject it as appropriate.
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(0n), locationData);
-    this.emit(Op.OP_LESSTHAN, locationData);
     this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_1SUB, locationData);
 
-    // Exit: drop j, push true
-    this.emit(Op.OP_DROP, locationData);
-    this.emit(encodeBool(true), locationData);
-
-    this.emit(Op.OP_ELSE, locationData);
-
-    // Check output[j]'s category+capability against self.
-    // Capability-free tokens report a 32-byte category and must not count as minting.
+    // Compare the full category+capability. A capability-free token's 32-byte value
+    // cannot equal this minting NFT's 33-byte category, so a separate size test is redundant.
     this.emit(Op.OP_DUP, locationData);                  // copy j
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);  // output[j].cat+cap
-    this.emit(Op.OP_SIZE, locationData);
-    this.emit(encodeInt(33n), locationData);
-    this.emit(Op.OP_NUMEQUAL, locationData);
-    this.emit(Op.OP_IF, locationData);
-    // Pick this_cat_cap: positions from top: cat_cap_j=0, j=1, bal=2, cat=3
     this.emit(encodeInt(3n), locationData);
     this.emit(Op.OP_PICK, locationData);                  // copy this_cat_cap
     this.emit(Op.OP_EQUAL, locationData);
-    this.emit(Op.OP_ELSE, locationData);
-    this.emit(Op.OP_DROP, locationData);                  // drop 32-byte none-cap category
-    this.emit(encodeBool(false), locationData);
-    this.emit(Op.OP_ENDIF, locationData);
-    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_ROT, locationData);     // [..., cat, j, match, bal]
+    this.emit(Op.OP_SWAP, locationData);    // [..., cat, j, bal, match]
+    this.emit(Op.OP_SUB, locationData);     // [..., cat, j, bal-match]
+    this.emit(Op.OP_SWAP, locationData);    // [..., cat, bal-match, j]
 
-    // Match: decrement counter (mint_balance--)
-    this.emit(Op.OP_SWAP, locationData);    // [..., cat, j, bal]
-    this.emit(Op.OP_1SUB, locationData);    // [..., cat, j, bal-1]
-    this.emit(Op.OP_SWAP, locationData);    // [..., cat, bal-1, j]
-
-    this.emit(Op.OP_ENDIF, locationData);
-
-    this.emit(Op.OP_1SUB, locationData);                  // j--
-    this.emit(encodeBool(false), locationData);            // continue loop
-
-    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_NOT, locationData);
     this.emit(Op.OP_UNTIL, locationData);
-
-    // After output loop: stack is [..., this_cat_cap, mint_balance]
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_DROP, locationData);
     this.popFromStack(); // remove (loop_j)
 
     // Verify mint_balance >= 0 (no new minting NFTs created)
@@ -34942,16 +34898,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Input loop: +1 per input whose category+capability == C ++ 0x01
     this.emit(Op.OP_TXINPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
     this.pushToStack('(loop_i)');
     this.emit(Op.OP_BEGIN, loc);
-    this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
-    this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);
-    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_1SUB, loc);
     this.emit(Op.OP_DUP, loc);               // copy i
     this.emit(Op.OP_UTXOTOKENCATEGORY, loc); // input[i].cat+cap
     this.emit(encodeInt(3n), loc);           // pick this_cat_mutable (catcap=0, i=1, bal=2, this=3)
@@ -34962,24 +34911,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1ADD, loc);              // bal++
     this.emit(Op.OP_SWAP, loc);              // [.., bal+1, i]
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1SUB, loc);              // i--
-    this.emit(encodeBool(false), loc);
-    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_i)
 
     // Output loop: -1 per output whose category+capability == C ++ 0x01
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
-    this.emit(Op.OP_1SUB, loc);
     this.pushToStack('(loop_j)');
-    this.emit(Op.OP_BEGIN, loc);
     this.emit(Op.OP_DUP, loc);
-    this.emit(encodeInt(0n), loc);
-    this.emit(Op.OP_LESSTHAN, loc);
     this.emit(Op.OP_IF, loc);
-    this.emit(Op.OP_DROP, loc);
-    this.emit(encodeBool(true), loc);
-    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_1SUB, loc);
     this.emit(Op.OP_DUP, loc);                 // copy j
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc); // output[j].cat+cap
     this.emit(encodeInt(3n), loc);             // pick this_cat_mutable (catcap=0, j=1, bal=2, this=3)
@@ -34990,10 +34935,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_1SUB, loc);              // bal--
     this.emit(Op.OP_SWAP, loc);              // [.., bal-1, j]
     this.emit(Op.OP_ENDIF, loc);
-    this.emit(Op.OP_1SUB, loc);              // j--
-    this.emit(encodeBool(false), loc);
-    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DUP, loc);
+    this.emit(Op.OP_0, loc);
+    this.emit(Op.OP_NUMEQUAL, loc);
     this.emit(Op.OP_UNTIL, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_j)
 
     // Assert balance == 0 (inputs preserved to outputs; none destroyed)

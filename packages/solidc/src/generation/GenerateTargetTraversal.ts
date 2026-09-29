@@ -7229,7 +7229,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
-          this.emitOwnCategoryMutableNftConservation(node);
+          this.emitOwnCategoryMutableNftConservation(node, true);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -7259,7 +7259,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emitUpgradeSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
           this.emitMasterCommitmentPreservation(node);
-          this.emitOwnCategoryMutableNftConservation(node);
+          this.emitOwnCategoryMutableNftConservation(node, true);
         } else {
           this.emitMasterSelfPreservation(node);
           this.emitMintingNftUniqueness(node);
@@ -7275,8 +7275,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // so an attacker cannot additionally co-spend an un-accessed data/entry NFT to destroy or corrupt it (its
       // own sub-covenant self-authorizes on any master-spend). Skipped for functions that legitimately co-spend
       // a variable count of own-category 0x01 NFTs (entries, token containers, dynamic-storage chunks) or that
-      // use a special NFT topology (deploy/selfdestruct/upgrade/split/merge/delegate); those keep per-slot
-      // verification and are a documented residual. See SECURITY-AUDIT C3.
+      // use a special NFT topology (deploy/selfdestruct/split/merge/delegate); those keep per-slot
+      // verification and are a documented residual. Upgrade has its own guarded-growth variant above.
+      // See SECURITY-AUDIT C3.
       if (!this.functionHasDelegatecall && !this.currentFunctionIsDelegate && isStatefulContract
         && !isSelfdestruct && !isUpgrade && !hasEntryAccess && !hasTokenContainerAccess
         && !hasTokenContainerTransfers && this.pendingDynamicWrites.size === 0 && !hasDeploys) {
@@ -34954,8 +34955,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // co-spends an UN-accessed data/entry NFT and DESTROYS it (flag=2, or an output-free flag=1) - which the
   // sub-covenant self-authorizes given the master's minting NFT is present - drops the output count below the
   // input count and is rejected. Mirrors emitMintingNftUniqueness (balance = inputs - outputs), asserting == 0.
-  // Residual: flag=1 corruption that re-emits a 0x01-of-C output keeps the count balanced (see SECURITY-AUDIT C3).
-  private emitOwnCategoryMutableNftConservation(node: FunctionDefinitionNode): void {
+  // Upgrade variant also requires exactly the old data-NFT input population and discounts only a contiguous
+  // run of newly minted data NFTs at the canonical covenant. Residual: flag=1 corruption that re-emits a
+  // 0x01-of-C output keeps the count balanced (see SECURITY-AUDIT C3).
+  private emitOwnCategoryMutableNftConservation(
+    node: FunctionDefinitionNode, allowUpgradeDataNftGrowth = false,
+  ): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
 
     // Build this contract's category ++ mutable(0x01) capability from the master's category+minting(0x02).
@@ -34994,6 +34999,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_i)
 
+    if (allowUpgradeDataNftGrowth) {
+      // An upgrade co-spends every old data NFT, and no entry/chunk NFT. This also prevents a
+      // destroyed, unaccessed mutable input from being masked by minting an extra data NFT.
+      this.emit(Op.OP_DUP, loc);
+      this.emit(encodeInt(BigInt(this.dataNftCount)), loc);
+      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+    }
+
     // Output loop: -1 per output whose category+capability == C ++ 0x01
     this.emit(Op.OP_TXOUTPUTCOUNT, loc);
     this.pushToStack('(loop_j)');
@@ -35018,6 +35031,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ENDIF, loc);
     this.emit(Op.OP_DROP, loc);
     this.popFromStack(); // (loop_j)
+
+    if (allowUpgradeDataNftGrowth) {
+      // The only permitted excess outputs are a contiguous run immediately after the old
+      // data-NFT outputs, each at the canonical data-NFT covenant for this category. Count
+      // that run back into the balance; the global output count above still rejects any
+      // mutable output beyond the run or at a different locking bytecode.
+      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+      this.pushToStack('(upgrade_new_data_j)');
+      this.emit(Op.OP_BEGIN, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_TXOUTPUTCOUNT, loc);
+      this.emit(Op.OP_LESSTHAN, loc);
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_DUP, loc);
+      this.emit(Op.OP_OUTPUTTOKENCATEGORY, loc);
+      this.emit(encodeInt(3n), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc); // output[j] is an own-category mutable NFT
+
+      this.emit(Op.OP_OVER, loc); // j, below the category comparison
+      this.emit(Op.OP_OUTPUTBYTECODE, loc);
+      this.emit(encodeInt(4n), loc);
+      this.emit(Op.OP_PICK, loc); // C ++ 0x01
+      this.pushToStack('(upgrade_data_category)');
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc); // C
+      this.emitDataNftLbc(loc);
+      this.emit(Op.OP_EQUAL, loc);
+      this.popFromStack(); // (upgrade_data_category), now canonical locking-bytecode comparison
+      this.emit(Op.OP_BOOLAND, loc);
+
+      this.emit(Op.OP_IF, loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_1ADD, loc); // discount one authorized new data NFT
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_1ADD, loc);
+      this.emit(encodeBool(false), loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeBool(true), loc); // first non-data output ends the allowed run
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_ELSE, loc);
+      this.emit(encodeBool(true), loc); // reached TXOUTPUTCOUNT
+      this.emit(Op.OP_ENDIF, loc);
+      this.emit(Op.OP_UNTIL, loc);
+      this.emit(Op.OP_DROP, loc);
+      this.popFromStack(); // (upgrade_new_data_j)
+    }
 
     // Assert balance == 0 (inputs preserved to outputs; none destroyed)
     this.emit(encodeInt(0n), loc);

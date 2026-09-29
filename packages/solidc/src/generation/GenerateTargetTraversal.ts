@@ -1952,6 +1952,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !this.usesMessageBusOwnerBlockBase();
   }
 
+  /** Select the execution-resource block authorized by the delegate prologue. */
+  private emitDelegateResourceBase(locationData: SingleLocationData): void {
+    const compactOffset = 1 + this.dataNftCount;
+    const balancedOffset = this.currentFunction.blockLayout?.blockSize ?? compactOffset;
+    if (balancedOffset <= compactOffset) {
+      this.emit(Op.OP_INPUTINDEX, locationData);
+      return;
+    }
+    // Compact forwarding lays entry/effect slots after the executor. A balanced co-spend lays them in the proxy
+    // block before the executor. State data NFTs are always proxy-owned and do not use this selector.
+    this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(encodeInt(BigInt(compactOffset)), locationData);
+    this.emit(Op.OP_SUB, locationData);
+    this.emit(Op.OP_NUMEQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(Op.OP_INPUTINDEX, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   /** A compiler-generated route handler receives its physical owner identity as an explicit hidden argument. */
   private usesMessageBusOwnerBlockBase(): boolean {
     return this.hasMessageBusParticipantOwner(this.currentFunction);
@@ -2125,6 +2147,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // entry outputs whenever the implementation follows the proxy at a non-zero input index.
     const delegateImplementationRelative = this.usesDelegateExecutorBlockBase()
       && new Set<BlockSlotKind>([
+        'entry',
         'keccakSideCar', 'ecrecoverSideCar',
         'transfer', 'tcTransfer', 'event', 'returnEvent',
       ]).has(kind);
@@ -2137,7 +2160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (delegateImplementationRelative && this.currentContractIsSplitFacet) {
       offset -= this.countDataNftSlotsBefore(offset);
     }
-    if (delegateImplementationRelative) this.emit(Op.OP_INPUTINDEX, locationData);
+    if (delegateImplementationRelative) this.emitDelegateResourceBase(locationData);
     else this.emitMasterInputIndex(locationData, extraStackOffset);
     if (offset > 0) {
       this.emit(encodeInt(BigInt(offset)), locationData);
@@ -6564,15 +6587,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // Ordinary delegate executors immediately follow the proxy's master/data-NFT region. A compiler-owned
-      // message-bus route instead places its executor at the end of the complete published owner block. Bind the
-      // witness to that compiler-authored offset so a route cannot execute from an arbitrary interior input.
-      this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
-        ? node.blockLayout?.blockSize ?? (1 + this.dataNftCount)
-        : 1 + this.dataNftCount)), loc);
-      this.emit(Op.OP_SUB, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      // A direct delegate may be reached through the compact proxy master/data-NFT prefix or after its complete
+      // balanced block (including entry/event slots). The route has only the latter layout. Accept exactly the
+      // published offsets, then use this authenticated proxy witness for every later state read.
+      const compactOffset = 1 + this.dataNftCount;
+      const balancedOffset = node.blockLayout?.blockSize ?? compactOffset;
+      if (!this.isCompilerMessageBusRoute(node) && balancedOffset > compactOffset) {
+        this.emit(Op.OP_DUP, loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(compactOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_OVER, loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(balancedOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_BOOLOR, loc);
+        this.emit(Op.OP_VERIFY, loc);
+        this.emit(Op.OP_DROP, loc);
+      } else {
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(this.isCompilerMessageBusRoute(node)
+          ? balancedOffset : compactOffset)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      }
     }
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined
@@ -24152,7 +24192,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     if (this.usesDelegateExecutorBlockBase()) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.emitDelegateResourceBase(locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
@@ -24190,7 +24230,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
         this.emit(Op.OP_ADD, locationData);
       } else {
-        this.emit(Op.OP_INPUTINDEX, locationData);
+        this.emitDelegateResourceBase(locationData);
       }
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
@@ -34253,10 +34293,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             this.getStackIndex('__internal__proxyMasterIndex'), extraStackOffset);
           this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         } else {
-          // Ordinary delegate executors have the compact physical relation authenticated at entry.
-          this.emit(Op.OP_INPUTINDEX, locationData);
-          this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
-          this.emit(Op.OP_SUB, locationData);
+          // The prologue authenticated either published delegate offset. Re-deriving only the compact one here
+          // would read an entry/funder NFT instead of proxy state in the balanced case.
+          this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
         }
       } else {
         // A DEFINE'd handler body shares the caller's physical stack, so a caller-side untracked operand can sit
@@ -34294,8 +34333,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         locationData,
       );
     } else if (this.usesDelegateExecutorBlockBase()) {
-      this.debugComputeBase('delegate-executor', '(op_inputindex)', -1, 0);
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      this.debugComputeBase('delegate-resource', '__internal__proxyMasterIndex', -1, 0);
+      this.emitDelegateResourceBase(locationData);
     } else {
       this.debugComputeBase('master-input-index', '(emitMasterInputIndex)', -1, 0);
       this.emitMasterInputIndex(locationData);
@@ -34392,7 +34431,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(BigInt(1 + this.dataNftCount)), locationData);
         this.emit(Op.OP_ADD, locationData);
       } else {
-        this.emit(Op.OP_INPUTINDEX, locationData);
+        this.emitDelegateResourceBase(locationData);
       }
       this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
@@ -35070,7 +35109,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Block base: allowed offsets are relative to the master's input index - except inside a delegate function,
     // whose output-only slots are IMPLEMENTATION-relative. Mirrors emitBlockSlotIndex's `delegateOutputOnly`,
     // so the admitted index is exactly the one emitEventCovenantVerification checked.
-    if (this.usesDelegateExecutorBlockBase()) this.emit(Op.OP_INPUTINDEX, loc);
+    if (this.usesDelegateExecutorBlockBase()) this.emitDelegateResourceBase(loc);
     else this.emitMasterInputIndex(loc);
     this.pushToStack('(imm_base)');
 

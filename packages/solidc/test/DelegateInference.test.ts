@@ -589,13 +589,18 @@ describe('delegate inference', () => {
       ...Object.values(artifact.debug?.invokeDebug ?? {}).map((entry) => entry.bytecode),
     ].filter((body): body is string => body !== undefined)
       .map((body) => decodeAuthenticationInstructions(hexToBin(body)));
-    const proxyStorageRead = bodies.some((instructions) => instructions.some((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_DEPTH
-      && instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB
-      && instructions[index + 2]?.opcode === OpcodesBCH.OP_PICK
-      && instructions[index + 3]?.opcode === OpcodesBCH.OP_1ADD
-      && instructions[index + 4]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT
-    )));
+    const proxyStorageRead = bodies.some((instructions) => instructions.some((instruction, index) => {
+      if (instruction.opcode !== OpcodesBCH.OP_DEPTH) return false;
+      const pick = instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB ? index + 2
+        : instructions[index + 1]?.opcode === OpcodesBCH.OP_1
+          && instructions[index + 2]?.opcode === OpcodesBCH.OP_SUB ? index + 3 : -1;
+      if (instructions[pick]?.opcode !== OpcodesBCH.OP_PICK) return false;
+      return (instructions[pick + 1]?.opcode === OpcodesBCH.OP_1ADD
+        && instructions[pick + 2]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT)
+        || (instructions[pick + 1]?.opcode === OpcodesBCH.OP_1
+          && instructions[pick + 2]?.opcode === OpcodesBCH.OP_ADD
+          && instructions[pick + 3]?.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT);
+    }));
     expect(proxyStorageRead).toBe(true);
 
     // The implementation executes two inputs after the proxy master: proxy master, its one data NFT, executor.
@@ -692,29 +697,42 @@ describe('delegate inference', () => {
       && readNumber(instructions[index + 1]) === BigInt(entryOffset)
       && instructions[index + 2]?.opcode === OpcodesBCH.OP_ADD
       && instructions.slice(index + 3, index + 7)
-        .some((candidate) => candidate.opcode === OpcodesBCH.OP_UTXOBYTECODE)
+        .some((candidate) => candidate.opcode === OpcodesBCH.OP_UTXOBYTECODE
+          || candidate.opcode === OpcodesBCH.OP_UTXOTOKENCOMMITMENT)
     ));
     expect(authenticatedEntryRead).toBeGreaterThanOrEqual(0);
 
     // Output-only effects use the same authenticated physical base. Compact execution keeps the executor base;
-    // a fully balanced invocation retains the proxy-master base before adding the event's published offset.
+    // a fully balanced invocation retains the proxy-master base. The category read addresses the published event
+    // slot, and the event commitment is still equality-checked after constructing its value.
     const eventOffset = apply.blockLayout!.slots.find((slot) => slot.kind === 'event')!.offset;
     const authenticatedEventIndex = instructions.some((instruction, index) => (
       instruction.opcode === OpcodesBCH.OP_INVOKE
       && readNumber(instructions[index - 1]) === resourceBaseHelperId
       && readNumber(instructions[index + 1]) === BigInt(eventOffset)
       && instructions[index + 2]?.opcode === OpcodesBCH.OP_ADD
-      && instructions[index + 3]?.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT
+      && instructions[index + 3]?.opcode === OpcodesBCH.OP_OUTPUTTOKENCATEGORY
     ));
     expect(authenticatedEventIndex).toBe(true);
+    expect(instructions.some((instruction, index) => instruction.opcode === OpcodesBCH.OP_OUTPUTTOKENCOMMITMENT
+      && instructions[index + 1]?.opcode === OpcodesBCH.OP_EQUALVERIFY)).toBe(true);
 
-    // The protocol-wide immutable-event scan must subtract that same base before admitting event offsets. Using
-    // OP_INPUTINDEX here would reject every honest balanced event even though its per-slot covenant passed.
+    // The protocol-wide immutable-event scan must use that same selected base. A bare OP_INPUTINDEX would reject
+    // every honest balanced event even though its per-slot covenant passed. The selector may be outlined or inline.
     const authenticatedImmutableEventScan = instructions.some((instruction, index) => (
-      instruction.opcode === OpcodesBCH.OP_INVOKE
-      && readNumber(instructions[index - 1]) === resourceBaseHelperId
-      && instructions[index + 1]?.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
-      && instructions[index + 2]?.opcode === OpcodesBCH.OP_1SUB
+      instruction.opcode === OpcodesBCH.OP_TXOUTPUTCOUNT
+      && instructions[index + 1]?.opcode === OpcodesBCH.OP_1SUB
+      && ((instructions[index - 1]?.opcode === OpcodesBCH.OP_INVOKE
+        && readNumber(instructions[index - 2]) === resourceBaseHelperId)
+        || (instructions[index - 9]?.opcode === OpcodesBCH.OP_DUP
+          && instructions[index - 8]?.opcode === OpcodesBCH.OP_INPUTINDEX
+          && readNumber(instructions[index - 7]) === BigInt(compactOffset)
+          && instructions[index - 6]?.opcode === OpcodesBCH.OP_SUB
+          && instructions[index - 5]?.opcode === OpcodesBCH.OP_NUMEQUAL
+          && instructions[index - 4]?.opcode === OpcodesBCH.OP_IF
+          && instructions[index - 3]?.opcode === OpcodesBCH.OP_DROP
+          && instructions[index - 2]?.opcode === OpcodesBCH.OP_INPUTINDEX
+          && instructions[index - 1]?.opcode === OpcodesBCH.OP_ENDIF))
     ));
     expect(authenticatedImmutableEventScan).toBe(true);
   });

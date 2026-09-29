@@ -2211,6 +2211,7 @@ export class StatefulTransactionBuilder {
   private _mintingOneToOneHost(): MintingOneToOneHost {
     return {
       allInputs: this.allInputs,
+      tokenContainers: this.tokenContainers,
     };
   }
 

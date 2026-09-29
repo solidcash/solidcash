@@ -223,6 +223,7 @@ import RedesugarImportedUdvtWrap from './semantic/RedesugarImportedUdvtWrap.js';
 import SynthesizePublicGetters from './semantic/SynthesizePublicGetters.js';
 import expandModifiers, { validateModifierDefinitions } from './semantic/ModifierExpansionTransformation.js';
 import FoldHashLiterals from './semantic/FoldHashLiterals.js';
+import FoldConstantBoolBranches from './semantic/FoldConstantBoolBranches.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
@@ -12894,6 +12895,8 @@ function compileResolvedAst(
         ast = ast.accept(new InlineExternalCallHelpers((fn) => earlyKernelRoots.has(fn))) as Ast;
       }
     }
+    // Before the entry witnesses are injected from the writes a body makes (see the later fold).
+    ast = ast.accept(new FoldConstantBoolBranches()) as Ast;
   }
 
   // Kernel admission must classify the program the compiler will actually execute. Supported Yul is already
@@ -13311,6 +13314,10 @@ function compileResolvedAst(
   // A `mapping(..) storage m = get()` local (get() inlined above to a bare mapping or `c ? a : b`) has no runtime
   // value; rewrite each `m[k]` use to the underlying mapping (or a branch/ternary) and drop the declaration.
   if (needsCollectionJournal) ast = ast.accept(new LowerMappingStorageAlias()) as Ast;
+
+  // A boolean literal substituted for a bool param at an inline site (`_refund(jobId, false)`) leaves an arm of the
+  // branch on it that never runs; drop it, so a write in that arm never reaches the entry's write analysis.
+  if (hasInternalHelpers) ast = ast.accept(new FoldConstantBoolBranches()) as Ast;
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
   // inline site (`_updateAllowlist(id, allowed, new address[](0))`) now makes the loop bound compile-time

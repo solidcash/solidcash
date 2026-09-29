@@ -1600,6 +1600,19 @@ risk. Take the slices in order, each with its own tests.
     reads the create sentinel and drops the proof-input comparison), but the composed `implementation-master` fails
     an `OP_VERIFY` before the body's insert runs — not the splice verification, which was ruled out by no-opping it.
     One agent is finding the failing invariant, on the SDK side if the placement is wrong.
+  - **Claimed by the parallel worker, from `dc4c1bdc6`** (user direction 2026-09-29: work the items this round is
+    not on, in a separate scratch copy): the ECDSA clauses of #41 `take job > sanity checks`, which no wall this
+    round holds covers, plus the prune's leftovers. The value items held in the bullet above stay held.
+    - **C13 (P18, G2 row 22): `ecrecover` returns address 0 for invalid input.** OZ `ECDSA.recover` over 65 zero
+      bytes (`v = 0`) has to reach its own `revert ECDSAInvalidSignature()`, which needs a recovery the composer
+      can witness as invalid rather than a pair it cannot split. Files: the per-call `ecrecover` emission in the
+      compiler, `src/ecrecover/` and `composer/recovery.ts`.
+    - **E3's argument half: a custom error's values are evaluated and reported**, so `takeJob(jobId, "0x")`
+      reports `ECDSAInvalidSignatureLength(0)` with its argument (`withArgs(0)`). Files: the compiler's `revert`
+      emission and the SDK's refusal report.
+    - **The prune's leftovers**: `call/value-call.test.ts` split so it runs on two workers, and the three changes
+      the facet sweep blocked (the `composed-arguments` duplicates, the shared derivations in
+      `dynamic-call-settlement` and `time-gated-challenge`).
 - [ ] **Limit profile for the gates** (user decision 2026-09-27, applying D3). I1, I2, I2b and every focused suite
   that evaluates a composition gate on the composition profile: `COMPOSITION_LIMITS` in
   `packages/solidc/test/per-call/machine.ts` (relaxed input bytes and operation-cost density, the profile a

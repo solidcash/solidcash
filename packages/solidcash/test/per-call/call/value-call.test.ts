@@ -588,3 +588,93 @@ describe('a paid receive() that emits or writes a mapping', () => {
     expect(containerValue(second, bankCategory)).toBe(3_000n);
   });
 });
+
+const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Splitter {'
+  + '   bytes25 public first;'
+  + '   bytes25 public second;'
+  + '   int public forwarded;'
+  + '   constructor(bytes25 a, bytes25 b) { this.first = a; this.second = b; }'
+  + '   receive() external payable {'
+  + '     this.forwarded = this.forwarded + msg.value;'
+  + '     this.transfer(this.first, msg.value / 2);'
+  + '     this.transfer(this.second, msg.value - msg.value / 2);'
+  + '   }'
+  + ' }'
+  + ' contract Doubler {'
+  + '   bytes25 public to;'
+  + '   int public paid;'
+  + '   constructor(bytes25 a) { this.to = a; }'
+  + '   function deposit() payable { require(msg.value > 0); }'
+  + '   receive() external payable { this.paid = this.paid + 1; this.transfer(this.to, msg.value * 2); }'
+  + ' }'
+  + ' contract Payer {'
+  + '   int public paid;'
+  + '   receive() external payable { require(true); }'
+  + '   function pay(bytes to, int amount) { this.paid = this.paid + amount; this.transfer(to, amount); }'
+  + ' }';
+
+const sendingBodies = compileStringMulti(SENDING_BODIES_SOURCE, { composition: 'per-call' });
+const FIRST_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x31));
+const SECOND_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x32));
+
+/** The value the broadcast pays to one lock. */
+function paidTo(result: PerCallCallResult, lock: Uint8Array): bigint {
+  return (result.broadcast?.outputs ?? [])
+    .filter((output) => binToHex(output.lockingBytecode) === binToHex(lock))
+    .reduce((sum, output) => sum + output.valueSatoshis, 0n);
+}
+
+describe('a paid receive() that sends', () => {
+  it('forwards what it receives to the users its records name', async () => {
+    const deployed = await deploy(sendingBodies.Payer!);
+    const splitterCategory = await deployBesideWith(
+      deployed, sendingBodies.Splitter!, [FIRST_LOCK, SECOND_LOCK], '50'.repeat(32),
+    );
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(sendingBodies.Splitter!, splitterCategory), 9_001n],
+      externals: { Splitter: { artifact: sendingBodies.Splitter!, categoryId: splitterCategory } },
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidTo(result, FIRST_LOCK)).toBe(4_500n);
+    expect(paidTo(result, SECOND_LOCK)).toBe(4_501n);
+  });
+
+  it('pays out more than it receives from its own containers, as the EVM does from its balance', async () => {
+    const deployed = await deploy(sendingBodies.Payer!);
+    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '51'.repeat(32));
+    const externals = { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } };
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    const doubler = { ...deployed, artifact: sendingBodies.Doubler!, categoryId: doublerCategory };
+    const deposit = await callPerCallEntry({ ...(await currentCaller(doubler)), functionName: 'deposit', value: 8_000n });
+    expect(deposit.accepted).toBe(true);
+
+    const result = await callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(sendingBodies.Doubler!, doublerCategory), 3_000n],
+      externals,
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidTo(result, FIRST_LOCK)).toBe(6_000n);
+    // The 3,000 it received and 3,000 of its deposit paid the send; the rest of the deposit stays in its container.
+    expect(containerValue(result, doublerCategory)).toBe(5_000n);
+  });
+
+  it('is refused by name when its containers cannot cover what it sends beyond what it receives', async () => {
+    const deployed = await deploy(sendingBodies.Payer!);
+    const doublerCategory = await deployBesideWith(deployed, sendingBodies.Doubler!, [FIRST_LOCK], '52'.repeat(32));
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+    await expect(callPerCallEntry({
+      ...(await currentCaller(deployed)),
+      functionName: 'pay',
+      args: [addressOf(sendingBodies.Doubler!, doublerCategory), 3_000n],
+      externals: { Doubler: { artifact: sendingBodies.Doubler!, categoryId: doublerCategory } },
+    })).rejects.toThrow(/contract "Doubler" holds 0 satoshis in its containers/);
+  });
+});
+

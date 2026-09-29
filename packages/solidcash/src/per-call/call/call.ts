@@ -32,8 +32,9 @@
  * send to a contract is a call into its `receive()` (or its payable `fallback()`), made after the entry's own code:
  * the call resolves the recipient from the send's published recipe, finds it among `externals`, and plans the
  * frame of that body, whose containers take the value; a recipient with neither is refused by name. The paid body
- * may emit and write its mapping, both learned from its own program as the entry's are; one that sends or calls is
- * refused by name.
+ * may emit, write its mapping and send to users' locks, paying from what it receives and then from its own
+ * containers, all learned from its own program as the entry's are; one that calls, or sends to a contract or on a
+ * branch, is refused by name.
  *
  * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
  * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
@@ -222,11 +223,16 @@ function receiveRecordId(index: number, nftIndex: number): string {
 function receiveNodeId(index: number, id: string): string {
   return `receive-${index}-${id}`;
 }
+/** The `position`-th container a paid contract spends to cover its sends. */
+function receiveContainerId(index: number, position: number): string {
+  return `receive-${index}-container-${position}`;
+}
 
-/** What a paid contract's body computes that the plan learns: its events' payloads and its nodes' end views. */
+/** What a paid contract's body computes that the plan learns: its events, its nodes' end views and its sends. */
 interface PayeeLearned {
   readonly events: readonly (Uint8Array | undefined)[];
   readonly views: readonly (Uint8Array | undefined)[];
+  readonly sends: readonly { readonly lock?: Uint8Array; readonly amount?: bigint }[];
 }
 
 /** A call record's eight-byte value, as the site compares the amount the body computed against it. */
@@ -575,11 +581,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
       const body = valueEntryOf(external.artifact, `the value entry "${functionName}" sends it`);
       const layout = external.artifact.stateLayout;
       const bodySites = publishedEntryOf(external.artifact, body.name);
-      if (layout === undefined || (body.transferCount ?? 0) > 0 || (bodySites?.calls.length ?? 0) > 0) {
-        throw new PerCallCallError(
-          `contract "${external.artifact.contractName}"'s ${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}() `
-          + 'is not planned yet: this call plans one that writes its own records and emits, with no send or call',
-        );
+      const bodyLabel = `contract "${external.artifact.contractName}"'s `
+        + `${body.name === RECEIVE_ENTRY ? 'receive' : 'fallback'}()`;
+      if (layout === undefined || (bodySites?.calls.length ?? 0) > 0) {
+        throw new PerCallCallError(`${bodyLabel} makes a call, which this call path does not plan yet`);
       }
       const recipientCategory = hexToBin(external.categoryId);
       const set = await readPerCallDeployment(provider, external.categoryId, layout);
@@ -588,6 +593,23 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         throw new PerCallCallError(
           `contract "${external.artifact.contractName}" at category ${external.categoryId} holds no master or not every `
           + 'record its layout names',
+        );
+      }
+      // Its sends, each to the user's lock its recipe names, read against its own records with the paying contract as
+      // its `msg.sender`.
+      const bodyTransfers = [...(body.transfers ?? [])].sort((left, right) => left.transferIndex - right.transferIndex);
+      const bodyRecipients = bodyTransfers.map((transfer) => sendRecipient(transfer.recipientRecipe, {
+        args: [],
+        inputs: body.inputs,
+        structs: structDefinitionsOf(external.artifact),
+        callerLock: deployed.address,
+        state: set.records.slice(0, layout.dataNftCount).map((utxo, nftIndex) =>
+          parsePushdataCommitment(utxo.token?.nft?.commitment ?? '', layout, nftIndex)),
+      }));
+      if (bodyTransfers.some((transfer) => transfer.condition !== undefined)
+        || bodyRecipients.some((recipient) => recipient !== undefined && recipient.length !== 25)) {
+        throw new PerCallCallError(
+          `${bodyLabel} sends on a branch or to a contract, which this call path does not plan yet`,
         );
       }
       return {
@@ -615,6 +637,8 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
           nodesByCollection: set.nodesByCollection,
         }),
         segmentCount: bodySites?.sites.sites.filter((site) => site.kind === 'segmentClose').length ?? 1,
+        sendCount: bodyRecipients.length,
+        containers: bodyRecipients.length > 0 ? await readSatoshiContainers(provider, external.categoryId) : [],
       };
     })()];
   }));
@@ -686,6 +710,18 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   ).slice(0, 20)));
   const sendAmountSentinels = sendIndices.map((_index, position) => bigIntToVmNumber(SEND_AMOUNT_SENTINEL
     + BigInt(position)));
+  // Each paid contract that sends lists a run of its own after the entry's: one of its containers, then its sends.
+  const runLength = (sends: number): number => (sends > 0 ? 1 + sends : 0);
+  const payeeMarkers = payees.map((_payee, index) => markerIndex + runLength(sendCount)
+    + payees.slice(0, index).reduce((count, earlier) => count + runLength(earlier.sendCount), 0));
+  const payeeSendIndices = payees.map((payee, index) =>
+    Array.from({ length: payee.sendCount }, (_unused, position) => payeeMarkers[index]! + 1 + position));
+  const payeeSendLockSentinels = payees.map((payee) => Array.from({ length: payee.sendCount }, (_unused, position) =>
+    encodeLockingBytecodeP2pkh(sha256(new TextEncoder().encode(
+      `per-call send lock\u0000${payee.artifact.contractName}\u0000${payee.entryName}\u0000${position}`,
+    )).slice(0, 20))));
+  const payeeSendAmountSentinels = payees.map((payee, index) => Array.from({ length: payee.sendCount },
+    (_unused, position) => SEND_AMOUNT_SENTINEL + BigInt(1_000 * (index + 1) + position)));
   // An entry that reads its own balance reads the containers its transaction spends, so it spends every one.
   const readsBalance = (
     (artifact.composition as { balanceReaders?: readonly string[] } | undefined)?.balanceReaders ?? []
@@ -729,8 +765,36 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     }
     return { spent, kept: settle(total - need) };
   };
-  // Created mapping nodes are the trailing outputs past the sends.
-  const createdBase = markerIndex + (sendCount > 0 ? 1 + sendCount : 0);
+  // Created mapping nodes are the trailing outputs past every run of sends.
+  const createdBase = markerIndex + runLength(sendCount)
+    + payees.reduce((count, payee) => count + runLength(payee.sendCount), 0);
+  /**
+   * What a paid contract that sends keeps, and the containers it spends: its sends are paid from what it receives,
+   * then from its own containers, as the EVM's are from its balance.
+   */
+  const payeePaying = (
+    index: number, received: bigint, amounts: readonly (bigint | undefined)[],
+  ): { spent: readonly Utxo[]; kept: bigint } => {
+    const payee = payees[index]!;
+    const atLeastMinimum = (kept: bigint): bigint => (kept > CONTAINER_MINIMUM_SATOSHIS ? kept : CONTAINER_MINIMUM_SATOSHIS);
+    if (amounts.some((amount) => amount === undefined)) return { spent: [], kept: CONTAINER_MINIMUM_SATOSHIS };
+    const need = amounts.reduce<bigint>((sum, amount) => sum + amount!, 0n) - received;
+    if (need <= 0n) return { spent: [], kept: atLeastMinimum(-need) };
+    const spent: Utxo[] = [];
+    let total = 0n;
+    for (const utxo of [...payee.containers].sort((left, right) => (left.satoshis > right.satoshis ? -1 : 1))) {
+      if (total >= need) break;
+      spent.push(utxo);
+      total += utxo.satoshis;
+    }
+    if (total < need) {
+      throw new PerCallCallError(
+        `contract "${payee.artifact.contractName}" holds ${total} satoshis in its containers, and the body entry `
+        + `"${functionName}" pays sends ${need} more than it receives`,
+      );
+    }
+    return { spent, kept: atLeastMinimum(total - need) };
+  };
   // The value a call into a contract's `receive()` carries starts from a sentinel the body's own site fails
   // against, until the derivation learns the amount the body computed.
   const callValueSentinels = payees.map((_payee, index) => recordValueBytes(CALL_VALUE_SENTINEL + BigInt(index)));
@@ -773,8 +837,10 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     + payeeProbes.slice(0, index).reduce((count, earlier) => count + (earlier?.trailingOutputs.length ?? 0), 0));
   // One attempt per value the body computes (each mapping node, each event, each send's lock and amount and the
   // frame's `retval`, and each one a paid contract computes), plus the attempt that derives against every value.
+  // A paid contract's value learned before the amount it was paid is learned again once the amount is known.
   const maximumAttempts = learningCandidates.length + emits.length + 2 * sendCount + payees.length
-    + payeeEventSentinels.flat().length + payeeCandidates.flat().length + (returnsValue ? 1 : 0) + 3;
+    + 2 * (payeeEventSentinels.flat().length + payeeCandidates.flat().length + 2 * payeeSendIndices.flat().length)
+    + (returnsValue ? 1 : 0) + 3;
 
   const buildPlan = (
     learnedViews: readonly (Uint8Array | undefined)[],
@@ -786,6 +852,23 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   ): CompositionDraftPlan => {
     const paying = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]);
     const callValue = (index: number): bigint => learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index);
+    // Each paid contract that sends keeps what it does not send in the container its run starts with.
+    const payeePayings = payees.map((payee, index) => (payee.sendCount === 0
+      ? undefined
+      : payeePaying(index, callValue(index), learnedPayees[index]!.sends.map((send) => send.amount))));
+    const payeeRuns: DraftSourceOutput[] = payees.flatMap((payee, index) => {
+      const payeePay = payeePayings[index];
+      if (payeePay === undefined) return [];
+      return [
+        { lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: payeePay.kept },
+        ...learnedPayees[index]!.sends.map((send, position) => ({
+          lockingBytecode: send.lock ?? payeeSendLockSentinels[index]![position]!,
+          valueSatoshis: send.amount ?? payeeSendAmountSentinels[index]![position]!,
+        })),
+      ];
+    });
+    const payeeSpent = payees.flatMap((_payee, index) => (payeePayings[index]?.spent ?? [])
+      .map((utxo, position) => ({ id: receiveContainerId(index, position), index, utxo })));
     const ownContainer: DraftSourceOutput[] = paying.kept > 0n
       ? [{ lockingBytecode: containerLock, valueSatoshis: paying.kept }]
       : [];
@@ -897,7 +980,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         ...(payeeLaid[index]!.mapping?.entries ?? []),
       ]),
       events: payeeLaid[index]!.events,
-      sends: [],
+      sends: payeeSendIndices[index]!,
       argumentPushes: [payee.selector],
       redeemScript: payee.deployed.script,
     }));
@@ -952,6 +1035,14 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         consumed: true,
       };
     });
+    for (const spent of payeeSpent) {
+      const payee = payees[spent.index]!;
+      inputs[spent.id] = {
+        source: { lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: spent.utxo.satoshis },
+        unlockingBytecode: satoshiContainerUnlockingBytecode(payee.categoryId, recordIndex(receiveMasterId(spent.index))),
+        consumed: true,
+      };
+    }
 
     return {
       blocks,
@@ -960,21 +1051,24 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         ...paying.spent.map((_utxo, position) => ({
           id: containerInputId(position), index: layout.participantCount + 1 + position,
         })),
+        ...payeeSpent.map((spent, position) => ({
+          id: spent.id, index: layout.participantCount + 1 + paying.spent.length + position,
+        })),
       ],
       masters: [masterDraft, ...payeeDrafts],
       inputs,
       ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [
         ...eventOutputs(learnedEvents), ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.eventOutputs),
-        ...sendOutputs,
+        ...sendOutputs, ...payeeRuns,
         ...(laid?.trailingOutputs ?? []),
         ...payeeLaid.flatMap((payeeLaidOut) => payeeLaidOut.mapping?.trailingOutputs ?? []),
         // The contract's own container, when no send precedes it: the change its calls leave, or the value it takes.
         ...(sendCount === 0 ? ownContainer : []),
-        // Each contract it pays takes the value into a container of its own.
-        ...payees.map((payee, index) => ({
+        // Each contract it pays takes the value into a container of its own, the one its sends follow if it sends.
+        ...payees.flatMap((payee, index) => (payee.sendCount > 0 ? [] : [{
           lockingBytecode: satoshiContainerLockingBytecode(payee.categoryId), valueSatoshis: callValue(index),
-        })),
+        }])),
       ],
       validator: {
         id: VALIDATOR_ID,
@@ -1022,6 +1116,7 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
   let learnedPayees: readonly PayeeLearned[] = payees.map((_payee, index) => ({
     events: payeeEventSentinels[index]!.map(() => undefined),
     views: payeeCandidates[index]!.map(() => undefined),
+    sends: payeeSendIndices[index]!.map(() => ({})),
   }));
   /**
    * The first value a paid contract's own failing close hands back, learned into the payees' values, if any.
@@ -1042,10 +1137,24 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
         declares(sentinel, learnedBefore.events[position]));
       const view = payeeCandidates[index]!.findIndex((candidateView, position) =>
         declares(candidateView, learnedBefore.views[position]));
-      if (event < 0 && view < 0) continue;
+      // A send's lock is compared with the output's on top, and its amount with the output's value on top.
+      const lock = payeeSendLockSentinels[index]!.findIndex((sentinel, position) =>
+        declares(sentinel, learnedBefore.sends[position]?.lock));
+      const amount = payeeSendAmountSentinels[index]!.findIndex((sentinel, position) => declares(
+        bigIntToVmNumber(sentinel),
+        learnedBefore.sends[position]?.amount === undefined ? undefined
+          : bigIntToVmNumber(learnedBefore.sends[position]!.amount!),
+      ));
+      const computedAmount = vmNumberToBigInt(reading.computed);
+      if (event < 0 && view < 0 && lock < 0 && (amount < 0 || typeof computedAmount !== 'bigint')) continue;
       return learnedPayees.map((learned, at) => (at !== index ? learned : {
         events: learned.events.map((known, position) => (position === event ? Uint8Array.from(reading.computed) : known)),
         views: learned.views.map((known, position) => (position === view ? Uint8Array.from(reading.computed) : known)),
+        sends: learned.sends.map((known, position) => ({
+          ...known,
+          ...(position === lock ? { lock: Uint8Array.from(reading.computed) } : {}),
+          ...(position === amount && typeof computedAmount === 'bigint' ? { amount: computedAmount } : {}),
+        })),
       }));
     }
     return undefined;
@@ -1177,9 +1286,11 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     || learnedEvents.some((view) => view === undefined)
     || learnedSends.some((send) => send.lock === undefined || send.amount === undefined)
     || learnedCallAmounts.some((amount) => amount === undefined)
-    || learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined));
+    || learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined)
+      || learned.sends.some((send) => send.lock === undefined || send.amount === undefined));
   if (!settled && owed) {
-    if (learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined))) {
+    if (learnedPayees.some((learned) => [...learned.events, ...learned.views].some((known) => known === undefined)
+      || learned.sends.some((send) => send.lock === undefined || send.amount === undefined))) {
       throw new PerCallCallError(
         `a contract entry "${functionName}" pays did not hand back every event payload and node it writes, so its `
         + 'frame cannot declare them',
@@ -1220,10 +1331,15 @@ async function callInShape(options: PerCallCallOptions, shape: SendShape): Promi
     throw new PerCallCallError('the composer built no transaction for the call frame');
   }
   // The containers the sends are paid from sit after the caller's coin, and the machine is asked about them too.
-  const containerInputs = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]).spent
-    .map((utxo, position) => ({
-      id: containerInputId(position), index: draft!.layout.participantCount + 1 + position, utxo,
-    }));
+  const rootSpent = payFromContainers([...learnedSends.map((send) => send.amount), ...learnedCallAmounts]).spent;
+  const payeeSpentFinal = payees.flatMap((payee, index) => (payee.sendCount === 0 ? [] : payeePaying(
+    index, learnedCallAmounts[index] ?? CALL_VALUE_SENTINEL + BigInt(index),
+    learnedPayees[index]!.sends.map((send) => send.amount),
+  ).spent.map((utxo, position) => ({ id: receiveContainerId(index, position), utxo }))));
+  const containerInputs = [
+    ...rootSpent.map((utxo, position) => ({ id: containerInputId(position), utxo })),
+    ...payeeSpentFinal,
+  ].map((spent, position) => ({ ...spent, index: draft!.layout.participantCount + 1 + position }));
   const rawVerdicts: PerCallCallVerdict[] = [...draft.layout.participants, ...containerInputs].map((placed) => {
     const state = machine.evaluate({
       inputIndex: placed.index, sourceOutputs: program.sourceOutputs, transaction,

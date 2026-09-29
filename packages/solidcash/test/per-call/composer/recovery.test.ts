@@ -2,7 +2,8 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2sh32, hash256, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import {
-  FrameKind, SHARED_LIBRARY_SALT, asmToScript, encodeIntegerValue, scriptToBytecode, sha256, validatorAddress,
+  FrameKind, SHARED_LIBRARY_SALT, asmToScript, buildPushdataCommitment, encodeIntegerValue, scriptToBytecode, sha256,
+  validatorAddress, type FrameKindValue,
 } from '@solidcash/utils';
 import { ethers } from 'ethers';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -13,11 +14,15 @@ import {
 } from '../../../../solidc/test/per-call/master/validator-input.js';
 import { computeEcrecoverWitness } from '../../../src/ecrecover/ecrecoverRecovery.js';
 import { probeEcrecoverSplit } from '../../../src/ecrecover/ecrecoverComputeSidecar.js';
+import { stateRecordLockingBytecode, stateRecordUnlockingBytecode } from '../../../src/per-call/deploy/index.js';
 import {
-  buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, recoveryCallsOf,
-  type CompositionDraftPlan, type DraftMaster, type RecoverySideCars,
+  buildKeccakSideCars, buildRecoverySideCars, composeDraft, keccakPreimagesOf, layoutTransaction, participant,
+  recoveryCallsOf, type CompositionDraftPlan, type DraftMaster, type RecoverySideCars,
 } from '../../../src/per-call/composer/index.js';
-import { USER_LOCK, composeAndDerive, rootOf, userInput } from '../shapes/harness.js';
+import {
+  USER_LOCK, compileAndDeploy, composeAndDerive, master as shapeMaster, masterInput, rootOf, token, userInput, userInputs,
+  validatorFor,
+} from '../shapes/harness.js';
 
 /**
  * A per-call master that recovers a signer, composed and derived by the shipped composer.
@@ -299,6 +304,106 @@ describe('a composed per-call recovery over a digest the body computes', () => {
     const verdicts = verdictsOf(test);
     expect(verdicts[MASTER_ID]).toStrictEqual({ accepted: true });
     for (const id of test.ids) expect(verdicts[id]!.accepted, id).toBe(true);
+  }, 120_000);
+});
+
+describe('a composed per-call recovery in a frame that runs on its caller\'s records', () => {
+  it('reads every side-car after its own input, not after the records\' owner', () => {
+    // A proxy delegates into an implementation entry that hashes and recovers: the frame's records are the proxy's,
+    // and its recovery pair, the projection's keccak side-car and its own keccak side-car follow its own input.
+    const data = new TextEncoder().encode('proxied side-cars');
+    const { artifacts, contracts } = compileAndDeploy('pragma solidcash ^0.13.0;'
+      + ' contract Impl {'
+      + '   address public implementation;'
+      + '   int public counter;'
+      + '   function check(bytes data, bytes32 expected, bytes32 h, int v, bytes32 r, bytes32 s) {'
+      + '     require(keccak256(data) == expected);'
+      + `     require(ecrecoverEvm(h, v, r, s) == bytes20(0x${binToHex(signer.address)}));`
+      + '     require(this.counter >= 0);'
+      + '   }'
+      + ' }'
+      + ' contract Proxy {'
+      + '   address public implementation;'
+      + '   int public counter;'
+      + '   fallback(bytes input) external { this.implementation.delegatecall(input); require(true); }'
+      + ' }', { Proxy: 'proxied recovery proxy', Impl: 'proxied recovery implementation' });
+    const proxy = contracts.Proxy!;
+    const impl = contracts.Impl!;
+    const state = hexToBin(
+      buildPushdataCommitment(artifacts.Proxy!.stateLayout!, { implementation: impl.address, counter: 5n }, 0));
+    const abiFunction = artifacts.Impl!.abi.find((row) => row.name === 'check')!;
+    const pushes = [
+      hexToBin(abiFunction.selector!), signer.s, signer.r, encodeIntegerValue(BigInt(signer.v)), signer.h,
+      keccak_256(data), data,
+    ];
+    const recovery = buildRecoverySideCars('impl-1', recoveryCallsOf(abiFunction, pushes, 1));
+    const keccak = buildKeccakSideCars('impl-1', keccakPreimagesOf(abiFunction, pushes, 1));
+    const ids = [...recovery.ids, ...keccak.ids];
+    const blocks: CompositionDraftPlan['blocks'] = [
+      { contract: 'Proxy', masters: ['proxy-1'], validator: { id: 'validator', settles: [] }, state: ['record'] },
+      { contract: 'Impl', masters: ['impl-1'], state: [], recovery: { 'impl-1': ids } },
+    ];
+    const layout = layoutTransaction(blocks);
+    const read = { in: participant(layout, 'record').index, out: participant(layout, 'record').index,
+      viewIn: state, viewOut: state };
+    const frameFacts = (contract: string, entry: string, kind: FrameKindValue): DraftMaster['facts'] => ({
+      contract, functionName: entry, kind, callerIsUser: kind === FrameKind.ROOT,
+      originEqualsCaller: kind === FrameKind.ROOT, makesExternalCall: kind === FrameKind.ROOT, mastersOfContract: 1,
+    });
+    const categoryHex = binToHex(proxy.category);
+    const recordSource = {
+      lockingBytecode: stateRecordLockingBytecode(categoryHex), valueSatoshis: 20_000n,
+      token: token(proxy.category, 'mutable', state),
+    };
+    const validator = validatorFor(proxy.category);
+    const plan: CompositionDraftPlan = {
+      blocks,
+      userInputs: userInputs(['user'], layout.participantCount),
+      masters: [
+        shapeMaster({
+          master: 'proxy-1', contract: 'Proxy', entry: '__fallback', program: proxy.program,
+          facts: frameFacts('Proxy', '__fallback', FrameKind.ROOT),
+          frame: { kind: FrameKind.ROOT, sender: USER_LOCK, self: proxy.address, value: 0n },
+          enteredBy: 'user', origin: 'user',
+          calls: [{ kind: FrameKind.DELEGATE, callee: 'impl-1', target: impl.address, value: 0n, argumentPushes: pushes }],
+          segments: [[read], [read]], argumentPushes: pushes, dispatches: true,
+        }),
+        shapeMaster({
+          master: 'impl-1', contract: 'Impl', entry: 'check', program: impl.program,
+          facts: frameFacts('Impl', 'check', FrameKind.DELEGATE),
+          frame: { kind: FrameKind.DELEGATE, sender: USER_LOCK, self: proxy.address, value: 0n },
+          enteredBy: 'proxy-1', origin: 'user', segments: [[read]], argumentPushes: pushes,
+        }),
+      ],
+      inputs: {
+        'proxy-1': { source: masterInput(proxy) },
+        'impl-1': { source: masterInput(impl) },
+        validator: {
+          source: { lockingBytecode: validator.lock, valueSatoshis: 20_000n, token: token(proxy.category, 'mutable') },
+        },
+        record: {
+          source: recordSource,
+          output: recordSource,
+          unlockingBytecode: stateRecordUnlockingBytecode(categoryHex, participant(layout, 'proxy-1').index, 1),
+        },
+        ...recovery.inputs,
+        ...keccak.inputs,
+        user: userInput(),
+      },
+      validator: {
+        id: 'validator', covers: ['Impl'],
+        settles: [{ category: proxy.category, stateInputs: ['record'] }],
+        redeemScript: validator.redeem,
+      },
+    };
+    // The records' owner sits before the implementation's input; every side-car follows the implementation's own.
+    const implIndex = participant(layout, 'impl-1').index;
+    expect(participant(layout, 'proxy-1').index).toBeLessThan(implIndex);
+    expect(ids.map((id) => participant(layout, id).index)).toStrictEqual(ids.map((_, offset) => implIndex + 1 + offset));
+    const outcome = composeAndDerive(plan, [artifacts.Proxy!, artifacts.Impl!], [rootOf('Proxy', '__fallback', 'proxy-1')]);
+    for (const verdict of outcome.verdicts) expect(verdict.accepted, verdict.participant).toBe(true);
+    expect(outcome.verdicts.map((verdict) => verdict.participant)).toStrictEqual(
+      ['proxy-1', 'validator', 'record', 'impl-1', ...ids]);
   }, 120_000);
 });
 

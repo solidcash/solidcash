@@ -11458,10 +11458,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return;
       }
       if (this.perCallMaster) {
-        // A per-call frame owns its input: its side-cars follow it, each recovery pair and its EVM keccak side-car
-        // first, then one keccak side-car per call in the order the body makes them. A side-car recreates at its own
-        // index, so the input coordinate also reads the output.
-        this.emitMasterInputIndex(loc);
+        // A per-call frame's side-cars follow its own input, even in a frame that runs on its caller's records: each
+        // recovery pair and its EVM keccak side-car first, then one keccak side-car per call in the order the body
+        // makes them. A side-car recreates at its own index, so the input coordinate also reads the output.
+        this.emit(Op.OP_INPUTINDEX, loc);
         const step = 1 + 2 * (fn.ecrecoverCallCount ?? 0) + (fn.ecrecoverEvmCallCount ?? 0) + i;
         this.emit(encodeInt(BigInt(step)), loc);
         this.emit(Op.OP_ADD, loc);
@@ -11625,10 +11625,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slotIdx = (role: 'A' | 'B', _isOutput = false): void => {
       if (loop) { emitLoopSideCarIndex(role === 'A' ? 1n : 2n); return; }
       if (this.perCallMaster) {
-        // A per-call frame owns its input: the side-car pair is placed immediately after it, one pair per call, so
-        // the body locates A/B from `OP_INPUTINDEX` rather than from an SDK operand. A self-preserving side-car
-        // recreates at its own index, so the input coordinate also reads the output.
-        this.emitMasterInputIndex(loc);
+        // A per-call frame's side-car pair is placed immediately after its own input, one pair per call, so the body
+        // locates A/B from `OP_INPUTINDEX`, not from the records' owner a frame that runs on its caller's records
+        // reads. A self-preserving side-car recreates at its own index, so the input coordinate also reads the output.
+        this.emit(Op.OP_INPUTINDEX, loc);
         const offset = 1 + 2 * effectOrdinal + (role === 'B' ? 1 : 0);
         this.emit(encodeInt(BigInt(offset)), loc);
         this.emit(Op.OP_ADD, loc);
@@ -11691,7 +11691,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.perCallMaster) {
         // The EVM projection's keccak side-car rides after every recovery pair, one per ecrecoverEvm call, so its
         // coordinate is the frame's own input plus the pairs plus this call's evm ordinal.
-        this.emitMasterInputIndex(loc);
+        this.emit(Op.OP_INPUTINDEX, loc);
         const offset = 1 + 2 * n + j;
         this.emit(encodeInt(BigInt(offset)), loc);
         this.emit(Op.OP_ADD, loc);

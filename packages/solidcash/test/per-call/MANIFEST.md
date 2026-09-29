@@ -27,7 +27,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidc/test/per-call/validator/` | `solidc` | 9 |
 | `packages/solidc/test/per-call/machine.test.ts` | `solidc` | 3 |
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
-| `packages/solidcash/test/per-call/composer/` | `solidcash` | 170 |
+| `packages/solidcash/test/per-call/composer/` | `solidcash` | 171 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
 | `packages/solidcash/test/per-call/reads/` | `solidcash` | 23 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
@@ -45,9 +45,9 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1492 checks (115 + 513 + 862 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1488 checks (115 + 508 + 863 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 508 is the four rows above it, `solidcash` 862 (861 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 508 is the four rows above it, `solidcash` 863 (862 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -128,7 +128,8 @@ frame runs, by `reads/proxied-root-read.test.ts`.
   `parseChunkCommitment`) and each refused shape named. `keccak-side-car.test.ts` hashes through keccak256 compute
   side-cars: a preimage the entry takes is read from its argument pushes, and one its body computes is learned
   from the body's own bind, a nested call included. `recovery.test.ts` does the same for a recovery pair: a digest
-  the body computes is learned with the keccak256 preimage it hashes, and the placeholder pair stands on its own.
+  the body computes is learned with the keccak256 preimage it hashes, and the placeholder pair stands on its own;
+  a frame that runs on its caller's records reads every side-car after its own input.
 - **`solidcash/test/per-call/deploy/`** — the deployed side: the master program's filled slots and published
   offsets, the master and validator pools, the genesis state a constructor's own frame computes (including the
   events a constructor emits), the record discovery a deployed contract is read through - the token category is

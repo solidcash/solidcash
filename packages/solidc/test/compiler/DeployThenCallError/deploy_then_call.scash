@@ -1,12 +1,13 @@
 // Calling a method on a freshly-deployed child in the same transaction is rejected unless the method folds
-// into the deploy genesis. A method with CONTROL FLOW does not (yet) fold - only straight-line local/field
-// assignments do - so it is still rejected: the call would co-spend the child, which this tx creates as an
+// into the deploy genesis. Deterministic branches now fold, but a runtime loop still cannot be represented
+// by the finite genesis recipe. The unfolded call would co-spend the child, which this tx creates as an
 // output, and a UTXO cannot be both created and spent in one transaction.
 contract Child(bytes20 owner) {
     int counter;
     function configure(int target) {
-        if (target > 0) {
+        while (target > 0) {
             this.counter = target;
+            target = 0;
         }
         require(true);
     }

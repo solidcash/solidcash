@@ -59,6 +59,7 @@ import {
   parsePushdataCommitment,
   parseValueChunkCommitment,
   scriptToBytecode,
+  sha256,
   type AbiFunction,
   type ArgSource,
   type Artifact,
@@ -74,7 +75,7 @@ import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '.
 import { evalComputedKey } from '../../stateful/route-expression-key.js';
 import type { DraftInput, DraftSourceOutput, DraftToken } from '../composer/draft.js';
 import {
-  layOutChunkRun, planChunkRun, type ChunkRunPlan,
+  dynamicValueRecords, layOutChunkRun, planChunkRun, type ChunkRunPlan,
 } from '../composer/chunk-plan.js';
 import {
   layOutMappingBatch, mappingValueChunkLock, planMappingBatch,
@@ -138,6 +139,16 @@ export interface HopEntryWritesRequest {
    * deployment path, whose writes start from the empty state.
    */
   readonly liveDeployment?: HopLiveDeployment;
+  /**
+   * The commitment the plan currently states for each record, in data-NFT order.
+   *
+   * A body that appends a default element and fills its fields in place publishes no element when a field's value
+   * is one the artifact's vocabulary cannot state — a machine fact such as the block time. The record that carries
+   * the value's byte length is still written by the body and closed against the declaration the plan states, so its
+   * commitment here names the run's width: the value's length implies its chunks. Absent leaves that write refused,
+   * which is the deployment path's shape.
+   */
+  readonly writtenCommitments?: readonly Uint8Array[];
 }
 
 /** The live deployment a call's hop reads its writes against, from the deployment's own classification. */
@@ -199,6 +210,13 @@ export interface HopEntryWrites {
    * for again when the hop is rebuilt for the broadcast.
    */
   readonly spentUtxos: ReadonlyMap<string, Utxo>;
+  /**
+   * The dynamic run whose width the record's own declaration fixed, and that width, when the element was unstated.
+   *
+   * It is what a refusal names: a run laid at a width the body's own pin does not close at is a run whose record
+   * declared a length the body did not write.
+   */
+  readonly sizedRun?: { readonly variable: string; readonly chunks: number };
   lay(context: HopEntryWritesContext): LaidHopEntryWrites;
 }
 
@@ -802,6 +820,8 @@ interface HopDynamicRun {
    * from the chunks the deployment holds, and each of them the frame spends and recreates in place.
    */
   readonly spent: readonly { readonly id: string; readonly utxo: Utxo }[];
+  /** The run's width, when the record's own declared length fixed it rather than a stated element. */
+  readonly declaredChunks?: number;
 }
 
 /** The participant id a hop's block holds for one chunk of a dynamic value's run. */
@@ -955,16 +975,24 @@ function resolveAppendedElement(
  * A per-call body holds a dynamic value in a run of chunk NFTs at the value's own collection covenant, addressed
  * from the frame's declared record block rather than from arithmetic. The run's records are the records the
  * transaction writes, so the hop has to declare them before the body runs; their commitments are what the body
- * computed, which no caller can state, so each declaration starts from the candidate the shipped chunk plan
- * derives and the derivation learns the body's own value from its close.
+ * computed, which no caller can state, so each declaration starts from a candidate and the derivation learns the
+ * body's own value from its close.
  *
  * What the hop must state is the run's width, because a run laid out at the wrong width is not one the body
- * addresses. This plans the one width an entry's own facts determine: the append's element, which the artifact
- * publishes under the pushed variable's name, added to the value the deployment holds — the empty one its genesis
- * minted for a deployment's own first hop, or the one its record and chunks carry for a later call. The run's spent
- * side is those live chunks, which the frame spends and recreates; a write that would shorten the run is refused by
- * name, and so is every other shape — several dynamic variables, a source the artifact does not publish, a live set
- * that does not match the record's own length.
+ * addresses. Two facts can fix it, and the hop takes whichever the entry has:
+ *
+ *   - the append's element, which the artifact publishes under the pushed variable's name when the body's own
+ *     fields are all values its vocabulary can state, added to the value the deployment holds;
+ *   - the record's own declaration, when the element is unstated: the body writes the value's byte length into the
+ *     record and closes against the declaration the plan states, so the length that record is asked to carry names
+ *     the run's chunks. The declaration is read from `writtenCommitments`, which the caller re-states from the
+ *     body's own close, so the run is planned at the width the body wrote rather than at the empty one it started
+ *     from. Until the length is stated the run is laid at the live width; the record close precedes the run's pin
+ *     in the body, which is what lets that first plan reach the close that sizes it.
+ *
+ * The run's spent side is the live chunks, which the frame spends and recreates; a write that would shorten the run
+ * is refused by name, and so is every other shape — several dynamic variables, a live set that does not match the
+ * record's own length.
  */
 function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | undefined {
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
@@ -986,12 +1014,56 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
       + 'not publish as a dynamic state variable',
     );
   }
-  // The run's width is the live value's length plus the element the append writes, so the element has to be
-  // stated. The artifact publishes it under the variable's name in the source vocabulary a constructor's
-  // whole-value source uses, and the hop resolves that source against its own call data; a source the artifact
-  // does not publish, or one the call data does not determine, is refused by name rather than sized by guessing.
   const elementType = parseArrayTypeString(declared.type)?.elementType;
   const source = fn.dynamicWriteSources?.[variable];
+  const structs = request.artifact.structs ?? layout?.structs;
+  // The element the append writes, when the artifact publishes one. The run's width is the live value's length
+  // plus that element, so a stated element sizes it without the body's help.
+  const element = elementType === undefined || source === undefined
+    ? undefined : resolveAppendedElement(request, fn, source, elementType);
+  const live = request.liveDeployment === undefined ? undefined
+    : liveDynamicValue(request.liveDeployment, layout!, variable, declared.type, declared.nftIndex);
+  const spent = live?.value ?? new Uint8Array(0);
+  const spentChunks = dynamicValueRecords(layout, variable, spent).chunks;
+  const spentParticipants = (live?.chunks ?? []).map(
+    (chunk, index) => ({ id: dynamicChunkId(variable, index), utxo: chunk.utxo }),
+  );
+
+  if (element !== undefined) {
+    const written = appendedElementValue(spent, declared.type, element, structs);
+    const plan = planChunkRun({ layout, variable, spent, written });
+    if (plan.spent.chunks.length > plan.written.chunks.length) {
+      throw new PerCallProxyDeployError(
+        `the implementation's "${request.functionName}" entry writes dynamic "${variable}" a value shorter than `
+        + 'the one the deployment holds, which this hop does not plan',
+      );
+    }
+    return { variable, type: declared.type, plan, spent: spentParticipants };
+  }
+
+  // The element is unstated, so the record's own declaration is what names the run's width. A caller that states
+  // the record's commitments is a call reconstructing the plan from what the body closed against; a caller that
+  // does not is the deployment path, which has no such close to read and refuses by name.
+  const length = declaredRunLength(request, declared.name, declared.nftIndex);
+  if (length !== undefined) {
+    const width = chunkCountForLength(length);
+    if (width < spentChunks.length) {
+      throw new PerCallProxyDeployError(
+        `the implementation's "${request.functionName}" entry writes dynamic "${variable}" ${length} byte(s), which `
+        + `is ${width} chunk(s), fewer than the ${spentChunks.length} chunk(s) the deployment holds`,
+      );
+    }
+    const plan: ChunkRunPlan = {
+      variable,
+      type: declared.type,
+      spent: { header: new Uint8Array(0), chunks: spentChunks },
+      written: {
+        header: new Uint8Array(0),
+        chunks: Array.from({ length: width }, (_unused, index) => runChunkCandidate(variable, index)),
+      },
+    };
+    return { variable, type: declared.type, plan, spent: spentParticipants, declaredChunks: width };
+  }
   if (elementType === undefined || source === undefined) {
     throw new PerCallProxyDeployError(
       `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}), whose `
@@ -999,32 +1071,48 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
       + 'cannot be sized',
     );
   }
-  const structs = request.artifact.structs ?? layout?.structs;
-  const element = resolveAppendedElement(request, fn, source, elementType);
-  if (element === undefined) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}) an `
-      + 'element the artifact publishes a source for but the hop\'s call data does not determine, so the run of '
-      + 'chunk records its write creates cannot be sized',
-    );
+  throw new PerCallProxyDeployError(
+    `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}) an `
+    + 'element the artifact publishes a source for but the hop\'s call data does not determine, so the run of '
+    + 'chunk records its write creates cannot be sized',
+  );
+}
+
+/**
+ * The byte length the record's own declaration asks for a dynamic value, or `undefined` when the caller states no
+ * record for it.
+ *
+ * The record carries the value's length beside the contract's other fields, so it is decoded through the shipped
+ * pushdata decoder the deployment's own classification uses. A commitment that does not decode as this layout's
+ * record states nothing here, and the run stays unsized rather than being planned from a guess.
+ */
+function declaredRunLength(
+  request: HopEntryWritesRequest,
+  variable: string,
+  nftIndex: number,
+): number | undefined {
+  const commitment = request.writtenCommitments?.[nftIndex];
+  const layout = request.artifact.stateLayout;
+  if (commitment === undefined || layout === undefined) return undefined;
+  let length: unknown;
+  try {
+    length = parsePushdataCommitment(binToHex(commitment), layout, nftIndex)[dynamicLenKey(variable)];
+  } catch {
+    return undefined;
   }
-  const live = request.liveDeployment === undefined ? undefined
-    : liveDynamicValue(request.liveDeployment, layout!, variable, declared.type, declared.nftIndex);
-  const spent = live?.value ?? new Uint8Array(0);
-  const written = appendedElementValue(spent, declared.type, element, structs);
-  const plan = planChunkRun({ layout, variable, spent, written });
-  if (plan.spent.chunks.length > plan.written.chunks.length) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" a value shorter than the `
-      + 'one the deployment holds, which this hop does not plan',
-    );
-  }
-  return {
-    variable,
-    type: declared.type,
-    plan,
-    spent: (live?.chunks ?? []).map((chunk, index) => ({ id: dynamicChunkId(variable, index), utxo: chunk.utxo })),
-  };
+  return typeof length === 'bigint' ? Number(length) : undefined;
+}
+
+/**
+ * The candidate one chunk of an unsized run starts from.
+ *
+ * The record's declaration fixes only how many chunks the run has; the bytes each carries are what the body
+ * computed, so each is learned from the body's own close exactly as a stated element's run is. The candidate is
+ * the identity the close is matched against, and it is derived from the variable and the chunk's index, so a run
+ * re-planned at a wider width keeps the candidates an earlier attempt learned.
+ */
+function runChunkCandidate(variable: string, index: number): Uint8Array {
+  return sha256(new TextEncoder().encode(`per-call dynamic run\u0000${variable}\u0000${index}`));
 }
 
 /** Plans the entry's own writes, with the ids the plan places. */
@@ -1053,6 +1141,8 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
       ...(dynamic?.plan.written.chunks ?? []),
     ],
     spentUtxos,
+    ...(dynamic?.declaredChunks === undefined
+      ? {} : { sizedRun: { variable: dynamic.variable, chunks: dynamic.declaredChunks } }),
     lay: (context: HopEntryWritesContext): LaidHopEntryWrites => {
       // The record families that fill the trailing region are laid out in the order the compiler emits them: the
       // batch's records, then a dynamic value's chunks, then a chunkable mapping value's chunks. A created record's

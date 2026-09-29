@@ -168,6 +168,14 @@ export interface PerCallProxyDeployment {
 const DEFAULT_MAXIMUM_COMMITMENT_BYTES = 10_000_000;
 /** How many times a hop rebuilds its plan from the state it read back, one attempt per record written. */
 const MAXIMUM_HOP_ATTEMPTS = 4;
+/**
+ * The most attempts a hop makes at all.
+ *
+ * A record that sizes one of the entry's own runs is itself learned in one of the attempts, after which the plan
+ * states the run's records, so the per-attempt budget above grows with the plan. The cap only bounds a plan that
+ * never hands anything back.
+ */
+const MAXIMUM_HOP_ATTEMPT_CAP = MAXIMUM_HOP_ATTEMPTS * 16;
 
 const PROXY_MASTER_ID = 'proxy-master';
 const IMPLEMENTATION_MASTER_ID = 'implementation-master';
@@ -493,16 +501,18 @@ export async function deployPerCallProxy(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: entryWrites?.learningCandidates ?? [],
+    ...(entryWrites === undefined ? {} : { entryWrites }),
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.initialize.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.initialize.functionName),
-    planFor: (writtenCommitments, entryWriteViews, eventCommitments, implementationRetval) => buildHopPlan({
+    planFor: (
+      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval,
+    ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments, recordLockingBytecode,
-      ...(entryWrites === undefined ? {} : { entryWrites }),
+      ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
       eventOutputs: hopEventOutputs(
@@ -592,6 +602,8 @@ interface SettledHop {
   readonly writtenEventCommitments: readonly Uint8Array[];
   /** The bytes the implementation frame recorded in its `retval`, which a returning entry's own body computed. */
   readonly retval: Uint8Array;
+  /** The entry's own writes as the settled plan states them, whose participant ids the broadcast reads back. */
+  readonly entryWrites?: HopEntryWrites;
 }
 
 /** Everything one attempt at a hop reads, and how to rebuild the plan once a record's computed value is learned. */
@@ -602,11 +614,17 @@ interface SettleHopOptions {
   readonly root: FrameRequest;
   readonly maximumCommitmentBytes: number;
   readonly recordCommitments: readonly Uint8Array[];
+  /** The records the entry's own body writes beyond its data-NFT records, or absent when it writes none. */
+  readonly entryWrites?: HopEntryWrites;
   /**
-   * One placeholder per commitment the entry's own body computes beyond its data-NFT records, which the
-   * derivation replaces as it learns. A mapping write's created node is the only one today.
+   * The entry's own writes as the record commitments the plan currently states imply them.
+   *
+   * A record's own declaration can fix the width of a run the entry writes — the record carries a dynamic value's
+   * byte length — so the writes are re-planned from the commitments each attempt states: the first attempt lays
+   * the run at the live width, the record's own close hands back the length the body wrote, and the next attempt
+   * lays the run at the chunks that length names. Absent leaves the writes as the caller stated them.
    */
-  readonly extraWrites: readonly Uint8Array[];
+  readonly entryWritesFor?: (writtenCommitments: readonly Uint8Array[]) => HopEntryWrites | undefined;
   /** One placeholder per event the entry emits, in emit order, which the derivation replaces as it learns. */
   readonly eventCommitments: readonly Uint8Array[];
   /**
@@ -622,6 +640,7 @@ interface SettleHopOptions {
   /** The plan for a given set of per-record, per-entry-write, per-event and `retval` candidate end values. */
   readonly planFor: (
     writtenCommitments: readonly Uint8Array[],
+    entryWrites: HopEntryWrites | undefined,
     entryWriteViews: readonly Uint8Array[],
     eventCommitments: readonly Uint8Array[],
     implementationRetval: Uint8Array,
@@ -642,19 +661,31 @@ interface SettleHopOptions {
 async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   const { vm, proxyArtifact, implementationArtifact } = options;
   let writtenCommitments = [...options.recordCommitments];
-  let writtenExtras = [...options.extraWrites];
   let writtenEvents = [...options.eventCommitments];
   let learnedRetval = options.retvalPlaceholder;
-  // One step per value the entry computes, plus the attempt that is accepted once every value is stated.
-  const maximumAttempts = Math.max(
-    MAXIMUM_HOP_ATTEMPTS,
-    writtenCommitments.length + writtenExtras.length + writtenEvents.length
-      + (options.retvalPlaceholder === undefined ? 0 : 1) + 1,
-  );
+  let entryWrites = options.entryWritesFor === undefined
+    ? options.entryWrites
+    : options.entryWritesFor(writtenCommitments);
+  // The declaration a value-dependent write closed against is learned once; the candidate it started from is that
+  // declaration's identity, so a re-planned entry — one whose run the record's own length widened — keeps what an
+  // earlier attempt learned.
+  const learnedExtras = new Map<string, Uint8Array>();
+  let maximumAttempts = MAXIMUM_HOP_ATTEMPTS;
   let composed: ReturnType<typeof createComposedDerivationHost> | undefined;
-  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
+  for (let attempt = 0; attempt < MAXIMUM_HOP_ATTEMPT_CAP; attempt += 1) {
+    const extras = entryWrites?.learningCandidates ?? [];
+    const writtenExtras = extras.map((candidate) => learnedExtras.get(bytesToHex(candidate)) ?? candidate);
+    // One step per value the entry computes, plus the attempt that is accepted once every value is stated. The
+    // plan is re-taken from the commitments in hand, so a run a record's own declaration sizes widens the budget
+    // when it is learned; the cap above only bounds a plan that never learns.
+    maximumAttempts = Math.max(
+      MAXIMUM_HOP_ATTEMPTS,
+      writtenCommitments.length + extras.length + writtenEvents.length
+        + (options.retvalPlaceholder === undefined ? 0 : 1) + 1,
+    );
+    if (attempt >= maximumAttempts) break;
     const plan = options.planFor(
-      writtenCommitments, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0));
+      writtenCommitments, entryWrites, writtenExtras, writtenEvents, learnedRetval ?? new Uint8Array(0));
     const candidate = createComposedDerivationHost({
       vm, artifacts: [proxyArtifact, implementationArtifact], plan,
     });
@@ -710,15 +741,16 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
         ? describeReading(reading, writtenCommitments[0] ?? new Uint8Array(0))
         : describeInnermost(refusal.innermost);
       throw new PerCallProxyDeployError(
-        `the implementation's ${options.entryLabel} did not settle through the proxy: ${attributed}`,
+        `the implementation's ${options.entryLabel} did not settle through the proxy: ${attributed}`
+        + sizedRunClause(entryWrites),
       );
     }
     if (learned >= 0) {
       writtenCommitments = writtenCommitments.map((candidate, nftIndex) =>
         (nftIndex === learned ? Uint8Array.from(reading.computed) : candidate));
+      entryWrites = options.entryWritesFor?.(writtenCommitments) ?? entryWrites;
     } else if (learnedExtra >= 0) {
-      writtenExtras = writtenExtras.map((candidate, writeIndex) =>
-        (writeIndex === learnedExtra ? Uint8Array.from(reading.computed) : candidate));
+      learnedExtras.set(bytesToHex(extras[learnedExtra]!), Uint8Array.from(reading.computed));
     } else {
       writtenEvents = writtenEvents.map((candidate, emitIndex) =>
         (emitIndex === learnedEvent ? Uint8Array.from(reading.computed) : candidate));
@@ -727,7 +759,7 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
   if (composed === undefined) {
     throw new PerCallProxyDeployError(
       `the implementation's ${options.entryLabel} did not settle through the proxy in `
-      + `${maximumAttempts} attempts`,
+      + `${maximumAttempts} attempts${sizedRunClause(entryWrites)}`,
     );
   }
   const { host, draft } = composed;
@@ -768,7 +800,21 @@ async function settleHop(options: SettleHopOptions): Promise<SettledHop> {
     verdicts, accepted: verdicts.every((verdict) => verdict.accepted),
     writtenCommitments, writtenEventCommitments: writtenEvents,
     retval: learnedRetval ?? new Uint8Array(0),
+    ...(entryWrites === undefined ? {} : { entryWrites }),
   };
+}
+
+/**
+ * The refusal's own words for a run the entry's record sizes, naming the width it was laid at.
+ *
+ * A run whose width comes from a declared length is the one shape whose refusal is not about a value: the record
+ * asked the body for a length, and the run laid at that length's chunks is not the run the body pinned.
+ */
+function sizedRunClause(entryWrites: HopEntryWrites | undefined): string {
+  const sized = entryWrites?.sizedRun;
+  return sized === undefined ? ''
+    : `, and the run it declares for dynamic "${sized.variable}" is ${sized.chunks} chunk(s), sized from the `
+      + "length the record's own declaration states";
 }
 
 /** Everything the hop's plan is built from, whether the hop is a deployment's first call or a user's later one. */
@@ -1355,21 +1401,26 @@ export async function callPerCallProxyEntry(
     ?? DEFAULT_MAXIMUM_COMMITMENT_BYTES;
   const recordAmounts = proxyPools.records.map((record) => record.satoshis);
 
-  const entryWrites = hopEntryWrites({
+  // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
+  // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the
+  // latter — a mapping node's value chunks sit at their own root-salted covenant, not at the collection's.
+  const writesRequest = {
     artifact: implementationArtifact,
     functionName: options.functionName,
     ...(options.args === undefined ? {} : { args: options.args }),
     callerLockingBytecode: options.callerLockingBytecode,
-    // The live deployment: the record's commitments give a dynamic value's length, and the category's chunk UTXOs
-    // are both a dynamic value's chunks and a mapping value's continuation chunks. `collectionNodes` holds the
-    // latter — a mapping node's value chunks sit at their own root-salted covenant, not at the collection's.
     liveDeployment: {
       category: proxyCategory,
       recordCommitments,
       chunks: [...proxyPools.chunks, ...proxyPools.collectionNodes],
       nodesByCollection: proxyPools.nodesByCollection,
     },
-  });
+  } as const;
+  // An entry whose element the artifact cannot state still writes the value's byte length into the record, so the
+  // run it grows is re-planned from the commitment the plan states: the first attempt lays it at the live width,
+  // the record's own close hands back the length the body wrote, and the run is laid at that length's chunks.
+  const entryWritesFor = (commitments: readonly Uint8Array[]): HopEntryWrites | undefined =>
+    hopEntryWrites({ ...writesRequest, writtenCommitments: commitments });
   const settled = await settleHop({
     vm,
     proxyArtifact,
@@ -1377,16 +1428,18 @@ export async function callPerCallProxyEntry(
     root: rootOn(proxyArtifact),
     maximumCommitmentBytes,
     recordCommitments,
-    extraWrites: entryWrites?.learningCandidates ?? [],
+    entryWritesFor,
     eventCommitments: hopEventSentinels(
       implementationArtifact, options.functionName, proxyCategory, maximumCommitmentBytes,
     ),
     ...(retvalPlaceholder === undefined ? {} : { retvalPlaceholder }),
     entryLabel: entryLabelFor(options.functionName),
-    planFor: (writtenCommitments, entryWriteViews, eventCommitments, implementationRetval) => buildHopPlan({
+    planFor: (
+      writtenCommitments, attemptWrites, entryWriteViews, eventCommitments, implementationRetval,
+    ) => buildHopPlan({
       proxyArtifact, implementationArtifact, implementationMaster, proxyMaster,
       proxyCategory, implementationCategory, recordCommitments, writtenCommitments,
-      ...(entryWrites === undefined ? {} : { entryWrites }),
+      ...(attemptWrites === undefined ? {} : { entryWrites: attemptWrites }),
       entryWriteViews,
       implementationRetval,
       eventOutputs: hopEventOutputs(implementationArtifact, options.functionName, proxyCategory, eventCommitments),
@@ -1416,7 +1469,7 @@ export async function callPerCallProxyEntry(
     implementationCategoryId: options.implementationCategoryId,
     program: settled.program,
     draft: settled.draft,
-    ...(entryWrites === undefined ? {} : { spentUtxos: entryWrites.spentUtxos }),
+    ...(settled.entryWrites === undefined ? {} : { spentUtxos: settled.entryWrites.spentUtxos }),
   });
 
   const retval = settled.retval;

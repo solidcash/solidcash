@@ -476,27 +476,29 @@ export function declaredRecordsKeptScript(options: DeclaredRecordsKeptOptions): 
     raw(takeLengthPrefixedField32()); // viewIn
     raw(takeLengthPrefixedField32()); // viewOut: [shared, count, cursor, in, out, viewIn, viewOut, rest]
     op(Opcodes.OP_TOALTSTACK);
-    op(Opcodes.OP_OVER, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0NOTEQUAL); // whether the view is a record's
-    op(Opcodes.OP_ROT, Opcodes.OP_ROT, Opcodes.OP_EQUAL); // [shared, count, cursor, in, out, viewed, sameView]
-    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM); num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BIN2NUM);
-    op(Opcodes.OP_2DUP, Opcodes.OP_NUMEQUAL); // [shared, count, cursor, viewed, sameView, in, out, sameIndex]
-    num(2); op(Opcodes.OP_PICK); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL);
-    num(5); op(Opcodes.OP_PICK, Opcodes.OP_BOOLAND);
-    num(8); op(Opcodes.OP_PICK, Opcodes.OP_BOOLAND, Opcodes.OP_BOOLOR);
-    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_BOOLAND);
-    num(3); op(Opcodes.OP_ROLL, Opcodes.OP_DROP); // [shared, count, cursor, in, out, kept]
+    num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM); num(3); op(Opcodes.OP_PICK, Opcodes.OP_BIN2NUM);
+    op(Opcodes.OP_0); // [shared, count, cursor, in, out, viewIn, viewOut, in#, out#, exempt]
     if (options.leading !== undefined) {
-      num(3); op(Opcodes.OP_PICK); num(options.leading); op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_BOOLOR);
+      num(7); op(Opcodes.OP_PICK); num(options.leading); op(Opcodes.OP_GREATERTHANOREQUAL, Opcodes.OP_BOOLOR);
     }
     for (let pair = 1; pair <= options.exempt; pair += 1) {
-      // Beneath [shared, count, cursor, in, out, kept] the pairs sit deepest first; one copy is on top as each is read.
-      const depth = 8 + 2 * (options.exempt - pair);
+      // Beneath those ten items the pairs sit deepest first; one copy is on top as each is read.
+      const depth = 12 + 2 * (options.exempt - pair);
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's input
       num(2); op(Opcodes.OP_PICK); num(depth); op(Opcodes.OP_PICK, Opcodes.OP_NUMEQUAL); // the pair's output
       op(Opcodes.OP_BOOLOR, Opcodes.OP_BOOLOR);
     }
-    op(Opcodes.OP_VERIFY, Opcodes.OP_2DROP);
-    op(Opcodes.OP_FROMALTSTACK); // [count, cursor, rest]
+    op(Opcodes.OP_IF);
+    op(Opcodes.OP_2DROP, Opcodes.OP_2DROP, Opcodes.OP_2DROP);
+    op(Opcodes.OP_ELSE);
+    op(Opcodes.OP_2DUP, Opcodes.OP_NUMEQUAL); // one index
+    num(2); op(Opcodes.OP_PICK); raw(encodeDataPush(INDEX_NONE_BYTES)); op(Opcodes.OP_NUMEQUAL); // or its output alone
+    num(5); op(Opcodes.OP_PICK, Opcodes.OP_SIZE, Opcodes.OP_NIP, Opcodes.OP_0NOTEQUAL, Opcodes.OP_BOOLAND);
+    num(10); op(Opcodes.OP_PICK, Opcodes.OP_BOOLAND, Opcodes.OP_BOOLOR, Opcodes.OP_VERIFY);
+    // The view unchanged, closed with the declaration on top, so a run learns a view a plan left unstated.
+    op(Opcodes.OP_2DROP, Opcodes.OP_EQUALVERIFY, Opcodes.OP_2DROP);
+    op(Opcodes.OP_ENDIF);
+    op(Opcodes.OP_FROMALTSTACK); // [shared, count, cursor, rest]
     op(Opcodes.OP_SWAP, Opcodes.OP_1ADD, Opcodes.OP_SWAP);
     num(1); op(Opcodes.OP_PICK);
     num(3); op(Opcodes.OP_PICK);

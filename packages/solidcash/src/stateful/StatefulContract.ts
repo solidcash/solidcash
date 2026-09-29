@@ -9682,10 +9682,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // before registering a computed chunk run: inline values own no continuation outputs, while long
             // values can be split exactly. Reserving a phantom chunk for each literal shifts every later trailing
             // resource away from the compiler's declared coordinates.
-            const vBytes = directBytes ?? evalComputedKey(
+            // A whole-struct constructor's label is a sequence of field expressions, not a scalar literal.
+            // Evaluating it as one key can misread a nested `lit:`/`id:` segment as a CashAddress and loses
+            // the typed field encoding. The authenticated computed-value path below owns aggregate values.
+            const structuredValue = stateLayout.structs?.some((struct) => struct.name === collection.valueType);
+            const vBytes = directBytes ?? (structuredValue ? undefined : evalComputedKey(
               access.valueSource, entryArgs, entryAbiFunction!.inputs,
               onChainState.state as Record<string, StateValue>,
-            );
+            ));
             if (vBytes) {
               if (vBytes.length > 60) {
                 valueChunkMints.push({

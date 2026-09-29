@@ -608,28 +608,6 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     // the run the default takes has to be stated: an inline default is the empty value's own tail, which is one
     // record with no chunks.
     if (isDelete) {
-      // A `delete m[k]` lowered inside a branch is published as a conditional soft-delete slot, and the compiler
-      // verifies it by reading the entry's *output* at the contract's own record block base plus the compacted
-      // block offset. A frame that declares fewer data NFTs than the contract's layout compacts them, so that
-      // offset names the contract's record block rather than the hop's node and the body's close can never agree;
-      // refuse by name rather than spend the derivation's attempts on a comparison that cannot close. The sibling
-      // verifications (an input read, a sorted batch) address the frame's declared block, which is why an
-      // unguarded delete and a write settle.
-      const softDelete = fn.blockLayout?.slots.some(
-        (slot) => slot.kind === 'entry' && slot.slotIndex === access.slotIndex && slot.softDelete === true,
-      ) === true;
-      const contractNfts = request.artifact.stateLayout?.dataNftCount ?? 0;
-      const declaredNfts = fn.requiredNftIndices?.length ?? contractNfts;
-      if (softDelete && declaredNfts < contractNfts) {
-        throw new PerCallProxyDeployError(
-          `the implementation's "${request.functionName}" entry deletes mapping "${access.collection}" behind a `
-          + `branch, and the compiler verifies that delete by reading the entry output at the contract's own record `
-          + `block base plus the block offset of the frame's compacted slot ${String(access.slotIndex)}: the frame `
-          + `declares ${declaredNfts} data NFT(s) of the contract's ${contractNfts}, so the offset names the `
-          + "contract's record block rather than this hop's node. The compiler would have to address that read at the "
-          + "frame's declared record block base, as it does for the entry input",
-        );
-      }
       const keys = access.keyParams.map((_param, index) => resolveKey(access, index));
       return { keys, value: new Uint8Array(0) };
     }

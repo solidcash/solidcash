@@ -547,19 +547,23 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('plans a first insert against a head the hop creates, which the contract does not verify', async () => {
+  it('plans a first insert against a head the hop creates, which the composed frame still refuses', async () => {
     // A call into a collection the deployment holds no node of plans its first write against the empty list's head
     // sentinel, which no live UTXO carries. The hop mints that head in its own transaction — the shipped encoder's
     // commitment for the empty list, at the collection's own entry covenant, spending nothing for it — and declares
     // the group's first record as the created head relinked to the new slot. The plan carries the head as
-    // `{in: 0xffff, out: <trailing>, viewOut: <zero slot || target slot>}` beside the created node, measured.
+    // `{in: 0xffff, out: <trailing>, viewIn: empty, viewOut: <zero slot || target slot || zero value>}`, measured,
+    // beside the created node.
     //
-    // The frame still refuses. The contract's single-target insert arm proves the splice against a proof INPUT at
-    // the predecessor's coordinate — it compares the predecessor output's bytecode with that input's and reads the
-    // input's record view — and the derivation takes that coordinate from the predecessor record's `in`. A record
-    // the transaction creates carries the create sentinel there, which the derivation reads as a signed number:
-    // measured, the machine is asked for UTXO index -32767 (0xffff read sign-magnitude) and refuses. The hop half
-    // is in place; the contract would have to state how a predecessor it does not spend proves its splice.
+    // The compiler now serves that predecessor for a per-call master: the single-target insert arm reads the create
+    // sentinel in the record's `in` field as a coordinate below every input, proves the recreated head's output is
+    // the collection's zero slot relinked to the target, and drops the proof-input bytecode comparison that has no
+    // input to compare with. The isolated shape and its wrong-relink control settle
+    // (`solidc test/per-call/master/insert-beside-append.test.ts`), and the shipped composer's own declaration is
+    // the one those records carry (empty input view, sentinel-relinked output view).
+    //
+    // The composed hop still refuses, and no longer at the proof input: the composed implementation-master's program
+    // fails an OP_VERIFY before the body's insert runs. The refusal below is what it reports.
     const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 

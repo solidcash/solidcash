@@ -22949,10 +22949,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // entry from the record its own segment declares, so the declaration is the source and the transaction's
       // input at the coordinate need not be authenticated again.
       this.emitMasterInputIndex(loc, 2);
-      this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset
+      this.emit(Op.OP_FROMALTSTACK, loc); // parked proof offset; the created node's successor is now on top
       this.emit(Op.OP_ADD, loc);
-      if (this.readsRecordsFromFrame) {
-        this.emitRecordCommitmentRead('in', loc);
+      if (this.perCallMaster) {
+        // A predecessor the transaction creates carries the create sentinel in its `in` field, so the proof
+        // coordinate lands below every input and there is no spent record to read. Such a predecessor is the empty
+        // list's head, whose slot and link are the collection's zero slot, so the write judges the target's gap
+        // against that head rather than against a record the transaction holds.
+        this.emit(Op.OP_DUP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_LESSTHAN, loc);
+        this.emit(Op.OP_IF, loc);
+        {
+          this.emit(Op.OP_DROP, loc); // the created coordinate names no input
+          this.emitFixedWidthConstant(new Uint8Array(32), loc);
+          this.emitFixedWidthConstant(new Uint8Array(32), loc);
+          this.emit(Op.OP_CAT, loc);                                   // [slot, link, value]
+        }
+        this.emit(Op.OP_ELSE, loc);
+        {
+          if (this.readsRecordsFromFrame) {
+            this.emitRecordCommitmentRead('in', loc); // the spent coordinate names its declared record
+          } else {
+            this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
+            this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+          }
+        }
+        this.emit(Op.OP_ENDIF, loc);
       } else {
         this.emit(Op.OP_2DUP, loc); this.emit(Op.OP_UTXOBYTECODE, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
@@ -24961,26 +24982,67 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // has no proof input or output and is authenticated by the same -2 sentinel as a general batch target.
         arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
         bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-        // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
-        directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
-        directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
-        bin(Op.OP_IF);
-        // UPDATE: no separate predecessor output is permitted.
-        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
-        bin(Op.OP_ELSE);
-        // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value.
-        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
-        bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
-        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
-        proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
-        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
-        bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
-        this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
-        this.emitVerifyCatBaseEqMaster(loc);
-        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
-        directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
-        directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
-        bin(Op.OP_ENDIF);
+        /** The predecessor is one the transaction spends: the proof coordinate names its input. */
+        const spentPredecessorArm = (): void => {
+          // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
+          directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+          directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
+          bin(Op.OP_IF);
+          // UPDATE: no separate predecessor output is permitted.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+          bin(Op.OP_ELSE);
+          // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+          this.emitVerifyCatBaseEqMaster(loc);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+          directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
+          directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
+          bin(Op.OP_ENDIF);
+        };
+        /**
+         * A predecessor the transaction creates rather than spends has no input at the coordinate the derivation
+         * states for it: the record's `in` field carries the create sentinel, so the coordinate lands below every
+         * input the way a created node's does. Such a predecessor is the empty list's head — the collection's zero
+         * slot — relinked to the written node, so the body proves the splice from the output it is created at: that
+         * output's first two fields are the zero slot and the target. The proof-input bytecode comparison is
+         * dropped, because there is no input to compare the recreated output with.
+         */
+        const createdPredecessorArm = (): void => {
+          // PredOut >= 0, and the output is at the collection's own entry covenant.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+          bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+          this.emitVerifyCatBaseEqMaster(loc);
+          // The recreated predecessor's commitment is the empty head relinked to the written node: the collection's
+          // zero slot, then the target. The record's own value is the sentinel's, which no lookup reads.
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+          this.emit(encodeInt(64n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+          zero32(); arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_CAT);
+          bin(Op.OP_EQUALVERIFY);
+          // No proof-input bytecode comparison: a created predecessor has no input to compare the output with.
+        };
+        if (this.perCallMaster) {
+          // The predecessor's `in` field is the create sentinel exactly when the derivation's coordinate is below
+          // every input; a spent predecessor's coordinate is its real input index.
+          proofIndex(slot); bin(Op.OP_DUP); bin(Op.OP_0); bin(Op.OP_LESSTHAN);
+          bin(Op.OP_IF);
+          bin(Op.OP_DROP); // the created coordinate names no input
+          createdPredecessorArm();
+          bin(Op.OP_ELSE);
+          bin(Op.OP_DROP);
+          spentPredecessorArm();
+          bin(Op.OP_ENDIF);
+        } else {
+          spentPredecessorArm();
+        }
         bin(Op.OP_ENDIF);
       } else if (batch.linear) {
         const rowsName = `__internal__vmapBatchRows_${batch.collection}`;
@@ -25452,6 +25514,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_INPUTINDEX, locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
+    } else if (this.readsRecordsFromFrame) {
+      // A per-call frame's records are separate UTXOs, so an entry output is not at a fixed offset from the input
+      // the frame runs on: the frame's witness block declares the output block base and the head parks it there.
+      // The input coordinate takes this branch; without it the close reads the contract's record block instead.
+      const proofName = `__internal__vmapBatchProof_${slotIndex}`;
+      const inBatch = this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex)) === true;
+      if (inBatch && this.getStackIndex(this.vmapWitnessName(proofName), true) >= 0) {
+        // A sorted-batch entry is recreated where it was spent, so its output coordinate is the co-spent proof
+        // input's own. The input read resolves this the same way; a frame that skipped it would name the declared
+        // block base instead of the batch's node, which the proof relocates.
+        this.emitMasterInputIndex(locationData, extraStackOffset);
+        this.emitPickVMapWitness(proofName, locationData);
+        this.emit(Op.OP_ADD, locationData);
+        return;
+      }
+      this.emitPerCallEntryIndex('out', slotIndex, locationData);
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData, extraStackOffset);
   }
 

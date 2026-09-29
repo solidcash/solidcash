@@ -143,6 +143,10 @@ interface SpendOptions {
   readonly createdCommitment?: Uint8Array;
   /** The commitment the run's chunk output carries; the planned one by default. */
   readonly chunkCommitment?: Uint8Array;
+  /** The commitment the recreated predecessor output carries; the planned relink by default. */
+  readonly predCommitment?: Uint8Array;
+  /** True when the transaction creates the predecessor, so no state UTXO sits at its index. */
+  readonly createdPredecessor?: boolean;
 }
 
 /** Builds the master, the state record, the sentinel and the run, and evaluates the master's own input. */
@@ -208,7 +212,8 @@ function evaluate(shape: Shape, options: SpendOptions = {}): { accepted: boolean
     lockingBytecode: STATE_LOCK, valueSatoshis: 20_000n, token: token('mutable', shape.stateOut),
   };
   const predOutput = {
-    lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', HEAD_AFTER),
+    lockingBytecode: entryLock, valueSatoshis: 20_000n,
+    token: token('mutable', options.predCommitment ?? HEAD_AFTER),
   };
   const createdOutput = {
     lockingBytecode: entryLock,
@@ -235,7 +240,11 @@ function evaluate(shape: Shape, options: SpendOptions = {}): { accepted: boolean
     { lockingBytecode: masterLock, valueSatoshis: 20_000n, token: token('minting', EMPTY) },
     { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n },
     { lockingBytecode: STATE_LOCK, valueSatoshis: 20_000n, token: token('mutable', shape.stateIn) },
-    { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', HEAD_BEFORE) },
+    // When the transaction creates the predecessor it holds no state UTXO at that index: the coin there is a
+    // plain one, or the head's declaration would read an index the frame never touches and the census refuse it.
+    options.createdPredecessor === true
+      ? { lockingBytecode: USER_LOCK, valueSatoshis: 100_000n }
+      : { lockingBytecode: entryLock, valueSatoshis: 20_000n, token: token('mutable', HEAD_BEFORE) },
     {
       lockingBytecode: chunkLock,
       valueSatoshis: 20_000n,
@@ -330,8 +339,27 @@ function evaluateUpdate(): { accepted: boolean; objection?: string } {
     : { accepted: false, objection: String(state.error) };
 }
 
-describe('a per-call master whose entry inserts a mapping target beside a dynamic append', () => {
-  it('publishes a per-call master whose layout puts the dynamic run past the batch group', () => {
+/**
+ * The segment the transaction creates the head in: the predecessor record carries the create sentinel in its `in`
+ * field and an empty input view, because the record has no input for a view to describe. Its output view is the
+ * empty list's head relinked to the target, which is the commitment the output it is created at must carry.
+ */
+const HEAD_AFTER_PADDED = encodeEntryCommitment(ZERO_SLOT, SLOT, new Uint8Array(64));
+const CREATED_HEAD_RECORDS: RecordEntry[] = [
+  { in: STATE_INDEX, out: STATE_INDEX, viewIn: STATE_EMPTY, viewOut: STATE_HELD },
+  { in: 0xffff, out: PRED_INDEX, viewIn: EMPTY, viewOut: HEAD_AFTER_PADDED },
+  { in: 0xffff, out: CREATED_INDEX, viewIn: EMPTY, viewOut: NODE_COMMITMENT },
+  { in: CHUNK_INDEX, out: CHUNK_INDEX, viewIn: EMPTY, viewOut: CHUNK_HELD },
+];
+
+/** The insert whose bracketing predecessor is created in the transaction rather than spent. */
+function evaluateCreatedHead(options: SpendOptions = {}): { accepted: boolean; objection?: string } {
+  return evaluate(EMPTY_RUN, {
+    records: CREATED_HEAD_RECORDS, createdPredecessor: true, predCommitment: HEAD_AFTER_PADDED, ...options,
+  });
+}
+
+describe('a per-call master whose entry inserts a mapping target beside a dynamic append', () => {  it('publishes a per-call master whose layout puts the dynamic run past the batch group', () => {
     expect(artifact.composition?.convention).toBe('per-call');
     expect(scriptToBytecode(deployed.script).length).toBeGreaterThan(0);
   });
@@ -346,6 +374,24 @@ describe('a per-call master whose entry inserts a mapping target beside a dynami
 
   it('settles the update beside the append, the control the same body already carried', () => {
     expect(evaluateUpdate()).toStrictEqual({ accepted: true });
+  });
+
+  it('settles the insert through a predecessor the transaction creates rather than spends', () => {
+    // The head is a trailing output the transaction mints, so the predecessor record names no input. The arm reads
+    // the splice from that record's declared output view and drops the proof-input bytecode comparison.
+    expect(evaluateCreatedHead()).toStrictEqual({ accepted: true });
+  });
+
+  it('is refused when the created predecessor is relinked to a slot the body did not splice', () => {
+    // The declaration and the output agree on a relink to some other slot, so the census admits the record and the
+    // body's own splice check is what refuses it.
+    const elsewhere = keyToSlot(new Uint8Array([1, 1, 1]));
+    const wrongHead = encodeEntryCommitment(ZERO_SLOT, elsewhere, new Uint8Array(64));
+    const records = CREATED_HEAD_RECORDS.map((record, index) => (
+      index === 1 ? { ...record, viewOut: wrongHead } : record
+    ));
+    expect(evaluateCreatedHead({ records, predCommitment: wrongHead }).accepted).toBe(false);
+    expect(evaluateCreatedHead().accepted).toBe(true);
   });
 
   it('is refused when the created node carries a value the code did not compute', () => {

@@ -18,10 +18,11 @@ import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
  * slot carries `conditional` and `softDelete`, and the body verifies the write by reading the entry's *output*
  * coordinate. The unguarded delete lowers to a plain in-place write, which the hop settles.
  *
- * The guarded body cannot settle through the proxy: the compiler verifies that delete by reading the entry's
- * *output* at the contract's category owner plus the compacted block offset, while a frame that declares fewer
- * data NFTs than the contract's layout leaves the node one layout offset past that read. The hop therefore
- * refuses it by name rather than stall, and the unguarded body beside it shows the same removal settling.
+ * The guarded body settles through the proxy: the compiler verifies that delete by reading the entry's *output* at
+ * the coordinate the frame declares for the record (a sorted batch's node, recreated where it was spent, at the
+ * co-spent proof input's own index), the same branch the entry input already takes, so the close agrees with the
+ * node the hop publishes and the derivation converges. The unguarded body beside it settles the same removal
+ * through the in-place write.
  */
 
 const IMPL_CATEGORY = '11'.repeat(32);
@@ -121,16 +122,18 @@ describe('a proxied delete of a sorted-mapping key', () => {
       .toStrictEqual(['master', 'dataNft', 'entry']);
   });
 
-  it('refuses the branch-guarded delete through the proxy, naming the compiler\u2019s output coordinate', async () => {
+  it('settles the branch-guarded delete through the proxy, rewriting the node to the default tail', async () => {
+    const encoder = new TextEncoder();
     const key = 'DV';
+    const artifacts = compileStringMulti(GUARDED_SOURCE, { composition: 'per-call' });
     const network = new MockNetworkProvider({ consensusLimits: COMPOSITION_LIMITS });
     const funding = await funded(network);
     const deployment = await deploy(GUARDED_SOURCE, funding, key, 'DIGITAL_VIDEO');
     expect(deployment.initialize.accepted).toBe(true);
 
-    await expect(callPerCallProxyEntry({
+    const result = await callPerCallProxyEntry({
       provider: network,
-      implementationArtifact: compileStringMulti(GUARDED_SOURCE, { composition: 'per-call' }).Impl!,
+      implementationArtifact: artifacts.Impl!,
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'untag',
@@ -140,11 +143,19 @@ describe('a proxied delete of a sorted-mapping key', () => {
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      'the compiler verifies that delete by reading the entry output at the contract\'s own record block base '
-      + 'plus the block offset of the frame\'s compacted slot 0: the frame declares 1 data NFT(s) of the '
-      + "contract's 2, so the offset names the contract's record block rather than this hop's node",
-    );
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    const slot = keyToSlotMulti([encoder.encode(key)]);
+    const nodeIds = result.draft.layout.participants.filter((placed) => placed.id.startsWith('mapping-node-'));
+    expect(nodeIds).toHaveLength(1);
+    const written = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[nodeIds[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(written.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(written.value)).toBe(bytesToHex(encodeChunkableValueTail(new Uint8Array(0))));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
   it('settles the unconditional write-then-delete in one deployment and broadcasts it', async () => {

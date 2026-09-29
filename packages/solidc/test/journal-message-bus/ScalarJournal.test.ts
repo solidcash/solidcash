@@ -351,8 +351,19 @@ describe('Release 1 scalar journal lowering', () => {
     expect(artifact.messageBus?.maximumRows).toBe(255);
     expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'approve', eligible: true, physicalEntrySlots: [0] }),
-      expect.objectContaining({ name: 'transferFrom', eligible: true, physicalEntrySlots: [2, 1, 0] }),
+      expect.objectContaining({
+        name: 'transferFrom', eligible: true,
+        physicalEntrySlots: [3, 2, 0],
+        physicalEntrySlotAlternatives: [[3, 4, 5, 6, 7, 8, 9, 10], [2], [0, 1]],
+      }),
     ]));
+    // The allowance's alternate lane precedes both balance lanes. The destination balance additionally owns
+    // the eight-row key pool; every published physical slot must name an actual co-spent entry in that order.
+    expect(artifact.messageBus?.route.entryAccesses?.map(({ slotIndex, collection }) => [slotIndex, collection]))
+      .toEqual([
+        [0, 'allowances'], [1, 'allowances'],
+        ...Array.from({ length: 9 }, (_, index) => [index + 2, 'balances']),
+      ]);
     expect(artifact.messageBus?.route.entryAccesses?.map((access) => access.collection))
       .toEqual(expect.arrayContaining(['allowances', 'balances']));
     // Runtime cache selection must stay linear in independently aliasable entries. Expanding every alias choice

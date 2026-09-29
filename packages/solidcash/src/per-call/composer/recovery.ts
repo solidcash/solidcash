@@ -61,6 +61,16 @@ export interface RecoverySideCars {
   readonly inputs: Readonly<Record<string, DraftInput>>;
   /** The witnesses the body computes, which the plan hands the derivation to learn. */
   readonly computedWitnesses: readonly DraftComputedWitness[];
+  /** The UTXO each side-car spends, by id: a live one when the caller supplied its pool, else a synthetic one. */
+  readonly utxos: Readonly<Record<string, Utxo>>;
+}
+
+/** The live side-car UTXOs a caller supplies, per covenant, in the order the side-cars take them. */
+export interface RecoverySideCarPools {
+  readonly a: readonly Utxo[];
+  readonly b: readonly Utxo[];
+  /** The stateful keccak covenant's UTXOs the EVM projections take, one per projection. */
+  readonly k: readonly Utxo[];
 }
 
 /** The ABI row of a function that makes recovery calls, as the compiled artifact publishes it. */
@@ -93,16 +103,33 @@ function sideCarUtxo(role: 'A' | 'B' | 'K'): Utxo {
  */
 const unlockingOf = (unlocker: Unlocker): Uint8Array => unlocker.generateUnlockingBytecode({} as never);
 
-/** The source output a side-car input spends: its lock is the covenant's, its token the side-car's own. */
-function sideCarSource(lock: Uint8Array): DraftSourceOutput {
+/** The source output a side-car input spends: the covenant's lock, and the value and token of the UTXO it spends. */
+function sideCarSource(lock: Uint8Array, utxo: Utxo): DraftSourceOutput {
+  const token = utxo.token!;
   return {
     lockingBytecode: lock,
-    valueSatoshis: SIDE_CAR_VALUE,
+    valueSatoshis: utxo.satoshis,
     token: {
-      category: RECOVERY_SIDE_CAR_CATEGORY, amount: 0n,
-      nft: { capability: 'mutable', commitment: new Uint8Array(0) },
+      category: hexToBin(token.category), amount: token.amount,
+      nft: { capability: token.nft!.capability, commitment: hexToBin(token.nft!.commitment) },
     },
   };
+}
+
+/** The UTXO the `index`-th side-car of a role spends: from the caller's pool when it supplied one. */
+function sideCarUtxoAt(pool: readonly Utxo[] | undefined, index: number, role: 'A' | 'B' | 'K'): Utxo {
+  if (pool === undefined) return sideCarUtxo(role);
+  const utxo = pool[index];
+  if (utxo === undefined) {
+    throw new PerCallEncodingError(`the supplied pool holds no ${role} side-car UTXO for side-car ${index}`);
+  }
+  return utxo;
+}
+
+/** One side-car a builder places: the id the plan names it by and the UTXO it spends. */
+interface PlacedSideCar {
+  readonly id: string;
+  readonly utxo: Utxo;
 }
 
 /** The output a side-car recreates, from the recreation the shipped builder produced. */
@@ -125,24 +152,24 @@ const RECOVERY_ARGUMENT_BYTES = 97;
 /** The most scalar draws a placeholder recovery tries; a random point's ladder nearly always splits. */
 const PLACEHOLDER_RECOVERY_DRAWS = 16;
 
-/** The A/B pair over `scalars`, and when `kId` is set the EVM projection's keccak side-car over the recovered key. */
+/** The A/B pair over `scalars`, and when `k` is set the EVM projection's keccak side-car over the recovered key. */
 function recoverySideCarsOver(
   scalars: RecoveryScalars,
   salt: Uint8Array,
-  ids: { readonly a: string; readonly b: string; readonly k: string | undefined },
+  placed: { readonly a: PlacedSideCar; readonly b: PlacedSideCar; readonly k: PlacedSideCar | undefined },
 ): Record<string, DraftSettledInput> {
   const witness = computeEcrecoverWitness(scalars.hash, scalars.v, scalars.r, scalars.s);
-  const chunkA = probeEcrecoverSplit(witness, salt, sideCarUtxo('A'), sideCarUtxo('B'));
+  const chunkA = probeEcrecoverSplit(witness, salt, placed.a.utxo, placed.b.utxo);
   const { unlockerA, recreateA, unlockerB, recreateB } = buildEcrecoverComputeSidecars(
-    witness, chunkA, salt, sideCarUtxo('A'), sideCarUtxo('B'),
+    witness, chunkA, salt, placed.a.utxo, placed.b.utxo,
   );
   const settled: Record<string, DraftSettledInput> = {
-    [ids.a]: { unlockingBytecode: unlockingOf(unlockerA), output: sideCarRecreation(recreateA) },
-    [ids.b]: { unlockingBytecode: unlockingOf(unlockerB), output: sideCarRecreation(recreateB) },
+    [placed.a.id]: { unlockingBytecode: unlockingOf(unlockerA), output: sideCarRecreation(recreateA) },
+    [placed.b.id]: { unlockingBytecode: unlockingOf(unlockerB), output: sideCarRecreation(recreateB) },
   };
-  if (ids.k !== undefined) {
-    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, sideCarUtxo('K'), true);
-    settled[ids.k] = { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
+  if (placed.k !== undefined) {
+    const { unlocker, recreate } = buildKeccakComputeSidecar(witness.uncompressedPubkey, salt, placed.k.utxo, true);
+    settled[placed.k.id] = { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
   }
   return settled;
 }
@@ -205,34 +232,41 @@ function placeholderRecovery(
  * Builds the recovery side-cars one master co-spends, in the order its body reads them: the A/B pair of each call,
  * then one keccak side-car per EVM projection. The ids are namespaced by the master, so a composition that names
  * two masters' side-cars keeps them distinct. A call whose scalars the body computes is built over placeholder
- * scalars, and its computed witness rebuilds the pair (and its keccak side-car) over the blob the body binds.
+ * scalars, and its computed witness rebuilds the pair (and its keccak side-car) over the blob the body binds. A
+ * caller that spends live side-cars supplies their pools; without them each side-car spends a synthetic UTXO.
  */
 export function buildRecoverySideCars(
   master: string,
   calls: readonly (RecoveryCall | ComputedRecoveryCall)[],
   salt: Uint8Array = SHARED_LIBRARY_SALT,
+  pools?: RecoverySideCarPools,
 ): RecoverySideCars {
   const pairIds: string[] = [];
   const keccakIds: string[] = [];
   const inputs: Record<string, DraftInput> = {};
   const computedWitnesses: DraftComputedWitness[] = [];
+  const utxos: Record<string, Utxo> = {};
   calls.forEach((call, index) => {
-    const ids = {
-      a: `${master}/recovery-A${index}`,
-      b: `${master}/recovery-B${index}`,
-      k: call.evm ? `${master}/recovery-K${keccakIds.length}` : undefined,
+    const evmIndex = keccakIds.length;
+    const placed = {
+      a: { id: `${master}/recovery-A${index}`, utxo: sideCarUtxoAt(pools?.a, index, 'A') },
+      b: { id: `${master}/recovery-B${index}`, utxo: sideCarUtxoAt(pools?.b, index, 'B') },
+      k: call.evm ? { id: `${master}/recovery-K${evmIndex}`, utxo: sideCarUtxoAt(pools?.k, evmIndex, 'K') } : undefined,
     };
-    pairIds.push(ids.a, ids.b);
+    pairIds.push(placed.a.id, placed.b.id);
     const sources: Record<string, DraftSourceOutput> = {
-      [ids.a]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'A')),
-      [ids.b]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'B')),
+      [placed.a.id]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'A'), placed.a.utxo),
+      [placed.b.id]: sideCarSource(ecrecoverComputeLockingBytecode(salt, 'B'), placed.b.utxo),
     };
-    if (ids.k !== undefined) {
-      keccakIds.push(ids.k);
-      sources[ids.k] = sideCarSource(keccakComputeLockingBytecode(salt, true));
+    utxos[placed.a.id] = placed.a.utxo;
+    utxos[placed.b.id] = placed.b.utxo;
+    if (placed.k !== undefined) {
+      keccakIds.push(placed.k.id);
+      sources[placed.k.id] = sideCarSource(keccakComputeLockingBytecode(salt, true), placed.k.utxo);
+      utxos[placed.k.id] = placed.k.utxo;
     }
     const over = (scalars: RecoveryScalars): Record<string, DraftSettledInput> =>
-      recoverySideCarsOver(scalars, salt, ids);
+      recoverySideCarsOver(scalars, salt, placed);
     let settled: Record<string, DraftSettledInput>;
     if ('computed' in call) {
       const placeholder = placeholderRecovery(`${master}/recovery-${index}`, over);
@@ -245,7 +279,7 @@ export function buildRecoverySideCars(
     }
     for (const [id, input] of Object.entries(settled)) inputs[id] = { source: sources[id]!, ...input };
   });
-  return { ids: [...pairIds, ...keccakIds], inputs, computedWitnesses };
+  return { ids: [...pairIds, ...keccakIds], inputs, computedWitnesses, utxos };
 }
 
 /**
@@ -329,8 +363,8 @@ export function keccakPreimagesOf(
 }
 
 /** A stateful keccak256 side-car's unlocking bytecode and recreated output, hashing `preimage`. */
-function keccakSideCarOver(preimage: Uint8Array, salt: Uint8Array): DraftSettledInput {
-  const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sideCarUtxo('K'), true);
+function keccakSideCarOver(preimage: Uint8Array, salt: Uint8Array, utxo: Utxo): DraftSettledInput {
+  const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, utxo, true);
   return { unlockingBytecode: unlockingOf(unlocker), output: sideCarRecreation(recreate) };
 }
 
@@ -341,27 +375,34 @@ function keccakSideCarOver(preimage: Uint8Array, salt: Uint8Array): DraftSettled
  * of calls names. The stateful covenant recreates the side-car at its own index, where a per-call body reads the
  * result; the ids are namespaced by the master. A side-car whose preimage the body computes hashes a placeholder,
  * and its computed witness rebuilds it around the preimage the body binds. A side-car the body never reads keeps
- * the placeholder and still holds its place, so the calls after it read theirs.
+ * the placeholder and still holds its place, so the calls after it read theirs. A caller that spends live side-cars
+ * supplies their pool; without it each side-car spends a synthetic UTXO.
  */
 export function buildKeccakSideCars(
   master: string,
   preimages: readonly (Uint8Array | undefined)[],
   salt: Uint8Array = SHARED_LIBRARY_SALT,
+  pool?: readonly Utxo[],
 ): RecoverySideCars {
   const ids: string[] = [];
   const inputs: Record<string, DraftInput> = {};
   const computedWitnesses: DraftComputedWitness[] = [];
+  const utxos: Record<string, Utxo> = {};
   preimages.forEach((preimage, index) => {
     const id = `${master}/keccak-${index}`;
+    const utxo = sideCarUtxoAt(pool, index, 'K');
     ids.push(id);
-    const source = sideCarSource(keccakComputeLockingBytecode(salt, true));
+    utxos[id] = utxo;
+    const source = sideCarSource(keccakComputeLockingBytecode(salt, true), utxo);
     if (preimage !== undefined) {
-      inputs[id] = { source, ...keccakSideCarOver(preimage, salt) };
+      inputs[id] = { source, ...keccakSideCarOver(preimage, salt, utxo) };
       return;
     }
     const placeholder = sha256(new TextEncoder().encode(`per-call computed witness\u0000${id}`));
-    inputs[id] = { source, ...keccakSideCarOver(placeholder, salt) };
-    computedWitnesses.push({ master, placeholder, settle: (value) => ({ [id]: keccakSideCarOver(value, salt) }) });
+    inputs[id] = { source, ...keccakSideCarOver(placeholder, salt, utxo) };
+    computedWitnesses.push({
+      master, placeholder, settle: (value) => ({ [id]: keccakSideCarOver(value, salt, utxo) }),
+    });
   });
-  return { ids, inputs, computedWitnesses };
+  return { ids, inputs, computedWitnesses, utxos };
 }

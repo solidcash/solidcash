@@ -160,7 +160,7 @@ function caseOf(
   artifacts: ReturnType<typeof compileStringMulti>,
   program: Uint8Array,
   pushes: readonly Uint8Array[],
-  sideCars: RecoverySideCars,
+  sideCars: Omit<RecoverySideCars, 'utxos'>,
 ): RecoveryCase {
   const master: DraftMaster = {
     master: MASTER_ID,

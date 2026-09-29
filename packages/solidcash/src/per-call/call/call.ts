@@ -21,6 +21,10 @@
  * the plan is rebuilt with it. The bytes are the entry's own answer, decoded with the shipped decoder into the call
  * result.
  *
+ * An entry that hashes through keccak256 or recovers a signer co-spends a side-car per call right after its master.
+ * The call spends live side-car UTXOs (`entrySideCars`), and a preimage or a digest the body computes is learned
+ * from the body's own bind.
+ *
  * What is not covered: an entry that calls another contract (the plan names no callee frames), and a returning
  * entry reached through a proxy hop whose forwarded call records no result — the generated closure shape forwards
  * with a bare `delegatecall(input)` and drops the result, so the hop cannot express the value in that call record
@@ -54,6 +58,7 @@ import {
   stateRecordUnlockingBytecode,
 } from '../deploy/index.js';
 import { callEntryRecords } from './entry-records.js';
+import { entrySideCars } from './side-cars.js';
 import { decodeReturnValues } from '../read/index.js';
 import {
   PerCallComposerError,
@@ -351,12 +356,23 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
   });
   const mappingIds = mappingRecords?.participantIds ?? [];
 
-  // One block: the contract's master, its validator, and every record it reads and writes.
+  const argumentPushes = entryArgumentPushes(entry, options.args ?? [], structs, functionName);
+  // The compute side-cars the entry's keccak256 and recovery calls read, one per call after the master.
+  const sideCars = await entrySideCars({
+    provider,
+    master: MASTER_ID,
+    abiFunction: artifact.abi.find((candidate) => candidate.name === functionName)!,
+    argumentPushes,
+    leadingPushes: 1,
+  });
+
+  // One block: the contract's master and its side-cars, its validator, and every record it reads and writes.
   const blocks: ContractBlock[] = [{
     contract: artifact.contractName,
     masters: [MASTER_ID],
     validator: { id: VALIDATOR_ID, settles: [] },
     state: [...recordIds, ...mappingIds],
+    ...(sideCars.ids.length === 0 ? {} : { recovery: { [MASTER_ID]: sideCars.ids } }),
   }];
   const layout = layoutTransaction(blocks);
   const masterIndex = participant(layout, MASTER_ID).index;
@@ -448,7 +464,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       segments: Array.from({ length: segmentCount }, segment),
       events: eventIndices,
       sends: [],
-      argumentPushes: entryArgumentPushes(entry, options.args ?? [], structs, functionName),
+      argumentPushes,
       redeemScript: deployed.script,
       // A root that carries call data is one a dispatcher selects an entry of.
       dispatches: true,
@@ -477,12 +493,14 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
       };
     }
     if (laid !== undefined) Object.assign(inputs, laid.inputs);
+    Object.assign(inputs, sideCars.inputs);
 
     return {
       blocks,
       userInputs: [{ id: CALLER_ID, index: layout.participantCount }],
       masters: [masterDraft],
       inputs,
+      ...(sideCars.computedWitnesses.length === 0 ? {} : { computedWitnesses: sideCars.computedWitnesses }),
       trailingOutputs: [...eventOutputs(learnedEvents), ...(laid?.trailingOutputs ?? [])],
       validator: {
         id: VALIDATOR_ID,
@@ -648,6 +666,7 @@ export async function callPerCallEntry(options: PerCallCallOptions): Promise<Per
     [VALIDATOR_ID, validator],
     ...records.map((record, nftIndex) => [record.id, deployment.records[nftIndex]!] as const),
     ...(mappingRecords?.spentUtxos ?? []),
+    ...Object.entries(sideCars.utxos),
   ]);
   // A refused call has no transaction to broadcast: every output and signature would describe a state the entry
   // never computed.
@@ -716,8 +735,8 @@ async function broadcastCall(options: BroadcastCallOptions): Promise<Transaction
   }
 
   const { TransactionBuilder } = await import('../../TransactionBuilder.js');
-  // The call's shape is fixed - the composer assembled every contract input and there is no oracle or side-car to
-  // co-spend - so the builder must not append anything.
+  // The call's shape is fixed - the composer assembled every contract input, its side-cars included, and there is no
+  // oracle to co-spend - so the builder must not append anything.
   const builder = new TransactionBuilder({ provider, skipAutomaticCoSpends: true });
   // The derived locktime is what every frame that reads `block.timestamp` was evaluated against, so the broadcast
   // carries that same one.

@@ -80,18 +80,47 @@ export class FailedRequireError extends FailedTransactionError {
     public bitauthUri: string,
     public libauthErrorMessage?: string,
     functionSourceMap?: string,
+    preferDirectCheckSigPredicate = false,
   ) {
     const { statement, lineNumber } = getLocationDataForInstructionPointer(
       artifact, failingInstructionPointer, functionSourceMap, requireStatement.line,
     );
+    const failingStatement = preferDirectCheckSigPredicate
+      ? directCheckSigPredicate(statement) ?? statement : statement;
 
     const baseMessage = `${artifact.contractName}.scash:${lineNumber} Require statement failed at input ${inputIndex} in contract ${artifact.contractName}.scash at line ${lineNumber}`;
     const baseMessageWithRequireMessage = `${baseMessage} with the following message: ${requireStatement.message}`;
-    const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${statement}`;
+    const fullMessage = `${requireStatement.message ? baseMessageWithRequireMessage : baseMessage}.\nFailing statement: ${failingStatement}`;
 
     super(fullMessage, bitauthUri);
   }
 }
+
+/** NULLFAIL rejects the nonempty signature inside a direct checkSig call before the enclosing require runs. */
+const directCheckSigPredicate = (statement: string): string | undefined => {
+  const opening = /^require\s*\(/.exec(statement.trim());
+  if (!opening) return undefined;
+  const source = statement.trim();
+  const start = opening[0].length;
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote !== undefined) {
+      if (char === '\\') index += 1;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'") { quote = char; continue; }
+    if (char === '(') { depth += 1; continue; }
+    if (char === ')' && depth > 0) { depth -= 1; continue; }
+    if ((char === ',' || char === ')') && depth === 0) {
+      const predicate = source.slice(start, index).trim();
+      return /^checkSig\s*\(/.test(predicate) ? predicate : undefined;
+    }
+  }
+  return undefined;
+};
 
 const getLocationDataForInstructionPointer = (
   artifact: Artifact,

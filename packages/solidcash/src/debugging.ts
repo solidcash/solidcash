@@ -341,6 +341,7 @@ const debugSingleScenario = (
       throw new FailedRequireError(
         artifact, failingIp, requireStatement, inputIndex, getBitauthUri(template), error,
         functionSourceMap,
+        isNullFail && failingInstruction?.opcode === Op.OP_CHECKSIGVERIFY,
       );
     }
 

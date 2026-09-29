@@ -89,6 +89,20 @@ describe('result-dependent topology propagation', () => {
     expect(unchanged.calls.map((call) => call.contract)).toEqual(ctx.descriptors.map((call) => call.contract));
   });
 
+  it('retains graph-inferred child callsites when prepared descriptors omit their optional IDs', async () => {
+    const ctx = fixture();
+    for (const child of ctx.descriptors.slice(1)) delete child.callsiteId;
+    const results = { 1: '01'.padStart(64, '0'), 4: '4d'.padStart(64, '0') };
+    const prepared = propagateResultDependentArguments(ctx, results).calls;
+    const changed = await propagateResultDependentCallTopology(ctx, prepared, results);
+    expect(changed.propagated).toBe(true);
+    expect(changed.calls).toHaveLength(4);
+    expect(changed.calls[0].contract).toBe(ctx.descriptors[0].contract);
+    expect(changed.calls[1].contract).toBe(ctx.descriptors[1].contract);
+    expect(changed.calls[2].contract).not.toBe(ctx.descriptors[2].contract);
+    expect(changed.calls[3].contract).toBe(ctx.descriptors[4].contract);
+  });
+
   it('binds guard results only through a published condition lane', () => {
     const args = [{ kind: 'expression' as const, expression: producer }];
     const results = new Map([[0, true]]);

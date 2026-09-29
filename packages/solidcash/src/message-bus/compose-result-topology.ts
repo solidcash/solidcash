@@ -120,7 +120,13 @@ export async function propagateResultDependentCallTopology(
       };
       const next: Child[] = [];
       for (const source of sources) {
-        const existingSite = children.filter((child) => child.call.callsiteId === source.callsiteId);
+        // A prepared call may omit its callsiteId when the compiled graph can infer the exact edge from source
+        // order. Once planned, that graph identity is authoritative: filtering by the optional descriptor field
+        // would silently discard every existing sibling during a result-dependent topology refresh.
+        const existingSite = children.filter((child) => (
+          child.previous === undefined ? child.call.callsiteId
+            : ctx.plan.invocations[child.previous]?.consumerCallsiteId
+        ) === source.callsiteId);
         const templates = source.batchInvocations?.map((row) => ({
           ...source, ...row, argSources: row.argSources, rawArgSources: undefined,
           sourceCallsiteId: row.sourceCallsiteId, sourceLogicalIndex: row.logicalIndex,
@@ -128,8 +134,12 @@ export async function propagateResultDependentCallTopology(
         })) ?? [{ ...source, sourceCallsiteId: source.callsiteId,
           sourceLogicalIndex: undefined, selectedSelector: source.rawSelector }];
         for (const template of templates) {
-          const existing = existingSite.filter((child) =>
-            (child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex) === template.sourceLogicalIndex);
+          const existing = existingSite.filter((child) => (
+            child.previous === undefined
+              ? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
+              : ctx.plan.invocations[child.previous]?.sourceLogicalIndex
+                ?? child.call.sourceLogicalIndex ?? child.call.batchLogicalIndex
+          ) === template.sourceLogicalIndex);
           if (previous !== undefined && !hasChangedDependency(
             [template.condition, template.iterationDomain, template.addressSource], childResults,
             ctx.descriptors[previous].args, call.args,
@@ -174,8 +184,12 @@ export async function propagateResultDependentCallTopology(
               if (!active) continue;
             }
             const reachedOccurrence = occurrence;
-            const prior = existing.find((child) =>
-              (child.call.occurrenceIndex ?? child.call.batchOccurrenceIndex ?? 0) === reachedOccurrence);
+            const prior = existing.find((child) => (
+              child.previous === undefined
+                ? child.call.occurrenceIndex ?? child.call.batchOccurrenceIndex
+                : ctx.plan.invocations[child.previous]?.occurrenceIndex
+                  ?? child.call.occurrenceIndex ?? child.call.batchOccurrenceIndex
+            ) === reachedOccurrence);
             const argSources = template.rawArgSources ?? template.argSources ?? [];
             const addressSources = template.addressSource ? [template.addressSource] : [];
             const returns = returnsFor([...argSources, ...addressSources]);

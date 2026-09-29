@@ -135,6 +135,7 @@ export async function createComposeSettlementContext(
     byLockingBytecode: input.byLockingBytecode,
     descriptorByLockingBytecode: input.descriptorByLockingBytecode,
     categories: input.categories,
+    preparedResults: input.preparedResults,
     logicalIdentities: input.logicalIdentities,
     runtimeEventSlots: slots.runtimeEventSlots,
     sidecarSlots: slots.sidecarSlots,

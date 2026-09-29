@@ -19,11 +19,11 @@ import {
   StateAssignNode, MappingAssignNode, MappingFieldAssignNode, StateArrayAssignNode,
   MappingAccessNode, ArrayAccessNode, FieldAccessNode, ExternalCallExpression, ExternalCallArgSource,
   ExternalCallStatement, EmitStatementNode, TernaryOpNode, TokenContainerMethodStatementNode,
-  UnaryOpNode, BranchNode, BoolLiteralNode,
+  UnaryOpNode, NullaryOpNode, BranchNode, BoolLiteralNode,
   SwitchNode, TryCatchNode, InstantiationNode, UncheckedNode,
   EntryAccessInfo,
 } from '../ast/AST.js';
-import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
 import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
@@ -1460,6 +1460,53 @@ const signatureGuardDominatesDelegatecalls = (fn: FunctionDefinitionNode): boole
   return delegates.every((call) => guards.some((guard) => dominates(guard, call)));
 };
 
+/** Publish only a direct, unconditional struct-parameter update whose source is the chain timestamp. */
+function argumentFieldUpdatesOf(func: FunctionDefinitionNode): AbiFunction['argumentFieldUpdates'] {
+  const timestamp = (expression: ExpressionNode): boolean => {
+    if (expression instanceof CastNode) return timestamp(expression.expression);
+    return (expression instanceof NullaryOpNode && expression.operator === NullaryOperator.BLOCK_TIMESTAMP)
+      || (expression instanceof StateAccessNode && expression.name === '__block_timestamp');
+  };
+  const originalField = (expression: ExpressionNode, parameter: string, field: string): boolean =>
+    expression instanceof FieldAccessNode && expression.name === field
+      && expression.expression instanceof IdentifierNode && expression.expression.name === parameter;
+  const writeCount = new Map<string, number>();
+  const seen = new Set<Node>();
+  const countWrites = (node: Node): void => {
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof AssignNode) {
+      writeCount.set(node.identifier.name, (writeCount.get(node.identifier.name) ?? 0) + 1);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (['location', 'type', 'definition', 'symbolTable', 'resolvedFunction', 'functionReference']
+        .includes(key)) continue;
+      if (value instanceof Node) countWrites(value);
+      else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) countWrites(child);
+    }
+  };
+  if (func.body) countWrites(func.body);
+  const updates: NonNullable<AbiFunction['argumentFieldUpdates']>[number][] = [];
+  for (const statement of func.body?.statements ?? []) {
+    if (!(statement instanceof AssignNode) || !statement.isReferenceDataWrite
+      || !(statement.expression instanceof FunctionCallNode)) continue;
+    const parameter = func.parameters.find((candidate) => candidate.name === statement.identifier.name
+      && candidate.type instanceof StructType);
+    if (!parameter || !(parameter.type instanceof StructType)
+      || writeCount.get(parameter.name) !== 1) continue;
+    const fields = parameter.type.fields;
+    const rebuild = statement.expression;
+    if (rebuild.identifier.name !== parameter.type.name || rebuild.parameters.length !== fields.length) continue;
+    const changed = fields.flatMap((field, index) => timestamp(rebuild.parameters[index]) ? [index] : []);
+    if (changed.length !== 1) continue;
+    const [fieldIndex] = changed;
+    if (!rebuild.parameters.every((value, index) => index === fieldIndex
+      || originalField(value, parameter.name, fields[index].name))) continue;
+    updates.push({ parameter: parameter.name, fieldPath: [fields[fieldIndex].name], source: 'blockTimestamp' });
+  }
+  return updates.length === 0 ? undefined : updates;
+}
+
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
@@ -2286,7 +2333,9 @@ function buildFunctionAbiMetadata(
   const publishedSourceEffectOrder = sourceEffectOrderForArtifact(
     func.sourceEffectOrder, func.externalCalls ?? [], func.entryAccesses ?? [],
   );
+  const argumentFieldUpdates = argumentFieldUpdatesOf(func);
   return {
+    ...(argumentFieldUpdates && { argumentFieldUpdates }),
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
     ...(func.graphEffectFrame && { graphEffectFrame: { ...func.graphEffectFrame } }),

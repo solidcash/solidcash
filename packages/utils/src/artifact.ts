@@ -478,6 +478,10 @@ export interface DelegateForwardingAbi {
 
 export interface AbiFunction {
   name: string;
+  /** Dominating source assignment to a public struct argument before it is consumed by a state write. */
+  argumentFieldUpdates?: readonly {
+    parameter: string; fieldPath: readonly string[]; source: 'blockTimestamp';
+  }[];
   selector?: string;  // 4-byte hex selector (e.g. "a9059cbb")
   inputs: readonly AbiInput[];
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)

@@ -60,11 +60,14 @@ import {
   parseValueChunkCommitment,
   scriptToBytecode,
   type AbiFunction,
+  type ArgSource,
   type Artifact,
+  type ExternalCallExpression,
   type RecordEntry,
   type StateValue,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../../Argument.js';
+import { evaluateExternalExpression } from '../../stateful/sc-evaluate-external-expression.js';
 import type { Utxo } from '../../interfaces.js';
 import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../../utils.js';
 import { decodeEntryCommitment, headSentinelCommitment, keyToSlotMulti } from '../../stateful/SortedList.js';
@@ -650,9 +653,19 @@ function planHopMappingBatch(request: HopEntryWritesRequest): HopMappingBatch | 
     }
   }
 
-  const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];  const inventory: Uint8Array[] = [];
+  const collectionNodes = request.liveDeployment?.nodesByCollection.get(collection.name) ?? [];
+  const inventory: Uint8Array[] = [];
   const utxoBySlot = new Map<string, Utxo>();
   if (collectionNodes.length === 0) {
+    if (request.liveDeployment !== undefined) {
+      // A sorted list's first write splices through the empty head sentinel, which a deployment's own entry mints
+      // for the collection it writes. A call reads the deployment's nodes, so a collection it holds none of has no
+      // head to splice: the write is refused by name rather than planned against a node no live UTXO carries.
+      throw new PerCallProxyDeployError(
+        `the implementation's "${request.functionName}" entry writes mapping "${collection.name}", and the `
+        + 'deployment holds no node of that collection, so this hop has no head to plan the write\'s splice against',
+      );
+    }
     // The genesis mints the empty list's head sentinel, so a hop before it plans against that commitment.
     inventory.push(headSentinelCommitment());
   } else {
@@ -836,16 +849,71 @@ function liveDynamicValue(
   };
 }
 
-/** The value an append produces: the elements the value already holds, then the frame's own sender. */
+/** The value an append produces: the elements the value already holds, then the element the write appends. */
 function appendedElementValue(
   live: Uint8Array,
   type: string,
-  sender: Uint8Array,
+  element: StateValue,
   structs: Artifact['structs'],
 ): Uint8Array {
   const decoded = live.length === 0 ? [] : decodePushdataValue(live, 0, type, structs).value;
   const elements = Array.isArray(decoded) ? decoded as StateValue[] : [];
-  return encodePushdataValue([...elements, sender] as StateValue[], type, structs);
+  return encodePushdataValue([...elements, element] as StateValue[], type, structs);
+}
+
+/** The element an append writes, in the raw form the array's element type encodes. */
+function appendedElement(resolved: FunctionArgument, elementType: string): StateValue | undefined {
+  // A literal or forwarded string is the only resolved form whose encoding depends on the element type: a string
+  // element stays the text, an address element is its locking bytecode, and a bytes element is its bytes.
+  if (typeof resolved !== 'string') return resolved as StateValue;
+  return coerceFieldValue(resolved, elementType) as StateValue | undefined;
+}
+
+/**
+ * The element one append writes, resolved from the artifact's own published source against the hop's call data.
+ *
+ * A non-constructor entry's dynamic write is an append, so the artifact publishes the ELEMENT the push names under
+ * the pushed variable's name, in the same source vocabulary a constructor's whole-value source uses: a forwarded
+ * parameter or contract argument, a literal, the transaction's sender, a struct construction, and the field, index,
+ * cast and operator nodes the shipped evaluator speaks. The sender resolves to the frame's own caller lock, which
+ * is the address `msg.sender` is bound to. An operand the vocabulary cannot name is published as nothing, so the
+ * source is absent and the caller refuses by name rather than guessing an element.
+ */
+function resolveAppendedElement(
+  request: HopEntryWritesRequest,
+  fn: AbiFunction,
+  source: ExternalCallExpression,
+  elementType: string,
+): StateValue | undefined {
+  const visible = visibleInputs(fn);
+  const args = [...(request.args ?? [])];
+  const host = {
+    resolveExternalArgs: (sources: readonly ArgSource[] | undefined): FunctionArgument[] | undefined =>
+      sources?.map((entry): FunctionArgument | undefined => {
+        if (entry.kind === 'msgSender') return request.callerLockingBytecode;
+        if (entry.kind === 'forward') {
+          return entry.paramIndex === undefined ? undefined : args[entry.paramIndex];
+        }
+        if (entry.kind === 'constructorArg') {
+          const index = visible.findIndex((input) => input.name === entry.paramName);
+          return index < 0 ? undefined : args[index];
+        }
+        if (entry.kind === 'literal') {
+          if (entry.type === 'bool') return entry.value === 'true';
+          if (entry.type === 'string') return entry.value;
+          if (entry.value !== undefined && entry.type !== undefined && /^u?int/.test(entry.type)) {
+            return BigInt(entry.value);
+          }
+          return entry.value === undefined || entry.type === undefined
+            ? undefined : hexToBin(entry.value);
+        }
+        return undefined;
+      }) as FunctionArgument[] | undefined,
+  };
+  const resolved = evaluateExternalExpression(
+    host, source, args, request.artifact, undefined, visible,
+  );
+  return resolved === undefined ? undefined : appendedElement(resolved, elementType);
 }
 
 /**
@@ -858,12 +926,12 @@ function appendedElementValue(
  * derives and the derivation learns the body's own value from its close.
  *
  * What the hop must state is the run's width, because a run laid out at the wrong width is not one the body
- * addresses. This plans the one width an entry's own facts determine: a write to a dynamic array of the frame's own
- * address type that appends the frame sender, starting from the value the deployment holds — the empty one its
- * genesis minted for a deployment's own first hop, or the one its record and chunks carry for a later call. The
- * run's spent side is those live chunks, which the frame spends and recreates; a write that would shorten the run
- * is refused by name, and so is every other shape — several dynamic variables, an element type the frame does not
- * fix, a live set that does not match the record's own length.
+ * addresses. This plans the one width an entry's own facts determine: the append's element, which the artifact
+ * publishes under the pushed variable's name, added to the value the deployment holds — the empty one its genesis
+ * minted for a deployment's own first hop, or the one its record and chunks carry for a later call. The run's spent
+ * side is those live chunks, which the frame spends and recreates; a write that would shorten the run is refused by
+ * name, and so is every other shape — several dynamic variables, a source the artifact does not publish, a live set
+ * that does not match the record's own length.
  */
 function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | undefined {
   const fn = request.artifact.abi.find((candidate) => candidate.name === request.functionName);
@@ -885,21 +953,32 @@ function planHopDynamicRun(request: HopEntryWritesRequest): HopDynamicRun | unde
       + 'not publish as a dynamic state variable',
     );
   }
-  // Only the frame's own sender can be stated as the appended element, and only an address element is one whose
-  // value fills a single chunk whatever it holds: any other element type's width is not fixed by the frame, so the
-  // run's width would be a guess.
-  const element = parseArrayTypeString(declared.type)?.elementType;
-  if (element !== 'address' || fn.usesMsgSender !== true) {
+  // The run's width is the live value's length plus the element the append writes, so the element has to be
+  // stated. The artifact publishes it under the variable's name in the source vocabulary a constructor's
+  // whole-value source uses, and the hop resolves that source against its own call data; a source the artifact
+  // does not publish, or one the call data does not determine, is refused by name rather than sized by guessing.
+  const elementType = parseArrayTypeString(declared.type)?.elementType;
+  const source = fn.dynamicWriteSources?.[variable];
+  if (elementType === undefined || source === undefined) {
     throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}) a value `
-      + 'whose element this hop cannot state, so the run of chunk records its write creates cannot be sized',
+      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}), whose `
+      + 'appended element the artifact publishes no source for, so the run of chunk records its write creates '
+      + 'cannot be sized',
     );
   }
   const structs = request.artifact.structs ?? layout?.structs;
+  const element = resolveAppendedElement(request, fn, source, elementType);
+  if (element === undefined) {
+    throw new PerCallProxyDeployError(
+      `the implementation's "${request.functionName}" entry writes dynamic "${variable}" (${declared.type}) an `
+      + 'element the artifact publishes a source for but the hop\'s call data does not determine, so the run of '
+      + 'chunk records its write creates cannot be sized',
+    );
+  }
   const live = request.liveDeployment === undefined ? undefined
     : liveDynamicValue(request.liveDeployment, layout!, variable, declared.type, declared.nftIndex);
   const spent = live?.value ?? new Uint8Array(0);
-  const written = appendedElementValue(spent, declared.type, request.callerLockingBytecode, structs);
+  const written = appendedElementValue(spent, declared.type, element, structs);
   const plan = planChunkRun({ layout, variable, spent, written });
   if (plan.spent.chunks.length > plan.written.chunks.length) {
     throw new PerCallProxyDeployError(
@@ -920,20 +999,10 @@ export function hopEntryWrites(request: HopEntryWritesRequest): HopEntryWrites |
   const batch = planHopMappingBatch(request);
   const dynamic = planHopDynamicRun(request);
   if (batch === undefined && dynamic === undefined) return undefined;
-  // A per-call body locates a dynamic run at the ordinal its own arithmetic derives from the batch's operands, and
-  // a target the live list does not hold makes the batch's group two records — the relinked predecessor and the
-  // created node — where the body advances the run's base by one. The ordinal the run addresses then names the
-  // created node, whose lock is the entry covenant rather than the run's own, so the body's address pin fails and
-  // no declared position for the run puts it back. A target the list holds makes the group one record, which the
-  // base already accounts for, so that shape is served; a target that splices a predecessor is refused by name.
-  if (batch !== undefined && dynamic !== undefined && request.liveDeployment !== undefined
-    && batch.plan.written.some((node) => !node.existed)) {
-    throw new PerCallProxyDeployError(
-      `the implementation's "${request.functionName}" entry inserts a mapping target the live list does not hold `
-      + 'beside a dynamic value, and an insert group declares the relinked predecessor and the created node, so '
-      + 'the ordinal the dynamic run is addressed at names the created node rather than the run',
-    );
-  }
+  // A batch's group and a dynamic value's run both sit in the frame's one segment, and the body addresses each by
+  // its own rule: the group by declared position, the run at the ordinal its arithmetic derives past the group.
+  // The contract states the group's declared surplus in both loops that address the run, so an insert group (the
+  // relinked predecessor and the created node) and a run beside it settle together.
   const spentUtxos = new Map<string, Utxo>();
   for (const node of batch?.spent ?? []) {
     const utxo = batch!.utxoBySlot.get(bytesToHex(node.slot));

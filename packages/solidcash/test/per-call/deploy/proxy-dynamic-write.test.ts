@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeLockingBytecodeP2pkh, hexToBin } from '@bitauth/libauth';
 import {
-  buildChunkCommitment, buildValueChunkCommitment, bytesToHex, encodeChunkableValueTail, encodePushdataValue,
-  parseChunkCommitment, sha256, splitValueIntoValueChunks,
+  buildChunkCommitment, buildValueChunkCommitment, bytesToHex, decodePushdataValue, encodeChunkableValueTail,
+  encodePushdataValue, parseChunkCommitment, sha256, splitValueIntoValueChunks,
 } from '@solidcash/utils';
 import { COMPOSITION_LIMITS, compositionMachine } from '../../../../solidc/test/per-call/machine.js';
 import { compileStringMulti } from '../../../../solidc/src/compiler.js';
@@ -19,14 +19,15 @@ import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 
 /**
- * A proxied initialize that appends one element to a dynamic state array.
+ * A proxied entry that appends to a dynamic state array, alone and beside a sorted-mapping write.
  *
  * A dynamic value is not held in the data NFT that declares it: the NFT carries the value's byte length and the
  * bytes live in a run of chunk NFTs at the variable's own collection covenant, addressed from the frame's declared
  * record block. A delegate frame runs on the proxy's records, so the hop has to declare that run — its records and
  * the outputs the transaction writes at their indices — or the body's own address pin reads whatever the hop put at
- * that ordinal and fails. The run's width comes from the value the write produces; its commitments are what the
- * body computed, which the derivation learns from the body's close.
+ * that ordinal and fails. The run's width comes from the value the write produces — the value the deployment holds
+ * plus the element the artifact publishes for the append — and its commitments are what the body computed, which
+ * the derivation learns from the body's close.
  *
  * The expected commitments here come from the shipped encoders (`encodePushdataValue` for the value,
  * `buildChunkCommitment` for a chunk, `chunkRecordLockingBytecode` for the value's collection covenant), and the
@@ -65,14 +66,51 @@ const COUNTER_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function again(address who) { this.counts[who] = this.counts[who] + 1; this.items.push(msg.sender); }'
   + ' }';
 
-/** The marketplace's registration shape: an append beside a struct-valued mapping entry whose value chunks. */
+/**
+ * The registration shape: an insert of a chunked struct value beside the append, over a list the deployment seeded.
+ *
+ * The deployment's own entry writes the collection, so the deployment mints the list's empty head and the call
+ * splices a fresh key beside it. The entry takes its struct as a parameter, which is the shape the artifact
+ * publishes an element source for: a body that also builds the struct clears the push's exactly-once proof, so
+ * only a forwarded struct keeps the append a single stated element.
+ */
 const REGISTER_CALL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   struct Member { address who; string name; string bio; uint up; }'
   + '   address public implementation;'
   + '   mapping(address => Member) public members;'
   + '   address[] public items;'
+  + '   function initialize(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
+  + '   function register(address who, Member m) {'
+  + '     require(this.members[who].up == 0);'
+  + '     this.members[who] = m;'
+  + '     this.items.push(msg.sender);'
+  + '   }'
+  + ' }';
+
+/** The same insert beside the append, over a mapping the deployment's own entry never wrote. */
+const UNSEEDED_REGISTER_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; string name; string bio; uint up; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   address[] public items;'
   + '   function initialize() { this.items.push(msg.sender); }'
+  + '   function register(address who, Member m) {'
+  + '     require(this.members[who].up == 0);'
+  + '     this.members[who] = m;'
+  + '     this.items.push(msg.sender);'
+  + '   }'
+  + ' }';
+
+/** The append in a body that also builds its struct value, which the artifact publishes no element source for. */
+const CONSTRUCTED_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   struct Member { address who; string name; string bio; uint up; }'
+  + '   address public implementation;'
+  + '   mapping(address => Member) public members;'
+  + '   address[] public items;'
+  + '   function initialize(address who, Member m) { this.members[who] = m; }'
   + '   function register(address who, string name_, string bio_) {'
   + '     require(this.members[who].up == 0);'
   + '     this.members[who] = Member(who, name_, bio_, 1);'
@@ -93,14 +131,8 @@ const LONG_UPDATE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   address public implementation;'
   + '   mapping(address => Member) public members;'
   + '   address[] public items;'
-  + '   function initialize() {'
-  + '     this.members[msg.sender] = Member(msg.sender, "n", "b", 1);'
-  + '     this.items.push(msg.sender);'
-  + '   }'
-  + '   function rename(string name_, string bio_) {'
-  + '     this.members[msg.sender] = Member(msg.sender, name_, bio_, 2);'
-  + '     this.items.push(msg.sender);'
-  + '   }'
+  + '   function initialize(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
+  + '   function rename(address who, Member m) { this.members[who] = m; this.items.push(msg.sender); }'
   + ' }';
 
 /** The same append beside a sorted-mapping write, which the hop plans as a batch. */
@@ -115,13 +147,26 @@ const MAPPING_BESIDE_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
-/** An element type whose width the frame does not fix, so the run's width cannot be stated. */
-const UNSIZED_SOURCE = 'pragma solidcash ^0.13.0;'
+/** An element type the artifact states only as a literal, which the hop sizes through the shipped encoder. */
+const LITERAL_SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Impl {'
   + '   address public implementation;'
   + '   int[] public items;'
   + '   function initialize() { this.items.push(1); }'
   + ' }';
+
+/** A write whose run the artifact publishes no element for, because the body pushes more than once. */
+const WIDE_SOURCE = 'pragma solidcash ^0.13.0;'
+  + ' contract Impl {'
+  + '   address public implementation;'
+  + '   address[] public items;'
+  + '   function initialize() {'
+  + Array.from({ length: 5 }, () => '     this.items.push(msg.sender);').join('')
+  + '   }'
+  + ' }';
+
+/** A fresh key the seeded deployment does not hold, so the call's write is an insert. */
+const FRESH_LOCK = encodeLockingBytecodeP2pkh(new Uint8Array(20).fill(0x77));
 
 interface Funding {
   readonly network: MockNetworkProvider;
@@ -250,24 +295,39 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
   });
 
-  it('refuses an append whose element the frame does not fix, so the run cannot be sized', async () => {
-    await expect(deploy(UNSIZED_SOURCE)).rejects.toThrow(
-      /writes dynamic "items" \(int256\[\]\) a value whose element this hop cannot state/,
+  it('settles a literal element, sizing the run from the element the artifact publishes', async () => {
+    // The artifact states the pushed element as a literal, so the hop sizes the run through the shipped encoder
+    // rather than refusing an element type it cannot name.
+    const { deployment, network, artifacts, layout, funding } = await deploy(LITERAL_SOURCE, [], true);
+    expect(deployment.initialize.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    // The element the artifact publishes as a literal is what sizes the run: the hop encodes it through the same
+    // shipped array encoder the body's write uses, so the value's byte length is the header the record carries and
+    // the run is one chunk wide.
+    const declaredType = layout.variables.find((variable) => variable.name === 'items')!.type;
+    const trailing = deployment.initialize.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1);
+    expect(trailing[0]!.output.lockingBytecode).toStrictEqual(
+      chunkRecordLockingBytecode(deployment.proxy.categoryId, 'items', declaredType),
     );
+    // The chunk carries the one-element array the literal names, and the record's header is that value's length.
+    const commitment = deployment.initialize.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!;
+    const { value: chunkData } = decodePushdataValue(commitment, 1, 'bytes') as { value: Uint8Array };
+    expect(chunkData.length).toBeGreaterThan(0);
+    const state = await readPerCallState(network, deployment.proxy.categoryId, layout);
+    expect(state.byNft[0]!['items$len']).toBe(BigInt(chunkData.length));
+    expect(await network.getRawTransaction(deployment.initialize.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+    expect(funding.deployerLock.length).toBe(25);
   });
 
-  it('refuses a write whose run is wider than one element, rather than leaving a record unpinned', async () => {
-    // Five elements cross the 120-byte chunk boundary, so the body pins a second chunk the hop's one-element run
-    // does not declare. The write is refused rather than settled with a record the body never computed.
-    const wide = 'pragma solidcash ^0.13.0;'
-      + ' contract Impl {'
-      + '   address public implementation;'
-      + '   address[] public items;'
-      + '   function initialize() {'
-      + Array.from({ length: 5 }, () => '     this.items.push(msg.sender);').join('')
-      + '   }'
-      + ' }';
-    await expect(deploy(wide)).rejects.toThrow(/did not settle through the proxy/);
+  it('refuses a write whose run the artifact publishes no element for, naming the missing source', async () => {
+    // Five pushes are five elements on the one segment, and no single stated element grows the run by all of them,
+    // so the artifact publishes no source for the append and the hop refuses by name rather than sizing a run it
+    // would have to guess at.
+    await expect(deploy(WIDE_SOURCE)).rejects.toThrow(
+      /writes dynamic "items" \(address\[\]\), whose appended element the artifact publishes no source for/,
+    );
   });
 
   it('keeps the chunk the deployment holds and writes the grown value through a later call', async () => {
@@ -350,7 +410,8 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     // mapping value takes. A per-call body locates a dynamic run at the ordinal its own arithmetic names and a
     // mapping value's run by address, so the two families are declared in the order the compiler emits them and
     // both settle.
-    const { deployment, network, artifacts, funding } = await deploy(LONG_UPDATE_SOURCE, [], true);
+    const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
+    const { deployment, network, artifacts, funding } = await deploy(LONG_UPDATE_SOURCE, [seeded.who, seeded], true);
     expect(deployment.initialize.accepted).toBe(true);
 
     const name = 'n'.repeat(80);
@@ -361,7 +422,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'rename',
-      args: [name, bio],
+      args: [seeded.who, { who: seeded.who, name, bio, up: 2n }],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
@@ -374,10 +435,10 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
 
     // The value the entry's own body computed, and the run its node takes in the shipped encoders' form.
     const value = encodePushdataValue(
-      { who: funding.deployerLock, name, bio, up: 2n }, 'Member', artifacts.Impl!.structs,
+      { who: seeded.who, name, bio, up: 2n }, 'Member', artifacts.Impl!.structs,
     );
     expect(value.length).toBeGreaterThan(60);
-    const slot = keyToSlotMulti([funding.deployerLock]);
+    const slot = keyToSlotMulti([seeded.who]);
     const chunkLock = mappingValueChunkLock(
       hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
     );
@@ -414,16 +475,78 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
   });
 
-  it('refuses an insert of a mapping target beside the append, which the hop does not plan', async () => {
-    // A target the live list does not hold makes its group two records: the relinked predecessor and the created
-    // node, and they sit between the batch's target slots and the run's own records. The contract states that
-    // surplus in both loops that address the run — the write and, since it reads the run an append grows, the read
-    // — so the transition itself settles (`solidc/test/per-call/master/insert-beside-append.test.ts` drives the
-    // insert beside a run the deployment holds through the shipped machine). The refusal this pin holds is the
-    // hop's own: it declines the arrangement before a frame runs, and it does not plan the records the run the
-    // deployment already holds occupies. Measured on the pin's own call: with that guard lifted the call stops in
-    // the hop's planning, before any frame, on the mapping head's live UTXO.
-    const { deployment, network, artifacts, funding } = await deploy(REGISTER_CALL_SOURCE, [], true);
+  it('settles an insert of a chunked value beside the append, the node and the value chunks created', async () => {
+    // The registration shape: the deployment's own entry wrote the collection, so the head the insert splices
+    // through is a live node the hop plans the batch against, and the call declares the group's two records, the
+    // dynamic run's kept chunk and the value's chunk run. The created node, its chunks and the dynamic chunk all
+    // carry what the body computed.
+    const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
+    const { deployment, network, artifacts, funding }
+      = await deploy(REGISTER_CALL_SOURCE, [seeded.who, seeded], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    const name = 'n'.repeat(80);
+    const bio = 'b'.repeat(80);
+    const result = await callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'register',
+      args: [FRESH_LOCK, { who: FRESH_LOCK, name, bio, up: 1n }],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    });
+    expect(result.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(result.accepted).toBe(true);
+    expect(result.broadcast).toBeDefined();
+
+    // The value the entry's own body computed, and the run its created node takes.
+    const value = encodePushdataValue(
+      { who: FRESH_LOCK, name, bio, up: 1n }, 'Member', artifacts.Impl!.structs,
+    );
+    expect(value.length).toBeGreaterThan(60);
+    const slot = keyToSlotMulti([FRESH_LOCK]);
+    const chunkLock = mappingValueChunkLock(
+      hexToBin(deployment.proxy.categoryId), 'members', { slot, root: sha256(value) },
+    );
+    const valueChunks = splitValueIntoValueChunks(value).map(
+      (piece, index) => ({ index, commitment: hexToBin(buildValueChunkCommitment(index, piece)) }),
+    );
+    expect(valueChunks.length).toBeGreaterThan(0);
+
+    // The created node is a trailing output; the value's chunks follow it at the value's own covenant.
+    const trailing = result.draft.trailingOutputs;
+    expect(trailing).toHaveLength(1 + valueChunks.length);
+    const created = decodeEntryCommitment(
+      Uint8Array.from(result.transaction.outputs[trailing[0]!.index]!.token!.nft!.commitment!));
+    expect(bytesToHex(created.slot)).toBe(bytesToHex(slot));
+    expect(bytesToHex(created.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
+    trailing.slice(1).forEach((output, position) => {
+      expect(output.output.lockingBytecode).toStrictEqual(chunkLock);
+      expect(output.output.token!.nft!.commitment).toStrictEqual(valueChunks[position]!.commitment);
+    });
+
+    // The dynamic value's run is the live chunk recreated in place, carrying the array the append grew.
+    const grown = encodePushdataValue(
+      [funding.deployerLock, funding.deployerLock], 'address[]', artifacts.Impl!.structs,
+    );
+    const chunkIds = result.draft.layout.participants
+      .filter((placed) => placed.id.startsWith('dynamic-chunk-'));
+    expect(chunkIds).toHaveLength(1);
+    expect(result.transaction.outputs[chunkIds[0]!.index]!.token!.nft!.commitment)
+      .toStrictEqual(new Uint8Array(hexToBin(buildChunkCommitment(0, grown))));
+    expect(await network.getRawTransaction(result.broadcast!.txid)).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it('refuses an insert over a mapping the deployment holds no node of, naming the missing head', async () => {
+    // A sorted list's first write splices through the empty head sentinel, which a deployment's own entry mints
+    // for the collection it writes. This deployment's entry never wrote the mapping, so the call has no head to
+    // plan the splice against and the hop refuses by name rather than planning against a node no UTXO carries.
+    const { deployment, network, artifacts, funding } = await deploy(UNSEEDED_REGISTER_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
     await expect(callPerCallProxyEntry({
@@ -432,13 +555,43 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       proxyCategoryId: deployment.proxy.categoryId,
       implementationCategoryId: deployment.implementation.categoryId,
       functionName: 'register',
-      args: [funding.deployerLock, 'n'.repeat(80), 'b'.repeat(80)],
+      args: [FRESH_LOCK, { who: FRESH_LOCK, name: 'n'.repeat(80), bio: 'b'.repeat(80), up: 1n }],
       callerUtxo: funding.callUtxo,
       callerLockingBytecode: funding.deployerLock,
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow('inserts a mapping target the live list does not hold beside a dynamic value');
+    })).rejects.toThrow(
+      'the implementation\'s "register" entry writes mapping "members", and the deployment holds no node of that '
+      + 'collection, so this hop has no head to plan the write\'s splice against',
+    );
+  });
+
+  it('refuses an append whose element source the artifact does not publish, naming the missing source', async () => {
+    // The body builds its struct value before the push, and the lowered construction clears the push's
+    // exactly-once proof, so the artifact publishes no element source: the hop refuses by name rather than
+    // guessing the element and sizing the run from it.
+    const seeded = { who: encodeLockingBytecodeP2pkh(alicePkh), name: 'n', bio: 'b', up: 1n };
+    const { deployment, network, artifacts, funding }
+      = await deploy(CONSTRUCTED_BESIDE_SOURCE, [seeded.who, seeded], true);
+    expect(deployment.initialize.accepted).toBe(true);
+
+    await expect(callPerCallProxyEntry({
+      provider: network,
+      implementationArtifact: artifacts.Impl!,
+      proxyCategoryId: deployment.proxy.categoryId,
+      implementationCategoryId: deployment.implementation.categoryId,
+      functionName: 'register',
+      args: [FRESH_LOCK, 'n'.repeat(80), 'b'.repeat(80)],
+      callerUtxo: funding.callUtxo,
+      callerLockingBytecode: funding.deployerLock,
+      funder: funding.signature.unlockP2PKH(),
+      changeAddress: funding.changeAddress,
+      vm: compositionMachine(),
+    })).rejects.toThrow(
+      'the implementation\'s "register" entry writes dynamic "items" (address[]), whose appended element the '
+      + 'artifact publishes no source for, so the run of chunk records its write creates cannot be sized',
+    );
   });
 });
 

@@ -15,6 +15,10 @@ import { refusalMessageOf } from './refused-entry.js';
  * by the fixed number of calls that precede it; a call that only some paths make moves that segment, which the run
  * time position mode cannot follow.
  *
+ * Beside them sits the gate a body that reaches inline assembly trips. It refuses by reachability rather than per
+ * body, so the cases fix both ends: an unreached assembly helper is served, and a body that reaches one fails the
+ * contract.
+ *
  * Each case drives a real source through the shipped compile entry point and reads the refusal the compile
  * publishes beside the artifact; the served bodies beside them fix where each refusal begins.
  */
@@ -105,6 +109,20 @@ const WRITE_ALONE = 'pragma solidcash ^0.13.0;'
   + '   }'
   + ' }';
 
+/** The per-call convention composes no inline assembly, so a body that reaches any is refused contract-wide. */
+const INLINE_ASSEMBLY_REFUSAL = 'the per-call composition convention does not support this contract: '
+  + 'inline assembly is not composed per-call';
+
+/** A body that calls a helper whose own body holds inline assembly. */
+const ASSEMBLY_IN_REACHED_HELPER = 'pragma solidcash ^0.13.0;'
+  + ' library Lifted { function lift() internal { assembly { OP_DUP OP_ADD 0x01 } } }'
+  + ' contract Caller { function callIt() { Lifted.lift(); require(true); } }';
+
+/** The same helper, which no body calls: the reachability the gate reads is what refuses, not the helper alone. */
+const ASSEMBLY_IN_UNREACHED_HELPER = 'pragma solidcash ^0.13.0;'
+  + ' library Lifted { function lift() internal { assembly { OP_DUP OP_ADD 0x01 } } }'
+  + ' contract Caller { function callIt() { require(true); } }';
+
 describe('a low-level call whose payload names a method the compiler can hold', () => {
   it('serves the payload when the helper that makes the call is inlined', () => {
     expect(refusalMessageOf(PAYLOAD_ACROSS_VOID_HELPER)).toBe('');
@@ -120,6 +138,18 @@ describe('a low-level call whose payload names a method the compiler can hold', 
 describe('a low-level call whose payload names no method', () => {
   it('refuses the body, keeping the direct path\'s opaque-return machinery', () => {
     expect(refusalMessageOf(OPAQUE_SELECTOR_PAYLOAD)).toBe(`Caller.callIt(): ${RAW_REFUSAL}`);
+  });
+});
+
+describe('a body that reaches inline assembly', () => {
+  it('serves the contract when no body reaches the assembly helper', () => {
+    expect(refusalMessageOf(ASSEMBLY_IN_UNREACHED_HELPER)).toBe('');
+  });
+
+  it('refuses the whole contract when a body reaches it', () => {
+    // The gate refuses by reachability, before any per-body refusal: a body that reaches inline assembly fails
+    // the contract rather than only itself.
+    expect(() => refusalMessageOf(ASSEMBLY_IN_REACHED_HELPER)).toThrow(INLINE_ASSEMBLY_REFUSAL);
   });
 });
 

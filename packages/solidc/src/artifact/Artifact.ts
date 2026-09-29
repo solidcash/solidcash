@@ -3,6 +3,7 @@ import {
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type,
   EnumType, StructType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
   ValueProvenance, ValueProvenanceKind, ValueType,
+  AddressType,
   abiTypeString, ChildDeploymentValueRecipe, FixedBchTransferAbi, ExternalResultConsumerAbi,
   ATOMIC_MESSAGE_BUS_MAX_ROWS, computeErrorSignature, computeEventSignature,
 } from '@solidcash/utils';
@@ -1255,6 +1256,7 @@ const SIGNATURE_CHECK_KEY_ARGUMENT: Record<string, number> = {
 interface ProvenanceIndex {
   bindings: Map<string, ExpressionNode[]>;
   bound: Set<string>;
+  reassigned: Set<string>;
   calls: (LowLevelCallNode | LowLevelCallStatementNode)[];
   signatureChecks: FunctionCallNode[];
 }
@@ -1269,16 +1271,22 @@ const bindName = (index: ProvenanceIndex, name: string, expression?: ExpressionN
 
 const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
   const index: ProvenanceIndex = {
-    bindings: new Map(), bound: new Set(), calls: [], signatureChecks: [],
+    bindings: new Map(), bound: new Set(), reassigned: new Set(), calls: [], signatureChecks: [],
   };
   const seen = new Set<object>();
   const walk = (value: unknown): void => {
     if (!(value instanceof Node) || seen.has(value)) return;
     seen.add(value);
     if (value instanceof VariableDefinitionNode) bindName(index, value.name, value.expression);
-    else if (value instanceof AssignNode) bindName(index, value.identifier.name, value.expression);
+    else if (value instanceof AssignNode) {
+      index.reassigned.add(value.identifier.name);
+      bindName(index, value.identifier.name, value.expression);
+    }
     else if (value instanceof TupleAssignmentNode) {
-      for (const element of value.elements) if (!element.skip && element.name) bindName(index, element.name);
+      for (const element of value.elements) if (!element.skip && element.name) {
+        index.reassigned.add(element.name);
+        bindName(index, element.name);
+      }
     } else if (value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
       index.calls.push(value);
     } else if (value instanceof FunctionCallNode
@@ -1363,6 +1371,53 @@ const lowLevelCallTargets = (
     targets[call.callIndex] = existing ? weakerProvenance(existing, resolved) : resolved;
   }
   return targets;
+};
+
+/** Publish only exact, side-effect-free call target recipes. A mutable local or any unsupported expression
+ * remains unpublished, so SDK consumers cannot mistake a guessed origin for the address used by the script. */
+const lowLevelCallTargetSources = (
+  fn: FunctionDefinitionNode, index: ProvenanceIndex,
+): (ExternalCallArgSource | undefined)[] => {
+  const parameters = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+  const expressionOf = (value: ExpressionNode, resolving = new Set<string>()): ExternalCallExpression | undefined => {
+    if (value instanceof IdentifierNode) {
+      if (index.reassigned.has(value.name)) return undefined;
+      const paramIndex = parameters.findIndex((parameter) => parameter.name === value.name);
+      if (paramIndex >= 0) return { kind: 'source', source: { kind: 'forward', paramIndex } };
+      if (resolving.has(value.name)) return undefined;
+      const definition = value.definition?.definition;
+      const bindings = index.bindings.get(value.name);
+      if (!(definition instanceof VariableDefinitionNode) || !definition.expression
+        || bindings?.length !== 1 || bindings[0] !== definition.expression) return undefined;
+      return expressionOf(definition.expression, new Set(resolving).add(value.name));
+    }
+    if (value instanceof CastNode) {
+      const inner = expressionOf(value.expression, resolving);
+      if (!inner) return undefined;
+      const definition = value.expression instanceof IdentifierNode
+        ? value.expression.definition?.definition : undefined;
+      const identityAddressCast = value.type instanceof AddressType
+        && (value.expression.type instanceof AddressType
+          || (definition instanceof VariableDefinitionNode && definition.type instanceof AddressType));
+      return identityAddressCast || value.type.toString() === value.expression.type?.toString()
+        ? inner : { kind: 'cast', type: value.type.toString(), expression: inner };
+    }
+    if (value instanceof TernaryOpNode) {
+      const condition = expressionOf(value.condition, resolving);
+      const ifTrue = expressionOf(value.ifTrue, resolving);
+      const ifFalse = expressionOf(value.ifFalse, resolving);
+      return condition && ifTrue && ifFalse ? { kind: 'ternary', condition, ifTrue, ifFalse } : undefined;
+    }
+    return undefined;
+  };
+  const sources: (ExternalCallArgSource | undefined)[] = [];
+  for (const call of index.calls) {
+    const expression = expressionOf(call.targetExpression);
+    if (!expression) continue;
+    sources[call.callIndex] = expression.kind === 'source' && expression.source?.kind === 'forward'
+      ? expression.source : { kind: 'expression', expression };
+  }
+  return sources;
 };
 
 /**
@@ -1906,6 +1961,7 @@ function buildFunctionAbiMetadata(
   // low-level call and no signature check resolves nothing and publishes nothing.
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
+  const callTargetSources = lowLevelCallTargetSources(func, provenance);
   const delegateForwarding = (() => {
     const statements = func.body.statements ?? [];
     if (statements.length !== 2) return undefined;
@@ -2600,6 +2656,7 @@ function buildFunctionAbiMetadata(
         // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
         // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
         target: callTargets[index] ?? COMPUTED_PROVENANCE,
+        ...(callTargetSources[index] && { targetSource: callTargetSources[index] }),
       })),
     }),
     ...(delegateForwarding && { delegateForwarding }),

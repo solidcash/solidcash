@@ -617,6 +617,8 @@ export interface AbiFunction {
      * `lowLevelCallTargetProvenance`, which makes that unknown leg explicit.
      */
     target?: ValueProvenance;
+    /** Exact replayable target source when the compiler proves an immutable, side-effect-free recipe. */
+    targetSource?: ArgSource;
   }[];
   /**
    * Compiler proof that this function is only a singular delegate frame: one unconditional low-level

@@ -182,6 +182,9 @@ describe('cycle-safe AST metadata walks', () => {
 
   it('handles a self-function reference passed to abi.encode', () => {
     expect(ok('contract C { function f() public view { abi.encode(this.f); } }')).toBe('C');
+    expect(ok('contract C { function f() public view { abi.encode(this.f, this.f); } }')).toBe('C');
+    expect(() => ok('contract C { function f() public view returns (bytes memory) {'
+      + ' return abi.encode(this.f); } }')).toThrow(/unsupported type.*function/i);
   });
 
   it('handles comparisons of self-function references', () => {
@@ -612,6 +615,8 @@ describe('cast-wrapped low-level call targets', () => {
     const fn = artifact.abi.find((candidate) => candidate.name === 'f');
     expect(fn?.lowLevelCalls).toEqual([{
       callMode: 'call',
+      dataParamIndex: 3,
+      occurrence: 'once',
       target: { kind: 'computed' },
       targetSource: {
         kind: 'expression',
@@ -623,6 +628,14 @@ describe('cast-wrapped low-level call targets', () => {
         },
       },
     }]);
+  });
+
+  it('does not publish an exact source for a reassigned low-level target', () => {
+    const src = 'contract C { function f(address a, address b, bytes calldata data) public {'
+      + ' address target = a; target = b; address(target).call(data); require(data.length > 0); } }';
+    const artifact = compileString(src, { solidityImportCompat: true });
+    const fn = artifact.abi.find((candidate) => candidate.name === 'f');
+    expect(fn?.lowLevelCalls?.[0]?.targetSource).toBeUndefined();
   });
 });
 

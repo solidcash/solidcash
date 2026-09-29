@@ -29,17 +29,21 @@ describe('Compiler', () => {
       });
     });
 
-    it('keeps an explicit opt-in enabled while omitting a handler whose effects cannot be settled', () => {
-      const artifact = _csRawSolidc(`contract ConditionalTokenContainerSend() {
-        int counter;
-        function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
-          if (flag) this.tokens[category].transfer(a, amount);
-          else this.tokens[category].transfer(b, amount);
-          this.counter = this.counter + 1;
+    it('keeps an explicit opt-in enabled while refusing an unbounded repeated token transfer', () => {
+      const artifact = _csRawSolidc(`contract RepeatedTokenContainerSend() {
+        mapping(int => int) m;
+        function sendRepeated(int n, bytes32 category, bytes to) public {
+          for (int i = 0; i < n; i = i + 1) {
+            this.m[i] = 1;
+            this.tokens[category].transfer(to, 1);
+          }
+          require(true);
         }
       }`, { messageBus: true });
 
-      expect(artifact.messageBus).toBeUndefined();
+      expect(artifact.messageBus?.available).toBe(false);
+      expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sendRepeated'))
+        .toMatchObject({ eligible: false, rejectionReason: 'KERNEL_LAYOUT' });
       expect(artifact.compiler.options?.messageBus).toBe(true);
     });
 

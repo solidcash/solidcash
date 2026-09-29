@@ -8461,8 +8461,15 @@ function synthesizeMessageBusRoute(
   const selector = sourceFunctionSelectorHex;
   const routeMaximumBlobBytes = compilerOptions.messageBusKernel === true
     ? MAX_KERNEL_MESSAGE_BUS_BLOB_BYTES : MAX_MESSAGE_BUS_BLOB_BYTES;
+  // A value effect reserves a balanced physical output (and funder input) for every possible row.
+  // The kernel's 255-row logical envelope is affordable for pure handlers, but reserving 255
+  // transfer UTXOs for a two-row batch makes the mandatory token-conservation scans exceed BCH's
+  // operation-cost density limit. Keep the established eight-row capacity for value-bearing routes.
+  const kernelHasValueEffect = eligible.some((fn) =>
+    eligibleFootprint(fn).effects.includes('value')
+      || carriesRawValueOption(fn) || carriesAdmittedChildDeploymentValue(fn));
   const defaultRouteMaximumRows = compilerOptions.messageBusKernel === true
-    ? MAX_KERNEL_MESSAGE_BUS_ROWS
+    ? (kernelHasValueEffect ? MAX_MESSAGE_BUS_ROWS : MAX_KERNEL_MESSAGE_BUS_ROWS)
     : resourceShapedHandler
       ? (compilerOptions.maximumInputBytes !== undefined
         && compilerOptions.maximumInputBytes > MAX_INPUT_BYTESIZE

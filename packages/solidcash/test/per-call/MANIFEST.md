@@ -37,7 +37,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/deploy/` | `solidcash` | 130 |
 | `packages/solidcash/test/per-call/call/` | `solidcash` | 14 |
 | `packages/solidcash/test/per-call/time/` | `solidcash` | 7 |
-| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 85 |
+| `packages/solidcash/test/per-call/hostile/` | `solidcash` | 86 |
 | `packages/solidcash/test/per-call/shapes/` | `solidcash` | 112 |
 | `packages/solidcash/test/per-call/edges/` | `solidcash` | 41 |
 | `packages/solidcash/test/per-call/primitives/` | `solidcash` | 12 |
@@ -45,9 +45,9 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1475 checks (115 + 507 + 851 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1476 checks (115 + 507 + 852 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 507 is the four rows above it, `solidcash` 851 (850 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 507 is the four rows above it, `solidcash` 852 (851 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one

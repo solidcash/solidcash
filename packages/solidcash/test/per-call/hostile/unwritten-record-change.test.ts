@@ -17,8 +17,9 @@ import {
  * Settlement chains whatever views a frame declares, so a frame's code has to account for every record it declares:
  * a record it does not write in a segment is declared kept there. Each entry below settles with its honest
  * declarations and stalls with the same record declared changed where its code does not change it: an entry that
- * never touches the record, one that writes it before a call and would see it changed after, and a guard written
- * before and after a call whose intermediate value a callee would read.
+ * never touches the record, one that writes it before a call and would see it changed after, a guard written
+ * before and after a call whose intermediate value a callee would read, and a call only some paths make, whose
+ * segments the frame counts as it runs.
  */
 
 const PING_ADDRESS = seededAddress('unwritten record change ping');
@@ -28,6 +29,7 @@ const SOURCE = 'pragma solidcash ^0.13.0;'
   + ' contract Ledger {'
   + '   int count;'
   + '   function noop() { require(true); }'
+  + `   function maybe(int b) { if (b > 0) { IPing(0x${hexOf(PING_ADDRESS)}).ping(); } require(true); }`
   + `   function touch() { IPing(0x${hexOf(PING_ADDRESS)}).ping(); require(true); }`
   + `   function bump(int id) { this.count = id + 1; IPing(0x${hexOf(PING_ADDRESS)}).ping(); require(true); }`
   + `   function guard() { this.count = 1; IPing(0x${hexOf(PING_ADDRESS)}).ping(); this.count = 0; require(true); }`
@@ -44,7 +46,7 @@ const ONE = commitment(1n);
 const EIGHT = commitment(8n);
 const FAKE = commitment(999n);
 
-type Entry = 'noop' | 'touch' | 'bump' | 'guard';
+type Entry = 'noop' | 'touch' | 'bump' | 'guard' | 'maybe';
 type Views = readonly (readonly [Uint8Array, Uint8Array])[];
 
 /** The composition: `entry` runs on the ledger with its record declared `views`, one pair per segment. */
@@ -71,7 +73,8 @@ function plan(entry: Entry, views: Views): CompositionDraftPlan {
       kind: FrameKind.CALL, callee: 'ping-1', target: ping.address, value: 0n, argumentPushes: pingPushes,
     }] : [],
     segments: views.map(([viewIn, viewOut]): RecordEntry[] => [{ in: record, out: record, viewIn, viewOut }]),
-    argumentPushes: [selectorOf(artifacts, 'Ledger', entry), ...(entry === 'bump' ? [encodeIntegerValue(7n)] : [])],
+    argumentPushes: [selectorOf(artifacts, 'Ledger', entry), ...(entry === 'bump' ? [encodeIntegerValue(7n)] : []),
+      ...(entry === 'maybe' ? [encodeIntegerValue(1n)] : [])],
     dispatches: true,
   });
   const pingMaster: DraftMaster = master({
@@ -138,5 +141,11 @@ describe('a record declared changed where its frame does not write it', () => {
     expect(() => compose('bump', [[ZERO, EIGHT], [EIGHT, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
     // The guard shown unset while the call runs, so a callee re-entering would pass it.
     expect(() => compose('guard', [[ZERO, ZERO], [ZERO, ZERO]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+  });
+
+  it('refuses the record declared changed around a call only some paths make', () => {
+    expect(refusals(compose('maybe', [[ZERO, ZERO], [ZERO, ZERO]]))).toStrictEqual([]);
+    expect(() => compose('maybe', [[ZERO, ZERO], [ZERO, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
+    expect(() => compose('maybe', [[ZERO, FAKE], [FAKE, FAKE]])).toThrow(/PER_CALL_DERIVATION_STALLED/);
   });
 });

@@ -6,6 +6,7 @@ import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libau
 import {
   decodePushdataValue,
   encodePushdataValue,
+  getDefaultStateValue,
   type AbiFunction,
   type Artifact,
   type StateValue,
@@ -193,7 +194,13 @@ callerContract?: StatefulContract<Artifact>,
         match.value, exactAbiFunction ?? host.resolveCallAbi(functionName, args), host.inner.artifact,
       );
     }
-    return 0n;
+    const returnFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
+    const outputType = returnFunction?.outputs?.[0]?.type;
+    if (!outputType) throw new Error(`Direct mapping read '${functionName}' has no declared return type`);
+    return decorateFunctionResult(
+      getDefaultStateValue(outputType, host.inner.artifact.stateLayout?.structs ?? host.inner.artifact.structs),
+      returnFunction, host.inner.artifact,
+    );
   }
   const abiFunction = exactAbiFunction ?? host.resolveCallAbi(functionName, args);
   type StatefulCall = Extract<CallInfo, { type: 'stateful' }>;

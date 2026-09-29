@@ -28,6 +28,7 @@ import {
   takeLengthPrefixedField32,
   unsignedLength,
 } from '../master/witness-reader.js';
+import { countMastersScript } from '../master/frame-tail.js';
 import { addressCheckScript, addressFromPinScript } from './address-check.js';
 import type { ValidatorReasonName } from './reasons.js';
 
@@ -144,6 +145,7 @@ export const VALIDATOR_PROGRAM_REASONS: readonly ValidatorReasonName[] = [
   'V7_EVENT_OUTPUT_OUT_OF_RANGE',
   'V7_EVENT_OUTPUT_SHARED',
   'V7_TOUCHED_RECORDS_MISMATCH',
+  'V7_MASTER_NOT_COVERED',
   // The chains rule, in the order V6 derives: a record's first declaration carries the commitment the transaction
   // spends at the record's input (nothing, for a record the transaction creates), each later one carries on from the
   // view the one before it left, only the last may delete the record, and the last writes the commitment the
@@ -1143,12 +1145,12 @@ function requireStaticSegments(e: Emitter): void {
 }
 
 /**
- * A contract with two or more covered masters is one the transcript settles.
+ * A contract with a covered master and another master anywhere in the transaction is one the transcript settles.
  *
- * Entry `[M]`, exit `[M]`. Every category that two or more covered masters share is one the transcript settles. The
- * categories are compared in the order the machine reports a spent token's category, which is the reverse of the
- * order the transcript writes them. A contract that is settled only because a frame runs on its records is not
- * decided here.
+ * Entry `[M]`, exit `[M]`. The masters are counted over the whole transaction, not over the covered ones: a master
+ * that is not its category's only one leaves its records to a validator, so a contract split across two validators'
+ * call trees would otherwise be settled by neither. The categories are compared in the order the machine reports a
+ * spent token's category, which is the reverse of the order the transcript writes them.
  */
 function emitSettlementMembership(e: Emitter): void {
   const O = Opcodes;
@@ -1160,10 +1162,10 @@ function emitSettlementMembership(e: Emitter): void {
   e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
   e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
   e.unsignedByteOnTop();
-  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
-  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
-  e.count(3).op(O.OP_PICK, O.OP_1, O.OP_PICK);
-  emitCountCategory(e);
+  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY, O.OP_DUP);
+  e.script(countMastersScript());
+  e.op(O.OP_SWAP);
+  e.count(32).op(O.OP_SPLIT, O.OP_DROP, O.OP_SWAP);
   e.op(O.OP_DUP);
   e.count(2).op(O.OP_GREATERTHANOREQUAL, O.OP_IF);
   e.op(O.OP_DROP);
@@ -2159,12 +2161,13 @@ function emitCollectRecordInput(e: Emitter): void {
 }
 
 /**
- * Every master of the settled contract is recreated in place, at the same index, and nothing else is.
+ * Every master of the settled contract is covered here and recreated in place, at the same index, and nothing else
+ * is.
  *
  * Entry `[.., X]`, exit the same. A master is identified by its category with the minting capability and by nothing
  * else, so the program compares the machine's answer with the pin the contract's category builds rather than with a
- * lock. A master that leaves the transaction, one that appears at an index where the input was not a master, and a
- * recreation that changes the lock or the commitment are all refused.
+ * lock. A master another validator covers, one that leaves the transaction, one that appears at an index where the
+ * input was not a master, and a recreation that changes the lock or the commitment are all refused.
  */
 function emitRequireMastersRecreated(e: Emitter): void {
   const O = Opcodes;
@@ -2176,6 +2179,7 @@ function emitRequireMastersRecreated(e: Emitter): void {
   loopCounted(e, (em) => {
     emitMasterPinFlag(em, O.OP_UTXOTOKENCATEGORY);
     em.op(O.OP_IF);
+    emitRequireCovered(em);
     em.op(O.OP_DUP, O.OP_TXOUTPUTCOUNT, O.OP_LESSTHAN, O.OP_VERIFY);
     emitRequireMasterPinFlag(em, O.OP_OUTPUTTOKENCATEGORY);
     emitRequireMasterRecreated(em);
@@ -2194,6 +2198,23 @@ function emitRequireMastersRecreated(e: Emitter): void {
     em.op(O.OP_1ADD);
   });
   e.op(O.OP_DROP, O.OP_FROMALTSTACK, O.OP_DROP);
+}
+
+/**
+ * The input index on top is one of the covered masters.
+ *
+ * Entry `[M, settleCount, after, created, X, count, index]`, exit the same. A covered master's index is one byte of
+ * the transcript's master list, so an index past a byte is never covered.
+ */
+function emitRequireCovered(e: Emitter): void {
+  const O = Opcodes;
+  e.op(O.OP_DUP).count(MAX_TRANSCRIPT_COUNT).op(O.OP_LESSTHANOREQUAL, O.OP_VERIFY);
+  e.count(6).op(O.OP_PICK);
+  emitMasterByteString(e);
+  e.op(O.OP_NIP);
+  e.op(O.OP_OVER).count(2).op(O.OP_NUM2BIN).count(1).op(O.OP_SPLIT, O.OP_DROP);
+  emitFoundWidth(e, 1);
+  e.op(O.OP_VERIFY);
 }
 
 /**
@@ -2454,25 +2475,6 @@ function emitMasterByteString(e: Emitter): void {
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_NIP);
   takeCount(e);
   e.op(O.OP_SWAP, O.OP_SPLIT, O.OP_DROP);
-}
-
-/** Entry `[masters, category]`, exit `[count]`. Covered masters whose category is the one given. */
-function emitCountCategory(e: Emitter): void {
-  const O = Opcodes;
-  e.op(O.OP_0, O.OP_ROT);
-  e.op(O.OP_BEGIN);
-  e.op(O.OP_SIZE, O.OP_0NOTEQUAL, O.OP_IF);
-  e.count(1).op(O.OP_SPLIT, O.OP_SWAP);
-  e.unsignedByteOnTop();
-  e.op(O.OP_DUP, O.OP_UTXOTOKENCATEGORY);
-  e.count(32).op(O.OP_SPLIT, O.OP_DROP);
-  e.count(4).op(O.OP_PICK, O.OP_EQUAL, O.OP_IF);
-  e.op(O.OP_DROP, O.OP_SWAP, O.OP_1ADD, O.OP_SWAP);
-  e.op(O.OP_ELSE, O.OP_DROP, O.OP_ENDIF);
-  e.op(O.OP_ENDIF);
-  e.op(O.OP_SIZE);
-  e.count(0).op(O.OP_NUMEQUAL, O.OP_UNTIL);
-  e.op(O.OP_DROP, O.OP_NIP);
 }
 
 /**

@@ -574,16 +574,22 @@ function checkRecordValues(
   }
 }
 
-/** V8. A contract is settled here exactly when it has two or more covered masters, or a frame runs on its records. */
+/**
+ * V8. A contract is settled here exactly when a covered master of it is not its only master in the transaction, or a
+ * frame runs on its records. The masters are counted over the whole transaction, so a contract split across two
+ * validators' call trees is one both have to settle, and V7 then refuses the masters the other covers.
+ */
 export function checkV8(state: DerivationState): void {
   const counts = new Map<string, number>();
-  for (const master of state.masterSet) {
-    const key = categoryKey(ownCategory(state, master));
+  for (const input of state.transaction.inputs) {
+    if (!isMasterToken(input.token)) continue;
+    const key = categoryKey(input.token.category);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const needed = new Set<string>();
-  for (const [key, count] of counts) {
-    if (count >= 2) needed.add(key);
+  for (const master of state.masterSet) {
+    const key = categoryKey(ownCategory(state, master));
+    if ((counts.get(key) ?? 0) >= 2) needed.add(key);
   }
   for (const master of state.masterSet) {
     const kind = blockOf(state, master).kind;

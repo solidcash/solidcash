@@ -824,7 +824,7 @@ Conversely, every covered master that is not a root appears in exactly one calle
   per call level, so a call tree deeper than about 30 levels is refused.
 
 **V7. Settlement**, for each contract X in `M.settles`:
-- every master of `catX` in the transaction is covered;
+- every master of `catX` in the transaction is covered, so no other validator runs a frame on X's records;
 - **inputs:** the `catX` state UTXOs spent in the transaction are exactly `M.settles`' `stateInput` list, and that list
   is exactly the set of X's records that the covered frames' views touch (T38);
 - **chains:** X's records' views chain in the V6 order, across every frame that runs on X's records, from the real
@@ -839,8 +839,11 @@ Conversely, every covered master that is not a root appears in exactly one calle
   amounts, so its index must be one a frame in X's context lists as an event;
 - **values** as in S4.
 
-**V8.** A contract is in `M.settles` if it has two or more covered masters, or if a covered `DELEGATE` or `INTERNAL`
-frame runs on its records. Otherwise it is not, and its single master settles it (R4).
+**V8.** A contract is in `M.settles` if one of its masters is covered and it has another master anywhere in the
+transaction, or if a covered `DELEGATE` or `INTERNAL` frame runs on its records. Otherwise it is not, and its single
+master settles it (R4). The masters are counted over the whole transaction: a master that is not its category's only
+one leaves its records to a validator, so counting only the covered ones would let a contract with one master in
+each of two validators' call trees be settled by neither (T7).
 
 **V9. Owner policy.** The first root master's category equals the validator's own category. This is not needed for
 safety; it keeps pools per contract.
@@ -962,7 +965,7 @@ by the code that produces it, by the validator program, or against real state.
 | T4 | Leave out a validator that is needed | N1 need test | Yes |
 | T5 | Fake validator | N1 recognizer: a mutable NFT of its own category, and a redeem script of `pin(c)` plus code hashing to `H_V` | Yes |
 | T6 | A master points to a validator that does not list it (its witnesses go unchecked) | V3 completeness | Yes |
-| T7 | Split view across validators | V3, V5 and V7: every edge and every multi-master contract sits inside one validator | Yes |
+| T7 | Split view across validators, including one master of a contract in each of two validators' call trees | V3, V5, V7 (every master of a settled contract is covered) and V8 (masters counted over the transaction): every edge and every multi-master contract sits inside one validator | Yes |
 | T8 | Forged arguments, selector or result | V5, with W2: the caller hashes what it computed, and the callee proves `retval` | Yes |
 | T9 | Reordered segments, stale reads | V6, plus view chaining in V7 / S1 | Yes |
 | T10 | Claim self-settlement while another master of the contract exists | S applies only when a category scan finds one master; N1 | Yes |

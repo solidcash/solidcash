@@ -30046,6 +30046,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return nesting;
   }
 
+  /**
+   * Adds the records a per-call body's sorted batch declares past the run's own layout slots.
+   *
+   * A per-call segment declares one record per batch target, so the dynamic run's records begin after the targets.
+   * A target spliced into a predecessor the live list does not hold declares the relinked predecessor as well, so
+   * the run's own record sits one position later for every spliced target. The write loop states that surplus; the
+   * read loop addresses the same record, so it states it too. Either loop without it names the record the surplus
+   * displaced — a created node, whose declared view is empty — and fails the declared-view read.
+   *
+   * The direct convention's SDK computes the run's coordinate itself, so its batch band is already inside the base
+   * it supplies; the distinct-predecessor count its trailing operand carries is the write's own surplus.
+   */
+  private emitSortedBatchRecordSurplus(loc: SingleLocationData, extraStackOffset = 0): void {
+    if (this.getStackIndex('__internal__vmapBatchTrailingCount', true) < 0) return;
+    const batchSlots = (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
+    const perCallInserts = this.perCallMaster && batchSlots.length > 0
+      && batchSlots.every((slot) => this.getStackIndex(`__internal__vmapBatchPredOut_${slot}`, true) >= 0);
+    if (!perCallInserts) {
+      this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1 + extraStackOffset);
+      this.emit(Op.OP_ADD, loc);
+      return;
+    }
+    this.emit(encodeInt(0n), loc);
+    for (const slot of batchSlots) {
+      this.emitPickCompilerRouteFrameValue(`__internal__vmapBatchPredOut_${slot}`, loc, 2 + extraStackOffset);
+      this.emit(encodeInt(0n), loc);
+      this.emit(Op.OP_GREATERTHANOREQUAL, loc);
+      this.emit(Op.OP_ADD, loc);
+    }
+    this.emit(Op.OP_ADD, loc);
+  }
+
   private emitDynamicWriteVerification(node: FunctionDefinitionNode, guardInactiveRoute = true): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const dynamicBaseIndex = this.getStackIndex('__internal__dynamicChunkInputBase', true);
@@ -30262,28 +30294,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!this.usesDelegateTransactionSuffix()) {
         // Returning-call bases do not pass through the ordinary reconstruction branch above.
         if (returningExternalSlots.length > 0) this.emitAddCollectionIterCounts(loc);
-        const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
-        const batchSlots = (this.currentFunction.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices);
-        const perCallInserts = this.perCallMaster && batchSlots.length > 0
-          && batchSlots.every((slot) => this.getStackIndex(`__internal__vmapBatchPredOut_${slot}`, true) >= 0);
-        if (batchCountIdx >= 0) {
-          if (perCallInserts) {
-            // A per-call segment declares one record per target plus one more for every target spliced into a
-            // predecessor the empty list shares, so the run sits after the insert surplus rather than after the
-            // distinct-predecessor count (which is what the direct convention's Trailing operand carries).
-            this.emit(encodeInt(0n), loc);
-            for (const slot of batchSlots) {
-              this.emitPickCompilerRouteFrameValue(`__internal__vmapBatchPredOut_${slot}`, loc, 2);
-              this.emit(encodeInt(0n), loc);
-              this.emit(Op.OP_GREATERTHANOREQUAL, loc);
-              this.emit(Op.OP_ADD, loc);
-            }
-            this.emit(Op.OP_ADD, loc);
-          } else {
-            this.emitPickCompilerRouteFrameValue('__internal__vmapBatchTrailingCount', loc, 1);
-            this.emit(Op.OP_ADD, loc);
-          }
-        }
+        // The run's own record sits after the batch's target slots and the extra records a splice declares.
+        this.emitSortedBatchRecordSurplus(loc);
         if (this.runtimeLoopEntryOutputCountActive) {
           // Runtime mapping entries are verified inline before the epilogue's newly written dynamic chunks. Their
           // exact width can differ from the source iteration count (an insert may emit predecessor + NEW), so use
@@ -31452,6 +31464,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.perCallMaster) {
         this.emit(encodeInt(BigInt(this.perCallDynamicChunkWidth())), loc);
         this.emit(Op.OP_ADD, loc);
+        // The read addresses the same record the write does, so it states the same batch surplus: without it the
+        // run's coordinate names the record a spliced target's extra declaration displaced.
+        this.emitSortedBatchRecordSurplus(loc);
       }
       // Values below -1 encode an inactive-write route while retaining its read-only chunk coordinate:
       // encoded = -(base + 3). Decode before applying read-loop offsets.

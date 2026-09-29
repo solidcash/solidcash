@@ -414,11 +414,15 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
     expect(bytesToHex(node.value)).toBe(bytesToHex(encodeChunkableValueTail(value)));
   });
 
-  it('refuses an insert of a mapping target beside the append, naming the record the run addresses', async () => {
+  it('refuses an insert of a mapping target beside the append, which the hop does not plan', async () => {
     // A target the live list does not hold makes its group two records: the relinked predecessor and the created
-    // node. A per-call body derives the dynamic run's ordinal from the batch's operands, which advance past a
-    // target's group by one, so the run addresses the created node — whose lock is the entry covenant, not the
-    // run's own — and no declared position for the run puts it back. The insert is refused by name.
+    // node, and they sit between the batch's target slots and the run's own records. The contract states that
+    // surplus in both loops that address the run — the write and, since it reads the run an append grows, the read
+    // — so the transition itself settles (`solidc/test/per-call/master/insert-beside-append.test.ts` drives the
+    // insert beside a run the deployment holds through the shipped machine). The refusal this pin holds is the
+    // hop's own: it declines the arrangement before a frame runs, and it does not plan the records the run the
+    // deployment already holds occupies. Measured on the pin's own call: with that guard lifted the call stops in
+    // the hop's planning, before any frame, on the mapping head's live UTXO.
     const { deployment, network, artifacts, funding } = await deploy(REGISTER_CALL_SOURCE, [], true);
     expect(deployment.initialize.accepted).toBe(true);
 
@@ -434,11 +438,7 @@ describe('a proxied initialize that appends to a dynamic state array', () => {
       funder: funding.signature.unlockP2PKH(),
       changeAddress: funding.changeAddress,
       vm: compositionMachine(),
-    })).rejects.toThrow(
-      'the implementation\'s "register" entry inserts a mapping target the live list does not hold beside a '
-      + 'dynamic value, and an insert group declares the relinked predecessor and the created node, so the '
-      + 'ordinal the dynamic run is addressed at names the created node rather than the run',
-    );
+    })).rejects.toThrow('inserts a mapping target the live list does not hold beside a dynamic value');
   });
 });
 

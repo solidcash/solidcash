@@ -29,7 +29,7 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/validator/` | `solidcash` | 94 |
 | `packages/solidcash/test/per-call/composer/` | `solidcash` | 168 |
 | `packages/solidcash/test/per-call/frames/` | `solidcash` | 71 |
-| `packages/solidcash/test/per-call/reads/` | `solidcash` | 19 |
+| `packages/solidcash/test/per-call/reads/` | `solidcash` | 20 |
 | `packages/solidcash/test/per-call/reverts/` | `solidcash` | 3 |
 | `packages/solidcash/test/per-call/receipt/` | `solidcash` | 8 |
 | `packages/solidcash/test/per-call/queue/` | `solidcash` | 3 |
@@ -45,9 +45,9 @@ default. `PER_CALL_FULL=1` restores its full 400-case sample; use it at mileston
 | `packages/solidcash/test/per-call/conformance/` | `solidcash` | — not written |
 | `packages/testing/test/per-call/` | `@solidcash/testing` | 2 |
 
-Total: 1485 checks (115 + 513 + 857 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
+Total: 1488 checks (115 + 513 + 858 + 2), with one more case that runs under `PER_CALL_FULL=1` (the
 twenty-four-master composition, which takes about twenty-eight seconds to derive). The package totals are full-config runs of
-`vitest.per-call.config.ts`: `solidc` 513 is the four rows above it, `solidcash` 857 (856 passed, one skipped) is the
+`vitest.per-call.config.ts`: `solidc` 513 is the four rows above it, `solidcash` 858 (857 passed, one skipped) is the
 seventeen rows above it,
 and `@solidcash/testing` is its own row and drives the layer's public entry points rather than the SDK's.
 A row is refreshed by rerunning its directory, not by carrying a number forward. A new case belongs in one
@@ -84,6 +84,8 @@ says what is missing.
 The proxy hops of the catalog are exercised as their own rows: a user's call into a proxy that `DELEGATE`s into its
 implementation by `toys/proxied-entry.test.ts`, `toys/proxied-appends.test.ts` and `shapes/proxied-registration.test.ts`,
 and the binding of a delegate callee to the implementation the record names by `hostile/delegate-target-binding.test.ts`.
+A read-only entry of a proxy handle is read at the proxy's category, the implementation's artifact being the code the
+frame runs, by `reads/proxied-root-read.test.ts`.
 
 ## What each directory covers
 
@@ -182,6 +184,9 @@ and the binding of a delegate callee to the implementation the record names by `
   itself: the caller names the other contracts in `externals`, a view that reads a view returns the composed value
   with nothing broadcast, a three-contract chain returns the leaf's value, a nested refusal reports the innermost
   callee frame and builds nothing, and an entry calling a contract the caller did not supply is refused by name.
+  `proxied-root-read.test.ts` is the read at a handle that names a proxy: the implementation's artifact is the code
+  the frame runs and the proxy's category is where its records sit, so a view reads the proxy's record rather than
+  the implementation's own genesis, with the proxy's own address record left unspent.
 - **`solidcash/test/per-call/reverts/`** — a composition the machine refuses, reporting the *innermost* frame's
   reason: the refusing frame is found by asking the machine for a verdict on every frame of the draft, its depth is
   read from the assembled caller references, and its reason names the frame, the source line and the custom error the

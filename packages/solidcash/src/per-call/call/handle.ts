@@ -10,8 +10,10 @@
  * What this surface covers today: a single contract's entry, entered by a signer, with no external calls. A writing
  * entry that returns a value is carried, and the decoded value is on the call result (`PerCallCallResult.values`); an
  * entry reached through the proxy hop that returns a value is refused, because no stage records the implementation
- * frame's `retval`. A call's fluent modifiers (a time lock, an age lock, an extra output) have no per-call equivalent
- * here yet and are not aliased; the entry's own arguments are the whole of what it takes.
+ * frame's `retval`. A read-only entry reached through the proxy hop is read at the proxy's category, where the
+ * implementation's delegate frame finds the records it runs on. A call's fluent modifiers (a time lock, an age
+ * lock, an extra output) have no per-call equivalent here yet and are not aliased; the entry's own arguments are
+ * the whole of what it takes.
  */
 
 import type { Artifact, StateValue } from '@solidcash/utils';
@@ -32,9 +34,12 @@ export interface PerCallHandleContract {
   readonly provider: NetworkProvider;
   readonly signer?: Signer;
   /**
-   * The implementation's own category, when the handle names a contract behind a proxy: the entry is then reached
-   * by the hop that enters the proxy's fallback and delegates into the implementation, which runs on the proxy's
-   * records, and both categories have to be read to place the composition's inputs.
+   * The implementation's own category, when the handle names a contract behind a proxy.
+   *
+   * A writing entry is reached by the hop that enters the proxy's fallback and delegates into the implementation,
+   * which runs on the proxy's records, so both categories have to be read to place the composition's inputs. A
+   * read-only entry reads the proxy's category alone (`categoryId`): the implementation's own category holds its
+   * genesis, not the state its delegate frame runs on.
    */
   readonly proxyImplementationCategoryId?: string;
 }
@@ -103,18 +108,14 @@ export class PerCallFunctionCall {
     });
   }
 
-  /** Runs the entry as a read of the deployed contract, which changes nothing and is never broadcast. */
+  /**
+   * Runs the entry as a read of the deployed contract, which changes nothing and is never broadcast.
+   *
+   * A handle that names a proxy reads the proxy's category, because `categoryId` is the proxy's: the implementation
+   * runs there as the proxy's delegate frame, over the proxy's records, which is the frame the read composes.
+   */
   public async staticCall(): Promise<PerCallReadResult> {
-    const { artifact, categoryId, provider, proxyImplementationCategoryId } = this.contract;
-    if (proxyImplementationCategoryId !== undefined) {
-      // A read of a proxied contract has to run the hop's own two-category frame like a call does; the read path
-      // reads one category, so this combination is refused rather than answered from the wrong records.
-      throw new PerCallCallError(
-        `a read-only call to "${this.functionName}" behind a proxy is not planned yet: the read path reads one `
-        + 'category, and a proxy keeps its records under the proxy\'s category while the implementation runs '
-        + 'under its own',
-      );
-    }
+    const { artifact, categoryId, provider } = this.contract;
     return readPerCallEntry({
       provider, artifact, categoryId, functionName: this.functionName, args: this.args,
     });

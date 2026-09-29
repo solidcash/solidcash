@@ -5219,6 +5219,140 @@ function synthesizeMessageBusRoute(
     }
     return candidates.length === 1 ? candidates[0] : undefined;
   };
+  // The fixed entry/effect frame can settle an unconditional scalar update beside mapping rows, but a scalar
+  // write selected by a source branch has no independent row-local settlement identity. Inspect successful
+  // paths through internal calls rather than treating every syntactic arm as reachable: a preceding terminal
+  // zero guard can rule out that arm, including when the guard is in the caller of the writing helper.
+  const hasSuccessfulConditionalScalarWrite = (root: FunctionDefinitionNode): boolean => {
+    const scalarStateNames = new Set(contract.stateVariables.map((state) => state.name));
+    interface ScalarPath {
+      owner: FunctionDefinitionNode;
+      aliases: Map<string, string>;
+      nonZero: Set<string>;
+      conditional: boolean;
+    }
+    let found = false;
+    const zero = (expression: ExpressionNode): boolean => expression instanceof IntLiteralNode
+      ? expression.value === 0n
+      : expression instanceof CastNode && zero(expression.expression);
+    const zeroComparison = (
+      expression: ExpressionNode, path: ScalarPath,
+    ): { marker: string; equal: boolean } | undefined => {
+      if (!(expression instanceof BinaryOpNode)
+        || (expression.operator !== BinaryOperator.EQ && expression.operator !== BinaryOperator.NE)) {
+        return undefined;
+      }
+      const identifier = expression.left instanceof IdentifierNode && zero(expression.right)
+        ? expression.left : expression.right instanceof IdentifierNode && zero(expression.left)
+          ? expression.right : undefined;
+      const marker = identifier === undefined ? undefined : path.aliases.get(identifier.name);
+      return marker === undefined ? undefined : { marker, equal: expression.operator === BinaryOperator.EQ };
+    };
+    const active = new Set<FunctionDefinitionNode>();
+    const visitBlock = (block: BlockNode | undefined, initial: ScalarPath[]): ScalarPath[] => {
+      let paths = initial;
+      for (const statement of block?.statements ?? []) {
+        paths = paths.flatMap((path) => visitStatement(statement, path));
+        if (found || paths.length === 0) break;
+        // A larger symbolic path set needs a real join proof. Refuse the mixed layout instead of silently
+        // dropping a branch which could carry the scalar write.
+        if (paths.length > 64) { found = true; break; }
+      }
+      return paths;
+    };
+    const visitCall = (call: FunctionCallNode, path: ScalarPath): void => {
+      const target = exactPreSemanticCallTarget(call, path.owner);
+      if (!target || !target.body) {
+        if ((signatureClosureByName.get(call.identifier.name) ?? []).some((candidate) =>
+          analyseFunctionFootprint(candidate, byName, footprintCache).writes.some((write) =>
+            write.startsWith('state:')))) found = true;
+        return;
+      }
+      if (active.has(target)) {
+        if (analyseFunctionFootprint(target, byName, footprintCache).writes.some((write) =>
+          write.startsWith('state:'))) found = true;
+        return;
+      }
+      const aliases = new Map<string, string>();
+      for (const [index, parameter] of target.parameters.entries()) {
+        const argument = call.parameters[index];
+        if (!(argument instanceof IdentifierNode)) continue;
+        const marker = path.aliases.get(argument.name);
+        if (marker !== undefined) aliases.set(parameter.name, marker);
+      }
+      active.add(target);
+      visitBlock(target.body, [{
+        owner: target, aliases, nonZero: new Set(path.nonZero), conditional: path.conditional,
+      }]);
+      active.delete(target);
+    };
+    const visitStatement = (statement: StatementNode, path: ScalarPath): ScalarPath[] => {
+      if (statement instanceof BlockNode) return visitBlock(statement, [path]);
+      if (statement instanceof UncheckedNode) return visitBlock(statement.block, [path]);
+      if (statement instanceof BranchNode) {
+        const comparison = zeroComparison(statement.condition, path);
+        const truePossible = comparison === undefined || !comparison.equal
+          || !path.nonZero.has(comparison.marker);
+        const falsePossible = comparison === undefined || comparison.equal
+          || !path.nonZero.has(comparison.marker);
+        const branchPath = (nonZero: Set<string>): ScalarPath => ({
+          owner: path.owner, aliases: new Map(path.aliases), nonZero, conditional: true,
+        });
+        const trueNonZero = new Set(path.nonZero);
+        const falseNonZero = new Set(path.nonZero);
+        if (comparison && !comparison.equal) trueNonZero.add(comparison.marker);
+        if (comparison && comparison.equal) falseNonZero.add(comparison.marker);
+        const yes = truePossible ? visitBlock(statement.ifBlock, [branchPath(trueNonZero)]) : [];
+        const no = falsePossible
+          ? statement.elseBlock
+            ? visitBlock(statement.elseBlock, [branchPath(falseNonZero)])
+            : [branchPath(falseNonZero)]
+          : [];
+        // The branch predicate selects writes *inside* an arm; an assignment after the join is not itself
+        // conditional. Retain only the proven facts on each surviving path.
+        return [...yes, ...no].map((survivor) => ({ ...survivor, conditional: path.conditional }));
+      }
+      if (statement instanceof StateAssignNode || statement instanceof DeleteStateNode
+        || (statement instanceof AssignNode && scalarStateNames.has(statement.identifier.name))) {
+        if (path.conditional) found = true;
+      }
+      if (statement instanceof WhileNode || statement instanceof DoWhileNode
+        || statement instanceof SwitchNode || statement instanceof TryCatchNode
+        || statement instanceof CollectionIterationNode) {
+        walkInvocationAst(statement, (node) => {
+          if (node instanceof StateAssignNode || node instanceof DeleteStateNode
+            || (node instanceof AssignNode && scalarStateNames.has(node.identifier.name))) found = true;
+          if (node instanceof FunctionCallNode) visitCall(node, path);
+        });
+        // Unsupported control flow may rebind an alias before a later zero guard. Forget proof facts at its join.
+        path.aliases.clear();
+        path.nonZero.clear();
+        return [path];
+      }
+      walkInvocationAst(statement, (node) => {
+        if (node instanceof FunctionCallNode) visitCall(node, path);
+      });
+      if (statement instanceof RequireNode) {
+        const comparison = zeroComparison(statement.expression, path);
+        if (comparison && !comparison.equal) path.nonZero.add(comparison.marker);
+        if (comparison && comparison.equal && path.nonZero.has(comparison.marker)) return [];
+      }
+      if (statement instanceof AssignNode) {
+        const marker = path.aliases.get(statement.identifier.name);
+        path.aliases.delete(statement.identifier.name);
+        if (marker !== undefined) path.nonZero.delete(marker);
+      }
+      if (statement instanceof VariableDefinitionNode) path.aliases.delete(statement.name);
+      return statement instanceof RevertNode || statement instanceof ReturnNode ? [] : [path];
+    };
+    active.add(root);
+    visitBlock(root.body, [{
+      owner: root,
+      aliases: new Map(root.parameters.map((parameter, index) => [parameter.name, `${index}`])),
+      nonZero: new Set(), conditional: false,
+    }]);
+    return found;
+  };
   // Graph lowering gives a physical effect helper extra settlement operands. A source entry can call that helper
   // safely only when its target/value provenance can be reconstructed in the graph frame. A helper which closes
   // over a contract constructor parameter has neither an entry-row argument nor a state/immutable read carrying
@@ -5817,6 +5951,16 @@ function synthesizeMessageBusRoute(
       }
     }
     const footprint = analyseFunctionFootprint(fn, byName, footprintCache);
+    if (compilerOptions.messageBusKernel === true
+      && footprint.writes.some((resource) => resource.startsWith('state:'))
+      && footprint.writes.some((resource) => resource.startsWith('collection:'))
+      && footprint.effects.includes('events')
+      && hasSuccessfulConditionalScalarWrite(fn)) {
+      noteKernelLayoutGate(fn, 'conditional-scalar-collection-event-settlement');
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'KERNEL_LAYOUT';
+      continue;
+    }
     if ([...footprint.reads, ...footprint.writes].some((resource) =>
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)))) {
       fn.usesDynamicChunkInputBase = true;

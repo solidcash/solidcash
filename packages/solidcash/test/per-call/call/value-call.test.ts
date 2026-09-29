@@ -679,6 +679,15 @@ const SENDING_BODIES_SOURCE = 'pragma solidcash ^0.13.0;'
   + '   function deposit() payable { require(msg.value > 0); }'
   + '   receive() external payable { this.paid = this.paid + 1; this.transfer(this.to, msg.value * 2); }'
   + ' }'
+  + ' contract Tipper {'
+  + '   bytes25 public first;'
+  + '   bytes25 public second;'
+  + '   constructor(bytes25 a, bytes25 b) { this.first = a; this.second = b; }'
+  + '   receive() external payable {'
+  + '     if (msg.value > 5000) { this.transfer(this.first, 1000); }'
+  + '     this.transfer(this.second, 500);'
+  + '   }'
+  + ' }'
   + ' contract Payer {'
   + '   int public paid;'
   + '   receive() external payable { require(true); }'
@@ -734,6 +743,32 @@ describe('a paid receive() that sends', () => {
     expect(paidTo(result, FIRST_LOCK)).toBe(6_000n);
     // The 3,000 it received and 3,000 of its deposit paid the send; the rest of the deposit stays in its container.
     expect(containerValue(result, doublerCategory)).toBe(5_000n);
+  });
+
+  it('makes a send on a branch it takes, and lists only the send it makes when it does not', async () => {
+    const deployed = await deploy(sendingBodies.Payer!);
+    const tipperCategory = await deployBesideWith(
+      deployed, sendingBodies.Tipper!, [FIRST_LOCK, SECOND_LOCK], '53'.repeat(32),
+    );
+    const externals = { Tipper: { artifact: sendingBodies.Tipper!, categoryId: tipperCategory } };
+    const to = addressOf(sendingBodies.Tipper!, tipperCategory);
+    await sendPerCallValue({ ...(await currentCaller(deployed)), value: 20_000n });
+
+    const taken = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 9_000n], externals,
+    });
+    expect(taken.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidTo(taken, FIRST_LOCK)).toBe(1_000n);
+    expect(paidTo(taken, SECOND_LOCK)).toBe(500n);
+    expect(containerValue(taken, tipperCategory)).toBe(7_500n);
+
+    const skipped = await callPerCallEntry({
+      ...(await currentCaller(deployed)), functionName: 'pay', args: [to, 3_000n], externals,
+    });
+    expect(skipped.verdicts.filter((verdict) => !verdict.accepted)).toStrictEqual([]);
+    expect(paidTo(skipped, FIRST_LOCK)).toBe(0n);
+    expect(paidTo(skipped, SECOND_LOCK)).toBe(500n);
+    expect(containerValue(skipped, tipperCategory)).toBe(2_500n);
   });
 
   it('is refused by name when its containers cannot cover what it sends beyond what it receives', async () => {

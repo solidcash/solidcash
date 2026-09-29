@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { binToHex } from '@bitauth/libauth';
 import { compileStringSplit } from 'solidc';
-import { parsePushdataCommitment } from '@solidcash/utils';
+import { messageBusVerifierCommitment, parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
 import { alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
@@ -49,7 +50,7 @@ function stateFromTx(tx: any, category: string, layout: any): Record<string, big
 }
 
 describe('split contract SDK', () => {
-  it('deploys branded master-only facets and routes calls into one shared root state', async () => {
+  it('deploys branded facets without application data NFTs and routes calls into one shared root state', async () => {
     const signer = await fundedSigner();
     const compiled = compileStringSplit(SOURCE, { forceSplit: true });
     const sdk = SplitContractBundle.from(compiled, signer);
@@ -63,11 +64,14 @@ describe('split contract SDK', () => {
     expect(new Set(Object.values(deployed.facets).map((facet) => facet.categoryId)).size).toBe(1);
     expect(Object.values(deployed.facets).every((facet) => facet.categoryId !== deployed.categoryId)).toBe(true);
 
-    // Each facet genesis contains its minting master but no application mutable data NFT.
+    // Each facet genesis contains its minting master and the one compiler-owned verifier, but no application
+    // mutable data NFT. The verifier is a mutable NFT too, so checking capability alone would misclassify it.
     for (const tx of deployed.deploymentTransactions.slice(0, -1) as any[]) {
       const tokenOutputs = getTxOutputs(tx).filter((output) => output.token);
       expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'minting')).toHaveLength(1);
-      expect(tokenOutputs.some((output) => output.token?.nft?.capability === 'mutable')).toBe(false);
+      expect(tokenOutputs.filter((output) => output.token?.nft?.capability === 'mutable')
+        .map((output) => output.token?.nft?.commitment))
+        .toEqual([binToHex(messageBusVerifierCommitment(0))]);
     }
 
     const setTx = await deployed.call.setX(7n).send();

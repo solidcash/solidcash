@@ -10353,7 +10353,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         node.expression.type as Type,
         node.type,
         node.isUnsafe,
-        this.compilerOptions.solidityImportCompat ?? false,
+        this.compilerOptions.solidityImportCompat || this.compilerOptions.evmCompat || false,
       ),
       { location: node.location, positionHint: PositionHint.END },
     );

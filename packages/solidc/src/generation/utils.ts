@@ -219,11 +219,14 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     return compileAddressToEvmIdentity();
   }
   if (from instanceof AddressType && to instanceof IntType) {
-    // OP_BIN2NUM reads a sign-magnitude little-endian number; for unsigned targets append a 0x00 sign byte so
-    // the hash is a non-negative value (otherwise ~half of hashes fail the uint's >= 0 bounds check).
+    // OP_BIN2NUM reads a sign-magnitude little-endian number. Solidity's uint160(address) interprets the
+    // 20-byte identity in big-endian order, so reverse it first in compatibility mode. Native SolidCash keeps
+    // its historical little-endian numeric cast. For unsigned targets append a 0x00 sign byte so hashes whose
+    // high bit is set remain non-negative before the caller's bounds check.
+    const endian = solidityCompat ? [Op.OP_REVERSEBYTES] : [];
     return to.signed
-      ? [...compileAddressToEvmIdentity(), Op.OP_BIN2NUM]
-      : [...compileAddressToEvmIdentity(), new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
+      ? [...compileAddressToEvmIdentity(), ...endian, Op.OP_BIN2NUM]
+      : [...compileAddressToEvmIdentity(), ...endian, new Uint8Array([0]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
 
   // address casts are no-ops (stack value unchanged)

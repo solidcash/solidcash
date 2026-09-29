@@ -134,6 +134,21 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
     warn.mockRestore();
   });
 
+  it('interprets the address identity as big-endian only in Solidity-compatible numeric casts', () => {
+    const source = 'contract C() { function f(address a, uint160 e) { require(uint160(a) == e); } }';
+    const native = bytecodeToAsm(hexToBin(compileString(source, { messageBus: false }).debug.bytecode));
+    const compatible = bytecodeToAsm(hexToBin(compileString(source, {
+      messageBus: false, solidityImportCompat: true,
+    }).debug.bytecode));
+    const evmCompatible = bytecodeToAsm(hexToBin(compileString(source, {
+      messageBus: false, evmCompat: true,
+    }).debug.bytecode));
+    expect(native).not.toContain('OP_REVERSEBYTES');
+    expect(compatible).toContain('OP_REVERSEBYTES');
+    expect(compatible).toContain('OP_BIN2NUM');
+    expect(evmCompatible).toContain('OP_REVERSEBYTES');
+  });
+
   it('uint160(address) HASH160s a 35-byte P2SH32 instead of the P2PKH offset-3 extract', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(

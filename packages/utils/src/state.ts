@@ -702,6 +702,10 @@ function isPackedLockingBytecode(bytes: Uint8Array): boolean {
 
 /** Normalize the SDK spellings accepted only for an address-typed value. */
 function lockingBytecodeFromAddressValue(value: PrimitiveStateValue): PrimitiveStateValue {
+  // A compiled address value is bytes: `address(0)` casts an int with no opcode at all, so the body's stack value
+  // is the VM number's own bytes - the empty string for zero. Accept that integer spelling like the other zero
+  // spellings below rather than failing a value which does have a byte meaning.
+  if (typeof value === 'bigint') return bigIntToVmNumber(value);
   const fromCashAddress = (text: string): Uint8Array | undefined => {
     if (!text.includes(':')) return undefined;
     const decoded = cashAddressToLockingBytecode(text);

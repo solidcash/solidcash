@@ -401,6 +401,19 @@ describe('encodePushdataValue CashAddress values', () => {
     expect(encodePushdataValue(new Uint8Array(20), 'address')).toEqual(empty);
     expect(empty).toEqual(new Uint8Array([0x00]));
   });
+
+  it('encodes the integer spelling of an address as its own bytes, so address(0) is the empty one', () => {
+    // A compiled `address(0)` casts an int with no opcode, so the body's value is the VM number's bytes: the empty
+    // string for zero. The vocabulary reaches the encoder with that integer, and it must encode like the other
+    // zero spellings rather than being rejected as a value with no byte meaning.
+    const empty = encodePushdataValue(new Uint8Array(0), 'address');
+    expect(encodePushdataValue(0n, 'address')).toEqual(empty);
+    expect(encodePushdataValue(new Uint8Array(20), 'address')).toEqual(empty);
+    // A non-zero integer keeps its VM-number bytes, and every other type still rejects an integer.
+    expect(encodePushdataValue(5n, 'address')).toEqual(encodePushdataValue(new Uint8Array([0x05]), 'address'));
+    expect(() => encodePushdataValue(0n, 'bytes')).toThrow('Cannot convert value to bytes for type bytes');
+    expect(() => encodePushdataValue(0n, 'string')).toThrow('Cannot convert value to bytes for type string');
+  });
 });
 
 describe('encodePushdataValue input validation', () => {

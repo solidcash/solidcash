@@ -12636,7 +12636,13 @@ function compileResolvedAst(
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
     }
   }
-  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0) {
+  const hasRootOverride = ast.contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE))
+    || ast.contract.modifierDefinitions.some((modifier) => modifier.isOverride)
+    || [ast.contract.fallbackDef, ast.contract.receiveDef].some((fn) =>
+      fn?.modifiers.includes(FunctionModifier.OVERRIDE));
+  if (ast.contract.parentInvocations.length > 0 || ast.contract.implements.length > 0
+    || ast.importedContracts.some((contract) => contract.implements.length > 0)
+    || (mergedCompilerOptions.solidityImportCompat && hasRootOverride)) {
     ast = expandInheritance(ast, mergedCompilerOptions.solidityImportCompat ?? false);
   }
 
@@ -17475,6 +17481,8 @@ function predictExpressionPrefix(
   const lparen = SolidCashParser.T__56;
   const lbrack = SolidCashParser.T__81;
   if (first === lparen) {
+    // `(type(T)).member` is a distinct metatype prefix, not a grouped expression.
+    if (input.LA(2) === SolidCashParser.T__62) return undefined;
     const rparen = SolidCashParser.T__57;
     const dot = SolidCashParser.T__6;
     if ((input.LA(2) === SolidCashParser.Identifier && input.LA(3) === rparen && input.LA(4) === lparen)
@@ -17846,6 +17854,7 @@ function installExpressionPrefixFastPath(parser: SolidCashParser): void {
       if (token === placeholderTok) return STATEMENT_ALT_PLACEHOLDER;
       if (token === lbrace) return STATEMENT_ALT_BLOCK;
       if (token === requireTok) {
+        if (input.LA(2) !== lparen) return orig(input, decision, ctx);
         // `timeOpStatement` and ordinary `requireStatement` share the `require (` prefix. Preserve the grammar's
         // exact `require ( TxVar >=` distinction in this optimized decision.
         return input.LA(3) === SolidCashParser.TxVar && input.LA(4) === SolidCashParser.T__22

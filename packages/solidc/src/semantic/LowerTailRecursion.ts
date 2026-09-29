@@ -1400,10 +1400,22 @@ export default class LowerTailRecursion extends AstTraversal {
     ), root.location);
   }
 
-  /** An identical `+ 1` at each recursive frame needs only the descent count, not two packed arrays. */
-  private foldUnwindUnitAdd(root: FunctionDefinitionNode, resultName: string, iterationName: string): WhileNode {
+  /** An identical `+ 1` at each recursive frame needs only the descent count. */
+  private foldUnwindUnitAdd(root: FunctionDefinitionNode, resultName: string, iterationName: string): StatementNode {
     const result = (): IdentifierNode => this.stamp(new IdentifierNode(resultName), root.location);
     const iteration = (): IdentifierNode => this.stamp(new IdentifierNode(iterationName), root.location);
+    const resultType = root.returnTypes[0];
+    if (resultType instanceof IntType || resultType === PrimitiveType.BIGINT) {
+      // Widen before adding: the frame count can exceed a narrow result type even when the final sum fits.
+      // For a checked integer, adding a nonnegative count has the same overflow point as repeated +1.
+      const left = resultType instanceof IntType
+        ? this.stamp(new CastNode(PrimitiveType.BIGINT, result(), false), root.location) : result();
+      const sum = this.stamp(new BinaryOpNode(left, BinaryOperator.PLUS, iteration()), root.location);
+      const value = resultType instanceof IntType
+        ? this.stamp(new CastNode(resultType, sum, false), root.location) : sum;
+      return this.stamp(new AssignNode(result(), value), root.location);
+    }
+    // Fixed-point increments require scale conversion; retain the per-frame arithmetic for those folds.
     const one = (): IntLiteralNode => this.stamp(new IntLiteralNode(1n), root.location);
     return this.stamp(new WhileNode(
       this.stamp(new BinaryOpNode(iteration(), BinaryOperator.GT,

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { Contract, StatefulContract, SignatureTemplate, TransactionBuilder } from '../../src/index.js';
+import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
 // A contract with a single variable-length `string` state var. Today this lives in ONE data NFT
@@ -350,15 +351,22 @@ describe('string state variable: orphan-bound (write leaves exactly the right ch
 
     await sc.setText('hello', alicePub, sig()).send(); // valid baseline
 
-    // Derive a valid single-chunk write, then append a duplicate chunk commitment so the builder emits
-    // nNew+1 chunk outputs. The covenant's orphan-bound (count == nNew) must reject it.
-    const call = sc.setText('world', alicePub, sig());
+    // Derive a valid single-chunk write, then append a duplicate physical chunk output after SDK derivation.
+    // The covenant's orphan-bound (count == nNew) must reject the extra output at the VM boundary.
+    const call = sc.setText('world'.repeat(20), alicePub, sig());
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stb: any = await (call as any)._applyOverrides();
     const cur = stb.getChunkRawCommitments('text');
-    stb.setChunkRawCommitments('text', [...cur, cur[0]]);
-    let rejected = false;
-    try { await stb.send(); } catch { rejected = true; }
-    expect(rejected).toBe(true);
+    expect(cur).toHaveLength(1);
+    const builder = stb.build() as TransactionBuilder;
+    const chunk = builder.outputs.find((output) => output.token?.category === categoryId
+      && output.token?.nft?.capability === 'mutable' && output.token.nft.commitment === cur[0]);
+    expect(chunk).toBeDefined();
+    builder.addOutput({ ...chunk!, token: { ...chunk!.token!, nft: { ...chunk!.token!.nft! } } });
+    const feeFunder = await createFeeFunder(provider, 100_000n);
+    builder.addInput(feeFunder.utxo, feeFunder.unlocker);
+    const raw = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
+    await expect(provider.sendRawTransaction(raw))
+      .rejects.toThrow(/error in evaluating input index 0: Program failed an OP_VERIFY operation/);
   });
 });
